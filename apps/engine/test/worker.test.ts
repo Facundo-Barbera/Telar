@@ -12,10 +12,21 @@ const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+const knownClaudeDefault = (directory: string): string => {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+};
+
 const root = (): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-worker-"));
   roots.push(directory);
-  return directory;
+  return knownClaudeDefault(directory);
 };
 
 afterEach(async () => {
@@ -370,6 +381,14 @@ test("a STOPPED first turn keeps the provider session — continuity survives th
   // human's context silently vanished. The driver now reports the id the
   // moment it learns it, and the engine persists it mid-turn.
   const seenCursor: Array<string | undefined> = [];
+  let identified: (() => void) | undefined;
+  // THE PRECONDITION, MADE REAL. This test is about losing an id that was
+  // ALREADY REPORTED, so it must not stop the turn until the provider has
+  // actually identified itself. Waiting on `running` is not that: the turn is
+  // running the moment the driver is called, before it has said anything.
+  const reported = new Promise<void>((resolve) => {
+    identified = resolve;
+  });
   const driver: TurnDriver = {
     async run({ providerSessionId, signal, onObservations }) {
       seenCursor.push(providerSessionId);
@@ -377,6 +396,7 @@ test("a STOPPED first turn keeps the provider session — continuity survives th
         // First turn: report the provider session early, then park until the
         // human stops the turn — the shape of a long generation.
         await onObservations([{ kind: "provider.session", providerSessionId: "provider-abc" }]);
+        identified!();
         await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
         throw new Error("stopped mid-generation");
       }
@@ -386,7 +406,7 @@ test("a STOPPED first turn keeps the provider session — continuity survives th
   const { client, sessionId, worker } = await setup(driver);
   await client.submitTurn(sessionId, { runId: "first", input: "One" });
   await worker.tick();
-  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
+  await reported;
   await client.stopTurn(sessionId);
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
@@ -397,6 +417,61 @@ test("a STOPPED first turn keeps the provider session — continuity survives th
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[1]?.state).toBe("completed"));
   expect(seenCursor).toEqual([undefined, "provider-abc"]);
+});
+
+test("a Stop that lands DURING setup stops, and the provider is never started", async () => {
+  /**
+   * The window `markTurnRunning`'s move created: the turn is claimed, the
+   * worker is mid-setup, and the provider does not exist yet. Blocked on a real
+   * setup await — the profile binding — rather than on timing.
+   */
+  let ran = 0;
+  const driver: TurnDriver = {
+    async run() {
+      ran += 1;
+      return { text: "should not happen" };
+    },
+  };
+  let releaseBinding: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    releaseBinding = resolve;
+  });
+  let bindingEntered: (() => void) | undefined;
+  const entered = new Promise<void>((resolve) => {
+    bindingEntered = resolve;
+  });
+  const browserSocket = new BrowserToolSocket({
+    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    isReadOnly: () => false,
+    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
+    state: async () => ({ provider: "headless", tabs: [] }),
+    bindProfile: async () => {
+      bindingEntered!();
+      await blocked;
+    },
+  });
+  const { client, sessionId, worker } = await setup(driver, { browserSocket });
+
+  await client.submitTurn(sessionId, { runId: "first", input: "One" });
+  const ticking = worker.tick();
+  // Parked inside setup: claimed, and NOT yet running — the provider has not
+  // been asked for, so there is nothing to identify a session with.
+  await entered;
+  expect((await client.session(sessionId)).turns[0]?.state).toBe("claimed");
+
+  await client.stopTurn(sessionId);
+  expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped");
+
+  releaseBinding!();
+  await ticking;
+
+  // The stop stands — not overwritten by a failure — and nothing ever ran.
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
+  expect(ran).toBe(0);
+  // No provider identified itself, so there is no cursor to have kept. This is
+  // the honest boundary: a Stop this early loses nothing, because nothing
+  // existed yet — distinct from losing an id already reported (see above).
+  expect((await client.session(sessionId)).session.resumeCursor).toBeUndefined();
 });
 
 // ── the browser lease ────────────────────────────────────────────────────────

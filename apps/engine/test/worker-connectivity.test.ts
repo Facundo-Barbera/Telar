@@ -9,6 +9,18 @@ import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
 
 /**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
+/**
  * A BARRIER AT THE CLAIM PUMP'S BOUNDARY, not a sleep. Claiming runs off the
  * tick's await chain so a hung claim cannot hold cancellations, approvals and
  * steers behind it — which means `await tick()` no longer implies the claim has
@@ -603,7 +615,7 @@ test("a lost settlement response is retried as ITSELF, against the real engine s
    * in a temp home — the wrapper drops the RESPONSE, so the first write really
    * does commit and the retry really does meet the engine's own conflict.
    */
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-"));
+  const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-")));
   const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 5_000 });
   try {
     const client = new EngineClient(daemon.discovery);
@@ -665,7 +677,7 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
    * fail BEFORE reaching the engine (nothing is committed), heartbeats keep
    * succeeding throughout, and the endpoint then recovers.
    */
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-late-"));
+  const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-late-")));
   const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);
@@ -767,7 +779,7 @@ test("a REVOKED pre-settlement fault revokes the worker even when the settle the
    * successful `failTurn` bury an `engine_unauthorized` from `markTurnRunning`,
    * so the worker carried on under a credential the engine had refused.
    */
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-revoked-"));
+  const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-revoked-")));
   const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);
@@ -815,7 +827,7 @@ test("a settlement is NEVER forgotten on a retry count: >20 rounds, then the end
    * previous cap, then recovers; the turn must resolve with its ORIGINAL
    * result, asserted against the STORE, not against a diagnostic name.
    */
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-forever-"));
+  const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-forever-")));
   const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);

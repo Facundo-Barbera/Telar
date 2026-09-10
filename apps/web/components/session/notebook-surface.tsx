@@ -41,9 +41,44 @@ function engineFor(hostId: string | undefined) {
 }
 const SAVE_DEBOUNCE_MS = 600;
 
+/**
+ * WHY A READ FAILED, AND ONLY ONE ANSWER OFFERS TO CREATE ANYTHING.
+ *
+ * "This notebook is not there" and "the engine could not answer" are both
+ * `not_found` on the wire, and treating them as one is how an EXISTING
+ * notebook came to be shown as "No notebook here yet" with a Create button
+ * under it: the read had 404'd on a missing plugin route, not on a missing
+ * file. So `missing` is an ALLOWLIST — the engine's own sentence about a file
+ * in the workspace — and everything else, including any 404 that names a
+ * method, a plugin or an endpoint, is `unreadable`: shown with what the engine
+ * said and a Retry, never with an offer to create over the reader's file.
+ */
+export type NotebookReadFailure = { kind: "missing" } | { kind: "unreadable"; message: string };
+
+/** The engine's words for a file that is not in the workspace (`state.ts`). */
+const MISSING_FILE = /no such file in this workspace/i;
+/** A 404 about the DOOR rather than the file: a route, a plugin, an endpoint. */
+const NOT_THE_FILE = /\bmethod\b|\bplugin\b|\bendpoint\b|\bhas no\b|\broute\b/i;
+
+export function classifyNotebookRead(cause: unknown): NotebookReadFailure {
+  const message = cause instanceof EngineApiError ? cause.message : cause instanceof Error ? cause.message : "";
+  const code = cause instanceof EngineApiError ? cause.code : undefined;
+  if (code === "not_found" && MISSING_FILE.test(message) && !NOT_THE_FILE.test(message)) return { kind: "missing" };
+  return {
+    kind: "unreadable",
+    // The engine's own sentence when there is one: "no data-science method
+    // notebook/read" tells a person to look at the build, which "could not
+    // read this notebook" does not.
+    message: message.trim() || "The engine did not answer.",
+  };
+}
+
 export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }: { path: string; sessionId?: string; hostId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void }) {
   const [nb, setNb] = useState<NotebookRead>();
-  const [error, setError] = useState<string>();
+  const [failure, setFailure] = useState<NotebookReadFailure>();
+  /** False until the first read has answered, so "loading" is a state of its
+   *  own rather than the absence of both a notebook and an error. */
+  const [read, setRead] = useState(false);
   const [kernel, setKernel] = useState<KernelState>("none");
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -72,13 +107,18 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
   const load = useCallback(async () => {
     if (!sessionId) return;
     try {
-      const read = await api.notebook(sessionId, path, { withOutputs: true });
-      setNb(read);
-      setError(undefined);
+      const answer = await api.notebook(sessionId, path, { withOutputs: true });
+      setNb(answer);
+      setFailure(undefined);
     } catch (cause) {
-      if (cause instanceof EngineApiError && cause.code === "not_found") {
-        setError("notfound");
-      } else setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
+      /**
+       * WHAT IS ON SCREEN IS NOT THROWN AWAY. A re-read that fails leaves the
+       * cells the reader was looking at where they are, under a banner — the
+       * file has not changed, only our last question about it.
+       */
+      setFailure(classifyNotebookRead(cause));
+    } finally {
+      setRead(true);
     }
   }, [sessionId, path, api]);
 
@@ -99,6 +139,16 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
     }, 0);
     return () => window.clearTimeout(first);
   }, [load, refreshKernel, active]);
+
+  // A different notebook is a different question: neither the last one's cells
+  // nor the last one's failure describes it.
+  const [opened, setOpened] = useState(`${scope}\u0000${path}`);
+  if (opened !== `${scope}\u0000${path}`) {
+    setOpened(`${scope}\u0000${path}`);
+    setNb(undefined);
+    setFailure(undefined);
+    setRead(false);
+  }
 
   /**
    * ADOPT WHAT AN EARLIER MOUNT COULD NOT SAVE. A cell whose write failed left
@@ -123,7 +173,7 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
     setBusy(true);
     try {
       setNb(await api.notebookEdit(sessionId, path, { kind: "create" }));
-      setError(undefined);
+      setFailure(undefined);
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : "Could not create.");
     } finally {
@@ -285,17 +335,25 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
         </div>
       )}
 
-      {error === "notfound" ? (
-        <PanelEmpty icon={<NotebookIcon />} title="No notebook here yet">
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void create()} className="mt-2">
-            {busy ? <Spinner className="size-3" /> : <PlusIcon className="size-3" />} Create {path.slice(cut + 1)}
-          </Button>
-        </PanelEmpty>
-      ) : error ? (
-        <PanelEmpty icon={<NotebookIcon />} title="Could not read this notebook">{error}</PanelEmpty>
-      ) : !nb ? (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground"><Spinner className="size-3" /> reading…</p>
-      ) : (
+      {/*
+        FOUR STATES, AND THEY ARE NOT INTERCHANGEABLE: still reading, the file
+        is not there, the read failed, the notebook is open. A notebook already
+        on screen outranks a failed re-read — its cells stay, with the banner
+        above them — so only a surface with nothing to show falls through to a
+        panel. Create is offered by ONE branch, and only for the engine's own
+        "no such file".
+      */}
+      {failure && nb && (
+        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+          <span className="min-w-0 flex-1">
+            {failure.kind === "missing" ? "This notebook is no longer in the workspace." : failure.message}
+          </span>
+          <Button size="xs" variant="outline" onClick={() => void load()}>Retry</Button>
+        </div>
+      )}
+
+      {nb ? (
         <div className="min-h-0 flex-1 overflow-auto">
           <InsertBar onInsert={(type) => void structural({ kind: "insert", after: -1, source: "", cellType: type })} />
           {cells.map((cell) => (
@@ -315,6 +373,29 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
             </div>
           ))}
         </div>
+      ) : failure?.kind === "missing" ? (
+        <PanelEmpty icon={<NotebookIcon />} title="No notebook here yet">
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void create()} className="mt-2">
+            {busy ? <Spinner className="size-3" /> : <PlusIcon className="size-3" />} Create {path.slice(cut + 1)}
+          </Button>
+        </PanelEmpty>
+      ) : failure ? (
+        /**
+         * THE READ FAILED, AND THE FILE IS PRESUMED TO BE THERE. No Create:
+         * the engine did not say the notebook is absent, it said it could not
+         * answer — and offering to make one over a file nobody has read is the
+         * bug this branch exists to prevent.
+         */
+        <PanelEmpty icon={<TriangleAlertIcon />} title="Could not read this notebook">
+          <span className="block max-w-prose text-balance">{failure.message}</span>
+          <Button size="sm" variant="outline" onClick={() => void load()} className="mt-3">
+            <RotateCwIcon className="size-3" /> Retry
+          </Button>
+        </PanelEmpty>
+      ) : (
+        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+          <Spinner className="size-3" /> {read ? "reading…" : "opening…"}
+        </p>
       )}
     </div>
   );

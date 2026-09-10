@@ -173,7 +173,9 @@ Say everything needed; sessions cannot see each other's conversations. Do not ac
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, what happened, and enough of the outcome to act on — so you can end your turn now and be woken later rather than polling. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
+const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, the run and what happened — so you can end your turn now and be woken later rather than polling.
+
+A WAKE IS A PING, NOT A REPORT. It carries no result body and no request payload — only what happened, to which session and which run, because it lands in your context whether or not you need the detail. It names the call that fetches it: sessions_read(sessionId, runId). Read it when it matters and skip it when it does not. A parked request is the same: the notice gives its id, kind and a short title, and the fields you would answer from are one read away. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
 
 events narrows what wakes you (default: all four). Subscriptions are one-shot by default: the first matching wake removes them. Subscribe only when awaiting a concrete result or blocker. Explicit once: false opts into ongoing monitoring; unsubscribe when the task is done. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
 
@@ -190,6 +192,10 @@ const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. d
 Accepting an approval on another session's behalf is you taking responsibility for it. Never accept what you were yourself refused. Only answer a question you actually know the answer to; decline, or leave it for the user, otherwise. A secret-access request cannot be answered here at all. ${NOT_A_BYPASS}`;
 
 const READ = `Read what a session has done since a point in its journal: its messages, its tool calls, its answers. Pass no cursor to start from the beginning and the cursor you got back to continue — that is how you follow a session as it works.
+
+ONE RUN, DIRECTLY: pass \`runId\` and you get that turn's own events and its final answer, without paging the journal to find them. This is what a wake notice names — a wake carries no result body, so \`sessions_read(sessionId, runId)\` is how you fetch the outcome it is telling you about, and only when you actually want it.
+
+PAGING WITHIN A RUN: \`after\` works with \`runId\` and walks that run's events. The answer rides the first page only, so continuations do not repeat it; a long answer is read in slices with \`resultAfter\`, and every reply says how many characters there are in total, whether more remain, and the exact next call. The slices are verbatim — concatenated they are the answer, with nothing trimmed or marked inside them.
 
 THE ANSWER IS BOUNDED and a transcript is not: you may get a page rather than everything, and the result says so and gives you the cursor to ask for the next one. Never assume a page is the whole story; if "more" is true, there is more.`;
 
@@ -223,6 +229,9 @@ READ-ONLY, AND IT IS NOT AN ACCEPTANCE. Nothing here merges, pushes, lands or ap
 const MAX_EVENTS = 50;
 const MAX_EVENT_CHARS = 24_000;
 const MAX_STRING_CHARS = 2_000;
+/** A run-scoped read hands over the turn's answer whole, up to this. Larger
+ *  than the per-string clamp on purpose: this IS what the caller asked for. */
+const MAX_RESULT_CHARS = 8_000;
 
 /** One event, with any oversized string inside it clamped and MARKED. Recursive
  *  because the payloads nest (an item's detail, a turn's observations) and a
@@ -422,15 +431,105 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .min(0)
           .optional()
           .describe("Continue from a cursor a previous read returned. Leave it off to start at the beginning of the journal."),
+        runId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("One turn only: its own events and its final answer text, without paging the journal. This is the id a wake notice gives you. Combines with `after` — the cursor then walks that run's events."),
+        resultAfter: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("With `runId`: continue the ANSWER from this character offset. The reply says how many characters there are in total and whether more remain, so a long answer can be read whole in slices."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         const after = typeof args.after === "number" && Number.isSafeInteger(args.after) && args.after >= 0 ? args.after : 0;
+        const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
+        const resultAfter =
+          typeof args.resultAfter === "number" && Number.isSafeInteger(args.resultAfter) && args.resultAfter >= 0 ? args.resultAfter : undefined;
         let events: EngineEvent[];
         try {
+          // `after` is a journal cursor either way: with `runId` it walks THAT
+          // run's events, which is what a second page of the same run needs.
           events = await capability.read(sessionId, after);
         } catch (error) {
           return err(`Could not read "${sessionId}": ${failure(error)}`);
+        }
+        if (runId !== undefined) {
+          /**
+           * ONE RUN, ANSWERED WITHOUT PAGING THE JOURNAL. A wake names a run and
+           * carries no result; this is the other half of that trade. The events
+           * are filtered to the run and bounded by the same page budget, and the
+           * turn's own answer is handed over rather than reconstructed out of
+           * observations.
+           *
+           * THE ANSWER IS SENT ONCE, NOT PER PAGE. A caller walking a long run's
+           * events does not want the answer repeated on every continuation, so it
+           * rides the FIRST page (`after: 0`) or an explicit `resultAfter` — and
+           * a long one is read whole in slices rather than clipped away.
+           */
+          const mine = events.filter((event) => event.runId === runId);
+          let turn: Turn | undefined;
+          try {
+            turn = (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
+          } catch {
+            turn = undefined;
+          }
+          const { page, cursor, more } = pageEvents(mine);
+          // NOT TRIMMED. The slices are meant to concatenate into the answer
+          // exactly as the turn wrote it, and a trim would silently drop
+          // leading or trailing whitespace that belongs to it — the one edit a
+          // "verbatim" contract cannot make.
+          const answer = turn?.resultText ?? "";
+          const wantsResult = turn !== undefined && answer.length > 0 && (resultAfter !== undefined || after === 0);
+          const from = Math.min(resultAfter ?? 0, answer.length);
+          // VERBATIM: the slice carries no ellipsis and no marker, so slices
+          // concatenated are the answer exactly as the turn wrote it.
+          const slice = wantsResult ? answer.slice(from, from + MAX_RESULT_CHARS) : "";
+          const resultMore = wantsResult && from + slice.length < answer.length;
+          const nextResult = from + slice.length;
+          /**
+           * THE EVENT CURSOR RIDES EVERY CONTINUATION, including one asked for
+           * only to finish reading an answer. Omitting it when the events had
+           * run out left the next call defaulting to `after: 0`, which replayed
+           * the run's first page of events under a result-only read.
+           */
+          const nextCursor = page.length > 0 ? cursor : after;
+          const continuation =
+            more || resultMore
+              ? [`after: ${nextCursor}`, ...(resultMore ? [`resultAfter: ${nextResult}`] : [])]
+              : [];
+          return json({
+            sessionId,
+            runId,
+            ...(turn
+              ? {
+                  state: turn.state,
+                  ...(turn.failure ? { failure: turn.failure } : {}),
+                  // The total is always reported when there IS an answer, even
+                  // on a page that does not carry it — otherwise a caller cannot
+                  // tell "no answer" from "answer not on this page".
+                  ...(answer ? { resultChars: answer.length } : {}),
+                  ...(wantsResult ? { result: slice, resultFrom: from, resultMore } : {}),
+                }
+              : {}),
+            cursor: page.length > 0 ? cursor : after,
+            more,
+            events: page,
+            note: turn === undefined
+              ? `No turn ${runId} on this session. Its events, if any, are above; sessions_status lists the turns this session has.`
+              : continuation.length > 0
+                ? `That run: ${page.length} events${more ? ` of ${mine.length} past cursor ${after}` : " (no more events)"}${
+                    wantsResult ? `, answer characters ${from}-${nextResult} of ${answer.length}` : answer ? `, answer not on this page (${answer.length} characters)` : ""
+                  }. Continue with sessions_read(sessionId: "${sessionId}", runId: "${runId}", ${continuation.join(", ")}).`
+                : answer
+                  ? wantsResult
+                    ? `That run's events and its whole answer (${answer.length} characters). Nothing else was needed.`
+                    : `That run's events. Its answer (${answer.length} characters) is not on this page — ask with resultAfter: 0.`
+                  : "That run's events. It ended with no answer text.",
+          });
         }
         const { page, cursor, more } = pageEvents(events);
         return json({
@@ -607,7 +706,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           });
           return json({
             ...subscription,
-            note: `You will be woken with a "[wake: …]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues.`,
+            note: `You will be woken with a "[wake: …]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues. The notice is a ping — fetch an outcome with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
           });
         } catch (error) {
           return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);

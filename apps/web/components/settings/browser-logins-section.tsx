@@ -28,7 +28,7 @@ import type { RememberedLogin } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -86,10 +86,10 @@ export function BrowserLoginsSection() {
     >
       {error && <p className="text-xs text-destructive">{error}</p>}
       {logins === undefined && !error && <Spinner className="size-4" />}
+      {/* A row rather than a loose paragraph, so the empty state sits on the
+          same grid as the list it replaces. */}
       {logins?.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          None. Telar asks before every credential fill; the approval card offers to remember one.
-        </p>
+        <Row label="No remembered logins" hint="Telar asks before every fill; the approval card offers to remember one." />
       )}
       <div className="flex flex-col gap-2">
         {(logins ?? []).map((grant) => (

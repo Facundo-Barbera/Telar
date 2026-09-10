@@ -36,7 +36,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { GlobeIcon, PlugIcon, Settings2Icon, TerminalIcon, XIcon } from "lucide-react";
+import { GlobeIcon, PlugIcon, PlusIcon, Settings2Icon, TerminalIcon, XIcon } from "lucide-react";
 import type { McpOAuthStatus, McpServer, McpServerSpec } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { cn } from "@/lib/utils";
@@ -240,6 +240,7 @@ function ServerRow({
 }
 
 function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => void }) {
+  const [open, setOpen] = useState(false);
   const [transport, setTransport] = useState<Transport>("stdio");
   const [id, setId] = useState("");
   const [label, setLabel] = useState("");
@@ -269,12 +270,36 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
       setLabel("");
       setTarget("");
       onAdded();
+      // Closes on success: the pane returns to what is configured.
+      setOpen(false);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause.message : "That server could not be saved.");
     } finally {
       setBusy(false);
     }
   };
+
+  /**
+   * PROGRESSIVE. The form was always open, so the pane led with an empty
+   * three-transport form rather than with what is configured. It opens on
+   * demand and closes after a server lands.
+   */
+  if (!open) {
+    return (
+      <SettingsGroup title="Add a server">
+        <Row
+          icon={PlusIcon}
+          label="Add a server"
+          hint={scope ? `Only sessions on ${scope.projectName}.` : "Every project, unless one defines the same id."}
+          control={
+            <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+              Add
+            </Button>
+          }
+        />
+      </SettingsGroup>
+    );
+  }
 
   return (
     <SettingsGroup
@@ -312,12 +337,15 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
         />
         <p className="text-[0.6875rem] leading-snug text-muted-foreground">
           The id becomes the server&rsquo;s name to the provider, so its tools arrive as <code className="font-mono">mcp__{id.trim() || "id"}__*</code>.
-          Letters, numbers, dashes and underscores only, and it cannot be changed afterwards.
+          Letters, numbers, dashes and underscores. Cannot be changed later.
         </p>
         {error && <p className="text-[0.6875rem] text-destructive">{error}</p>}
-        <div>
+        <div className="flex items-center gap-2">
           <Button type="button" size="sm" disabled={busy || !id.trim() || !target.trim()} onClick={() => void save()}>
             Add server
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+            Cancel
           </Button>
         </div>
       </div>
@@ -481,12 +509,9 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         ) : servers === undefined ? (
           <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
         ) : servers.length === 0 ? (
-          <Row
-            icon={PlugIcon}
-            label="No servers configured"
-            hint="Telar's own capabilities — the browser, and whatever comes after it — are always present and are not listed here."
-            control={<Badge variant="outline">None</Badge>}
-          />
+          // The label already says none; a pill repeating it is noise. Telar's
+          // own capabilities are never listed here, so the hint says only that.
+          <Row icon={PlugIcon} label="No servers configured" hint="Telar's own tools are always available and not listed here." />
         ) : (
           servers.map((server) => (
             <ServerRow

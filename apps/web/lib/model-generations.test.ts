@@ -44,31 +44,58 @@ describe("modelVersion", () => {
 });
 
 describe("splitGenerations", () => {
-  test("Codex's real seven split into the 5.6 family and everything older", () => {
-    // Exactly what `model/list` answered on this machine.
+  test("Astra arriving does not relegate the actively-used 5.6 family", () => {
+    // Exactly what `model/list` answered on this machine on 2026-09-10:
+    // GPT-6-Astra became the default, and under the old "older than the
+    // default" rule every 5.6 model — in daily use that morning — fell behind
+    // the Legacy fold. Current reaches one generation back.
+    const models = [
+      model("gpt-6-astra", { isDefault: true }),
+      model("gpt-5.6-sol"),
+      model("gpt-5.6-terra"),
+      model("gpt-5.6-luna"),
+      model("gpt-5.5"),
+      model("gpt-5.3-codex-spark"),
+    ];
+    const split = splitGenerations(models);
+    expect(split.current.map((entry) => entry.id)).toEqual(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    expect(split.legacy.map((entry) => entry.id)).toEqual(["gpt-5.5", "gpt-5.3-codex-spark"]);
+  });
+
+  test("the previous generation stays current when the default IS the newest line", () => {
+    // The pre-Astra catalogue: 5.6-sol default keeps 5.5 (one line back)
+    // reachable, and only 5.4 and older fold away.
     const models = [
       model("gpt-5.6-sol", { isDefault: true }),
       model("gpt-5.6-terra"),
-      model("gpt-5.6-luna"),
       model("gpt-5.5"),
       model("gpt-5.4"),
       model("gpt-5.4-mini"),
       model("gpt-5.3-codex-spark"),
     ];
     const split = splitGenerations(models);
-    expect(split.current.map((entry) => entry.id)).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
-    expect(split.legacy.map((entry) => entry.id)).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]);
+    expect(split.current.map((entry) => entry.id)).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
+    expect(split.legacy.map((entry) => entry.id)).toEqual(["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]);
   });
 
-  test("Claude's list splits at the 5 line", () => {
+  test("Claude keeps the 5 line and the generation just below it", () => {
     const split = splitGenerations([
       model("claude-opus-5", { isDefault: true }),
       model("claude-sonnet-5"),
       model("claude-opus-4-8"),
       model("claude-haiku-4-5"),
     ]);
-    expect(split.current.map((entry) => entry.id)).toEqual(["claude-opus-5", "claude-sonnet-5"]);
-    expect(split.legacy.map((entry) => entry.id)).toEqual(["claude-opus-4-8", "claude-haiku-4-5"]);
+    expect(split.current.map((entry) => entry.id)).toEqual(["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8"]);
+    expect(split.legacy.map((entry) => entry.id)).toEqual(["claude-haiku-4-5"]);
+  });
+
+  test("a catalogue with no stated default files nothing as legacy", () => {
+    // OpenCode's multi-connection list marks no default; the old `?? visible[0]`
+    // fallback anchored the split on whichever row happened to be first, which
+    // made the filing depend on catalogue order.
+    const split = splitGenerations([model("openai/gpt-6-astra"), model("opencode/big-pickle"), model("opencode-go/glm-5.1")]);
+    expect(split.current).toHaveLength(3);
+    expect(split.legacy).toEqual([]);
   });
 
   test("a model the provider hid is legacy no matter what its version says", () => {

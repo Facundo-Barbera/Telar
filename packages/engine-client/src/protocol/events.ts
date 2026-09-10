@@ -1,3 +1,4 @@
+import { PluginStatus } from "./plugins";
 /**
  * engine protocol v2 — the event journal.
  *
@@ -331,6 +332,13 @@ export const EngineHealth = z.object({
     activeWorkers: z.number().int().nonnegative().optional(),
   }),
   browser: z.object({ provider: BrowserProvider }).optional(),
+  /**
+   * Every registered plugin and what its startup did. ADDITIVE on every client:
+   * a cockpit or a phone that predates the host decodes the keys it knows and
+   * ignores this one, which is the tolerance we want while there is no mobile
+   * plugin surface.
+   */
+  plugins: z.array(PluginStatus).optional(),
 });
 export type EngineHealth = z.infer<typeof EngineHealth>;
 
@@ -361,6 +369,12 @@ export const EngineErrorCode = z.enum([
    *  `driver_failed`, which is about a SESSION's provider: nothing is broken
    *  here and nothing is lost, the completion simply did not arrive. */
   "textgen_failed",
+  /**
+   * A PLUGIN FAILED, and its id is on the message. A broken plugin reads as ITS
+   * failure rather than as "the engine did something" — the difference between
+   * a person knowing which switch to turn off and filing a bug.
+   */
+  "plugin_error",
   "internal_error",
 ]);
 export type EngineErrorCode = z.infer<typeof EngineErrorCode>;

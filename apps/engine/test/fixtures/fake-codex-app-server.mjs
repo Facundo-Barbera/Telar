@@ -24,6 +24,19 @@ import fs from "node:fs";
 import readline from "node:readline";
 
 const scenario = process.env.FAKE_CODEX_TURN_SCENARIO ?? "plain";
+let mcpServersConfig = {};
+
+/** Call a configured MCP server for real, so a declined tool provably runs nothing. */
+async function callConfiguredTool(serverKey, tool, args) {
+  const entry = mcpServersConfig[serverKey];
+  if (!entry?.url) return { error: `no ${serverKey} server was configured` };
+  const response = await fetch(entry.url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(entry.http_headers ?? {}) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: tool, arguments: args ?? {} } }),
+  });
+  return await response.json();
+}
 const rl = readline.createInterface({ input: process.stdin });
 
 const write = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
@@ -90,6 +103,9 @@ rl.on("line", (line) => {
   }
   if (msg.method === "initialized") return; // a notification: nothing is owed
   if (msg.method === "thread/start") {
+    // Remembered so a scenario can actually CALL a configured Telar socket,
+    // rather than only proving the url arrived.
+    mcpServersConfig = msg.params?.config?.mcp_servers ?? {};
     threadId = ROOT_THREAD;
     write({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: threadId } } });
     return;
@@ -340,6 +356,44 @@ async function playTurn() {
     // The SAME elicitation for Telar's SESSIONS socket. Unlike the browser's,
     // this one MUST reach `onRequest`: the sessions socket carries no gate of
     // its own, so the engine's ladder is the one card.
+    /**
+     * THE PLUGIN WALL'S APPROVAL, END TO END. On accept it actually calls the
+     * `telar` socket it was configured with; on decline it calls nothing — so a
+     * test can prove the gate decides DISPATCH, not just that a card appeared.
+     */
+    case "mcp-elicitation-telar-plugins": {
+      const reply = ask("mcpServer/elicitation/request", {
+        threadId,
+        turnId,
+        serverName: "telar",
+        mode: "form",
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          persist: ["session", "always"],
+          tool_description: "The proof plugin's greeting.",
+          tool_params: { name: "telar" },
+          tool_params_display: [],
+        },
+        message: 'Allow the telar MCP server to run tool "hello_ping"?',
+        requestedSchema: { type: "object", properties: {} },
+      });
+      const action = (await reply).result?.action;
+      const called = action === "accept" ? await callConfiguredTool("telar", "hello_ping", { name: "telar" }) : undefined;
+      done({
+        type: "mcpToolCall",
+        id: "item-mcp-telar-plugins",
+        server: "telar",
+        tool: "hello_ping",
+        arguments: { name: "telar" },
+        status: action === "accept" ? "completed" : "declined",
+        ...(action === "accept"
+          ? { result: called?.result ?? { content: [{ type: "text", text: JSON.stringify(called) }] } }
+          : { error: { message: "user rejected MCP tool call" } }),
+      });
+      finish(`action=${action}`);
+      return;
+    }
+
     case "mcp-elicitation-telar-sessions": {
       const reply = ask("mcpServer/elicitation/request", {
         threadId,

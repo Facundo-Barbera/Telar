@@ -35,6 +35,9 @@ import {
   type TurnSubmissionResult,
   type WorkerClaim,
   type WorkerStatus,
+  pluginEnabled,
+  machineAllows,
+  readProjectPlugins,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
@@ -45,6 +48,11 @@ import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
+import { bundledPlugins } from "./plugins/bundled";
+import { PluginHost } from "./plugins/host";
+import { setPluginReadTools } from "./driver";
+import { createRunMount } from "./run/mount";
+import { RunError } from "./run/types";
 import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
 import {
   isAppearanceId,
@@ -126,6 +134,8 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   asyncGit?: AsyncGitRunner;
+  /** Test seam: the provider model list, so a suite never spawns a real CLI. */
+  models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
   /**
    * Run a worker inside the daemon process.
    *
@@ -493,6 +503,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
+    ...(options.models ? { models: options.models } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -509,6 +520,77 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
   const daemonId = crypto.randomUUID();
+  /**
+   * The kernel host is built much later than the plugin host — it needs the
+   * bound port's environment — so data science reads it through this ref rather
+   * than capturing an undefined. Read at CALL time, when a kernel either exists
+   * or honestly does not.
+   */
+  const kernelsRef: { current: KernelHost | undefined } = { current: undefined };
+  /**
+   * WHAT ONE SESSION SEES OF A PLUGIN, resolved generically — the same question
+   * for every plugin ("which project, has it opted in"), answered from the
+   * plugin map. A per-plugin store method would be the hardcoded case the host
+   * exists to remove.
+   */
+  const resolvePluginProject = (pluginId: string, sessionId: string): { projectId: string; sessionId: string } => {
+    const session = store.getSession(sessionId);
+    if (!session.projectId) throw new EngineStateError("invalid_request", `${pluginId} needs a project`);
+    const project = store.getProject(session.projectId);
+    // EFFECTIVE = MACHINE AND PROJECT. Every door goes through this one gate —
+    // the generic `/plugins/:id/:verb`, the `/ds/` and `/latex/` aliases, and
+    // the tool walls — so a globally disabled plugin is refused everywhere
+    // rather than merely hidden in a cockpit.
+    if (!store.pluginRuns(project, pluginId)) {
+      const why = machineAllows(store.machinePlugins(), pluginId)
+        ? `${pluginId} is not enabled for this session's project`
+        : `${pluginId} is turned off for this Mac`;
+      throw new EngineStateError("invalid_request", why);
+    }
+    return { projectId: project.id, sessionId };
+  };
+  const pluginHost = new PluginHost(
+    bundledPlugins({
+      resolveHello: (sessionId) => resolvePluginProject("hello", sessionId),
+      // The SAME capabilities the aliases and the tool walls already use —
+      // migrating a door must not change what is behind it. Each gate is the
+      // store's own, which reads the plugin map.
+      latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs },
+      dataScience: {
+        resolve: (sessionId) => store.dataScience(sessionId),
+        kernels: {
+          list: () => (kernelsRef.current?.list() ?? []).map((info) => ({ sessionId: info.sessionId, state: info.state })),
+          dispose: (sessionId, reason) => kernelsRef.current?.dispose(sessionId, reason),
+          disposeAll: (reason) => kernelsRef.current?.disposeAll(reason),
+        },
+        projectOf: (sessionId) => {
+          try { return store.getSession(sessionId).projectId; } catch { return undefined; }
+        },
+      },
+    }),
+    {
+      daemonId,
+      stateDir: store.paths.root,
+      log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
+    },
+  );
+  /**
+   * RUN CONFIGURATIONS. The daemon owns the process group — a dev server
+   * spawned by a worker would die with its conversation — and `createRunMount`
+   * recovers its journal BEFORE returning, so the port is never bound in front
+   * of a manager that has not read it.
+   */
+  const runMount = createRunMount({ root: store.paths.root });
+  const pluginStatuses = await pluginHost.startAll();
+  /**
+   * The host is the authority on which of its tools are reads. Installed here
+   * so every provider answers the same way — see `plugins/policy.ts` for why a
+   * plugin's own manifest is not allowed to be that authority.
+   */
+  setPluginReadTools(pluginHost.ratifiedReadTools());
+  // The store announces a session's departure; the host decides which plugin
+  // cares. This is what let `releaseDataScience` stop naming features.
+  store.attachPluginRelease((sessionId, reason) => void pluginHost.releaseSession(sessionId, reason));
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = (options.now ?? Date.now)();
   const workers = new Map<string, RegisteredWorker>();
@@ -594,6 +676,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         ? { worker: { registered: true, workerId: first.workerId, activeWorkers: workers.size } }
         : { worker: { registered: false, activeWorkers: 0 } };
     })(),
+    // Every registered plugin and what its startup did. Additive on every
+    // client: one that predates the host decodes the keys it knows.
+    ...(pluginStatuses.length > 0 ? { plugins: pluginHost.statuses() } : {}),
   });
 
   /**
@@ -2321,7 +2406,51 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           patch.latex = input.latex as Parameters<typeof store.updateProject>[1]["latex"];
         }
-        writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
+        /**
+         * THE GENERIC ARM. `plugins: { "<id>": {…} | null }` — one entry per
+         * plugin, `null` to turn it off, and no new arm per feature again. The
+         * settings blob is validated by the PLUGIN that owns it: the protocol
+         * deliberately does not know what a LaTeX toolchain is.
+         */
+        if ("plugins" in input) {
+          if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
+            throw new HttpError(400, "invalid_request", "plugins must be an object");
+          }
+          const entries = input.plugins as Record<string, unknown>;
+          for (const [id, value] of Object.entries(entries)) {
+            if (value === null) continue;
+            if (typeof value !== "object" || Array.isArray(value)) {
+              throw new HttpError(400, "invalid_request", `plugins.${id} must be an object or null`);
+            }
+            const config = value as { enabled?: unknown; settings?: unknown };
+            if (typeof config.enabled !== "boolean") {
+              throw new HttpError(400, "invalid_request", `plugins.${id}.enabled must be a boolean`);
+            }
+            const module = pluginHost.ready(id);
+            if (module?.settingsSchema && config.settings !== undefined) {
+              const parsed = module.settingsSchema.safeParse(config.settings);
+              if (!parsed.success) {
+                throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
+              }
+            }
+          }
+          patch.plugins = entries as Parameters<typeof store.updateProject>[1]["plugins"];
+        }
+        const project = store.updateProject(decodeURIComponent(projectPatch[1]), patch);
+        /**
+         * DISABLE MEANS DRAIN. A plugin the write turned OFF stops accepting new
+         * work now, finishes what is running, and gives its resources back once
+         * `busy` reports false. Nothing running is cancelled — that is a
+         * separate, explicit user action.
+         */
+        if (patch.plugins) {
+          const { plugins: after } = readProjectPlugins(project);
+          for (const pluginId of Object.keys(patch.plugins)) {
+            if (pluginEnabled(after, pluginId)) pluginHost.cancelDrain(pluginId, project.id);
+            else void pluginHost.drainProject(pluginId, project.id);
+          }
+        }
+        writeJson(response, 200, { project });
         return;
       }
       /**
@@ -2751,6 +2880,58 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * happily as it matches a session id, and hoisting it would turn this
        * route into "no session by that id".
        */
+      /**
+       * WHAT THIS MAC ALLOWS, and the machine-level settings behind it.
+       *
+       * SCOPED TO THIS ENGINE. A cockpit looking at a remote Mac reaches that
+       * Mac's daemon, so these reads and writes land on the engine being viewed
+       * and never on the one the browser happens to be running beside.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/plugins") {
+        writeJson(response, 200, { plugins: pluginHost.statuses(), machine: store.machinePlugins() });
+        return;
+      }
+      if (request.method === "PATCH" && url.pathname === "/v2/plugins") {
+        const input = await body(request);
+        if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
+          throw new HttpError(400, "invalid_request", "plugins must be an object");
+        }
+        const entries = input.plugins as Record<string, unknown>;
+        for (const [id, value] of Object.entries(entries)) {
+          if (value === null) continue;
+          if (typeof value !== "object" || Array.isArray(value)) {
+            throw new HttpError(400, "invalid_request", `plugins.${id} must be an object or null`);
+          }
+          const config = value as { enabled?: unknown; settings?: unknown };
+          if (typeof config.enabled !== "boolean") {
+            throw new HttpError(400, "invalid_request", `plugins.${id}.enabled must be a boolean`);
+          }
+          // THE PLUGIN'S OWN SCHEMA VALIDATES ITS OWN SETTINGS, here as on the
+          // project arm. The protocol does not know what a TeX distribution is.
+          const module = pluginHost.ready(id);
+          if (module?.settingsSchema && config.settings !== undefined) {
+            const parsed = module.settingsSchema.safeParse(config.settings);
+            if (!parsed.success) {
+              throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
+            }
+          }
+        }
+        const machine = store.updateMachinePlugins(entries as Parameters<typeof store.updateMachinePlugins>[0]);
+        /**
+         * TURNING A PLUGIN OFF DRAINS IT EVERYWHERE. New work is already refused
+         * by the gate; this lets what is running finish and gives resources back
+         * when it does. Nothing is killed — the same rule as a project switch.
+         */
+        for (const [id, value] of Object.entries(entries)) {
+          const off = value === null || (value as { enabled?: boolean }).enabled === false;
+          for (const project of store.listProjects()) {
+            if (off) void pluginHost.drainProject(id, project.id);
+            else pluginHost.cancelDrain(id, project.id);
+          }
+        }
+        writeJson(response, 200, { machine });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
         writeJson(response, 200, store.liveSessions());
         return;
@@ -2984,6 +3165,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...window,
             items,
             requests: store.requests(session.sessionId),
+            // Folded over the WHOLE queue, not the window above: a client
+            // paging its transcript must not have to guess at a carrier it
+            // cannot see. See `sessionAssignments`.
+            assignments: store.sessionAssignments(session.sessionId),
           });
           return;
         }
@@ -3095,95 +3280,120 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         /**
-         * THE KERNEL'S DOOR. Every data-science verb is a POST under
-         * `/ds/<method>`, dispatched to the store's capability — the same object
-         * the worker's toolkit reaches through `EngineClient.ds`. A project that
-         * has not opted in gets `invalid_request` here, which is the whole gate.
+         * THE DATA SCIENCE DOOR, NOW AN ALIAS. Data science is a migrated
+         * plugin (`plugins/data-science.ts`): its verbs live in that module's
+         * `routes` table and are served by the generic arm below at
+         * `/plugins/data-science/<method>`. This arm stays because
+         * `/ds/<method>` is what a RELEASED client calls, and an old cockpit
+         * pointed at a new daemon has to keep working.
+         *
+         * It FORWARDS rather than reimplementing — the switch that used to sit
+         * here is gone, so the two doors cannot drift apart.
          */
         const dsMethod = /^\/ds\/([a-z]+(?:\/[a-z]+)?)$/.exec(session.tail)?.[1];
         if (request.method === "POST" && dsMethod) {
+          const module = pluginHost.ready("data-science");
+          if (!module) throw new HttpError(404, "not_found", "data science is unavailable");
+          const route = module.routes?.[dsMethod];
+          if (!route) throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
           const input = await body(request);
-          const ds = store.dataScience(session.sessionId);
-          /**
-           * A KERNEL'S REFUSAL IS AN ANSWER, NOT A CRASH. "The notebook is
-           * 2 MB, larger than the engine reads" and "could not build the
-           * kernel's environment" are sentences a person can act on; folded
-           * into a generic 500 they read as the engine being broken, which is
-           * what the first nightly showed. Everything the capability throws is
-           * about the request, so it maps to 400 with its own words.
-           */
-          const dsAnswer = async <T,>(work: () => Promise<T>): Promise<T> => {
-            try {
-              return await work();
-            } catch (error) {
-              if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-              throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
-            }
-          };
-          const str = (key: string, optional = false) => stringValue(input[key], key, optional);
-          const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
-          let result: unknown;
-          switch (dsMethod) {
-            case "kernel": result = await dsAnswer(() => ds.kernel()); break;
-            case "execute": result = await dsAnswer(() => ds.execute({ code: str("code")!, ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}), ...(str("producer", true) ? { producer: str("producer", true)! } : {}) })); break;
-            case "interrupt": await dsAnswer(() => ds.interrupt()); result = {}; break;
-            case "restart": await dsAnswer(() => ds.restart()); result = {}; break;
-            case "vars": result = await dsAnswer(() => ds.vars(num("limit"))); break;
-            case "inspect": result = await dsAnswer(() => ds.inspect(str("name")!, num("depth"))); break;
-            case "notebook/read": result = await dsAnswer(() => ds.notebookRead(str("path")!, { ...(num("from") !== undefined ? { from: num("from")! } : {}), ...(num("to") !== undefined ? { to: num("to")! } : {}), ...(input.withOutputs === true ? { withOutputs: true } : {}) })); break;
-            case "notebook/edit": result = await dsAnswer(() => ds.notebookEdit(str("path")!, input.edit as Parameters<typeof ds.notebookEdit>[1])); break;
-            case "notebook/run": result = await dsAnswer(() => ds.notebookRun(str("path")!, { ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(input.all === true ? { all: true } : {}), ...(typeof input.stopOnError === "boolean" ? { stopOnError: input.stopOnError } : {}) })); break;
-            case "plot": result = await dsAnswer(() => ds.plot({ code: str("code")!, ...(str("title", true) ? { title: str("title", true)! } : {}) })); break;
-            case "snapshot": result = await dsAnswer(() => ds.snapshot(str("name")!, Array.isArray(input.vars) ? input.vars.map(String) : undefined)); break;
-            case "snapshots": result = await dsAnswer(() => ds.snapshots()); break;
-            case "diff": result = await dsAnswer(() => ds.diff(str("from")!, str("to")!)); break;
-            case "checkpoint": result = await dsAnswer(() => ds.checkpoint({ action: str("action")! as "save" | "restore" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}) })); break;
-            case "lineage": result = await dsAnswer(() => ds.lineage(str("of", true))); break;
-            case "watches": result = await dsAnswer(() => ds.watches()); break;
-            case "watch": result = await dsAnswer(() => ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) })); break;
-            case "env": result = await dsAnswer(() => ds.environment({ ...(str("use", true) ? { use: str("use", true)! } : {}) })); break;
-            case "packages": result = await dsAnswer(() => ds.packages()); break;
-            case "install": result = await dsAnswer(() => ds.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}), ...(str("requirements", true) ? { requirements: str("requirements", true)! } : {}) })); break;
-            case "experiment": result = await dsAnswer(() => ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) })); break;
-            default: throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
+          try {
+            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
+          } catch (error) {
+            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+            throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
           }
-          writeJson(response, 200, result ?? {});
           return;
         }
         /**
-         * THE LATEX DOOR, shaped like the kernel's above: every verb is a
-         * POST under `/latex/<method>`, dispatched to the store's capability
-         * — the same object the worker's toolkit reaches through
-         * `EngineClient.latex`. Not opted in → `invalid_request`, the gate.
+         * THE LATEX DOOR, NOW AN ALIAS, for the same reason and in the same
+         * shape: `/latex/<method>` is what a released client calls, and the
+         * verbs live in `plugins/latex.ts`.
          */
         const latexMethod = /^\/latex\/([a-z]+)$/.exec(session.tail)?.[1];
         if (request.method === "POST" && latexMethod) {
+          const module = pluginHost.ready("latex");
+          if (!module) throw new HttpError(404, "not_found", "latex is unavailable");
+          const route = module.routes?.[latexMethod];
+          if (!route) throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
           const input = await body(request);
-          const latex = store.latex(session.sessionId);
-          // Same rule as dsAnswer: a compile's refusal is an answer, not a crash.
-          const latexAnswer = async <T,>(work: () => Promise<T>): Promise<T> => {
-            try {
-              return await work();
-            } catch (error) {
-              if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-              throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
-            }
-          };
-          const str = (key: string, optional = false) => stringValue(input[key], key, optional);
-          const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
-          let result: unknown;
-          switch (latexMethod) {
-            case "toolchain": result = await latexAnswer(() => latex.toolchain()); break;
-            case "compile": result = await latexAnswer(() => latex.compile({ ...(str("path", true) ? { path: str("path", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}) })); break;
-            case "status": result = await latexAnswer(() => latex.status()); break;
-            case "log": result = await latexAnswer(() => latex.log({ ...(num("tail") !== undefined ? { tail: num("tail")! } : {}), ...(num("around") !== undefined ? { around: num("around")! } : {}), ...(str("find", true) ? { find: str("find", true)! } : {}) })); break;
-            case "packages": result = await latexAnswer(() => latex.packages()); break;
-            case "install": result = await latexAnswer(() => latex.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}) })); break;
-            case "clean": result = await latexAnswer(() => latex.clean({ ...(input.pdf === true ? { pdf: true } : {}) })); break;
-            default: throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
+          try {
+            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
+          } catch (error) {
+            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+            throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
           }
-          writeJson(response, 200, result ?? {});
           return;
+        }
+        /**
+         * THE GENERIC PLUGIN DOOR — the one arm that replaces the two above.
+         * `/plugins/<id>/<verb>` resolves the plugin's capability for this
+         * session and calls its own route. Nothing here knows what any plugin
+         * does, which is the whole claim: adding a plugin adds no line here.
+         */
+        /**
+         * ONE OPTIONAL SECOND SEGMENT IN THE VERB, and no more. A plugin may
+         * own a second tool prefix — data science owns `notebook` — and those
+         * verbs arrive as `notebook/read`, which a one-segment matcher could
+         * not see: the request fell past this arm to "endpoint does not exist"
+         * while the `/ds/` alias (whose own matcher allows the slash) answered
+         * it. The depth is capped rather than opened up, and the route TABLE
+         * still decides what executes, so this widens what can be addressed by
+         * exactly the shape a registered verb can have.
+         */
+        const pluginCallPath = /^\/plugins\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)?)$/.exec(session.tail);
+        if (request.method === "POST" && pluginCallPath) {
+          const [, pluginId, verb] = pluginCallPath as unknown as [string, string, string];
+          const module = pluginHost.ready(pluginId);
+          if (!module) throw new HttpError(404, "not_found", `no plugin ${pluginId}`);
+          const route = module.routes?.[verb];
+          if (!route) throw new HttpError(404, "not_found", `plugin ${pluginId} has no ${verb}`);
+          const input = await body(request);
+          try {
+            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
+          } catch (error) {
+            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+            // A BROKEN PLUGIN IS LEGIBLE AS ITS OWN FAILURE — the id is on the
+            // message, so a person sees which switch to turn off.
+            throw new HttpError(400, "plugin_error", `${pluginId}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          return;
+        }
+        /**
+         * THE RUN DOOR. Gated on the tail BEFORE the body is read, because
+         * `body(request)` consumes the stream and every other session route
+         * below still needs it. `run/mount.ts` owns everything else and answers
+         * `undefined` when the request is not a run request.
+         */
+        if (session.tail === "/run" || session.tail.startsWith("/run/")) {
+          const runAnswer = runMount.handle(
+            request.method ?? "",
+            session.tail,
+            request.method === "GET" ? Object.fromEntries(url.searchParams) : await body(request),
+            () => {
+              const record = store.getSession(session.sessionId);
+              if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
+              return {
+                sessionId: record.id,
+                projectId: record.projectId,
+                worktreePath: record.workspace.path,
+                ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
+              };
+            },
+          );
+          if (runAnswer !== undefined) {
+            try {
+              writeJson(response, 200, (await runAnswer) ?? {});
+            } catch (error) {
+              // A run's refusal is an ANSWER about the request — "that port is
+              // taken", "nothing is deployed" — not a crash.
+              if (error instanceof RunError) {
+                throw new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
+              }
+              throw error;
+            }
+            return;
+          }
         }
         /** The CSV / Parquet table viewer's backend: a window of rows. */
         if (request.method === "GET" && session.tail === "/data/table") {
@@ -3288,6 +3498,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const model = TurnModelSelection.safeParse(input.model);
           if (input.model !== undefined && !model.success) {
             throw new HttpError(400, "invalid_request", "turn model selection is invalid");
+          }
+          /**
+           * THE CLAUDE DEFAULT, REFRESHED OFF THE CRITICAL PATH.
+           *
+           * Never awaited: reading a model list spawns the provider's CLI, and
+           * neither this request nor the claim behind it may wait on that — the
+           * claim runs against a worker lease and would lose the turn. The
+           * remembered default (see `rememberedClaudeDefault`) is what the
+           * synchronous claim reads; this only keeps it current, and only when a
+           * turn would actually need it, so a Codex-only machine never probes a
+           * Claude CLI it may not have installed.
+           */
+          if (store.claudeAdmissionNeedsCatalogue(session.sessionId, model.success ? model.data : undefined)) {
+            void store.prepareClaudeCatalogue();
           }
           const accepted = store.submitTurn(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
@@ -3471,6 +3695,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
+    let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
     let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -3515,6 +3740,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         },
       });
       store.attachKernels(kernels);
+      kernelsRef.current = kernels;
       // The browser reaches sessions over the worker-hosted MCP socket, for
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
@@ -3524,6 +3750,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // outward `/v2/sessions/mcp` door below, deliberately: two doors, two
       // credentials, and only this one carries a `self` to be woken in.
       sessionsRunSocket = new (await import("./sessions-tools/run-socket")).SessionsToolSocket();
+      telarRunSocket = new (await import("./telar-socket")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
@@ -3539,6 +3766,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
       const sessionsSocket = sessionsRunSocket;
+      const telarSocket = telarRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
           return withDirectExecution(new EngineClient(discovery), { ...execution, registerWorker: async (id) => {
@@ -3567,6 +3795,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // note on `createLoginGrantStore`.
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
+            ...(telarSocket ? { telarSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             // TRUSTED, and in-process: this is the registration `pruneWorkers`
             // excludes, so the worker must not expire itself on a clock the
@@ -3649,11 +3878,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
         await sessionsRunSocket?.close();
+        await telarRunSocket?.close();
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.
-        await kernels?.disposeAll("engine shutting down");
+        // Kernels and compile jobs come back through their plugins' own
+        // `onDispose`, bounded per cleanup, rather than a line per feature here.
+        await pluginHost.disposeAll("shutdown");
+        // Runs are the one subprocess nothing else reaps: a dev server is
+        // deliberately not a child of any turn.
+        await runMount.shutdown();
         // Compile and tlmgr jobs are subprocesses of the same kind.
-        store.latexJobs.disposeAll();
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");

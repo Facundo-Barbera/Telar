@@ -4,7 +4,7 @@ import { TurnObservation, type TurnObservation as Observation } from "@telar/eng
 import { createOpenCodeDriver } from "../src/opencode/driver";
 import type { DriverRun } from "../src/provider-contract";
 
-function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; multiple?: boolean } = {}) {
+function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; providerErrorShape?: { name: string; data: Record<string, unknown> }; multiple?: boolean } = {}) {
   const calls: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
   let messageID = "";
   let snapshots = 0;
@@ -38,7 +38,7 @@ function fixture(options: { lostAck?: boolean; permission?: boolean; question?: 
       snapshots += 1;
       const complete = snapshots > 1 && permissionDone && questionDone;
       return json([{ info: { id: "msg_answer", sessionID: "ses_test", role: "assistant", parentID: messageID,
-        time: { created: 1, ...(complete ? { completed: 2 } : {}) }, ...(options.providerError ? { error: { name: "APIError", data: { message: "fixture failure", isRetryable: false } } } : {}), finish: complete ? "stop" : undefined,
+        time: { created: 1, ...(complete ? { completed: 2 } : {}) }, ...(options.providerError ? { error: options.providerErrorShape ?? { name: "APIError", data: { message: "fixture failure", isRetryable: false } } } : {}), finish: complete ? "stop" : undefined,
         cost: 0.001, tokens: { input: 5, output: 2, reasoning: 1, cache: { read: 3, write: 0 } } },
         parts: [{ id: "prt_text", sessionID: "ses_test", messageID: "msg_answer", type: "text", text: complete ? "Hello" : "Hel" },
           ...(options.permission ? [{ id: "prt_tool", sessionID: "ses_test", messageID: "msg_answer", type: "tool", tool: "bash", callID: "call_one",
@@ -115,6 +115,69 @@ test("a provider failure is terminal rather than retried as a snapshot transport
   expect(f.closed()).toBe(true);
 });
 
+test("the turn fails with WHAT WENT WRONG, not just the error's name", async () => {
+  /**
+   * The reported failure, end to end: a real Dev session died as
+   * "OpenCode: UnknownError" while the SDK was holding "Token refresh failed:
+   * 401". The driver threw the name and dropped the sentence.
+   */
+  const f = fixture({
+    providerError: true,
+    providerErrorShape: { name: "UnknownError", data: { message: "Token refresh failed: 401" } },
+  });
+  const error = await f.driver.run(f.input).then(() => undefined, (thrown: Error) => thrown);
+  expect(error?.message).toContain("Token refresh failed: 401");
+  expect(error?.message).toContain("Reconnect this provider in OpenCode (opencode auth login).");
+  expect(error?.message).toContain("UnknownError");
+});
+
+test("an APIError's response headers and body never reach the turn's failure", async () => {
+  const f = fixture({
+    providerError: true,
+    providerErrorShape: {
+      name: "APIError",
+      data: {
+        message: "Rate limit reached",
+        statusCode: 429,
+        isRetryable: true,
+        responseHeaders: { authorization: "Bearer sk-live-REALTOKENVALUE0123456789" },
+        responseBody: '{"key":"sk-live-REALTOKENVALUE0123456789"}',
+      },
+    },
+  });
+  const error = await f.driver.run(f.input).then(() => undefined, (thrown: Error) => thrown);
+  expect(error?.message).not.toContain("REALTOKENVALUE");
+  expect(error?.message).not.toContain("Bearer");
+  expect(error?.message).toContain("429");
+  expect(error?.message).toContain("Rate limited");
+});
+
+
+test("the connection and model ids survive to the prompt, split at the FIRST slash", async () => {
+  /**
+   * `openai/gpt-6-astra` — the pairing on the reported session. The provider is
+   * the first segment and the model is everything after it, so a routed id like
+   * `openrouter/anthropic/claude` keeps its inner slash instead of losing half
+   * the model name.
+   */
+  const f = fixture({});
+  await f.driver.run({ ...f.input, model: "openai/gpt-6-astra" });
+  const prompt = f.calls.find((call) => call.path.endsWith("/prompt_async"));
+  expect((prompt?.body as { model?: unknown })?.model).toEqual({ providerID: "openai", modelID: "gpt-6-astra" });
+
+  const routed = fixture({});
+  await routed.driver.run({ ...routed.input, model: "openrouter/anthropic/claude-x" });
+  const routedPrompt = routed.calls.find((call) => call.path.endsWith("/prompt_async"));
+  expect((routedPrompt?.body as { model?: unknown })?.model).toEqual({ providerID: "openrouter", modelID: "anthropic/claude-x" });
+});
+
+test("a model id with no connection prefix is REFUSED, not silently defaulted", async () => {
+  // Better than falling back to the server's choice: a session that asked for
+  // one model and quietly got another is the harder bug to see.
+  const f = fixture({});
+  await expect(f.driver.run({ ...f.input, model: "gpt-6-astra" })).rejects.toThrow("provider/model");
+  expect(f.calls.some((call) => call.path.endsWith("/prompt_async"))).toBe(false);
+});
 
 test("multiple-choice questions keep their choices and submit independent selections", async () => {
   const f = fixture({ question: true, multiple: true });

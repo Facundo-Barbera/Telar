@@ -16,12 +16,14 @@
  * the id is not something a person recognises.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { CircleAlertIcon, FlaskConicalIcon, FolderGitIcon, SigmaIcon, WrenchIcon } from "lucide-react";
-import type { Project } from "@telar/engine-client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CircleAlertIcon, FlaskConicalIcon, FolderGitIcon, PlugIcon, SigmaIcon, WrenchIcon } from "lucide-react";
+import type { PluginStatus, Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { canvasHref } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
+import { projectPluginSections } from "@/lib/plugins/sections";
+import { PluginSettings } from "./plugin-settings";
 import { DataScienceSection } from "./data-science-section";
 import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
@@ -31,21 +33,51 @@ import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createEngineApi();
 
-const SECTIONS: SettingsSection[] = [
+/**
+ * The sections that are not a plugin's. Everything between them is CONTRIBUTED
+ * — see `projectPluginSections` — so a new feature appears here by registering
+ * with the engine rather than by editing this array.
+ */
+const FIXED_SECTIONS: SettingsSection[] = [
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "This project" },
-  { id: "data-science", label: "Data science", icon: FlaskConicalIcon, group: "This project" },
-  { id: "latex", label: "LaTeX", icon: SigmaIcon, group: "This project" },
+];
+const TRAILING_SECTIONS: SettingsSection[] = [
   { id: "project", label: "Project", icon: FolderGitIcon, group: "This project" },
 ];
 
-const SECTION_IDS = SECTIONS.map((section) => section.id);
+/**
+ * Icons the two shipped plugins already had. A contributed section names a
+ * Lucide icon in its manifest; anything this map does not know falls back to a
+ * generic one rather than failing to render.
+ */
+const PLUGIN_ICONS: Record<string, SettingsSection["icon"]> = {
+  "data-science": FlaskConicalIcon,
+  latex: SigmaIcon,
+};
 
 export function ProjectSettingsPage({ projectId }: { projectId: string }) {
   // Already opens on MCP servers, but a sign-in returning here still names the
   // section — so the redirect is identical for both scopes.
-  const [active, setActive] = useSectionFromUrl("mcp", SECTION_IDS);
   const [project, setProject] = useState<Project>();
   const [missing, setMissing] = useState(false);
+  const [plugins, setPlugins] = useState<PluginStatus[]>();
+
+  const pluginSections = useMemo(() => projectPluginSections(plugins), [plugins]);
+  const sections = useMemo<SettingsSection[]>(
+    () => [
+      ...FIXED_SECTIONS,
+      ...pluginSections.map((entry) => ({
+        id: entry.key,
+        label: entry.label,
+        icon: PLUGIN_ICONS[entry.pluginId] ?? PlugIcon,
+        group: "This project" as const,
+      })),
+      ...TRAILING_SECTIONS,
+    ],
+    [pluginSections],
+  );
+  const sectionIds = useMemo(() => sections.map((section) => section.id), [sections]);
+  const [active, setActive] = useSectionFromUrl("mcp", sectionIds);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +92,14 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
     } catch {
       setMissing(true);
     }
+    try {
+      // WHICH PLUGINS EXIST is the engine's answer, not this file's. A plugin
+      // that failed to start still appears — with its reason — because a
+      // missing section is indistinguishable from a feature that was removed.
+      setPlugins((await api.health()).plugins ?? []);
+    } catch {
+      setPlugins([]);
+    }
   }, [projectId]);
 
   useEffect(() => {
@@ -71,7 +111,7 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
     <SettingsShell
       title={project?.name ?? "Project"}
       subtitle="Project settings"
-      sections={SECTIONS}
+      sections={sections}
       active={active}
       onSelect={setActive}
       // Back to this project's composer. It was `/projects` — a table that no
@@ -103,23 +143,23 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           </SettingsGroup>
         ))}
 
-      {active === "data-science" &&
-        (project ? (
-          <DataScienceSection project={project} onChange={setProject} />
-        ) : (
-          <SettingsGroup title="Data science">
+      {/* EVERY PLUGIN'S PANE, chosen by id. The two that shipped with real
+          editors keep them — a generic enable toggle would be a downgrade for
+          an environment picker — and everything else gets the generic pane.
+          That mapping is `BESPOKE_PLUGIN_PANES`, stated rather than inferred. */}
+      {pluginSections.map((entry) =>
+        active !== entry.key ? null : !project ? (
+          <SettingsGroup key={entry.key} title={entry.label}>
             <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
           </SettingsGroup>
-        ))}
-
-      {active === "latex" &&
-        (project ? (
-          <LatexSection project={project} onChange={setProject} />
+        ) : entry.pluginId === "data-science" ? (
+          <DataScienceSection key={entry.key} project={project} onChange={setProject} />
+        ) : entry.pluginId === "latex" ? (
+          <LatexSection key={entry.key} project={project} onChange={setProject} />
         ) : (
-          <SettingsGroup title="LaTeX">
-            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
-          </SettingsGroup>
-        ))}
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={setProject} />
+        ),
+      )}
 
       {active === "project" && (
         <SettingsGroup title="Identity" description="Registered facts — moving a project means registering it again.">

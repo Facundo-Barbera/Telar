@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, SearchIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
@@ -25,7 +25,9 @@ import {
   type ModelFamily,
 } from "@/lib/model-families";
 import { importLocalFavorites, patchModelOverlay, useModelCatalogue, useModelCatalogues, useModelOverlays } from "@/lib/model-catalogue-cache";
+import { connectionLabel, familySearchText, routeOf, routedModelLabel } from "@/lib/model-connections";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
+import { ModelRowIcon } from "@/components/session/connection-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
@@ -351,21 +353,34 @@ const PROVIDERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 /** What the rail selects: one provider's models, or the ones you starred. */
 type ModelView = ProviderDriverKind | "favorites";
 
+/** The scrollable list, addressed by the search field's arrow-down handoff. */
+const MODEL_LIST_ID = "telar-model-picker-list";
+
 /**
- * ONE LINE PER MODEL — the name, whether it is the default, a tick, and a star.
+ * ONE LINE PER MODEL — the mark of who serves it, the name, which CONNECTION
+ * routes it, whether it is the default, a tick, and a star.
  *
  * The row lists a FAMILY rather than a catalogue row (lib/model-families.ts):
  * `sonnet` and `sonnet[1m]` are one model here, and which window it runs in is a
- * setting on the reasoning pill. Before that fold the list showed Sonnet twice
- * and wrote the answer into a name — "Sonnet 5 (1M context)" — where no control
- * could reach it.
+ * setting on the reasoning pill.
  *
- * THE PROVIDER ICON IS ONLY ON A MIXED LIST. In a provider's own list every row
- * would carry the same mark, which is decoration; in the favourites list it is
- * the only thing saying which harness a starred model belongs to.
+ * THE CONNECTION IS PART OF THE ANSWER, not decoration. OpenCode reaches one
+ * model through several connections — `openai/gpt-5.6-luna` and
+ * `opencode-go/gpt-5.6-luna` are two routes to one model, billed and
+ * rate-limited differently — so a row that said only "GPT-5.6 Luna" twice
+ * would be the same name with two different meanings. The badge names the
+ * connection (models.dev's own names, lib/model-connections.ts), the icon is
+ * its mark, and the title still carries the exact routing id that goes on the
+ * wire. Claude Code and Codex rows carry their serving provider's mark the
+ * same way, so all three lists read alike.
+ *
+ * THE HARNESS ICON IS ONLY ON A MIXED LIST. In the favourites view, which
+ * spans providers, the leading mark is the HARNESS (Claude/Codex/OpenCode) —
+ * the only thing saying where a starred model runs.
  */
 function FamilyRow({
   family,
+  driver,
   provider,
   selected,
   starred,
@@ -374,6 +389,9 @@ function FamilyRow({
   onStar,
 }: {
   family: ModelFamily;
+  /** The harness whose catalogue this row came from. */
+  driver: ProviderDriverKind;
+  /** Set on a mixed (favourites) list: show the harness mark instead. */
   provider?: ProviderDriverKind;
   selected: boolean;
   starred: boolean;
@@ -381,24 +399,33 @@ function FamilyRow({
   onSelect: () => void;
   onStar: () => void;
 }) {
+  const route = routeOf(family.id);
+  const label = route ? routedModelLabel(route.model) : family.label;
   return (
     <div className="group/model flex items-center gap-0.5">
       <button
         type="button"
+        data-model-row
         disabled={readOnly}
         onClick={onSelect}
+        // The exact id(s) this row can put on the wire — the routing id is a
+        // fact worth hovering for, especially when two rows share a name.
+        title={family.rows.map((row) => row.id).join("\n")}
         className={cn(
-          "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+          "flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
           selected ? "bg-accent" : "hover:bg-accent/60",
           readOnly && "cursor-default opacity-60",
         )}
       >
-        {provider && (
-          <span className="shrink-0 text-muted-foreground">
-            <ProviderIcon provider={provider} size={13} />
+        <span className="shrink-0 text-muted-foreground">
+          {provider ? <ProviderIcon provider={provider} size={15} /> : <ModelRowIcon driver={driver} modelId={family.id} size={15} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {route && (
+          <span className="max-w-24 shrink-0 truncate rounded border border-border/60 px-1 py-px text-[0.625rem] leading-4 text-muted-foreground">
+            {connectionLabel(route.connection)}
           </span>
         )}
-        <span className="min-w-0 flex-1 truncate">{family.label}</span>
         {family.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
         <span className="flex size-3.5 shrink-0 items-center justify-center">
           {selected && <CheckIcon className="size-3.5 text-primary" />}
@@ -408,11 +435,11 @@ function FamilyRow({
           never be one pixel away from favouriting it. */}
       <button
         type="button"
-        aria-label={starred ? `Unstar ${family.label}` : `Star ${family.label}`}
+        aria-label={starred ? `Unstar ${label}` : `Star ${label}`}
         title={starred ? "Unstar" : "Star"}
         onClick={onStar}
         className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
+          "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
           starred ? "opacity-100" : "opacity-0 group-hover/model:opacity-60 focus-visible:opacity-100",
         )}
       >
@@ -458,6 +485,15 @@ export function AgentControl({
 }) {
   const [open, setOpen] = useState(false);
   const [showLegacy, setShowLegacy] = useState(false);
+  /**
+   * THE SEARCH. OpenCode's multi-connection catalogue is two hundred rows on
+   * this machine — a list nobody scrolls. Matching covers the display name,
+   * the raw routing id, and the CONNECTION's name (lib/model-connections.ts),
+   * so "go" narrows to OpenCode Go and "openai" to the direct connection.
+   * While a query is live it searches past the Legacy fold too: a model you
+   * can name is a model you were looking for.
+   */
+  const [query, setQuery] = useState("");
   /** Which rail entry is showing. Reset when the popover closes: reopening
    *  should land on the models you can run, not wherever you last wandered. */
   const [view, setView] = useState<ModelView>(driver);
@@ -550,14 +586,17 @@ export function AgentControl({
    * generation, favourites first; the favourites view is every starred model on
    * every provider you could switch to, in catalogue order per provider.
    */
-  const listed: { from: ProviderDriverKind; family: ModelFamily }[] =
+  const searching = query.trim().length > 0;
+  const matches = (family: ModelFamily) => familySearchText(family).includes(query.trim().toLowerCase());
+  const listed: { from: ProviderDriverKind; family: ModelFamily }[] = (
     view === "favorites"
       ? (crossProvider ? PROVIDERS : [driver]).flatMap((option) =>
           groupFamilies(visibleModels(catalogues.get(option)?.models ?? [], choice.model))
             .filter((family) => favorites.has(family.id))
             .map((family) => ({ from: option, family })),
         )
-      : orderByFavorite(showLegacy ? [...current, ...legacy] : current, favorites).map((family) => ({ from: driver, family }));
+      : orderByFavorite(searching || showLegacy ? [...current, ...legacy] : current, favorites).map((family) => ({ from: driver, family }))
+  ).filter((entry) => !searching || matches(entry.family));
   /** A provider the favourites view is still waiting on. Named, because a
    *  silently short list looks like a lost star. */
   const asking = (crossProvider ? PROVIDERS : [driver]).find((option) => !catalogues.get(option));
@@ -576,6 +615,7 @@ export function AgentControl({
     setOpen(false);
     setView(onto);
     setShowLegacy(false);
+    setQuery("");
   };
 
   /**
@@ -598,7 +638,13 @@ export function AgentControl({
     close(from);
   };
 
-  const label = selectedFamily?.label ?? modelLabel(models, choice.model);
+  /** The pill reads the routed name, not the raw route: `openai/gpt-5.6-luna`
+   *  is "GPT-5.6 Luna · OpenAI" — the same two facts the row showed when it
+   *  was picked, and the wire id is unchanged underneath. */
+  const pillRoute = routeOf(selectedFamily?.id ?? choice.model ?? "");
+  const label = pillRoute
+    ? `${routedModelLabel(pillRoute.model)} · ${connectionLabel(pillRoute.connection)}`
+    : (selectedFamily?.label ?? modelLabel(models, choice.model));
 
   return (
     <Popover open={open} onOpenChange={(next: boolean) => (next ? setOpen(true) : close(driver))}>
@@ -627,10 +673,15 @@ export function AgentControl({
         align="start"
         side="top"
         sideOffset={8}
-        // w-80, not the old w-64: a 44px provider rail plus a star, a tick and
-        // a badge left ~130px of truncating label per row — versioned names
-        // need the room more than the composer needs the popover narrow.
-        className="max-h-[min(26rem,70vh)] w-80 flex-col gap-0 overflow-hidden rounded-xl p-0"
+        // FIXED, IDENTICAL DIMENSIONS ON EVERY PROVIDER AND VIEW — h-[26rem],
+        // not max-h. The menu used to be as tall as its list: Claude's four
+        // rows made a short box, OpenCode's two hundred a full-height one, and
+        // switching the rail visibly re-shaped the popover under the pointer.
+        // One size means the rail, the search field and the footer never move;
+        // only the scrollable middle changes. w-88 gives the wider rows (mark,
+        // name, connection badge, Default, tick, star) their room; 70vh still
+        // caps it on a short window.
+        className="h-[min(26rem,70vh)] w-[22rem] flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         {/**
          * THE RAIL — the donor's own column, star and all.
@@ -649,6 +700,7 @@ export function AgentControl({
               onClick={() => {
                 setView("favorites");
                 setShowLegacy(false);
+                setQuery("");
               }}
               aria-label="Favourites"
               title="Favourites"
@@ -673,6 +725,7 @@ export function AgentControl({
                 onClick={() => {
                   setView(option);
                   setShowLegacy(false);
+                  setQuery("");
                   if (option !== driver) onDriverChange?.(option);
                 }}
                 aria-label={PROVIDER_LABEL[option]}
@@ -689,12 +742,58 @@ export function AgentControl({
               </button>
             ))}
           </div>
-          <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {/* THE SEARCH FIELD — fixed above the scroll, part of the menu's
+                constant chrome. Arrow-down hands focus to the list; typing
+                narrows by name, routing id and connection. */}
+            <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2.5 py-1.5">
+              <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    document.getElementById(MODEL_LIST_ID)?.querySelector("button")?.focus();
+                  }
+                }}
+                placeholder={view === "favorites" ? "Search favourites…" : `Search ${PROVIDER_LABEL[view]} models…`}
+                aria-label="Search models by name or connection"
+                className="h-6 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/70"
+              />
+              {searching && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setQuery("")}
+                  className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:text-foreground"
+                >
+                  clear
+                </button>
+              )}
+            </div>
+            <div
+              id={MODEL_LIST_ID}
+              className="min-h-0 flex-1 overflow-y-auto p-1"
+              // Arrow keys walk the rows themselves — the search field above
+              // and the star beside each row stay on the tab ring only.
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                const rows = [...(event.currentTarget.querySelectorAll<HTMLButtonElement>("[data-model-row]") ?? [])];
+                const at = rows.findIndex((row) => row === document.activeElement);
+                if (at === -1) return;
+                event.preventDefault();
+                const next = event.key === "ArrowDown" ? Math.min(at + 1, rows.length - 1) : at - 1;
+                if (next < 0) (event.currentTarget.previousElementSibling?.querySelector("input") as HTMLInputElement | null)?.focus();
+                else rows[next]?.focus();
+              }}
+            >
             {view === "favorites" && <MenuHeading>Favourites</MenuHeading>}
             {listed.map(({ from, family }) => (
               <FamilyRow
                 key={`${from}:${family.id}`}
                 family={family}
+                driver={from}
                 {...(crossProvider ? { provider: from } : {})}
                 selected={from === driver && family.id === selectedFamily?.id}
                 starred={favorites.has(family.id)}
@@ -712,11 +811,11 @@ export function AgentControl({
              * lib/model-generations.ts. A STARRED model is never in here, whoever
              * it is older than.
              */}
-            {view !== "favorites" && legacy.length > 0 && !showLegacy && (
+            {view !== "favorites" && !searching && legacy.length > 0 && !showLegacy && (
               <button
                 type="button"
                 onClick={() => setShowLegacy(true)}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
               >
                 <span className="min-w-0 flex-1 truncate">Legacy models</span>
                 <span className="shrink-0 text-[0.625rem]">{legacy.length}</span>
@@ -726,19 +825,23 @@ export function AgentControl({
             {/* A model this catalogue does not list — set by another client, or
                 added upstream since. Shown so the session never reads as running
                 something it is not. */}
-            {view !== "favorites" && choice.model && models.length > 0 && !selectedFamily && (
+            {view !== "favorites" && !searching && choice.model && models.length > 0 && !selectedFamily && (
               <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
             )}
             {asking && <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
-            {/* Nothing to show, and the two reasons are different questions. */}
-            {view === "favorites" && !asking && listed.length === 0 && (
+            {/* Nothing to show, and the reasons are different questions. */}
+            {searching && listed.length === 0 && (
+              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Nothing matches “{query.trim()}” — names, ids and connections are searched.</p>
+            )}
+            {view === "favorites" && !asking && !searching && listed.length === 0 && (
               <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Star a model to keep it here.</p>
             )}
-            {view !== "favorites" && catalogue && models.length === 0 && (
+            {view !== "favorites" && !searching && catalogue && models.length === 0 && (
               <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
                 {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
               </p>
             )}
+            </div>
           </div>
         </div>
         <p className="border-t border-border px-2.5 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">

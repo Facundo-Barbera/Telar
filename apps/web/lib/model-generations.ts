@@ -68,18 +68,36 @@ type Generational = { id: string; isDefault: boolean; hidden: boolean };
 export function splitGenerations<T extends Generational>(models: readonly T[]): ModelGenerations<T> {
   const visible = models.filter((model) => !model.hidden);
   const hidden = models.filter((model) => model.hidden);
-  const defaultModel = visible.find((model) => model.isDefault) ?? visible[0];
+  const defaultModel = visible.find((model) => model.isDefault);
   const line = defaultModel ? modelVersion(defaultModel.id) : undefined;
 
-  // No readable default version: everything visible is current. A picker that
-  // guessed here would be hiding models on the strength of a regex.
+  // No stated default, or one whose version cannot be read: everything visible
+  // is current. Both used to guess — `?? visible[0]` anchored the split on
+  // whatever happened to be listed first, which for a provider that marks no
+  // default (OpenCode's 200-row multi-connection list) made the filing depend
+  // on catalogue order. A picker that guesses here is hiding models on the
+  // strength of a regex.
   if (line === undefined) return { current: visible, legacy: hidden };
+
+  /**
+   * CURRENT REACHES ONE GENERATION BACK, not only the default's line.
+   *
+   * The day Codex shipped GPT-6-Astra as its default, the whole actively-used
+   * 5.6 family — three models people had sessions on that morning — fell under
+   * "Legacy models" behind a fold, because the rule was "older than the
+   * default". A new default arriving does not make last month's models
+   * history; it makes them the PREVIOUS generation, which readers still reach
+   * for daily. So the newest version line strictly below the default's stays
+   * current too, and only what is older than THAT folds away.
+   */
+  const versions = visible.map((model) => modelVersion(model.id)).filter((version): version is number => version !== undefined);
+  const previousLine = Math.max(...versions.filter((version) => version < line), Number.NEGATIVE_INFINITY);
 
   const current: T[] = [];
   const legacy: T[] = [...hidden];
   for (const model of visible) {
     const version = modelVersion(model.id);
-    if (version === undefined || version >= line) current.push(model);
+    if (version === undefined || version >= (previousLine === Number.NEGATIVE_INFINITY ? line : previousLine)) current.push(model);
     else legacy.push(model);
   }
   return { current, legacy };

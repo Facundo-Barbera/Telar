@@ -49,6 +49,8 @@ import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
+import { RunHeaderControl } from "./run/run-header-control";
+import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";
 import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
 import {
@@ -60,6 +62,7 @@ import {
   readPanelTabIds,
   readPanelTabs,
   writePanelTabs,
+  clearPanelTabs,
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
 import {
@@ -69,6 +72,7 @@ import {
   openInEditor,
   readEditor,
   writeEditor,
+  clearEditor,
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
@@ -185,6 +189,7 @@ function SessionMasthead({
   onRename,
   panel,
   readOnly = false,
+  onWatchRun,
 }: {
   projectId: string;
   /** Which Mac the project is on — the breadcrumb's link must stay there. */
@@ -203,6 +208,9 @@ function SessionMasthead({
   /** Observe mode: the title is a fact, not a field, and there is no spin —
    *  a loom-owned session cannot be spun into another loom. */
   readOnly?: boolean;
+  /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
+   *  Run control only configures, starts and stops. */
+  onWatchRun?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -318,6 +326,28 @@ function SessionMasthead({
           rather than one button at a time. `shrink-0`: these are fixed-size
           glyphs, and the title beside them is what absorbs a narrow window. */}
       <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">
+        {/* SETTING A RUN UP IS A THING YOU DO ONCE, ABOUT THE WHOLE
+            CONVERSATION — so it sits here with the other facts about this
+            session, not behind a panel you must open first. Watching it run
+            stays in the right panel; "Watch output" is the door between them.
+            Only for a session that exists: there is nothing to run on a canvas
+            with no workspace yet. */}
+        {/* KEYED BY HOST AND SESSION: a different machine is a different
+            mount, so no answer, latch or poll from the previous one can reach
+            this one. Two hosts can hold the same session id. */}
+        {session && !readOnly && (
+          <RunHeaderControl
+            key={`${hostId}:${session.id}`}
+            sessionId={session.id}
+            hostId={hostId}
+            {...(onWatchRun ? { onWatchOutput: onWatchRun } : {})}
+          />
+        )}
+        {/* The folder itself, in the machine's own tools. Renders only on the
+            desktop shell, and states its own limits (remote sessions). */}
+        {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
+            "another machine" is true where a guessed name would not be. */}
+        {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
         {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
             produced enough shape, hand it to the weaver. The session becomes
             the loom's origin and detaches — it leaves this surface and lives
@@ -632,7 +662,7 @@ function SessionTurnBody({
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
           {turn.origin === "session" && turn.sender ? (
-            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
           )}
@@ -652,7 +682,11 @@ function SessionTurnBody({
           {response.items.length > 0 && (
             <Message from="assistant">
               <MessageContent from="assistant">
-                <ActivityGroup items={response.items} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                {/* CUT AT ITS SEAMS, like every other response. Folding these
+                    items into one group hid the assistant's prose — including
+                    prose still streaming when the steer landed — inside a
+                    collapsed step. See `LiveActivity`. */}
+                <LiveActivity items={response.items} tasks={turn.tasks} liveTail={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
               </MessageContent>
             </Message>
           )}
@@ -1451,6 +1485,16 @@ export function SessionCockpit({
       // built while writing the first message is the arrangement they want
       // while it runs.
       writeEditor(id, editor, Date.now());
+      /**
+       * AND THE CANVAS FORGETS IT, which is the difference between a hand-off
+       * and a default. `new:<projectId>` is ONE key shared by every new
+       * conversation in the project, so an arrangement left there was
+       * inherited by all of them — the reported "every conversation opens with
+       * Run showing". Cleared here, this conversation keeps what was arranged
+       * for it and the next one starts closed.
+       */
+      clearPanelTabs(canvasPanelKey(projectId));
+      clearEditor(canvasPanelKey(projectId));
       owner.current = { sessionId: id, projectId };
       setSession(patched.session);
       setCreatedSessionId(id);
@@ -2206,6 +2250,9 @@ export function SessionCockpit({
           sending={sending}
           readOnly={observe}
           onRename={(next) => void rename(next)}
+          // The masthead's Run control hands monitoring back to the panel
+          // through the same opener every other surface uses.
+          onWatchRun={() => showPanelTab("run")}
           panel={
             <>
               <WorkspaceInspector

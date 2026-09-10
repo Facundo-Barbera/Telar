@@ -94,6 +94,9 @@ describe("engine route adapters", () => {
     // The SAME subdirectory `engineRootFromWebEnv` composes from TELAR_HOME. A
     // route that reads one directory while the daemon writes another answers
     // 503 for every call, and this test is the only thing that would notice.
+    // This fixture starts with a provider default already learned by the engine.
+    fs.mkdirSync(path.join(home, "engine"), { recursive: true });
+    fs.writeFileSync(path.join(home, "engine", "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
     const daemon = await startEngine({ engineRoot: path.join(home, "engine") });
     daemons.push(daemon);
     const client = new EngineClient(daemon.discovery);

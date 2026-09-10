@@ -176,6 +176,11 @@ export type DesktopBrowserBridge = {
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   resumeFromPrivate?(): Promise<DesktopPrivacyState>;
+  /** The EXPLICIT login-offer fallback (AUTH-001): open the shell's trusted
+   *  offer window about this session's current page — for a sign-in Telar
+   *  never saw, or an automatic offer that was dismissed. Opening only asks;
+   *  the answer happens inside the shell's own window, never here. */
+  offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;
   onExtension?(listener: (status: DesktopExtensionStatus) => void): () => void;
 };
 
@@ -937,6 +942,23 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                 className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
               >
                 Make default
+              </button>
+            )}
+            {bridge.offerLoginMemory && (
+              <button
+                type="button"
+                title={"Already signed in on this page? Let agents reuse that login here.\nOpens Telar's own window; you pick the 1Password item there."}
+                onClick={() =>
+                  void profileAction(async () => {
+                    const result = await bridge.offerLoginMemory!(sessionId);
+                    // The shell's refusal ("open an http(s) page first") is the
+                    // row's error, same as any other profile action's.
+                    if (!result.ok && result.error) throw new Error(result.error);
+                  })
+                }
+                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              >
+                Let agents use a login…
               </button>
             )}
             {bridge.updateProfile && (

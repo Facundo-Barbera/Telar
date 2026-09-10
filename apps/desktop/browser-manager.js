@@ -3,6 +3,7 @@ const { pathToFileURL } = require("node:url");
 const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
 const { ProfileRegistry, requireProjectKey } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
+const { captureEntry } = require("./login-offer");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -417,6 +418,17 @@ class DesktopBrowserManager {
     // Only actual credential entry starts the automatic protection lifecycle.
     this.uiHolds = new Map(); // id → reason (popup, extension window)
     this.credentialHold = false;
+    /**
+     * THE LOGIN OFFER'S CAPTURE (AUTH-001, #195; login-offer.js). When a value
+     * lands in a credential field, the page's ADDRESS, the tab's IDENTITY and
+     * the moment are recorded here — metadata only, and IMMUTABLE: a redirect
+     * after sign-in must not broaden what a later grant names, so nothing ever
+     * rewrites a held capture. Handed to `onCredentialEntryFinished` when the
+     * automatic release decides the entry is over; the offer flow re-checks it
+     * again at confirmation time.
+     */
+    this.heldLoginCapture = null;
+    this.onCredentialEntryFinished = dependencies.onCredentialEntryFinished || null;
     this.holdRevision = 0;
     this.privacyStuck = false;
     this._autoReleaseRunning = false;
@@ -790,6 +802,19 @@ class DesktopBrowserManager {
       tab.credentialFieldsAt = undefined;
     }
     this.privacy.end();
+    // THE ENTRY IS OVER (which is NOT proof the sign-in succeeded — the offer
+    // is phrased as a permission question, login-offer.js). Hand the captured
+    // metadata to the offer flow, once: the held capture is consumed here so
+    // the next entry starts clean.
+    const capture = this.heldLoginCapture;
+    this.heldLoginCapture = null;
+    if (capture && this.onCredentialEntryFinished) {
+      try {
+        this.onCredentialEntryFinished(capture);
+      } catch {
+        // The offer must never break the release path under it.
+      }
+    }
   }
 
   setPrivacyStuck(value) {
@@ -936,9 +961,45 @@ class DesktopBrowserManager {
     const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
     if (!tab) return;
     tab.credentialFieldsAt = this.now();
+    // AN ENTRY (typed or filled — never mere focus) is what the login offer
+    // may later ask about. The origin is the TAB's top-level address at this
+    // moment — the same address a fill's grant matching reads (secret-fill.ts
+    // uses originOf(tab.url)) — captured now so a redirect cannot move it.
+    // `captureEntry` refuses focus, non-web schemes and missing identity.
+    const capture = captureEntry({
+      kind: detail.kind,
+      origin: tab.url,
+      profileId: tab.profileId,
+      profileLabel: this.profiles.get(tab.profileId)?.label,
+      tabUid: tab.id,
+      at: this.now(),
+    });
+    if (capture) this.heldLoginCapture = capture;
     // A credential HOLD, cleared only by a clean focus-aware probe — not by
     // any close event. The automatic loop ends privacy when the entry is over.
     this.noteCredentialHold(detail.kind === "fill" ? "credentials filled" : "credential entry");
+  }
+
+  /**
+   * THE EXPLICIT OFFER'S CAPTURE — a person asking "remember the login on this
+   * page" from the cockpit, with no automatic entry event to ride on. Built
+   * from the scope's ACTIVE tab as it is NOW: the person is looking at the
+   * page they mean, and their request IS the assertion an entry happened (the
+   * `input` kind below is that assertion, not a page report). Null when the
+   * page cannot carry a grant (non-web scheme, no tab).
+   */
+  loginCaptureForScope(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const tab = this.tabs.find((candidate) => candidate.scopeKey === scope && candidate.id === this.activeTabIds.get(scope));
+    if (!tab) return null;
+    return captureEntry({
+      kind: "input",
+      origin: tab.url,
+      profileId: tab.profileId,
+      profileLabel: this.profiles.get(tab.profileId)?.label,
+      tabUid: tab.id,
+      at: this.now(),
+    });
   }
 
   /**

@@ -95,17 +95,75 @@ export function agentSenderLabel(sender: MessageSender): string {
   return sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session";
 }
 
-export function AgentMessageBubble({
+/**
+ * AN EXPLICIT TASK IS A MESSAGE, NOT A CHIP.
+ *
+ * A peer handing this session work is the reason the session is doing anything;
+ * folding it into a collapsed "Agent message" row hides the instruction the
+ * transcript exists to explain. Reports stay collapsed — they are a peer
+ * talking, not a peer asking.
+ *
+ * Attribution is the ENGINE's (`Turn.sender`, stamped from a claim token), so
+ * the name here cannot be asserted by a model. The link goes to the sender's
+ * own session, which is where the words came from.
+ */
+function TaskMessage({
   text,
   sender,
   attachments,
+  scope,
 }: {
   text: string;
   sender: MessageSender;
   attachments?: readonly TurnAttachment[];
+  scope?: string;
+}) {
+  return (
+    <div className="mx-auto w-full min-w-0 max-w-[50rem] py-1" aria-label="Task from another session">
+      <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+        <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-xs">
+          <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0 font-medium">Task</span>
+          {sender.sessionId ? (
+            <a
+              href={`/sessions/${encodeURIComponent(sender.sessionId)}`}
+              className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground underline-offset-2 hover:underline"
+            >
+              {agentSenderLabel(sender)}
+            </a>
+          ) : (
+            <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{agentSenderLabel(sender)}</span>
+          )}
+          {scope && <span className="ml-auto shrink-0 truncate text-[0.6875rem] text-muted-foreground">{scope}</span>}
+        </div>
+        <div className="min-w-0 break-words text-sm">
+          <MessageResponse streaming={false}>{text}</MessageResponse>
+          <MessageAttachments {...(attachments ? { attachments } : {})} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AgentMessageBubble({
+  text,
+  sender,
+  attachments,
+  intent,
+  scope,
+}: {
+  text: string;
+  sender: MessageSender;
+  attachments?: readonly TurnAttachment[];
+  /** `task` renders in full; everything else stays collapsed. */
+  intent?: string;
+  scope?: string;
   onOpenTab?: OpenTab;
 }) {
   const [open, setOpen] = useState(false);
+  if (intent === "task") {
+    return <TaskMessage text={text} sender={sender} {...(attachments ? { attachments } : {})} {...(scope ? { scope } : {})} />;
+  }
   return (
     <div className="mx-auto w-full min-w-0 max-w-[50rem] py-0.5 text-sm" aria-label="Message from another agent">
       <button

@@ -43,6 +43,11 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
+import { runTools } from "./run/tools";
+import { pluginToolModules } from "./plugins/bundled";
+import type { ToolFactory } from "./tool-kit";
+import type { RunCapability } from "./run/capability";
 import {
   canonicalEnvPatch,
   canonicalJson,
@@ -197,6 +202,9 @@ type ClaudeTurnBindings = {
   ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
   latex: LatexCapability | undefined;
+  /** The project's runs, when the turn carries them. See `run/capability.ts`. */
+  run: RunCapability | undefined;
+  plugins: Record<string, unknown> | undefined;
   warpSpawn: WarpSpawn;
   onWarpTask: (seed: TaskSeed) => void;
 };
@@ -422,7 +430,12 @@ A Warp child may not create work that outlives the run or escapes the script: fa
  * string it can pass.
  */
 function warpTool(
-  sdk: ClaudeSdk,
+  /**
+   * THE FACTORY, NOT THE SDK. Warp used to take the whole `ClaudeSdk` and reach
+   * for `sdk.tool`, which quietly made it the one core tool that could only be
+   * registered in-process. It needs a way to declare a tool and nothing else.
+   */
+  tool: ToolFactory | undefined,
   deps: {
     spawn: WarpSpawn;
     /** Every row the run produces, in order. The driver decides which event
@@ -438,7 +451,6 @@ function warpTool(
     concurrency?: number;
   },
 ): unknown | undefined {
-  const { tool } = sdk;
   if (!tool) return undefined;
   const start = createWarpRunner({
     spawn: deps.spawn,
@@ -559,7 +571,29 @@ function warpTool(
 // nothing, spends nothing, and its whole effect is a panel opening on the
 // human's own screen — which they watch happen. Parking an approval card for
 // "may I show you this?" would be the card answering itself.
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel", "display_open"]);
+/**
+ * THE CORE READS. Plugin reads are NOT listed here — they arrive from the HOST
+ * at startup through `setPluginReadTools`, because a plugin's own manifest is a
+ * CLAIM rather than a grant and only the host may ratify it.
+ */
+const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "display_open"]);
+
+/**
+ * The reads the host ratified. EMPTY UNTIL INSTALLED, deliberately.
+ *
+ * FAIL CLOSED, and the reason is process boundaries. This is a module global,
+ * and the out-of-process worker is a DIFFERENT PROCESS from the daemon that
+ * calls `setPluginReadTools` — so a default seeded from the static policy table
+ * would leave that worker treating as reads a set the host may have NARROWED,
+ * silently granting a plugin more than the host allowed. An empty default means
+ * an uninstalled process asks for approval on everything, which is the safe
+ * direction to be wrong in. `installPluginReadTools` is called on both paths.
+ */
+let telarPluginReadTools = new Set<string>();
+
+export function setPluginReadTools(tools: Iterable<string>): void {
+  telarPluginReadTools = new Set(tools);
+}
 
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
@@ -568,7 +602,9 @@ export function requestKindForTool(name: string): RequestKind {
   const parsed = parseToolName(name);
   // Only OUR servers' tools qualify — a user-configured server that happened to
   // name a tool `spool_list_items` must not inherit the engine's own posture.
-  if (isTelarMcpServer(parsed.server) && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
+  if (isTelarMcpServer(parsed.server) && (TELAR_READ_TOOLS.has(parsed.tool) || telarPluginReadTools.has(parsed.tool))) {
+    return "file_read";
+  }
   return "tool_call";
 }
 
@@ -755,6 +791,12 @@ const BACKGROUND_TASK_TYPES = new Set(["background_shell", "background_bash", "l
 
 export function taskKindForType(taskType: string | undefined): TaskKind {
   return taskType && BACKGROUND_TASK_TYPES.has(taskType) ? "background" : "agent";
+}
+
+/** The same classification, but SILENT about a type nobody stated — so an
+ *  absent `task_type` reads as "unknown", never as "agent". */
+export function taskKindForTypeOrUndefined(taskType: string | undefined): TaskKind | undefined {
+  return taskType ? taskKindForType(taskType) : undefined;
 }
 
 /**
@@ -1058,6 +1100,20 @@ export function createClaudeDriver(
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
+  /**
+   * ONE `telar` WALL LEASE PER SESSION, plus the bindings ref its wall reads.
+   *
+   * PER SESSION, NOT PER TURN: the token is baked into the MCP server entry the
+   * provider was started with, so minting a fresh one each turn would 401 every
+   * reused query. The REF is what makes that safe — `buildRuntime` points it at
+   * the live bindings, so a stable lease still serves whatever the current turn
+   * carries.
+   */
+  const telarLeases = new Map<
+    string,
+    { lease: TelarSocketLease; ref: { current: RuntimeBindings<ClaudeTurnBindings> | undefined } }
+  >();
+
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>({
     /**
      * WHAT THE POOL MUST NOT DESTROY. A backgrounded shell, monitor or
@@ -1087,6 +1143,9 @@ export function createClaudeDriver(
       providerSessionId,
       providerInstanceId,
       browserSocket,
+      telarSocket,
+      run,
+      plugins,
       spool,
       sessions,
       ds,
@@ -1207,6 +1266,8 @@ export function createClaudeDriver(
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
       let knownTasks: Map<string, TaskSeed> = new Map();
+      /** The SDK's `task_type` per task id — see `TaskMemory.typesBySdkId`. */
+      let taskTypesBySdkId: Map<string, string> = new Map();
       /** SDK task ids that are not rows: `ambient` housekeeping, and shells
        *  that block their turn (`isForegroundShell`). Remembered, so the
        *  progress/notification edges of the same task cannot re-create the row
@@ -1252,6 +1313,7 @@ export function createClaudeDriver(
         const id = taskIdFor(sdkTaskId, toolUseId);
         if (sdkTaskId) taskIdsBySdkId.set(sdkTaskId, id);
         const known = knownTasks.get(id);
+        const statedKind = sdkTaskId ? taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkTaskId)) : undefined;
         /**
          * THE FIRST ENDING IS THE ENDING. A task that has finished never changes
          * state again; later reports may still add to it.
@@ -1276,7 +1338,11 @@ export function createClaudeDriver(
           ...known,
           ...patch,
           id,
-          kind: patch.kind ?? known?.kind ?? "agent",
+          // PRECEDENCE: what the frame says, then what the SDK ever STATED
+          // about this task, then what we last held, then the default. The
+          // stated type outranks `known.kind` because that may itself be a
+          // default this fold wrote before the type was ever announced.
+          kind: patch.kind ?? statedKind ?? known?.kind ?? "agent",
           state,
           ...(sdkTaskId ? { providerTaskId: sdkTaskId } : {}),
         };
@@ -1397,6 +1463,10 @@ export function createClaudeDriver(
           runtimeRef.tasks.lastWokenTaskId = spokeFor;
         }
         if (item.subtype === "task_started") {
+          // Before the suppression branch: a blocking shell announces
+          // `local_bash` and then earns no row, so this is the only place its
+          // type is stated before Ctrl+B gives it one.
+          if (str(item.task_id) && str(item.task_type)) taskTypesBySdkId.set(item.task_id!, item.task_type!);
           /**
            * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
            * them itself and says what to do ("hosts should exclude them from
@@ -1476,6 +1546,9 @@ export function createClaudeDriver(
            */
           const backgrounded = item.patch?.is_backgrounded === true;
           const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
+          // `task_updated` states no `task_type`, and `is_backgrounded` is set
+          // for `local_agent` AND `local_bash` — so it cannot name a kind. The
+          // fold reads the type the SDK stated elsewhere.
           emitTask(
             terminal ? "task.completed" : "task.progress",
             str(item.task_id),
@@ -1484,7 +1557,6 @@ export function createClaudeDriver(
               ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
               ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
               ...(backgrounded ? { backgrounded: true } : {}),
-              ...(backgrounded && !known ? { kind: "background" as const } : {}),
             },
             undefined,
           );
@@ -1545,10 +1617,28 @@ export function createClaudeDriver(
            */
           const live = new Set(
             (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-              const id = str(asRecord(raw).task_id);
-              return id ? [id] : [];
+              const entry = asRecord(raw);
+              const id = str(entry.task_id);
+              if (!id) return [];
+              // The one frame that states `task_type` for a task this process
+              // never announced. Remembered so the kind is read, not inferred
+              // from `is_backgrounded` — set for sub-agents and shells alike.
+              const taskType = str(entry.task_type);
+              if (taskType) taskTypesBySdkId.set(id, taskType);
+              return [id];
             }),
           );
+          // LATE METADATA CORRECTS AN EARLIER GUESS: a row minted before any
+          // frame stated its type carries a defaulted kind, and this payload is
+          // the statement. Re-announced so it lands even if nothing else about
+          // the task ever arrives. Live rows only — a settled one is history.
+          for (const sdkId of live) {
+            const rowId = taskIdsBySdkId.get(sdkId);
+            const row = rowId ? knownTasks.get(rowId) : undefined;
+            if (!row || isTerminalTaskState(row.state)) continue;
+            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkId));
+            if (stated && stated !== row.kind) emitTask("task.progress", sdkId, { state: row.state, kind: stated });
+          }
           for (const task of [...knownTasks.values()]) {
             if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
             const sdkId = task.providerTaskId;
@@ -1806,6 +1896,8 @@ export function createClaudeDriver(
         ds,
         display,
         latex,
+        run,
+        plugins,
         warpSpawn,
         onWarpTask,
       };
@@ -1819,6 +1911,40 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
+      /**
+       * THE `telar` WALL, WHEN THIS DEPLOYMENT HOSTS ONE. Each part names a
+       * toolkit, its own builder, and a GETTER for the capability this turn
+       * bound; the getters read through `ref`, which `buildRuntime` points at
+       * the live bindings, so one stable lease serves every turn of a session
+       * while still dispatching to the current one.
+       */
+      const telarLeased = telarSocket ? telarLeases.get(sessionId) : undefined;
+      const telarRef = telarLeased?.ref ?? { current: undefined as RuntimeBindings<ClaudeTurnBindings> | undefined };
+      const telarParts: TelarWallPart[] = [
+        { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
+        { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
+        { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
+        { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
+        { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
+        { name: "display", build: displayTools as never, capability: () => telarRef.current?.current.display },
+        { name: "run", build: runTools as never, capability: () => telarRef.current?.current.run },
+        /**
+         * EVERY PLUGIN'S WALL, on the same key. One entry per registered module
+         * rather than a second socket: a plugin tool must have one qualified
+         * name, and a `telar-plugins` server beside `telar` would give it two.
+         */
+        ...pluginToolModules().map((module) => ({
+          name: `plugin:${module.meta.id}`,
+          build: ((tool: ToolFactory, capability: never) => module.tools(tool, capability) as unknown[]) as never,
+          capability: () => telarRef.current?.current.plugins?.[module.meta.id],
+        })),
+      ];
+      let telarLease = telarLeased?.lease;
+      if (telarSocket && !telarLease) {
+        telarLease = await telarSocket.bind(() => collectTelarWall(telarParts));
+        if (telarLease) telarLeases.set(sessionId, { lease: telarLease, ref: telarRef });
+      }
+
       const fingerprintFields: Record<string, unknown> = {
         cwd,
         /**
@@ -1848,6 +1974,21 @@ export function createClaudeDriver(
         // Same rule for the LaTeX switch.
         latex: Boolean(latex),
         display: Boolean(display),
+        /**
+         * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
+         * re-collecting per request keeps dispatch honest server-side, but a
+         * reused query keeps advertising the list it was started with. The
+         * capability booleans around this cold-start the provider when the SET
+         * changes; the generation covers a rebind of the lease itself.
+         */
+        telarSocket: telarLease ? `${telarLease.url}#${telarLease.generation}` : null,
+        /**
+         * THE ENABLED PLUGIN SET. The wall re-collects per request, so dispatch
+         * is already honest — but a reused query keeps advertising the catalog
+         * it was started with, so a plugin toggled on or off must cold-start it.
+         * Sorted: a map's key order is not a decision anybody made.
+         */
+        plugins: Object.keys(plugins ?? {}).sort(),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       };
@@ -1862,6 +2003,9 @@ export function createClaudeDriver(
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
+        // The socket wall reads through this. A cold start replaces the bindings
+        // object and the lease — deliberately outliving it — follows.
+        telarRef.current = bindings;
 
         /** The permission gate the QUERY holds: a stable wrapper over the
          *  current turn's `canUseTool`, because the worker's gate is bound to
@@ -1936,7 +2080,7 @@ export function createClaudeDriver(
          */
         if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
 
-        const warp = warpTool(sdk, {
+        const warp = warpTool(sdk.tool, {
           // Both delegate through the bindings — the tool is registered once
           // per session runtime, the spawn and the task sink change per turn.
           spawn: (input) => bindings.current.warpSpawn(input),
@@ -1946,8 +2090,24 @@ export function createClaudeDriver(
         });
         if (warp) telarTools.push(warp);
 
-        const telarServer =
-          telarTools.length > 0 && sdk.createSdkMcpServer
+        /**
+         * ONE `telar` REGISTRATION, FROM WHICHEVER TRANSPORT THIS DEPLOYMENT HAS.
+         *
+         * With a lease the key is the worker-hosted http entry and the
+         * in-process server is NOT built — two servers under one key is a
+         * shadowing bug, not a fallback. The socket is what lets these same
+         * tools, under these same names, reach Codex and OpenCode; the
+         * in-process path remains for a deployment with no socket.
+         */
+        const telarServer = telarLease
+          ? {
+              [TELAR_MCP_SERVER]: {
+                type: "http" as const,
+                url: telarLease.url,
+                headers: { Authorization: `Bearer ${telarLease.token}` },
+              },
+            }
+          : telarTools.length > 0 && sdk.createSdkMcpServer
             ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
             : undefined;
 
@@ -2150,6 +2310,7 @@ export function createClaudeDriver(
       taskIdsBySdkId = runtime.tasks.bySdkId;
       knownTasks = runtime.tasks.known;
       suppressedTasks = runtime.tasks.suppressed;
+      taskTypesBySdkId = runtime.tasks.typesBySdkId;
 
       /**
        * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
@@ -2180,6 +2341,29 @@ export function createClaudeDriver(
        * anything later is the engine sweep's to requeue.
        */
       let turnDone = false;
+      /**
+       * Interrupts issued to deliver a person's steer, still unanswered — one
+       * token each, not a count.
+       *
+       * IDENTITY, BECAUSE THE TWO EVENTS RACE. The SDK writes the interrupt
+       * receipt before the interrupted result on a clean cut, but a turn that
+       * crashes during interrupt handling emits its error result on a direct
+       * path that may PRECEDE the receipt (sdk.d.ts, SDKControlInterruptResponse).
+       * So a result can consume a token before that same call settles; with a
+       * counter a late rejection would then decrement someone else's arm and
+       * drive it negative. A token can only ever remove itself.
+       *
+       * Consumed by the next result whatever its subtype — the CLI emits
+       * exactly one result per turn — so a cut that raced a finishing answer
+       * leaves nothing behind to swallow an unrelated failure later.
+       */
+      const outstandingSteerCuts = new Set<symbol>();
+      const consumeSteerCut = (): boolean => {
+        const [first] = outstandingSteerCuts;
+        if (first === undefined) return false;
+        outstandingSteerCuts.delete(first);
+        return true;
+      };
       if (persistent && steer) {
         void (async () => {
           for (;;) {
@@ -2201,6 +2385,32 @@ export function createClaudeDriver(
                 message: { role: "user", content: claudeInitialContent(text, attachments) },
                 parent_tool_use_id: null,
               });
+              /**
+               * PUSHING IS NOT INTERRUPTING: the provider reads no further input
+               * while it generates, so a pushed message waits out the old answer.
+               * Interrupt as Esc does — the generation stops, the process and
+               * session survive. Ordered AFTER the push so the words are already
+               * in the feed when the provider comes back for input.
+               *
+               * Only for words a PERSON typed: an agent report or engine wake is
+               * a notice, not a change of direction.
+               */
+              const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
+              if (typedByAPerson && runtime.query.interrupt) {
+                // Armed BEFORE the await: the pump is concurrent and the result
+                // can land first. Disarmed only if the call itself refuses, which
+                // leaves the message queued — late rather than lost.
+                const cut = Symbol("steer-cut");
+                outstandingSteerCuts.add(cut);
+                try {
+                  await runtime.query.interrupt();
+                } catch {
+                  // Removes only ITS OWN arm, and only if a result has not
+                  // already consumed it — a refused cut leaves the message
+                  // queued, which is late rather than lost.
+                  outstandingSteerCuts.delete(cut);
+                }
+              }
               await flush();
             }
             if (steer.isClosed) return;
@@ -2514,6 +2724,13 @@ export function createClaudeDriver(
               // An interrupt surfaces as a non-success result; the human's
               // stop must read as a stop, never as a provider failure.
               if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+              // OUR OWN CUT, ANSWERING A STEER: not a failure and not the turn's
+              // end. The words that caused it are already in the feed, so keep
+              // pumping; the text streamed before the cut stays journalled.
+              if (consumeSteerCut()) {
+                await flush();
+                continue;
+              }
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             /**
@@ -2541,6 +2758,26 @@ export function createClaudeDriver(
             if (persistent && toolsStillRunning) {
               await flush();
               continue;
+            }
+            /**
+             * A SUCCESS ALSO ANSWERS AN OUTSTANDING CUT: the answer finished
+             * before the interrupt landed. Consumed here so no token survives.
+             *
+             * AND THE PERSON'S WORDS ARE STILL OWED AN ANSWER. They are in the
+             * CLI's command queue, which an interrupt spares — `queued_turn_count`
+             * above zero is the SDK saying another turn follows with no further
+             * input (sdk.d.ts). Completing here would end the engine turn with
+             * the message already acked as delivered and nothing answering it,
+             * so keep pumping until it has been. At zero it was already absorbed
+             * into the answer just read; absent (older CLI) keeps the previous
+             * behaviour, where the next turn's pump picks it up.
+             */
+            if (consumeSteerCut()) {
+              const queuedTurns = "queued_turn_count" in item ? item.queued_turn_count : undefined;
+              if (typeof queuedTurns === "number" && queuedTurns > 0) {
+                await flush();
+                continue;
+              }
             }
             completed = true;
             await flush();

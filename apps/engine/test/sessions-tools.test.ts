@@ -33,9 +33,21 @@ import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessi
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import { WARP_CHILD_DISALLOWED_TOOLS } from "../src/warp/spawn";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   roots.push(directory);
   return directory;
 };
@@ -426,6 +438,11 @@ describe("driving a session", () => {
 
 // ── the bound on read ───────────────────────────────────────────────────────
 
+/** Mirrors `MAX_RESULT_CHARS` in the wall: a slice budget, not a limit on what
+ *  is retrievable. Stated here so the test says why 20 000 characters is enough
+ *  to need more than one slice. */
+const MAX_RESULT_CHARS_EXPECTED = 8_000;
+
 describe("sessions_read is bounded", () => {
   test("a long journal comes back as a page that SAYS it is one, with a cursor that skips nothing", async () => {
     const { store, projectId } = engine();
@@ -464,6 +481,222 @@ describe("sessions_read is bounded", () => {
     }
     expect(more).toBe(false);
     expect(seen).toEqual(whole.map((event) => event.id));
+  });
+
+  test("a run-scoped read answers with THAT turn's events and its final text, without paging", async () => {
+    /**
+     * THE OTHER HALF OF A PING-ONLY WAKE. A wake names a run and carries no
+     * result (see `wakeMessage` in state.ts); this is how the recipient gets
+     * the outcome — one call, that run only, with the answer handed over rather
+     * than reconstructed out of observations.
+     */
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+
+    // Two turns, so "that run only" is a real filter rather than everything.
+    for (const [runId, answer] of [["run_first", "the first answer"], ["run_wanted", `the answer worth reading: ${"y".repeat(3_000)}`]] as const) {
+      store.submitTurn(id, { runId, input: `work ${runId}` });
+      const token = store.claimTurn(id, "worker_read")!.claim!.token;
+      store.markRunning(id, runId, token);
+      store.completeTurn(id, runId, token, { text: answer });
+    }
+
+    const read = await call(tools, "sessions_read", { sessionId: id, runId: "run_wanted" });
+    expect(read.json!.runId).toBe("run_wanted");
+    expect(read.json!.state).toBe("completed");
+    // The turn's own answer, whole, and its true length beside it.
+    expect(String(read.json!.result)).toContain("the answer worth reading");
+    expect(read.json!.resultChars).toBe(`the answer worth reading: ${"y".repeat(3_000)}`.length);
+    expect(read.json!.resultFrom).toBe(0);
+    expect(read.json!.resultMore).toBe(false);
+    // Only that run's events — the other turn's are not in the page.
+    const events = read.json!.events as Array<{ runId?: string }>;
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((event) => event.runId === "run_wanted")).toBe(true);
+    // No cursor arithmetic was needed to get here.
+    expect(String(read.json!.note)).toContain("Nothing else was needed");
+  });
+
+  test("a run-scoped read of an unknown run says so rather than pretending", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const read = await call(tools, "sessions_read", { sessionId: id, runId: "run_never" });
+    expect(read.json!.runId).toBe("run_never");
+    expect(read.json!.result).toBeUndefined();
+    expect(String(read.json!.note)).toContain("No turn run_never on this session");
+  });
+
+  test("a long answer is read whole in verbatim slices, and never trimmed", async () => {
+    /**
+     * THE ANSWER IS RETRIEVABLE IN FULL. Clipping it at a cap with no way past
+     * the cap would move the problem rather than solve it: a coordinator that
+     * needs the outcome would be stuck with a prefix. The slices carry no
+     * ellipsis and no marker, so concatenating them is the answer exactly.
+     */
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    // Distinctive and long: 20 000 characters of numbered lines, so a dropped
+    // or duplicated slice is visible rather than plausible.
+    // LEADING AND TRAILING WHITESPACE INCLUDED, deliberately: the answer is
+    // handed over verbatim, and a trim would drop characters the turn wrote.
+    const answer = `\n\n   ${Array.from({ length: 1_000 }, (_, index) => `line ${String(index).padStart(4, "0")} ${"·".repeat(8)}`).join("\n")}   \n\n`;
+    expect(answer.length).toBeGreaterThan(MAX_RESULT_CHARS_EXPECTED * 2);
+    store.submitTurn(id, { runId: "run_long", input: "work" });
+    const token = store.claimTurn(id, "worker_read")!.claim!.token;
+    store.markRunning(id, "run_long", token);
+    store.completeTurn(id, "run_long", token, { text: answer });
+
+    let cursor = 0;
+    let assembled = "";
+    let more = true;
+    for (let guard = 0; more && guard < 20; guard += 1) {
+      const read = await call(tools, "sessions_read", { sessionId: id, runId: "run_long", resultAfter: cursor });
+      expect(read.json!.resultChars).toBe(answer.length);
+      expect(read.json!.resultFrom).toBe(cursor);
+      const slice = String(read.json!.result);
+      // Verbatim: no marker anywhere inside a slice.
+      expect(slice).not.toContain("not shown");
+      expect(slice).not.toContain("…");
+      assembled += slice;
+      more = read.json!.resultMore === true;
+      cursor = assembled.length;
+      if (more) expect(String(read.json!.note)).toContain(`resultAfter: ${cursor}`);
+    }
+    expect(more).toBe(false);
+    // EXACTLY the answer — same length, same characters, same edges.
+    expect(assembled.length).toBe(answer.length);
+    expect(assembled).toBe(answer);
+    expect(assembled.startsWith("\n\n   ")).toBe(true);
+    expect(assembled.endsWith("   \n\n")).toBe(true);
+  });
+
+  test("a result-only continuation carries the event cursor, so events are not replayed", async () => {
+    /**
+     * THE BUG THIS PINS: when the events had run out but the answer had not,
+     * the continuation named only `resultAfter`. A caller following it exactly
+     * would send no `after`, which defaults to 0 — and receive that run's first
+     * page of events all over again, on every slice of a long answer.
+     */
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const answer = "w".repeat(20_000);
+    store.submitTurn(id, { runId: "run_tail", input: "work" });
+    const token = store.claimTurn(id, "worker_read")!.claim!.token;
+    store.markRunning(id, "run_tail", token);
+    store.completeTurn(id, "run_tail", token, { text: answer });
+
+    // One page holds this run's few events, so `more` is false while
+    // `resultMore` is true — exactly the case that used to omit the cursor.
+    const first = await call(tools, "sessions_read", { sessionId: id, runId: "run_tail" });
+    expect(first.json!.more).toBe(false);
+    expect(first.json!.resultMore).toBe(true);
+    const cursor = first.json!.cursor as number;
+    expect(cursor).toBeGreaterThan(0);
+    const note = String(first.json!.note);
+    expect(note).toContain(`after: ${cursor}`);
+    expect(note).toContain("resultAfter: 8000");
+
+    // Following the note exactly returns no events a second time.
+    const second = await call(tools, "sessions_read", { sessionId: id, runId: "run_tail", after: cursor, resultAfter: 8_000 });
+    expect(second.json!.events).toEqual([]);
+    expect(second.json!.resultFrom).toBe(8_000);
+    expect(String(second.json!.result).length).toBe(8_000);
+    expect(second.json!.resultMore).toBe(true);
+
+    // And the whole answer still reconstructs from the slices.
+    const third = await call(tools, "sessions_read", { sessionId: id, runId: "run_tail", after: second.json!.cursor as number, resultAfter: 16_000 });
+    expect(third.json!.resultMore).toBe(false);
+    expect(`${first.json!.result}${second.json!.result}${third.json!.result}`).toBe(answer);
+  });
+
+  test("paging a run's events does not repeat its answer, and skips the other runs' events", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+
+    // Three runs interleaved: the one under test is opened first, then other
+    // runs write events, then it writes more — so a filter that ignored runId
+    // or a cursor that ignored the filter would both show up.
+    const busy = "run_busy";
+    store.submitTurn(id, { runId: busy, input: "work" });
+    const token = store.claimTurn(id, "worker_read")!.claim!.token;
+    store.markRunning(id, busy, token);
+    for (let index = 0; index < 60; index += 1) {
+      store.ingestObservations(id, busy, token, [
+        { kind: "item.started", item: { id: `item_${index}`, detail: { type: "assistant_message", text: `step ${index}` } } },
+        { kind: "item.completed", itemId: `item_${index}`, status: "completed" },
+      ]);
+      if (index % 20 === 0) {
+        // Another run's traffic, in the middle of this one's.
+        const other = `run_other_${index}`;
+        store.submitTurn(id, { runId: other, input: "someone else" });
+        store.stopTurn(id, other);
+      }
+    }
+    store.completeTurn(id, busy, token, { text: "the busy answer" });
+
+    let cursor = 0;
+    let pages = 0;
+    let events = 0;
+    let more = true;
+    for (let guard = 0; more && guard < 20; guard += 1) {
+      const read = await call(tools, "sessions_read", { sessionId: id, runId: busy, ...(cursor > 0 ? { after: cursor } : {}) });
+      const page = read.json!.events as Array<{ id: number; runId?: string }>;
+      // Only this run's events, on every page.
+      expect(page.every((event) => event.runId === busy)).toBe(true);
+      // The answer rides the FIRST page only: continuations do not repeat it.
+      if (pages === 0) expect(read.json!.result).toBe("the busy answer");
+      else expect(read.json!.result).toBeUndefined();
+      // The total is still reported, so "not on this page" is distinguishable
+      // from "no answer at all".
+      expect(read.json!.resultChars).toBe("the busy answer".length);
+      events += page.length;
+      pages += 1;
+      more = read.json!.more === true;
+      if (more) {
+        expect(read.json!.cursor).toBe(page.at(-1)!.id);
+        expect(String(read.json!.note)).toContain(`after: ${read.json!.cursor}`);
+        cursor = read.json!.cursor as number;
+      }
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(more).toBe(false);
+    // Every event of that run, and nothing repeated: the ids are unique.
+    const all = store.readEvents(id, 0).filter((event) => event.runId === busy);
+    expect(events).toBe(all.length);
+  });
+
+  test("a run with no answer text says that", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+
+    store.submitTurn(id, { runId: "run_quiet", input: "work" });
+    const quiet = store.claimTurn(id, "worker_read")!.claim!.token;
+    store.markRunning(id, "run_quiet", quiet);
+    // An empty answer, which is what a turn that said nothing records.
+    store.completeTurn(id, "run_quiet", quiet, { text: "" });
+    const silent = await call(tools, "sessions_read", { sessionId: id, runId: "run_quiet" });
+    expect(silent.json!.result).toBeUndefined();
+    expect(silent.json!.resultChars).toBeUndefined();
+    expect(String(silent.json!.note)).toContain("no answer text");
+  });
+
+  test("without a runId nothing changed: the same page, the same cursor", async () => {
+    // Backwards compatibility, asserted rather than assumed.
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
+    const read = await call(tools, "sessions_read", { sessionId: id });
+    expect(read.json!.from).toBe(0);
+    expect(read.json!.runId).toBeUndefined();
+    expect(read.json!.result).toBeUndefined();
+    expect((read.json!.events as unknown[]).length).toBeGreaterThan(0);
   });
 
   test("one enormous event is clamped and MARKED, and never squeezes the page to nothing", async () => {

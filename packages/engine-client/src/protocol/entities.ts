@@ -1,3 +1,4 @@
+import { ProjectPlugins } from "./plugins";
 /**
  * engine protocol v2 — the durable entities.
  *
@@ -375,6 +376,15 @@ export const Project = z.object({
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
   latex: LatexConfig.optional(),
+  /**
+   * THE PLUGIN MAP — the last per-feature block this record grows.
+   *
+   * `dataScience` and `latex` above are two bespoke optional blocks, each with
+   * its own patch arm; a third would have been a third arm. Everything after
+   * them is an entry here, and those two are MIRRORED into it so a rollback to
+   * an engine that predates this key keeps the user's settings.
+   */
+  plugins: ProjectPlugins.optional(),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -488,6 +498,22 @@ export const Session = z.object({
   state: SessionState,
   /** Provenance, never a link — see `SessionOrigin`. Absent is "human". */
   origin: SessionOrigin.optional(),
+  /**
+   * WHICH SESSION THIS ONE WAS STARTED FROM. Permanent, engine-stamped, and
+   * never cleared.
+   *
+   * `origin` says an agent asked; this says WHO, which is the question a person
+   * reading a session list actually has. Stamped from the same proof
+   * `Turn.sender` is — the creating turn's claim token — so a model cannot claim
+   * a provenance it does not have.
+   *
+   * IT IS NOT A LIFETIME, A PERMISSION OR A CANCELLATION PATH. The two sessions
+   * remain independent peers; this records where one came from and nothing else.
+   * A free continuation carries this and no assignment.
+   */
+  startedFrom: z
+    .object({ sessionId: Id, runId: Id.optional() })
+    .optional(),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 
@@ -1062,6 +1088,24 @@ export const Turn = z.object({
   agentIntent: AgentMessageIntent.optional(),
   agentDelivery: z.enum(["passive", "wake"]).optional(),
   agentSourceRunId: Id.optional(),
+  /**
+   * WHAT THE SENDER SAID THIS TASK COVERS, on the task turn itself.
+   *
+   * DELIBERATELY NOT A SECOND QUEUE. An assignment is DERIVED from the task
+   * turns a session holds (`activeAssignments`), because the turn is already
+   * the durable record of "this work was handed over" — a parallel list would
+   * be a second thing to keep in step and a second thing to get wrong.
+   *
+   * Scope is descriptive. It confers NO authority: a task naming a file does
+   * not grant permission to write it, and every existing approval still applies.
+   */
+  assignmentScope: z.string().max(2_000).optional(),
+  /**
+   * The human chose "continue independently". The assignment stops being
+   * PRESENTED as active; the turn, its outcome and `startedFrom` all remain.
+   * Detaching stops nothing that is running.
+   */
+  assignmentDetachedAt: Timestamp.optional(),
   providerReason: z
     .object({
       kind: z.enum(["task_notification", "unknown"]),

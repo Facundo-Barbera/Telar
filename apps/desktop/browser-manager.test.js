@@ -202,6 +202,7 @@ function makeHarness(options = {}) {
     ...(options.now ? { now: options.now } : {}),
     ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
+    ...(options.onCredentialEntryFinished ? { onCredentialEntryFinished: options.onCredentialEntryFinished } : {}),
   });
   // Most tests do not care about profiles; a scope auto-binds the explicit
   // `none` profile on first tab so they exercise the rest of the manager.
@@ -2145,4 +2146,74 @@ test("only an interruption is reported as the human taking the browser", async (
   clock.t += 10_000;
   manager.noteHumanInput("s", { force: true });
   expect(changes.at(-1)).toMatchObject({ controller: "human", interrupted: true });
+});
+
+// ── the login offer capture (AUTH-001, #195) ───────────────────────────────
+//
+// The manager's half of login-offer.js: WHEN a capture is taken (a value in a
+// credential field, never mere focus), WHAT it holds (the tab's top-level
+// address and identity at that moment — metadata only), and WHEN it is handed
+// on (the automatic release that ends the private window). The offer's own
+// decisions are covered in login-offer.test.js and login-offer-flow.test.js.
+describe("the login offer capture", () => {
+  test("an entry captures the tab's address and identity; focus captures nothing", async () => {
+    const finished = [];
+    const clock = { t: 50_000 };
+    const { manager, views } = makeHarness({ now: () => clock.t, onCredentialEntryFinished: (capture) => finished.push(capture) });
+    await manager.createTab("s", "https://accounts.example.com/signin?next=/inbox");
+    const wc = views[0].webContents;
+
+    manager.noteCredentialFieldFromWebContents(wc, { kind: "focus" });
+    expect(manager.heldLoginCapture).toBeNull();
+
+    manager.noteCredentialFieldFromWebContents(wc, { kind: "fill" });
+    expect(manager.heldLoginCapture).toMatchObject({
+      origin: "https://accounts.example.com",
+      tabUid: manager.scopeTabs("s")[0].id,
+      at: 50_000,
+    });
+    expect(manager.heldLoginCapture.profileId).toBeTruthy();
+  });
+
+  test("the capture is taken AT ENTRY and a later navigation does not move it", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://accounts.example.com/signin");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
+    // The sign-in redirects; the held capture still names the typed-into page.
+    await views[0].webContents.loadURL("https://mail.example.com/u/0");
+    expect(manager.heldLoginCapture.origin).toBe("https://accounts.example.com");
+  });
+
+  test("the automatic release hands the capture on, once", async () => {
+    const finished = [];
+    const { manager, views } = makeHarness({ onCredentialEntryFinished: (capture) => finished.push(capture) });
+    await manager.createTab("s", "https://accounts.example.com/signin");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
+    manager.autoRelease();
+    expect(finished.length).toBe(1);
+    expect(finished[0].origin).toBe("https://accounts.example.com");
+    expect(manager.heldLoginCapture).toBeNull();
+    // A release with nothing held (the next one) hands nothing on.
+    manager.autoRelease();
+    expect(finished.length).toBe(1);
+  });
+
+  test("a page that cannot carry a grant is never captured", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "about:blank");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
+    expect(manager.heldLoginCapture).toBeNull();
+  });
+
+  test("loginCaptureForScope — the explicit offer's capture — reads the active tab now", async () => {
+    const clock = { t: 90_000 };
+    const { manager } = makeHarness({ now: () => clock.t });
+    await manager.createTab("s", "https://mail.example.com/u/0", "human");
+    const capture = manager.loginCaptureForScope("s");
+    expect(capture).toMatchObject({ origin: "https://mail.example.com", at: 90_000 });
+    // A page with no http(s) origin answers null, not a broken offer.
+    const { manager: blank } = makeHarness();
+    await blank.createTab("s2", "about:blank", "human");
+    expect(blank.loginCaptureForScope("s2")).toBeNull();
+  });
 });

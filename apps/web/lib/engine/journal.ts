@@ -47,6 +47,10 @@ export type JournalTurn = {
    *  as an agent's bubble, never as the person's — the words are a peer's. */
   sender?: Turn["sender"];
   agentDelivery?: Turn["agentDelivery"];
+  /** `task` renders as a full message; a report stays collapsed. */
+  agentIntent?: Turn["agentIntent"];
+  /** What the sender said the task covers. Descriptive; confers nothing. */
+  assignmentScope?: Turn["assignmentScope"];
   /** Files sent WITH this message. On the turn because that is what they
    *  describe — a transcript that showed the words and not the screenshot has
    *  lost half of what was said. */
@@ -148,6 +152,8 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
         ...(turn.sender ? { sender: turn.sender } : {}),
         ...(turn.agentDelivery ? { agentDelivery: turn.agentDelivery } : {}),
+        ...(turn.agentIntent ? { agentIntent: turn.agentIntent } : {}),
+        ...(turn.assignmentScope ? { assignmentScope: turn.assignmentScope } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
         ...(turn.held ? { held: true, heldReason: turn.held.reason } : {}),
@@ -261,6 +267,8 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             ...(event.turn.wakeReason ? { wakeReason: event.turn.wakeReason } : {}),
             ...(event.turn.sender ? { sender: event.turn.sender } : {}),
             ...(event.turn.agentDelivery ? { agentDelivery: event.turn.agentDelivery } : {}),
+            ...(event.turn.agentIntent ? { agentIntent: event.turn.agentIntent } : {}),
+            ...(event.turn.assignmentScope ? { assignmentScope: event.turn.assignmentScope } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
             ...(event.turn.held ? { held: true, heldReason: event.turn.held.reason } : {}),

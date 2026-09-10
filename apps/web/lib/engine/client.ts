@@ -75,6 +75,11 @@ import type {
   WorkspaceFile,
   WorkspaceListing,
   WorkspaceWriteResult,
+  SessionAssignment,
+  PluginStatus,
+  ProjectPlugins,
+  Subscription,
+  WakeKind,
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { pathnameFetcher } from "@/lib/hosts/client";
@@ -166,7 +171,15 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
-    updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }) =>
+    updateProject: (
+      projectId: string,
+      patch: {
+        dataScience?: DataScienceConfig | null;
+        latex?: LatexConfig | null;
+        // The generic arm — one entry per plugin, `null` to turn it off.
+        plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
+      },
+    ) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
     /** Remove a project from Telar. Nothing on disk is touched and the record
      *  is kept — see the engine client's `unregisterProject`. 409 while a
@@ -334,7 +347,29 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
-    liveSessions: () => request<{ sessions: Session[]; projects: Project[] }>(fetcher, "GET", "/api/sessions/live"),
+    // `assignments` rides this list so Related work needs no per-session
+    // history read. Optional: an older engine does not send it.
+    /**
+     * FOLLOWING — who this session is woken by. One-directional and revocable;
+     * it changes what wakes you and confers nothing else.
+     */
+    sessionSubscriptions: (sessionId: string) =>
+      request<{ subscriptions: Subscription[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/subscriptions`),
+    follow: (sessionId: string, input: { targetSessionId: string; events?: WakeKind[]; once?: boolean }) =>
+      request<{ subscription: Subscription }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/subscriptions`, input),
+    unfollow: (subscriptionId: string, subscriberSessionId?: string) =>
+      request<{ removed: boolean }>(fetcher, "DELETE", `/api/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+        ...(subscriberSessionId ? { subscriberSessionId } : {}),
+      }),
+    machinePlugins: () => request<{ plugins: PluginStatus[]; machine: ProjectPlugins }>(fetcher, "GET", "/api/plugins"),
+    updateMachinePlugins: (plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>) =>
+      request<{ machine: ProjectPlugins }>(fetcher, "PATCH", "/api/plugins", { plugins }),
+    liveSessions: () =>
+      request<{ sessions: Session[]; projects: Project[]; assignments?: Record<string, SessionAssignment[]> }>(
+        fetcher,
+        "GET",
+        "/api/sessions/live",
+      ),
     createSession: (
       projectId: string,
       input: {

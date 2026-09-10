@@ -29,13 +29,25 @@ import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "..
 import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
 import { EngineWorker } from "../src/worker";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 const sockets: SessionsToolSocket[] = [];
 
 const tmp = (prefix: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   roots.push(directory);
   return directory;
 };
@@ -291,7 +303,10 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   expect(wake).toBeDefined();
   expect(wake!.wakeReason).toEqual({ kind: "turn_completed", sessionId: made!.id, runId: "run_made" });
   expect(wake!.input).toContain("[wake: completed]");
-  expect(wake!.input).toContain("all done here");
+  // A PING OVER THE WIRE TOO: the answer is not in the notice, the run-scoped
+  // read that fetches it is.
+  expect(wake!.input).not.toContain("all done here");
+  expect(wake!.input).toContain(`runId: "run_made"`);
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.
   expect(["queued", "claimed", "running", "completed"]).toContain(wake!.state);

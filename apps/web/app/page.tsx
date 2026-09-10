@@ -49,30 +49,62 @@ async function resolveComposer(): Promise<{ href?: string; unreachable: boolean 
     if (projects.length === 0) return { unreachable: false };
     if (projects.length === 1) return { href: canvas(projects[0]!.id), unreachable: false };
 
-    // Several projects: the one you were last working in. Sessions are local
-    // file reads, so asking each project is cheap — and asking is the only way
-    // to know, because a project record's own `updatedAt` moves when it is
-    // registered rather than when it is used.
-    const recency = await Promise.all(
-      projects.map(async (project) => {
-        try {
-          const { sessions } = await engine.listSessions(project.id);
-          return { id: project.id, at: Math.max(0, ...sessions.map((session) => session.updatedAt)) };
-        } catch {
-          return { id: project.id, at: 0 };
-        }
-      }),
-    );
-    const newest = recency.sort((left, right) => right.at - left.at)[0]!;
-    // Every project cold: fall back to the most recently registered rather than
-    // to whichever one sorted first by accident.
-    const cold = [...projects].sort((left, right) => right.createdAt - left.createdAt)[0]!;
-    return { href: canvas(newest.at === 0 ? cold.id : newest.id), unreachable: false };
+    /**
+     * Several projects: the one you were last working in — from ONE read.
+     *
+     * This used to ask `listSessions` per project, on the reasoning that a
+     * session list is a local file read and therefore cheap. It is not cheap
+     * per PROJECT: each call reads every session in the store and filters, so
+     * the cost is projects × sessions. Measured on a real store (14 projects,
+     * 114 sessions) this route spent **1.7-2.9 s** deciding a redirect — and it
+     * is the first thing the desktop window loads, so that time is the launch.
+     * `liveSessions` answers the same question in one pass.
+     *
+     * IT COUNTS ACTIVE SESSIONS ONLY, which the per-project version did not. A
+     * project whose sessions are all archived now reads as cold and falls to
+     * the registry order below — the better answer anyway: "where you were last
+     * working" should not resurrect a project you finished with.
+     */
+    const { sessions } = await engine.liveSessions();
+    return { href: canvas(composerProject(projects, sessions)), unreachable: false };
   } catch {
     // The engine is not answering. A redirect would land the reader on a canvas
     // that cannot explain itself; the first-run screen can.
     return { unreachable: true };
   }
+}
+
+/**
+ * Which project the front door opens: the one owning the most recently touched
+ * ACTIVE session, else the most recently registered.
+ *
+ * Exported and pure so the decision is testable without a server — the route
+ * around it is now only a read and a redirect (`lib/composer-project.test.ts`).
+ */
+export function composerProject(
+  projects: readonly { id: string; createdAt: number }[],
+  sessions: readonly { projectId?: string; updatedAt: number }[],
+): string {
+  const recency = new Map(projects.map((project) => [project.id, 0]));
+  for (const session of sessions) {
+    if (!session.projectId) continue;
+    const at = recency.get(session.projectId);
+    // A session whose project is not in this registry (removed, or another
+    // engine's) cannot vote for a destination that does not exist.
+    if (at === undefined) continue;
+    if (session.updatedAt > at) recency.set(session.projectId, session.updatedAt);
+  }
+  const newest = [...recency].map(([id, at]) => ({ id, at })).sort((left, right) => right.at - left.at)[0]!;
+  if (newest.at > 0) return newest.id;
+  /**
+   * EVERY PROJECT COLD — including the case this route did not have before:
+   * a project whose only sessions are ARCHIVED. `liveSessions` reports active
+   * ones, so an archived-only project scores 0 and lands here rather than
+   * winning on the strength of a conversation somebody finished with. The
+   * fallback is the most recently REGISTERED project, which is a deliberate
+   * answer rather than whichever id happened to sort first.
+   */
+  return [...projects].sort((left, right) => right.createdAt - left.createdAt)[0]!.id;
 }
 
 function canvas(projectId: string): string {

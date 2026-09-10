@@ -77,6 +77,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
     resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),
     onExtension: (listener) => on("telar:browser:extension", listener),
+    // The EXPLICIT login-offer fallback (AUTH-001): ask, about this session's
+    // current page, "may agents use the login I signed in with here?". Opens
+    // the trusted offer window; the answer only ever happens inside it.
+    offerLoginMemory: (scopeKey) => ipcRenderer.invoke("telar:login-offer:open", scopeKey),
   },
   /**
    * The native folder picker.
@@ -88,6 +92,16 @@ contextBridge.exposeInMainWorld("telarDesktop", {
    */
   dialog: {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
+  },
+  /**
+   * Open a workspace folder in the system's own handler, or reveal it in the
+   * file manager. The path is passed as an ARGUMENT the whole way down — see
+   * the main-process handler; nothing is ever interpolated into a command.
+   */
+  workspace: {
+    openers: () => ipcRenderer.invoke("telar:workspace:openers"),
+    open: (path, openerId) => ipcRenderer.invoke("telar:workspace:open", { path, ...(openerId ? { openerId } : {}) }),
+    reveal: (path) => ipcRenderer.invoke("telar:workspace:open", { path, reveal: true }),
   },
   // Window translucency — the one piece of appearance the renderer cannot do
   // alone, because the vibrancy layer lives under the page (main.js).
@@ -107,8 +121,13 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     install: () => ipcRenderer.invoke("telar:updates:install"),
     onStatus: (listener) => on("telar:updates:status", listener),
+    // The last status the shell broadcast — how a renderer that mounted after
+    // `update-downloaded` still learns an install is waiting.
+    status: () => ipcRenderer.invoke("telar:updates:status"),
     getPrefs: () => ipcRenderer.invoke("telar:updates:getPrefs"),
     setPrefs: (patch) => ipcRenderer.invoke("telar:updates:setPrefs", patch),
+    // Dev builds only: the local-checkout update window (dev-update.js).
+    openLocalUpdater: () => ipcRenderer.invoke("telar:updates:openLocalUpdater"),
   },
   // Issue #16: the app menu's native accelerators fire in the main process,
   // which has no DOM and so cannot apply the focus rule itself — it just

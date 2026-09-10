@@ -11,7 +11,6 @@ import {
   TableIcon,
   FileCode2Icon,
   FileDiffIcon,
-  FolderTreeIcon,
   GitPullRequestIcon,
   FileIcon,
   GlobeIcon,
@@ -21,6 +20,7 @@ import {
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PanelsTopLeftIcon,
+  PlayIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
@@ -53,13 +53,13 @@ import {
 } from "@/lib/right-panel-layout";
 import { DiffSurface } from "@/components/session/diff-surface";
 import { EditorSurface } from "@/components/session/editor-surface";
-import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
 import { NotebookSurface } from "@/components/session/notebook-surface";
 import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";
 import { DataSurface } from "@/components/session/data-surface";
 import { LatexSurface } from "@/components/session/latex-surface";
+import { RunPanel } from "@/components/run/run-panel";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
@@ -118,7 +118,21 @@ const SURFACES = [
    * (session/diff-surface.tsx), and one for what is there (session/files-surface.tsx).
    */
   { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this session changed" },
-  { id: "files", label: "Files", icon: FolderTreeIcon, blurb: "The checkout, as a tree" },
+  /**
+   * FILES IS GONE, SUPERSEDED BY EDITOR (EDITOR-001, #193).
+   *
+   * The tree it offered is the tree Editor already carries beside the files it
+   * opens, so the two were one click apart showing the same thing — and picking
+   * between them meant knowing that one could open a file and the other could
+   * only list it. Browsing a checkout is unchanged: it happens in Editor, whose
+   * tree still shows every file, changed or not.
+   *
+   * THE SURFACE ITSELF IS NOT DELETED — Editor mounts the same
+   * `FilesSurface` component as its tree (session/editor-surface.tsx), which
+   * is what makes this a removed CHOICE rather than removed functionality. A
+   * session that saved `files` as its tab opens on Editor instead of on
+   * nothing; see `migratePanelTab`.
+   */
   /**
    * THE EDITOR, and the reason it is ONE tab.
    *
@@ -157,6 +171,15 @@ const SURFACES = [
    * through `panelTabForPath` like any other file.
    */
   { id: "latex", label: "LaTeX", icon: SigmaIcon, blurb: "Compile status, errors and the log" },
+  /**
+   * THE RUN SURFACE, and it is the project's rather than this session's. A
+   * project has ONE local deployment; every session looking at the project sees
+   * the same one, which is why this tab is not gated on anything the session
+   * opted into and why the panel inside it names the worktree the run came from.
+   * Reading it from a session sitting on another branch is the normal case, not
+   * the edge case (components/run/run-panel.tsx).
+   */
+  { id: "run", label: "Run", icon: PlayIcon, blurb: "The project's dev server, and how to start it" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -206,6 +229,9 @@ export function isFilePanelTab(value: string): boolean {
  */
 export function migratePanelTab(value: string): string {
   if (LEGACY_DS_TABS.has(value)) return "data";
+  // `files` was retired in favour of Editor (#193). A saved arrangement that
+  // names it opens on Editor's tree rather than on nothing.
+  if (value === "files") return "editor";
   return isFilePanelTab(value) ? "editor" : value;
 }
 
@@ -313,8 +339,8 @@ export function filePanelPath(tab: PanelTab): string | undefined {
 }
 
 /* An open file is no longer a panel tab, so "which files are open" is a
-   question for the Editor's own state (`editorPaths`) rather than for this
-   strip — see `RightPanel`'s `openPaths`. */
+   question for the Editor's own state rather than for this strip — the tree
+   inside Editor reads it from there (session/editor-surface.tsx). */
 
 /**
  * ONE ISSUE OR ONE PULL REQUEST IS ALSO A TAB, and for the third time the same
@@ -368,7 +394,6 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => pdfPanelPath(tab) !== undefined,
   (tab) => issuePanelNumber(tab) !== undefined,
   (tab) => pullPanelNumber(tab) !== undefined,
-  (tab) => tab === "files",
   (tab) => tab === "editor",
   (tab) => tab === "data",
   (tab) => tab === "latex",
@@ -1050,7 +1075,6 @@ export function PanelSurface({
   sessionTitle,
   projectId,
   branch,
-  openPaths,
   openIssueNumbers,
   openPullNumbers,
   onOpenTab,
@@ -1060,6 +1084,7 @@ export function PanelSurface({
   editor,
   onEditorChange,
   hostId,
+  visible = true,
 }: {
   tab: PanelTab;
   /** What the journal says was written, path → count. The Diff surface's half of
@@ -1081,9 +1106,7 @@ export function PanelSurface({
   projectId?: string;
   /** The session's own branch, so its pull request can be marked as its own. */
   branch?: string;
-  /** Files already open as tabs, so the tree can mark them. */
-  openPaths?: readonly string[];
-  /** Issues and pull requests already open as tabs, for the same reason. */
+  /** Issues and pull requests already open as tabs, so a list row can say so. */
   openIssueNumbers?: readonly number[];
   openPullNumbers?: readonly number[];
   /**
@@ -1104,6 +1127,12 @@ export function PanelSurface({
   /** WHICH MAC this session is on. The Editor pins its engine client and keys
    *  its unsaved-text stash with it — see session/file-view-surface.tsx. */
   hostId?: string;
+  /**
+   * Is the panel actually on screen? The shell keeps it mounted at zero width
+   * through the close animation, so a surface that polls must be able to stop
+   * without being unmounted — and resume when it comes back.
+   */
+  visible?: boolean;
 }) {
   /**
    * THE FILE ARMS ARE A FALLBACK NOW, not a route anybody takes. A file opens
@@ -1146,6 +1175,14 @@ export function PanelSurface({
   if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   if (tab === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
+  /**
+   * KEYED BY HOST AND SESSION. The surface polls and holds a cursor into one
+   * run's output, so a move must not carry that cursor across — and session ids
+   * are per-Mac, so the session alone would reuse one host's panel for
+   * another's. The host is in the props too (components/run/run-panel.tsx).
+   */
+  if (tab === "run")
+    return sessionId ? <RunPanel key={`${hostId ?? "local"}:${sessionId}`} sessionId={sessionId} {...(hostId ? { hostId } : {})} visible={visible} /> : null;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (
@@ -1172,16 +1209,6 @@ export function PanelSurface({
         {...(projectId ? { projectId } : {})}
         reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
-        {...(active ? { active } : {})}
-      />
-    );
-  if (tab === "files")
-    return (
-      <FilesSurface
-        {...(sessionId ? { sessionId } : {})}
-        {...(projectId ? { projectId } : {})}
-        {...(openPaths ? { openPaths } : {})}
-        onOpenFile={(path, intent) => onOpenTab(panelTabForPath(path, dataScience === true), intent)}
         {...(active ? { active } : {})}
       />
     );
@@ -1580,9 +1607,6 @@ export function RightPanel({
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   const livePages = useLivePages(sessionId);
-  /** What the tree marks as already open — the EDITOR's files now, not the
-   *  panel's tabs, since that is where an open file lives. */
-  const openPaths = useMemo(() => editor?.files.map((file) => file.path) ?? [], [editor]);
   const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
   const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
   /**
@@ -1858,7 +1882,6 @@ export function RightPanel({
               writes={writes}
               tasks={tasks}
               {...(focusedTask ? { focusedTask } : {})}
-              openPaths={openPaths}
               openIssueNumbers={openIssueNumbers}
               openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
@@ -1873,6 +1896,7 @@ export function RightPanel({
               {...(editor ? { editor } : {})}
               {...(onEditorChange ? { onEditorChange } : {})}
               {...(hostId ? { hostId } : {})}
+              visible={open}
             />
             {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
           </>

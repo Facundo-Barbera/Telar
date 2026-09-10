@@ -131,6 +131,16 @@ import {
   type WorkspaceListing,
   type WorkerTurnFailureCode,
   type WorkspaceWriteResult,
+  type RunConfigurationDraft,
+  type RunView,
+  type RunConfigurationView,
+  type RunConfigurationsAnswer,
+  type RunOutputAnswer,
+  type RunStartInput,
+  type RunStatusAnswer,
+  type SessionAssignment,
+  type PluginStatus,
+  type ProjectPlugins,
 } from "./protocol";
 
 export * from "./protocol";
@@ -249,11 +259,24 @@ export type SessionSnapshot = {
   turns: Turn[];
   items: Item[];
   requests: EngineRequest[];
+  /**
+   * Who this session is working on behalf of, and what it has finished for
+   * them. Folded by the ENGINE over the whole queue, never windowed — a client
+   * paging its transcript cannot tell a finished carrier from an absent one,
+   * so it must not have to try. Absent from an older engine.
+   */
+  assignments?: SessionAssignment[];
   /** Sub-agents and background work. A background task OUTLIVES the turn that
    *  started it, so this is the only thing that can tell a client opening a
    *  cold session that it is still working. */
   tasks: Task[];
 };
+
+/** The run surface hangs off the session that is asking — see `runStatus` for
+ *  why a project-scoped answer lives under a session-scoped path. */
+function runBase(sessionId: string): string {
+  return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
+}
 
 export class EngineClient {
   constructor(
@@ -417,7 +440,19 @@ export class EngineClient {
   }
 
   /** Move a project's opt-in switches. `dataScience: null` / `latex: null` turn them off. */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Promise<{ project: Project }> {
+  updateProject(
+    projectId: string,
+    patch: {
+      dataScience?: DataScienceConfig | null;
+      latex?: LatexConfig | null;
+      /**
+       * THE GENERIC ARM. One entry per plugin, `null` to turn it off. The two
+       * legacy keys above still work and are mirrored into this map by the
+       * engine, so an old cockpit and a new one write the same truth.
+       */
+      plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
+    },
+  ): Promise<{ project: Project }> {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
   }
 
@@ -1591,7 +1626,29 @@ export class EngineClient {
    * registry beside it — one read rather than one per project, so the two
    * halves cannot be composed from different instants.
    */
-  liveSessions(): Promise<{ sessions: Session[]; projects: Array<{ id: string; name: string }> }> {
+  /**
+   * WHAT THIS MAC ALLOWS, and its machine-level plugin settings.
+   *
+   * Scoped to the engine this client points at — a cockpit viewing a remote Mac
+   * reads that Mac's answer, never the one it happens to run beside.
+   */
+  machinePlugins(): Promise<{ plugins: PluginStatus[]; machine: ProjectPlugins }> {
+    return this.request("GET", "/v2/plugins");
+  }
+
+  /** Turn a plugin on or off for this Mac, or change its machine settings. */
+  updateMachinePlugins(
+    plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>,
+  ): Promise<{ machine: ProjectPlugins }> {
+    return this.request("PATCH", "/v2/plugins", { plugins });
+  }
+
+  /** Assignments ride this list so a sidebar never fetches a history per row. */
+  liveSessions(): Promise<{
+    sessions: Session[];
+    projects: Array<{ id: string; name: string }>;
+    assignments?: Record<string, SessionAssignment[]>;
+  }> {
     return this.request("GET", "/v2/sessions/live");
   }
 
@@ -1725,6 +1782,94 @@ export class EngineClient {
    */
   latex<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/latex/${method}`, body ?? {});
+  }
+
+  /**
+   * ONE DOOR TO EVERY PLUGIN — `ds` and `latex` above, generalised, and the
+   * reason a third feature needs no third method here. `pluginId` picks the
+   * plugin, `method` its verb; the daemon resolves the capability (which
+   * project, has it opted in) and hands it to the plugin's own route.
+   *
+   * `ds` and `latex` REMAIN as their own methods rather than becoming callers
+   * of this: they are the shape a released client already speaks, and an old
+   * client pointed at a new daemon has to keep working.
+   */
+  plugin<T>(sessionId: string, pluginId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/plugins/${pluginId}/${method}`, body ?? {});
+  }
+
+  /**
+   * The project's saved launch recipes and its one local deployment.
+   *
+   * SESSION-SCOPED URLS, PROJECT-SCOPED ANSWERS, and the mismatch is the design
+   * rather than an oversight. A run belongs to the project — every session
+   * looking at it sees the same deployment — but WHICH project, and which
+   * worktree the caller is sitting on, is something only the engine can resolve
+   * from a session id. So the session names the caller; the answer describes the
+   * project, and says which tree the caller is on so a client can tell "my dev
+   * server" from "the one started from another branch".
+   */
+  runConfigurations(sessionId: string): Promise<RunConfigurationsAnswer> {
+    return this.request("GET", `${runBase(sessionId)}/configs`);
+  }
+
+  createRunConfiguration(sessionId: string, draft: RunConfigurationDraft): Promise<RunConfigurationView> {
+    return this.request("POST", `${runBase(sessionId)}/configs`, draft);
+  }
+
+  /**
+   * PATCH SEMANTICS, AND `env` IS THE ONE THAT MATTERS. The engine merges this
+   * shallowly, so omitting `env` preserves what is stored — which is the only
+   * way a client that was never sent a secret value can edit a configuration
+   * without erasing it. Sending `env` replaces the whole list.
+   */
+  updateRunConfiguration(sessionId: string, configId: string, patch: Partial<RunConfigurationDraft>): Promise<RunConfigurationView> {
+    return this.request("POST", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`, patch);
+  }
+
+  removeRunConfiguration(sessionId: string, configId: string): Promise<{ removed: string }> {
+    return this.request("DELETE", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`);
+  }
+
+  runStatus(sessionId: string): Promise<RunStatusAnswer> {
+    return this.request("GET", `${runBase(sessionId)}/status`);
+  }
+
+  /**
+   * Start a configuration. `replace` is REFUSED BY DEFAULT rather than assumed:
+   * a project has one local deployment, and taking over one somebody else is
+   * watching has to be asked for by name. Without it, a project that is already
+   * running answers `conflict`.
+   */
+  startRun(sessionId: string, input: RunStartInput): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/start`, input);
+  }
+
+  stopRun(sessionId: string, runId?: string): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/stop`, runId === undefined ? {} : { runId });
+  }
+
+  restartRun(sessionId: string, runId?: string): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/restart`, runId === undefined ? {} : { runId });
+  }
+
+  /**
+   * Give up the project's slot for a run the engine has lost contact with.
+   * SIGNALS NOTHING — that is the point: whatever is still holding the port is
+   * the human's to deal with, and this is them saying they have checked.
+   */
+  releaseRun(sessionId: string, runId: string): Promise<RunView> {
+    return this.request("POST", `${runBase(sessionId)}/release`, { runId });
+  }
+
+  /** Captured output from `after`. A cursor that goes BACKWARDS means a
+   *  different run, not lost lines — see `RunOutputAnswer`. */
+  runOutput(sessionId: string, input: { runId?: string; after?: number } = {}): Promise<RunOutputAnswer> {
+    const query = new URLSearchParams();
+    if (input.runId !== undefined) query.set("runId", input.runId);
+    if (input.after !== undefined) query.set("after", String(input.after));
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    return this.request("GET", `${runBase(sessionId)}/output${suffix}`);
   }
 
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */

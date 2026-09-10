@@ -38,6 +38,22 @@ import {
   DataScienceConfig as DataScienceConfigSchema,
   type DataScienceConfig,
   LatexConfig as LatexConfigSchema,
+  applyPluginPatch,
+  machineAllows,
+  machineSettings,
+  pluginEffectivelyEnabled,
+  PROJECT_PLUGINS_VERSION,
+  ProjectPlugins as ProjectPluginsSchema,
+  type ProjectPlugins,
+  legacyMirrors,
+  MIRRORED_PLUGINS,
+  type MirroredPlugin,
+  pluginConfigFromLegacy,
+  readProjectPlugins,
+  assignmentsOf,
+  type AssignmentTurn,
+  type SessionAssignment,
+  type PluginPatch,
   type LatexConfig,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
@@ -225,8 +241,9 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
+import { LatexSettings as LatexSettingsSchema } from "./plugins/latex";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -248,13 +265,24 @@ import type { ResolvedLatex } from "./latex/compile";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
- * THE WAKE TEXT — what an orchestrator reads when a peer does something. It
- * begins with `[wake]` so a model can tell it from a person, names the peer
- * and the turn, carries enough of the outcome to act on, and ends with the
- * tool that gets the rest. A request's fields are spelt out so the answer
- * can be composed without a second read; a secret pick is NOT — the wall
- * refuses to resolve those, and listing candidates here would offer the
- * model something it may not touch.
+ * THE WAKE TEXT — A PING, NOT A REPORT.
+ *
+ * It begins with `[wake: …]` so a model can tell it from a person, names the
+ * peer, the turn and what happened, and then names the ONE call that fetches
+ * the detail. It deliberately carries no result body: a wake is injected into
+ * the subscriber's context whether or not it needs the answer, and a child that
+ * wrote fifty kilobytes used to spend that on every coordinator subscribed to
+ * it. The outcome is one `sessions_read(sessionId, runId)` away, and the
+ * recipient decides whether it is worth reading.
+ *
+ * A PARKED REQUEST IS NO EXCEPTION. It names the request, its kind and a short
+ * title, and then the two calls: read it, answer it. The fields used to ride
+ * the notice so an answer could be composed without a second read — but that
+ * made the one notice whose size followed its payload, and a coordinator that
+ * is going to answer a question can afford the read it needs to answer it
+ * properly. A secret pick is never described beyond its origin: the wall
+ * refuses to resolve those, and naming candidates would offer the model
+ * something it may not touch.
  */
 function wakeMessage(
   kind: WakeKind,
@@ -273,40 +301,50 @@ function wakeMessage(
   const lines: string[] = [];
   switch (kind) {
     case "turn_completed": {
-      lines.push(`[wake: completed] ${who} — turn ${turn.runId} completed.`);
       const text = (context.resultText ?? "").trim();
-      if (text) {
-        const clipped = text.length > MAX_WAKE_RESULT_CHARS;
-        lines.push(clipped ? `Result (first ${MAX_WAKE_RESULT_CHARS} chars):` : "Result:", clipped ? text.slice(0, MAX_WAKE_RESULT_CHARS) : text);
-      } else {
-        lines.push("It ended with no answer text.");
-      }
+      lines.push(
+        `[wake: completed] ${who} — turn ${turn.runId} completed.`,
+        // The SIZE, not the text: enough for the recipient to judge whether
+        // fetching it is worth the context, and honest about there being
+        // nothing to fetch.
+        text ? `It answered with ${text.length} characters. The text is not in this notice.` : "It ended with no answer text.",
+      );
       break;
     }
     case "turn_failed":
-      lines.push(`[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code}): ${context.failure.message}` : "."}`);
+      lines.push(
+        `[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code})` : "."}`,
+        ...(context.failure ? [clampWake(context.failure.message)] : []),
+      );
       break;
     case "turn_stopped":
       lines.push(`[wake: stopped] ${who} — turn ${turn.runId} was stopped.`);
       break;
     case "request_opened": {
       const request = context.request!;
-      lines.push(`[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${requestTitle(request.detail)}`);
-      if (request.detail.kind === "user_input") {
-        for (const field of request.detail.fields) {
-          const choices = field.choices && field.choices.length > 0 ? ` [choices: ${field.choices.join(" | ")}]` : "";
-          lines.push(`- ${field.key} (${field.kind}): ${field.label}${choices}`);
-        }
-      }
       lines.push(
+        `[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${clampWake(requestTitle(request.detail))}`,
         "—",
-        `Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
+        `Read it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — the request's own fields are there. Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
       );
       return lines.join("\n");
     }
   }
-  lines.push("—", `Read more with sessions_read(sessionId: "${target.id}"); its diff with sessions_diff.`);
+  lines.push(
+    "—",
+    // THE RETRIEVAL IS DIRECTLY USABLE, and scoped to this run: a coordinator
+    // that wants the outcome should not have to page a journal to find it.
+    `Fetch it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — that run's events and its final answer, bounded. Its diff with sessions_diff.`,
+  );
   return lines.join("\n");
+}
+
+/** One clamped line for a wake. A wake is a ping; nothing in it is a payload. */
+function clampWake(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= MAX_WAKE_LINE_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, MAX_WAKE_LINE_CHARS)}… [${trimmed.length - MAX_WAKE_LINE_CHARS} more characters — sessions_read has the rest]`;
 }
 
 function requestTitle(detail: RequestDetail): string {
@@ -379,7 +417,13 @@ const MAX_SUBSCRIPTIONS_PER_SESSION = 64;
 
 /** How much of a finished turn's answer rides in the wake that announces it.
  *  The whole answer is one `sessions_read` away; the wake is a summons. */
-const MAX_WAKE_RESULT_CHARS = 2_000;
+/**
+ * The clamp on any single line a wake carries — a failure message, a request's
+ * prompt, a field label. Not a budget for a result: a wake carries no result at
+ * all (see `wakeMessage`), and this only keeps a pathological one-liner from
+ * becoming the notice.
+ */
+const MAX_WAKE_LINE_CHARS = 240;
 
 const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped", "request_opened"];
 
@@ -473,6 +517,11 @@ const FACET_CACHE_MS = 5 * 60_000;
 export type EngineStatePaths = {
   root: string;
   projects: string;
+  /** Plugin facts true of this Mac. See `machinePlugins()`. */
+  machinePlugins: string;
+  /** The Claude default this machine last read from the provider — what a
+   *  synchronous claim uses when the in-memory catalogue is cold. */
+  claudeDefault: string;
   sessions: string;
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
    *  rather than inside a session: a tool is configured once. */
@@ -624,6 +673,9 @@ export function statePaths(root: string): EngineStatePaths {
   return {
     root: resolved,
     projects: path.join(resolved, "projects.json"),
+    /** Plugin facts true of THIS Mac — see `MachinePlugins`. */
+    machinePlugins: path.join(resolved, "machine-plugins.json"),
+    claudeDefault: path.join(resolved, "claude-default-model.json"),
     sessions: path.join(resolved, "sessions"),
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
@@ -1339,6 +1391,12 @@ export class EngineStore {
   /** In memory, like the GitHub cache and for the same reason: it describes
    *  somebody else's installation, which changes without telling us. */
   private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
+  /** In-flight `prepareClaudeCatalogue`, so concurrent claims share one probe. */
+  private claudeCataloguePrepare: Promise<void> | undefined;
+  /** When the probe last failed — see `prepareClaudeCatalogue`. */
+  private claudeCatalogueFailedAt: number | undefined;
+  /** The remembered default, cached in memory. `""` means "read, and absent". */
+  private claudeDefaultMemo: string | undefined;
   /**
    * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
    * so the store keeps no provider dependency — every test builds an
@@ -1393,7 +1451,14 @@ export class EngineStore {
   dataScience(sessionId: string): DsCapability {
     const session = this.getSession(sessionId);
     const resolved = this.resolveDataScience(session);
-    if (!resolved) throw new EngineStateError("invalid_request", "data science is not enabled for this session's project");
+    if (!resolved) {
+      throw new EngineStateError(
+        "invalid_request",
+        machineAllows(this.machinePlugins(), "data-science")
+          ? "data science is not enabled for this session's project"
+          : "data science is turned off for this Mac",
+      );
+    }
     if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
     return storeDsCapability({
       sessionId,
@@ -1431,6 +1496,9 @@ export class EngineStore {
     try { project = this.getProject(session.projectId); } catch { return undefined; }
     const config = project.dataScience;
     if (!config?.enabled || !config.python) return undefined;
+    // The machine ceiling, same rule as LaTeX's: off here means unavailable
+    // everywhere, and every project keeps what it chose.
+    if (!machineAllows(this.machinePlugins(), "data-science")) return undefined;
     const pythonPath = resolvePythonPath(session.workspace.path, config.python.path);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
@@ -1453,7 +1521,16 @@ export class EngineStore {
   latex(sessionId: string): LatexCapability {
     const session = this.getSession(sessionId);
     const resolved = this.resolveLatex(session);
-    if (!resolved) throw new EngineStateError("invalid_request", "LaTeX is not enabled for this session's project");
+    if (!resolved) {
+      // WHICH SWITCH, so a person knows where to go. The ceiling and the
+      // project's own setting produce the same refusal but not the same fix.
+      throw new EngineStateError(
+        "invalid_request",
+        machineAllows(this.machinePlugins(), "latex")
+          ? "LaTeX is not enabled for this session's project"
+          : "LaTeX is turned off for this Mac",
+      );
+    }
     return storeLatexCapability({
       sessionId,
       cwd: session.workspace.path,
@@ -1480,12 +1557,24 @@ export class EngineStore {
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return undefined; }
     const config = project.latex;
-    if (!config?.enabled || !config.toolchain?.path) return undefined;
-    if (!fs.existsSync(config.toolchain.path)) return undefined;
+    if (!config?.enabled) return undefined;
+    // THE MACHINE CEILING. Turning LaTeX off for this Mac makes it unavailable
+    // everywhere without touching what any project chose.
+    if (!machineAllows(this.machinePlugins(), "latex")) return undefined;
+    /**
+     * THE MACHINE'S TeX INSTALL IS A REAL FALLBACK, not an inert stored field.
+     * Which distribution compiles is a fact about this Mac, so a project that
+     * has not chosen one uses the machine's — and a project that HAS chosen
+     * still wins, because a per-checkout choice is more specific.
+     */
+    const machineToolchain = LatexSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
+    const toolchain = config.toolchain ?? (machineToolchain.success ? machineToolchain.data.toolchain : undefined);
+    if (!toolchain?.path) return undefined;
+    if (!fs.existsSync(toolchain.path)) return undefined;
     return {
-      kind: config.toolchain.kind,
-      binPath: config.toolchain.path,
-      ...(config.toolchain.engine ? { engine: config.toolchain.engine } : {}),
+      kind: toolchain.kind as ResolvedLatex["kind"],
+      binPath: toolchain.path,
+      ...(toolchain.engine ? { engine: toolchain.engine as ResolvedLatex["engine"] } : {}),
       ...(config.mainFile ? { mainFile: config.mainFile } : {}),
     };
   }
@@ -4301,7 +4390,10 @@ export class EngineStore {
    * the block, which is how "off" is spelled so the registry does not grow a
    * `{enabled: false}` for every project that tried it once.
    */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Project {
+  updateProject(
+    projectId: string,
+    patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null; plugins?: PluginPatch },
+  ): Project {
     assertId(projectId, "project id");
     const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
@@ -4333,9 +4425,154 @@ export class EngineStore {
         } catch { /* not a repo, or unwritable — compiles still work */ }
       }
     }
+    /**
+     * THE MAP, AND ITS MIRRORS, IN THE SAME WRITE.
+     *
+     * Both legacy arms above still work — they are what a released cockpit
+     * sends — and each is translated into the map here rather than being a
+     * second source of truth. The map then writes BACK the legacy blocks,
+     * INCLUDING THEIR ABSENCES: a mirror that is only ever added is the
+     * resurrection bug with extra steps.
+     *
+     * `version`'s presence is the durable migration marker. Once it is there
+     * the map is the whole truth and the legacy fields are never read again —
+     * see `PROJECT_PLUGINS_VERSION` for why a per-key fallback resurrects a
+     * feature the user just turned off.
+     */
+    const before = readProjectPlugins(next).plugins;
+    const fromLegacy: PluginPatch = {};
+    if (patch.dataScience !== undefined) {
+      fromLegacy["data-science"] =
+        patch.dataScience === null ? null : pluginConfigFromLegacy(patch.dataScience as Record<string, unknown>);
+    }
+    if (patch.latex !== undefined) {
+      fromLegacy.latex = patch.latex === null ? null : pluginConfigFromLegacy(patch.latex as Record<string, unknown>);
+    }
+    const merged = applyPluginPatch(before, { ...fromLegacy, ...(patch.plugins ?? {}) });
+    const changed = patch.dataScience !== undefined || patch.latex !== undefined || patch.plugins !== undefined;
+    // HAS-MAP GUARD: a project nobody has configured keeps no `plugins` key at
+    // all, so an untouched registry is never rewritten with an empty map.
+    if (changed || next.plugins !== undefined) {
+      next.plugins = merged;
+      const mirrors = legacyMirrors(merged);
+      for (const [key, value] of Object.entries(mirrors)) {
+        if (value === undefined) delete (next as Record<string, unknown>)[key];
+        else (next as Record<string, unknown>)[key] = value;
+      }
+    }
     parsed.projects[index] = next;
     this.writeDocument(this.paths.projects, parsed);
     return structuredClone(next);
+  }
+
+  /**
+   * WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids.
+   *
+   * `data-science` and `latex` are excluded even when the map names them,
+   * because their own claim fields already carry them and a worker that saw
+   * them twice would build their walls twice. That exclusion is temporary in
+   * the same sense the two dedicated claim fields are, and it lives HERE, in
+   * one line, rather than in the worker where it would be a second place to
+   * forget.
+   */
+  /**
+   * Where a departure is announced. One subscriber — the plugin host — so a
+   * plugin with per-session state gives it back without the store naming it.
+   */
+  private pluginRelease: ((sessionId: string, reason: string) => void) | undefined;
+
+  /**
+   * Every assignment this session holds, folded over its WHOLE queue.
+   *
+   * Authoritative over what the engine STILL HOLDS: a client's transcript may be
+   * a page, and a fold over a page cannot tell "the joined run finished" from
+   * "the joined run is not in this window". The engine has every turn it has
+   * kept, so it answers once and the answer rides the snapshot.
+   *
+   * `unresolved` can still occur here, and saying otherwise would be a lie:
+   * journal retention or a deleted turn can remove a carrier the engine no
+   * longer has. That is genuinely unknown, and reporting it as unknown is the
+   * honest answer — not "running", and not a guess at an outcome.
+   */
+  sessionAssignments(sessionId: string): SessionAssignment[] {
+    return assignmentsOf(this.readQueue(sessionId).turns as unknown as AssignmentTurn[]);
+  }
+
+  /**
+   * CONTINUE INDEPENDENTLY. Stops PRESENTING an assignment as active without
+   * deleting anything: the task turn, its outcome and the session's
+   * `startedFrom` all remain, and nothing running is stopped.
+   *
+   * Marks every outstanding task turn rather than taking a run id, because
+   * "continue independently" is a statement about the session's relationship to
+   * its coordinators, not about one message.
+   */
+  detachAssignments(sessionId: string, runId?: string): Turn[] {
+    const session = this.getSession(sessionId);
+    const at = this.now();
+    const queue = this.readQueue(session.id);
+    const detached: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.origin !== "session" || turn.agentIntent !== "task") continue;
+      if (runId && turn.runId !== runId) continue;
+      if (turn.assignmentDetachedAt !== undefined) continue;
+      turn.assignmentDetachedAt = at;
+      turn.updatedAt = at;
+      detached.push(structuredClone(turn));
+    }
+    if (detached.length > 0) {
+      this.writeQueue(session.id, queue);
+      // No `turn.updated` kind exists; the cockpit refolds from the snapshot on
+      // `session.updated`, which is what a detach changes for a reader.
+      this.appendEvent(sessionId, { type: "session.updated", session });
+    }
+    return detached;
+  }
+
+  /**
+   * WHAT THIS MACHINE ALLOWS. Absent file means everything is allowed — a Mac
+   * that predates this must not have its working plugins silently switched off.
+   */
+  machinePlugins(): ProjectPlugins {
+    const parsed = ProjectPluginsSchema.safeParse(this.readDocument(this.paths.machinePlugins));
+    return parsed.success ? parsed.data : { version: PROJECT_PLUGINS_VERSION, entries: {} };
+  }
+
+  /**
+   * Turn a plugin on or off for this Mac, or change its machine settings.
+   *
+   * PROJECT CONFIGURATION IS NEVER TOUCHED. Disabling globally is a ceiling: a
+   * project that had the plugin on still has it on, and re-enabling here
+   * restores exactly what each project had rather than a blank slate.
+   */
+  updateMachinePlugins(patch: PluginPatch): ProjectPlugins {
+    const next = applyPluginPatch(this.machinePlugins(), patch);
+    this.writeDocument(this.paths.machinePlugins, next);
+    return structuredClone(next);
+  }
+
+  /** Does this plugin actually run for this project: machine AND project. */
+  pluginRuns(project: Project, id: string): boolean {
+    return pluginEffectivelyEnabled(this.machinePlugins(), readProjectPlugins(project).plugins, id);
+  }
+
+  attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
+    this.pluginRelease = release;
+  }
+
+  enabledPluginIds(session: Session): string[] {
+    if (!session.projectId) return [];
+    let project: Project;
+    try { project = this.getProject(session.projectId); } catch { return []; }
+    const { plugins } = readProjectPlugins(project);
+    const machine = this.machinePlugins();
+    return Object.entries(plugins.entries)
+      // THE MACHINE CEILING APPLIES TO THE CLAIM TOO. A worker builds walls from
+      // this list, so a globally disabled plugin must not reach a turn — the
+      // frontend hiding it would not be enforcement.
+      .filter(([id, config]) => config.enabled && machineAllows(machine, id) && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
+      .map(([id]) => id)
+      .sort();
   }
 
   /**
@@ -4821,6 +5058,9 @@ export class EngineStore {
      * Claude-only today; Codex publishes no windows to fill in.
      */
     const listed = driver === "claude" ? applyModelManifest(raw.models, this.manifest) : raw.models;
+    // Remembered from the PROVIDER's list, before the reader's overlay: hiding
+    // a row in the picker is curation, not a statement about what the CLI runs.
+    if (driver === "claude") this.rememberClaudeDefault(raw.models);
     return { ...raw, instanceId, models: applyModelOverlay(listed, overlay) };
   }
 
@@ -5325,6 +5565,12 @@ export class EngineStore {
     draft?: boolean;
     id?: string;
     projectId: string;
+    /**
+     * WHO STARTED THIS SESSION. Supplied by the daemon from the creating turn's
+     * CLAIM TOKEN, never from a tool argument — see `Session.startedFrom`.
+     * Permanent, and no lifetime or permission travels with it.
+     */
+    startedFrom?: { sessionId: string; runId?: string };
     title?: string;
     detached?: boolean;
     envMode?: EnvMode;
@@ -5457,6 +5703,9 @@ export class EngineStore {
       // session document would be a second spelling of absent, and the two
       // would drift the first time a reader forgot one of them.
       ...(input.origin === "session" ? { origin: "session" as const } : {}),
+      ...(input.startedFrom
+        ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
+        : {}),
       createdAt: at,
       updatedAt: at,
       // The instance is the ROUTING key and the driver is descriptive, so the
@@ -5843,12 +6092,31 @@ export class EngineStore {
    * NO BRANCH DERIVATION, unlike `listProjects`: that costs a `git rev-parse`
    * per project and nothing in this answer renders a branch.
    */
-  liveSessions(): { sessions: Session[]; projects: Array<{ id: string; name: string }> } {
+  liveSessions(): {
+    sessions: Session[];
+    projects: Array<{ id: string; name: string }>;
+    assignments: Record<string, SessionAssignment[]>;
+  } {
     const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const sessions = this.readSessions().filter((session) => session.state === "active");
+    /**
+     * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
+     *
+     * The sidebar reads this one route each polling pass. Asking it to fetch
+     * every session's full history to learn who each is working for would be an
+     * N+1 over whole transcripts — the most expensive read in the engine,
+     * repeated per session, per poll. One pass over the queues answers it here.
+     */
+    const assignments: Record<string, SessionAssignment[]> = {};
+    for (const session of sessions) {
+      const held = this.sessionAssignments(session.id);
+      if (held.length > 0) assignments[session.id] = held;
+    }
     return {
-      sessions: this.readSessions().filter((session) => session.state === "active"),
+      sessions,
       projects: projects.map((project) => ({ id: project.id, name: project.name })),
+      assignments,
     };
   }
 
@@ -5975,6 +6243,7 @@ export class EngineStore {
       agentIntent?: Turn["agentIntent"];
       agentDelivery?: Turn["agentDelivery"];
       agentSourceRunId?: string;
+      assignmentScope?: string;
       origin?: "session";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
@@ -6074,6 +6343,7 @@ export class EngineStore {
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+      ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
       ...(passive ? { completedAt: at, resultText: "" } : {}),
       state: passive ? "completed" : "queued",
       acceptedAt: at,
@@ -6261,7 +6531,7 @@ export class EngineStore {
    */
   submitAgentTurn(
     sessionId: string,
-    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"] },
+    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
     proof?: { sessionId: string; runId: string; claimToken: string },
   ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
@@ -6280,6 +6550,9 @@ export class EngineStore {
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
+      // Only a TASK carries a scope. A report that named one would read as an
+      // assignment in every surface that folds these turns.
+      ...(intent === "task" && input.scope ? { assignmentScope: input.scope } : {}),
     });
     if (!result.replayed && waiting?.once) {
       this.writeSubscriptions(this.readSubscriptions().filter((sub) => sub.id !== waiting.id));
@@ -6437,6 +6710,114 @@ export class EngineStore {
   }
 
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
+  /**
+   * Would THIS turn run Claude with no model of its own, on a cold catalogue?
+   * Asked at admission so `prepareClaudeCatalogue` runs only when it is needed:
+   * a Codex session, or a turn that names a model, never makes the machine read
+   * a Claude CLI it may not have installed.
+   */
+  claudeAdmissionNeedsCatalogue(sessionId: string, turnModel?: { model?: string }): boolean {
+    if (turnModel?.model) return false;
+    const session = this.getSession(sessionId);
+    return session.driver === "claude" && !session.model?.model && this.defaultClaudeModelId() === undefined;
+  }
+
+  /**
+   * WHAT TO DO WITH A CLAUDE TURN THAT NAMED NO MODEL.
+   *
+   * Telar publishes only long-window rows, so running one of these on the CLI's
+   * own default means a window the person removed from their picker. That is
+   * not a fallback, so there are only three answers:
+   *
+   *  - `"ready"`     the default is known; claim it and run.
+   *  - `"pending"`   not known yet. NOT CLAIMABLE — skipped in the scan, so no
+   *                  lease is taken and nothing waits inside one. Other
+   *                  sessions and other providers are untouched.
+   *  - `"failed"`    the list could not be read. The turn fails with something
+   *                  actionable rather than running at the wrong window or
+   *                  waiting for ever; no provider is ever started for it.
+   */
+  private claudeSelectionState(driver: ProviderDriverKind, selection: ModelSelection | undefined): "ready" | "pending" | "failed" {
+    if (driver !== "claude" || selection?.model) return "ready";
+    if (this.defaultClaudeModelId() !== undefined) return "ready";
+    // A failure is only current for as long as the probe stays refused; after
+    // that this is pending again and `prepareClaudeCatalogue` tries afresh, so
+    // a transient outage is not a permanent verdict.
+    const failedFor = this.claudeCatalogueFailedAt === undefined ? undefined : this.now() - this.claudeCatalogueFailedAt;
+    return failedFor !== undefined && failedFor < MODEL_CACHE_MS ? "failed" : "pending";
+  }
+
+  /** Settle a never-claimed turn as failed. Mirrors `failTurn`'s shape without
+   *  a claim, because there is deliberately no worker involved. */
+  private failQueuedTurn(sessionId: string, queue: SessionQueue, turn: Turn, message: string): void {
+    const at = this.now();
+    turn.state = "failed";
+    turn.completedAt = at;
+    turn.updatedAt = at;
+    turn.failure = { code: "provider_unavailable", message };
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+    this.writeQueue(sessionId, queue);
+    // This turn's own bookkeeping only: no worker ran, so there are no items or
+    // tasks of its own, and background work belongs to whatever else is running.
+    this.closeOpenRequests(sessionId, turn.runId, at);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    // A coordinator waiting on this session hears the failure like any other.
+    this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+  }
+
+  /**
+   * Learn the long-window default this machine will run.
+   *
+   * ONE PROBE IN FLIGHT, and an unusable answer is remembered rather than
+   * retried on every poll. Nothing here lets a turn run on a window Telar does
+   * not publish: until this succeeds the turn is withheld, and if it cannot
+   * succeed the turn fails saying so.
+   */
+  async prepareClaudeCatalogue(timeoutMs = 2_000): Promise<void> {
+    // USABLE, not merely read: a list that parses but publishes no long row
+    // (Haiku-only, or empty) is as unusable as no list, and returning early on
+    // a populated cache would leave those turns pending with nothing left to
+    // try. One marker covers every way this can fail.
+    if (this.defaultClaudeModelId() !== undefined) return;
+    if (this.claudeCatalogueFailedAt !== undefined && this.now() - this.claudeCatalogueFailedAt < MODEL_CACHE_MS) return;
+    const unusable = (reason: string) => {
+      this.claudeCatalogueFailedAt = this.now();
+      console.error(`[engine] no long-window Claude model could be resolved, so a session that named no model cannot run: ${reason}`);
+    };
+    this.claudeCataloguePrepare ??= this.modelCatalogue("claude").then(
+      () => {
+        // Late or on time, one question decides it: did this produce a row
+        // Telar can run? A late success clears a timeout's verdict.
+        if (this.defaultClaudeModelId() !== undefined) this.claudeCatalogueFailedAt = undefined;
+        else unusable("the provider listed no long-window model");
+      },
+      (error) => unusable(error instanceof Error ? error.message : String(error)),
+    );
+    const probe = this.claudeCataloguePrepare;
+    void probe.finally(() => {
+      if (this.claudeCataloguePrepare === probe) this.claudeCataloguePrepare = undefined;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    await Promise.race([
+      probe,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
+    // A probe that never answers must not leave turns pending for ever: the
+    // verdict is bounded and retried like any other, and the probe is left
+    // running so its late answer still counts.
+    if (timedOut && this.defaultClaudeModelId() === undefined) unusable(`the provider did not answer within ${timeoutMs}ms`);
+  }
+
   claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");
     /**
@@ -6472,7 +6853,28 @@ export class EngineStore {
       if (!next) continue;
       // `claimTurn` refuses a paused session; skipping it here keeps it from
       // winning the sort and stalling every other session for a poll.
-      if (this.getSession(sessionId).paused) continue;
+      const session = this.getSession(sessionId);
+      if (session.paused) continue;
+      /**
+       * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
+       * Decided here, before a candidate exists, so no lease is taken and
+       * nothing is awaited inside one. Every other session keeps moving.
+       */
+      const selection = this.claudeSelectionState(session.driver, next.model ?? session.model);
+      if (selection === "pending") {
+        // One probe in flight for the whole engine, never one per tick.
+        void this.prepareClaudeCatalogue();
+        continue;
+      }
+      if (selection === "failed") {
+        this.failQueuedTurn(
+          sessionId,
+          queue,
+          next,
+          "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
+        );
+        continue;
+      }
       candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
@@ -6494,7 +6896,7 @@ export class EngineStore {
       // Normalised HERE TOO, because a record saved before the window became a
       // control is read here without ever passing through a patch — and the
       // claim is the one place that decides what actually runs.
-      const model = this.normalizeModelSelection(session.driver, turn.model ?? session.model);
+      const model = this.claimModelSelection(session.driver, turn.model ?? session.model, session.providerInstanceId ?? defaultInstanceIdForDriver(session.driver));
       /**
        * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
        * enabled ones. Both halves happen HERE rather than in the worker so each
@@ -6552,6 +6954,12 @@ export class EngineStore {
           const latex = this.resolveLatex(session);
           return latex ? { latex: { kind: latex.kind } } : {};
         })(),
+        // Every other plugin the project turned on, as ids — the arm that does
+        // not grow when a third feature arrives.
+        ...(() => {
+          const ids = this.enabledPluginIds(session);
+          return ids.length > 0 ? { plugins: ids } : {};
+        })(),
         /**
          * The project's NAME, for the spool toolkit's scoping — a spool item's
          * `project` is a free-form LABEL, so a session's slice is found by
@@ -6583,14 +6991,93 @@ export class EngineStore {
   }
 
   /**
-   * A Claude selection in the spelling Telar actually offers — see
-   * `normalizeClaudeModel`. Codex ids are never touched; there is no window
-   * to spell. Absent stays absent: the provider's default is its own.
+   * The default Claude row Telar publishes, read synchronously or not at all.
+   *
+   * The CLI's own default put through the manifest the picker uses, so it is
+   * the `[1m]` spelling of the family the provider would have chosen anyway.
+   * WINDOW ONLY: never a different family, never an invented id.
+   *
+   * `claimNextTurn` is synchronous on purpose (see `refreshProviderToken`), so
+   * this reads the in-memory catalogue and nothing else. Cold yields
+   * `undefined` — `prepareClaudeCatalogue` is what makes it warm in time.
+   */
+  private defaultClaudeModelId(): string | undefined {
+    const cached = this.modelCache.get("claude");
+    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest));
+    // COLD MEMORY, WARM DISK. Reading the list spawns the provider's CLI, which
+    // a synchronous claim cannot do and a user's first message must not wait
+    // for. The last list this machine actually read is remembered instead, so a
+    // restart is covered from its very first turn; the background refresh on
+    // admission keeps it current.
+    return this.rememberedClaudeDefault();
+  }
+
+  /** The remembered default, or nothing. Never throws: a damaged record costs
+   *  the long window on one turn, not the ability to work. */
+  private rememberedClaudeDefault(): string | undefined {
+    if (this.claudeDefaultMemo !== undefined) return this.claudeDefaultMemo || undefined;
+    let remembered: string | undefined;
+    try {
+      const stored = this.readDocument(this.paths.claudeDefault) as { model?: unknown } | undefined;
+      if (typeof stored?.model === "string" && /\[1m\]$/i.test(stored.model)) remembered = stored.model;
+    } catch {
+      remembered = undefined;
+    }
+    this.claudeDefaultMemo = remembered ?? "";
+    return remembered;
+  }
+
+  /** Remember what the provider just said its default was, when it is a row
+   *  Telar would publish. Written only on change. */
+  private rememberClaudeDefault(models: ModelCatalogue["models"]): void {
+    const model = longDefaultOf(applyModelManifest(models, this.manifest));
+    if (!model || model === this.rememberedClaudeDefault()) return;
+    this.claudeDefaultMemo = model;
+    try {
+      this.writeDocument(this.paths.claudeDefault, { model, at: this.now() });
+    } catch {
+      // A machine that cannot write this still runs; it just re-learns the
+      // default after each restart instead of remembering it.
+    }
+  }
+
+  /**
+   * A Claude selection in the spelling Telar offers — see `normalizeClaudeModel`.
+   * Other drivers are never touched; there is no window to spell. Absent stays
+   * absent here: filling one in is the CLAIM's job, not a patch's.
    */
   private normalizeModelSelection<T extends ModelSelection | undefined>(driver: ProviderDriverKind, selection: T): T {
     if (!selection || driver !== "claude" || !selection.model) return selection;
     const model = normalizeClaudeModel(selection.model, this.manifest);
     return model === selection.model ? selection : { ...selection, model };
+  }
+
+  /**
+   * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
+   *
+   * An absent Claude model reaches the SDK as no `model` option at all, so the
+   * CLI picks its own default — measured in a Dev store as a 200k window on
+   * every absent-model session, while every `[1m]` one ran 1M. The driver's
+   * `CLAUDE_CODE_DISABLE_1M_CONTEXT=0` only PERMITS the long window; the id
+   * selects it.
+   *
+   * An effort-only or fastMode-only selection keeps what it named and gains the
+   * model, so "the default model at maximum effort" still means that.
+   */
+  private claimModelSelection(
+    driver: ProviderDriverKind,
+    selection: ModelSelection | undefined,
+    instanceId: string,
+  ): ModelSelection | undefined {
+    const normalized = this.normalizeModelSelection(driver, selection);
+    if (driver !== "claude" || normalized?.model) return normalized;
+    const model = this.defaultClaudeModelId();
+    // Nothing known: unchanged. A guess here would be the 200k bug wearing a
+    // different hat.
+    if (!model) return normalized;
+    // `instanceId` is required on a selection, so it comes from the session
+    // rather than being conjured — an absent selection has none of its own.
+    return { ...(normalized ?? {}), instanceId: normalized?.instanceId ?? instanceId, model };
   }
 
   /**
@@ -7147,7 +7634,14 @@ export class EngineStore {
    * the next read, so it either goes or the call fails with it intact.
    */
   /** Kill the session's kernel, and for a worktree, its own Telar venv. Best-effort. */
+  /**
+   * A SESSION IS GOING AWAY. The store ANNOUNCES it and the host decides who
+   * cares — `attachPluginRelease` is what stops this method growing a line per
+   * feature. The venv removal stays here because it is the store's own file
+   * layout, not any plugin's.
+   */
   private releaseDataScience(session: Session, reason: string): void {
+    this.pluginRelease?.(session.id, reason);
     void this.kernels?.dispose(session.id, reason);
     if (session.workspace.mode === "worktree" && session.projectId) {
       removeTelarVenv(telarVenvDir(this.paths.root, session.projectId, path.basename(session.workspace.path)));
@@ -7774,12 +8268,24 @@ export class EngineStore {
        * Keyed on the TURN being terminal rather than on a timestamp: an agent
        * whose turn is still queued or running is not stranded, it is waiting.
        */
+      /**
+       * EVERY TERMINAL TURN AT ONCE, because this is a boot and there are
+       * hundreds of them. Collected first, then swept in three reads per
+       * session rather than three per turn — see `closeOpenItemsForRuns` for
+       * the measurement that made this the difference between a 21 s engine
+       * start and a fast one.
+       */
+      const settledRuns = new Set<string>();
       for (const turn of queue.turns) {
         if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
-        this.closeOrphanedTasks(session.id, turn.runId, this.now(), "the turn ended before this agent reported back");
+        settledRuns.add(turn.runId);
+      }
+      {
+        const sweptAt = this.now();
+        this.closeLiveTasks(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
         // Same retroactive cure for items: a stopped turn from before this
         // sweep existed still holds the tool row it was inside.
-        this.closeOpenItems(session.id, turn.runId, this.now());
+        this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
         // And for requests: a question parked on a turn that already ended
         // kept a persisted session `blocked` with nothing left to answer it.
         //
@@ -7796,7 +8302,7 @@ export class EngineStore {
         //
         // The row stays in the transcript, resolved, as part of the record of
         // what the lost turn was doing when it died.
-        this.closeOpenRequests(session.id, turn.runId, this.now());
+        this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
@@ -8273,6 +8779,55 @@ export class EngineStore {
     return closed;
   }
 
+  /**
+   * THE SAME SWEEP FOR MANY RUNS, IN ONE READ — what `recover()` needs.
+   *
+   * The per-turn closers below are right for a live transition, where one turn
+   * has just ended. At boot there are hundreds of them: measured on a real
+   * store, 114 sessions held 1471 terminal turns, and reading each session's
+   * items (577 KB average), requests and tasks once PER TURN made
+   * `readDocument` 15.7 s of a 21 s engine start — which is the whole cold
+   * launch, because the desktop shell does not show its window until the engine
+   * answers `/v2/health` (apps/desktop/main.js:1895).
+   *
+   * Identical outcome: the per-turn versions only ever match rows whose `runId`
+   * is that turn's, so matching against the SET of terminal run ids closes
+   * exactly the same rows and appends the same events.
+   */
+  private closeOpenItemsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
+    if (runIds.size === 0) return 0;
+    const items = this.readItems(sessionId);
+    let closed = 0;
+    for (const item of items.values()) {
+      if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
+      const settled: Item = { ...item, status: "failed", completedAt: at };
+      items.set(item.id, settled);
+      this.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeItems(sessionId, items);
+    return closed;
+  }
+
+  private closeOpenRequestsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
+    if (runIds.size === 0) return 0;
+    const requests = this.readRequests(sessionId);
+    let closed = 0;
+    for (const request of requests.values()) {
+      if (!runIds.has(request.runId) || request.state !== "open") continue;
+      request.state = "resolved";
+      request.decision = "cancel";
+      request.resolvedBy = "cancelled";
+      request.resolvedAt = at;
+      request.reason = "the turn ended before this request was answered";
+      requests.set(request.id, request);
+      this.appendEvent(sessionId, { type: "request.resolved", requestId: request.id, decision: "cancel", resolvedBy: "cancelled", reason: request.reason }, request.runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeRequests(sessionId, requests);
+    return closed;
+  }
+
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.readItems(sessionId);
     let closed = 0;
@@ -8303,12 +8858,15 @@ export class EngineStore {
     sessionId: string,
     at: number,
     failure: string,
-    options: { runId?: string; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
+    options: { runId?: string; runIds?: ReadonlySet<string>; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
   ): Task[] {
     const tasks = this.readTasks(sessionId);
     const closedTasks: Task[] = [];
     for (const [id, task] of tasks) {
       if (options.runId !== undefined && task.runId !== options.runId) continue;
+      // MANY RUNS, ONE READ. `recover()` sweeps every terminal turn of a
+      // session; asking per turn re-read this whole document once per turn.
+      if (options.runIds !== undefined && !options.runIds.has(task.runId)) continue;
       // `isBackgroundWork`, not `kind`: an agent launched detached outlives
       // its turn exactly as a shell does, and was being swept here as failed
       // while it was still reporting.

@@ -21,6 +21,17 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+const engineHome = (prefix: string): string => {
+  const directory = tmp(prefix);
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+};
+
 afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -129,7 +140,7 @@ test("a branch slug outside the engine-owned namespaces is refused", () => {
 
 test("a titled worktree session derives its branch from the title", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({
     id: "session_abcdef123456",
@@ -143,7 +154,7 @@ test("a titled worktree session derives its branch from the title", () => {
 
 test("a session created with envMode worktree records its branch and base", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
@@ -164,7 +175,7 @@ test("the standing default decides an omitted envMode, and an explicit one still
   // caller that says nothing — the MCP toolkit, an API client — builds what the
   // preference says.
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   store.setSessionDefaults({ envMode: "worktree" });
 
@@ -181,7 +192,7 @@ test("the worktree default yields on an unversioned project, but a stated worktr
   // `createSessionWorktree` refuses a directory that is not a repo — right for
   // a caller who asked for a worktree, and wrong for one who asked for nothing
   // and would otherwise be unable to open a session in that project at all.
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   store.setSessionDefaults({ envMode: "worktree" });
 
@@ -194,7 +205,7 @@ test("the worktree default yields on an unversioned project, but a stated worktr
 test("a failed worktree cut leaves no half-created session behind", () => {
   // The worktree is cut BEFORE the session document is written, so there is
   // nothing to repair on read.
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   expect(() => store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
   expect(() => store.getSession("session_one")).toThrow(EngineStateError);
@@ -202,7 +213,7 @@ test("a failed worktree cut leaves no half-created session behind", () => {
 
 test("archiving frees the checkout and KEEPS the branch", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
@@ -224,7 +235,7 @@ test("archiving refuses while a turn is in flight", () => {
   // Pulling the checkout out from under a live provider process is how a
   // half-written file becomes a corrupt commit.
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
@@ -235,7 +246,7 @@ test("archiving refuses while a turn is in flight", () => {
 });
 
 test("archiving is idempotent", () => {
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.archiveSession("session_one").state).toBe("archived");
@@ -412,7 +423,51 @@ test("async git pool expires queued reads without spawning them and recovers cap
   expect(fs.existsSync(marker)).toBe(false);
 });
 
+/**
+ * A POOL OF ITS OWN, NOT THE SINGLETON. What this test asserts is that the
+ * async readers agree with the synchronous ones — nothing about
+ * `defaultAsyncGitRunner`. Sharing it made this test's 22 reads queue behind
+ * whatever else in the same process holds those four slots, and the pool charges
+ * queue time to each call's deadline (worktree.ts:108-155), so an unrelated slow
+ * read could spend this test's whole budget before its own git ran. Measured:
+ * with the four slots held for 3 s, one read waited 2950 ms and the body went
+ * from 338 ms to 3357 ms (docs/investigations/197-git-test-timing.md).
+ *
+ * Production semantics are unchanged and still covered: the deadline including
+ * queue time is what the dedicated pool tests above assert, and the singleton's
+ * own construction is checked below.
+ */
+test("the shared async runner is a bounded runner like any other", async () => {
+  // The singleton every EngineState uses by default (state.ts) still has to
+  // BE a runner: reachable, and bounded per call. Its queue behaviour is
+  // specified by the dedicated pool tests above, on pools those tests own —
+  // asserting it here would again couple this file to whatever else in the
+  // process is holding its slots.
+  const unversioned = tmp("telar-shared-async-");
+  const result = await defaultAsyncGitRunner(unversioned, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 10_000 });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("not a git repository");
+  expect(result.timedOut).toBeUndefined();
+});
+
+test("a queued read's deadline counts the time it spent queued", async () => {
+  // The property the parity test must not depend on, pinned where it belongs:
+  // on a pool this test owns. One slot, occupied; the second read's 100ms
+  // budget expires while it is still in the queue, so it reports a timeout
+  // without ever having been spawned.
+  const root = tmp("telar-queue-deadline-");
+  const marker = path.join(root, "second-ran");
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const holder = run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 1_500 });
+  const queued = await run(root, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], { timeoutMs: 100 });
+  expect(queued.timedOut).toBe(true);
+  expect(queued.stderr).toContain("did not finish within 100ms");
+  expect(fs.existsSync(marker)).toBe(false);
+  expect((await holder).timedOut).toBe(true);
+}, 10_000);
+
 test("async git reads preserve overview and review data for committed and untracked changes", async () => {
+  const asyncGit = createAsyncGitRunner();
   const root = repo();
   const base = defaultGitRunner(root, ["rev-parse", "HEAD"]).stdout.trim();
   fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\n");
@@ -420,8 +475,8 @@ test("async git reads preserve overview and review data for committed and untrac
   fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\nworking\n");
   fs.writeFileSync(path.join(root, "new.txt"), "new file\n");
   const input = { cwd: root, baseRef: base };
-  expect(await gitOverviewAsync(defaultAsyncGitRunner, root)).toEqual(gitOverview(defaultGitRunner, root));
-  const diff = await sessionDiffAsync(defaultAsyncGitRunner, input);
+  expect(await gitOverviewAsync(asyncGit, root)).toEqual(gitOverview(defaultGitRunner, root));
+  const diff = await sessionDiffAsync(asyncGit, input);
   expect(diff).toEqual(sessionDiff(defaultGitRunner, input));
   expect(diff.commits).toHaveLength(1);
   expect(diff.files.map(file => file.path)).toEqual(["new.txt", "README.md"].sort((a, b) => a.localeCompare(b)));
@@ -430,7 +485,7 @@ test("async git reads preserve overview and review data for committed and untrac
     { ...input, path: "new.txt", untracked: true },
     { ...input, baseRef: "deleted-base", path: "README.md" },
   ]) {
-    const patch = await sessionFilePatchAsync(defaultAsyncGitRunner, patchInput);
+    const patch = await sessionFilePatchAsync(asyncGit, patchInput);
     expect(patch).toEqual(sessionFilePatch(defaultGitRunner, patchInput));
     expect(patch.patch).not.toBe("");
   }

@@ -1850,6 +1850,516 @@ test("a steered message is injected MID-TURN, journalled as a user_message row",
   expect(userRows).toHaveLength(1);
 });
 
+test("a HUMAN steer interrupts the running generation instead of queueing behind it", async () => {
+  /**
+   * The user-visible regression: while Claude streams, a steered message does
+   * not interrupt — the old answer keeps coming and the new words only land
+   * afterwards. The fake models the provider honestly: once generating it does
+   * NOT read further input until its own generation ends, which is exactly why
+   * pushing into the feed is not enough.
+   */
+  const interrupts: number[] = [];
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  let releaseGeneration: (() => void) | undefined;
+  const finished = new Promise<void>((resolve) => {
+    releaseGeneration = resolve;
+  });
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    // `interrupt` belongs to the QUERY, as in the real SDK — the provider is
+    // interrupted, not the module.
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        const first = await iterator.next();
+        heard.push(first.value!.message.content);
+        startedGenerating!();
+        yield { type: "assistant", message: { content: [{ type: "text", text: "long answer" }] } };
+        // Generating: no further input is read until interrupted.
+        await finished;
+        yield { type: "result", subtype: "interrupted" };
+        const second = await iterator.next();
+        heard.push(second.value!.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: "new direction" }] } };
+        yield { type: "result", subtype: "success" };
+      }
+      return Object.assign(pump(), {
+        interrupt: async () => {
+          interrupts.push(Date.now());
+          releaseGeneration!();
+        },
+      });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  // The human types while it streams.
+  steer.push("stop, do this instead");
+  const resolved = await result;
+  expect(interrupts).toHaveLength(1);
+  expect(heard).toEqual(["prompt", "stop, do this instead"]);
+  // Partial text survives, and the new direction is what the turn answers.
+  expect(resolved.text).toContain("new direction");
+});
+
+test("an AGENT report and an engine WAKE do NOT interrupt — a notice is not a change of direction", async () => {
+  /**
+   * The boundary of the interrupt above. Cutting a running answer for a peer's
+   * routine report, or for a wake the engine wrote, would be the model
+   * interrupting itself; those keep the old behaviour and land at the seam the
+   * provider chooses.
+   */
+  const interrupts: string[] = [];
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        const first = await iterator.next();
+        void first;
+        yield { type: "assistant", message: { content: [{ type: "text", text: "answer" }] } };
+        yield { type: "result", subtype: "success" };
+      }
+      return Object.assign(pump(), {
+        interrupt: async () => void interrupts.push("interrupted"),
+      });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push({ text: "a peer reports in", sender: { sessionId: "session_peer" } });
+  steer.push({ text: "a session you follow finished", wakeReason: "completed" });
+  const { result } = run(driver, { steer });
+  await result;
+  expect(interrupts).toEqual([]);
+});
+
+test("a provider with no interrupt still fails honestly on the next non-success result", async () => {
+  /**
+   * The swallow above is armed only by an interrupt we actually issued. A
+   * provider that cannot interrupt keeps the old late-delivery behaviour — and
+   * a real failure after a steer must still read as a failure, not be eaten as
+   * if it were our own cut.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      await iterator.next();
+      // No `interrupt` on this query at all.
+      yield { type: "result", subtype: "error_during_execution" };
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push("typed by a person");
+  const { result } = run(driver, { steer });
+  await expect(result).rejects.toThrow(/did not complete successfully/);
+});
+
+test("the interrupt's RESULT may arrive before its acknowledgment resolves — still not a failure", async () => {
+  /**
+   * The pump is concurrent with the steer loop. A provider that emits the
+   * non-success result the moment it is interrupted, and only acknowledges the
+   * call afterwards, must not have that result read as a turn failure. Arming
+   * before the await is what makes this hold.
+   */
+  const heard: unknown[] = [];
+  let interruptCalled: (() => void) | undefined;
+  const called = new Promise<void>((resolve) => {
+    interruptCalled = resolve;
+  });
+  let acknowledge: (() => void) | undefined;
+  const acknowledged = new Promise<void>((resolve) => {
+    acknowledge = resolve;
+  });
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        heard.push((await iterator.next()).value!.message.content);
+        startedGenerating!();
+        yield { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
+        // The cut's result lands FIRST; the acknowledgment is still pending.
+        await called;
+        yield { type: "result", subtype: "interrupted" };
+        // Only now does the provider acknowledge the interrupt.
+        acknowledge!();
+        heard.push((await iterator.next()).value!.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: "new direction" }] } };
+        yield { type: "result", subtype: "success" };
+      }
+      return Object.assign(pump(), {
+        interrupt: async () => {
+          interruptCalled!();
+          await acknowledged;
+        },
+      });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  steer.push("change course");
+  const resolved = await result;
+  expect(heard).toEqual(["prompt", "change course"]);
+  expect(resolved.text).toContain("new direction");
+});
+
+test("TWO interrupts outstanding AT ONCE are both absorbed — a flag would lose one", async () => {
+  /**
+   * Two steers typed in quick succession, each draining before the provider has
+   * answered either: two cuts are issued with zero results in between, so two
+   * non-success results come back. A boolean absorbs the first and lets the
+   * second fail the turn.
+   */
+  const heard: unknown[] = [];
+  let interrupts = 0;
+  let bothIssued: (() => void) | undefined;
+  const issued = new Promise<void>((resolve) => {
+    bothIssued = resolve;
+  });
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        heard.push((await iterator.next()).value!.message.content);
+        startedGenerating!();
+        // Nothing is emitted until BOTH cuts have been issued, so both are
+        // outstanding when the results finally arrive.
+        await issued;
+        yield { type: "result", subtype: "interrupted" };
+        heard.push((await iterator.next()).value!.message.content);
+        yield { type: "result", subtype: "interrupted" };
+        heard.push((await iterator.next()).value!.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: "settled" }] } };
+        yield { type: "result", subtype: "success" };
+      }
+      return Object.assign(pump(), {
+        interrupt: async () => {
+          interrupts += 1;
+          if (interrupts === 2) bothIssued!();
+        },
+      });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  steer.push("first correction");
+  // Pushed only once the first cut is issued, so it drains separately — but
+  // still before any result exists to consume either.
+  while (interrupts < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  steer.push("second correction");
+  const resolved = await result;
+  expect(interrupts).toBe(2);
+  expect(heard).toEqual(["prompt", "first correction", "second correction"]);
+  expect(resolved.text).toContain("settled");
+});
+
+test("a GENUINE failure after an absorbed interrupt still fails the turn", async () => {
+  /**
+   * The token is consumed by the one result that answers the cut. Anything
+   * after it is the provider's own failure and must surface as one — the
+   * swallow is single-shot, not a mode the turn stays in.
+   */
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  let cut: (() => void) | undefined;
+  const wasCut = new Promise<void>((resolve) => {
+    cut = resolve;
+  });
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        await iterator.next();
+        startedGenerating!();
+        await wasCut;
+        yield { type: "result", subtype: "interrupted" }; // ours, absorbed
+        await iterator.next();
+        yield { type: "result", subtype: "error_during_execution" }; // theirs
+      }
+      return Object.assign(pump(), { interrupt: async () => void cut!() });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  steer.push("change course");
+  await expect(result).rejects.toThrow(/did not complete successfully/);
+});
+
+test("when the answer FINISHES before the cut lands, the person's words are still answered in this turn", async () => {
+  /**
+   * The success-races-interrupt case. The provider completes its answer just as
+   * the interrupt arrives, so the cut is reported as a SUCCESS result rather
+   * than an interrupted one — but the human's message is in the CLI's command
+   * queue, which an interrupt spares. `queued_turn_count > 0` is the SDK saying
+   * another turn follows with no further input (sdk.d.ts). Ending the engine
+   * turn there would strand words the engine has already acked as delivered.
+   */
+  const heard: unknown[] = [];
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  let cutIssued: (() => void) | undefined;
+  const cut = new Promise<void>((resolve) => {
+    cutIssued = resolve;
+  });
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        heard.push((await iterator.next()).value!.message.content);
+        startedGenerating!();
+        await cut;
+        yield { type: "assistant", message: { content: [{ type: "text", text: "the old answer" }] } };
+        // The answer had already finished: a SUCCESS, with the steered message
+        // still queued behind it.
+        yield { type: "result", subtype: "success", queued_turn_count: 1 };
+        heard.push((await iterator.next()).value!.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: "answering the correction" }] } };
+        yield { type: "result", subtype: "success", queued_turn_count: 0 };
+      }
+      return Object.assign(pump(), { interrupt: async () => void cutIssued!() });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  steer.push("actually, do this");
+  const resolved = await result;
+  // The person's words reached the provider AND were answered before the turn
+  // ended — not left queued behind a turn the engine had already closed.
+  expect(heard).toEqual(["prompt", "actually, do this"]);
+  expect(resolved.text).toContain("answering the correction");
+});
+
+test("a cut whose acknowledgment REJECTS after its result was consumed cannot corrupt later cuts", async () => {
+  /**
+   * The SDK writes the receipt before the interrupted result on a clean cut,
+   * but a turn crashing during interrupt handling emits its result first — so a
+   * result can consume a cut before that same call settles. With a bare counter
+   * a late rejection then decrements a token it does not own, going negative and
+   * leaving the NEXT genuine cut unabsorbed. Identity makes that impossible.
+   */
+  const heard: unknown[] = [];
+  let rejectFirst: ((error: Error) => void) | undefined;
+  let firstResultSeen: (() => void) | undefined;
+  const firstResult = new Promise<void>((resolve) => {
+    firstResultSeen = resolve;
+  });
+  let calls = 0;
+  let secondCut: (() => void) | undefined;
+  const cutAgain = new Promise<void>((resolve) => {
+    secondCut = resolve;
+  });
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => {
+    startedGenerating = resolve;
+  });
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        heard.push((await iterator.next()).value!.message.content);
+        startedGenerating!();
+        await firstResult;
+        // The crash path: the result precedes the receipt, and the control
+        // request then fails outright.
+        yield { type: "result", subtype: "interrupted" };
+        rejectFirst!(new Error("interrupt control request failed"));
+        heard.push((await iterator.next()).value!.message.content);
+        await cutAgain;
+        // A SECOND, ordinary cut — this must still be absorbed.
+        yield { type: "result", subtype: "interrupted" };
+        heard.push((await iterator.next()).value!.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: "answered at last" }] } };
+        yield { type: "result", subtype: "success", queued_turn_count: 0 };
+      }
+      return Object.assign(pump(), {
+        interrupt: async () => {
+          calls += 1;
+          if (calls === 1) {
+            firstResultSeen!();
+            await new Promise<void>((_resolve, reject) => {
+              rejectFirst = reject;
+            });
+            return;
+          }
+          secondCut!();
+        },
+      });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { result } = run(driver, { steer });
+  await generating;
+  steer.push("first correction");
+  while (heard.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+  steer.push("second correction");
+  const resolved = await result;
+  expect(calls).toBe(2);
+  expect(heard).toEqual(["prompt", "first correction", "second correction"]);
+  expect(resolved.text).toContain("answered at last");
+});
+
+test("a RESUMED SUB-AGENT this process never announced is not filed as a process", async () => {
+  /**
+   * THE REPORTED BUG. `task_updated` carries no `task_type` — its patch is the
+   * SDK's "wire-safe subset of TaskState fields that changed" — and
+   * `is_backgrounded` is set for `local_agent` AND `local_bash` alike. A
+   * resumed sub-agent "is always registered in the background", so its first
+   * frame in a fresh process is a backgrounded `task_updated`, and reading that
+   * as "a shell" put a sub-agent under Processes.
+   *
+   * The level frame states the type. It is read, not guessed.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      // The level signal names it: a sub-agent, running in the background.
+      yield {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "agent_7", task_type: "local_agent", description: "Explore the repo" }],
+      };
+      // Its only edge in this process: no task_type, only the backgrounded flag.
+      yield { type: "system", subtype: "task_updated", task_id: "agent_7", patch: { status: "running", is_backgrounded: true } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const rows = sink.observations.filter((o) => o.kind === "task.progress" || o.kind === "task.started");
+  expect(rows).toHaveLength(1);
+  const task = rows[0]?.kind === "task.progress" ? rows[0].task : undefined;
+  expect(task?.kind).toBe("agent");
+  // Still background WORK — it outlives the turn — just not a process.
+  expect(task?.backgrounded).toBe(true);
+});
+
+test("a real backgrounded SHELL this process never announced stays a process", async () => {
+  /**
+   * The other half, and observed in real data: a shell whose row this process
+   * never minted was relabelled an AGENT by the bare default. Measured in a Dev
+   * store — "Start Telar dev server" left `task.started {kind: background}` and
+   * ended `task.completed {kind: agent}`.
+   *
+   * A notification is the shape that produced it: it carries no `task_type`, so
+   * without the level frame's statement the fold had only its default to go on.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "shell_3", task_type: "local_bash", description: "Start Telar dev server" }],
+      };
+      // The only edge this process sees, and it states no type.
+      yield { type: "system", subtype: "task_notification", task_id: "shell_3", status: "completed", summary: "server exited" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "task.completed");
+  expect(closed).toHaveLength(1);
+  const task = closed[0]?.kind === "task.completed" ? closed[0].task : undefined;
+  expect(task?.kind).toBe("background");
+  expect(task?.resultText).toBe("server exited");
+});
+
+test("an ANNOUNCED sub-agent later moved to the background keeps being an agent", async () => {
+  /**
+   * The case that already worked and must keep working: a sub-agent whose
+   * `task_started` this process saw. Ctrl+B on it adds `backgrounded` and
+   * changes nothing else.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "agent_9", tool_use_id: "toolu_a9", description: "Explore", task_type: "local_agent", subagent_type: "Explore" };
+      yield { type: "system", subtype: "task_updated", task_id: "agent_9", patch: { status: "running", is_backgrounded: true } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const last = sink.observations.filter((o) => o.kind === "task.progress").at(-1);
+  const task = last?.kind === "task.progress" ? last.task : undefined;
+  expect(task?.kind).toBe("agent");
+  expect(task?.role).toBe("Explore");
+});
+
+test("a type stated AFTER the row exists corrects the kind it was defaulted to", async () => {
+  /**
+   * The ordering that kept a wrong answer: `task_updated` arrives first for a
+   * task nobody has named, the fold defaults it to `agent` and stores that,
+   * and the authoritative `local_bash` lands afterwards. A `known.kind` that
+   * outranked the statement would keep calling a dev server an agent for ever.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      // No type stated anywhere yet.
+      yield { type: "system", subtype: "task_updated", task_id: "late_1", patch: { status: "running", is_backgrounded: true } };
+      // The SDK finally says what it is.
+      yield {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "late_1", task_type: "local_bash", description: "Start Telar dev server" }],
+      };
+      yield { type: "system", subtype: "task_updated", task_id: "late_1", patch: { status: "running" } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const rows = sink.observations.filter((o) => o.kind === "task.progress");
+  const kinds = rows.map((o) => (o.kind === "task.progress" ? o.task.kind : undefined));
+  // It may start out defaulted, but the statement wins and is the last word.
+  expect(kinds.at(-1)).toBe("background");
+  // …and the correction is announced, not merely held: the level frame itself
+  // re-announces the row, so a store with no further frames still ends right.
+  expect(kinds.filter((kind) => kind === "background").length).toBeGreaterThanOrEqual(2);
+});
+
+test("a SEEDED row carrying the wrong kind is corrected by the stated type", async () => {
+  /**
+   * The reverse seed: the store hands this process a row it did not mint —
+   * classified `background` by an older build — and the SDK states `local_agent`.
+   * The statement outranks the seed, so a sub-agent stops being a process
+   * without anyone restarting anything.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "seeded_1", task_type: "local_agent", description: "Explore the repo" }],
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver, {
+    tasks: [{ id: "task_seeded_1", providerTaskId: "seeded_1", kind: "background", state: "running" }],
+  });
+  await result;
+  const rows = sink.observations.filter((o) => o.kind === "task.progress");
+  const task = rows.at(-1);
+  expect(task?.kind === "task.progress" && task.task.kind).toBe("agent");
+});
+
 test("TELAR_CLAUDE_STREAMING_INPUT=0 restores the plain-string prompt — the field kill switch", async () => {
   const previous = process.env.TELAR_CLAUDE_STREAMING_INPUT;
   process.env.TELAR_CLAUDE_STREAMING_INPUT = "0";

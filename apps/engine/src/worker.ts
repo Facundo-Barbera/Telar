@@ -3,12 +3,22 @@ import fs from "node:fs";
 import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { clientDsCapability } from "./ds/client-capability";
+import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
+import { pluginToolModules } from "./plugins/bundled";
+import { pluginCall } from "./plugins/tool-module";
+import { spoolTools, type SpoolCapability } from "./spool/tools";
+import { sessionsTools } from "./sessions-tools/tools";
+import { dsTools } from "./ds/ds-tools";
+import { notebookTools } from "./ds/notebook-tools";
+import { latexTools } from "./latex/latex-tools";
 import { createDisplayCapability } from "./display/capability";
 import { clientLatexCapability } from "./latex/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
+import { ratifiedReadTools } from "./plugins/policy";
+import { setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import type { LoginGrantStore } from "./secrets/login-grants";
@@ -18,6 +28,7 @@ import { framedTurnInput } from "./attribution";
 
 type WorkerClient = Pick<
   EngineClient,
+  | "health"
   | "registerWorker"
   | "workerHeartbeat"
   | "claimTurn"
@@ -68,6 +79,8 @@ type WorkerClient = Pick<
   | "liveSessions"
   | "ds"
   | "latex"
+  // The generic plugin door. ONE verb for every plugin.
+  | "plugin"
   | "createSession"
   // An AGENT's message, never `submitTurn`: the worker speaks for a turn, and
   // the route it reaches stamps who — see `EngineStore.submitAgentTurn`.
@@ -161,6 +174,13 @@ export type EngineWorkerOptions = {
    * produced before this existed.
    */
   sessionsSocket?: SessionsToolSocket;
+  /**
+   * WHERE THE `telar` WALL IS SERVED for providers that take MCP servers as
+   * CONFIG. Codex and OpenCode cannot be handed an in-process server, so the
+   * worker binds the wall against its own per-session client capabilities and
+   * passes the lease down. Claude's driver binds its own.
+   */
+  telarSocket?: TelarToolSocket;
   /**
    * The password-manager read path for `browser_fill_secret`. Defaults to the
    * real `op` CLI adapter; injected by tests so no suite ever spawns one. The
@@ -378,6 +398,21 @@ export class EngineWorker {
    * stable for the session's life. Revoked in `stop()`.
    */
   private readonly sessionsLeases = new Map<string, SessionsSocketLease>();
+  /** One `telar` wall lease per session, keyed by the enabled set it serves. */
+  private readonly telarLeases = new Map<
+    string,
+    {
+      key: string;
+      lease?: TelarSocketLease;
+      /**
+       * A REUSED LEASE MUST NOT SERVE A FINISHED TURN'S CAPABILITIES. The bound
+       * thunk closes over this box, never over a turn's own record, so every
+       * request reads the capabilities of the turn that is actually running —
+       * with its runId and its claim, not the ones the lease was minted under.
+       */
+      capabilities: { current: Record<string, unknown> };
+    }
+  >();
   /** Terminal settlements the engine has not acknowledged, by runId. Retried on
    *  every healthy tick — see `drainSettlements`. */
   private readonly pendingSettlements = new Map<
@@ -394,6 +429,24 @@ export class EngineWorker {
   async start(): Promise<void> {
     const startedAt = this.now();
     this.lastAckAt = startedAt;
+    /**
+     * THE HOST'S RATIFIED PLUGIN READS, CARRIED ACROSS THE PROCESS BOUNDARY.
+     *
+     * `setPluginReadTools` is a module global in `driver.ts`, and an
+     * out-of-process worker does not share the daemon's globals — so without
+     * this the worker would classify every plugin tool as needing approval
+     * (fail-closed, but wrong) or, worse under a seeded default, as a read the
+     * host had narrowed away. The health document carries each plugin's
+     * MANIFEST; `ratifiedReadTools` is the same function the daemon ratified
+     * with, so both processes reach the identical answer from identical inputs
+     * rather than trusting a copied list.
+     */
+    try {
+      const health = await this.options.client.health();
+      setPluginReadTools((health.plugins ?? []).flatMap((status) => ratifiedReadTools(status.meta)));
+    } catch {
+      // Unreachable health leaves the set EMPTY, so every plugin tool asks.
+    }
     const registration = await this.options.client.registerWorker(this.options.workerId);
     // Nothing is installed once stop() has run: no timers, no claims.
     if (this.stopped) return;
@@ -511,6 +564,8 @@ export class EngineWorker {
     this.browserLeases.clear();
     for (const lease of this.sessionsLeases.values()) lease.release();
     this.sessionsLeases.clear();
+    for (const entry of this.telarLeases.values()) entry.lease?.release();
+    this.telarLeases.clear();
     if (typeof this.options.driver !== "function") this.usedDrivers.add(this.options.driver);
     for (const driver of this.usedDrivers) {
       try { driver.dispose?.(); } catch { /* continue closing the remaining providers */ }
@@ -987,13 +1042,20 @@ export class EngineWorker {
      */
     const { askEngine, gate: gateForTurn, onNavigated: onNavigatedForTurn, fillSecret: fillSecretForTurn } = this.bindTurn(sessionId, runId, claimToken, controller);
     let lease: BrowserSocketLease | undefined;
+    /** Whether `markTurnRunning` landed — see `ensureRunning` below. */
+    let running = false;
+    /**
+     * A settlement needs a RUNNING turn. When the fault happened during setup
+     * the turn is still `claimed`, so mark it first — best-effort, because a
+     * turn already stopped or expired refuses, and the settle that follows will
+     * refuse for the same reason and unwind quietly.
+     */
+    const ensureRunning = async () => {
+      if (running) return;
+      running = true;
+      await this.options.client.markTurnRunning(sessionId, runId, claimToken).catch(() => undefined);
+    };
     try {
-      // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
-      // `failTurn` only settles a turn that is RUNNING, so a worker with no
-      // driver for this provider that threw here first would leave the turn
-      // stuck at `claimed` until its lease expired, with nothing recorded.
-      // Measured — the test below asserted `failed` and got `claimed`.
-      await this.options.client.markTurnRunning(sessionId, runId, claimToken);
       const driver = this.driverFor(driverKind);
       // THE PROJECT FOLDER MUST EXIST BEFORE A PROVIDER IS SPAWNED IN IT. A
       // missing cwd makes the SDK's spawn fail with ENOENT, which the Claude
@@ -1130,6 +1192,85 @@ export class EngineWorker {
         sessionsLease = await this.options.sessionsSocket.bind(sessionsCapability);
         this.sessionsLeases.set(sessionId, sessionsLease);
       }
+      /**
+       * EVERY ENABLED PLUGIN'S CAPABILITY, BY ID. The claim carries IDS only —
+       * a plugin's settings stay in the daemon behind its capability — and an
+       * id this binary does not bundle is simply absent, so an older worker
+       * against a newer daemon builds fewer walls rather than crashing.
+       */
+      const pluginCapabilities = Object.fromEntries(
+        pluginToolModules()
+          .filter((module) => claim.plugins?.includes(module.meta.id))
+          .map((module) => [module.meta.id, module.capability(pluginCall(this.options.client, sessionId, module.meta.id))]),
+      );
+
+      /**
+       * THE `telar` WALL for a provider that cannot hold in-process state.
+       *
+       * Cached per SESSION, keyed by the enabled set: the token is baked into
+       * the MCP entry the provider was started with, so minting one per turn
+       * would 401 every reused query — while a changed set must rebind, because
+       * a stale lease would keep serving a plugin the project turned off. That
+       * same change moves the driver's fingerprint, so the provider cold-starts
+       * onto the new credential.
+       */
+      /**
+       * Filled by the `driver.run` options below. The wall reads it at REQUEST
+       * time, after the run has been entered, so assigning it later is sound —
+       * and leaving it unset would give a Codex turn no `spool_*` at all.
+       */
+      let spoolCapability: SpoolCapability | undefined;
+      const telarKey = [...(claim.plugins ?? [])].sort().join(",");
+      let telarEntry = this.telarLeases.get(sessionId);
+      const telarCapabilities: Record<string, unknown> = {
+        get spool() { return spoolCapability; },
+        sessions: sessionsCapability,
+        ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
+        ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
+        ...pluginCapabilities,
+      };
+      if (driverKind !== "claude" && this.options.telarSocket) {
+        if (telarEntry?.key === telarKey) {
+          // Same enabled set: keep the credential, retarget the capabilities.
+          telarEntry.capabilities.current = telarCapabilities;
+        } else {
+          telarEntry?.lease?.release();
+          const box = { current: telarCapabilities };
+          const lease = await this.options.telarSocket.bind(() =>
+            collectTelarWall([
+              { name: "spool", build: spoolTools as never, capability: () => box.current.spool },
+              { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
+              { name: "ds", build: dsTools as never, capability: () => box.current.ds },
+              { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
+              { name: "latex", build: latexTools as never, capability: () => box.current.latex },
+              ...pluginToolModules().map((module) => ({
+                name: `plugin:${module.meta.id}`,
+                build: ((tool: never, capability: never) => module.tools(tool, capability) as unknown[]) as never,
+                capability: () => box.current[module.meta.id],
+              })),
+            ]),
+          );
+          telarEntry = { key: telarKey, capabilities: box, ...(lease ? { lease } : {}) };
+          // A `stop()` during the await already cleared the map; give it back.
+          if (this.stopped) lease?.release();
+          else this.telarLeases.set(sessionId, telarEntry);
+        }
+      }
+
+      /**
+       * RUNNING MEANS THE PROVIDER IS RUNNING IT. Marked here rather than
+       * before the setup above (profile binding, socket leases, plugin wall —
+       * all HTTP), which used to leave the turn reading `running` for the whole
+       * of it: a Stop there settled it terminally, and the `provider.session`
+       * the driver reported afterwards was refused against a settled claim.
+       *
+       * A Stop during setup still stops — `stopTurn` settles a `claimed` turn
+       * too, and this call then conflicts and unwinds without overwriting it.
+       * See `ensureRunning` for the settle-needs-running ordering this keeps.
+       */
+      await this.options.client.markTurnRunning(sessionId, runId, claimToken);
+      running = true;
+
       const result = await driver.run({
         runId,
         prompt,
@@ -1185,7 +1326,7 @@ export class EngineWorker {
          * same routes the queue does and there is exactly one implementation of
          * every rule about an item.
          */
-        spool: {
+        spool: (spoolCapability = {
           ...(claim.project ? { project: claim.project } : {}),
           snapshot: () => this.options.client.spool(),
           item: (id) =>
@@ -1230,7 +1371,7 @@ export class EngineWorker {
           updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
           search: async (query, subject) =>
             (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
-        },
+        }),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
         // The sessions wall over HTTP, for the provider that takes servers as
@@ -1245,6 +1386,12 @@ export class EngineWorker {
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         // The compile door, same shape: HTTP to the daemon, which owns the jobs.
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
+        // Claude's driver binds its own telar socket and reads these through its
+        // per-turn bindings; Codex and OpenCode consume the worker's lease.
+        ...(Object.keys(pluginCapabilities).length > 0 ? { plugins: pluginCapabilities } : {}),
+        ...(telarEntry?.lease
+          ? { telarSocketLease: { url: telarEntry.lease.url, token: telarEntry.lease.token, generation: telarEntry.lease.generation } }
+          : {}),
         /**
          * `display_open` — show the human one file in the cockpit. The fence
          * is this turn's own checkout; the report rides the same observation
@@ -1379,6 +1526,7 @@ export class EngineWorker {
        * the message says so rather than inviting a blind replay.
        */
       if (this.shuttingDown && controller.signal.aborted) {
+        await ensureRunning();
         await this.recordInterruption(sessionId, runId, claimToken);
         return;
       }
@@ -1394,6 +1542,7 @@ export class EngineWorker {
          * not against the settle that followed.
          */
         this.noteConnectivityFailure(error);
+        await ensureRunning();
         // The turn produced no outcome, so `interrupted` is the honest one; a
         // terminal settlement that lost its response never reaches here.
         await this.settle({
@@ -1419,6 +1568,7 @@ export class EngineWorker {
         error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
           ? { code: "provider_unavailable" as const, message: error.message }
           : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "Telar driver failed" };
+      await ensureRunning();
       await this.settle({
         sessionId,
         runId,

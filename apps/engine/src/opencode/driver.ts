@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { openCodeFailure, openCodeFailureText } from "./errors";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Message, SessionStatus, Part, PermissionRequest, QuestionRequest, Config } from "@opencode-ai/sdk/v2";
-import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
+import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
 import { normalizeOutcome, type DriverRun, type TurnDriver } from "../provider-contract";
 import { startOpenCodeRuntime, type OpenCodeRuntime } from "./runtime";
 
@@ -16,7 +17,18 @@ function mcpConfiguration(input: DriverRun): NonNullable<Config["mcp"]> {
     if (spec.transport === "stdio") mcp[server.id] = { type: "local", command: [spec.command, ...(spec.args ?? [])], environment: spec.env };
     else mcp[server.id] = { type: "remote", url: spec.url, headers: spec.headers, oauth: false };
   }
-  for (const [name, socket] of [[TELAR_BROWSER_MCP_SERVER, input.browserSocket], [TELAR_SESSIONS_MCP_SERVER, input.sessionsSocket]] as const) {
+  /**
+   * `telar` IS IN THIS LIST, and that is what gives OpenCode the core toolkits
+   * at all. Like Codex it takes MCP servers as CONFIG, so an in-process
+   * registration reaches it never — the socket is the only transport all three
+   * providers share, and it registers under the key those tools already ship
+   * under so one tool has one qualified name everywhere.
+   */
+  for (const [name, socket] of [
+    [TELAR_MCP_SERVER, input.telarSocketLease],
+    [TELAR_BROWSER_MCP_SERVER, input.browserSocket],
+    [TELAR_SESSIONS_MCP_SERVER, input.sessionsSocket],
+  ] as const) {
     if (socket) mcp[name] = { type: "remote", url: socket.url, headers: { Authorization: `Bearer ${socket.token}` }, oauth: false };
   }
   return mcp;
@@ -188,7 +200,12 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
             }
             if (observations.length) await input.onObservations(observations);
             const last = responses.at(-1)?.info;
-            if (last?.error) throw new Error(`OpenCode: ${last.error.name}`);
+            if (last?.error) {
+              // Sanitized and bounded — `APIError` carries `responseHeaders`
+              // and `responseBody`, which never leave the SDK. See ./errors.ts.
+              const failure = openCodeFailure(last.error);
+              throw new Error(failure ? openCodeFailureText(failure) : "OpenCode: the turn failed.");
+            }
             if (last?.time.completed && (statuses.data?.[sessionID]?.type === "idle" || statuses.data?.[sessionID] === undefined) && last.finish !== "tool-calls") {
               completed = true;
               return { providerSessionId: sessionID, text: parts.filter((part) => part.type === "text").map((part) => part.text).join("\n"),

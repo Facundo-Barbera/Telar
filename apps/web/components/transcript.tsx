@@ -786,17 +786,35 @@ export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[
   return segments;
 }
 
+/**
+ * ONE RESPONSE'S WORK, CUT AT ITS SEAMS — the only way any response is drawn,
+ * live or already closed by a steer.
+ *
+ * `liveTail` says whether the LAST run is still being appended to (a rolling
+ * window) or is finished (a tally). It does NOT decide whether prose is
+ * visible: an assistant message is a seam at every scale, so it is a row here
+ * whether the turn is running or over.
+ *
+ * A RESPONSE CLOSED BY A STEER STILL GOES THROUGH THIS. Rendering those items
+ * as one `ActivityGroup` instead was the regression: the assistant's live
+ * prose, which had not finished streaming when the person typed, was swept
+ * into the fold above their message and went on streaming inside a collapsed
+ * step — text presented as a tool call, still growing where nobody could read
+ * it. The seam rule is what keeps prose prose, so every response uses it.
+ */
 export function LiveActivity({
   items,
   tasks,
+  liveTail = true,
   onOpenAgent,
 }: {
   items: JournalItem[];
   tasks: JournalTask[];
+  liveTail?: boolean;
   onOpenAgent?: (taskId: string) => void;
 }) {
   const segments = segmentActivity(items);
-  const tail = segments.length - 1;
+  const tail = liveTail ? segments.length - 1 : -1;
   const open = onOpenAgent ? { onOpenAgent } : {};
   return (
     <>
@@ -852,9 +870,51 @@ export function ActivityGroup({
   );
 }
 
+/**
+ * How many of these rows actually failed — not whether any did.
+ *
+ * A COLLAPSED RUN USED TO GO ENTIRELY RED on one failure: the chevron, the step
+ * count and the tally all turned destructive, so "10 steps" where two commands
+ * failed read exactly like ten that did. The summary was answering "did
+ * anything go wrong" in the place a reader looks to find out how much (#206).
+ *
+ * A FAILED SUB-AGENT COUNTS, because its row is the only trace of it here; the
+ * work it failed at is inside the agent, not in this run.
+ */
+export function failedCount(rows: readonly JournalItem[], tasks: readonly JournalTask[]): number {
+  return rows.filter(
+    (item) =>
+      failed(item) ||
+      (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed"),
+  ).length;
+}
+
+/**
+ * The failed tally beside a neutral step count.
+ *
+ * SEPARATELY STYLED, AND ONLY THAT. The count of what went wrong is the
+ * destructive part; the count of what happened is not. Hidden while the run is
+ * open because every failed row is then on screen saying so itself — this is
+ * the fold's summary of what it is covering up, not a second error report.
+ */
+function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
+  if (hidden || count === 0) return null;
+  return (
+    <>
+      <span className="shrink-0 text-muted-foreground/50">·</span>
+      <span className="flex shrink-0 items-center gap-1 text-destructive">
+        <TriangleAlertIcon className="size-3 shrink-0" />
+        {count} failed
+      </span>
+    </>
+  );
+}
+
 function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
-  const anyFailed = rows.some(failed);
+  // Only the rows the fold is HIDING can carry a surprise; the one on screen
+  // reports itself. Same rule as the settled run, applied to its own window.
+  const failures = failedCount(rows.slice(0, -1), tasks);
   const hidden = Math.max(0, rows.length - 1);
   const shown = open ? rows : rows.slice(-1);
   const pass = onOpenAgent ? { onOpenAgent } : {};
@@ -868,12 +928,10 @@ function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: Jou
           className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
         >
           <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-          {/* A step that failed while scrolled out of the window must not be
-              swallowed by the very mechanism that hid it. */}
-          {!open && anyFailed && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
-          <span className={cn("shrink-0", !open && anyFailed && "text-destructive")}>
+          <span className="shrink-0">
             {open ? "Show fewer steps" : `+${hidden} earlier step${hidden === 1 ? "" : "s"}`}
           </span>
+          <FailedCount count={failures} hidden={open} />
         </button>
       )}
       {shown.map((item) => (
@@ -885,7 +943,7 @@ function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: Jou
 
 function SettledRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
-  const anyFailed = rows.some(failed) || rows.some((item) => item.detail.type === "task" && tasks.find((t) => t.id === (item.detail as { taskId: string }).taskId)?.state === "failed");
+  const failures = failedCount(rows, tasks);
   const pass = onOpenAgent ? { onOpenAgent } : {};
   return (
     <>
@@ -893,13 +951,13 @@ function SettledRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: 
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((c) => !c)}
-        className={cn(ROW, "text-muted-foreground hover:bg-muted/50", !open && anyFailed && "text-destructive")}
+        className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
       >
         <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-        {!open && anyFailed && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
         <span className="shrink-0">
           {rows.length} step{rows.length === 1 ? "" : "s"}
         </span>
+        <FailedCount count={failures} hidden={open} />
         <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="min-w-0 truncate text-muted-foreground/80">{tally(rows)}</span>
       </button>

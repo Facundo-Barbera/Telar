@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- The login offer window (AUTH-001, #195). WORDING IS LOAD-BEARING: nothing
+     here claims the sign-in succeeded, or that 1Password did the typing —
+     only that a credential was entered on this page (login-offer.js explains
+     what is and is not known). The question is a PERMISSION question. -->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Allow a login for agents</title>
+  <style>
+    :root { color-scheme: light dark; }
+    /* Explicit canvas colors: the window may composite over transparency, and
+       an unpainted background leaves dark-mode text unreadable. */
+    body { font: 13px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 16px 20px; display: flex; flex-direction: column; height: calc(100vh - 32px); background: Canvas; color: CanvasText; }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    p { margin: 0 0 12px; opacity: 0.85; }
+    code { font-family: ui-monospace, monospace; font-size: 12px; }
+    .where { padding: 8px 10px; border-radius: 6px; background: rgba(127,127,127,0.12); margin-bottom: 12px; }
+    .where .profile { opacity: 0.6; }
+    #items { flex: 1; overflow-y: auto; margin: 0 0 12px; display: flex; flex-direction: column; gap: 4px; }
+    #items label { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; }
+    #items label:hover { background: rgba(127,127,127,0.1); }
+    #items .vault { opacity: 0.55; font-size: 12px; }
+    #error { color: #b91c1c; margin-bottom: 12px; white-space: pre-wrap; }
+    .otp { margin-bottom: 12px; display: flex; gap: 8px; align-items: baseline; }
+    .otp span { opacity: 0.6; }
+    .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+    button { font: inherit; padding: 6px 14px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Allow agents to use this login?</h1>
+  <p>A credential was entered on the page below. If it was one of these 1Password
+     items, you can let agents use it here without asking each time. Nothing is
+     stored — agents will still fetch it from 1Password.</p>
+  <div class="where"><code id="origin">…</code> <span class="profile" id="profile"></span></div>
+  <div id="error" hidden></div>
+  <div id="items"></div>
+  <label class="otp"><input type="checkbox" id="otp" />
+    <span>Also allow fetching fresh one-time codes for this login</span></label>
+  <div class="buttons">
+    <button id="dismiss">Not now</button>
+    <button id="confirm" disabled>Allow for agents</button>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let chosen = null;
+    function render(state) {
+      $("origin").textContent = state.origin || "";
+      $("profile").textContent = state.profileLabel ? `· ${state.profileLabel} profile` : "";
+      $("error").hidden = !state.error;
+      $("error").textContent = state.error || "";
+      const items = $("items");
+      items.textContent = "";
+      chosen = null;
+      $("confirm").disabled = true;
+      for (const candidate of state.candidates || []) {
+        const label = document.createElement("label");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "item";
+        radio.addEventListener("change", () => {
+          chosen = candidate.id;
+          $("confirm").disabled = false;
+        });
+        const title = document.createElement("span");
+        title.textContent = candidate.title;
+        const vault = document.createElement("span");
+        vault.className = "vault";
+        vault.textContent = candidate.vault || "";
+        label.append(radio, title, vault);
+        items.append(label);
+      }
+      if (!state.error && !(state.candidates || []).length) {
+        $("error").hidden = false;
+        $("error").textContent = "No 1Password Login item lists this site. Add the site to an item's website field and use the explicit offer again.";
+      }
+    }
+    async function refresh() {
+      render(await window.telarLoginOffer.state());
+    }
+    $("confirm").addEventListener("click", async () => {
+      if (!chosen) return;
+      $("confirm").disabled = true;
+      const result = await window.telarLoginOffer.confirm({ itemId: chosen, otp: $("otp").checked });
+      if (!result.ok) {
+        $("error").hidden = false;
+        $("error").textContent = result.error;
+        $("confirm").disabled = chosen === null;
+      }
+    });
+    $("dismiss").addEventListener("click", () => window.telarLoginOffer.dismiss());
+    window.telarLoginOffer.onRefresh(refresh);
+    refresh();
+  </script>
+</body>
+</html>
