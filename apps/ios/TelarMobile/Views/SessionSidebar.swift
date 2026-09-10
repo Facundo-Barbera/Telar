@@ -15,6 +15,8 @@ struct SessionSidebar: View {
     @State private var settledOpen = false
     @State private var settledLimit = 25
     @State private var layoutError: String?
+    /// The row whose snooze sheet is up.
+    @State private var snoozing: HostedSession?
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
@@ -62,7 +64,7 @@ struct SessionSidebar: View {
                 ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
                     Section {
                         if !collapsed.contains(group.id) {
-                            ForEach(group.sessions) { row in sessionRow(row) }
+                            ForEach(group.sessions) { row in sessionRow(row, showsProject: false) }
                         }
                     } header: {
                         Button {
@@ -131,6 +133,7 @@ struct SessionSidebar: View {
             await loadOrders()
         }
         .onChange(of: inbox.filter) { projectFilter = nil }
+        .sheet(item: $snoozing) { row in snoozeSheet(row) }
     }
 
     private var projectOptions: [SidebarProject] { SidebarModel(sessions: all.map { row in
@@ -140,41 +143,170 @@ struct SessionSidebar: View {
 
     private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
 
-    private func sessionRow(_ row: HostedSession) -> some View {
+    private func sessionRow(_ row: HostedSession, showsProject: Bool = true) -> some View {
         NavigationLink(value: row.id) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if row.session.settledOverride == "active" { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(Theme.accent) }
-                    Text(row.session.title).font(Theme.rowTitle).lineLimit(2)
-                }
-                HStack {
-                    ActivityBadge(activity: row.session.activity)
-                    Text(row.session.activity == .blocked ? "Needs you" : row.session.activity == .idle ? (row.session.lastTurnFailed == true ? "Failed" : "Idle") : row.session.activity.rawValue.capitalized)
-                        .font(.caption).foregroundStyle(Theme.textMuted)
-                    Spacer(minLength: 4)
-                    // The attention and pinned bands mix projects, so the row
-                    // says which one — the project sections already do.
-                    if let project = inbox.project(row) {
-                        ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
+            // THE CARD, as the desktop draws it: three lines, each answering
+            // a different question.
+            //   project + status   whose is this, and what is it doing
+            //   title              the only thing anyone scans for
+            //   branch + provider  where the work lands, and who is doing it
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    if row.session.settledOverride == "active" {
+                        Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.textMuted.opacity(0.7))
                     }
-                    if settings.hosts.count > 1 { Text(hostName(row.hostId)).font(.caption2).foregroundStyle(Theme.textMuted) }
+                    // The attention and pinned bands, search and the shelves
+                    // mix projects, so the row names its own. A row under its
+                    // project's own header says nothing the header has not.
+                    if showsProject, let project = inbox.project(row) {
+                        ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
+                        Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if settings.hosts.count > 1 {
+                        Text(hostName(row.hostId)).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                            .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                    }
+                    // THE STATUS SITS WHERE THE TIMESTAMP WOULD, never beside
+                    // it: a row showing "Working" and "8h ago" invites the
+                    // question of which one is now.
+                    statusSlot(row.session)
                 }
-            }.padding(.vertical, 5)
-                .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
+                HStack(spacing: 6) {
+                    // ONE LINE. The title carries the card and is a size up
+                    // from the lines around it; a second line makes the card a
+                    // paragraph and pushes every row below it around.
+                    Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
+                        .font(Theme.rowTitle).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    // The provider mark is IDENTITY, not status, so it rides
+                    // at the end at reduced opacity. It sits on the title line
+                    // so it survives the third line's absence.
+                    if row.session.workspace.branch == nil {
+                        ProviderIconView(driver: row.session.driver, size: 11).opacity(0.5)
+                    }
+                }
+                // NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD
+                // SAY. A branch differs per row; the model does not.
+                if let branch = row.session.workspace.branch {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
+                        Text(branch).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
+                    }
+                    .foregroundStyle(Theme.textMuted.opacity(0.7))
+                }
+            }
+            .padding(.vertical, 4)
+            .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
+        }
+        // MAIL'S GRAMMAR: the leading edge is the one-tap toggle you reach
+        // for most (pin), the trailing edge is where a row LEAVES the list
+        // (settle, snooze). Full swipe commits the first action on each edge.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if row.session.settledOverride == "active" {
+                Button { Task { await patch(row, SessionPatch(clearSettledOverride: true)) } } label: { Label("Unpin", systemImage: "pin.slash") }
+                    .tint(Theme.textMuted)
+            } else {
+                Button { Task { await patch(row, SessionPatch(settledOverride: "active")) } } label: { Label("Pin", systemImage: "pin") }
+                    .tint(Theme.accent)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if isShelved(row) {
+                Button { Task { await patch(row, SessionPatch(settledOverride: "active", clearSnooze: true)) } } label: { Label("Wake", systemImage: "arrow.uturn.backward") }
+                    .tint(Theme.statusSky)
+            } else {
+                Button { Task { await inbox.setSettled(row.id, true) } } label: { Label("Settle", systemImage: "checkmark") }
+                    .tint(Theme.textTertiary)
+                Button { snoozing = row } label: { Label("Snooze", systemImage: "moon.zzz") }
+                    .tint(Theme.statusAmber)
+            }
         }
         .contextMenu {
-            Button(row.session.settledOverride == "active" ? "Unpin" : "Pin", systemImage: "pin") {
-                Task { await patch(row, SessionPatch(settledOverride: row.session.settledOverride == "active" ? nil : "active", clearSettledOverride: row.session.settledOverride == "active")) }
+            if row.session.settledOverride == "active" {
+                Button("Unpin", systemImage: "pin.slash") { Task { await patch(row, SessionPatch(clearSettledOverride: true)) } }
+            } else {
+                Button("Pin", systemImage: "pin") { Task { await patch(row, SessionPatch(settledOverride: "active")) } }
             }
-            Button("Snooze for one hour", systemImage: "moon.zzz") {
-                Task { await patch(row, SessionPatch(snoozedUntil: Int(Date().addingTimeInterval(3600).timeIntervalSince1970 * 1000))) }
+            if isShelved(row) {
+                Button("Wake now", systemImage: "arrow.uturn.backward") { Task { await patch(row, SessionPatch(settledOverride: "active", clearSnooze: true)) } }
+            } else {
+                Menu("Snooze", systemImage: "moon.zzz") {
+                    ForEach(snoozePresets(now: Date())) { preset in
+                        Button { Task { await patch(row, SessionPatch(snoozedUntil: preset.until)) } } label: {
+                            Text("\(preset.label) · \(preset.when)")
+                        }
+                    }
+                }
+                Button("Settle", systemImage: "checkmark") { Task { await inbox.setSettled(row.id, true) } }
             }
-            Button("Settle", systemImage: "checkmark") { Task { await inbox.setSettled(row.id, true) } }
-            Button("Return to active", systemImage: "arrow.uturn.backward") { Task { await patch(row, SessionPatch(settledOverride: "active", clearSnooze: true)) } }
             if let base = settings.host(row.hostId)?.baseURL {
                 ShareLink(item: row.session.cockpitURL(base: base)) { Label("Share cockpit link", systemImage: "link") }
             }
         }
+    }
+
+    /// A SPINNER-DOT FOR "STILL GOING", A STILL DOT FOR "STOPPED AND WAITING",
+    /// the wake time for a snoozed row, the relative time for everything else.
+    @ViewBuilder private func statusSlot(_ session: Session) -> some View {
+        let now = Timestamp(Date().timeIntervalSince1970 * 1000)
+        if let until = session.snoozedUntil, until > now, session.activity != .blocked {
+            HStack(spacing: 3) {
+                Image(systemName: "alarm").font(.system(size: 9))
+                Text(relativeTime(until)).monospacedDigit()
+            }
+            .font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
+        } else if session.activity == .blocked {
+            HStack(spacing: 3) {
+                Image(systemName: "circle.circle").font(.system(size: 9))
+                Text("Needs you")
+            }
+            .font(.caption2.weight(.medium)).foregroundStyle(Theme.statusAmber)
+        } else if session.activity == .working || session.activity == .queued {
+            HStack(spacing: 3) {
+                SteppedPulseDot(color: Theme.statusSky)
+                Text(session.activity == .queued ? "Queued" : "Working")
+            }
+            .font(.caption2.weight(.medium)).foregroundStyle(Theme.statusSky)
+        } else if session.activity == .monitoring {
+            Text("Monitoring").font(.caption2.weight(.medium)).foregroundStyle(Theme.statusSky)
+        } else if session.lastTurnFailed == true {
+            Text("Failed").font(.caption2.weight(.medium)).foregroundStyle(Theme.statusRed)
+        } else {
+            Text(relativeTime(session.activityAt ?? session.updatedAt))
+                .font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7)).monospacedDigit()
+        }
+    }
+
+    /// On the Snoozed or Settled shelf: the trailing action brings it back
+    /// rather than pushing it further away.
+    private func isShelved(_ row: HostedSession) -> Bool {
+        inbox.sections.snoozed.contains { $0.id == row.id } || inbox.sections.settled.contains { $0.id == row.id }
+    }
+
+    /// The snooze choices, as a sheet — a swipe cannot open a submenu, and
+    /// a single fixed hour was the whole reason the web grew presets.
+    @ViewBuilder private func snoozeSheet(_ row: HostedSession) -> some View {
+        NavigationStack {
+            List(snoozePresets(now: Date())) { preset in
+                Button {
+                    snoozing = nil
+                    Task { await patch(row, SessionPatch(snoozedUntil: preset.until)) }
+                } label: {
+                    HStack {
+                        Text(preset.label).foregroundStyle(Theme.text)
+                        Spacer()
+                        Text(preset.when).foregroundStyle(Theme.textMuted).monospacedDigit()
+                    }
+                }
+            }
+            .navigationTitle("Snooze")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { snoozing = nil } } }
+        }
+        .presentationDetents([.medium])
     }
 
     @ViewBuilder private func shelf(_ name: String, rows: [HostedSession], open: Binding<Bool>) -> some View {
