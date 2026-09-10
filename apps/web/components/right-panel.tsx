@@ -21,6 +21,7 @@ import {
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PanelsTopLeftIcon,
+  PlayIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
@@ -60,6 +61,7 @@ import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";
 import { DataSurface } from "@/components/session/data-surface";
 import { LatexSurface } from "@/components/session/latex-surface";
+import { RunPanel } from "@/components/run/run-panel";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
@@ -157,6 +159,15 @@ const SURFACES = [
    * through `panelTabForPath` like any other file.
    */
   { id: "latex", label: "LaTeX", icon: SigmaIcon, blurb: "Compile status, errors and the log" },
+  /**
+   * THE RUN SURFACE, and it is the project's rather than this session's. A
+   * project has ONE local deployment; every session looking at the project sees
+   * the same one, which is why this tab is not gated on anything the session
+   * opted into and why the panel inside it names the worktree the run came from.
+   * Reading it from a session sitting on another branch is the normal case, not
+   * the edge case (components/run/run-panel.tsx).
+   */
+  { id: "run", label: "Run", icon: PlayIcon, blurb: "The project's dev server, and how to start it" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -1146,6 +1157,14 @@ export function PanelSurface({
   if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   if (tab === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
+  /**
+   * KEYED BY THE SESSION, because the run surface polls on a schedule and holds
+   * a cursor into one run's output. Moving between sessions must not carry that
+   * cursor across — the answer is about the same project either way, but the
+   * output window is not, and appending one run's log to another's is the exact
+   * confusion `appendOutput` exists to prevent.
+   */
+  if (tab === "run") return sessionId ? <RunPanel key={sessionId} sessionId={sessionId} /> : null;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (

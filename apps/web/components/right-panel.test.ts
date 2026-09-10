@@ -94,6 +94,26 @@ describe("file tabs", () => {
   });
 });
 
+describe("the Run surface", () => {
+  test("is a real tab: it validates, it survives a restore, and it is not file-shaped", () => {
+    // The panel restores tab ids from storage, so a surface that does not
+    // validate here is one that silently disappears on the next reload.
+    expect(isPanelTab("run")).toBe(true);
+    expect(migratePanelTab("run")).toBe("run");
+    // Not file-shaped: it must not be collapsed into the Editor.
+    expect(isFilePanelTab("run")).toBe(false);
+  });
+
+  test("describes itself without needing the network or a session", () => {
+    // A restored tab has to be drawable before anything is fetched — the run
+    // status is a poll, and a tab that could not label itself until it answered
+    // would render blank on every cold open.
+    const { label, blurb } = describePanelTab("run");
+    expect(label).toBe("Run");
+    expect(blurb.length).toBeGreaterThan(0);
+  });
+});
+
 describe("pdf tabs", () => {
   test("a .pdf path routes to its own tab, data science or not", () => {
     // The PDF viewer is deliberately ungated: compiled LaTeX output, a
