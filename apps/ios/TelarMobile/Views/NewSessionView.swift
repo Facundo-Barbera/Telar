@@ -100,10 +100,7 @@ struct NewSessionView: View {
                         ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
                             NavigationLink(value: project) {
                                 HStack(spacing: 12) {
-                                    Image(systemName: "folder.fill")
-                                        .font(.system(size: 17))
-                                        .foregroundStyle(Theme.textMuted2)
-                                        .frame(width: 27, height: 27)
+                                    ProjectAvatar(name: project.name, projectId: project.id, hostId: hostId, icon: project.icon, api: settings.api(for: hostId), size: 27)
                                     Text(project.name)
                                         .font(.system(size: 16, weight: .bold))
                                         .foregroundStyle(Theme.text)

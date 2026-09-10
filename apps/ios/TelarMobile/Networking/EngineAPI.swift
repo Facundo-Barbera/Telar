@@ -14,6 +14,9 @@ protocol EngineAPI: Sendable {
     /// is the cockpit's own JSON; these hand it over unparsed.
     func sessionData(_ id: EngineID) async throws -> Data
     func liveSessionsData() async throws -> Data
+    /// The bytes behind `ProjectRef.icon`. `icon` rides as `?v=` so the
+    /// cockpit's immutable cache header is honest; the route does not read it.
+    func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stopSession(_ id: EngineID) async throws
     func stopTurn(_ id: EngineID, runId: String) async throws
@@ -257,6 +260,10 @@ struct HTTPEngineAPI: EngineAPI {
 
     func liveSessionsData() async throws -> Data {
         try await raw(makeRequest(url("api/sessions/live")))
+    }
+
+    func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data {
+        try await raw(makeRequest(url("api/projects/\(escape(projectId))/icon", query: [URLQueryItem(name: "v", value: icon)])))
     }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {

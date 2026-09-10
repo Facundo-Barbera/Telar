@@ -51,6 +51,16 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(a != b)
     }
 
+    @Test func projectIconCarriesTheKeyAsTheCacheBuster() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/projects/project_dud/icon")
+            #expect(request.url?.query() == "v=sha-abc")
+            return (200, Data([0x89, 0x50, 0x4E, 0x47]))
+        }
+        let data = try await stubAPI().projectIcon("project_dud", icon: "sha-abc")
+        #expect(data == Data([0x89, 0x50, 0x4E, 0x47]))
+    }
+
     @Test func submitSendsIdempotencyKeyAndAcceptsReplay() async throws {
         let turnJSON = """
         {"turn":{"runId":"run_abc","sessionId":"s","sequence":1,"state":"queued",

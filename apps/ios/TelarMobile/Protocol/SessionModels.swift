@@ -121,6 +121,11 @@ struct Session: Codable, Identifiable, Equatable {
 struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     var id: EngineID
     var name: String
+    /// `Project.icon` — present when the engine found an icon file in the
+    /// checkout. An opaque content-derived key: the bytes live behind
+    /// `GET /api/projects/:id/icon?v=<icon>` and may be cached immutably
+    /// against it, because a changed file is a changed key.
+    var icon: String?
 }
 
 /// `GET /api/sessions/live` — the whole inbox in one call.

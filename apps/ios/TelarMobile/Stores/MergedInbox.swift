@@ -85,6 +85,15 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         return stores[session.hostId]?.projectNames[projectId]
     }
 
+    func project(_ session: HostedSession) -> ProjectRef? {
+        guard let projectId = session.session.projectId else { return nil }
+        return stores[session.hostId]?.projects[projectId]
+    }
+
+    func project(_ id: EngineID, on hostId: HostID) -> ProjectRef? {
+        stores[hostId]?.projects[id]
+    }
+
     /// Reconcile the store set with the host book. Unchanged hosts keep
     /// their store (no poll churn, no flash of empty).
     func sync(hosts: [Host], settings: AppSettings) {

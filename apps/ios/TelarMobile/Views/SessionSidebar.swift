@@ -18,7 +18,7 @@ struct SessionSidebar: View {
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
-        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, orders: orders)
+        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, icons: { inbox.project($0)?.icon }, orders: orders)
     }
     private var all: [HostedSession] { inbox.sections.active + inbox.sections.tail }
     private func matches(_ row: HostedSession) -> Bool {
@@ -69,8 +69,9 @@ struct SessionSidebar: View {
                             if collapsed.contains(group.id) { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
                             savedCollapsed = collapsed.sorted().joined(separator: "\n")
                         } label: {
-                            HStack {
+                            HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
+                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, icon: group.icon, api: settings.api(for: group.hostId), size: 16)
                                 Text(group.name)
                                 Spacer()
                                 if settings.hosts.count > 1 { Text(hostName(group.hostId)).font(.caption2) }
@@ -151,6 +152,11 @@ struct SessionSidebar: View {
                     Text(row.session.activity == .blocked ? "Needs you" : row.session.activity == .idle ? (row.session.lastTurnFailed == true ? "Failed" : "Idle") : row.session.activity.rawValue.capitalized)
                         .font(.caption).foregroundStyle(Theme.textMuted)
                     Spacer(minLength: 4)
+                    // The attention and pinned bands mix projects, so the row
+                    // says which one — the project sections already do.
+                    if let project = inbox.project(row) {
+                        ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
+                    }
                     if settings.hosts.count > 1 { Text(hostName(row.hostId)).font(.caption2).foregroundStyle(Theme.textMuted) }
                 }
             }.padding(.vertical, 5)

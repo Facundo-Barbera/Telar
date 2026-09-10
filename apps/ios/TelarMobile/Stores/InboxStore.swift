@@ -44,6 +44,9 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 @MainActor @Observable final class InboxStore {
     private(set) var sections = InboxSections()
     private(set) var projectNames: [EngineID: String] = [:]
+    /// The projects as the Mac listed them — name AND icon key — so a row can
+    /// draw the project's mark, not just say its name.
+    private(set) var projects: [EngineID: ProjectRef] = [:]
     private(set) var lastError: String?
     /// A retry can't fix a credential — the merged view escalates this one.
     private(set) var unauthorized = false
@@ -154,6 +157,7 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 
     private func apply(_ live: LiveSessions) {
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
+        projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         sections = groupInbox(
             live.sessions,
             now: Timestamp(Date().timeIntervalSince1970 * 1000),
