@@ -106,7 +106,7 @@ printf '{\n  "shortSha": "%s",\n  "sha": "%s",\n  "ref": "working-tree",\n  "cha
 echo "==> stamped local build: $SHORT_SHA (channel=$CHANNEL dirty=$DIRTY)"
 
 cd "$DESKTOP_DIR"
-CONFIG_OVERRIDES=(--dir --publish never)
+CONFIG_OVERRIDES=()
 if [ "$DEV" -eq 1 ]; then
   echo "==> package unsigned macOS arm64 DEV app (Telar Dev, com.telar.desktop.dev)"
   # Everything that gives the dev build an identity of its own, as overrides so
@@ -117,7 +117,7 @@ if [ "$DEV" -eq 1 ]; then
   #                    inherited TELAR_HOME/TELAR_DESKTOP_URL and to keep the
   #                    updater off. The hardened runtime is off because nothing
   #                    signs this build and it never needs a notarized shape.
-  CONFIG_OVERRIDES+=(
+  CONFIG_OVERRIDES=(
     "-c.productName=Telar Dev"
     "-c.appId=com.telar.desktop.dev"
     "-c.extraMetadata.productName=Telar Dev"
@@ -126,6 +126,10 @@ if [ "$DEV" -eq 1 ]; then
     "-c.mac.identity=null"
     "-c.mac.notarize=false"
     "-c.directories.output=release/dev"
+    # Where "Update from Local Checkout" (dev-update.js) rebuilds from: the
+    # checkout that produced this bundle. Overridable at runtime via
+    # <Dev home>/dev-update.json.
+    "-c.extraMetadata.telarDevRepo=$REPO_ROOT"
   )
   APP="$DESKTOP_DIR/release/dev/mac-arm64/Telar Dev.app"
   BIN="$APP/Contents/MacOS/Telar Dev"
@@ -137,10 +141,16 @@ fi
 # Force unsigned regardless of any Developer ID cert sitting in Keychain — this
 # script is for fast local iteration, not a release build. `--publish never`
 # for the same reason: nothing here ever talks to an update feed.
-CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder "${CONFIG_OVERRIDES[@]}"
+CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir --publish never "${CONFIG_OVERRIDES[@]}"
 
 test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }
 test -x "$BIN" || { echo "!! packaged executable missing at $APP" >&2; exit 1; }
+# The LSUIElement helper nodeExecPath() resolves engine children to; without it
+# every child falls back to the Foreground main binary and each one puts a
+# dead Dock icon up. Named after the product, so the dev bundle differs.
+HELPER_NAME="Telar Helper"; [ "$DEV" -eq 1 ] && HELPER_NAME="Telar Dev Helper"
+HELPER="$APP/Contents/Frameworks/$HELPER_NAME.app/Contents/MacOS/$HELPER_NAME"
+test -x "$HELPER" || { echo "!! packaged app missing its helper at $HELPER — engine children would land in the Dock" >&2; exit 1; }
 if [ "$DEV" -eq 1 ]; then
   # The identity the overrides were supposed to produce, checked on the artefact
   # rather than trusted: a dev build that answers to the installed app's bundle

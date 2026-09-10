@@ -28,6 +28,8 @@ const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
+const { resolveHelperExec } = require("./helper-exec");
+const devUpdate = require("./dev-update");
 
 const SMOKE = process.argv.includes("--smoke");
 
@@ -369,19 +371,14 @@ function telarHome() {
  * with LaunchServices as a Foreground app even under RUN_AS_NODE, putting a
  * second, dead "Telar" in the Dock per child. The Helper binary is LSUIElement
  * in its Info.plist — same runtime, no Dock entry — so prefer it when packaged.
+ * The helper is named after the PRODUCT ("Telar Dev Helper" in a --dev
+ * package), so resolution derives from app.getName() — see helper-exec.js.
  */
 function nodeExecPath() {
   if (app.isPackaged && process.platform === "darwin") {
-    const helper = path.join(
-      path.dirname(process.execPath),
-      "..",
-      "Frameworks",
-      "Telar Helper.app",
-      "Contents",
-      "MacOS",
-      "Telar Helper",
-    );
-    if (fs.existsSync(helper)) return helper;
+    const frameworks = path.join(path.dirname(process.execPath), "..", "Frameworks");
+    const helper = resolveHelperExec(frameworks, app.getName());
+    if (helper) return helper;
   }
   return process.execPath;
 }
@@ -1036,6 +1033,14 @@ function buildApplicationMenu() {
         ...otherBindings.map(toMenuItem),
         { type: "separator" },
         { label: "Jump to Conversation", submenu: jumpBindings.map(toMenuItem) },
+        // The Dev self-update entry (DEV-005) — only a --dev package carries
+        // it. The shipping app keeps electron-updater; this is the local twin.
+        ...(DEV_BUILD
+          ? [
+              { type: "separator" },
+              { label: "Update from Local Checkout…", click: () => devUpdate.openWindow() },
+            ]
+          : []),
       ],
     },
     { role: "editMenu" },
