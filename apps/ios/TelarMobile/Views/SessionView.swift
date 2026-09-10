@@ -425,6 +425,8 @@ struct ComposerView: View {
     @State private var managingQueue = false
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var pickingPhotos = false
+    @State private var showingStash = false
+    @State private var stashNote: String?
     @Environment(\.colorScheme) private var scheme
 
     private var isRunning: Bool { store.hasRunningTurn }
@@ -437,12 +439,23 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let stashNote {
+                Text(stashNote)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
             surface
             if focused { toolbar }
             if !queued.isEmpty { queueLine }
         }
         .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        .sheet(isPresented: $showingStash) {
+            StashSheet { entry in restore(entry) }
+        }
         .photosPicker(isPresented: $pickingPhotos, selection: $pickedPhotos, maxSelectionCount: 8, matching: .images)
         .onChange(of: pickedPhotos) { _, items in
             guard !items.isEmpty else { return }
@@ -571,6 +584,10 @@ struct ComposerView: View {
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
+                    // THE STASH sits beside the attach button because that
+                    // cluster is already "things that go into this message".
+                    StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                onStash: stashDraft, onOpen: { showingStash = true })
                     if isRunning {
                         ToolbarPill(variant: .danger) {
                             stop()
@@ -739,6 +756,31 @@ struct ComposerView: View {
 
     private func stop() {
         Task { await store.stopActiveTurn() }
+    }
+
+    /// TEXT ONLY, on the phone. The web also carries pictures; here an
+    /// attachment is already uploaded to the session it was picked in, and
+    /// re-uploading it elsewhere is the stash's next step, not this one. The
+    /// attachments stay in the box and are named in the note so nothing
+    /// looks lost.
+    private func stashDraft() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let ok = PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: []))
+        guard ok else {
+            stashNote = "There was no room to stash this. Nothing was taken from the box."
+            return
+        }
+        draft = ""
+        stashNote = store.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
+    }
+
+    /// A RESTORE NEVER EATS WHAT IS ALREADY IN THE BOX.
+    private func restore(_ entry: StashEntry) {
+        guard let taken = PromptStash.shared.take(entry.id, room: 0) else { return }
+        draft = StashRules.appendPrompt(draft, taken.prompt)
+        stashNote = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
+        focused = true
     }
 
     static let runtimeModes: [(String, String)] = [

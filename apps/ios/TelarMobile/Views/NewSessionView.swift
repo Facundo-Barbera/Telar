@@ -260,6 +260,7 @@ struct NewSessionDraftView: View {
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var submitting = false
     @State private var pickingBranch = false
+    @State private var showingStash = false
     @State private var error: String?
     /// Set the moment the create succeeds: a retry after a failed upload or
     /// turn must resume this session, never create a second one.
@@ -324,6 +325,18 @@ struct NewSessionDraftView: View {
                                     .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                             }
                             .accessibilityLabel("Attach photos")
+                            StashButton(
+                                hasDraft: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                onStash: {
+                                    let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: [])) {
+                                        prompt = ""
+                                    } else {
+                                        error = "There was no room to stash this. Nothing was taken from the box."
+                                    }
+                                },
+                                onOpen: { showingStash = true }
+                            )
                             ModelPillView(
                                 catalogues: catalogues,
                                 choice: choice,
@@ -409,6 +422,14 @@ struct NewSessionDraftView: View {
         .task {
             await loadCatalogues()
             git = try? await api.projectGit(project.id)
+        }
+        .sheet(isPresented: $showingStash) {
+            StashSheet { entry in
+                if let taken = PromptStash.shared.take(entry.id, room: 0) {
+                    prompt = StashRules.appendPrompt(prompt, taken.prompt)
+                    focused = true
+                }
+            }
         }
         .sheet(isPresented: $pickingBranch) {
             BranchPickerSheet(git: git, selected: baseRef) { picked in
