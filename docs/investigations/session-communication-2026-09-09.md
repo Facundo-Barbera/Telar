@@ -16,9 +16,10 @@ machine-triggered replies also occupied the main history.
 - Direct messages are collapsed activity rows at the normal 50rem maximum width,
   in both idle and steering paths. Expanded content uses the shared Markdown
   renderer and a 24rem scrolling body.
-- Machine-triggered turns, including their replies, start behind a disclosure.
-  Human messages, human steering, and pending requests remain visible. Stored
-  messages and history are not deleted or rewritten.
+- Passive reports start behind a disclosure. Actual agent work and completion
+  messages remain visible, including legacy delegated tasks and subscription
+  responses. Human messages, human steering, and pending requests remain visible.
+  Stored messages and history are not deleted or rewritten.
 - The agent subscription tool defaults to one matching notification. Ongoing
   monitoring requires explicit `once: false`; the lower-level subscription API
   retains compatibility. Tool instructions discourage duplicate reports and
@@ -74,3 +75,17 @@ New SQLite-backed regressions cover passive persistence and restart, no steering
 or notification cascade, awaited versus unawaited results, duplicate suppression,
 and Stop precedence. A transcript regression checks the initiating message appears
 before later human steering. A tool regression checks the passive default.
+
+## Completion visibility regression
+
+The first containment patch folded every session-origin turn, including completed
+work. This affected conversations throughout the app, especially delegated worker
+sessions: five stored conversations have exclusively session-origin turns. The
+user reported seeing only session activity rows instead of completion messages.
+All 109 sessions were inspected; none had received new turns since that update.
+This was a rendering regression, not deleted history or a new delivery burst.
+
+Only explicitly passive deliveries now fold the entire turn. Incoming message
+payloads retain their bounded disclosure, but actual responses are visible by
+default regardless of their initiator. Regression coverage includes legacy
+assignments, explicit waking work, and subscription completions.

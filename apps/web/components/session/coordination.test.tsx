@@ -8,12 +8,31 @@ import type { JournalTurn } from "@/lib/engine/journal";
 const machine: JournalTurn = { runId: "run_peer", origin: "session", sender: { sessionId: "session_worker" }, prompt: "Internal checkpoint", state: "completed", resultText: "Internal acknowledgement", items: [], tasks: [] };
 const render = (turn: JournalTurn) => renderToStaticMarkup(<SessionTurn turn={turn} requests={[]} sending={false} live={false} now={1} onDecide={() => {}} onRetry={() => {}} />);
 
-test("a machine-triggered exchange keeps its payload and response out of the default chat view", () => {
-  const html = render(machine);
+test("a passive report keeps its payload out of the default chat view", () => {
+  const html = render({ ...machine, agentDelivery: "passive", resultText: "" });
   expect(html).toContain('aria-expanded="false"');
   expect(html).toContain("Session activity");
   expect(html).not.toContain("Internal checkpoint");
   expect(html).not.toContain("Internal acknowledgement");
+});
+
+test("legacy agent assignments retain visible completion messages", () => {
+  const html = render(machine);
+  expect(html).toContain("Internal acknowledgement");
+  expect(html).not.toContain('aria-label="Session coordination"');
+  expect(html).not.toContain("Internal checkpoint");
+});
+
+test("waking agent work retains its completion message", () => {
+  const html = render({ ...machine, agentDelivery: "wake" });
+  expect(html).toContain("Internal acknowledgement");
+  expect(html).not.toContain('aria-label="Session coordination"');
+});
+
+test("subscription completions retain the recipient's response", () => {
+  const html = render({ ...machine, sender: undefined, wakeReason: { kind: "turn_completed", sessionId: "session_worker", runId: "run_source" } });
+  expect(html).toContain("Internal acknowledgement");
+  expect(html).not.toContain('aria-label="Session coordination"');
 });
 
 test("a human's message is never folded as session coordination", () => {
