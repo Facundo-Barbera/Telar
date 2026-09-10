@@ -31,5 +31,6 @@ test("a mid-turn direct report is collapsed too", () => {
 test("human steering into a machine turn remains visible", () => {
   const html = render({ ...machine, items: [{ id: "item_human", runId: "run_peer", sessionId: "session_host", status: "completed", title: "Message", detail: { type: "user_message", text: "Please change direction" }, streamedText: "", openedBy: 1, startedAt: 1 }] });
   expect(html).toContain("Please change direction");
+  expect(html.indexOf('aria-label="Message from another agent"')).toBeLessThan(html.indexOf("Please change direction"));
   expect(html).not.toContain('aria-label="Session coordination"');
 });

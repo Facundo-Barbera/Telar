@@ -3198,23 +3198,23 @@ describe("an agent's message is attributed, never the person's", () => {
     const token = claimed.claim!.token;
     // Not yet running: the proof is not live, and a message cannot be
     // attributed to a turn that has not started.
-    expect(() => store.submitAgentTurn("session_two", { runId: "run_early", input: "go" }, { sessionId: "session_one", runId: "run_host", claimToken: token })).toThrow(/not running/);
+    expect(() => store.submitAgentTurn("session_two", { intent: "task", runId: "run_early", input: "go" }, { sessionId: "session_one", runId: "run_host", claimToken: token })).toThrow(/not running/);
     store.markRunning("session_one", "run_host", token);
 
-    const { turn } = store.submitAgentTurn("session_two", { runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
+    const { turn } = store.submitAgentTurn("session_two", { intent: "task", runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
     expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_one" }, state: "queued", input: "please do X" });
     expect(turn.wakeReason).toBeUndefined();
     expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session", sender: { sessionId: "session_one" } } });
 
     // A forged proof — wrong token — is refused rather than attributed.
-    expect(() => store.submitAgentTurn("session_two", { runId: "run_forged", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) })).toThrow(EngineStateError);
+    expect(() => store.submitAgentTurn("session_two", { intent: "task", runId: "run_forged", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) })).toThrow(EngineStateError);
     // And a proof naming a session that does not exist.
-    expect(() => store.submitAgentTurn("session_two", { runId: "run_ghost", input: "boo" }, { sessionId: "session_nope", runId: "run_host", claimToken: token })).toThrow(EngineStateError);
+    expect(() => store.submitAgentTurn("session_two", { intent: "task", runId: "run_ghost", input: "boo" }, { sessionId: "session_nope", runId: "run_host", claimToken: token })).toThrow(EngineStateError);
   });
 
   test("without proof it is still an agent's — unattributed, never a human bubble", () => {
     const store = pair();
-    const { turn } = store.submitAgentTurn("session_two", { runId: "run_socket", input: "from a chat client" });
+    const { turn } = store.submitAgentTurn("session_two", { intent: "task", runId: "run_socket", input: "from a chat client" });
     expect(turn.origin).toBe("session");
     expect(turn.sender).toEqual({});
     expect(turn.wakeReason).toBeUndefined();
@@ -3236,7 +3236,7 @@ describe("an agent's message is attributed, never the person's", () => {
     const live = store.claimTurn("session_two", "worker_one")!;
     store.markRunning("session_two", "run_live", live.claim!.token);
 
-    const steered = store.submitAgentTurn("session_two", { runId: "run_steer", input: "also this" });
+    const steered = store.submitAgentTurn("session_two", { intent: "task", runId: "run_steer", input: "also this" });
     expect(steered.turn.state).toBe("steering");
     const [delivery] = store.steerForWorker("worker_one");
     expect(delivery).toMatchObject({ steerRunId: "run_steer", text: "also this", sender: {} });
@@ -3252,7 +3252,7 @@ describe("an agent's message is attributed, never the person's", () => {
     store.stopTurn("session_two", "run_steer");
     store.stopTurn("session_two", "run_human");
     store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
-    const direct = store.submitAgentTurn("session_two", { runId: "run_direct", input: "next job" });
+    const direct = store.submitAgentTurn("session_two", { intent: "task", runId: "run_direct", input: "next job" });
     expect(direct.turn.state).toBe("queued");
     const claimedDirect = store.claimTurn("session_two", "worker_one")!;
     store.markRunning("session_two", "run_direct", claimedDirect.claim!.token);

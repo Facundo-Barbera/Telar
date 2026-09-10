@@ -281,15 +281,26 @@ describe("there is no cap on creation", () => {
 // ── driving ─────────────────────────────────────────────────────────────────
 
 describe("driving a session", () => {
+  test("send defaults to passive activity and does not promise an answer", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
+    expect(sent.isError).toBe(false);
+    expect(sent.json!.delivery).toBe("passive");
+    expect(String(sent.json!.note)).toContain("No model was started or steered");
+    expect(store.claimTurn(id, "worker_test")).toBeUndefined();
+  });
+
   test("send queues one turn and says plainly that it is not the answer", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
 
-    const sent = await call(tools, "sessions_send", { sessionId: id, input: "read the parser and report" });
+    const sent = await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "read the parser and report" });
     expect(sent.isError).toBe(false);
     expect(sent.json!.state).toBe("queued");
-    expect(String(sent.json!.note)).toContain("Queued, not answered");
+    expect(String(sent.json!.note)).toContain("Accepted for execution, not answered");
     expect(store.turns(id).map((turn) => turn.input)).toEqual(["read the parser and report"]);
     // THE RUN ID IS THE WALL'S, not a caller's: nothing in the argument shape
     // can carry one, so two messages can never collide on one.
@@ -305,7 +316,7 @@ describe("driving a session", () => {
     expect(idle.json!.running).toBe(false);
     expect(String(idle.json!.note)).toContain("Nothing is running");
 
-    await call(tools, "sessions_send", { sessionId: id, input: "go" });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "go" });
     const busy = await call(tools, "sessions_status", { sessionId: id });
     expect(busy.json!.running).toBe(true);
     expect((busy.json!.turns as unknown[]).length).toBe(1);
@@ -323,7 +334,7 @@ describe("driving a session", () => {
     expect(store.getSession(id)).toMatchObject({ state: "active", settledOverride: "settled" });
 
     // Still live: a message lifts it, exactly as one typed by a person would.
-    await call(tools, "sessions_send", { sessionId: id, input: "one more thing" });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one more thing" });
     expect(store.getSession(id).settledOverride).toBeUndefined();
 
     const back = await call(tools, "sessions_settle", { sessionId: id, settled: false });
@@ -341,10 +352,10 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    await call(tools, "sessions_send", { sessionId: id, input: "go" });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "go" });
     const claimed = store.claimTurn(id, "worker_one")!;
     store.markRunning(id, claimed.runId, claimed.claim!.token);
-    await call(tools, "sessions_send", { sessionId: id, input: "and then this" });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "and then this" });
 
     const stopped = await call(tools, "sessions_stop", { sessionId: id });
     expect(stopped.json!).toMatchObject({ stopped: 2, runId: claimed.runId, state: "stopped" });
@@ -362,7 +373,7 @@ describe("driving a session", () => {
     expect([...tools.keys()]).not.toContain("sessions_resume");
 
     // THE NEXT MESSAGE JUST RUNS.
-    await call(tools, "sessions_send", { sessionId: id, input: "carry on" });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "carry on" });
     expect(store.claimNextTurn("worker_two")?.turn.input).toBe("carry on");
 
     // Stopping an idle session says so rather than erroring.
@@ -425,7 +436,7 @@ describe("sessions_read is bounded", () => {
     // turn is not a queued one). NOT `sessions_stop`: that pauses the
     // session, and every send after the first would be held.
     for (let lap = 0; lap < 40; lap++) {
-      await call(tools, "sessions_send", { sessionId: id, input: `message ${lap}` });
+      await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `message ${lap}` });
       store.stopTurn(id);
     }
     const whole = store.readEvents(id, 0);
@@ -459,7 +470,7 @@ describe("sessions_read is bounded", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    await call(tools, "sessions_send", { sessionId: id, input: "x".repeat(60_000) });
+    await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "x".repeat(60_000) });
 
     const read = await call(tools, "sessions_read", { sessionId: id });
     const text = read.text;
@@ -543,7 +554,7 @@ describe("subscribing and answering", () => {
     store.subscribe(host.id, { targetSessionId: peer.id });
     store.stopSession(host.id, "user");
     const tools = wall(store, { sessionId: peer.id });
-    expect((await call(tools, "sessions_send", { sessionId: host.id, input: "another update" })).isError).toBe(true);
+    expect((await call(tools, "sessions_send", { intent: "task", sessionId: host.id, input: "another update" })).isError).toBe(true);
     store.submitTurn(peer.id, { runId: "run_peer", input: "work" });
     const token = store.claimTurn(peer.id, "worker_one")!.claim!.token;
     store.markRunning(peer.id, "run_peer", token);
@@ -551,7 +562,7 @@ describe("subscribing and answering", () => {
     expect(store.turns(host.id)).toHaveLength(0);
     store.submitTurn(host.id, { runId: "run_human", input: "continue" });
     expect(store.getSession(host.id).agentMessagesBlocked).toBeUndefined();
-    expect((await call(tools, "sessions_send", { sessionId: host.id, input: "fresh report" })).isError).not.toBe(true);
+    expect((await call(tools, "sessions_send", { intent: "task", sessionId: host.id, input: "fresh report" })).isError).not.toBe(true);
     expect(store.turns(host.id)).toHaveLength(2);
   });
 

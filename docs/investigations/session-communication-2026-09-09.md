@@ -36,9 +36,25 @@ that instant. The backup is in Telar's application-support `diagnostics` folder,
 `pinned-subscriptions-before-containment-20260909.json`. Do not blindly restore
 all of these old subscriptions or resume a notification backlog.
 
-This is not a global rate limiter or a new inbox protocol. Explicit agent sends
-can still start work in sessions that the user has not stopped. Agents should
-subscribe only to outcomes they are awaiting and communicate actionable changes.
+## Awaited results and blockers
+
+The follow-up delivery policy makes `sessions_send` passive by default. Routine
+reports are durable, collapsed activity; they never enter the model queue,
+steer a running coordinator, reopen settled work, or notify its subscribers.
+`result` wakes only a recipient subscribed to that sender's completion. An
+explicit result consumes a one-shot subscription and suppresses the later
+duplicate completion notice, including for ongoing subscriptions. Sender and
+source run attribution come from the engine's validated claim proof.
+
+An actionable `blocker` can wake a recipient. An explicit `task` can assign new
+work to a worker. These intents do not override human Stop. Tool schemas and
+responses explain delivery instead of claiming that every send starts work.
+
+The last transcript also exposed a display-order defect: its initiating disk-full
+report was rendered below later steering and completion notices. The initiating
+machine message now precedes every response segment. The stored history already
+had the correct order and is preserved. That exchange ended with disk cleanup
+and builds on hold; the agents have not resumed feature work.
 
 ## Verification
 
@@ -51,3 +67,10 @@ Browser verification of the development gallery confirmed collapsed defaults,
 Markdown expansion, 800px/320px widths, 384px maximum expanded body height, no
 horizontal overflow, and no browser errors. No paid provider turns are needed
 for these checks.
+
+Follow-up validation: 1,877 engine tests and 1,520 web tests pass, plus 68 client
+tests; engine/web typechecks pass and lint has no errors (12 existing warnings).
+New SQLite-backed regressions cover passive persistence and restart, no steering
+or notification cascade, awaited versus unawaited results, duplicate suppression,
+and Stop precedence. A transcript regression checks the initiating message appears
+before later human steering. A tool regression checks the passive default.
