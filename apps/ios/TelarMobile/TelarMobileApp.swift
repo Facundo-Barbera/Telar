@@ -54,6 +54,21 @@ struct RootView: View {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
                             SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId))
                                 .id("\(settings.apiFingerprint(ref.hostId)):\(ref.sessionId)")
+                                // THE WAY BACK. The split view's own toggle is a
+                                // system placement the detail's toolbar can
+                                // displace, and once it did there was no control
+                                // left that could show the sidebar again. This
+                                // one appears only while the sidebar is hidden.
+                                .toolbar {
+                                    if columnVisibility == .detailOnly {
+                                        ToolbarItem(placement: .topBarLeading) {
+                                            Button("Show sidebar", systemImage: "sidebar.leading") {
+                                                withAnimation { columnVisibility = .all }
+                                            }
+                                            .keyboardShortcut("0", modifiers: [.command, .option])
+                                        }
+                                    }
+                                }
                         } else {
                             ContentUnavailableView {
                                 Label("Your work, within reach", systemImage: "text.bubble")

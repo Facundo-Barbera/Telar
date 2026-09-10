@@ -481,12 +481,17 @@ struct ComposerView: View {
             if focused && !store.pendingAttachments.isEmpty {
                 attachmentStrip.padding(.bottom, 10)
             }
-            HStack(alignment: .bottom, spacing: 8) {
+            // AT REST THE ROW IS CENTRED: the field sits on the pill's centre
+            // line beside the 44pt send button. Bottom alignment is for the
+            // focused card, where a growing field keeps the send button on
+            // its last line. Bottom-aligning a 36pt field against a 44pt
+            // button at rest was the placeholder sitting low in the pill.
+            HStack(alignment: focused ? .bottom : .center, spacing: 8) {
                 TextField("Ask the agent, or run a command…", text: $draft, axis: .vertical)
                     .font(.system(size: 16))
                     .foregroundStyle(Theme.text)
                     .lineLimit(focused ? 7 : 1)
-                    .frame(minHeight: focused ? 80 : 36, alignment: focused ? .topLeading : .center)
+                    .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                     .padding(.vertical, focused ? 8 : 0)
                     .focused($focused)
                     .onSubmit { submit() }
@@ -498,7 +503,6 @@ struct ComposerView: View {
                             .frame(width: 30, height: 30)
                             .background(Theme.subtleStrong)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .padding(.bottom, 7)
                     }
                     ControlPillButton(
                         isRunning: isRunning, canSend: canSend,
