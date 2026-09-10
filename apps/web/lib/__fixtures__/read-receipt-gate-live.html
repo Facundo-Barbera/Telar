@@ -1,0 +1,108 @@
+<!doctype html>
+<!--
+  THE SAME GATE, DRIVEN BY HAND rather than by a script.
+
+  `read-receipt-gate.html` beside this one asserts the observer's answers in one
+  self-driving pass. This one exposes the live state instead, so an agent (or a
+  person) can scroll, replace the newest answer, and take the window's focus
+  away, and SEE what the gate says at each step — including the two things the
+  scripted fixture cannot reach: focus actually leaving the window, and a new
+  answer's marker starting unseen rather than inheriting the previous one's.
+
+  Fixtures only. Nothing here talks to an engine or sends a receipt.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Read receipt gate — live</title>
+    <style>
+      body { font: 14px system-ui; margin: 0; padding: 16px; }
+      #viewport { height: 200px; overflow-y: auto; border: 1px solid #ccc; }
+      #viewport:focus { outline: 2px solid #59f; }
+      .turn { height: 170px; margin: 8px; background: #eef; }
+      .marker { height: 1px; }
+      #state { margin-top: 12px; font-family: ui-monospace, monospace; white-space: pre; background: #f6f6f6; padding: 8px; }
+      .yes { color: #0a7; font-weight: 700; }
+      .no { color: #c00; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <h1>Read receipt gate — live</h1>
+    <!-- tabindex so the scroller can be driven with End/Home from a keyboard. -->
+    <div id="viewport" tabindex="0"></div>
+    <button id="answer" type="button">Add a newer answer</button>
+    <!-- Buttons rather than only the keyboard, so the scroller can be driven
+         without stealing focus from it. -->
+    <button id="toEnd" type="button">Scroll to newest</button>
+    <button id="toTop" type="button">Scroll to top</button>
+    <div id="state">…</div>
+    <script type="module">
+      const viewport = document.getElementById("viewport");
+      const state = document.getElementById("state");
+
+      /** WHICH run's marker is on screen — the shape the hook stores, and the
+       *  reason a new answer cannot inherit the previous one's visibility. */
+      let visibleRunId;
+      let candidateRunId;
+      let observer;
+
+      const render = () => {
+        const foreground = document.visibilityState === "visible" && document.hasFocus();
+        const atLatest = candidateRunId !== undefined && visibleRunId === candidateRunId;
+        const cls = (value) => (value ? "yes" : "no");
+        state.innerHTML =
+          `candidate       ${candidateRunId}\n` +
+          `visibleRunId    ${visibleRunId ?? "(none)"}\n` +
+          `foreground      <span class="${cls(foreground)}">${foreground}</span>   (visibility=${document.visibilityState} focus=${document.hasFocus()})\n` +
+          `atLatestResult  <span class="${cls(atLatest)}">${atLatest}</span>\n` +
+          `WOULD SEND      <span class="${cls(foreground && atLatest)}">${foreground && atLatest}</span>`;
+      };
+
+      /** Append an answer and move the marker to the end of it, exactly as the
+       *  cockpit does: the previous marker is REMOVED, and the new one is
+       *  unseen until its own observer reports. */
+      let next = 0;
+      const addAnswer = () => {
+        document.querySelector(".marker")?.remove();
+        observer?.disconnect();
+        next += 1;
+        const runId = `run-${next}`;
+        const turn = document.createElement("div");
+        turn.className = "turn";
+        turn.textContent = `turn ${next}`;
+        viewport.append(turn);
+        const marker = document.createElement("div");
+        marker.className = "marker";
+        viewport.append(marker);
+        candidateRunId = runId;
+        // The new candidate starts unseen. This is the assignment the boolean
+        // version got wrong: it kept the old answer's "yes".
+        visibleRunId = visibleRunId === undefined ? undefined : visibleRunId;
+        if (visibleRunId !== runId) visibleRunId = undefined;
+        render();
+        observer = new IntersectionObserver((entries) => {
+          const entry = entries[entries.length - 1];
+          visibleRunId = entry?.isIntersecting ? runId : visibleRunId === runId ? undefined : visibleRunId;
+          render();
+        });
+        observer.observe(marker);
+      };
+
+      document.getElementById("answer").addEventListener("click", addAnswer);
+      document.getElementById("toEnd").addEventListener("click", () => {
+        viewport.scrollTop = viewport.scrollHeight;
+      });
+      document.getElementById("toTop").addEventListener("click", () => {
+        viewport.scrollTop = 0;
+      });
+      for (const event of ["visibilitychange"]) document.addEventListener(event, render);
+      for (const event of ["focus", "blur"]) window.addEventListener(event, render);
+      viewport.addEventListener("scroll", render);
+
+      addAnswer();
+      addAnswer();
+      addAnswer();
+      render();
+    </script>
+  </body>
+</html>
