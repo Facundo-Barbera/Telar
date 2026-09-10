@@ -42,13 +42,14 @@ import { Composer } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
+import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
 import {
   canvasPanelKey,
   closePanelTab,
@@ -522,46 +523,10 @@ function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeo
   }
 }
 
-/**
- * A MESSAGE ANOTHER AGENT SENT — `sessions_send`, landing here as a turn or
- * steered into a running one. Drawn in the assistant's lane, left-aligned,
- * with a bot glyph and the sender's id: NOT the person's bubble. The old
- * rendering showed an orchestrator's instructions as if the human had typed
- * them, which is exactly the misreading the engine's `sender` stamp exists to
- * prevent — a peer's report carries no human authorization, and the transcript
- * must not look as though it did.
- */
-export function agentSenderLabel(sender: NonNullable<JournalTurn["sender"]>): string {
-  return sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session";
-}
-
-export function AgentMessageBubble({ text, sender, attachments, onOpenTab }: {
-  text: string;
-  sender: NonNullable<JournalTurn["sender"]>;
-  attachments?: readonly TurnAttachment[];
-  onOpenTab?: (tab: PanelTab) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2" aria-label="Message from another agent">
-      <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-        <BotIcon className="size-3.5 shrink-0" />
-        <span className="font-mono">{agentSenderLabel(sender)}</span>
-        <span>· not the user, no approval implied</span>
-      </div>
-      <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
-      {attachments?.length ? (
-        <ul className="mt-1 flex flex-wrap gap-1.5">
-          {attachments.map((attachment) => (
-            <li key={attachment.id} title={attachment.path} className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground">
-              <PaperclipIcon className="size-3 shrink-0" />
-              <span className="max-w-48 truncate">{attachment.name}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
+// A peer agent's message and the person's own now live in one place, beside
+// each other, so neither can drift from how the other is drawn. Re-exported
+// because this module was their home and callers still import them from here.
+export { agentSenderLabel, AgentMessageBubble };
 
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -681,9 +646,21 @@ export function SessionTurn({
    */
   /** What the line under the turn says it is doing — see `turnActivity`. */
   const doing = turnActivity(turn);
-  const lastProse = turn.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
-  const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
-  const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
+  /**
+   * THE TURN'S RESPONSES. A message sent into a running turn is a boundary in
+   * the conversation, so the work after it belongs to it and is drawn under
+   * it — outside the assistant's lane, where the person's own words belong.
+   * `responses.length === 1` is every turn nobody steered, and it renders
+   * exactly as it did before. See `splitAtMessageBoundaries`.
+   */
+  const responses = splitAtMessageBoundaries(turn.items);
+  const answering = responses.at(-1)!;
+  const earlier = responses.slice(0, -1);
+  // The closing-prose split applies to the LAST response only: that is the one
+  // whose final assistant message is the answer to the turn.
+  const lastProse = answering.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
+  const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
+  const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
   /** The quiet fold's own toggle. Per turn, never persisted — looking at how
    *  one answer was made is a glance, not a mode. */
@@ -731,37 +708,32 @@ export function SessionTurn({
 
   return (
     <div className="flex flex-col gap-8">
+      {/* THE ORDINARY MESSAGE, from the one component that defines what that
+          looks like — the same one a message steered into a running turn now
+          uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
       {turn.origin !== "provider" && turn.origin !== "session" && (
-      <Message from="user">
-        <MessageContent from="user">
-          {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
-              bare paragraph, so every reference a gesture had put in the box
-              came back as raw text the moment it was sent — a dropped issue
-              reappearing as `#409 "…" (https://github.com/…)`, URL and all.
-              Nothing is stored to fix it: the draft has always been plain text
-              with the chips derived from it, and this reads it the same way. */}
-          <PromptText text={turn.prompt} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
-          {/* WHAT WAS SENT, not what the model made of it. A transcript that
-              shows the words and not the screenshot has lost half the message —
-              and re-reading it later is exactly when that half matters. Named
-              rather than rendered: the bytes live beside the session on the
-              engine's disk, and no route serves them back to a browser. */}
-          {turn.attachments?.length ? (
-            <ul className="mt-2 flex flex-wrap gap-1.5">
-              {turn.attachments.map((attachment) => (
-                <li
-                  key={attachment.id}
-                  title={attachment.path}
-                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground"
-                >
-                  <PaperclipIcon className="size-3 shrink-0" />
-                  <span className="max-w-48 truncate">{attachment.name}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </MessageContent>
-      </Message>
+        <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+      )}
+
+      {/* A BOUNDARY INTRODUCES THE WORK UNDER IT — message first, then what the
+          agent did about it. Drawn at the top level, not inside the assistant's
+          lane, so a reply is never painted over the message it answers. */}
+      {earlier.map((response) => (
+        <Fragment key={response.boundary?.id ?? "opening"}>
+          {response.boundary && (
+            <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          )}
+          {response.items.length > 0 && (
+            <Message from="assistant">
+              <MessageContent from="assistant">
+                <ActivityGroup items={response.items} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+              </MessageContent>
+            </Message>
+          )}
+        </Fragment>
+      ))}
+      {answering.boundary && (
+        <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
       )}
 
       <Message from="assistant">
@@ -783,7 +755,10 @@ export function SessionTurn({
               The prose/closing split below is for a turn that has FINISHED:
               only then is "the last message" known to be the answer. */}
           {live ? (
-            <LiveActivity items={turn.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+            // The ANSWERING response's items only — the boundaries and the work
+            // before them were drawn above, so live and settled cut the turn in
+            // the same place and a reload cannot move a message.
+            <LiveActivity items={answering.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
           ) : (
             <>
               {!folded && (
@@ -1858,24 +1833,30 @@ export function SessionCockpit({
   );
 
   /**
-   * THE STOP BUTTON PAUSES THE SESSION. It used to end one turn, after which
-   * the worker claimed the next queued message within a heartbeat — the
-   * measured "I pressed stop and it started again". A pause stops the run AND
-   * holds everything queued (and everything that arrives) until Resume, which
-   * is what pressing Stop on a conversation means to the person pressing it.
-   * Pressing it with nothing running still pauses — that is how you hold a
-   * backlog before it starts.
+   * THE STOP BUTTON STOPS. What is running ends, what was queued behind it is
+   * settled rather than started, and the session is idle — the next message
+   * runs, with nothing to resume.
+   *
+   * IT USED TO PAUSE, and that was wrong twice over. Stopping one turn let the
+   * worker claim the next queued message within a heartbeat — the measured "I
+   * pressed stop and it started again" — and a pause was reached for because
+   * it suppressed that. But the leftovers were the problem, not the session's
+   * willingness to work: the latch made a person who pressed Stop press Resume
+   * before they could say anything, which is not what Stop means.
+   *
+   * `stopSession` settles the leftovers instead, so no latch is needed. The
+   * pause is still its own thing, with its own affordance — a session already
+   * paused keeps its banner and its Resume.
    */
   const stop = async () => {
     if (!sessionId) return;
     setSending(true);
     try {
-      const paused = await api.pauseSession(sessionId);
-      setSession(paused.session);
+      await api.stopSession(sessionId);
       await hydrate();
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not pause the session."));
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the session."));
     } finally {
       setSending(false);
     }

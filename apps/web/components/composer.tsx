@@ -957,9 +957,11 @@ export function Composer({
     event.dataTransfer.types.includes("Files") ||
     event.dataTransfer.types.includes("text/uri-list");
 
-  // "Pause", because that is what it does now: the run stops AND the session
-  // stays stopped until Resume — see the cockpit's `stop`.
-  const submitLabel = escArmed ? "Press Escape again to pause" : busy ? "Pause" : "Send";
+  // "Stop", because that is what it does: the run ends and what was queued
+  // behind it is settled, leaving the session idle. It briefly said "Pause" —
+  // it paused, and a person who pressed it had to press Resume before they
+  // could say anything. See the cockpit's `stop`.
+  const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
   const questionSubmitLabel = isLastQuestion(qFields, qd)
     ? qFields.length === 1
       ? "Submit answer"

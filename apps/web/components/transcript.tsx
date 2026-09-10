@@ -55,6 +55,9 @@ import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
+// The ONE definition of what a message looks like — shared with the cockpit so
+// a message sent mid-run and one sent idle cannot drift apart.
+import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
 import { cn } from "@/lib/utils";
 
 /** Deliberately small and literal. The lane is meant to be uniform and boring:
@@ -533,13 +536,23 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
 }
 
 /**
- * A message the human SENT NOW — injected into the running turn rather than
- * queued behind it. Rendered as a user bubble where it landed, because that is
- * where the agent heard it; without this row the agent's change of direction
- * would have no visible cause.
+ * A MESSAGE SENT INTO A RUNNING TURN — and it is drawn as a message, not as a
+ * thing that happened during one.
+ *
+ * IT USED TO HAVE ITS OWN BUBBLE: narrower, differently padded, a smaller type
+ * scale, its attachment chips a size down from the ones on the identical
+ * message sent a second earlier while the agent was idle. Nothing about being
+ * delivered mid-run makes it a different kind of object to the person who
+ * typed it, and the difference read as one. It now renders through
+ * `ConversationMessage`, the same component the turn's own message uses.
+ *
+ * WHAT STAYS DIFFERENT IS AUTHORSHIP, and only where it already was: a peer
+ * agent's words and an engine wake are not the person's, and each is drawn the
+ * way that same origin is drawn when it arrives idle. There is no badge, no
+ * compact variant and no card earned merely by arriving mid-run.
  */
-function SteeredMessageRow({ item }: { item: JournalItem }) {
-  const attachments = item.detail.type === "user_message" ? (item.detail.attachments ?? []) : [];
+function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?: OpenTab }) {
+  const attachments = item.detail.type === "user_message" ? item.detail.attachments : undefined;
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
   const wakeReason = item.detail.type === "user_message" ? item.detail.wakeReason : undefined;
   // A WAKE IS NOBODY'S BUBBLE. The engine wrote it because a subscribed
@@ -549,45 +562,10 @@ function SteeredMessageRow({ item }: { item: JournalItem }) {
   // so the two read as one kind of thing however the wake happened to land.
   // Keyed on the structured stamp, never on the `[wake: …]` text.
   if (wakeReason) return <SteeredWakeRow item={item} reason={wakeReason} />;
-  // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE: left-aligned, dashed, and
-  // labelled with who sent them — the same shape the cockpit gives an
-  // agent-sent turn, so the two read as one kind of thing.
-  if (sender) {
-    return (
-      <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm" aria-label="Message from another agent">
-        <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-          <BotIcon className="size-3.5 shrink-0" />
-          <span className="font-mono">{sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session"}</span>
-          <span>· not the user, no approval implied</span>
-        </div>
-        <p className="whitespace-pre-wrap">{itemText(item)}</p>
-      </div>
-    );
-  }
-  return (
-    <div className="flex justify-end py-1">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">
-        <p className="whitespace-pre-wrap">{itemText(item)}</p>
-        {/* WHAT WAS SENT, not what the model made of it — the same rule the
-            queued turn's bubble follows. Named rather than rendered: the bytes
-            live beside the session on the engine's disk. */}
-        {attachments.length > 0 && (
-          <ul className="mt-1.5 flex flex-wrap gap-1.5">
-            {attachments.map((attachment) => (
-              <li
-                key={attachment.id}
-                title={attachment.path}
-                className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-0.5 text-[0.6875rem] text-muted-foreground"
-              >
-                <PaperclipIcon className="size-3 shrink-0" />
-                <span className="max-w-48 truncate">{attachment.name}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+  // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE — the same dashed, labelled
+  // shape the cockpit gives an agent-sent turn, so the two read alike.
+  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
+  return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
 }
 
 /**
@@ -605,7 +583,14 @@ function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: stri
   );
 }
 
-export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem; tasks?: readonly JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab }: {
+  item: JournalItem;
+  tasks?: readonly JournalTask[];
+  onOpenAgent?: (taskId: string) => void;
+  /** So a message steered into a running turn opens its references exactly
+   *  as the same message sent idle does. */
+  onOpenTab?: OpenTab;
+}) {
   if (item.detail.type === "task") {
     const taskId = item.detail.taskId;
     const task = tasks?.find((candidate) => candidate.id === taskId);
@@ -618,7 +603,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
-  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
+  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
@@ -741,6 +726,51 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 // and folding it into a run tally ("18 steps · Ran command ×12") would hide the
 // one row that says why nothing happened for four minutes.
 const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
+
+/**
+ * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a
+ * running turn is a boundary in the conversation, not an event inside the
+ * work: what the agent does next is a response TO it.
+ *
+ * A live turn already seamed on `user_message`; a settled one folded every
+ * item into one `ActivityGroup` inside the assistant's lane, so the message
+ * vanished into "N steps" when the turn ended and, unfolded, sat nested in the
+ * assistant's own bubble. Live and reload disagreed about whether it existed.
+ *
+ * The first response has no boundary — its cause is the turn's prompt, drawn
+ * above. Same rule as T3 Code's timeline (pinned 1d1bf504,
+ * `MessagesTimeline.logic.ts:503-531`), applied explicitly because Telar keeps
+ * messages as items inside a turn rather than as free rows.
+ */
+export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
+
+export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {
+  const responses: TurnResponse[] = [{ items: [] }];
+  for (const item of items) {
+    if (item.detail.type === "user_message") responses.push({ boundary: item, items: [] });
+    else responses.at(-1)!.items.push(item);
+  }
+  // A turn whose only message is its own prompt is one response, and renders
+  // exactly as it always did.
+  return responses.length > 1 && responses[0]!.items.length === 0 ? responses.slice(1) : responses;
+}
+
+/**
+ * THE ORDER THE TURN IS EMITTED IN — a boundary, then the work it introduced,
+ * for every response. `SessionTurn` renders exactly this sequence, so a test
+ * over it is a test of the assembly and not merely of the splitter's shape.
+ *
+ * The distinction matters: the splitter can group correctly while the renderer
+ * still emits the parts in the wrong order, which is precisely the bug review
+ * caught — work drawn above the message that caused it, for every steer but
+ * the last.
+ */
+export function turnRenderOrder(items: readonly JournalItem[]): Array<{ kind: "boundary"; item: JournalItem } | { kind: "work"; items: JournalItem[] }> {
+  return splitAtMessageBoundaries(items).flatMap((response) => [
+    ...(response.boundary ? [{ kind: "boundary" as const, item: response.boundary }] : []),
+    ...(response.items.length > 0 ? [{ kind: "work" as const, items: response.items }] : []),
+  ]);
+}
 
 export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[] {
   const segments: ActivitySegment[] = [];

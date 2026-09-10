@@ -104,7 +104,10 @@ export type SessionsCapability = {
    * new run on the same session. There is NO resume on this wall: a pause an
    * agent could lift is a pause a person cannot rely on.
    */
-  stop(sessionId: string): Promise<{ stopped?: Turn; held: number; already: boolean }>;
+  /** Stop the session's work: `stopped` is every turn settled (the live one
+   *  plus whatever was waiting), `live` the one that was actually running. No
+   *  hold count and no `already` — there is no latch to be already in. */
+  stop(sessionId: string): Promise<{ stopped: Turn[]; live?: Turn }>;
   /**
    * SHELVE OR UNSHELVE A SESSION IN THE LIST — `Session.settledOverride`, the
    * same switch the sidebar's Settle button flips. NOT an archive: the session
@@ -192,7 +195,9 @@ THE ANSWER IS BOUNDED and a transcript is not: you may get a page rather than ev
 
 const STATUS = `Whether a session is doing anything: what it is (working, waiting on a person, idle), what its recent turns are and how each ended, and whether anything is running right now. This is the cheap question — ask it before sessions_read when all you need to know is "is it finished yet". It costs nothing to call and it changes nothing.`;
 
-const STOP = `Stop a session and keep it stopped: its running turn is interrupted, and everything queued on it — and anything that arrives afterwards, your messages included — is HELD until a human resumes it. The work already done is kept; nothing is undone or deleted. This is a PAUSE, not a one-turn stop: the session will not pick up its backlog, run a wake, or answer a new message on its own, and only a person can resume it (there is no resume tool). Use it when a session is going somewhere wrong, or to hand its backlog to the user for a decision. A session that was already paused answers that it changed nothing, which is not an error.`;
+const STOP = `Stop a session's work now: its running turn ends where it stands, and anything queued behind it — messages, wakes, your own sends — is settled as stopped rather than started. The work already done is kept and stays in the transcript; nothing is undone, nothing is deleted, and nothing claims to have been rolled back. A turn that had already written files or run commands may well have finished doing so: stopping it does not reverse that, and the transcript says only that it stopped.
+
+THE SESSION IS THEN IDLE, NOT PAUSED. There is no latch and no resume — the next message anyone sends is new work and runs normally, continuing the same provider conversation. So this is not a way to park a session or hold its backlog for a human: it is the same Stop the person's own button does. Use it when a session is going somewhere wrong and should stop going there.`;
 
 const SETTLE = `Shelve a session — move it out of the active list into Settled, the way the sidebar's Settle button does — or bring it back with settled: false. Use it on a session you started once it has finished and you have read what you needed: a settled session is still live and resumable, nothing is deleted, and any new message (yours or a wake) lifts it back into the list. You may settle your own session as your last act. This is housekeeping, not acceptance: it says nothing about whether the work was good, and it archives nothing — archive and delete stay the user's.`;
 
@@ -482,18 +487,17 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         try {
-          const { stopped, held, already } = await capability.stop(sessionId);
+          const { stopped, live } = await capability.stop(sessionId);
+          const settled = stopped.length;
+          const behind = live ? settled - 1 : settled;
           return json({
             sessionId,
-            paused: true,
-            stopped: Boolean(stopped),
-            ...(stopped ? { runId: stopped.runId, state: stopped.state } : {}),
-            held,
-            note: already
-              ? "Already paused. Nothing changed; it is still waiting for a person to resume it."
-              : stopped
-                ? `The turn is stopped and the session is paused: ${held} queued message${held === 1 ? "" : "s"} held. Whatever it had already written is still there — stopping ends a turn, it never undoes one. Only a person can resume it.`
-                : `Nothing was running; the session is paused with ${held} queued message${held === 1 ? "" : "s"} held. Only a person can resume it.`,
+            stopped: settled,
+            ...(live ? { runId: live.runId, state: live.state } : {}),
+            note:
+              settled === 0
+                ? "Nothing was running and nothing was waiting; the session was already idle."
+                : `${live ? "The turn is stopped" : "Nothing was running"}${behind > 0 ? ` and ${behind} waiting message${behind === 1 ? "" : "s"} ${behind === 1 ? "was" : "were"} settled rather than started` : ""}. Whatever it had already written is still there — stopping ends work, it never undoes it, and a command it had already run may have finished. The session is IDLE now, not paused: the next message runs normally.`,
           });
         } catch (error) {
           return err(`Could not stop "${sessionId}": ${failure(error)}`);

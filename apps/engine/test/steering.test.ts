@@ -121,7 +121,7 @@ test("a DELIVERED message stays steered when the turn settles — its words are 
   expect(store.claimTurn("session_one", "worker_one")).toBeUndefined();
 });
 
-test("recover() requeues an orphaned steering turn instead of stranding it", () => {
+test("recover() SETTLES an orphaned steering turn instead of stranding or replaying it", () => {
   const stateRoot = root();
   const first = new EngineStore(stateRoot, () => 100);
   first.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -134,9 +134,16 @@ test("recover() requeues an orphaned steering turn instead of stranding it", () 
   // A fresh store over the same root is the restart.
   const second = new EngineStore(stateRoot, () => 200);
   const recovered = second.recover();
-  expect(recovered.ambiguous).toEqual(["run_live"]);
-  expect(recovered.requeued).toContain("run_next");
-  expect(second.turns("session_one").find((turn) => turn.runId === "run_next")?.state).toBe("queued");
+  // BOTH END. The live turn is not left ambiguous for a human to adjudicate,
+  // and the message that never reached it is not requeued to run by itself —
+  // "not lost" is satisfied by keeping it readable, not by running it.
+  expect(recovered.stopped.sort()).toEqual(["run_live", "run_next"]);
+  expect(second.turns("session_one").find((turn) => turn.runId === "run_next")).toMatchObject({
+    state: "stopped",
+    stopReason: "engine_restart",
+    input: "Also this",
+  });
+  expect(second.claimNextTurn("worker_two")).toBeUndefined();
 });
 
 test("while the provider compacts a message falls back to queued, and can be sent once the gate opens", () => {

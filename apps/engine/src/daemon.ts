@@ -99,18 +99,16 @@ export type EngineDaemonOptions = {
   engineRoot?: string;
   port?: number;
   now?: () => number;
-  /** Worker liveness is deliberately short, but a lost running process remains ambiguous rather than replayed. */
+  /** Worker liveness is deliberately short; a lost running turn is stopped
+   *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
   /**
-   * OBSERVER ONLY, and last. A worker generation was retired: its registration
-   * is gone and its work has already been terminalized by `retireWorker`.
-   * Optional by design — nothing about correctness may depend on it, because a
-   * deployment that passes nothing must still be correct.
-   *
-   * Declared on both this branch and telar/stop-is-not-pause with the same
-   * meaning; TAKE THAT BRANCH'S on merge.
+   * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
+   * ending that worker's claims happens on the default path inside
+   * `retireWorker` whether or not this is passed, because a deployment that
+   * passed nothing would otherwise keep a stale claim for ever.
    */
   onWorkerRetired?: (workerId: string) => void;
   /**
@@ -524,12 +522,45 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+  /**
+   * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
+   * ending the work it held are the same event, so they are the same function
+   * and `workers.delete` is not called anywhere else. A path that forgot the
+   * second half would leave a claim held by a worker that no longer exists:
+   * the session's dispatch blocked behind it for ever, and the stale claim
+   * token still able to start a provider through `markTurnRunning` — a turn
+   * beginning after the thing that owned it was stopped.
+   *
+   * Both halves are fenced by ending the turn: `markRunning` takes only a
+   * `claimed` turn, so once this has run the old token is refused.
+   *
+   * Scoped per worker. A retiring registration says nothing about any other
+   * worker's claims, and sweeping theirs would stop work nobody touched.
+   */
+  const retireWorker = (workerId: string): void => {
+    // Idempotent: a registration already gone is a no-op, and the store finds
+    // no live claims to settle, so a second call journals nothing. That is what
+    // makes it safe to call from every path that might be the one that noticed.
+    workers.delete(workerId);
+    store.retireWorkerRegistration(workerId);
+    /**
+     * THE OBSERVER RUNS LAST, AND IS NOT THE CLEANUP. `onWorkerRetired` lets a
+     * caller (a test, the desktop shell) hear about a retirement; it is
+     * optional and unbound by default, so nothing that matters may depend on
+     * it. Terminalization happened above, on the default `startEngine` path,
+     * with no wiring required — a retirement whose cleanup lived in an
+     * optional callback would leave a stale claim blocking the session, and
+     * its token still able to start a provider, on every deployment that did
+     * not pass one.
+     */
+    options.onWorkerRetired?.(workerId);
+  };
   const pruneWorkers = (): void => {
+    // The BACKSTOP for a worker that died without saying so — a directly
+    // constructed one, or a crash. The lease bounds how long its claim can sit
+    // there; nothing waits on it for ever.
     const expired = [...workers.values()].filter((worker) => worker !== embeddedRegistration && now() - worker.heartbeatAt > workerLeaseMs);
-    for (const worker of expired) {
-      workers.delete(worker.workerId);
-      store.recoverInactiveWorker(worker.workerId);
-    }
+    for (const worker of expired) retireWorker(worker.workerId);
   };
   const activeWorker = (workerId: string): RegisteredWorker => {
     pruneWorkers();
@@ -537,27 +568,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     if (!worker) throw new HttpError(503, "worker_unavailable", "worker is not registered or its lease expired");
     return worker;
   };
-  /**
-   * RETIRE ONE WORKER GENERATION.
-   *
-   * THE BODY BELOW IS A PLACEHOLDER. telar/stop-is-not-pause replaces it with
-   * the production form, which terminalizes that worker's claims between the
-   * two lines here:
-   *
-   *   workers.delete(workerId);
-   *   store.retireWorkerRegistration(workerId);   // <- the default path
-   *   options.onWorkerRetired?.(workerId);
-   *
-   * It is a function, and called by name, so that merge is a body swap with no
-   * call-site conflict. Until it lands, this branch fences the registration and
-   * does NOT decide what becomes of the work — deliberately, because requeueing
-   * it is the replay the unified stop semantics forbids.
-   */
-  const retireWorker = (workerId: string): void => {
-    workers.delete(workerId);
-    options.onWorkerRetired?.(workerId);
-  };
-
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
   workerPruner.unref();
 
@@ -665,7 +675,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
-      stop: async (sessionId) => store.pauseSession(sessionId, "session"),
+      // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
+      // same work a person's Stop ends, and leaves the session idle rather
+      // than latched — see `stopSession`.
+      stop: async (sessionId) => store.stopSession(sessionId, "agent"),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -3314,7 +3327,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
-          writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
+          /**
+           * TWO VERBS, NAMED. `scope: "session"` is the Stop button — end what
+           * is running and settle what was waiting; absent is the historical
+           * one-turn stop. VALIDATED RATHER THAN DEFAULTED: an unrecognised
+           * scope is refused, because the one thing worse than rejecting a
+           * typo is silently stopping something other than what was asked for.
+           */
+          const scope = input.scope === undefined ? undefined : stringValue(input.scope, "scope");
+          if (scope !== undefined && scope !== "session") throw new HttpError(400, "invalid_request", 'scope must be "session" when given');
+          const runId = stringValue(input.runId, "run id", true);
+          // Contradictory: one names a turn, the other says every turn.
+          if (scope === "session" && runId) throw new HttpError(400, "invalid_request", 'a session-scope stop names no run id');
+          // WHO PRESSED IT, validated like the scope. Only the record differs
+          // — a person's stop and an agent's do the same thing.
+          const by = input.by === undefined ? "user" : stringValue(input.by, "by");
+          if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
+          writeJson(response, 200, scope === "session" ? store.stopSession(session.sessionId, by) : store.stopTurn(session.sessionId, runId));
           return;
         }
         // A turn the PROVIDER started (a wake-up between turns). Worker-only,
