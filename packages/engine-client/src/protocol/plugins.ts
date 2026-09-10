@@ -323,3 +323,54 @@ export function applyPluginPatch(plugins: ProjectPlugins, patch: PluginPatch): P
   }
   return { version: PROJECT_PLUGINS_VERSION, entries };
 }
+
+// ── machine-wide configuration ──────────────────────────────────────────────
+
+/**
+ * THE SAME MAP, FOR THE MACHINE. One file beside `projects.json`, holding the
+ * facts that are true of this Mac rather than of a checkout — which TeX install
+ * compiles, and whether a plugin is available here at all.
+ *
+ * SCOPED TO THE ENGINE THAT OWNS IT. A cockpit viewing a remote Mac reads and
+ * writes THAT Mac's file; nothing here is global across hosts, and a read taken
+ * while looking at somebody else's engine must never land in this one.
+ */
+export const MachinePlugins = ProjectPlugins;
+export type MachinePlugins = ProjectPlugins;
+
+/**
+ * EFFECTIVE ENABLEMENT IS AN AND, and the global half is a CEILING rather than
+ * a value.
+ *
+ * A plugin runs for a project when the machine allows it AND the project asked
+ * for it. Turning it off machine-wide therefore makes it unavailable everywhere
+ * without touching one project's settings — which is what makes re-enabling
+ * restore exactly what each project had, rather than a blank slate.
+ *
+ * A MISSING GLOBAL ENTRY MEANS ALLOWED. Every machine that predates this file
+ * has none, and reading absence as "off" would silently disable working setups
+ * on upgrade. Absence never ENABLES anything either: the project still has to
+ * have asked.
+ */
+export function machineAllows(machine: ProjectPlugins | undefined, id: string): boolean {
+  const entry = machine?.entries[id];
+  return entry === undefined ? true : entry.enabled;
+}
+
+/** What actually runs: the machine allows it and the project asked for it. */
+export function pluginEffectivelyEnabled(
+  machine: ProjectPlugins | undefined,
+  project: ProjectPlugins,
+  id: string,
+): boolean {
+  return machineAllows(machine, id) && pluginEnabled(project, id);
+}
+
+/**
+ * A plugin's machine settings, or `{}`. Validated by the PLUGIN's own schema at
+ * the host boundary, exactly as the project blob is — the protocol does not know
+ * what a TeX distribution looks like and must not pretend to.
+ */
+export function machineSettings(machine: ProjectPlugins | undefined, id: string): Record<string, unknown> {
+  return machine?.entries[id]?.settings ?? {};
+}

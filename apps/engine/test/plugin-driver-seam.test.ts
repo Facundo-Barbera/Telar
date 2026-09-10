@@ -17,7 +17,7 @@
  */
 import { afterEach, expect, test } from "bun:test";
 import {
-  TELAR_PLUGINS_MCP_SERVER,
+  TELAR_MCP_SERVER,
   canonicalToolName,
   parseToolName,
 } from "@telar/engine-client";
@@ -27,10 +27,13 @@ import { setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
 import { PluginToolSocket } from "../src/plugins/socket";
+import { TelarToolSocket } from "../src/telar-socket";
 
 const sockets: PluginToolSocket[] = [];
+const telarSockets: TelarToolSocket[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) await socket.close();
+  for (const socket of telarSockets.splice(0)) await socket.close();
   setPluginToolModules([]);
   setPluginReadTools(new Set(Object.values(HOST_RATIFIED_READ_TOOLS).flat()));
 });
@@ -120,7 +123,10 @@ test("the socket takes its own bearer and serves one path", async () => {
 
 // ── both drivers mount it, under the same key ───────────────────────────────
 
-test("the Claude driver mounts the plugin socket as an http server under the shared key", async () => {
+test("the Claude driver mounts the telar socket as an http server under the shared key", async () => {
+  setPluginToolModules([helloToolModule]);
+  const socket = new TelarToolSocket();
+  telarSockets.push(socket);
   let servers: Record<string, unknown> | undefined;
   const driver = createClaudeDriver(async () => ({
     async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
@@ -135,17 +141,51 @@ test("the Claude driver mounts the plugin socket as an http server under the sha
     cwd: "/tmp",
     signal: new AbortController().signal,
     onObservations: async () => undefined,
-    pluginsSocket: { url: "http://127.0.0.1:9/v2/plugins/mcp", token: "t0ken" },
+    telarSocket: socket,
+    plugins: { hello: { ping: async () => ({ greeted: "world" }), state: async () => ({ busy: false }) } },
   });
 
-  expect(servers?.[TELAR_PLUGINS_MCP_SERVER]).toEqual({
-    type: "http",
-    url: "http://127.0.0.1:9/v2/plugins/mcp",
-    headers: { Authorization: "Bearer t0ken" },
-  });
+  /**
+   * THE TOKEN IS THE DRIVER'S OWN, so asserting a literal would only prove the
+   * test's argument round-tripped. What matters is that the credential it
+   * minted actually opens the wall — and that a revoked one does not.
+   */
+  const entry = servers?.[TELAR_MCP_SERVER] as { type: string; url: string; headers: Record<string, string> };
+  expect(entry?.type).toBe("http");
+  expect(entry.url).toContain("/v2/telar/mcp");
+  const bearer = entry.headers.Authorization;
+  expect(bearer).toMatch(/^Bearer \S+$/);
 
-  // …and a turn without plugins mounts no such server rather than an empty one.
-  servers = undefined;
+  const ask = (authorization: string) =>
+    fetch(entry.url, {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+  // The real token reaches the real wall, and the plugin's tools are on it.
+  const listed = await ask(bearer);
+  expect(listed.status).toBe(200);
+  const names = (((await listed.json()) as { result?: { tools?: { name: string }[] } }).result?.tools ?? []).map((tool) => tool.name);
+  expect(names).toContain("hello_ping");
+
+  // A different bearer does not.
+  expect((await ask("Bearer not-the-one")).status).toBe(401);
+
+  // …and closing the socket revokes it, so a provider still holding the entry
+  // cannot keep reaching a wall the worker has torn down.
+  await socket.close();
+  await expect(ask(bearer)).rejects.toBeDefined();
+});
+
+test("a turn with no plugins and no socket mounts no telar server", async () => {
+  let servers: Record<string, unknown> | undefined;
+  const driver = createClaudeDriver(async () => ({
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
+      servers = input.options.mcpServers;
+      yield { type: "result", subtype: "success" };
+    },
+  }));
   await driver.run({
     prompt: "prompt",
     sessionId: "session_claude_none",
@@ -153,23 +193,23 @@ test("the Claude driver mounts the plugin socket as an http server under the sha
     signal: new AbortController().signal,
     onObservations: async () => undefined,
   });
-  expect(servers?.[TELAR_PLUGINS_MCP_SERVER]).toBeUndefined();
+  expect(servers?.[TELAR_MCP_SERVER]).toBeUndefined();
 });
 
 test("a plugin tool has ONE qualified name, because both providers use one server key", () => {
   // The failure this prevents: `mcp__telar__hello_ping` under one provider and
   // `mcp__telar-plugins__hello_ping` under the other would be two rows a client
   // cannot group and two approvals to remember, for one tool.
-  const qualified = canonicalToolName(TELAR_PLUGINS_MCP_SERVER, "hello_ping");
-  expect(qualified).toBe("mcp__telar-plugins__hello_ping");
+  const qualified = canonicalToolName(TELAR_MCP_SERVER, "hello_ping");
+  expect(qualified).toBe("mcp__telar__hello_ping");
   // Capability is read off the TOOL, not the server, so the row stays typed.
   expect(parseToolName(qualified)).toEqual({
-    server: TELAR_PLUGINS_MCP_SERVER,
+    server: TELAR_MCP_SERVER,
     tool: "hello_ping",
     capability: "hello",
   });
   // Codex normalises its `{server, tool}` to the same spelling.
-  const mapped = codexItemDetail({ type: "mcpToolCall", server: TELAR_PLUGINS_MCP_SERVER, tool: "hello_ping", id: "c1" } as never);
+  const mapped = codexItemDetail({ type: "mcpToolCall", server: TELAR_MCP_SERVER, tool: "hello_ping", id: "c1" } as never);
   expect(mapped?.detail).toMatchObject({ type: "mcp_tool_call", call: { name: qualified } });
 });
 
@@ -177,11 +217,11 @@ test("a plugin tool has ONE qualified name, because both providers use one serve
 
 test("a plugin's write parks a card on BOTH wires and its read does not, from the same server key", () => {
   setPluginReadTools(new Set(["hello_state"]));
-  const claude = (tool: string) => requestKindForTool(canonicalToolName(TELAR_PLUGINS_MCP_SERVER, tool));
+  const claude = (tool: string) => requestKindForTool(canonicalToolName(TELAR_MCP_SERVER, tool));
   const codex = (tool: string) =>
     codexApprovalRequest(MCP_ELICITATION, {
-      serverName: TELAR_PLUGINS_MCP_SERVER,
-      message: `Allow the ${TELAR_PLUGINS_MCP_SERVER} MCP server to run tool "${tool}"?`,
+      serverName: TELAR_MCP_SERVER,
+      message: `Allow the ${TELAR_MCP_SERVER} MCP server to run tool "${tool}"?`,
       _meta: { codex_approval_kind: "mcp_tool_call", tool_params: {} },
     })?.kind;
 
@@ -202,13 +242,13 @@ test("the socket does not gate, so the host stays the only authority", async () 
   const { lease } = await bound({ hello: helloCapability("ungated") });
   const called = await mcp(lease!, "tools/call", { name: "hello_ping", arguments: {} });
   expect(called.status).toBe(200);
-  expect(requestKindForTool(canonicalToolName(TELAR_PLUGINS_MCP_SERVER, "hello_ping"))).not.toBe("file_read");
+  expect(requestKindForTool(canonicalToolName(TELAR_MCP_SERVER, "hello_ping"))).not.toBe("file_read");
 });
 
 test("a manifest cannot promote its own tool to a read on either wire", () => {
   setPluginReadTools(new Set(["hello_state"]));
   expect(helloToolModule.meta.readTools).not.toContain("hello_ping");
-  const write = requestKindForTool(canonicalToolName(TELAR_PLUGINS_MCP_SERVER, "hello_ping"));
-  const read = requestKindForTool(canonicalToolName(TELAR_PLUGINS_MCP_SERVER, "hello_state"));
+  const write = requestKindForTool(canonicalToolName(TELAR_MCP_SERVER, "hello_ping"));
+  const read = requestKindForTool(canonicalToolName(TELAR_MCP_SERVER, "hello_state"));
   expect(write).not.toBe(read);
 });

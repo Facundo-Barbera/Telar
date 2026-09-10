@@ -37,14 +37,25 @@ export type UpdatePrefsInfo = UpdatePrefs & {
   /** Where the shell writes the updater log, so it is findable without knowing
    *  where userData lives. */
   logPath: string;
+  /** True on a Dev-packaged build: updates come from the LOCAL CHECKOUT
+   *  through the shell's explicit window (`openLocalUpdater`), never from a
+   *  published feed. Never true alongside `configured`. Optional because an
+   *  older shell does not report it. */
+  localUpdater?: boolean;
 };
 
 export type UpdatesBridge = {
   check: () => Promise<{ status: string } | undefined>;
   install: () => Promise<void>;
   onStatus: (listener: (status: UpdateStatus) => void) => () => void;
+  /** The LAST status the shell broadcast, for a renderer that mounted after
+   *  it — `update-downloaded` is never re-emitted, so without this a reload
+   *  loses the "restart to install" state. Optional on older shells. */
+  status?: () => Promise<UpdateStatus | null | undefined>;
   getPrefs: () => Promise<UpdatePrefsInfo>;
   setPrefs: (patch: Partial<UpdatePrefs>) => Promise<UpdatePrefs>;
+  /** Dev builds only: open the local-checkout update window. */
+  openLocalUpdater?: () => Promise<{ ok: boolean; error?: string }>;
 };
 
 export function desktopUpdates(): UpdatesBridge | undefined {

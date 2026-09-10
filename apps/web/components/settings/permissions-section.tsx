@@ -35,7 +35,21 @@ const AUTOMATION_PANE = "x-apple.systempreferences:com.apple.preference.security
 
 function backendLabel(status: ComputerUseStatus): string {
   if (!status.installed) return "Not installed";
-  return status.backend === "cua" ? "cua-driver (open source)" : "Codex Computer Use (Sky)";
+  return status.backend === "cua" ? "cua-driver" : "Codex Computer Use";
+}
+
+/**
+ * What the Engine row says. A probe that is running and one that FAILED are
+ * different facts, and neither is an engine — the first draft rendered
+ * "Checking" forever once the request rejected.
+ */
+export function engineHint(input: { status?: ComputerUseStatus; checking: boolean; failed: boolean; isCua: boolean }): string {
+  if (input.failed) return "Could not reach the engine. Retry to check again.";
+  if (!input.status) return "Checking which engine is installed.";
+  if (!input.status.installed) return "Install cua-driver (github.com/trycua/cua), or Codex, and Telar picks it up.";
+  return input.isCua
+    ? "Open source. Telar holds the grants through CuaDriver.app."
+    : "Codex's bundled client. Install cua-driver to switch to the open-source engine.";
 }
 
 function PermissionBadge({ status }: { status: ComputerUseStatus }) {
@@ -100,26 +114,35 @@ export function PermissionsSection() {
   return (
     <SettingsGroup
       title="Computer use"
-      description="Claude and Codex sessions can drive Mac apps — screenshots, clicks, typing — through a desktop engine Telar owns. When Telar supplies it, Codex's own computer use is turned off for Telar's sessions only."
+      description="Sessions can drive Mac apps — screenshots, clicks, typing. When Telar supplies the engine, Codex's own computer use is off for Telar sessions only."
     >
+      {/* Three states, not two: checking, failed, answered. Neither of the
+          first two may name an engine — see `engineHint`. */}
       <Row
         label="Engine"
-        hint={
-          status && !status.installed
-            ? "Install the open-source cua-driver (github.com/trycua/cua) — or Codex, whose bundled Computer Use works as a fallback — and Telar picks it up."
-            : isCua
-              ? "The open-source trycua/cua driver. Telar drives it and holds the grants through CuaDriver.app."
-              : "Codex's bundled Computer Use client (proprietary). Install cua-driver to switch to the open-source engine."
+        hint={engineHint({ status, checking, failed: !status && !checking && error !== undefined, isCua })}
+        control={
+          checking && !status ? (
+            <Spinner className="size-4" />
+          ) : status ? (
+            <Badge variant={status.installed ? "secondary" : "outline"}>{backendLabel(status)}</Badge>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">Unknown</Badge>
+              <Button size="sm" variant="outline" onClick={() => void check()}>
+                Retry
+              </Button>
+            </div>
+          )
         }
-        control={checking && !status ? <Spinner className="size-4" /> : <Badge variant={status?.installed ? "secondary" : "outline"}>{backendLabel(status ?? { installed: false, hostRunning: false })}</Badge>}
       />
       {status?.installed && (
         <Row
           label={isCua ? "Driver daemon" : "Host app"}
           hint={
             isCua
-              ? "CuaDriver.app runs the actions in the background; it launches automatically when a session first needs it."
-              : "The background app that performs the actions. Woken automatically when a session first needs it."
+              ? "Launches automatically when a session first needs it."
+              : "Woken automatically when a session first needs it."
           }
           control={
             <div className="flex items-center gap-2">
@@ -138,12 +161,12 @@ export function PermissionsSection() {
           label="Access"
           hint={
             status.permission === "granted"
-              ? "One real read-only call succeeded. Claude and Codex sessions can drive the Mac."
+              ? "A read-only call succeeded. Sessions can drive the Mac."
               : isCua
                 ? "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it."
                 : status.permission === "denied"
                   ? "macOS refused Apple events. System Settings → Privacy & Security → Automation: enable the target under Telar (packaged) or the terminal (dev), then test again."
-                  : "“Test access” sends one real read-only call; the first time, macOS shows its own consent prompt."
+                  : "“Test access” sends one read-only call; macOS prompts the first time."
           }
           control={
             <div className="flex items-center gap-2">

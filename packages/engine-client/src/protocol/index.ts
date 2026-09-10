@@ -21,6 +21,7 @@ export * from "./items";
 export * from "./requests";
 export * from "./tasks";
 export * from "./tools";
+export * from "./assignments";
 export * from "./plugins";
 export * from "./run";
 export * from "./spool";

@@ -39,7 +39,6 @@
 // second door beside the one it replaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   CheckIcon,
@@ -51,10 +50,9 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
-  ChartNoAxesColumnIcon,
-  SettingsIcon,
   XIcon,
 } from "lucide-react";
+import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
@@ -71,6 +69,7 @@ import {
   canvasHref,
   canvasProjectFromPathname,
   deriveSessionList,
+  relatedWork,
   SESSION_PAGE_SIZE,
   SETTLED_PAGE_SIZE,
   sessionHref,
@@ -81,6 +80,8 @@ import {
   type SidebarSession,
 } from "@/lib/session-list";
 import { hostFetcher } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { createFollowingController, emptyFollowing, lockKey, type FollowingController, type FollowingState } from "@/lib/following";
 import type { PublicHost } from "@/lib/hosts/store";
 import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "@/lib/sidebar-cache";
 import { LOCAL_HOST } from "@/lib/snapshot-cache";
@@ -98,6 +99,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
+import { RelatedWork } from "@/components/session/related-work";
 import { ProjectGroupSection } from "@/components/session/project-group";
 import { dedupeAcrossHosts, groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, railRowsForCommandKeys, useCollapsedGroups } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
@@ -400,7 +402,17 @@ function SidebarBody() {
    * traffic. The aggregate route keeps the list one read per Mac.
    */
   const loadHost = useCallback(async (host: { id: string; name: string } | undefined) => {
-    const hostApi = host ? createEngineApi(hostFetcher(host.id)) : api;
+    /**
+     * ALWAYS AN EXPLICIT HOST, INCLUDING THE LOCAL ONE.
+     *
+     * The fallback used to be the pathname-following `api`, which reaches
+     * whichever engine the current URL names. So while a person was VIEWING a
+     * remote Mac, the read meant to fetch local rows went to the remote engine —
+     * and its answers were then cached and deduplicated under the local host's
+     * identity. Naming `LOCAL_HOST_ID` makes the destination a property of the
+     * host being loaded rather than of the page being looked at.
+     */
+    const hostApi = createEngineApi(hostFetcher(host?.id ?? LOCAL_HOST_ID));
     // The engine's identity rides beside its rows, so two reads that reached
     // ONE engine (a Mac paired with itself, or under two addresses) can be
     // folded into one — see `dedupeAcrossHosts`. Best-effort: a health that
@@ -431,6 +443,10 @@ function SidebarBody() {
         session.projectId ? branches.get(session.projectId) : undefined,
         session.projectId ? icons.get(session.projectId) : undefined,
         host,
+        // Folded by the ENGINE over each session's whole queue and sent on this
+        // same list — so Related work costs no extra request, and no per-row
+        // history read, on any polling pass.
+        result.assignments?.[session.id],
       ),
     );
     return { projects: result.projects, sessions, ...(daemonId ? { daemonId } : {}), ...(policy ? { policy } : {}) };
@@ -608,6 +624,120 @@ function SidebarBody() {
   // a search stays flat. The groups sit in the reader's own order — nothing a
   // conversation does moves its project.
   const grouped = list.flat ? undefined : groupSessions(list, projectOrder);
+  /**
+   * Every row the rail currently holds — the candidate pool `relatedWork`
+   * searches. Built from the bands the list already produced, so finding a
+   * coordinator's delegates costs no request.
+   */
+  const relatedPool = [...list.pinned, ...list.sessions, ...list.snoozed, ...list.settled];
+
+  /**
+   * WHO EACH PINNED SESSION FOLLOWS, keyed by `sessionKey`.
+   *
+   * READ FOR PINNED SESSIONS ONLY, and only when that set changes — not on
+   * every polling tick and never per row of the list. Pinned is the handful a
+   * person keeps in view, so this is a bounded read rather than an N+1 over
+   * every session the rail holds.
+   *
+   * HOST-PINNED: each read goes to the Mac that session lives on, so viewing a
+   * remote rail never asks the local engine about a remote session.
+   */
+  const [followState, setFollowState] = useState<FollowingState>(emptyFollowing);
+  const [unfollowing, setUnfollowing] = useState<ReadonlySet<string>>(() => new Set());
+  const [unfollowFailed, setUnfollowFailed] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * Owns generations, locks and the read epoch — outside React.
+   *
+   * A LAZY `useState` INITIALISER, not a ref written during render: it runs once
+   * for the component's life and the value is never reassigned, which is what
+   * makes reading it during render legitimate rather than a rule waived.
+   */
+  const [follow] = useState<FollowingController>(() => createFollowingController(setFollowState));
+  const pinnedForFollow = grouped ? grouped.pinned : list.pinned;
+  const pinnedKeys = pinnedForFollow.map((session) => sessionKey(session)).join("|");
+
+  useEffect(() => {
+    const controller = follow;
+    // The pinned set changed: any read still in flight describes the old one.
+    controller.bump();
+    const sessions = pinnedForFollow.map((session) => ({
+      id: session.id,
+      ...(session.hostId ? { hostId: session.hostId } : {}),
+      key: sessionKey(session),
+    }));
+    const tick = () =>
+      void controller.read(sessions, async (session) => {
+        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
+        return (await hostApi.sessionSubscriptions(session.id)).subscriptions;
+      });
+    tick();
+    // An agent can add, remove or consume a `once` subscription while the same
+    // coordinators stay pinned, which a set-keyed read alone never notices.
+    const timer = window.setInterval(tick, 15_000);
+    return () => {
+      window.clearInterval(timer);
+      controller.bump();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the pinned SET
+  }, [pinnedKeys]);
+
+  const [followFailed, setFollowFailed] = useState<ReadonlySet<string>>(() => new Set());
+
+  /** Start following, through the controller: sync lock, visible failure. */
+  const startFollow = useCallback(async (coordinator: SidebarSession, target: SidebarSession) => {
+    const lock = lockKey(coordinator.hostId, coordinator.id, sessionKey(target));
+    if (follow.locked(lock)) return;
+    setUnfollowing((current) => new Set(current).add(lock));
+    const outcome = await follow.follow(
+      { id: coordinator.id, ...(coordinator.hostId ? { hostId: coordinator.hostId } : {}), key: sessionKey(coordinator) },
+      { id: target.id, key: sessionKey(target) },
+      async (session, targetSessionId) => {
+        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
+        await hostApi.follow(session.id, { targetSessionId });
+      },
+      async (session) => {
+        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
+        return (await hostApi.sessionSubscriptions(session.id)).subscriptions;
+      },
+    );
+    setFollowFailed((current) => {
+      const next = new Set(current);
+      if (outcome.failed) next.add(lock);
+      else next.delete(lock);
+      return next;
+    });
+    setUnfollowing((current) => {
+      const next = new Set(current);
+      next.delete(lock);
+      return next;
+    });
+  }, [follow]);
+
+  const unfollow = useCallback(async (coordinator: SidebarSession, targetKey: string, subscriptionIds: readonly string[]) => {
+    const lock = lockKey(coordinator.hostId, coordinator.id, targetKey);
+    if (follow.locked(lock)) return;
+    setUnfollowing((current) => new Set(current).add(lock));
+    const outcome = await follow.unfollow(
+      { id: coordinator.id, ...(coordinator.hostId ? { hostId: coordinator.hostId } : {}), key: sessionKey(coordinator) },
+      targetKey,
+      subscriptionIds,
+      async (session, subscriptionId) => {
+        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
+        await hostApi.unfollow(subscriptionId, session.id);
+      },
+    );
+    setUnfollowFailed((current) => {
+      const next = new Set(current);
+      if (outcome.failed) next.add(lock);
+      else next.delete(lock);
+      return next;
+    });
+    setUnfollowing((current) => {
+      const next = new Set(current);
+      next.delete(lock);
+      return next;
+    });
+  }, [follow]);
 
   /**
    * DRAGGING A GROUP TO WHERE IT BELONGS. The header is the handle; a drop on
@@ -1059,17 +1189,35 @@ function SidebarBody() {
         {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
           <SidebarGroup className="shrink-0 pb-0">
             <SidebarGroupContent className="space-y-0.5">
+              {/* One fragment per coordinator: its row, then what it delegated.
+                  Two maps would put every related block after every row. */}
               {(grouped ? grouped.pinned : list.pinned).map((session) => (
-                <SessionRow
-                  key={sessionKey(session)}
-                  session={session}
-                  active={sessionKey(session) === activeSessionId}
-                  showProject={showProject}
-                  variant="card"
-                  band="pinned"
-                  renderedAt={renderedAt}
-                  onRefresh={() => void loadAll()}
-                />
+                <div key={sessionKey(session)} className="space-y-0.5">
+                  <SessionRow
+                    session={session}
+                    active={sessionKey(session) === activeSessionId}
+                    showProject={showProject}
+                    variant="card"
+                    band="pinned"
+                    renderedAt={renderedAt}
+                    onRefresh={() => void loadAll()}
+                  />
+                  <RelatedWork
+                    groups={relatedWork(relatedPool, session)}
+                    coordinatorId={session.id}
+                    {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
+                    {...(followState.byCoordinator.get(sessionKey(session))
+                      ? { following: followState.byCoordinator.get(sessionKey(session)) }
+                      : {})}
+                    followed={relatedPool}
+                    onUnfollow={(targetKey, subscriptionIds) => void unfollow(session, targetKey, subscriptionIds)}
+                    onFollow={(target) => void startFollow(session, target)}
+                    followFailed={followFailed}
+                    lockFor={(targetKey) => lockKey(session.hostId, session.id, targetKey)}
+                    unfollowing={unfollowing}
+                    unfollowFailed={unfollowFailed}
+                  />
+                </div>
               ))}
             </SidebarGroupContent>
             {/*
@@ -1255,10 +1403,10 @@ function SidebarBody() {
       </SidebarContent>
 
       <SidebarFooter>
-        <div className="p-1">
-          <UsageButton onNavigate={onNavigate} />
-          <SettingsButton onNavigate={onNavigate} />
-        </div>
+        {/* The compact icon footer — Usage and Settings left, the app-update
+            control right. Its whole implementation, including the updater
+            state machine, lives in components/app-sidebar-footer.tsx. */}
+        <AppSidebarFooterRow onNavigate={onNavigate} />
       </SidebarFooter>
     </>
   );
@@ -1271,43 +1419,9 @@ function SidebarBody() {
 // the switcher is where this button's job — and its "no count on it" law —
 // went.
 
-// The same slot the donor keeps it in: the sidebar's meta row, beside
-// Settings — a place, not a filter over the session list.
-function UsageButton({ onNavigate }: { onNavigate: () => void }) {
-  const pathname = usePathname();
-  const active = pathname.startsWith("/usage");
-  return (
-    <Link
-      href="/usage"
-      title="Usage"
-      onClick={onNavigate}
-      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
-        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
-      } w-full p-2`}
-    >
-      <ChartNoAxesColumnIcon className="size-4 shrink-0" />
-      <span>Usage</span>
-    </Link>
-  );
-}
-
-function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
-  const pathname = usePathname();
-  const active = pathname.startsWith("/settings");
-  return (
-    <Link
-      href="/settings"
-      title="Settings"
-      onClick={onNavigate}
-      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
-        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
-      } w-full p-2`}
-    >
-      <SettingsIcon className="size-4 shrink-0" />
-      <span>Settings</span>
-    </Link>
-  );
-}
+// `UsageButton` / `SettingsButton` moved into app-sidebar-footer.tsx as icon
+// buttons (the words live on in tooltips and aria-labels), joined on the
+// right by the shell's update control.
 
 function AppSidebarRail() {
   const { open } = useSidebar();

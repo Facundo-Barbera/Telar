@@ -62,8 +62,8 @@ export function shouldPollOutput(answer: RunStatusAnswer | undefined): boolean {
 
 const toneClass: Record<RunTone, string> = {
   idle: "text-muted-foreground",
-  working: "text-amber-600 dark:text-amber-400",
-  good: "text-emerald-600 dark:text-emerald-400",
+  working: "text-warning",
+  good: "text-success",
   bad: "text-destructive",
   lost: "text-destructive",
 };
@@ -333,7 +333,7 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
             // Stated plainly rather than as a warning colour: the run is fine,
             // it is simply not this session's tree, and its output below is
             // about that other checkout.
-            <p className="text-xs text-amber-600 dark:text-amber-400">
+            <p className="text-xs text-warning">
               This deployment is not from this session&apos;s worktree.
             </p>
           ) : null}

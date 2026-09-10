@@ -30,6 +30,7 @@ const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
+const { wireLoginOffer } = require("./login-offer-window");
 
 const SMOKE = process.argv.includes("--smoke");
 
@@ -848,6 +849,10 @@ function createWindow(url) {
   const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
+    // A credential entry FINISHED in some tab (metadata only — the capture is
+    // an address, an identity and a moment). The offer flow decides whether to
+    // ask "may agents use this login here?" — login-offer-window.js.
+    onCredentialEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
     // Recent sites are PER PROFILE, not per project: two projects sharing an
     // identity share its history, which is what sharing an identity means.
     onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
@@ -990,6 +995,20 @@ function startExtensionHost(win, manager, partition) {
 function requireBrowserManager() {
   if (!browserManager) throw new Error("The Telar desktop browser host is not ready.");
   return browserManager;
+}
+
+/**
+ * THE LOGIN OFFER (AUTH-001, #195), wired once for the app's lifetime — a
+ * translucency rebuild replaces the manager, not this (its ipcMain handlers
+ * may only register once). Grants land in the ENGINE's state root, the same
+ * file the daemon lists (`/v2/browser/logins`) and the worker's
+ * `browser_fill_secret` matches — see login-grant-writer.js for why the write
+ * happens here and not over the daemon's agent-readable HTTP surface.
+ */
+let loginOffer = null;
+function requireLoginOffer() {
+  loginOffer ??= wireLoginOffer({ stateRoot: path.join(telarHome(), "engine") });
+  return loginOffer;
 }
 
 // --- Application menu (issue #16 — command keys) -----------------------------
@@ -1166,6 +1185,25 @@ ipcMain.handle("telar:browser:release-scope", (_event, input) =>
 ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
   requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
+/**
+ * THE EXPLICIT FALLBACK (AUTH-001): "remember the login on this page", asked
+ * from the cockpit — for the person who dismissed the automatic offer, or
+ * whose sign-in Telar never saw. ONLY the cockpit window's own top frame may
+ * ask: a browser tab's preload, a subframe, or anything an agent can reach
+ * gets a refusal. And asking only OPENS the question in the trusted offer
+ * window — nothing here (and no API anywhere) can answer it.
+ */
+ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
+  const manager = requireBrowserManager();
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may open the login offer.");
+  }
+  const capture = manager.loginCaptureForScope(scopeKey);
+  if (!capture) return { ok: false, error: "This page cannot carry a remembered login (open an http(s) page first)." };
+  return requireLoginOffer().explicitOffer(capture);
+});
+
 // A tab preload heard a human's hands in the page; all we hold is the sender.
 ipcMain.on("telar:browser:credential-field", (event, detail) => {
   try {
@@ -1460,9 +1498,18 @@ function recreateWindowTranslucent(old) {
 let lastWindowUrl = null;
 
 let updaterWindow = null;
+/**
+ * The last status broadcast, held so a renderer that mounted AFTER the event
+ * can ask. The push alone lost the one state that matters most: an update
+ * downloads while the user is elsewhere, they reload or the window rebuilds,
+ * and the "restart to install" affordance never reappears because
+ * electron-updater does not re-emit `update-downloaded`.
+ */
+let lastUpdateStatus = null;
 function broadcastUpdateStatus(status, extra = {}) {
+  lastUpdateStatus = { status, ...extra };
   const win = updaterWindow || BrowserWindow.getAllWindows()[0];
-  win?.webContents.send("telar:updates:status", { status, ...extra });
+  win?.webContents.send("telar:updates:status", lastUpdateStatus);
 }
 
 // A packaged build only has a real feed to talk to when --publish-r2 baked both
@@ -1590,6 +1637,23 @@ ipcMain.handle("telar:updates:install", () => {
   autoUpdater.quitAndInstall();
 });
 
+// The pull half of the status contract — see `lastUpdateStatus`.
+ipcMain.handle("telar:updates:status", () => lastUpdateStatus);
+
+/**
+ * THE DEV BUILD'S UPDATE PATH, reachable from the cockpit. A dev-packaged
+ * build has no feed (`updatesConfigured` refuses it, deliberately) — its
+ * updates come from the local checkout through the explicit window in
+ * dev-update.js, which until now only the menu could open. Opening the window
+ * changes nothing by itself; building and swapping stay behind that window's
+ * own confirmation.
+ */
+ipcMain.handle("telar:updates:openLocalUpdater", () => {
+  if (!DEV_BUILD) return { ok: false, error: "This build updates from its published channel, not a local checkout." };
+  devUpdate.openWindow();
+  return { ok: true };
+});
+
 ipcMain.handle("telar:updates:getPrefs", () => ({
   ...readUpdatePrefs(),
   channels: UPDATE_CHANNELS,
@@ -1599,6 +1663,9 @@ ipcMain.handle("telar:updates:getPrefs", () => ({
   // So the settings surface can explain itself rather than offering controls
   // that silently do nothing on an unpublished local build.
   configured: updatesConfigured(),
+  // The Dev build's separate path: update from the local checkout, through
+  // its own explicit window. Never true alongside a configured feed.
+  localUpdater: DEV_BUILD,
 }));
 
 ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {

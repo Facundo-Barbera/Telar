@@ -632,7 +632,7 @@ function SessionTurnBody({
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
           {turn.origin === "session" && turn.sender ? (
-            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
           )}

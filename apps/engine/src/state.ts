@@ -39,11 +39,20 @@ import {
   type DataScienceConfig,
   LatexConfig as LatexConfigSchema,
   applyPluginPatch,
+  machineAllows,
+  machineSettings,
+  pluginEffectivelyEnabled,
+  PROJECT_PLUGINS_VERSION,
+  ProjectPlugins as ProjectPluginsSchema,
+  type ProjectPlugins,
   legacyMirrors,
   MIRRORED_PLUGINS,
   type MirroredPlugin,
   pluginConfigFromLegacy,
   readProjectPlugins,
+  assignmentsOf,
+  type AssignmentTurn,
+  type SessionAssignment,
   type PluginPatch,
   type LatexConfig,
   Session as SessionSchema,
@@ -234,6 +243,7 @@ import {
 import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
+import { LatexSettings as LatexSettingsSchema } from "./plugins/latex";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -255,13 +265,24 @@ import type { ResolvedLatex } from "./latex/compile";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
- * THE WAKE TEXT — what an orchestrator reads when a peer does something. It
- * begins with `[wake]` so a model can tell it from a person, names the peer
- * and the turn, carries enough of the outcome to act on, and ends with the
- * tool that gets the rest. A request's fields are spelt out so the answer
- * can be composed without a second read; a secret pick is NOT — the wall
- * refuses to resolve those, and listing candidates here would offer the
- * model something it may not touch.
+ * THE WAKE TEXT — A PING, NOT A REPORT.
+ *
+ * It begins with `[wake: …]` so a model can tell it from a person, names the
+ * peer, the turn and what happened, and then names the ONE call that fetches
+ * the detail. It deliberately carries no result body: a wake is injected into
+ * the subscriber's context whether or not it needs the answer, and a child that
+ * wrote fifty kilobytes used to spend that on every coordinator subscribed to
+ * it. The outcome is one `sessions_read(sessionId, runId)` away, and the
+ * recipient decides whether it is worth reading.
+ *
+ * A PARKED REQUEST IS NO EXCEPTION. It names the request, its kind and a short
+ * title, and then the two calls: read it, answer it. The fields used to ride
+ * the notice so an answer could be composed without a second read — but that
+ * made the one notice whose size followed its payload, and a coordinator that
+ * is going to answer a question can afford the read it needs to answer it
+ * properly. A secret pick is never described beyond its origin: the wall
+ * refuses to resolve those, and naming candidates would offer the model
+ * something it may not touch.
  */
 function wakeMessage(
   kind: WakeKind,
@@ -280,40 +301,50 @@ function wakeMessage(
   const lines: string[] = [];
   switch (kind) {
     case "turn_completed": {
-      lines.push(`[wake: completed] ${who} — turn ${turn.runId} completed.`);
       const text = (context.resultText ?? "").trim();
-      if (text) {
-        const clipped = text.length > MAX_WAKE_RESULT_CHARS;
-        lines.push(clipped ? `Result (first ${MAX_WAKE_RESULT_CHARS} chars):` : "Result:", clipped ? text.slice(0, MAX_WAKE_RESULT_CHARS) : text);
-      } else {
-        lines.push("It ended with no answer text.");
-      }
+      lines.push(
+        `[wake: completed] ${who} — turn ${turn.runId} completed.`,
+        // The SIZE, not the text: enough for the recipient to judge whether
+        // fetching it is worth the context, and honest about there being
+        // nothing to fetch.
+        text ? `It answered with ${text.length} characters. The text is not in this notice.` : "It ended with no answer text.",
+      );
       break;
     }
     case "turn_failed":
-      lines.push(`[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code}): ${context.failure.message}` : "."}`);
+      lines.push(
+        `[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code})` : "."}`,
+        ...(context.failure ? [clampWake(context.failure.message)] : []),
+      );
       break;
     case "turn_stopped":
       lines.push(`[wake: stopped] ${who} — turn ${turn.runId} was stopped.`);
       break;
     case "request_opened": {
       const request = context.request!;
-      lines.push(`[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${requestTitle(request.detail)}`);
-      if (request.detail.kind === "user_input") {
-        for (const field of request.detail.fields) {
-          const choices = field.choices && field.choices.length > 0 ? ` [choices: ${field.choices.join(" | ")}]` : "";
-          lines.push(`- ${field.key} (${field.kind}): ${field.label}${choices}`);
-        }
-      }
       lines.push(
+        `[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${clampWake(requestTitle(request.detail))}`,
         "—",
-        `Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
+        `Read it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — the request's own fields are there. Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
       );
       return lines.join("\n");
     }
   }
-  lines.push("—", `Read more with sessions_read(sessionId: "${target.id}"); its diff with sessions_diff.`);
+  lines.push(
+    "—",
+    // THE RETRIEVAL IS DIRECTLY USABLE, and scoped to this run: a coordinator
+    // that wants the outcome should not have to page a journal to find it.
+    `Fetch it with sessions_read(sessionId: "${target.id}", runId: "${turn.runId}") — that run's events and its final answer, bounded. Its diff with sessions_diff.`,
+  );
   return lines.join("\n");
+}
+
+/** One clamped line for a wake. A wake is a ping; nothing in it is a payload. */
+function clampWake(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= MAX_WAKE_LINE_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, MAX_WAKE_LINE_CHARS)}… [${trimmed.length - MAX_WAKE_LINE_CHARS} more characters — sessions_read has the rest]`;
 }
 
 function requestTitle(detail: RequestDetail): string {
@@ -386,7 +417,13 @@ const MAX_SUBSCRIPTIONS_PER_SESSION = 64;
 
 /** How much of a finished turn's answer rides in the wake that announces it.
  *  The whole answer is one `sessions_read` away; the wake is a summons. */
-const MAX_WAKE_RESULT_CHARS = 2_000;
+/**
+ * The clamp on any single line a wake carries — a failure message, a request's
+ * prompt, a field label. Not a budget for a result: a wake carries no result at
+ * all (see `wakeMessage`), and this only keeps a pathological one-liner from
+ * becoming the notice.
+ */
+const MAX_WAKE_LINE_CHARS = 240;
 
 const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped", "request_opened"];
 
@@ -480,6 +517,8 @@ const FACET_CACHE_MS = 5 * 60_000;
 export type EngineStatePaths = {
   root: string;
   projects: string;
+  /** Plugin facts true of this Mac. See `machinePlugins()`. */
+  machinePlugins: string;
   sessions: string;
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
    *  rather than inside a session: a tool is configured once. */
@@ -631,6 +670,8 @@ export function statePaths(root: string): EngineStatePaths {
   return {
     root: resolved,
     projects: path.join(resolved, "projects.json"),
+    /** Plugin facts true of THIS Mac — see `MachinePlugins`. */
+    machinePlugins: path.join(resolved, "machine-plugins.json"),
     sessions: path.join(resolved, "sessions"),
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
@@ -1400,7 +1441,14 @@ export class EngineStore {
   dataScience(sessionId: string): DsCapability {
     const session = this.getSession(sessionId);
     const resolved = this.resolveDataScience(session);
-    if (!resolved) throw new EngineStateError("invalid_request", "data science is not enabled for this session's project");
+    if (!resolved) {
+      throw new EngineStateError(
+        "invalid_request",
+        machineAllows(this.machinePlugins(), "data-science")
+          ? "data science is not enabled for this session's project"
+          : "data science is turned off for this Mac",
+      );
+    }
     if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
     return storeDsCapability({
       sessionId,
@@ -1438,6 +1486,9 @@ export class EngineStore {
     try { project = this.getProject(session.projectId); } catch { return undefined; }
     const config = project.dataScience;
     if (!config?.enabled || !config.python) return undefined;
+    // The machine ceiling, same rule as LaTeX's: off here means unavailable
+    // everywhere, and every project keeps what it chose.
+    if (!machineAllows(this.machinePlugins(), "data-science")) return undefined;
     const pythonPath = resolvePythonPath(session.workspace.path, config.python.path);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
@@ -1460,7 +1511,16 @@ export class EngineStore {
   latex(sessionId: string): LatexCapability {
     const session = this.getSession(sessionId);
     const resolved = this.resolveLatex(session);
-    if (!resolved) throw new EngineStateError("invalid_request", "LaTeX is not enabled for this session's project");
+    if (!resolved) {
+      // WHICH SWITCH, so a person knows where to go. The ceiling and the
+      // project's own setting produce the same refusal but not the same fix.
+      throw new EngineStateError(
+        "invalid_request",
+        machineAllows(this.machinePlugins(), "latex")
+          ? "LaTeX is not enabled for this session's project"
+          : "LaTeX is turned off for this Mac",
+      );
+    }
     return storeLatexCapability({
       sessionId,
       cwd: session.workspace.path,
@@ -1487,12 +1547,24 @@ export class EngineStore {
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return undefined; }
     const config = project.latex;
-    if (!config?.enabled || !config.toolchain?.path) return undefined;
-    if (!fs.existsSync(config.toolchain.path)) return undefined;
+    if (!config?.enabled) return undefined;
+    // THE MACHINE CEILING. Turning LaTeX off for this Mac makes it unavailable
+    // everywhere without touching what any project chose.
+    if (!machineAllows(this.machinePlugins(), "latex")) return undefined;
+    /**
+     * THE MACHINE'S TeX INSTALL IS A REAL FALLBACK, not an inert stored field.
+     * Which distribution compiles is a fact about this Mac, so a project that
+     * has not chosen one uses the machine's — and a project that HAS chosen
+     * still wins, because a per-checkout choice is more specific.
+     */
+    const machineToolchain = LatexSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
+    const toolchain = config.toolchain ?? (machineToolchain.success ? machineToolchain.data.toolchain : undefined);
+    if (!toolchain?.path) return undefined;
+    if (!fs.existsSync(toolchain.path)) return undefined;
     return {
-      kind: config.toolchain.kind,
-      binPath: config.toolchain.path,
-      ...(config.toolchain.engine ? { engine: config.toolchain.engine } : {}),
+      kind: toolchain.kind as ResolvedLatex["kind"],
+      binPath: toolchain.path,
+      ...(toolchain.engine ? { engine: toolchain.engine as ResolvedLatex["engine"] } : {}),
       ...(config.mainFile ? { mainFile: config.mainFile } : {}),
     };
   }
@@ -4399,6 +4471,81 @@ export class EngineStore {
    */
   private pluginRelease: ((sessionId: string, reason: string) => void) | undefined;
 
+  /**
+   * Every assignment this session holds, folded over its WHOLE queue.
+   *
+   * Authoritative over what the engine STILL HOLDS: a client's transcript may be
+   * a page, and a fold over a page cannot tell "the joined run finished" from
+   * "the joined run is not in this window". The engine has every turn it has
+   * kept, so it answers once and the answer rides the snapshot.
+   *
+   * `unresolved` can still occur here, and saying otherwise would be a lie:
+   * journal retention or a deleted turn can remove a carrier the engine no
+   * longer has. That is genuinely unknown, and reporting it as unknown is the
+   * honest answer — not "running", and not a guess at an outcome.
+   */
+  sessionAssignments(sessionId: string): SessionAssignment[] {
+    return assignmentsOf(this.readQueue(sessionId).turns as unknown as AssignmentTurn[]);
+  }
+
+  /**
+   * CONTINUE INDEPENDENTLY. Stops PRESENTING an assignment as active without
+   * deleting anything: the task turn, its outcome and the session's
+   * `startedFrom` all remain, and nothing running is stopped.
+   *
+   * Marks every outstanding task turn rather than taking a run id, because
+   * "continue independently" is a statement about the session's relationship to
+   * its coordinators, not about one message.
+   */
+  detachAssignments(sessionId: string, runId?: string): Turn[] {
+    const session = this.getSession(sessionId);
+    const at = this.now();
+    const queue = this.readQueue(session.id);
+    const detached: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.origin !== "session" || turn.agentIntent !== "task") continue;
+      if (runId && turn.runId !== runId) continue;
+      if (turn.assignmentDetachedAt !== undefined) continue;
+      turn.assignmentDetachedAt = at;
+      turn.updatedAt = at;
+      detached.push(structuredClone(turn));
+    }
+    if (detached.length > 0) {
+      this.writeQueue(session.id, queue);
+      // No `turn.updated` kind exists; the cockpit refolds from the snapshot on
+      // `session.updated`, which is what a detach changes for a reader.
+      this.appendEvent(sessionId, { type: "session.updated", session });
+    }
+    return detached;
+  }
+
+  /**
+   * WHAT THIS MACHINE ALLOWS. Absent file means everything is allowed — a Mac
+   * that predates this must not have its working plugins silently switched off.
+   */
+  machinePlugins(): ProjectPlugins {
+    const parsed = ProjectPluginsSchema.safeParse(this.readDocument(this.paths.machinePlugins));
+    return parsed.success ? parsed.data : { version: PROJECT_PLUGINS_VERSION, entries: {} };
+  }
+
+  /**
+   * Turn a plugin on or off for this Mac, or change its machine settings.
+   *
+   * PROJECT CONFIGURATION IS NEVER TOUCHED. Disabling globally is a ceiling: a
+   * project that had the plugin on still has it on, and re-enabling here
+   * restores exactly what each project had rather than a blank slate.
+   */
+  updateMachinePlugins(patch: PluginPatch): ProjectPlugins {
+    const next = applyPluginPatch(this.machinePlugins(), patch);
+    this.writeDocument(this.paths.machinePlugins, next);
+    return structuredClone(next);
+  }
+
+  /** Does this plugin actually run for this project: machine AND project. */
+  pluginRuns(project: Project, id: string): boolean {
+    return pluginEffectivelyEnabled(this.machinePlugins(), readProjectPlugins(project).plugins, id);
+  }
+
   attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
     this.pluginRelease = release;
   }
@@ -4408,8 +4555,12 @@ export class EngineStore {
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return []; }
     const { plugins } = readProjectPlugins(project);
+    const machine = this.machinePlugins();
     return Object.entries(plugins.entries)
-      .filter(([id, config]) => config.enabled && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
+      // THE MACHINE CEILING APPLIES TO THE CLAIM TOO. A worker builds walls from
+      // this list, so a globally disabled plugin must not reach a turn — the
+      // frontend hiding it would not be enforcement.
+      .filter(([id, config]) => config.enabled && machineAllows(machine, id) && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
       .map(([id]) => id)
       .sort();
   }
@@ -5401,6 +5552,12 @@ export class EngineStore {
     draft?: boolean;
     id?: string;
     projectId: string;
+    /**
+     * WHO STARTED THIS SESSION. Supplied by the daemon from the creating turn's
+     * CLAIM TOKEN, never from a tool argument — see `Session.startedFrom`.
+     * Permanent, and no lifetime or permission travels with it.
+     */
+    startedFrom?: { sessionId: string; runId?: string };
     title?: string;
     detached?: boolean;
     envMode?: EnvMode;
@@ -5533,6 +5690,9 @@ export class EngineStore {
       // session document would be a second spelling of absent, and the two
       // would drift the first time a reader forgot one of them.
       ...(input.origin === "session" ? { origin: "session" as const } : {}),
+      ...(input.startedFrom
+        ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
+        : {}),
       createdAt: at,
       updatedAt: at,
       // The instance is the ROUTING key and the driver is descriptive, so the
@@ -5919,12 +6079,31 @@ export class EngineStore {
    * NO BRANCH DERIVATION, unlike `listProjects`: that costs a `git rev-parse`
    * per project and nothing in this answer renders a branch.
    */
-  liveSessions(): { sessions: Session[]; projects: Array<{ id: string; name: string }> } {
+  liveSessions(): {
+    sessions: Session[];
+    projects: Array<{ id: string; name: string }>;
+    assignments: Record<string, SessionAssignment[]>;
+  } {
     const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    const sessions = this.readSessions().filter((session) => session.state === "active");
+    /**
+     * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
+     *
+     * The sidebar reads this one route each polling pass. Asking it to fetch
+     * every session's full history to learn who each is working for would be an
+     * N+1 over whole transcripts — the most expensive read in the engine,
+     * repeated per session, per poll. One pass over the queues answers it here.
+     */
+    const assignments: Record<string, SessionAssignment[]> = {};
+    for (const session of sessions) {
+      const held = this.sessionAssignments(session.id);
+      if (held.length > 0) assignments[session.id] = held;
+    }
     return {
-      sessions: this.readSessions().filter((session) => session.state === "active"),
+      sessions,
       projects: projects.map((project) => ({ id: project.id, name: project.name })),
+      assignments,
     };
   }
 
@@ -6051,6 +6230,7 @@ export class EngineStore {
       agentIntent?: Turn["agentIntent"];
       agentDelivery?: Turn["agentDelivery"];
       agentSourceRunId?: string;
+      assignmentScope?: string;
       origin?: "session";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
@@ -6150,6 +6330,7 @@ export class EngineStore {
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+      ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
       ...(passive ? { completedAt: at, resultText: "" } : {}),
       state: passive ? "completed" : "queued",
       acceptedAt: at,
@@ -6337,7 +6518,7 @@ export class EngineStore {
    */
   submitAgentTurn(
     sessionId: string,
-    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"] },
+    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
     proof?: { sessionId: string; runId: string; claimToken: string },
   ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
@@ -6356,6 +6537,9 @@ export class EngineStore {
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
+      // Only a TASK carries a scope. A report that named one would read as an
+      // assignment in every surface that folds these turns.
+      ...(intent === "task" && input.scope ? { assignmentScope: input.scope } : {}),
     });
     if (!result.replayed && waiting?.once) {
       this.writeSubscriptions(this.readSubscriptions().filter((sub) => sub.id !== waiting.id));
@@ -7863,12 +8047,24 @@ export class EngineStore {
        * Keyed on the TURN being terminal rather than on a timestamp: an agent
        * whose turn is still queued or running is not stranded, it is waiting.
        */
+      /**
+       * EVERY TERMINAL TURN AT ONCE, because this is a boot and there are
+       * hundreds of them. Collected first, then swept in three reads per
+       * session rather than three per turn — see `closeOpenItemsForRuns` for
+       * the measurement that made this the difference between a 21 s engine
+       * start and a fast one.
+       */
+      const settledRuns = new Set<string>();
       for (const turn of queue.turns) {
         if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
-        this.closeOrphanedTasks(session.id, turn.runId, this.now(), "the turn ended before this agent reported back");
+        settledRuns.add(turn.runId);
+      }
+      {
+        const sweptAt = this.now();
+        this.closeLiveTasks(session.id, sweptAt, "the turn ended before this agent reported back", { runIds: settledRuns, includeBackground: false });
         // Same retroactive cure for items: a stopped turn from before this
         // sweep existed still holds the tool row it was inside.
-        this.closeOpenItems(session.id, turn.runId, this.now());
+        this.closeOpenItemsForRuns(session.id, settledRuns, sweptAt);
         // And for requests: a question parked on a turn that already ended
         // kept a persisted session `blocked` with nothing left to answer it.
         //
@@ -7885,7 +8081,7 @@ export class EngineStore {
         //
         // The row stays in the transcript, resolved, as part of the record of
         // what the lost turn was doing when it died.
-        this.closeOpenRequests(session.id, turn.runId, this.now());
+        this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
@@ -8362,6 +8558,55 @@ export class EngineStore {
     return closed;
   }
 
+  /**
+   * THE SAME SWEEP FOR MANY RUNS, IN ONE READ — what `recover()` needs.
+   *
+   * The per-turn closers below are right for a live transition, where one turn
+   * has just ended. At boot there are hundreds of them: measured on a real
+   * store, 114 sessions held 1471 terminal turns, and reading each session's
+   * items (577 KB average), requests and tasks once PER TURN made
+   * `readDocument` 15.7 s of a 21 s engine start — which is the whole cold
+   * launch, because the desktop shell does not show its window until the engine
+   * answers `/v2/health` (apps/desktop/main.js:1895).
+   *
+   * Identical outcome: the per-turn versions only ever match rows whose `runId`
+   * is that turn's, so matching against the SET of terminal run ids closes
+   * exactly the same rows and appends the same events.
+   */
+  private closeOpenItemsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
+    if (runIds.size === 0) return 0;
+    const items = this.readItems(sessionId);
+    let closed = 0;
+    for (const item of items.values()) {
+      if (!runIds.has(item.runId) || item.status !== "inProgress") continue;
+      const settled: Item = { ...item, status: "failed", completedAt: at };
+      items.set(item.id, settled);
+      this.appendEvent(sessionId, { type: "item.completed", item: settled }, item.runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeItems(sessionId, items);
+    return closed;
+  }
+
+  private closeOpenRequestsForRuns(sessionId: string, runIds: ReadonlySet<string>, at: number): number {
+    if (runIds.size === 0) return 0;
+    const requests = this.readRequests(sessionId);
+    let closed = 0;
+    for (const request of requests.values()) {
+      if (!runIds.has(request.runId) || request.state !== "open") continue;
+      request.state = "resolved";
+      request.decision = "cancel";
+      request.resolvedBy = "cancelled";
+      request.resolvedAt = at;
+      request.reason = "the turn ended before this request was answered";
+      requests.set(request.id, request);
+      this.appendEvent(sessionId, { type: "request.resolved", requestId: request.id, decision: "cancel", resolvedBy: "cancelled", reason: request.reason }, request.runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeRequests(sessionId, requests);
+    return closed;
+  }
+
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.readItems(sessionId);
     let closed = 0;
@@ -8392,12 +8637,15 @@ export class EngineStore {
     sessionId: string,
     at: number,
     failure: string,
-    options: { runId?: string; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
+    options: { runId?: string; runIds?: ReadonlySet<string>; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
   ): Task[] {
     const tasks = this.readTasks(sessionId);
     const closedTasks: Task[] = [];
     for (const [id, task] of tasks) {
       if (options.runId !== undefined && task.runId !== options.runId) continue;
+      // MANY RUNS, ONE READ. `recover()` sweeps every terminal turn of a
+      // session; asking per turn re-read this whole document once per turn.
+      if (options.runIds !== undefined && !options.runIds.has(task.runId)) continue;
       // `isBackgroundWork`, not `kind`: an agent launched detached outlives
       // its turn exactly as a shell does, and was being swept here as failed
       // while it was still reporting.

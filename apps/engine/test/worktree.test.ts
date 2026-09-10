@@ -412,7 +412,51 @@ test("async git pool expires queued reads without spawning them and recovers cap
   expect(fs.existsSync(marker)).toBe(false);
 });
 
+/**
+ * A POOL OF ITS OWN, NOT THE SINGLETON. What this test asserts is that the
+ * async readers agree with the synchronous ones — nothing about
+ * `defaultAsyncGitRunner`. Sharing it made this test's 22 reads queue behind
+ * whatever else in the same process holds those four slots, and the pool charges
+ * queue time to each call's deadline (worktree.ts:108-155), so an unrelated slow
+ * read could spend this test's whole budget before its own git ran. Measured:
+ * with the four slots held for 3 s, one read waited 2950 ms and the body went
+ * from 338 ms to 3357 ms (docs/investigations/197-git-test-timing.md).
+ *
+ * Production semantics are unchanged and still covered: the deadline including
+ * queue time is what the dedicated pool tests above assert, and the singleton's
+ * own construction is checked below.
+ */
+test("the shared async runner is a bounded runner like any other", async () => {
+  // The singleton every EngineState uses by default (state.ts) still has to
+  // BE a runner: reachable, and bounded per call. Its queue behaviour is
+  // specified by the dedicated pool tests above, on pools those tests own —
+  // asserting it here would again couple this file to whatever else in the
+  // process is holding its slots.
+  const unversioned = tmp("telar-shared-async-");
+  const result = await defaultAsyncGitRunner(unversioned, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 10_000 });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("not a git repository");
+  expect(result.timedOut).toBeUndefined();
+});
+
+test("a queued read's deadline counts the time it spent queued", async () => {
+  // The property the parity test must not depend on, pinned where it belongs:
+  // on a pool this test owns. One slot, occupied; the second read's 100ms
+  // budget expires while it is still in the queue, so it reports a timeout
+  // without ever having been spawned.
+  const root = tmp("telar-queue-deadline-");
+  const marker = path.join(root, "second-ran");
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const holder = run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 1_500 });
+  const queued = await run(root, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], { timeoutMs: 100 });
+  expect(queued.timedOut).toBe(true);
+  expect(queued.stderr).toContain("did not finish within 100ms");
+  expect(fs.existsSync(marker)).toBe(false);
+  expect((await holder).timedOut).toBe(true);
+}, 10_000);
+
 test("async git reads preserve overview and review data for committed and untracked changes", async () => {
+  const asyncGit = createAsyncGitRunner();
   const root = repo();
   const base = defaultGitRunner(root, ["rev-parse", "HEAD"]).stdout.trim();
   fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\n");
@@ -420,8 +464,8 @@ test("async git reads preserve overview and review data for committed and untrac
   fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\nworking\n");
   fs.writeFileSync(path.join(root, "new.txt"), "new file\n");
   const input = { cwd: root, baseRef: base };
-  expect(await gitOverviewAsync(defaultAsyncGitRunner, root)).toEqual(gitOverview(defaultGitRunner, root));
-  const diff = await sessionDiffAsync(defaultAsyncGitRunner, input);
+  expect(await gitOverviewAsync(asyncGit, root)).toEqual(gitOverview(defaultGitRunner, root));
+  const diff = await sessionDiffAsync(asyncGit, input);
   expect(diff).toEqual(sessionDiff(defaultGitRunner, input));
   expect(diff.commits).toHaveLength(1);
   expect(diff.files.map(file => file.path)).toEqual(["new.txt", "README.md"].sort((a, b) => a.localeCompare(b)));
@@ -430,7 +474,7 @@ test("async git reads preserve overview and review data for committed and untrac
     { ...input, path: "new.txt", untracked: true },
     { ...input, baseRef: "deleted-base", path: "README.md" },
   ]) {
-    const patch = await sessionFilePatchAsync(defaultAsyncGitRunner, patchInput);
+    const patch = await sessionFilePatchAsync(asyncGit, patchInput);
     expect(patch).toEqual(sessionFilePatch(defaultGitRunner, patchInput));
     expect(patch.patch).not.toBe("");
   }

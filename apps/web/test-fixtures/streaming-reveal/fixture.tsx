@@ -9,6 +9,10 @@
 import { createElement as h, StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStreamingReveal } from "../../lib/use-streaming-reveal";
+import { REVEAL } from "../../lib/streaming-reveal";
+
+/** A chunk's hard latency bound, with one frame of slack for the checks. */
+const BOUND = REVEAL.maxLagMs + 100;
 
 // ── the controllable clock ────────────────────────────────────────────────
 let clock = 0;
@@ -102,8 +106,8 @@ const SCENARIOS: Scenario[] = [
       await settle();
       const atArrival = shown();
       check("new chunk is not dumped on arrival", atArrival < 10, `shown ${atArrival} of 10 right after commit`);
-      await tick(300);
-      check("and lands by its deadline", shown() === 10, `shown ${shown()} of 10`);
+      await tick(BOUND);
+      check("and lands by its bound", shown() === 10, `shown ${shown()} of 10`);
     },
   },
   {
@@ -112,10 +116,10 @@ const SCENARIOS: Scenario[] = [
       set(long(5));
       await tick(17);
       const old = shown();
-      // NO FRAMES: the clock jumps past the 5's deadline while the browser
+      // NO FRAMES: the clock jumps past the 5's bound while the browser
       // never painted, so those characters are genuinely overdue rather than
       // already finished.
-      skip(400);
+      skip(REVEAL.maxLagMs + 150);
       check("old chunk still outstanding", old < 5, `shown ${old} of 5 before the jump`);
       set(long(805));
       await settle();
@@ -123,8 +127,54 @@ const SCENARIOS: Scenario[] = [
       const after = shown();
       check("overdue chunk flushed", after >= 5, `shown ${after}, expected at least 5`);
       check("fresh 800 NOT dragged out with it", after < 805, `shown ${after} of 805`);
-      await tick(300);
-      check("fresh text lands by its own deadline", shown() === 805, `shown ${shown()} of 805`);
+      await tick(BOUND);
+      check("fresh text lands by its own bound", shown() === 805, `shown ${shown()} of 805`);
+    },
+  },
+  {
+    name: "SLOW INPUT — 5 chars/s in 800ms chunks, paced to the source",
+    run: async ({ set, tick, shown, check }) => {
+      // THE PACKAGED-BUILD COMPLAINT, replayed: a slow stream must neither
+      // flash each chunk out (the "way too fast" burst) nor sit dead between
+      // chunks. Fed for 12s; the trace below is chars revealed per 250ms.
+      const trace: number[] = [];
+      let text = 0;
+      let lastShown = 0;
+      let deadStreak = 0;
+      let worstDeadStreak = 0;
+      let worstBurst = 0;
+      for (let t = 0; t < 12_000; t += 200) {
+        if (t % 800 === 0) {
+          text += 4; // 4 chars every 800ms = 5 chars/s
+          set(long(text));
+          await settle();
+        }
+        await tick(200);
+        const nowShown = shown();
+        const delta = nowShown - lastShown;
+        trace.push(delta);
+        lastShown = nowShown;
+        if (t > 3000) {
+          if (delta === 0) {
+            deadStreak += 1;
+            worstDeadStreak = Math.max(worstDeadStreak, deadStreak);
+          } else deadStreak = 0;
+          worstBurst = Math.max(worstBurst, delta);
+        }
+      }
+      // At 5 chars/s a character lands every 200ms; whole-character rendering
+      // makes single still buckets normal. What must be GONE is the old dead
+      // air: chunk flashed out, then 550ms of nothing every cycle.
+      check(
+        "no sustained stillness once the estimate is warm",
+        worstDeadStreak <= 2,
+        `longest still run after warmup: ${worstDeadStreak * 200}ms (allowed 400ms)`,
+      );
+      // 5 chars/s → 1 per 200ms; drainSlack.max caps catch-up at 2×.
+      check("no bucket outruns the capped rate", worstBurst <= 3, `worst 200ms bucket revealed ${worstBurst} chars (cap 3)`);
+      check("nothing outlives its bound", lastShown >= text - 4, `shown ${lastShown} of ${text} at end of feed`);
+      const rows = trace.map((count) => "▁▂▃▄▅▆▇█"[Math.min(7, count)]).join("");
+      check(`trace (chars per 200ms): ${rows}`, true, "▁=0 …");
     },
   },
   {
@@ -201,7 +251,7 @@ function App() {
     setResults([]);
     for (const scenario of list) {
       // A clean slate: unmount, clear the text, jump well past any deadline.
-      clock += 2000;
+      skip(2000);
       setReduced(false);
       setKey((value) => value + 1);
       setText("");

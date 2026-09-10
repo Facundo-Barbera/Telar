@@ -36,6 +36,7 @@ import {
   type WorkerClaim,
   type WorkerStatus,
   pluginEnabled,
+  machineAllows,
   readProjectPlugins,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
@@ -533,8 +534,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     const session = store.getSession(sessionId);
     if (!session.projectId) throw new EngineStateError("invalid_request", `${pluginId} needs a project`);
     const project = store.getProject(session.projectId);
-    if (!pluginEnabled(readProjectPlugins(project).plugins, pluginId)) {
-      throw new EngineStateError("invalid_request", `${pluginId} is not enabled for this session's project`);
+    // EFFECTIVE = MACHINE AND PROJECT. Every door goes through this one gate —
+    // the generic `/plugins/:id/:verb`, the `/ds/` and `/latex/` aliases, and
+    // the tool walls — so a globally disabled plugin is refused everywhere
+    // rather than merely hidden in a cockpit.
+    if (!store.pluginRuns(project, pluginId)) {
+      const why = machineAllows(store.machinePlugins(), pluginId)
+        ? `${pluginId} is not enabled for this session's project`
+        : `${pluginId} is turned off for this Mac`;
+      throw new EngineStateError("invalid_request", why);
     }
     return { projectId: project.id, sessionId };
   };
@@ -2869,6 +2877,58 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * happily as it matches a session id, and hoisting it would turn this
        * route into "no session by that id".
        */
+      /**
+       * WHAT THIS MAC ALLOWS, and the machine-level settings behind it.
+       *
+       * SCOPED TO THIS ENGINE. A cockpit looking at a remote Mac reaches that
+       * Mac's daemon, so these reads and writes land on the engine being viewed
+       * and never on the one the browser happens to be running beside.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/plugins") {
+        writeJson(response, 200, { plugins: pluginHost.statuses(), machine: store.machinePlugins() });
+        return;
+      }
+      if (request.method === "PATCH" && url.pathname === "/v2/plugins") {
+        const input = await body(request);
+        if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
+          throw new HttpError(400, "invalid_request", "plugins must be an object");
+        }
+        const entries = input.plugins as Record<string, unknown>;
+        for (const [id, value] of Object.entries(entries)) {
+          if (value === null) continue;
+          if (typeof value !== "object" || Array.isArray(value)) {
+            throw new HttpError(400, "invalid_request", `plugins.${id} must be an object or null`);
+          }
+          const config = value as { enabled?: unknown; settings?: unknown };
+          if (typeof config.enabled !== "boolean") {
+            throw new HttpError(400, "invalid_request", `plugins.${id}.enabled must be a boolean`);
+          }
+          // THE PLUGIN'S OWN SCHEMA VALIDATES ITS OWN SETTINGS, here as on the
+          // project arm. The protocol does not know what a TeX distribution is.
+          const module = pluginHost.ready(id);
+          if (module?.settingsSchema && config.settings !== undefined) {
+            const parsed = module.settingsSchema.safeParse(config.settings);
+            if (!parsed.success) {
+              throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
+            }
+          }
+        }
+        const machine = store.updateMachinePlugins(entries as Parameters<typeof store.updateMachinePlugins>[0]);
+        /**
+         * TURNING A PLUGIN OFF DRAINS IT EVERYWHERE. New work is already refused
+         * by the gate; this lets what is running finish and gives resources back
+         * when it does. Nothing is killed — the same rule as a project switch.
+         */
+        for (const [id, value] of Object.entries(entries)) {
+          const off = value === null || (value as { enabled?: boolean }).enabled === false;
+          for (const project of store.listProjects()) {
+            if (off) void pluginHost.drainProject(id, project.id);
+            else pluginHost.cancelDrain(id, project.id);
+          }
+        }
+        writeJson(response, 200, { machine });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
         writeJson(response, 200, store.liveSessions());
         return;
@@ -3102,6 +3162,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...window,
             items,
             requests: store.requests(session.sessionId),
+            // Folded over the WHOLE queue, not the window above: a client
+            // paging its transcript must not have to guess at a carrier it
+            // cannot see. See `sessionAssignments`.
+            assignments: store.sessionAssignments(session.sessionId),
           });
           return;
         }
@@ -3604,6 +3668,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
+    let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
     let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -3658,6 +3723,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // outward `/v2/sessions/mcp` door below, deliberately: two doors, two
       // credentials, and only this one carries a `self` to be woken in.
       sessionsRunSocket = new (await import("./sessions-tools/run-socket")).SessionsToolSocket();
+      telarRunSocket = new (await import("./telar-socket")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
@@ -3673,6 +3739,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
       const sessionsSocket = sessionsRunSocket;
+      const telarSocket = telarRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
           return withDirectExecution(new EngineClient(discovery), { ...execution, registerWorker: async (id) => {
@@ -3701,6 +3768,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // note on `createLoginGrantStore`.
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
+            ...(telarSocket ? { telarSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             // TRUSTED, and in-process: this is the registration `pruneWorkers`
             // excludes, so the worker must not expire itself on a clock the
@@ -3783,6 +3851,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
         await sessionsRunSocket?.close();
+        await telarRunSocket?.close();
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.
         // Kernels and compile jobs come back through their plugins' own

@@ -30,7 +30,7 @@
  * "search flattens every band", the same survivor rule that keeps the session
  * you are LOOKING AT visible after it drops into a shelf.
  */
-import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity } from "@telar/engine-client";
+import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity, type SessionAssignment } from "@telar/engine-client";
 import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
 
@@ -62,6 +62,16 @@ export type SidebarSession = {
    */
   hostId?: string;
   hostName?: string;
+  /**
+   * Who this session is working for, and what it has finished for them.
+   *
+   * FROM THE LIVE LIST, not a per-row history read — the engine folds these
+   * over each session's whole queue and sends them on `liveSessions()`. The
+   * sidebar polls that one route, so learning this costs no extra request.
+   */
+  assignments?: readonly SessionAssignment[];
+  /** Which session started this one. Provenance, never a lifetime. */
+  startedFrom?: { sessionId: string; runId?: string };
   /**
    * OPTIONAL, and the rail never receives one without it today.
    *
@@ -140,10 +150,13 @@ export function toSidebarSession(
   projectBranch?: string,
   projectIcon?: string,
   host?: { id: string; name: string },
+  assignments?: readonly SessionAssignment[],
 ): SidebarSession {
   return {
     id: session.id,
     title: session.title,
+    ...(assignments && assignments.length > 0 ? { assignments } : {}),
+    ...(session.startedFrom ? { startedFrom: session.startedFrom } : {}),
     ...(session.draft ? { draft: true } : {}),
     ...(host ? { hostId: host.id, hostName: host.name } : {}),
     projectId: session.projectId,
@@ -281,6 +294,49 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
 /** A session's identity across every Mac in the rail: two engines can mint
  *  the same id, so the host rides in front. Local sessions keep their bare
  *  id, which is what every URL and every existing comparison already uses. */
+/**
+ * Sessions doing work for `coordinatorId`, and sessions it started.
+ *
+ * TWO DIFFERENT RELATIONSHIPS, deliberately not merged. An assignment is
+ * current work and ends; provenance is permanent and ends nothing. A session
+ * that finished a task still belongs here — under `review` — until the human
+ * settles it, because dropping it the moment its run ended would hide the
+ * result the coordinator delegated for.
+ *
+ * KEYED THROUGH `sessionKey`, because two Macs can mint the same session id and
+ * a coordinator on one host must not gather a stranger from another.
+ */
+export type RelatedWork = {
+  /** Outstanding assignments from this coordinator. */
+  active: SidebarSession[];
+  /** Finished, not yet settled — waiting to be looked at. */
+  review: SidebarSession[];
+  /** Started from this coordinator, with no current assignment. */
+  independent: SidebarSession[];
+};
+
+export function relatedWork(sessions: readonly SidebarSession[], coordinator: Pick<SidebarSession, "id" | "hostId">): RelatedWork {
+  const host = coordinator.hostId;
+  const related: RelatedWork = { active: [], review: [], independent: [] };
+  for (const session of sessions) {
+    if (sessionKey(session) === sessionKey(coordinator)) continue;
+    // SAME HOST ONLY. `sessionKey` scopes the comparison; an assignment's
+    // `fromSessionId` is a bare id, which is only meaningful within one engine.
+    if ((session.hostId ?? undefined) !== (host ?? undefined)) continue;
+    const mine = (session.assignments ?? []).filter((assignment) => assignment.fromSessionId === coordinator.id);
+    if (mine.some((assignment) => assignment.outcome === undefined && !assignment.unresolved)) {
+      related.active.push(session);
+      continue;
+    }
+    if (mine.some((assignment) => assignment.outcome !== undefined && assignment.outcome !== "detached")) {
+      related.review.push(session);
+      continue;
+    }
+    if (session.startedFrom?.sessionId === coordinator.id) related.independent.push(session);
+  }
+  return related;
+}
+
 export function sessionKey(session: Pick<SidebarSession, "id" | "hostId">): string {
   return session.hostId ? `${session.hostId}:${session.id}` : session.id;
 }

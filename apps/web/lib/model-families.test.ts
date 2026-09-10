@@ -248,10 +248,13 @@ describe("what the fold does to the generation split", () => {
     // put the 1M Sonnet under "Legacy models". Its family id is
     // `claude-sonnet-5`, which reports 5, which is what it is.
     const split = splitGenerations(groupFamilies(CLAUDE));
-    expect(split.current.map((family) => family.id)).toEqual(["claude-opus-5", "claude-fable-5", "claude-sonnet-5"]);
-    // And Haiku 4.5 is a generation behind the 5 default, which is what the fold
-    // finally made legible: its id said nothing, its resolved id says 4-5.
-    expect(split.legacy.map((family) => family.id)).toEqual(["claude-haiku-4-5"]);
+    // Haiku 4.5 is the line just below the default's — the previous
+    // generation, which `splitGenerations` now keeps current (the same rule
+    // that stopped Astra's arrival from folding away Codex's 5.6 family).
+    // It is also Anthropic's current small model, so the old filing was the
+    // misreading.
+    expect(split.current.map((family) => family.id)).toEqual(["claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5"]);
+    expect(split.legacy).toEqual([]);
   });
 
   test("a starred model is never folded away", () => {

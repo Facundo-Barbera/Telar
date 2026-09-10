@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { InfoIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, InfoIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
 import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
+import { PluginsPage } from "./plugins-page";
 import { UpdatesSection } from "./updates-section";
 import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
@@ -78,9 +79,14 @@ const SECTIONS: SettingsSection[] = [
    * engine stays loopback either way).
    */
   { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
-  { id: "application", label: "Application", icon: InfoIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
+  /**
+   * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
+   * shipped today and the list grows; a nav that grew with it would crowd out
+   * the things a person opens settings for.
+   */
+  { id: "plugins", label: "Plugins", icon: BlocksIcon, group: "Runtime" },
 ];
 
 /**
@@ -95,8 +101,12 @@ const SECTION_ALIASES: Record<string, string> = {
   textgen: "general",
   mcp: "tools",
   permissions: "tools",
-  updates: "application",
-  about: "application",
+  updates: "general",
+  about: "general",
+  // APPLICATION MERGED INTO GENERAL. Both held facts about this install and
+  // splitting them meant looking in two places for one question; the id keeps
+  // answering so bookmarks and the OAuth redirect do not strand.
+  application: "general",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -198,8 +208,13 @@ export function SettingsPage() {
           <LinksSection />
           <InboxSection />
           <TextGenSection />
+          {/* Merged in from the retired Application pane. */}
+          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+          <UpdatesSection />
         </>
       )}
+
+      {active === "plugins" && <PluginsPage />}
 
       {active === "remote" && (
         <>
@@ -218,12 +233,6 @@ export function SettingsPage() {
         </>
       )}
 
-      {active === "application" && (
-        <>
-          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
-          <UpdatesSection />
-        </>
-      )}
     </SettingsShell>
   );
 }

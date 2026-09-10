@@ -4,10 +4,28 @@
  * Providers deliver prose in bursts. Rendering each arrival immediately shows
  * the burst in one frame and then a flat gap, which reads as stuttering.
  *
- * EVERY CHUNK CARRIES ITS OWN DEADLINE. A chunk that arrived at `t` is fully
- * shown by `t + maxLagMs`, whatever arrives afterwards — one shared window
- * reset by each new arrival would let a busy stream postpone old text forever.
- * The rate demanded each frame is the worst case across outstanding chunks.
+ * THE SUSTAINED PACE TRACKS THE ESTIMATED ARRIVAL RATE, holding a small
+ * RESERVE of unshown text. The first cut of this pacer was deadline-driven —
+ * every chunk fully drained within 250ms of its own arrival — and the user's
+ * verdict on the packaged build was "way too fast for the input rate": at 5–10
+ * chars/s each chunk flashed out at 3–7× the true rate and then the screen sat
+ * dead for most of every gap (measured in
+ * test-fixtures/streaming-reveal/measure.mjs, which re-prints those numbers).
+ * So the deadline is no longer the pace; it is only the BOUND. Each frame:
+ *
+ *   sustained = arrival × clamp(backlog / reserve, drainSlack.min, drainSlack.max)
+ *
+ * At steady state backlog ≈ reserve and text moves at the source's own rate;
+ * when a burst lands the multiplier tops out at `drainSlack.max` — catch-up is
+ * CAPPED at a small multiple of the felt rate instead of overpowering it — and
+ * when a gap starves the backlog the multiplier floors at `drainSlack.min`, a
+ * crawl that spends the reserve bridging the silence.
+ *
+ * EVERY CHUNK STILL CARRIES ITS OWN DEADLINE, now as the latency bound: a
+ * chunk that arrived at `t` is fully shown by `t + maxLagMs` whatever the
+ * estimate got wrong — one shared window reset by each arrival would let a
+ * busy stream postpone old text forever. Draining at the worst-case required
+ * rate is linear in time, so even the bound-driven path moves smoothly.
  *
  * ARRIVAL RATE IS ADAPTIVE AND STARTS UNKNOWN. It is sampled over real
  * intervals between arrivals, never from one animation frame — a first chunk
@@ -19,8 +37,24 @@
  */
 
 export const REVEAL = {
-  /** A chunk is fully shown within this of ITS OWN arrival. */
-  maxLagMs: 250,
+  /**
+   * THE BOUND, NOT THE PACE: a chunk is fully shown within this of ITS OWN
+   * arrival, however wrong the rate estimate is. Raised from 250ms when the
+   * sustained pace moved to arrival-tracking — at 250ms the deadline WAS the
+   * pace, and the pace was the burst the user complained about.
+   */
+  maxLagMs: 1200,
+  /** The reserve the pacer holds to bridge chunk gaps, as time at the
+   *  arrival rate — the intentional added latency, well under `maxLagMs`. */
+  reserveMs: 450,
+  /** The reserve floor in characters. Two, not more: at 5 chars/s every
+   *  floor character is 200ms of added latency, and the measured mean lag
+   *  with a 4-char floor was 815ms against a 450ms target. */
+  reserveFloorChars: 2,
+  /** How far the sustained rate may deviate from the arrival estimate to
+   *  manage the reserve: the floor keeps a crawl through gaps, the cap is
+   *  the most catch-up may exceed the felt rate. */
+  drainSlack: { min: 0.25, max: 2 },
   /** Weight of the newest interval sample in the arrival estimate. */
   arrivalWeight: 0.3,
 } as const;
@@ -69,13 +103,23 @@ export function advanceReveal(state: RevealState, now: number, config: RevealCon
   for (const chunk of pending) if (chunk.at + config.maxLagMs - now <= 0) base = Math.max(base, chunk.end);
 
   // The worst case across the rest: whichever is closest to its own deadline
-  // sets the pace, so a later arrival cannot postpone an earlier one.
+  // sets the BOUND rate, so a later arrival cannot postpone an earlier one.
   let required = 0;
   for (const chunk of pending) {
     const left = chunk.at + config.maxLagMs - now;
     if (left > 0 && chunk.end > base) required = Math.max(required, ((chunk.end - base) * 1000) / left);
   }
-  const rate = Math.max(required, state.arrival ?? 0);
+  // The SUSTAINED rate: the arrival estimate, steered by how the backlog
+  // compares to the reserve it should hold — see the header. Zero until two
+  // arrivals exist; the deadlines pace the opening on their own.
+  let sustained = 0;
+  if (state.arrival !== undefined) {
+    const backlog = state.target - Math.max(base, state.shown);
+    const reserve = Math.max(config.reserveFloorChars, (state.arrival * config.reserveMs) / 1000);
+    const pressure = Math.min(config.drainSlack.max, Math.max(config.drainSlack.min, backlog / reserve));
+    sustained = state.arrival * pressure;
+  }
+  const rate = Math.max(required, sustained);
   const shown = Math.min(state.target, Math.max(base, state.shown + (rate * elapsed) / 1000));
   return { shown, target: state.target, pending: pending.filter((chunk) => chunk.end > shown), last: now, ...carry(state) };
 }

@@ -45,6 +45,7 @@ import {
 import { requireCli } from "./cli-resolution";
 import { collectTelarWall, type TelarSocketLease, type TelarWallPart } from "./telar-socket";
 import { runTools } from "./run/tools";
+import { pluginToolModules } from "./plugins/bundled";
 import type { ToolFactory } from "./tool-kit";
 import type { RunCapability } from "./run/capability";
 import {
@@ -203,6 +204,7 @@ type ClaudeTurnBindings = {
   latex: LatexCapability | undefined;
   /** The project's runs, when the turn carries them. See `run/capability.ts`. */
   run: RunCapability | undefined;
+  plugins: Record<string, unknown> | undefined;
   warpSpawn: WarpSpawn;
   onWarpTask: (seed: TaskSeed) => void;
 };
@@ -1137,6 +1139,7 @@ export function createClaudeDriver(
       browserSocket,
       telarSocket,
       run,
+      plugins,
       spool,
       sessions,
       ds,
@@ -1857,6 +1860,7 @@ export function createClaudeDriver(
         display,
         latex,
         run,
+        plugins,
         warpSpawn,
         onWarpTask,
       };
@@ -1887,6 +1891,16 @@ export function createClaudeDriver(
         { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
         { name: "display", build: displayTools as never, capability: () => telarRef.current?.current.display },
         { name: "run", build: runTools as never, capability: () => telarRef.current?.current.run },
+        /**
+         * EVERY PLUGIN'S WALL, on the same key. One entry per registered module
+         * rather than a second socket: a plugin tool must have one qualified
+         * name, and a `telar-plugins` server beside `telar` would give it two.
+         */
+        ...pluginToolModules().map((module) => ({
+          name: `plugin:${module.meta.id}`,
+          build: ((tool: ToolFactory, capability: never) => module.tools(tool, capability) as unknown[]) as never,
+          capability: () => telarRef.current?.current.plugins?.[module.meta.id],
+        })),
       ];
       let telarLease = telarLeased?.lease;
       if (telarSocket && !telarLease) {
@@ -1931,6 +1945,13 @@ export function createClaudeDriver(
          * changes; the generation covers a rebind of the lease itself.
          */
         telarSocket: telarLease ? `${telarLease.url}#${telarLease.generation}` : null,
+        /**
+         * THE ENABLED PLUGIN SET. The wall re-collects per request, so dispatch
+         * is already honest — but a reused query keeps advertising the catalog
+         * it was started with, so a plugin toggled on or off must cold-start it.
+         * Sorted: a map's key order is not a decision anybody made.
+         */
+        plugins: Object.keys(plugins ?? {}).sort(),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       };

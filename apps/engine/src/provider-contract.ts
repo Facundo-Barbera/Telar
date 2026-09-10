@@ -105,6 +105,12 @@ export type DriverRun = {
    */
   run?: RunCapability;
   /**
+   * Every enabled plugin's capability, by id — the arm that does not grow when
+   * a feature is added. Its walls join the `telar` socket beside the core ones,
+   * under the same key, so a plugin tool has one qualified name everywhere.
+   */
+  plugins?: Record<string, unknown>;
+  /**
    * The session's door to the human's SCREEN — `display_open`, the tool that
    * shows one workspace file in the cockpit's right panel. Per-run like the
    * spool: the worker assembles it around this turn's checkout, so the fence

@@ -40,11 +40,11 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { TELAR_PLUGINS_MCP_SERVER } from "@telar/engine-client";
+import { TELAR_MCP_SERVER } from "@telar/engine-client";
 import { createCodexDriver } from "../src/codex-driver";
 import type { DriverRequest } from "../src/driver";
 import { helloToolModule } from "../src/plugins/hello";
-import { PluginToolSocket } from "../src/plugins/socket";
+import { TelarToolSocket, collectTelarWall } from "../src/telar-socket";
 
 const FIXTURE = path.join(import.meta.dir, "fixtures", "fake-codex-app-server.mjs");
 
@@ -65,7 +65,7 @@ afterAll(() => {
   else process.env.CODEX_BIN = previousCodexBin;
 });
 
-const sockets: PluginToolSocket[] = [];
+const sockets: TelarToolSocket[] = [];
 const dirs: string[] = [];
 afterEach(async () => {
   for (const socket of sockets.splice(0)) await socket.close();
@@ -90,9 +90,17 @@ function countingHello() {
 /** One Codex turn through the fixture, with a real plugin socket bound. */
 async function turnWithDecision(decision: "accept" | "decline" | "acceptForSession") {
   const { calls, capability } = countingHello();
-  const socket = new PluginToolSocket();
+  const socket = new TelarToolSocket();
   sockets.push(socket);
-  const lease = (await socket.bind([helloToolModule], { hello: capability }))!;
+  const lease = (await socket.bind(() =>
+    collectTelarWall([
+      {
+        name: "plugin:hello",
+        build: ((tool: never, cap: never) => helloToolModule.tools(tool, cap) as unknown[]) as never,
+        capability: () => capability,
+      },
+    ]),
+  ))!;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-plugin-approve-"));
   dirs.push(dir);
@@ -116,7 +124,7 @@ async function turnWithDecision(decision: "accept" | "decline" | "acceptForSessi
       asked.push(incoming);
       return decision;
     },
-    pluginsSocket: { url: lease.url, token: lease.token, generation: lease.generation },
+    telarSocketLease: { url: lease.url, token: lease.token, generation: lease.generation },
   });
   return { calls, asked, result, lease };
 }
@@ -130,7 +138,7 @@ test("a DECLINED plugin write never runs — the gate decides dispatch, not just
   // …and it names the plugin's tool on the shared server key, which is what
   // makes the remembered approval the same one a Claude turn would produce.
   expect(JSON.stringify(asked[0])).toContain("hello_ping");
-  expect(JSON.stringify(asked[0])).toContain(TELAR_PLUGINS_MCP_SERVER);
+  expect(JSON.stringify(asked[0])).toContain(TELAR_MCP_SERVER);
 
   // And the plugin's capability NEVER RAN. This is the assertion the earlier
   // tests could not make: registering a url proves reachability, not restraint.

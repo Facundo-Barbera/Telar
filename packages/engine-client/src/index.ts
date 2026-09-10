@@ -138,6 +138,9 @@ import {
   type RunOutputAnswer,
   type RunStartInput,
   type RunStatusAnswer,
+  type SessionAssignment,
+  type PluginStatus,
+  type ProjectPlugins,
 } from "./protocol";
 
 export * from "./protocol";
@@ -256,6 +259,13 @@ export type SessionSnapshot = {
   turns: Turn[];
   items: Item[];
   requests: EngineRequest[];
+  /**
+   * Who this session is working on behalf of, and what it has finished for
+   * them. Folded by the ENGINE over the whole queue, never windowed — a client
+   * paging its transcript cannot tell a finished carrier from an absent one,
+   * so it must not have to try. Absent from an older engine.
+   */
+  assignments?: SessionAssignment[];
   /** Sub-agents and background work. A background task OUTLIVES the turn that
    *  started it, so this is the only thing that can tell a client opening a
    *  cold session that it is still working. */
@@ -1616,7 +1626,29 @@ export class EngineClient {
    * registry beside it — one read rather than one per project, so the two
    * halves cannot be composed from different instants.
    */
-  liveSessions(): Promise<{ sessions: Session[]; projects: Array<{ id: string; name: string }> }> {
+  /**
+   * WHAT THIS MAC ALLOWS, and its machine-level plugin settings.
+   *
+   * Scoped to the engine this client points at — a cockpit viewing a remote Mac
+   * reads that Mac's answer, never the one it happens to run beside.
+   */
+  machinePlugins(): Promise<{ plugins: PluginStatus[]; machine: ProjectPlugins }> {
+    return this.request("GET", "/v2/plugins");
+  }
+
+  /** Turn a plugin on or off for this Mac, or change its machine settings. */
+  updateMachinePlugins(
+    plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>,
+  ): Promise<{ machine: ProjectPlugins }> {
+    return this.request("PATCH", "/v2/plugins", { plugins });
+  }
+
+  /** Assignments ride this list so a sidebar never fetches a history per row. */
+  liveSessions(): Promise<{
+    sessions: Session[];
+    projects: Array<{ id: string; name: string }>;
+    assignments?: Record<string, SessionAssignment[]>;
+  }> {
     return this.request("GET", "/v2/sessions/live");
   }
 

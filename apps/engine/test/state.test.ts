@@ -308,6 +308,69 @@ test("a restart STOPS what it interrupted — claimed and running alike — and 
   expect(second.readEvents("session_one").filter((event) => event.type === "turn.stopped" && event.runId === "running_turn")).toHaveLength(1);
 });
 
+test("the boot sweep closes every terminal turn's leftovers in one pass over each document", () => {
+  /**
+   * THE SWEEP IS PER SESSION, NOT PER TURN, and this is the property that makes
+   * that safe. `recover()` used to call the item/request/task closers once per
+   * terminal turn, and each call re-read that session's whole document: on a
+   * real store (114 sessions, 1471 terminal turns, items averaging 577 KB) that
+   * was 15.7 s of a 21 s engine start, and the desktop shell shows no window
+   * until the engine answers `/v2/health`.
+   *
+   * Batched by run id, the outcome has to be identical — every turn's leftovers
+   * closed, one event each, nothing belonging to a turn that is still live.
+   */
+  const { store, root: stateRoot } = readyStore();
+  // Otherwise the policy answers each request the moment it is asked, and there
+  // is nothing left open for the sweep to retire.
+  store.updateSession("session_one", { runtimeMode: "approval-required" });
+  for (const runId of ["run_a", "run_b", "run_c"]) {
+    store.submitTurn("session_one", { runId, input: `work ${runId}` });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", runId, token);
+    store.ingestObservations("session_one", runId, token, [
+      { kind: "item.started", item: { id: `item_${runId}`, detail: { type: "command_execution", command: { command: "sleep 60" } }, title: "sleep 60" } },
+      { kind: "task.started", task: { id: `task_${runId}`, kind: "agent", state: "running", title: "helper" } },
+    ]);
+    store.openRequest("session_one", runId, token, {
+      requestId: `req_${runId}`,
+      kind: "command_execution",
+      detail: { kind: "command_execution", command: { command: "sleep 180" } },
+    });
+    // End each turn behind the store's back, the way an older build's crash
+    // left them: terminal on disk with its rows still open.
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+    for (const turn of queue.turns) {
+      if (turn.runId !== runId) continue;
+      turn.state = "failed";
+      turn.completedAt = 90;
+      turn.failure = { code: "driver_failed", message: "old build" };
+    }
+    fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+  }
+
+  const reopened = new EngineStore(stateRoot, () => 300);
+  reopened.recover();
+
+  // Every turn's item, task and request — not just the last one's.
+  for (const runId of ["run_a", "run_b", "run_c"]) {
+    expect(reopened.items("session_one").find((item) => item.id === `item_${runId}`)).toMatchObject({ status: "failed", completedAt: 300 });
+    expect(reopened.tasks("session_one").find((task) => task.id === `task_${runId}`)).toMatchObject({ state: "failed" });
+    expect(reopened.requests("session_one").find((request) => request.id === `req_${runId}`)).toMatchObject({ state: "resolved", resolvedBy: "cancelled", resolvedAt: 300 });
+  }
+  // One event each, and the run id on each event is the turn's own — a batched
+  // sweep must not attribute one turn's closure to another.
+  for (const runId of ["run_a", "run_b", "run_c"]) {
+    const closures = reopened.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === `item_${runId}`);
+    expect(closures).toHaveLength(1);
+    expect(closures[0]!.runId).toBe(runId);
+  }
+  // Idempotent: a second boot finds nothing open.
+  expect(reopened.recover()).toEqual({ stopped: [] });
+  expect(reopened.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(3);
+});
+
 test("a fresh message needs no discard first — there is nothing to decide", () => {
   /**
    * `discardAmbiguousTurn` was the human's half of the recovery gate: the
@@ -2785,7 +2848,13 @@ describe("subscriptions", () => {
     expect(cold.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two", runId: "run_w" });
   });
 
-  test("a completed turn on the target queues a [wake] turn on the subscriber, clipped and pointing at the rest", () => {
+  test("a completed turn queues a wake that PINGS: no result body, and the call that fetches one", () => {
+    /**
+     * A wake lands in the subscriber's context whether or not it needs the
+     * answer, so it carries none. The child here answers with 3 000 characters;
+     * the notice must contain neither them nor a clipped prefix of them — only
+     * the size, and the run-scoped read that fetches the text on demand.
+     */
     const { store } = pair();
     const subscription = store.subscribe("session_one", { targetSessionId: "session_two" });
     expect(subscription.events).toEqual(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]);
@@ -2794,9 +2863,13 @@ describe("subscriptions", () => {
     const [wake] = wakes(store, "session_one");
     expect(wake).toMatchObject({ origin: "session", state: "queued", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
     expect(wake!.input.startsWith("[wake: completed] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
-    expect(wake!.input).toContain("first 2000 chars");
-    expect(wake!.input).not.toContain("x".repeat(2_500));
-    expect(wake!.input).toContain('sessions_read(sessionId: "session_two")');
+    // Not one character of the answer, not even a prefix of it.
+    expect(wake!.input).not.toContain("all done");
+    expect(wake!.input).not.toContain("xxxxxxxxxx");
+    expect(wake!.input).toContain("characters. The text is not in this notice.");
+    // The whole notice stays small whatever the child wrote.
+    expect(wake!.input.length).toBeLessThan(600);
+    expect(wake!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_w")');
     expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session" } });
     // The file is at the engine root and outlives the store instance.
     expect(new EngineStore(store.paths.root, () => 100).subscriptionsFor("session_one")).toHaveLength(1);
@@ -2812,10 +2885,14 @@ describe("subscriptions", () => {
     const kinds = wakes(store, "session_one").map((turn) => turn.wakeReason!.kind);
     expect(kinds).toEqual(["turn_failed", "turn_stopped", "request_opened"]);
     const [failed, , parked] = wakes(store, "session_one");
-    expect(failed!.input).toContain("FAILED (driver_failed): the CLI died");
+    expect(failed!.input).toContain("FAILED (driver_failed)");
+    expect(failed!.input).toContain("the CLI died");
     expect(parked!.wakeReason).toMatchObject({ requestId: "req_q", runId: "run_p" });
+    // The short title says what it is; the fields are a read away, not here.
     expect(parked!.input).toContain("Which database?");
-    expect(parked!.input).toContain("- db (choice): Database [choices: postgres | sqlite]");
+    expect(parked!.input).not.toContain("choices:");
+    expect(parked!.input).not.toContain("- db (choice)");
+    expect(parked!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
     expect(parked!.input).toContain("sessions_resolve_request");
 
     // Under `auto`, a command resolves itself — nothing parked, nothing to wake for.
@@ -2823,6 +2900,88 @@ describe("subscriptions", () => {
     const token = store.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
     store.openRequest("session_two", "run_p", token, { requestId: "req_auto", kind: "file_read", detail: { kind: "file_read", read: { path: "/x" } } });
     expect(wakes(store, "session_one")).toHaveLength(3);
+  });
+
+  test("a parked request's notice carries NO fields — only what it is, and the two calls", () => {
+    /**
+     * A PING, INCLUDING WHEN SOMETHING IS WAITING. The fields used to ride the
+     * notice so an answer could be composed without a second read, which made
+     * this the one notice whose size followed its payload. A coordinator about
+     * to answer a question can afford the read it needs to answer properly.
+     */
+    const { store } = pair();
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    store.updateSession("session_two", { runtimeMode: "approval-required" });
+    store.submitTurn("session_two", { runId: "run_many", input: "work" });
+    const token = store.claimTurn("session_two", "worker_one")!.claim!.token;
+    store.markRunning("session_two", "run_many", token);
+    store.openRequest("session_two", "run_many", token, {
+      requestId: "req_many",
+      kind: "user_input",
+      detail: {
+        kind: "user_input",
+        prompt: `Pick: ${"p".repeat(4_000)}`,
+        fields: Array.from({ length: 30 }, (_, index) => ({
+          key: `field_${index}`,
+          label: `Label ${index} ${"l".repeat(500)}`,
+          kind: "choice" as const,
+          choices: Array.from({ length: 30 }, (_, choice) => `choice_${choice}_${"c".repeat(200)}`),
+        })),
+      },
+    });
+
+    const [parked] = wakes(store, "session_one");
+    expect(parked!.input.startsWith("[wake: waiting]")).toBe(true);
+    // What it is: the request, its kind, a clamped title.
+    expect(parked!.input).toContain("request req_many");
+    expect(parked!.input).toContain("kind user_input");
+    // NO fields, no choices, no counts of either — none of it is here.
+    expect(parked!.input).not.toContain("field_0");
+    expect(parked!.input).not.toContain("choices:");
+    expect(parked!.input).not.toContain("more fields");
+    expect(parked!.input).not.toContain("l".repeat(300));
+    expect(parked!.input).not.toContain("c".repeat(300));
+    // Both calls, and a notice that stays one however big the request was.
+    expect(parked!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_many")');
+    expect(parked!.input).toContain("sessions_resolve_request");
+    expect(parked!.input.length).toBeLessThan(800);
+
+    /**
+     * AND THE LENGTH DOES NOT FOLLOW THE PAYLOAD — the property, rather than a
+     * magic number. Ten times the fields, ten times the choices, ten times the
+     * padding: the same notice, to the character, because none of it is in
+     * there. Only the title's clamp can vary, and it is the same title.
+     */
+    // Captured before the first turn ends: finishing it REWRITES that wake in
+    // place (the coalescing rule), and the string under comparison is this one.
+    const notice = parked!.input;
+    const first = store.turns("session_two").find((turn) => turn.runId === "run_many")!.claim!.token;
+    store.resolveRequest("session_two", "req_many", { decision: "accept" });
+    store.completeTurn("session_two", "run_many", first, { text: "" });
+
+    store.submitTurn("session_two", { runId: "run_huge_req", input: "work" });
+    const second = store.claimTurn("session_two", "worker_one")!.claim!.token;
+    store.markRunning("session_two", "run_huge_req", second);
+    store.openRequest("session_two", "run_huge_req", second, {
+      requestId: "req_bigger",
+      kind: "user_input",
+      detail: {
+        kind: "user_input",
+        prompt: `Pick: ${"p".repeat(40_000)}`,
+        fields: Array.from({ length: 300 }, (_, index) => ({
+          key: `field_${index}`,
+          label: `Label ${index} ${"l".repeat(5_000)}`,
+          kind: "choice" as const,
+          choices: Array.from({ length: 300 }, (_, choice) => `choice_${choice}_${"c".repeat(2_000)}`),
+        })),
+      },
+    });
+    const bigger = wakes(store, "session_one").find((turn) => turn.wakeReason?.runId === "run_huge_req");
+    // Within a few characters — the ids differ in length and nothing else can.
+    // The payload grew by two orders of magnitude; the notice did not grow.
+    expect(Math.abs(bigger!.input.length - notice.length)).toBeLessThan(20);
+    expect(bigger!.input).not.toContain("l".repeat(300));
+    expect(bigger!.input).not.toContain("c".repeat(300));
   });
 
   test("events narrows; once fires once; subscribing twice merges into one", () => {
@@ -2865,6 +3024,13 @@ describe("subscriptions", () => {
     const events = store.readEvents("session_one").filter((event) => event.type === "turn.accepted" && event.runId === parked!.runId);
     expect(events).toHaveLength(2);
     expect(events.at(-1)).toMatchObject({ replayed: true });
+
+    // AND THE REWRITE IS STILL A PING. Coalescing must not smuggle a result
+    // body in: the notice that replaced the parked one carries the size and the
+    // run-scoped read, exactly as a first notice would.
+    expect(after[0]!.input).not.toContain("done");
+    expect(after[0]!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
+    expect(after[0]!.input.length).toBeLessThan(600);
 
     // A wake the worker already CLAIMED is not rewritten: a fresh one queues behind it.
     store.claimTurn("session_one", "worker_one");
