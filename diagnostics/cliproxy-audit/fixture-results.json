@@ -1,0 +1,69 @@
+{
+  "source_sha": "d9cea8904b14fbbebb77ef26e98ef08f6b48a724",
+  "validation": "source-checked Python models; Go suite not executed",
+  "provider_calls": 0,
+  "network_calls": 0,
+  "results": [
+    {
+      "fixture": "native-version-gate",
+      "caller": "2.1.258",
+      "baseline": "2.1.258",
+      "other_native_signals": true,
+      "confirmed": true,
+      "oauth_default_cloak": false,
+      "proxy_owns_cache_markers_under_oauth_default": false
+    },
+    {
+      "fixture": "native-version-gate",
+      "caller": "2.1.261",
+      "baseline": "2.1.258",
+      "other_native_signals": true,
+      "confirmed": false,
+      "oauth_default_cloak": true,
+      "proxy_owns_cache_markers_under_oauth_default": true
+    },
+    {
+      "fixture": "native-version-gate",
+      "caller": "2.1.257",
+      "baseline": "2.1.258",
+      "other_native_signals": true,
+      "confirmed": false,
+      "oauth_default_cloak": true,
+      "proxy_owns_cache_markers_under_oauth_default": true
+    },
+    {
+      "fixture": "sse-delimiter-delay",
+      "virtual_not_measured": true,
+      "first_upstream_line_ms": 10,
+      "forwarded_events": [
+        {
+          "virtual_ms": 120011,
+          "lines": 3
+        },
+        {
+          "virtual_ms": 120032,
+          "lines": 3
+        }
+      ]
+    },
+    {
+      "fixture": "proxy-usage-top-level-first-publish",
+      "published_usage": {
+        "output_tokens": 20
+      },
+      "correct_final_output": 30,
+      "input_cache_usage_present_in_forwarded_start": {
+        "input_tokens": 32,
+        "cache_read_input_tokens": 309592,
+        "cache_creation_input_tokens": 1868,
+        "output_tokens": 2
+      },
+      "telar_receives_start_usage_unchanged": true
+    },
+    {
+      "fixture": "cache-hit-arithmetic",
+      "input_cache_reuse": 0.9939003248879587,
+      "context_used_including_output_placeholder": 311494
+    }
+  ]
+}

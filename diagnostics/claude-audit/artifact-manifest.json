@@ -1,0 +1,55 @@
+{
+  "capturedAt": "2026-09-09T02:29:16.336738+00:00",
+  "telarSha": "79370cb44d458d93e818409ff76b0fbab5a92395",
+  "t3Sha": "1862686f9e42bf1d77e7f2ad03e24d7b0c7908f1",
+  "sdkVersions": [
+    "0.3.257",
+    "0.3.260"
+  ],
+  "artifacts": {
+    "fixture-results.json": {
+      "bytes": 15737,
+      "sha256": "a082b74704f7093db19626d646e6b73c30918239460a0b8e013d81cfb70cb3bd"
+    },
+    "fixture-stdout.json": {
+      "bytes": 15738,
+      "sha256": "fe535806665c9f09fd252f65ac3bdc2ee2a907b2e4d9b85b5bd4c865339f23f9"
+    },
+    "metrics-summary.json": {
+      "bytes": 6306,
+      "sha256": "7d07cfa1c55227c00fec7edfd8fa990533bec9558bd7427d2d3f72dcd744dc30"
+    },
+    "REPORT.md": {
+      "bytes": 29862,
+      "sha256": "111b7ddae88d403036f7ad851bfc286713863c54c1c98fd4b9c78ba6a7a05cb7"
+    },
+    "harness-fixtures.ts": {
+      "bytes": 8330,
+      "sha256": "08a450385bf8ce5e4bfecc2e8a514538a69b95f0242c750fef0c75d546fede1f"
+    },
+    "session-metrics.ts": {
+      "bytes": 3125,
+      "sha256": "cae4c1f20ca99ab885b993e53b7a365d2435b24fd24b6856548d08fb11f585fa"
+    },
+    "session_b9ff824fd6054512934e7ac06a667c52-sanitized.json": {
+      "bytes": 4970002,
+      "sha256": "4d9c80c9a8dd39ccd29e54d00912e1f6e9545be318dd0288c02af977b24f02f3"
+    },
+    "fable-followup-sanitized.json": {
+      "bytes": 743,
+      "sha256": "7d6bc1008c4747e158d470edbc58a5443e898b96d96349bdd69e473127f160e0"
+    },
+    "tsconfig.json": {
+      "bytes": 178,
+      "sha256": "45e5f21182c5543bd3a7bf288e7b6dd2bdd41817e670e502e66e5856cd120241"
+    },
+    "official-docs-manifest.json": {
+      "bytes": 755,
+      "sha256": "0bd5f3a2571d66485711b4c3835f6c5810bdaae51fba89cf296a00236bbce26a"
+    },
+    "session_014be402e6cc4fc5bc49b83c8205bb9a-sanitized.json": {
+      "bytes": 195980,
+      "sha256": "e71b9468ce0cadc0d86d2849d4eb51605890d716a3736dd441508a25c9c561d7"
+    }
+  }
+}

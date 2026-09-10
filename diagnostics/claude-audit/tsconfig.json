@@ -1,0 +1,1 @@
+{"compilerOptions":{"baseUrl":"../..","paths":{"@telar/engine-client":["packages/engine-client/src/index.ts"],"zod":["/tmp/telar-claude-audit-deps/node_modules/zod/index.js"]}}}

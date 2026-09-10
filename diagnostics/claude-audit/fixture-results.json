@@ -1,0 +1,694 @@
+{
+  "continuityAndAccounting": {
+    "queryCalls": 1,
+    "heard": [
+      "one",
+      "two"
+    ],
+    "resumeOnWarmQuery": null,
+    "turnCosts": [
+      0.1,
+      0.3
+    ],
+    "incorrectSum": 0.4,
+    "correctQueryTotal": 0.3,
+    "usageObservations": 6,
+    "turn2Tokens": {
+      "input": 2,
+      "output": 100,
+      "cacheRead": 1000,
+      "cacheCreate": 20
+    }
+  },
+  "restamped-server": {
+    "queryCalls": 1,
+    "modelControls": [],
+    "resumes": [
+      null
+    ]
+  },
+  "server-array-order": {
+    "queryCalls": 2,
+    "modelControls": [],
+    "resumes": [
+      null,
+      "fake-provider"
+    ]
+  },
+  "header-key-order": {
+    "queryCalls": 2,
+    "modelControls": [],
+    "resumes": [
+      null,
+      "fake-provider"
+    ]
+  },
+  "environment-key-order": {
+    "queryCalls": 2,
+    "modelControls": [],
+    "resumes": [
+      null,
+      "fake-provider"
+    ]
+  },
+  "undefined-env-deletion-collision": {
+    "queryCalls": 1,
+    "modelControls": [],
+    "resumes": [
+      null
+    ],
+    "retainedValue": "synthetic-inherited-value",
+    "intendedDeleted": true
+  },
+  "same-model": {
+    "queryCalls": 1,
+    "modelControls": [],
+    "resumes": [
+      null
+    ]
+  },
+  "switch-model": {
+    "queryCalls": 1,
+    "modelControls": [
+      "sonnet[1m]"
+    ],
+    "resumes": [
+      null
+    ]
+  },
+  "change-effort": {
+    "queryCalls": 2,
+    "modelControls": [],
+    "resumes": [
+      null,
+      "fake-provider"
+    ]
+  },
+  "stable-browser": {
+    "queryCalls": 1,
+    "modelControls": [],
+    "resumes": [
+      null
+    ]
+  },
+  "rotate-browser-token": {
+    "queryCalls": 2,
+    "modelControls": [],
+    "resumes": [
+      null,
+      "fake-provider"
+    ]
+  },
+  "idleEviction": {
+    "idleAfterFiveTurns": 4,
+    "destroyed": [
+      "fake-0"
+    ],
+    "backgroundWorkDidNotProtectFirst": true
+  },
+  "streamingFast": {
+    "delayMs": 0,
+    "frames": 40,
+    "batches": 41,
+    "ms": 0.32033400000000256,
+    "observationKinds": [
+      "item.started",
+      "content.delta",
+      "item.completed"
+    ],
+    "outputTokenUpdates": 0
+  },
+  "streamingSlowSink": {
+    "delayMs": 5,
+    "frames": 40,
+    "batches": 41,
+    "ms": 255.88779099999996,
+    "observationKinds": [
+      "item.started",
+      "content.delta",
+      "item.completed"
+    ],
+    "outputTokenUpdates": 0
+  },
+  "telarCatalogs": [
+    {
+      "name": "telar",
+      "toolCount": 35,
+      "bytes": 39693,
+      "tools": [
+        {
+          "name": "spool_list_items",
+          "descriptionBytes": 274,
+          "schemaBytes": 119
+        },
+        {
+          "name": "spool_list_lanes",
+          "descriptionBytes": 250,
+          "schemaBytes": 119
+        },
+        {
+          "name": "spool_create_item",
+          "descriptionBytes": 418,
+          "schemaBytes": 1153
+        },
+        {
+          "name": "spool_update_item",
+          "descriptionBytes": 375,
+          "schemaBytes": 1618
+        },
+        {
+          "name": "spool_consult_expert",
+          "descriptionBytes": 611,
+          "schemaBytes": 181
+        },
+        {
+          "name": "spool_list_threads",
+          "descriptionBytes": 304,
+          "schemaBytes": 149
+        },
+        {
+          "name": "spool_open_question",
+          "descriptionBytes": 378,
+          "schemaBytes": 812
+        },
+        {
+          "name": "spool_mark_waiting",
+          "descriptionBytes": 307,
+          "schemaBytes": 585
+        },
+        {
+          "name": "spool_answer_question",
+          "descriptionBytes": 456,
+          "schemaBytes": 411
+        },
+        {
+          "name": "spool_settle_thread",
+          "descriptionBytes": 440,
+          "schemaBytes": 372
+        },
+        {
+          "name": "spool_set_focus",
+          "descriptionBytes": 440,
+          "schemaBytes": 323
+        },
+        {
+          "name": "spool_end_focus",
+          "descriptionBytes": 303,
+          "schemaBytes": 505
+        },
+        {
+          "name": "spool_look",
+          "descriptionBytes": 481,
+          "schemaBytes": 280
+        },
+        {
+          "name": "spool_pin",
+          "descriptionBytes": 598,
+          "schemaBytes": 534
+        },
+        {
+          "name": "spool_set_area_permits",
+          "descriptionBytes": 622,
+          "schemaBytes": 641
+        },
+        {
+          "name": "spool_set_terrain",
+          "descriptionBytes": 425,
+          "schemaBytes": 681
+        },
+        {
+          "name": "spool_set_subject_identity",
+          "descriptionBytes": 633,
+          "schemaBytes": 876
+        },
+        {
+          "name": "spool_shelf",
+          "descriptionBytes": 436,
+          "schemaBytes": 337
+        },
+        {
+          "name": "spool_write_note",
+          "descriptionBytes": 596,
+          "schemaBytes": 953
+        },
+        {
+          "name": "spool_search",
+          "descriptionBytes": 466,
+          "schemaBytes": 389
+        },
+        {
+          "name": "sessions_list",
+          "descriptionBytes": 363,
+          "schemaBytes": 119
+        },
+        {
+          "name": "sessions_create",
+          "descriptionBytes": 1359,
+          "schemaBytes": 974
+        },
+        {
+          "name": "sessions_send",
+          "descriptionBytes": 992,
+          "schemaBytes": 400
+        },
+        {
+          "name": "sessions_read",
+          "descriptionBytes": 472,
+          "schemaBytes": 430
+        },
+        {
+          "name": "sessions_status",
+          "descriptionBytes": 333,
+          "schemaBytes": 249
+        },
+        {
+          "name": "sessions_stop",
+          "descriptionBytes": 419,
+          "schemaBytes": 259
+        },
+        {
+          "name": "sessions_settle",
+          "descriptionBytes": 571,
+          "schemaBytes": 369
+        },
+        {
+          "name": "sessions_diff",
+          "descriptionBytes": 571,
+          "schemaBytes": 258
+        },
+        {
+          "name": "sessions_subscribe",
+          "descriptionBytes": 1185,
+          "schemaBytes": 544
+        },
+        {
+          "name": "sessions_unsubscribe",
+          "descriptionBytes": 365,
+          "schemaBytes": 249
+        },
+        {
+          "name": "sessions_subscriptions",
+          "descriptionBytes": 183,
+          "schemaBytes": 119
+        },
+        {
+          "name": "sessions_requests",
+          "descriptionBytes": 532,
+          "schemaBytes": 244
+        },
+        {
+          "name": "sessions_resolve_request",
+          "descriptionBytes": 938,
+          "schemaBytes": 930
+        },
+        {
+          "name": "display_open",
+          "descriptionBytes": 661,
+          "schemaBytes": 366
+        },
+        {
+          "name": "warp",
+          "descriptionBytes": 3000,
+          "schemaBytes": 191
+        }
+      ]
+    },
+    {
+      "name": "telar",
+      "toolCount": 66,
+      "bytes": 58830,
+      "tools": [
+        {
+          "name": "spool_list_items",
+          "descriptionBytes": 274,
+          "schemaBytes": 119
+        },
+        {
+          "name": "spool_list_lanes",
+          "descriptionBytes": 250,
+          "schemaBytes": 119
+        },
+        {
+          "name": "spool_create_item",
+          "descriptionBytes": 418,
+          "schemaBytes": 1153
+        },
+        {
+          "name": "spool_update_item",
+          "descriptionBytes": 375,
+          "schemaBytes": 1618
+        },
+        {
+          "name": "spool_consult_expert",
+          "descriptionBytes": 611,
+          "schemaBytes": 181
+        },
+        {
+          "name": "spool_list_threads",
+          "descriptionBytes": 304,
+          "schemaBytes": 149
+        },
+        {
+          "name": "spool_open_question",
+          "descriptionBytes": 378,
+          "schemaBytes": 812
+        },
+        {
+          "name": "spool_mark_waiting",
+          "descriptionBytes": 307,
+          "schemaBytes": 585
+        },
+        {
+          "name": "spool_answer_question",
+          "descriptionBytes": 456,
+          "schemaBytes": 411
+        },
+        {
+          "name": "spool_settle_thread",
+          "descriptionBytes": 440,
+          "schemaBytes": 372
+        },
+        {
+          "name": "spool_set_focus",
+          "descriptionBytes": 440,
+          "schemaBytes": 323
+        },
+        {
+          "name": "spool_end_focus",
+          "descriptionBytes": 303,
+          "schemaBytes": 505
+        },
+        {
+          "name": "spool_look",
+          "descriptionBytes": 481,
+          "schemaBytes": 280
+        },
+        {
+          "name": "spool_pin",
+          "descriptionBytes": 598,
+          "schemaBytes": 534
+        },
+        {
+          "name": "spool_set_area_permits",
+          "descriptionBytes": 622,
+          "schemaBytes": 641
+        },
+        {
+          "name": "spool_set_terrain",
+          "descriptionBytes": 425,
+          "schemaBytes": 681
+        },
+        {
+          "name": "spool_set_subject_identity",
+          "descriptionBytes": 633,
+          "schemaBytes": 876
+        },
+        {
+          "name": "spool_shelf",
+          "descriptionBytes": 436,
+          "schemaBytes": 337
+        },
+        {
+          "name": "spool_write_note",
+          "descriptionBytes": 596,
+          "schemaBytes": 953
+        },
+        {
+          "name": "spool_search",
+          "descriptionBytes": 466,
+          "schemaBytes": 389
+        },
+        {
+          "name": "sessions_list",
+          "descriptionBytes": 363,
+          "schemaBytes": 119
+        },
+        {
+          "name": "sessions_create",
+          "descriptionBytes": 1359,
+          "schemaBytes": 974
+        },
+        {
+          "name": "sessions_send",
+          "descriptionBytes": 992,
+          "schemaBytes": 400
+        },
+        {
+          "name": "sessions_read",
+          "descriptionBytes": 472,
+          "schemaBytes": 430
+        },
+        {
+          "name": "sessions_status",
+          "descriptionBytes": 333,
+          "schemaBytes": 249
+        },
+        {
+          "name": "sessions_stop",
+          "descriptionBytes": 419,
+          "schemaBytes": 259
+        },
+        {
+          "name": "sessions_settle",
+          "descriptionBytes": 571,
+          "schemaBytes": 369
+        },
+        {
+          "name": "sessions_diff",
+          "descriptionBytes": 571,
+          "schemaBytes": 258
+        },
+        {
+          "name": "sessions_subscribe",
+          "descriptionBytes": 1185,
+          "schemaBytes": 544
+        },
+        {
+          "name": "sessions_unsubscribe",
+          "descriptionBytes": 365,
+          "schemaBytes": 249
+        },
+        {
+          "name": "sessions_subscriptions",
+          "descriptionBytes": 183,
+          "schemaBytes": 119
+        },
+        {
+          "name": "sessions_requests",
+          "descriptionBytes": 532,
+          "schemaBytes": 244
+        },
+        {
+          "name": "sessions_resolve_request",
+          "descriptionBytes": 938,
+          "schemaBytes": 930
+        },
+        {
+          "name": "notebook_open",
+          "descriptionBytes": 253,
+          "schemaBytes": 356
+        },
+        {
+          "name": "notebook_cells",
+          "descriptionBytes": 147,
+          "schemaBytes": 603
+        },
+        {
+          "name": "notebook_edit_cell",
+          "descriptionBytes": 238,
+          "schemaBytes": 1040
+        },
+        {
+          "name": "notebook_run_cell",
+          "descriptionBytes": 235,
+          "schemaBytes": 348
+        },
+        {
+          "name": "notebook_run_all",
+          "descriptionBytes": 195,
+          "schemaBytes": 321
+        },
+        {
+          "name": "notebook_interrupt",
+          "descriptionBytes": 110,
+          "schemaBytes": 119
+        },
+        {
+          "name": "notebook_restart",
+          "descriptionBytes": 148,
+          "schemaBytes": 119
+        },
+        {
+          "name": "ds_kernel",
+          "descriptionBytes": 322,
+          "schemaBytes": 119
+        },
+        {
+          "name": "ds_env",
+          "descriptionBytes": 311,
+          "schemaBytes": 258
+        },
+        {
+          "name": "ds_scratch",
+          "descriptionBytes": 289,
+          "schemaBytes": 362
+        },
+        {
+          "name": "ds_inspect",
+          "descriptionBytes": 267,
+          "schemaBytes": 387
+        },
+        {
+          "name": "ds_vars",
+          "descriptionBytes": 126,
+          "schemaBytes": 200
+        },
+        {
+          "name": "ds_profile",
+          "descriptionBytes": 181,
+          "schemaBytes": 373
+        },
+        {
+          "name": "ds_plot",
+          "descriptionBytes": 247,
+          "schemaBytes": 750
+        },
+        {
+          "name": "ds_query",
+          "descriptionBytes": 306,
+          "schemaBytes": 428
+        },
+        {
+          "name": "ds_export",
+          "descriptionBytes": 121,
+          "schemaBytes": 490
+        },
+        {
+          "name": "ds_snapshot",
+          "descriptionBytes": 205,
+          "schemaBytes": 436
+        },
+        {
+          "name": "ds_diff",
+          "descriptionBytes": 193,
+          "schemaBytes": 299
+        },
+        {
+          "name": "ds_checkpoint",
+          "descriptionBytes": 189,
+          "schemaBytes": 286
+        },
+        {
+          "name": "ds_lineage",
+          "descriptionBytes": 174,
+          "schemaBytes": 255
+        },
+        {
+          "name": "ds_watch",
+          "descriptionBytes": 294,
+          "schemaBytes": 289
+        },
+        {
+          "name": "ds_experiment",
+          "descriptionBytes": 203,
+          "schemaBytes": 527
+        },
+        {
+          "name": "ds_packages",
+          "descriptionBytes": 180,
+          "schemaBytes": 119
+        },
+        {
+          "name": "ds_install",
+          "descriptionBytes": 597,
+          "schemaBytes": 519
+        },
+        {
+          "name": "latex_compile",
+          "descriptionBytes": 265,
+          "schemaBytes": 389
+        },
+        {
+          "name": "latex_status",
+          "descriptionBytes": 109,
+          "schemaBytes": 119
+        },
+        {
+          "name": "latex_log",
+          "descriptionBytes": 169,
+          "schemaBytes": 448
+        },
+        {
+          "name": "latex_toolchain",
+          "descriptionBytes": 153,
+          "schemaBytes": 119
+        },
+        {
+          "name": "latex_packages",
+          "descriptionBytes": 133,
+          "schemaBytes": 119
+        },
+        {
+          "name": "latex_install",
+          "descriptionBytes": 186,
+          "schemaBytes": 342
+        },
+        {
+          "name": "latex_clean",
+          "descriptionBytes": 135,
+          "schemaBytes": 195
+        },
+        {
+          "name": "display_open",
+          "descriptionBytes": 661,
+          "schemaBytes": 366
+        },
+        {
+          "name": "warp",
+          "descriptionBytes": 3000,
+          "schemaBytes": 191
+        }
+      ]
+    }
+  ],
+  "transcriptDedupe": {
+    "sinceMs": 1788825600000,
+    "untilMs": 1788912000000,
+    "resolution": "day",
+    "timeZone": "UTC",
+    "buckets": [
+      {
+        "period": "2026-09-08",
+        "driver": "claude",
+        "model": "fake-model",
+        "tokens": {
+          "input": 2,
+          "output": 2,
+          "cacheRead": 1000,
+          "cacheCreate": 20
+        },
+        "costUsd": 0,
+        "priced": false,
+        "turns": 1
+      }
+    ],
+    "sources": [
+      {
+        "provider": "claude",
+        "status": "ok",
+        "path": "/tmp/telar-usage-fixture-nJKzMA/claude",
+        "files": 1,
+        "sessions": 1
+      },
+      {
+        "provider": "codex",
+        "status": "ok",
+        "path": "/tmp/telar-usage-fixture-nJKzMA/codex",
+        "files": 0,
+        "sessions": 0
+      }
+    ],
+    "sessions": 1,
+    "readAt": 1788920625626
+  }
+}

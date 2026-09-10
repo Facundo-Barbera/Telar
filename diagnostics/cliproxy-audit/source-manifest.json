@@ -1,0 +1,50 @@
+{
+  "recorded_at_utc": "2026-09-09T02:58:29.591574+00:00",
+  "installed_upstream_sha": "d9cea8904b14fbbebb77ef26e98ef08f6b48a724",
+  "comparison_main_sha": "7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974",
+  "source_files": {
+    "internal/api/server_options.go": "590202c092eb56e3d19b481a7b72c16b7883133a85f16d2353a748a3316e8f0a",
+    "internal/runtime/executor/claude_executor_cloaking.go": "54518216d5b20baf46f23dcf788cfbd7bc81df6a2f96b0498af7448f4f3246ad",
+    "internal/runtime/executor/claude_executor_request.go": "43f20c957b4ba0a6f23ba3b3adc3bf052c81ef609b201ecf709718e8d5989212",
+    "internal/runtime/executor/claude_executor_stream.go": "7599fb442c9ea788c45e08bf432ec7909608282e746e1daf38f3e7e94943e010",
+    "internal/runtime/executor/claude_thinking_replay.go": "d421ce59c2a21a0cdf813b1d5c13f7695db3207739797fcfc882120e1c9f2934",
+    "internal/runtime/executor/helps/claude_client_detection.go": "a867137849ddadcfd694a710168e02d2a85eb7ddc7169e783d496e247cb49da0",
+    "internal/runtime/executor/helps/claude_credential_identity.go": "6f6fa602035347201053d2621bc4b544a372a5f71f74280204a7c0489938ad2d",
+    "internal/runtime/executor/helps/claude_device_profile.go": "2c2ae222eceb76bae1fbcb0c4b976bc419e14616d8d7ec5ee0bb36cb303a875a",
+    "internal/runtime/executor/helps/claude_ratelimit.go": "e49629b3d2ee8ee5d190a52e9f681123b8fbb2159a211513c1caf553915747af",
+    "internal/runtime/executor/helps/usage_helpers.go": "957c8727409d7c103d0cd5eb2abe719632147597c396802f438e982885ba187e",
+    "internal/runtime/executor/helps/utls_client.go": "4f24ffbe560f3337978935a13c1f44782aab24133c3c70ccd598c182d05d9af2",
+    "sdk/api/handlers/claude/code_handlers.go": "7b1cd78868596ed5092af5d817b19f67b37ca014e6a2fe5523abe32ed1a1f539",
+    "sdk/cliproxy/auth/conductor_execution.go": "cf9b1bb609e966eb1485735502a3822a6f6c25e8add265e81945a16da1069d58",
+    "sdk/cliproxy/auth/conductor_selection.go": "96fd38566e7507513e0c0c6736e2a3c67f28e41842fd5fabd8c285e9a61d6ee3",
+    "sdk/cliproxy/auth/selector.go": "51e1e1d87d220c8d539da24612c2a51b4e3f60009307a04b6d91f5e4144987a3",
+    "sdk/translator/registry.go": "b87a06b97d368e40ef408bd9c8f99800680e15794deeb62cb1bcc9e5e91775d2"
+  },
+  "official_docs": [
+    {
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+      "version": "unversioned rendered documentation accessed September 9 2026 UTC"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/prompt-caching",
+      "version": "unversioned rendered documentation accessed September 9 2026 UTC"
+    },
+    {
+      "url": "https://platform.claude.com/docs/en/build-with-claude/streaming",
+      "version": "unversioned rendered documentation accessed September 9 2026 UTC"
+    }
+  ],
+  "prior_artifact_manifest_checks": {
+    "fixture-results.json": true,
+    "fixture-stdout.json": true,
+    "metrics-summary.json": true,
+    "REPORT.md": true,
+    "harness-fixtures.ts": true,
+    "session-metrics.ts": true,
+    "session_b9ff824fd6054512934e7ac06a667c52-sanitized.json": true,
+    "fable-followup-sanitized.json": true,
+    "tsconfig.json": true,
+    "official-docs-manifest.json": true,
+    "session_014be402e6cc4fc5bc49b83c8205bb9a-sanitized.json": true
+  }
+}

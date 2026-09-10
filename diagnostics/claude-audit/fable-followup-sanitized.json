@@ -1,0 +1,41 @@
+{
+  "capturedAt": "2026-09-09T02:20:06.027Z",
+  "cursor": 539,
+  "items": 162,
+  "requests": [
+    {
+      "state": "resolved",
+      "openedAt": 1788917500178,
+      "resolvedAt": 1788917500178,
+      "waitMs": 0
+    },
+    {
+      "state": "resolved",
+      "openedAt": 1788917856237,
+      "resolvedAt": 1788917856237,
+      "waitMs": 0
+    },
+    {
+      "state": "resolved",
+      "openedAt": 1788918093801,
+      "resolvedAt": 1788918093801,
+      "waitMs": 0
+    },
+    {
+      "state": "resolved",
+      "openedAt": 1788919738773,
+      "resolvedAt": 1788919738773,
+      "waitMs": 0
+    }
+  ],
+  "turnStates": [
+    {
+      "sequence": 1,
+      "state": "running"
+    },
+    {
+      "sequence": 2,
+      "state": "steered"
+    }
+  ]
+}

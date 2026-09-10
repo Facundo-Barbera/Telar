@@ -1,0 +1,26 @@
+[
+  {
+    "url": "https://code.claude.com/docs/en/agent-sdk/cost-tracking.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/how-claude-code-works.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/costs.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode.md",
+    "error": "HTTP Error 403: Forbidden"
+  }
+]

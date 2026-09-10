@@ -1,0 +1,249 @@
+{
+  "captured_at_utc": "2026-09-09T02:53:35.189338+00:00",
+  "scope": "Read-only allowlisted metadata; no request content or credentials retained",
+  "installed_version": "7.2.145",
+  "upstream_tag_sha": "d9cea8904b14fbbebb77ef26e98ef08f6b48a724",
+  "upstream_main_sha": "7fac6b15bcfe5ea55c18c9eaec8e5b7e6457d974",
+  "binary_sha256": "042c50c751d9349b8d8df2a72dab32c97e0388608fb437495991f23c9e96ebbc",
+  "formula_sha256": "dca87d0bc173f3fa158569669ca9520a4731943d500e395a0d9307e38aec89ce",
+  "config_path": "/opt/homebrew/etc/cliproxyapi.conf",
+  "config_mtime_utc": "2026-09-02T15:36:10.200470+00:00",
+  "safe_settings": [
+    {
+      "line": 3,
+      "path": "host",
+      "value": "127.0.0.1"
+    },
+    {
+      "line": 5,
+      "path": "port",
+      "value": "8317"
+    },
+    {
+      "line": 34,
+      "path": "debug",
+      "value": "false"
+    },
+    {
+      "line": 77,
+      "path": "plugins.enabled",
+      "value": "false"
+    },
+    {
+      "line": 98,
+      "path": "commercial-mode",
+      "value": "false"
+    },
+    {
+      "line": 100,
+      "path": "logging-to-file",
+      "value": "false"
+    },
+    {
+      "line": 103,
+      "path": "logs-max-total-size-mb",
+      "value": "0"
+    },
+    {
+      "line": 106,
+      "path": "error-logs-max-files",
+      "value": "10"
+    },
+    {
+      "line": 108,
+      "path": "usage-statistics-enabled",
+      "value": "false"
+    },
+    {
+      "line": 120,
+      "path": "passthrough-headers",
+      "value": "false"
+    },
+    {
+      "line": 122,
+      "path": "request-retry",
+      "value": "3"
+    },
+    {
+      "line": 125,
+      "path": "max-retry-credentials",
+      "value": "0"
+    },
+    {
+      "line": 127,
+      "path": "max-retry-interval",
+      "value": "90"
+    },
+    {
+      "line": 129,
+      "path": "disable-cooling",
+      "value": "false"
+    },
+    {
+      "line": 132,
+      "path": "save-cooldown-status",
+      "value": "false"
+    },
+    {
+      "line": 141,
+      "path": "disable-claude-cloak-mode",
+      "value": "false"
+    },
+    {
+      "line": 164,
+      "path": "quota-exceeded.switch-project",
+      "value": "true"
+    },
+    {
+      "line": 165,
+      "path": "quota-exceeded.switch-preview-model",
+      "value": "true"
+    },
+    {
+      "line": 169,
+      "path": "routing.strategy",
+      "value": "round-robin"
+    },
+    {
+      "line": 178,
+      "path": "routing.session-affinity",
+      "value": "true"
+    },
+    {
+      "line": 180,
+      "path": "routing.session-affinity-ttl",
+      "value": "1h"
+    },
+    {
+      "line": 229,
+      "path": "nonstream-keepalive-interval",
+      "value": "0"
+    },
+    {
+      "line": 585,
+      "path": "claude-header-defaults.user-agent",
+      "value": "claude-cli/2.1.258 (external, cli)"
+    },
+    {
+      "line": 586,
+      "path": "claude-header-defaults.package-version",
+      "value": "0.94.0"
+    },
+    {
+      "line": 587,
+      "path": "claude-header-defaults.runtime-version",
+      "value": "v26.3.0"
+    },
+    {
+      "line": 588,
+      "path": "claude-header-defaults.os",
+      "value": "MacOS"
+    },
+    {
+      "line": 589,
+      "path": "claude-header-defaults.arch",
+      "value": "arm64"
+    },
+    {
+      "line": 590,
+      "path": "claude-header-defaults.timeout",
+      "value": "600"
+    }
+  ],
+  "claude_base_url": {
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "port": 8317
+  },
+  "explicit_cache_env_settings": {},
+  "explicit_cache_ttl_settings": {},
+  "observed_processes": {
+    "proxy_pid": 1733,
+    "proxy_stdio": "/dev/null",
+    "claude_connected_pid": 69179,
+    "claude_executable_version": "2.1.261",
+    "note": "lsof observed a live loopback connection; not mapped to historical Fable run"
+  },
+  "retained_error_metadata": [
+    {
+      "filename": "error-api-hello-2026-09-08T205333-14510.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:33.030285-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205333-14512.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:33.274716-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205333-14514.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:33.402739-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205333-14516.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:33.816306-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14518.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.155549-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14520.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.168703-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14522.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.182943-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14524.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.346405-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14526.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.347138-06:00",
+      "Status": "404"
+    },
+    {
+      "filename": "error-api-hello-2026-09-08T205334-14528.log",
+      "bytes": 695,
+      "Version": "7.2.145",
+      "Method": "HEAD",
+      "Timestamp": "2026-09-08T20:53:34.346899-06:00",
+      "Status": "404"
+    }
+  ]
+}

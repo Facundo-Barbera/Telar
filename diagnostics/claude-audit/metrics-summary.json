@@ -1,0 +1,288 @@
+{
+  "sample": "2026-09-09T02:13:55.035Z",
+  "cursor": 503,
+  "spanMs": 2504913,
+  "acceptedToStartedMs": 88,
+  "startedToFirstItemMs": 8973,
+  "steerAckMs": 37,
+  "itemsByType": {
+    "reasoning": 41,
+    "assistant_message": 6,
+    "command_execution": 34,
+    "file_read": 68,
+    "user_message": 1
+  },
+  "eventCounts": {
+    "session.created": 1,
+    "session.updated": 1,
+    "turn.accepted": 2,
+    "turn.claimed": 1,
+    "turn.started": 1,
+    "item.started": 150,
+    "usage.updated": 149,
+    "item.completed": 150,
+    "content.delta": 38,
+    "request.opened": 4,
+    "request.resolved": 4,
+    "turn.steering": 1,
+    "turn.steered": 1
+  },
+  "durationMsByType": {
+    "user_message": {
+      "count": 1,
+      "sum": 0,
+      "min": 0,
+      "median": 0,
+      "p95": 0,
+      "max": 0
+    },
+    "command_execution": {
+      "count": 34,
+      "sum": 3238,
+      "min": 3,
+      "median": 78.0,
+      "p95": 175,
+      "max": 937
+    },
+    "file_read": {
+      "count": 68,
+      "sum": 720,
+      "min": 2,
+      "median": 4.0,
+      "p95": 32,
+      "max": 137
+    },
+    "reasoning": {
+      "count": 41,
+      "sum": 38329,
+      "min": 2,
+      "median": 4,
+      "p95": 32,
+      "max": 38009
+    },
+    "assistant_message": {
+      "count": 6,
+      "sum": 706,
+      "min": 7,
+      "median": 23.0,
+      "p95": 582,
+      "max": 582
+    }
+  },
+  "detailBytesByType": {
+    "user_message": 1013,
+    "command_execution": 122238,
+    "file_read": 11096,
+    "reasoning": 369,
+    "assistant_message": 792
+  },
+  "topGaps": [
+    {
+      "ms": 255715,
+      "afterEvent": 403,
+      "beforeEvent": 404,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 405,
+      "nextUsage": {
+        "input": 32,
+        "output": 6,
+        "cacheRead": 298293,
+        "cacheCreate": 2696
+      }
+    },
+    {
+      "ms": 174982,
+      "afterEvent": 393,
+      "beforeEvent": 394,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 395,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 296975,
+        "cacheCreate": 1318
+      }
+    },
+    {
+      "ms": 167513,
+      "afterEvent": 354,
+      "beforeEvent": 355,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 356,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 276311,
+        "cacheCreate": 8703
+      }
+    },
+    {
+      "ms": 157100,
+      "afterEvent": 415,
+      "beforeEvent": 416,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 417,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 300989,
+        "cacheCreate": 8603
+      }
+    },
+    {
+      "ms": 135219,
+      "afterEvent": 372,
+      "beforeEvent": 373,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 374,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 285014,
+        "cacheCreate": 10098
+      }
+    },
+    {
+      "ms": 132396,
+      "afterEvent": 199,
+      "beforeEvent": 200,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 201,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 189484,
+        "cacheCreate": 30026
+      }
+    },
+    {
+      "ms": 116321,
+      "afterEvent": 333,
+      "beforeEvent": 334,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 335,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 266690,
+        "cacheCreate": 9621
+      }
+    },
+    {
+      "ms": 114992,
+      "afterEvent": 424,
+      "beforeEvent": 425,
+      "afterType": "item.completed",
+      "beforeType": "turn.accepted",
+      "nextUsageEvent": 431,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 309592,
+        "cacheCreate": 1868
+      }
+    },
+    {
+      "ms": 114768,
+      "afterEvent": 467,
+      "beforeEvent": 468,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 469,
+      "nextUsage": {
+        "input": 32,
+        "output": 3,
+        "cacheRead": 316513,
+        "cacheCreate": 3097
+      }
+    },
+    {
+      "ms": 109812,
+      "afterEvent": 384,
+      "beforeEvent": 385,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 386,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 295911,
+        "cacheCreate": 1064
+      }
+    },
+    {
+      "ms": 101391,
+      "afterEvent": 222,
+      "beforeEvent": 223,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 224,
+      "nextUsage": {
+        "input": 32,
+        "output": 2,
+        "cacheRead": 219510,
+        "cacheCreate": 9344
+      }
+    },
+    {
+      "ms": 98248,
+      "afterEvent": 149,
+      "beforeEvent": 150,
+      "afterType": "item.completed",
+      "beforeType": "item.started",
+      "nextUsageEvent": 151,
+      "nextUsage": {
+        "input": 32,
+        "output": 3,
+        "cacheRead": 171711,
+        "cacheCreate": 16260
+      }
+    }
+  ],
+  "gapsOver30s": {
+    "count": 19,
+    "sumMs": 2187689
+  },
+  "usage": {
+    "envelopes": 149,
+    "distinctTuples": 35,
+    "first": {
+      "tokens": {
+        "input": 2,
+        "output": 7,
+        "cacheRead": 0,
+        "cacheCreate": 98333
+      },
+      "contextUsed": 98342,
+      "contextMax": 1000000
+    },
+    "last": {
+      "tokens": {
+        "input": 32,
+        "output": 3,
+        "cacheRead": 319610,
+        "cacheCreate": 2964
+      },
+      "contextUsed": 322609,
+      "contextMax": 1000000
+    },
+    "zeroReadDistinctTuples": 1,
+    "distinctTupleCacheRead": 7554117,
+    "distinctTupleCacheCreate": 322574,
+    "distinctTupleInput": 1060,
+    "distinctTupleWeightedHitProxy": 0.9589179703699698,
+    "reportedEventHitRatio": 0.9939003248879587,
+    "warning": "Distinct tuples are not API message IDs; totals and ratio are descriptive proxies, not verified spend."
+  },
+  "snapshotMs": 11.135792000000002,
+  "eventFetchMs": [
+    4.098499999999994
+  ]
+}
