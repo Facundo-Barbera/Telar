@@ -31,6 +31,7 @@ const { createTabStore } = require("./browser-tab-store");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const { wireLoginOffer } = require("./login-offer-window");
+const { discoverOpeners, openWith } = require("./workspace-openers");
 
 const SMOKE = process.argv.includes("--smoke");
 
@@ -1007,6 +1008,10 @@ function requireBrowserManager() {
  */
 let loginOffer = null;
 function requireLoginOffer() {
+  // The engine's state root. The shell is a declared co-tenant of this
+  // subtree — see `engine` in packages/core/test/invariants.test.ts
+  // (AD-5 / INV-3) for why, and why the write cannot go over the daemon's
+  // agent-readable HTTP surface.
   loginOffer ??= wireLoginOffer({ stateRoot: path.join(telarHome(), "engine") });
   return loginOffer;
 }
@@ -1278,6 +1283,44 @@ function reportBrowserControl(change) {
 //
 // CANCELLING IS AN ANSWER, not an error: `{ cancelled: true }`, so the caller does
 // not have to tell "the user changed their mind" apart from "the dialog broke".
+/**
+ * Open a session's workspace folder — in a named app, in the system default,
+ * or revealed in Finder.
+ *
+ * Absolute paths and real directories only: a relative path would resolve
+ * against this process's cwd, and a file is not a workspace. The app must be
+ * one `discoverOpeners` actually found, so a renderer cannot name an
+ * arbitrary binary. Nothing is ever interpolated into a command line — see
+ * workspace-openers.js.
+ */
+ipcMain.handle("telar:workspace:openers", () => ({ openers: discoverOpeners() }));
+
+ipcMain.handle("telar:workspace:open", async (_event, input) => {
+  const target = typeof input?.path === "string" ? input.path : "";
+  if (!target || !path.isAbsolute(target)) return { ok: false, error: "A workspace can only be opened from an absolute path." };
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return { ok: false, error: "That folder is no longer on this machine." };
+  }
+  if (!stat.isDirectory()) return { ok: false, error: "That path is not a folder." };
+  if (input?.reveal === true) {
+    shell.showItemInFolder(target);
+    return { ok: true };
+  }
+  if (typeof input?.openerId === "string" && input.openerId) {
+    // Matched against what is installed rather than trusted: the renderer
+    // names an id, never a path.
+    const opener = discoverOpeners().find((candidate) => candidate.id === input.openerId);
+    if (!opener) return { ok: false, error: "That app is not installed on this machine." };
+    return openWith({ target, appPath: opener.path });
+  }
+  // openPath answers with an error STRING, never a throw; empty means success.
+  const failure = await shell.openPath(target);
+  return failure ? { ok: false, error: failure } : { ok: true };
+});
+
 ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   const options = {

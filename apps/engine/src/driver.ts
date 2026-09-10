@@ -793,6 +793,12 @@ export function taskKindForType(taskType: string | undefined): TaskKind {
   return taskType && BACKGROUND_TASK_TYPES.has(taskType) ? "background" : "agent";
 }
 
+/** The same classification, but SILENT about a type nobody stated — so an
+ *  absent `task_type` reads as "unknown", never as "agent". */
+export function taskKindForTypeOrUndefined(taskType: string | undefined): TaskKind | undefined {
+  return taskType ? taskKindForType(taskType) : undefined;
+}
+
 /**
  * A SHELL THAT BLOCKS ITS TURN IS A TOOL CALL, NOT A TASK. The `Bash` tool_use
  * already produced a `command_execution` item for it; a task row on top is a
@@ -1260,6 +1266,8 @@ export function createClaudeDriver(
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
       let knownTasks: Map<string, TaskSeed> = new Map();
+      /** The SDK's `task_type` per task id — see `TaskMemory.typesBySdkId`. */
+      let taskTypesBySdkId: Map<string, string> = new Map();
       /** SDK task ids that are not rows: `ambient` housekeeping, and shells
        *  that block their turn (`isForegroundShell`). Remembered, so the
        *  progress/notification edges of the same task cannot re-create the row
@@ -1305,6 +1313,7 @@ export function createClaudeDriver(
         const id = taskIdFor(sdkTaskId, toolUseId);
         if (sdkTaskId) taskIdsBySdkId.set(sdkTaskId, id);
         const known = knownTasks.get(id);
+        const statedKind = sdkTaskId ? taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkTaskId)) : undefined;
         /**
          * THE FIRST ENDING IS THE ENDING. A task that has finished never changes
          * state again; later reports may still add to it.
@@ -1329,7 +1338,11 @@ export function createClaudeDriver(
           ...known,
           ...patch,
           id,
-          kind: patch.kind ?? known?.kind ?? "agent",
+          // PRECEDENCE: what the frame says, then what the SDK ever STATED
+          // about this task, then what we last held, then the default. The
+          // stated type outranks `known.kind` because that may itself be a
+          // default this fold wrote before the type was ever announced.
+          kind: patch.kind ?? statedKind ?? known?.kind ?? "agent",
           state,
           ...(sdkTaskId ? { providerTaskId: sdkTaskId } : {}),
         };
@@ -1450,6 +1463,10 @@ export function createClaudeDriver(
           runtimeRef.tasks.lastWokenTaskId = spokeFor;
         }
         if (item.subtype === "task_started") {
+          // Before the suppression branch: a blocking shell announces
+          // `local_bash` and then earns no row, so this is the only place its
+          // type is stated before Ctrl+B gives it one.
+          if (str(item.task_id) && str(item.task_type)) taskTypesBySdkId.set(item.task_id!, item.task_type!);
           /**
            * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
            * them itself and says what to do ("hosts should exclude them from
@@ -1529,6 +1546,9 @@ export function createClaudeDriver(
            */
           const backgrounded = item.patch?.is_backgrounded === true;
           const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
+          // `task_updated` states no `task_type`, and `is_backgrounded` is set
+          // for `local_agent` AND `local_bash` — so it cannot name a kind. The
+          // fold reads the type the SDK stated elsewhere.
           emitTask(
             terminal ? "task.completed" : "task.progress",
             str(item.task_id),
@@ -1537,7 +1557,6 @@ export function createClaudeDriver(
               ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
               ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
               ...(backgrounded ? { backgrounded: true } : {}),
-              ...(backgrounded && !known ? { kind: "background" as const } : {}),
             },
             undefined,
           );
@@ -1598,10 +1617,28 @@ export function createClaudeDriver(
            */
           const live = new Set(
             (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-              const id = str(asRecord(raw).task_id);
-              return id ? [id] : [];
+              const entry = asRecord(raw);
+              const id = str(entry.task_id);
+              if (!id) return [];
+              // The one frame that states `task_type` for a task this process
+              // never announced. Remembered so the kind is read, not inferred
+              // from `is_backgrounded` — set for sub-agents and shells alike.
+              const taskType = str(entry.task_type);
+              if (taskType) taskTypesBySdkId.set(id, taskType);
+              return [id];
             }),
           );
+          // LATE METADATA CORRECTS AN EARLIER GUESS: a row minted before any
+          // frame stated its type carries a defaulted kind, and this payload is
+          // the statement. Re-announced so it lands even if nothing else about
+          // the task ever arrives. Live rows only — a settled one is history.
+          for (const sdkId of live) {
+            const rowId = taskIdsBySdkId.get(sdkId);
+            const row = rowId ? knownTasks.get(rowId) : undefined;
+            if (!row || isTerminalTaskState(row.state)) continue;
+            const stated = taskKindForTypeOrUndefined(taskTypesBySdkId.get(sdkId));
+            if (stated && stated !== row.kind) emitTask("task.progress", sdkId, { state: row.state, kind: stated });
+          }
           for (const task of [...knownTasks.values()]) {
             if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
             const sdkId = task.providerTaskId;
@@ -2273,6 +2310,7 @@ export function createClaudeDriver(
       taskIdsBySdkId = runtime.tasks.bySdkId;
       knownTasks = runtime.tasks.known;
       suppressedTasks = runtime.tasks.suppressed;
+      taskTypesBySdkId = runtime.tasks.typesBySdkId;
 
       /**
        * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
@@ -2303,6 +2341,29 @@ export function createClaudeDriver(
        * anything later is the engine sweep's to requeue.
        */
       let turnDone = false;
+      /**
+       * Interrupts issued to deliver a person's steer, still unanswered — one
+       * token each, not a count.
+       *
+       * IDENTITY, BECAUSE THE TWO EVENTS RACE. The SDK writes the interrupt
+       * receipt before the interrupted result on a clean cut, but a turn that
+       * crashes during interrupt handling emits its error result on a direct
+       * path that may PRECEDE the receipt (sdk.d.ts, SDKControlInterruptResponse).
+       * So a result can consume a token before that same call settles; with a
+       * counter a late rejection would then decrement someone else's arm and
+       * drive it negative. A token can only ever remove itself.
+       *
+       * Consumed by the next result whatever its subtype — the CLI emits
+       * exactly one result per turn — so a cut that raced a finishing answer
+       * leaves nothing behind to swallow an unrelated failure later.
+       */
+      const outstandingSteerCuts = new Set<symbol>();
+      const consumeSteerCut = (): boolean => {
+        const [first] = outstandingSteerCuts;
+        if (first === undefined) return false;
+        outstandingSteerCuts.delete(first);
+        return true;
+      };
       if (persistent && steer) {
         void (async () => {
           for (;;) {
@@ -2324,6 +2385,32 @@ export function createClaudeDriver(
                 message: { role: "user", content: claudeInitialContent(text, attachments) },
                 parent_tool_use_id: null,
               });
+              /**
+               * PUSHING IS NOT INTERRUPTING: the provider reads no further input
+               * while it generates, so a pushed message waits out the old answer.
+               * Interrupt as Esc does — the generation stops, the process and
+               * session survive. Ordered AFTER the push so the words are already
+               * in the feed when the provider comes back for input.
+               *
+               * Only for words a PERSON typed: an agent report or engine wake is
+               * a notice, not a change of direction.
+               */
+              const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
+              if (typedByAPerson && runtime.query.interrupt) {
+                // Armed BEFORE the await: the pump is concurrent and the result
+                // can land first. Disarmed only if the call itself refuses, which
+                // leaves the message queued — late rather than lost.
+                const cut = Symbol("steer-cut");
+                outstandingSteerCuts.add(cut);
+                try {
+                  await runtime.query.interrupt();
+                } catch {
+                  // Removes only ITS OWN arm, and only if a result has not
+                  // already consumed it — a refused cut leaves the message
+                  // queued, which is late rather than lost.
+                  outstandingSteerCuts.delete(cut);
+                }
+              }
               await flush();
             }
             if (steer.isClosed) return;
@@ -2637,6 +2724,13 @@ export function createClaudeDriver(
               // An interrupt surfaces as a non-success result; the human's
               // stop must read as a stop, never as a provider failure.
               if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+              // OUR OWN CUT, ANSWERING A STEER: not a failure and not the turn's
+              // end. The words that caused it are already in the feed, so keep
+              // pumping; the text streamed before the cut stays journalled.
+              if (consumeSteerCut()) {
+                await flush();
+                continue;
+              }
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             /**
@@ -2664,6 +2758,26 @@ export function createClaudeDriver(
             if (persistent && toolsStillRunning) {
               await flush();
               continue;
+            }
+            /**
+             * A SUCCESS ALSO ANSWERS AN OUTSTANDING CUT: the answer finished
+             * before the interrupt landed. Consumed here so no token survives.
+             *
+             * AND THE PERSON'S WORDS ARE STILL OWED AN ANSWER. They are in the
+             * CLI's command queue, which an interrupt spares — `queued_turn_count`
+             * above zero is the SDK saying another turn follows with no further
+             * input (sdk.d.ts). Completing here would end the engine turn with
+             * the message already acked as delivered and nothing answering it,
+             * so keep pumping until it has been. At zero it was already absorbed
+             * into the answer just read; absent (older CLI) keeps the previous
+             * behaviour, where the next turn's pump picks it up.
+             */
+            if (consumeSteerCut()) {
+              const queuedTurns = "queued_turn_count" in item ? item.queued_turn_count : undefined;
+              if (typeof queuedTurns === "number" && queuedTurns > 0) {
+                await flush();
+                continue;
+              }
             }
             completed = true;
             await flush();

@@ -225,6 +225,21 @@ export function readEditor(sessionId: string): EditorState {
   };
 }
 
+/** Forget one key's files. The canvas clears its own after handing them to
+ *  the session it created — see `clearPanelTabs` for why the hand-off must
+ *  not also become a default for every later conversation. */
+export function clearEditor(sessionId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const store = readStore();
+    if (!(sessionId in store.sessions)) return;
+    delete store.sessions[sessionId];
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // A full or disabled localStorage must not break the editor.
+  }
+}
+
 export function writeEditor(sessionId: string, state: EditorState, now: number): void {
   if (typeof window === "undefined") return;
   try {

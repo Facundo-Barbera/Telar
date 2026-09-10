@@ -786,17 +786,35 @@ export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[
   return segments;
 }
 
+/**
+ * ONE RESPONSE'S WORK, CUT AT ITS SEAMS — the only way any response is drawn,
+ * live or already closed by a steer.
+ *
+ * `liveTail` says whether the LAST run is still being appended to (a rolling
+ * window) or is finished (a tally). It does NOT decide whether prose is
+ * visible: an assistant message is a seam at every scale, so it is a row here
+ * whether the turn is running or over.
+ *
+ * A RESPONSE CLOSED BY A STEER STILL GOES THROUGH THIS. Rendering those items
+ * as one `ActivityGroup` instead was the regression: the assistant's live
+ * prose, which had not finished streaming when the person typed, was swept
+ * into the fold above their message and went on streaming inside a collapsed
+ * step — text presented as a tool call, still growing where nobody could read
+ * it. The seam rule is what keeps prose prose, so every response uses it.
+ */
 export function LiveActivity({
   items,
   tasks,
+  liveTail = true,
   onOpenAgent,
 }: {
   items: JournalItem[];
   tasks: JournalTask[];
+  liveTail?: boolean;
   onOpenAgent?: (taskId: string) => void;
 }) {
   const segments = segmentActivity(items);
-  const tail = segments.length - 1;
+  const tail = liveTail ? segments.length - 1 : -1;
   const open = onOpenAgent ? { onOpenAgent } : {};
   return (
     <>

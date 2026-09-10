@@ -161,6 +161,30 @@ export function readPanelTabs<Tab extends string>(sessionId: string, isKnown: (t
   return { tabs, ...(activeTab ? { activeTab } : {}), open: Boolean(stored.open) && tabs.length > 0 };
 }
 
+/**
+ * Forget one key's panel entirely, so the next reader gets `emptyPanelTabs`.
+ *
+ * THE CANVAS IS THE ONLY CALLER, AND THAT IS THE BUG IT FIXES. A canvas keys
+ * its arrangement on `new:<projectId>` — ONE key shared by every new
+ * conversation in that project — and hands it to the session it creates. Left
+ * behind, that hand-off became a default: open Run once on a canvas and every
+ * later conversation in the project started with Run open, each inheriting it
+ * into its own record. Clearing it at the hand-off keeps the deliberate part
+ * (the surfaces you arranged while writing the first message follow it) and
+ * drops the accidental part (they follow every message after that, forever).
+ */
+export function clearPanelTabs(sessionId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const store = readStore();
+    if (!(sessionId in store.sessions)) return;
+    delete store.sessions[sessionId];
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // A full or disabled localStorage must not break the panel.
+  }
+}
+
 export function writePanelTabs<Tab extends string>(sessionId: string, state: PanelTabState<Tab>, now: number): void {
   if (typeof window === "undefined") return;
   try {

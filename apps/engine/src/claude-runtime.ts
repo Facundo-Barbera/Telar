@@ -132,13 +132,17 @@ export type TaskMemory<Seed extends { id: string; providerTaskId?: string }> = {
    *  block their turn. Process-lived for the same reason the rows are: the
    *  frames that would resurrect one arrive in any turn, or between turns. */
   readonly suppressed: Set<string>;
+  /** The SDK's own `task_type` per task id, from the frames that state it.
+   *  Read instead of guessing a kind from `is_backgrounded`, which the SDK
+   *  sets for sub-agents and shells alike. */
+  readonly typesBySdkId: Map<string, string>;
   /** The row the last `task_notification` spoke for: the shell whose ending
    *  the CLI is about to wake the model over. Names the wake-up's reason. */
   lastWokenTaskId: string | undefined;
 };
 
 export function taskMemoryFrom<Seed extends { id: string; providerTaskId?: string }>(seeds: Iterable<Seed>): TaskMemory<Seed> {
-  const memory: TaskMemory<Seed> = { bySdkId: new Map(), known: new Map(), suppressed: new Set(), lastWokenTaskId: undefined };
+  const memory: TaskMemory<Seed> = { bySdkId: new Map(), known: new Map(), suppressed: new Set(), typesBySdkId: new Map(), lastWokenTaskId: undefined };
   for (const seed of seeds) {
     memory.known.set(seed.id, seed);
     if (seed.providerTaskId) memory.bySdkId.set(seed.providerTaskId, seed.id);

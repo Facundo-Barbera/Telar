@@ -93,6 +93,16 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   dialog: {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
   },
+  /**
+   * Open a workspace folder in the system's own handler, or reveal it in the
+   * file manager. The path is passed as an ARGUMENT the whole way down — see
+   * the main-process handler; nothing is ever interpolated into a command.
+   */
+  workspace: {
+    openers: () => ipcRenderer.invoke("telar:workspace:openers"),
+    open: (path, openerId) => ipcRenderer.invoke("telar:workspace:open", { path, ...(openerId ? { openerId } : {}) }),
+    reveal: (path) => ipcRenderer.invoke("telar:workspace:open", { path, reveal: true }),
+  },
   // Window translucency — the one piece of appearance the renderer cannot do
   // alone, because the vibrancy layer lives under the page (main.js).
   appearance: {

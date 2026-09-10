@@ -3328,7 +3328,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * session and calls its own route. Nothing here knows what any plugin
          * does, which is the whole claim: adding a plugin adds no line here.
          */
-        const pluginCallPath = /^\/plugins\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9-]*)$/.exec(session.tail);
+        /**
+         * ONE OPTIONAL SECOND SEGMENT IN THE VERB, and no more. A plugin may
+         * own a second tool prefix — data science owns `notebook` — and those
+         * verbs arrive as `notebook/read`, which a one-segment matcher could
+         * not see: the request fell past this arm to "endpoint does not exist"
+         * while the `/ds/` alias (whose own matcher allows the slash) answered
+         * it. The depth is capped rather than opened up, and the route TABLE
+         * still decides what executes, so this widens what can be addressed by
+         * exactly the shape a registered verb can have.
+         */
+        const pluginCallPath = /^\/plugins\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)?)$/.exec(session.tail);
         if (request.method === "POST" && pluginCallPath) {
           const [, pluginId, verb] = pluginCallPath as unknown as [string, string, string];
           const module = pluginHost.ready(pluginId);

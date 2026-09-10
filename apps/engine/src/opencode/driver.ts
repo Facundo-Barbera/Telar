@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { openCodeFailure, openCodeFailureText } from "./errors";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Message, SessionStatus, Part, PermissionRequest, QuestionRequest, Config } from "@opencode-ai/sdk/v2";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
@@ -199,7 +200,12 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
             }
             if (observations.length) await input.onObservations(observations);
             const last = responses.at(-1)?.info;
-            if (last?.error) throw new Error(`OpenCode: ${last.error.name}`);
+            if (last?.error) {
+              // Sanitized and bounded — `APIError` carries `responseHeaders`
+              // and `responseBody`, which never leave the SDK. See ./errors.ts.
+              const failure = openCodeFailure(last.error);
+              throw new Error(failure ? openCodeFailureText(failure) : "OpenCode: the turn failed.");
+            }
             if (last?.time.completed && (statuses.data?.[sessionID]?.type === "idle" || statuses.data?.[sessionID] === undefined) && last.finish !== "tool-calls") {
               completed = true;
               return { providerSessionId: sessionID, text: parts.filter((part) => part.type === "text").map((part) => part.text).join("\n"),

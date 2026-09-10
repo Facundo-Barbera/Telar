@@ -162,6 +162,27 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
       vars: (input, capability) => (capability as DsCapability).vars(typeof input.limit === "number" ? input.limit : undefined),
       inspect: (input, capability) =>
         (capability as DsCapability).inspect(String(input.name ?? ""), typeof input.depth === "number" ? input.depth : undefined),
+      /**
+       * THE NOTEBOOK VERBS, KEYED AS THE WIRE SPELLS THEM. `notebook` is this
+       * plugin's second tool prefix, and both doors deliver the two-segment
+       * name — so a table keyed on the first segment routes nothing.
+       */
+      "notebook/read": (input, capability) =>
+        (capability as DsCapability).notebookRead(String(input.path ?? ""), {
+          ...(typeof input.from === "number" ? { from: input.from } : {}),
+          ...(typeof input.to === "number" ? { to: input.to } : {}),
+          ...(input.withOutputs === true ? { withOutputs: true } : {}),
+        }),
+      /** `edit` is the capability's own union — create, insert, set, delete —
+       *  validated there rather than flattened here. */
+      "notebook/edit": (input, capability) =>
+        (capability as DsCapability).notebookEdit(String(input.path ?? ""), input.edit as Parameters<DsCapability["notebookEdit"]>[1]),
+      "notebook/run": (input, capability) =>
+        (capability as DsCapability).notebookRun(String(input.path ?? ""), {
+          ...(typeof input.cellId === "string" ? { cellId: input.cellId } : {}),
+          ...(input.all === true ? { all: true } : {}),
+          ...(typeof input.stopOnError === "boolean" ? { stopOnError: input.stopOnError } : {}),
+        }),
       plot: (input, capability) =>
         (capability as DsCapability).plot({
           code: String(input.code ?? ""),

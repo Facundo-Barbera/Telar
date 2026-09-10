@@ -1733,6 +1733,9 @@ const AD5_SITES = [
   // none of them and reads none of them. When Telar grows persistence for
   // sessions/transcripts/permissions, do NOT re-add these paths from memory —
   // decide the layout fresh, then pin the new sites here.
+  // The desktop shell composing the engine's state root — see `engine` in
+  // AD5_OWNERS. Sorted first because "apps/" precedes "packages/".
+  "apps/desktop/main.js :: engine",
   "packages/core/src/accounts.ts :: accounts.json",
   "packages/core/src/detect.ts :: providers.json",
   "packages/core/src/dispatcher.ts :: policy.json",
@@ -1760,6 +1763,32 @@ const AD5_SITES = [
 // subtree; root-level FILES belonging to no module are AD-20's, not AD-5's, and
 // are still listed here because the composing module is their sole writer.
 const AD5_OWNERS: Record<string, string[]> = {
+  /**
+   * CO-TENANCY 3, AND IT IS LIVE — unlike 1 and 2 below, which were resolved
+   * by deletion. `<TELAR_HOME>/engine` is the ENGINE's subtree
+   * (`engineRootFromEnv`, apps/engine/src/state.ts), and the desktop shell
+   * composes it anyway, deliberately:
+   *
+   *   - the shell DECIDES TELAR_HOME (`telarHome()`) and spawns the engine
+   *     with it, so it is the parent of that root rather than a stranger
+   *     reaching into it;
+   *   - it reads `engine/engine.json` to find the daemon's port and token —
+   *     the discovery document exists to be read by whoever launched it;
+   *   - it writes `engine/browser-login-grants.json` through
+   *     apps/desktop/login-grant-writer.js, which mirrors the engine store's
+   *     schema and lock. That write CANNOT go through the daemon's HTTP
+   *     surface: local agents can read its bearer token, so an HTTP route
+   *     would let an agent authorize its own credential access (AUTH-001).
+   *
+   * `apps/engine` is not in ROOTS, so the owner's own composition is out of
+   * scan scope — this entry does NOT mean the shell is the sole composer, and
+   * must not be read as the engine having been demoted. What it measures is
+   * narrow and worth stating: WHICH SCANNED FILES compose this subtree. The
+   * risk it keeps visible is CO-TENANCY 1's asymmetry — two writers, only one
+   * of which (the engine) validates the layout — so a THIRD composing file, or
+   * a new subtree composed from the shell, fails INV-3a and INV-3b.
+   */
+  engine: ["apps/desktop/main.js"],
   "projects.json": ["packages/core/src/manifest.ts"],
   "accounts.json": ["packages/core/src/accounts.ts"],
   "credentials.json": ["packages/core/src/secrets.ts"],

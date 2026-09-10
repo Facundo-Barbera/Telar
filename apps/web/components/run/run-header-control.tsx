@@ -1,0 +1,366 @@
+"use client";
+
+/**
+ * The masthead's run control: SETUP and start/stop live here, monitoring
+ * lives in the right panel's Run tab. The same `RunConfigEditor` the panel
+ * uses is rendered inline, so there is one configuration form, not two.
+ *
+ * Host and session together are this control's identity — the client is
+ * pinned with `hostFetcher(hostId)` exactly as `RunPanel` pins it, because a
+ * pathname-following singleton would ask whichever host the URL happens to
+ * name. Two hosts can hold the same session id; an answer is dropped unless
+ * the identity that asked for it is still the one mounted.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlayIcon, PlusIcon, RotateCwIcon, SlidersHorizontalIcon } from "lucide-react";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { createRunApi, type RunApi } from "@/lib/run/api";
+import { runAction, statusLabel, statusTone, worktreeLabel, type RunTone } from "@/lib/run/presentation";
+import type { RunConfigurationDraft, RunConfigurationView, RunStatusAnswer } from "@/lib/run/types";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { RunConfigEditor } from "./run-config-editor";
+import { cn } from "@/lib/utils";
+
+/** Idle polls too: a run started from the panel or another session must reach
+ *  this pill, or the masthead and the panel disagree about what is running. */
+const POLL_ACTIVE_MS = 4000;
+const POLL_IDLE_MS = 12_000;
+
+const TONE_DOT: Record<RunTone, string> = {
+  idle: "bg-muted-foreground/40",
+  working: "bg-warning",
+  good: "bg-success",
+  bad: "bg-destructive",
+  lost: "bg-muted-foreground/60",
+};
+
+type Channel = "status" | "configs";
+/** What a read carries: the generation it opened under, and its place in its
+ *  own channel's sequence. */
+export type ReadToken = { channel: Channel; generation: number; seq: number };
+
+/**
+ * Which answers may still be applied.
+ *
+ * An answer is stale if a mutation or unmount bumped the generation, or if a
+ * newer read on the same channel has since opened — two configs reads with no
+ * mutation between them still order, so the earlier one cannot overwrite the
+ * later one's list. The status latch is owned by its token: only the read
+ * holding it may release it, or an old read's `finally` would free the latch
+ * a newer read is holding and let polls overlap.
+ *
+ * Exported because this is the rule worth testing directly; the component
+ * below is its only caller.
+ */
+export function createReadGuard() {
+  let generation = 0;
+  const newest: Record<Channel, number> = { status: 0, configs: 0 };
+  let holder: ReadToken | undefined;
+
+  const open = (channel: Channel): ReadToken => ({ channel, generation, seq: (newest[channel] += 1) });
+
+  return {
+    open,
+    stale: (token: ReadToken) => token.generation !== generation || token.seq !== newest[token.channel],
+    /** A mutation or unmount: every read in flight is now stale, and the
+     *  latch is freed so the re-read a start or stop needs can run. */
+    invalidate: () => {
+      generation += 1;
+      holder = undefined;
+    },
+    /** The token to carry, or null when a status read is already in flight. */
+    takeStatus: (): ReadToken | null => {
+      if (holder) return null;
+      holder = open("status");
+      return holder;
+    },
+    /** Only the holder may release. */
+    releaseStatus: (token: ReadToken) => {
+      if (holder === token) holder = undefined;
+    },
+  };
+}
+
+export type ReadGuard = ReturnType<typeof createReadGuard>;
+
+export function RunHeaderControl({
+  sessionId,
+  hostId,
+  api: injected,
+  onWatchOutput,
+}: {
+  sessionId: string;
+  /** Which Mac this session lives on. Absent means the local one. */
+  hostId?: string;
+  /** Injected by tests and the fixture; production builds a pinned client. */
+  api?: RunApi;
+  /** Opens the right panel's Run tab — monitoring stays there. */
+  onWatchOutput?: () => void;
+}) {
+  const api = useMemo(() => injected ?? createRunApi(hostFetcher(hostId ?? LOCAL_HOST_ID)), [injected, hostId]);
+
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<RunStatusAnswer>();
+  const [configs, setConfigs] = useState<RunConfigurationView[]>();
+  const [editing, setEditing] = useState<{ config?: RunConfigurationView } | undefined>();
+  const [error, setError] = useState<string>();
+
+  /** Per mount, and the masthead keys this component by host and session — so
+   *  a different machine starts with a clean guard. */
+  const [guard] = useState(createReadGuard);
+  // Unmount discards whatever is still in flight.
+  useEffect(() => () => guard.invalidate(), [guard]);
+
+  const refresh = useCallback(() => {
+    const token = guard.takeStatus();
+    if (!token) return;
+    api
+      .status(sessionId)
+      .then((answer) => {
+        if (!guard.stale(token)) setStatus(answer);
+      })
+      .catch((cause: unknown) => {
+        if (!guard.stale(token)) setError(cause instanceof Error ? cause.message : "Could not read the run status.");
+      })
+      .finally(() => guard.releaseStatus(token));
+  }, [api, sessionId, guard]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const active = status?.active;
+  useEffect(() => {
+    const timer = window.setInterval(refresh, active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+    return () => window.clearInterval(timer);
+  }, [active, refresh]);
+
+  /** Read on every open: a configuration added or renamed in the panel must
+   *  not be invisible here until the page reloads. */
+  const loadConfigs = useCallback(() => {
+    const token = guard.open("configs");
+    api
+      .configurations(sessionId)
+      .then((answer) => {
+        if (!guard.stale(token)) setConfigs(answer.configurations);
+      })
+      .catch((cause: unknown) => {
+        if (!guard.stale(token)) setError(cause instanceof Error ? cause.message : "Could not read the run configurations.");
+      });
+  }, [api, sessionId, guard]);
+
+  useEffect(() => {
+    if (open) loadConfigs();
+  }, [open, loadConfigs]);
+
+  const run = async (work: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await work();
+      // A mutation invalidates every read already in flight — the list and
+      // the status they would restore both predate this change — and frees
+      // the latch so the re-read below always runs.
+      guard.invalidate();
+      refresh();
+      loadConfigs();
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : "That run action failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = (draft: RunConfigurationDraft | Partial<RunConfigurationDraft>) =>
+    void run(async () => {
+      if (editing?.config) await api.updateConfiguration(sessionId, editing.config.id, draft);
+      else await api.createConfiguration(sessionId, draft as RunConfigurationDraft);
+      setEditing(undefined);
+    });
+
+  const action = status ? runAction(status) : undefined;
+  const tone = active ? statusTone(active.status) : "idle";
+  const label = active ? statusLabel(active) : "Run";
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next: boolean) => {
+        setOpen(next);
+        if (!next) setEditing(undefined);
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={active ? `Run: ${label}` : "Run this project"}
+            className="h-7 gap-1.5 px-2 text-xs font-medium"
+          >
+            <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
+            <span className="max-w-32 truncate">{label}</span>
+            <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+          </Button>
+        }
+      />
+      <PopoverContent
+        align="end"
+        side="bottom"
+        sideOffset={6}
+        className={cn("flex-col gap-0 overflow-hidden rounded-xl p-0", editing ? "max-h-[min(34rem,80vh)] w-[26rem]" : "w-80")}
+      >
+        {editing ? (
+          <div className="flex min-h-0 flex-col">
+            <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+              <SlidersHorizontalIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {editing.config ? `Edit ${editing.config.name}` : "New run configuration"}
+              </span>
+            </div>
+            {/* THE PANEL'S OWN FORM, not a second one. */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              <RunConfigEditor
+                {...(editing.config ? { config: editing.config } : {})}
+                busy={busy}
+                {...(error ? { error } : {})}
+                onSave={save}
+                onCancel={() => setEditing(undefined)}
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-col gap-1 border-b border-border px-3 py-2.5">
+              <div className="flex items-center gap-2">
+                <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>
+                {busy && <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
+              </div>
+              {/* A run whose output belongs to another worktree is the one fact
+                  that makes the panel confusing if it goes unsaid. */}
+              {action?.kind === "switch" && (
+                <p className="text-[0.6875rem] leading-snug text-warning">
+                  Deployed from {worktreeLabel(action.from)} — another tree. Starting here takes it over.
+                </p>
+              )}
+              {active?.readinessUrl && (
+                <a
+                  href={active.readinessUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="truncate text-[0.6875rem] text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  {active.readinessUrl}
+                </a>
+              )}
+            </div>
+
+            <div className="flex min-h-0 max-h-72 flex-col gap-0.5 overflow-y-auto p-1">
+              {configs === undefined ? (
+                <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Reading configurations…</p>
+              ) : configs.length === 0 ? (
+                <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                  No run configuration yet. Add one to give this project a start command.
+                </p>
+              ) : (
+                configs.map((config) => {
+                  const live = active?.configId === config.id;
+                  return (
+                    <div key={config.id} className="group/run flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        // Start, or restart the one already running. `replace`
+                        // is only sent for the deployment this session owns; a
+                        // foreign tree is warned about above instead.
+                        onClick={() =>
+                          void run(() =>
+                            live ? api.restart(sessionId, active?.runId) : api.start(sessionId, config.id, action?.kind === "replace"),
+                          )
+                        }
+                        className={cn(
+                          "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                          live ? "bg-accent" : "hover:bg-accent/60",
+                          busy && "opacity-60",
+                        )}
+                      >
+                        {live ? <RotateCwIcon className="size-3.5 shrink-0" /> : <PlayIcon className="size-3.5 shrink-0" />}
+                        <span className="min-w-0 flex-1 truncate">{config.name}</span>
+                        {live && <span className="shrink-0 text-[0.625rem] text-muted-foreground">running</span>}
+                      </button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Edit ${config.name}`}
+                        title="Edit"
+                        disabled={busy}
+                        className="shrink-0 opacity-0 group-hover/run:opacity-70 focus-visible:opacity-100"
+                        onClick={() => setEditing({ config })}
+                      >
+                        <SlidersHorizontalIcon />
+                      </Button>
+                      {live && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Stop ${config.name}`}
+                          title="Stop"
+                          disabled={busy}
+                          onClick={() => void run(() => api.stop(sessionId, active?.runId))}
+                        >
+                          <CircleStopIcon />
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+              {/* A slot Telar cannot vouch for is freed by a human saying so. */}
+              {action?.kind === "release" && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => api.release(sessionId, action.active.runId))}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
+                >
+                  Forget the lost run
+                </button>
+              )}
+            </div>
+
+            {error && <p className="border-t border-border px-3 py-1.5 text-[0.6875rem] leading-snug text-destructive">{error}</p>}
+
+            <div className="flex items-center gap-1 border-t border-border p-1">
+              <Button type="button" variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => setEditing({})}>
+                <PlusIcon className="size-3.5" />
+                New configuration
+              </Button>
+              <div className="flex-1" />
+              {/* The door to the monitor, not a second copy of it. */}
+              {onWatchOutput && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => {
+                    setOpen(false);
+                    onWatchOutput();
+                  }}
+                >
+                  Watch output
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
