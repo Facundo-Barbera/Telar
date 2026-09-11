@@ -60,7 +60,6 @@ function NoteChip({ projectId, note }: { projectId: string; note: ProjectNote })
             type="button"
             draggable
             title={note.title}
-            data-note-chip={note.id}
             onDragStart={(event) => {
               startReferenceDrag(event.dataTransfer, noteReference(note));
               // A drag that began on the chip must not also open it when the
