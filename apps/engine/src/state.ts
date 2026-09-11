@@ -8337,6 +8337,10 @@ export class EngineStore {
         this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
       }
       let changed = false;
+      /** Housekeeping, kept apart from `changed`: retiring a dead claim must
+       *  rewrite the queue but must NOT touch the session — nothing happened
+       *  to it, and a bumped `updatedAt` would reorder somebody's sidebar. */
+      let claimsRetired = false;
       const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
       const at = this.now();
       const recoveredProviderSessionId = latestProviderSessionId(queue);
@@ -8419,6 +8423,32 @@ export class EngineStore {
         changed = true;
       }
       /**
+       * AND A STOPPED TURN LETS GO OF ITS CLAIM.
+       *
+       * `stopSession` leaves the claim ON a turn it stops, deliberately: that
+       * is how the worker holding it learns over its heartbeat that the work
+       * ended. But the claim names a worker registration, and no registration
+       * survives a restart — so after this boot the token identifies nobody,
+       * can be delivered to nobody, and has nothing left to say.
+       *
+       * IT IS NOT INERT WHILE IT SITS THERE. `queueConcernsAWorker` counts a
+       * stopped turn that still carries a claim, which is what puts a session
+       * in `liveQueueSessionIds` — so every Stop anybody had ever pressed left
+       * a session in the set the heartbeat walks, permanently and across every
+       * restart. Measured on the machine that prompted this: 155 such turns
+       * held 45 of 129 sessions in an index that existed to describe the 2
+       * that were running.
+       *
+       * The turn itself is untouched. Its state, its text, its items and its
+       * `stopReason` all stay exactly as they were; only a token nobody can
+       * use goes.
+       */
+      for (const turn of queue.turns) {
+        if (turn.state !== "stopped" || !turn.claim) continue;
+        delete turn.claim;
+        claimsRetired = true;
+      }
+      /**
        * AND THE PAUSE LATCH COMES OFF. It is the same trap from the session's
        * side: a session paused by the old Stop button would open with a banner
        * and a Resume for a backlog this sweep has just settled. Pause is not a
@@ -8444,7 +8474,7 @@ export class EngineStore {
        * shell of the session, whichever turn started them.
        */
       const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
-      if (changed) {
+      if (changed || claimsRetired) {
         this.writeQueue(session.id, queue);
       }
       if (changed || metadataChanged || swept.length > 0) {

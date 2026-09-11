@@ -211,3 +211,33 @@ test("a session id reused after a delete does not inherit the old queue", () => 
   expect(store.turns("session_one")).toEqual([]);
   expect(store.cancellationsForWorker("worker_one")).toEqual([]);
 });
+
+/**
+ * A DEAD CLAIM IS NOT FREE TO LEAVE LYING ABOUT.
+ *
+ * `stopSession` keeps the claim on a turn it stops so the worker holding it
+ * hears about the stop — but the token names a registration, and none survives
+ * a restart. Left there it is not inert: `queueConcernsAWorker` counts it, so
+ * every Stop anybody ever pressed kept a session in the set the heartbeat
+ * walks, for ever and across every restart.
+ */
+test("a restart retires the claim on a stopped turn without disturbing the session", () => {
+  const { home, store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  store.stopSession("session_one", "user");
+  expect(store.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
+  const before = store.getSession("session_one").updatedAt;
+  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+
+  const reopened = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(reopened);
+  reopened.recover(); // what the daemon runs at boot
+  const turn = reopened.turns("session_one")[0]!;
+  expect(turn.claim).toBeUndefined();
+  // Only the token went. The turn still says what it was and how it ended,
+  // and nothing about the session moved.
+  expect(turn).toMatchObject({ runId: "run_one", input: "hello", state: "stopped", stopReason: "user" });
+  expect(reopened.getSession("session_one").updatedAt).toBe(before);
+  // And with no claim left, no worker is asked about this session again.
+  expect(reopened.cancellationsForWorker("worker_one")).toEqual([]);
+});
