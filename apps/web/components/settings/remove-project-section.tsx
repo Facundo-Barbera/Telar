@@ -9,10 +9,13 @@
  * listed everything that survives; that list existed to reassure against a
  * risk the design no longer takes.
  *
- * IT LIVES UNDER "Project", beside the name, checkout and id it is about,
- * rather than in a red "danger zone" — there is one such action, and a zone
- * built for it would promise more drama than a reversible registry write
- * deserves.
+ * IT LIVES UNDER "Project", beside the name, checkout and id it is about, as
+ * the LAST group on that page, under a plain "Danger" label. Still no red zone:
+ * the panel, the border and the colour would promise more drama than a
+ * reversible registry write deserves. What the label buys is structure — a
+ * destructive action is never adjacent to an ordinary one — and the actual
+ * safety is the row's copy naming what survives, which is cheaper and more
+ * reliable than any amount of red.
  *
  * THE ENGINE OWNS THE REFUSAL. A project with a session mid-turn answers 409
  * and this shows the sentence it sent; the surface never decides for itself
@@ -144,10 +147,10 @@ export function RemoveProjectSection({
 
   if (removed) {
     return (
-      <SettingsGroup title="Removed from Telar" description="This project is put away. Its sessions and their history are still here to read.">
+      <SettingsGroup title="Removed from Telar" description="Put away — nothing on disk was touched.">
         <Row
           label="Restore this project"
-          hint="Brings it back with the same id, settings and sessions. Registering its folder again does the same thing."
+          hint="Brings it back with the same id, settings and sessions, which are all still here. Registering its folder again does the same thing."
           control={
             <div className="flex items-center gap-2">
               <Badge variant="outline">Removed</Badge>
@@ -170,10 +173,19 @@ export function RemoveProjectSection({
   }
 
   return (
-    <SettingsGroup title="Remove from Telar" description="Stop offering this project, without deleting anything.">
+    // "DANGER" IS THE LABEL, AND THE LABEL IS THE WHOLE DEVICE — no red panel,
+    // no scary border. The separation is structural: a plain group at the floor
+    // of the page, so a destructive action is never adjacent to an ordinary one
+    // and never dressed up as more than it is. The safety comes from the row's
+    // own copy, below, which is a cheaper and more reliable guard than colour.
+    <SettingsGroup title="Danger">
       <Row
         label="Remove project from Telar"
-        hint="Nothing in the repository is touched, and you can put it back."
+        // WHAT IT DOES NOT DESTROY, in the row. Removal stops Telar offering the
+        // project; it is a registry write and nothing else, and saying so here is
+        // what lets somebody press the button without opening the dialog to find
+        // out whether their repository survives.
+        hint="Telar stops offering it and no new sessions can start on it. Files on disk are not touched, and you can put it back."
         control={
           <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!project} onClick={() => handleOpenChange(true)}>
             Remove…
