@@ -107,9 +107,17 @@ export const bridge = {
 
 /** The desktop workspace bridge, seated where `workspaceOpener()` looks. */
 const workspace: WorkspaceOpenBridge = {
+  // Three apps, one of them deliberately WITHOUT an icon id: the fallback glyph
+  // is a state a reader has to be able to recognise, same as the rest.
   openers: async () => {
     record("workspace.openers");
-    return { openers: [{ id: "vscode", label: "Visual Studio Code", path: "/Applications/Visual Studio Code.app" }, { id: "zed", label: "Zed", path: "/Applications/Zed.app" }] };
+    return {
+      openers: [
+        { id: "vscode", label: "Visual Studio Code", icon: "vscode", path: "/Applications/Visual Studio Code.app" },
+        { id: "zed", label: "Zed", icon: "zed", path: "/Applications/Zed.app" },
+        { id: "textmate", label: "TextMate", path: "/Applications/TextMate.app" },
+      ],
+    };
   },
   open: async (path, openerId) => {
     record(`workspace.open:${openerId ?? "default"}:${path}`);
