@@ -40,7 +40,7 @@ test("start failures retry, expired start tokens preserve notifications, disable
   for(const patch of [{liveActivities:false},{pushToStartToken:undefined},{liveActivities:undefined}]) await deliverRecord({...record(),...patch},[work],async()=>{sent++;return 200;},1000);
   expect(sent).toBe(0);
 });
-test("registration refresh preserves automatic start checkpoints and validates its new fields",()=>{
+test("a start receipt survives a refresh of the same start token, dies with a new one, and validates its fields",async()=>{
   for(const patch of [{liveActivities:"yes"},{pushToStartToken:"bad"},{hostName:42}]) expect(()=>parseRegistration({...record(),...patch})).toThrow();
   const dir=mkdtempSync(path.join(os.tmpdir(),"telar-auto-")),file=path.join(dir,"push.json");
   try {
@@ -50,5 +50,16 @@ test("registration refresh preserves automatic start checkpoints and validates i
     writeFileSync(file,JSON.stringify([r]));
     saveRegistration("phone",record(),file);
     expect(readPushRecords(file)[0]!.automaticStartedAt).toBe(1000);
+    // A reinstall mints a new start token: the receipt belongs to the old one, which this
+    // install never had, so it must not keep the gate shut on an activity it never ran.
+    saveRegistration("phone",{...record(),pushToStartToken:"d".repeat(64)},file);
+    const fresh=readPushRecords(file)[0]!;
+    expect(fresh.automaticStartedAt).toBeUndefined();
+    expect(fresh.seen).toEqual(r.seen);
+    const sent: Delivery[]=[];
+    await deliverRecord(fresh,[work],async d=>{sent.push(d);return 200;},2000);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.payload.aps.event).toBe("start");
+    expect(sent[0]!.token).toBe("d".repeat(64));
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
