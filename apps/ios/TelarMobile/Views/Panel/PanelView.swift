@@ -5,6 +5,16 @@ import SwiftUI
 /// beside the transcript on a regular width and as a full-screen push on a
 /// compact one; the same view either way, with its own navigation stack so
 /// its title bar is its own.
+/// HOW THE PANEL IS BEING SHOWN, which is the only thing that changes about
+/// it. A column sits BESIDE the conversation and needs to read as its own
+/// surface; a page has the screen to itself and needs no enclosure to say so.
+enum PanelPresentation {
+    /// The inspector column on a regular width: an inset card.
+    case column
+    /// A compact-width push, or full screen: the whole page, edge to edge.
+    case page
+}
+
 struct PanelView: View {
     let api: any EngineAPI
     let panelAPI: (any PanelAPI)?
@@ -14,6 +24,7 @@ struct PanelView: View {
     /// every surface re-reads. Nothing here polls.
     let active: Bool
     let panel: PanelModel
+    var presentation: PanelPresentation = .page
     let onClose: () -> Void
 
     var body: some View {
@@ -23,7 +34,7 @@ struct PanelView: View {
             surface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Theme.canvas)
+        .enclosure(presentation)
         .environment(\.panel, panel)
     }
 
@@ -87,6 +98,34 @@ struct PanelView: View {
 
     private var unavailable: some View {
         ContentUnavailableView("Not available here", systemImage: "wifi.slash", description: Text("This surface needs a paired Mac."))
+    }
+}
+
+private extension View {
+    /// THE PANEL'S OWN SURFACE. As a column it was a bare region carrying the
+    /// same canvas as the conversation beside it, separated by one hairline —
+    /// so it did not read as a thing, it read as the transcript continuing in
+    /// a different arrangement. iPadOS gives the sidebar an inset rounded card
+    /// for exactly this reason; the panel gets the same treatment, at the
+    /// radius already named for a panel that slides in.
+    ///
+    /// A page keeps none of it: edge to edge is what says "this has the screen
+    /// to itself", and a card inside a full-screen cover is a card floating on
+    /// nothing.
+    @ViewBuilder func enclosure(_ presentation: PanelPresentation) -> some View {
+        switch presentation {
+        case .page:
+            self.background(Theme.canvas)
+        case .column:
+            let shape = RoundedRectangle(cornerRadius: Theme.radiusDrawer, style: .continuous)
+            self
+                .background(Theme.sheet)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Theme.borderSubtle, lineWidth: 1))
+                .padding(.leading, 4)
+                .padding(.trailing, 10)
+                .padding(.bottom, 10)
+        }
     }
 }
 

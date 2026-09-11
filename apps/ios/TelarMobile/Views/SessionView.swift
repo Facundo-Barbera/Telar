@@ -270,9 +270,12 @@ struct SessionView: View {
         .environment(\.panel, panel)
         .inspector(isPresented: $inspectorShown) {
             NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, onClose: { panel.close() })
                     .toolbar(.hidden, for: .navigationBar)
             }
+            // The card draws its own surface, so the column behind it is the
+            // canvas the conversation sits on rather than a second sheet.
+            .background(Theme.canvas)
             .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
         }
         .navigationDestination(isPresented: $pushShown) {
