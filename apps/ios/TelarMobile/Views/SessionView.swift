@@ -102,19 +102,17 @@ struct SessionView: View {
     /// match it. Every write is guarded — a presentation modifier writes its
     /// own binding back on layout, sometimes with the value it already holds.
     private func raisePanel(_ open: Bool) {
-        // ONE AT A TIME. Leaving the column mounted behind a full-screen cover
-        // would run a second copy of every surface — two file reads, two
-        // kernels asked for their state, two editors over one draft.
-        let column = open && wantsColumn && !panel.isFullScreen
-        let push = open && !wantsColumn
+        let (column, push) = PanelRaise.flags(open: open, wantsColumn: wantsColumn, fullScreen: panel.isFullScreen)
         if inspectorShown != column { inspectorShown = column }
         if pushShown != push { pushShown = push }
     }
 
-    /// The other direction: the reader closed the column or popped the push.
-    private func panelPresented(_ open: Bool) {
-        guard open != panel.isOpen else { return }
-        if open { panel.open() } else { panel.close() }
+    /// The other direction, and ONLY that direction: the reader closed the
+    /// column or popped the push. A presentation raising its own flag is this
+    /// view's own write echoing — see `PanelRaise` for the ring it closed.
+    private func panelDismissed() {
+        guard panel.isOpen else { return }
+        panel.close()
     }
 
     /// There is room for sidebar, transcript and panel only in landscape, so
@@ -409,19 +407,25 @@ struct SessionView: View {
                 .navigationTitle("Panel")
                 .navigationBarTitleDisplayMode(.inline)
         }
-        .onChange(of: panel.isOpen, initial: true) { _, open in
-            raisePanel(open)
-            syncSidebar(open: open)
+        .onChange(of: panel.isOpen, initial: true) { _, _ in
+            // THE MODEL AS IT IS NOW, never the value the change carried.
+            // `isOpen` can flip twice inside one update pass, and SwiftUI then
+            // delivers the superseded one too; raising the push off THAT put
+            // `pushShown` back up for a frame against a panel already closed.
+            raisePanel(panel.isOpen)
+            syncSidebar(open: panel.isOpen)
         }
         .onChange(of: inspectorShown) { _, open in
             // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
             // CLOSING THE PANEL. Without this guard, expanding read as a
             // dismissal: `panel.close()` ran, which also drops full screen, and
             // the whole thing collapsed instead of filling the window.
-            guard wantsColumn, !panel.isFullScreen else { return }
-            panelPresented(open)
+            guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
+            panelDismissed()
         }
-        .onChange(of: pushShown) { _, open in if !wantsColumn { panelPresented(open) } }
+        .onChange(of: pushShown) { _, open in
+            if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
+        }
         // A rotation or a multitasking resize moves the panel between the
         // column and the push; the model says whether it is showing at all.
         .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }

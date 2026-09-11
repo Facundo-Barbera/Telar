@@ -180,11 +180,14 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
 
     func close() {
         guard isOpen || isFullScreen else { return }
-        isOpen = false
+        if isOpen { isOpen = false }
         // Closing is closing. Coming back to a panel that reopens filling the
         // window, because that is how it was left three days ago, is the
-        // surprise this guards against.
-        isFullScreen = false
+        // surprise this guards against. Guarded like every other setter here:
+        // an unconditional write notified `isFullScreen`'s watcher on every
+        // close, and on the pop path that is one more update pass than the
+        // close needed.
+        if isFullScreen { isFullScreen = false }
         persist()
     }
 
