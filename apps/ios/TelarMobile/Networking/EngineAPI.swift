@@ -165,17 +165,20 @@ struct NewSessionInput: Encodable {
     var branchName: String?
 }
 
-/// The only two shapes a `user_input` answer takes (`UserInputField.kind`
-/// text/secret/choice all answer with a string; boolean with a bool).
+/// The shapes a `user_input` answer takes (`UserInputField.kind`
+/// text/secret/choice all answer with a string; boolean with a bool; a
+/// `choice` field marked `multiple` with an array of the chosen labels).
 enum AnswerValue: Encodable, Equatable {
     case text(String)
     case bool(Bool)
+    case list([String])
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .text(let s): try c.encode(s)
         case .bool(let b): try c.encode(b)
+        case .list(let labels): try c.encode(labels)
         }
     }
 }

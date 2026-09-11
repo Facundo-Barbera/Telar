@@ -202,6 +202,23 @@ private func stubAPI() -> HTTPEngineAPI {
         )
     }
 
+    @Test func resolveRequestEncodesMultiSelectAsAnArray() async throws {
+        // A `choice` field marked `multiple` answers with the chosen labels,
+        // in the question's own order — not a joined string.
+        StubURLProtocol.handler = { request in
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            let answers = body?["answers"] as? [String: Any]
+            #expect(answers?["toppings"] as? [String] == ["a", "b"])
+            // The single-pick field beside it still goes as a bare string.
+            #expect(answers?["size"] as? String == "large")
+            return (200, Data("{}".utf8))
+        }
+        try await stubAPI().resolveRequest(
+            "s", requestId: "req_10", decision: .accept, reason: nil,
+            answers: ["toppings": .list(["a", "b"]), "size": .text("large")]
+        )
+    }
+
     @Test func eventsPassesCursor() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.url?.query() == "after=41")

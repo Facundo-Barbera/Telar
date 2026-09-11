@@ -133,6 +133,50 @@ func fixture(_ name: String) throws -> Data {
         #expect(request.isOpen)
     }
 
+    /// One `request.opened` row copied verbatim out of the live journal
+    /// (`select value from events where value like '%"user_input"%' ...`), not
+    /// typed by hand. Only the events-page envelope around it is ours — the
+    /// event itself is exactly what the engine wrote.
+    private static let journalUserInputEvent = #"""
+    {"id":1895,"at":1789074205111,"sessionId":"session_d016f60f8e27488d9f832539fb90b9fd","runId":"run_211867ec91144c5cbae3e648a1d12552","type":"request.opened","request":{"id":"req_toolu_018f7ocXFLHU7zFbe3gZ6KSm","runId":"run_211867ec91144c5cbae3e648a1d12552","sessionId":"session_d016f60f8e27488d9f832539fb90b9fd","state":"open","detail":{"kind":"user_input","prompt":"The agent needs your input to continue.","fields":[{"key":"I can't find Terra in this ChatGPT build. Where should I set it?","label":"I can't find Terra in this ChatGPT build. Where should I set it?","kind":"choice","choices":["It's under Create image","Switch back to Work mode","Just send with the default","I'll set Terra myself"],"required":true}]},"openedAt":1789074205111,"notified":false}}
+    """#
+
+    private static func decodeUserInputField(_ event: String) throws -> UserInputField {
+        let page = try JSONDecoder().decode(
+            EventPage.self,
+            from: Data(#"{"events":[\#(event)],"cursor":1895,"more":false}"#.utf8)
+        )
+        guard case .requestOpened(let request) = page.events.first?.payload,
+              case .userInput(_, let fields) = request.detail,
+              let field = fields.first
+        else { throw CocoaError(.coderValueNotFound) }
+        return field
+    }
+
+    @Test func journalChoiceFieldHasNoMultipleAndStaysSingle() throws {
+        // Every `choice` the engine has ever sent omits `multiple` — this is
+        // the shape in the journal today, and it must keep meaning one pick.
+        let field = try Self.decodeUserInputField(Self.journalUserInputEvent)
+        #expect(field.kind == "choice")
+        #expect(field.choices?.count == 4)
+        #expect(field.multiple == nil)
+        #expect(field.isMultiSelect == false)
+    }
+
+    @Test func multipleTrueDecodesAsMultiSelect() throws {
+        // The same verbatim journal event, with `"multiple":true` spliced into
+        // the field object by string edit. The journal carries no such sample
+        // yet because the feature did not exist — so this is the one place the
+        // shape is asserted rather than observed, and everything around the
+        // inserted key stays exactly as the engine wrote it.
+        let withMultiple = Self.journalUserInputEvent
+            .replacingOccurrences(of: #""kind":"choice""#, with: #""kind":"choice","multiple":true"#)
+        let field = try Self.decodeUserInputField(withMultiple)
+        #expect(field.multiple == true)
+        #expect(field.isMultiSelect)
+        #expect(field.choices?.count == 4)
+    }
+
     @Test func browserControlEventDecodesController() throws {
         let data = Data("""
         {"events":[
