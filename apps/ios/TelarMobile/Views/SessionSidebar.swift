@@ -42,7 +42,13 @@ struct SessionSidebar: View {
                 // asked, so every row in it is equally relevant and density
                 // beats detail — the desktop's rule, same reason.
                 ForEach(all.filter(matches)) { row in sessionRow(row, variant: .slim) }
-                if all.filter(matches).isEmpty { Text("No matching sessions").foregroundStyle(Theme.textMuted) }
+                // THE DESKTOP'S WORDS, because a reader who has both open
+                // should not have to work out that two different sentences are
+                // the same answer (`SidebarEmpty`, app-sidebar.tsx). The detail
+                // line is the part that earns its space: it says what to try.
+                if all.filter(matches).isEmpty {
+                    ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
+                }
             } else {
                 ForEach(MobileDrafts.shared.drafts.filter { draft in
                     settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
@@ -228,10 +234,34 @@ struct SessionSidebar: View {
                 } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
             }
         }
+        // AN ICON ROW, NOT A SENTENCE. The desktop's footer
+        // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
+        // that is the right shape for a destination you reach twice a week: a
+        // full-width tinted "Settings" was the loudest thing on the rail,
+        // reading as the sidebar's primary action directly beneath the work
+        // that actually is.
+        //
+        // ONE GLYPH, BECAUSE THERE IS ONE PAGE. The desktop puts Usage beside
+        // it; the phone has no usage screen to open, and a disabled or absent
+        // twin would be chrome. The desktop's update control has no counterpart
+        // either — this app updates through TestFlight, which is the App
+        // Store's job and not a button's.
+        //
+        // The glyph keeps the web's size and the tap target does not: 32pt is a
+        // mouse target, and a finger is owed the full 44.
         .safeAreaInset(edge: .bottom) {
-            Button(action: openSettings) {
-                Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading).padding()
-            }.keyboardShortcut(",", modifiers: .command).background(Theme.sheet)
+            HStack(spacing: 0) {
+                Button(action: openSettings) {
+                    Image(systemName: "gearshape").font(.system(size: 17))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .accessibilityLabel("Settings")
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.textMuted)
+            .padding(.horizontal, 8)
+            .background(Theme.sheet)
         }
         .refreshable { await inbox.refresh(); await loadOrders() }
         .task {
