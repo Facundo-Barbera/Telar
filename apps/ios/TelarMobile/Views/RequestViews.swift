@@ -236,6 +236,8 @@ struct UserInputFormView: View {
 
     @State private var textAnswers: [String: String] = [:]
     @State private var boolAnswers: [String: Bool] = [:]
+    /// Multi-select `choice` fields only — a set, because the rows toggle.
+    @State private var listAnswers: [String: Set<String>] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -252,8 +254,17 @@ struct UserInputFormView: View {
                         case "boolean":
                             answers[field.key] = .bool(boolAnswers[field.key] ?? false)
                         default:
-                            let value = textAnswers[field.key] ?? ""
-                            if !value.isEmpty { answers[field.key] = .text(value) }
+                            if field.isMultiSelect {
+                                // Choice order, not tap order: the engine reads
+                                // these back as labels, and the question's own
+                                // order is the one the person was reading.
+                                let picked = listAnswers[field.key] ?? []
+                                let ordered = (field.choices ?? []).filter(picked.contains)
+                                if !ordered.isEmpty { answers[field.key] = .list(ordered) }
+                            } else {
+                                let value = textAnswers[field.key] ?? ""
+                                if !value.isEmpty { answers[field.key] = .text(value) }
+                            }
                         }
                     }
                     submit(answers)
@@ -267,6 +278,7 @@ struct UserInputFormView: View {
         fields.allSatisfy { field in
             guard field.required == true else { return true }
             if field.kind == "boolean" { return true }
+            if field.isMultiSelect { return !(listAnswers[field.key] ?? []).isEmpty }
             return !(textAnswers[field.key] ?? "").isEmpty
         }
     }
@@ -275,20 +287,30 @@ struct UserInputFormView: View {
     private func fieldView(_ field: UserInputField) -> some View {
         switch field.kind {
         case "choice":
+            let multiple = field.isMultiSelect
             VStack(alignment: .leading, spacing: 4) {
                 Text(field.label)
                     .font(Theme.metaSmall)
                     .foregroundStyle(Theme.textMuted)
+                if multiple {
+                    Text("Pick any that apply")
+                        .font(Theme.metaSmall)
+                        .foregroundStyle(Theme.textMuted)
+                }
                 ForEach(field.choices ?? [], id: \.self) { choice in
+                    let picked = multiple
+                        ? (listAnswers[field.key] ?? []).contains(choice)
+                        : textAnswers[field.key] == choice
                     Button {
-                        textAnswers[field.key] = choice
+                        if multiple { toggle(field.key, choice) }
+                        else { textAnswers[field.key] = choice }
                     } label: {
                         HStack(spacing: 8) {
                             Text(choice)
                                 .font(Theme.body)
                                 .foregroundStyle(Theme.text)
                             Spacer(minLength: 0)
-                            if textAnswers[field.key] == choice {
+                            if picked {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(Theme.accent)
@@ -296,7 +318,7 @@ struct UserInputFormView: View {
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
-                        .background(textAnswers[field.key] == choice ? Theme.messageSurface : .clear)
+                        .background(picked ? Theme.messageSurface : .clear)
                         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusRow))
                         .contentShape(Rectangle())
                     }
@@ -327,6 +349,12 @@ struct UserInputFormView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl))
                 .hairline(Theme.radiusControl)
         }
+    }
+
+    private func toggle(_ key: String, _ choice: String) {
+        var picked = listAnswers[key] ?? []
+        if picked.contains(choice) { picked.remove(choice) } else { picked.insert(choice) }
+        listAnswers[key] = picked
     }
 
     private func binding(_ field: UserInputField) -> Binding<String> {
