@@ -109,6 +109,22 @@ import Testing
     }
 }
 
+@Suite struct NotebookReadTests {
+    private func engine(_ code: String, _ message: String) -> Error {
+        EngineAPIError.engine(code: code, message: message, status: 404)
+    }
+
+    @Test func missingOnlyWhenTheEngineSaysTheFileIsMissing() {
+        #expect(classifyNotebookRead(engine("not_found", "no such file in this workspace: a.ipynb")) == .missing)
+    }
+
+    @Test func aMissingDoorIsNeverAMissingFile() {
+        #expect(classifyNotebookRead(engine("not_found", "no data-science method notebook/read")) == .unreadable("no data-science method notebook/read"))
+        #expect(classifyNotebookRead(engine("not_found", "data science is unavailable: plugin off")) == .unreadable("data science is unavailable: plugin off"))
+        #expect(classifyNotebookRead(engine("invalid_request", "no such file in this workspace")) == .unreadable("no such file in this workspace"))
+    }
+}
+
 @Suite struct PanelDecodingTests {
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         try JSONDecoder().decode(type, from: Data(json.utf8))
