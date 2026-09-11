@@ -78,3 +78,76 @@ import Testing
         #expect(receiptMaxAttempts == 3)
     }
 }
+
+/// The fold that puts a receipt's answer back into a surface that is already
+/// holding a session — the transcript's own copy and, since the dot outlived
+/// the read on the iPad, the sidebar's row too.
+@Suite struct ReadMarkFoldTests {
+    private func mark(_ sequence: Int?, _ readAt: Timestamp? = nil) -> ReadMark {
+        ReadMark(sequence: sequence, readAt: readAt)
+    }
+
+    @Test func aHigherAnswerMovesBothFields() {
+        #expect(advancedReadMark(mark(4, 100), mark(5, 200)) == mark(5, 200))
+        // Nothing read yet is the same question with a zero on one side.
+        #expect(advancedReadMark(mark(nil, nil), mark(1, 200)) == mark(1, 200))
+    }
+
+    @Test func aLowerOrEqualAnswerLeavesTheRowAlone() {
+        // The stamp belongs to the sequence it arrived with, so a refused
+        // sequence refuses its `readAt` too — keeping it would claim a read at
+        // a time that never happened.
+        #expect(advancedReadMark(mark(5, 100), mark(5, 999)) == nil)
+        #expect(advancedReadMark(mark(6, 100), mark(5, 999)) == nil)
+        // A slow receipt for turn 5 landing after a poll already reported 6.
+        #expect(advancedReadMark(mark(6, 100), mark(nil, 999)) == nil)
+    }
+
+    @Test func anAnswerWithNoStampKeepsTheOneAlreadyThere() {
+        // The mark moved, so the old stamp is the best true thing known about
+        // WHEN — clearing it would lose the inactivity clock's baseline.
+        #expect(advancedReadMark(mark(4, 100), mark(5, nil)) == mark(5, 100))
+    }
+
+    @Test func theSessionHelperReportsWhetherAnythingMoved() {
+        var session = try! JSONDecoder().decode(Session.self, from: Data(#"""
+        {"id":"s","title":"T","createdAt":1,"updatedAt":1000,"driver":"claude",
+         "workspace":{"mode":"local","path":"/x"},"runtimeMode":"auto","detached":false,
+         "activity":"idle","lastTurnSequence":7,"lastReadTurnSequence":4,"readAt":100}
+        """#.utf8))
+        #expect(Settling.showsUnreadMark(session))
+        // Called outside `#expect`: the macro re-evaluates its expression with
+        // the captured value made immutable, which a mutating member cannot be
+        // called on.
+        let refused = session.applyReadMark(mark(4, 900))
+        #expect(!refused)
+        #expect(session.readAt == 100)
+        let moved = session.applyReadMark(mark(7, 900))
+        #expect(moved)
+        #expect(session.lastReadTurnSequence == 7)
+        #expect(session.readAt == 900)
+        // …and the dot the whole exercise is about is now out.
+        #expect(!Settling.showsUnreadMark(session))
+    }
+
+    @Test func theInboxFoldTouchesOneRowInWhicheverBandHoldsIt() {
+        func row(_ id: String, _ read: Int) -> Session {
+            try! JSONDecoder().decode(Session.self, from: Data("""
+            {"id":"\(id)","title":"T","createdAt":1,"updatedAt":1000,"driver":"claude",
+             "workspace":{"mode":"local","path":"/x"},"runtimeMode":"auto","detached":false,
+             "activity":"idle","lastTurnSequence":9,"lastReadTurnSequence":\(read)}
+            """.utf8))
+        }
+        var sections = InboxSections()
+        sections.active = [row("a", 1), row("b", 1)]
+        sections.settled = [row("c", 1)]
+        let folded = applyReadMark(sections, sessionId: "c", answer: mark(9, 500))
+        // Only the named row moves, and it moves inside the band it was in —
+        // re-banding here would let the row jump shelves under the reader.
+        #expect(folded.active.map(\.lastReadTurnSequence) == [1, 1])
+        #expect(folded.settled.map(\.lastReadTurnSequence) == [9])
+        #expect(folded.settled.count == 1 && folded.active.count == 2)
+        // A session this store does not list changes nothing at all.
+        #expect(applyReadMark(sections, sessionId: "zz", answer: mark(9, 500)) == sections)
+    }
+}

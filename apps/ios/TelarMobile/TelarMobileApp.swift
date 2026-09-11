@@ -69,7 +69,13 @@ struct RootView: View {
                 } detail: {
                     NavigationStack {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
-                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId))
+                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
+                                        // The one place both surfaces are in
+                                        // scope: a read confirmed in the
+                                        // transcript clears the dot on the
+                                        // sidebar row beside it, rather than
+                                        // waiting out that host's next poll.
+                                        onRead: { answer in inbox.applyRead(ref, answer: answer) })
                                 .id("\(settings.apiFingerprint(ref.hostId)):\(ref.sessionId)")
                                 // The session can hide the sidebar when its
                                 // panel needs the room, and put it back.

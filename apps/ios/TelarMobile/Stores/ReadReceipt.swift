@@ -111,6 +111,48 @@ func receiptRetryDelayMs(attempt: Int) -> Int {
     min(8_000, 1_000 * (1 << min(max(0, attempt - 1), 13)))
 }
 
+/// THE TWO FIELDS A RECEIPT MOVES, on their own.
+///
+/// Not the whole `Session`, because folding the record back would be the bug:
+/// the response was built when the receipt was SENT, and a poll that landed in
+/// between (a new turn, a title, a settle from the Mac) must not be undone by a
+/// bookkeeping call.
+struct ReadMark: Equatable, Sendable {
+    var sequence: Int?
+    var readAt: Timestamp?
+}
+
+/// The engine's answer to a receipt, folded into what a surface already holds —
+/// or `nil` when it moves nothing and the surface should be left alone.
+///
+/// MONOTONIC, and this is the whole reason it is a function rather than two
+/// assignments. A slow receipt for turn 5 can land after a fast one for turn 6,
+/// or after a poll already reported a higher mark set on another device. Taking
+/// only a mark that moved FORWARD is the one fold that cannot go backwards.
+///
+/// A LOWER ANSWER IS DROPPED WHOLE, `readAt` INCLUDED — the stamp belongs to
+/// the sequence it arrived with, so keeping it while refusing the sequence
+/// would claim a read at a time that never happened. For the same reason an
+/// answer with no stamp keeps the one already there rather than clearing it:
+/// the mark moved, so the old stamp is the best true thing known about when.
+func advancedReadMark(_ current: ReadMark, _ answer: ReadMark) -> ReadMark? {
+    guard let next = answer.sequence, next > (current.sequence ?? 0) else { return nil }
+    return ReadMark(sequence: next, readAt: answer.readAt ?? current.readAt)
+}
+
+extension Session {
+    var readMark: ReadMark { ReadMark(sequence: lastReadTurnSequence, readAt: readAt) }
+
+    /// Fold a receipt's answer in, monotonically. Returns whether anything
+    /// moved, so a caller can skip publishing an identical value.
+    @discardableResult mutating func applyReadMark(_ answer: ReadMark) -> Bool {
+        guard let advanced = advancedReadMark(readMark, answer) else { return false }
+        lastReadTurnSequence = advanced.sequence
+        readAt = advanced.readAt
+        return true
+    }
+}
+
 /// WHOSE SESSION THIS IS. Both halves, always.
 ///
 /// A session id is unique per ENGINE, not per phone: two paired Macs can mint

@@ -55,11 +55,26 @@ struct SessionView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
-    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cockpitBaseURL: URL? = nil, cache: HostSnapshotCache? = nil) {
+    /// Told when the engine confirms a read, with the session as it answered.
+    ///
+    /// THE SIDEBAR IS THE OTHER SURFACE SHOWING THE DOT, and it polls its own
+    /// list — so without this the row kept its dot until the next poll, which
+    /// on the iPad (sidebar and transcript on screen at once) meant the reader
+    /// watched it outlive the read by up to ten seconds. A closure rather than
+    /// an environment value because there is exactly one caller and one fact to
+    /// hand it; the view still knows nothing about an inbox.
+    private let onRead: ((Session) -> Void)?
+
+    init(
+        api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil,
+        cockpitBaseURL: URL? = nil, cache: HostSnapshotCache? = nil,
+        onRead: ((Session) -> Void)? = nil
+    ) {
         self.api = api
         self.sessionId = sessionId
         self.hostId = hostId
         self.cockpitBaseURL = cockpitBaseURL
+        self.onRead = onRead
         if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
         // NOT STARTED HERE. SwiftUI runs this initialiser on every parent
         // re-render and keeps only the first store; a loop started from it
@@ -281,9 +296,16 @@ struct SessionView: View {
             if receipt == nil {
                 let api = self.api
                 let sync = store.sync
+                let report = self.onRead
                 receipt = ReadReceiptCourier(
                     send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
-                    onRead: { _, session in sync.applyRead(session) }
+                    // BOTH SURFACES, from the one answer. The transcript's own
+                    // copy stops the gate re-firing; the report is what puts the
+                    // sidebar's row right without waiting for its poll.
+                    onRead: { _, session in
+                        sync.applyRead(session)
+                        report?(session)
+                    }
                 )
                 sendReceiptIfEarned()
             }

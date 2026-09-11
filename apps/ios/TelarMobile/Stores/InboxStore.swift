@@ -36,6 +36,30 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     return sections
 }
 
+/// PURE — a read receipt's answer, folded into whichever band holds that row.
+///
+/// THE BANDING IS DELIBERATELY LEFT ALONE. Re-running `groupInbox` here would
+/// be the obvious thing and the wrong one: the row would be free to jump to
+/// another shelf under the reader, at the exact moment they are reading it. It
+/// also cannot be needed — `Settling.idleSince` counts from `readAt`, so a
+/// receipt RESTARTS the inactivity clock rather than expiring it, and the next
+/// poll re-bands from the Mac's own word anyway.
+func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadMark) -> InboxSections {
+    func fold(_ rows: [Session]) -> [Session] {
+        rows.map { row in
+            guard row.id == sessionId else { return row }
+            var next = row
+            next.applyReadMark(answer)
+            return next
+        }
+    }
+    var next = sections
+    next.active = fold(sections.active)
+    next.snoozed = fold(sections.snoozed)
+    next.settled = fold(sections.settled)
+    return next
+}
+
 /// One Mac's inbox. THE LAST READ SURVIVES THE MAC: a store built with a
 /// cache opens on what this phone last recorded for that Mac — stamped
 /// `recordedAt` so a row can dim itself and a banner can say when — and keeps
@@ -96,6 +120,28 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     func stop() {
         loop?.cancel()
         loop = nil
+    }
+
+    /// A read receipt landed on a session this store lists. Clear its dot NOW.
+    ///
+    /// THE POLL IS TOO SLOW TO BE THE ANSWER HERE, and on the iPad that is
+    /// visible rather than theoretical: the sidebar and the transcript are on
+    /// screen together, so a reader opening a session with an unread answer
+    /// watched the dot sit there for up to ten seconds and then go out as they
+    /// moved away — which reads as "it clears when you LEAVE", the opposite of
+    /// what it means. (On the phone the sidebar is hidden while you read, so
+    /// the poll always landed before anyone could see it.) The same reason
+    /// `setSettled` refreshes instead of waiting.
+    ///
+    /// IN PLACE RATHER THAN A REFRESH. A refresh would be a whole extra round
+    /// trip to the Mac to learn one number this call is already holding, and it
+    /// would be the SLOWER of the two on exactly the connection where this
+    /// matters most. The fold is monotonic, so a poll already carrying a higher
+    /// mark cannot be dragged backwards by it.
+    func applyRead(_ sessionId: EngineID, answer: Session) {
+        let folded = applyReadMark(sections, sessionId: sessionId, answer: answer.readMark)
+        guard folded != sections else { return }
+        sections = folded
     }
 
     /// Settle or unsettle straight off a row — a context-menu action, so the
