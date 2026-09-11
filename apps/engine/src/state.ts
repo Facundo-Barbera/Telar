@@ -8131,8 +8131,16 @@ export class EngineStore {
         if (turn.state !== "steering" || !turn.steer) return [];
         const claimToken = claimed.get(turn.steer.intoRunId);
         if (!claimToken) return [];
+        /**
+         * CLONED, because `queue` here is the SHARED scan copy. Everything
+         * else this heartbeat returns is strings the engine built; a delivery
+         * is the one thing that would otherwise hand an embedded worker live
+         * references into the cache — its attachments array, its sender — and
+         * anything downstream that edited one would be editing the store's
+         * idea of the queue. Steers are rare; a copy of one costs nothing.
+         */
         return [
-          {
+          structuredClone({
             sessionId,
             runId: turn.steer.intoRunId,
             claimToken,
@@ -8151,7 +8159,7 @@ export class EngineStore {
             // the provider and the transcript as a person's typed message. The
             // stamp is the turn's; it rides the delivery.
             ...(turn.origin === "session" && turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
-          },
+          }),
         ];
       });
     });
