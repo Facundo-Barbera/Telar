@@ -18,7 +18,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { highlight } from "@/lib/highlight";
+import { carryTokens, highlight } from "@/lib/highlight";
 import { CodeLines } from "./overlay-editor";
 
 /** Consecutive blank lines, a blank line inside an indented block, a tab
@@ -96,5 +96,35 @@ describe("CodeLines", () => {
     const drawn = renderedLines(renderToStaticMarkup(<CodeLines lines={lines} coloured={await highlight(source, "python")} />));
     expect(drawn).toHaveLength(2);
     expect(drawn[1]).toBe(" ");
+  });
+
+  /** How many lines were drawn with coloured `<span>`s rather than as plain
+   *  text — the thing the reader actually sees flicker. */
+  function colouredLineCount(markup: string): number {
+    return [...markup.matchAll(/<div[^>]*>(.*?)<\/div>/g)].filter((match) => match[1]!.includes("<span")).length;
+  }
+
+  test("a keystroke costs ONE line its colours, not the whole file", async () => {
+    // THE FLICKER, at the layer the reader sees it. Between a keystroke and the
+    // debounced re-tokenise the editor holds tokens for text one character out
+    // of date; it used to discard them wholesale, which repainted every line of
+    // the file as plain text ~120ms at a time, continuously while typing.
+    const before = "import os\n\n\ndef main():\n    a = 1\n    return a\n";
+    const typed = before.replace("a = 1", "a = 12");
+    const tokens = await highlight(before, "python");
+    expect(tokens).toBeDefined();
+
+    const all = renderToStaticMarkup(<CodeLines lines={before.split("\n")} coloured={tokens} />);
+    const settled = colouredLineCount(all);
+    expect(settled).toBeGreaterThan(1);
+
+    // What the old rule drew for the very next frame: no tokens at all.
+    expect(colouredLineCount(renderToStaticMarkup(<CodeLines lines={typed.split("\n")} />))).toBe(0);
+
+    // What it draws now: everything but the line under the caret.
+    const mid = renderToStaticMarkup(<CodeLines lines={typed.split("\n")} coloured={carryTokens({ of: before, lines: tokens! }, typed)} />);
+    expect(colouredLineCount(mid)).toBe(settled - 1);
+    // And the line that lost them still draws its own source, not a gap.
+    expect(renderedLines(mid)).toEqual(typed.split("\n").map((line) => line || " "));
   });
 });

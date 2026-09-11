@@ -68,7 +68,7 @@ import {
   writeWrapLines,
 } from "@/lib/editor-wrap";
 import { rawFileUrl } from "@/lib/file-urls";
-import { highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
+import { carryTokens, highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
 import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
 import { SaveCoordinator, type SaveOutcome } from "@/lib/save-coordinator";
 import { FileKindIcon } from "@/components/session/file-icon";
@@ -499,9 +499,18 @@ export function FileViewSurface({
       window.clearTimeout(task);
     };
   }, [draft, kind.lang]);
-  /** Only the tokens for the text currently on screen. Anything else is a result
-   *  from text this tab has already moved past. */
-  const coloured = tokenised && tokenised.of === draft ? tokenised.lines : undefined;
+  /**
+   * The tokens for the text currently on screen — and, for the text it is one
+   * keystroke behind, the tokens of every line that keystroke did not change.
+   *
+   * ALL-OR-NOTHING WAS THE FLICKER. This used to drop the whole answer the
+   * moment `of` stopped matching, which repainted EVERY line of the file as
+   * plain uncoloured text for the 120ms until Shiki answered again — so at
+   * typing speed the file blinked monochrome continuously. Almost every line is
+   * character-for-character unchanged and its colours are still right; only the
+   * edited region genuinely has no tokens yet. See `carryTokens`.
+   */
+  const coloured = useMemo(() => (tokenised && draft !== undefined ? carryTokens(tokenised, draft) : undefined), [tokenised, draft]);
 
   /**
    * PUT THE READER BACK WHERE THEY WERE, once, when the text first arrives.
