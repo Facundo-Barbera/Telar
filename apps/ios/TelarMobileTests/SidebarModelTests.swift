@@ -23,6 +23,34 @@ import Testing
         #expect(result.projects.count == 3)
         #expect(result.projects.filter { $0.hostId == a }.map(\.projectId) == ["beta", "alpha"])
     }
+    /// THE HEADER'S COUNT IS THE ROWS UNDER IT, NOT THE PROJECT'S SESSIONS —
+    /// the desktop's `shown` (project-group.tsx). The two differ exactly when a
+    /// project has work in the bands above: a blocked row is showing under
+    /// "Needs you" and a pinned one above the list, so counting them here would
+    /// promise rows the group cannot produce when it is opened.
+    @Test func projectCountIsTheRowsItShowsNotEveryRowItOwns() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "blocked", project: "p", activity: "blocked"),
+                        row(host: host, id: "pinned", project: "p", pinned: true),
+                        row(host: host, id: "one", project: "p"),
+                        row(host: host, id: "two", project: "p")]
+        let result = SidebarModel(sessions: rows, names: { _ in "Project" })
+        let group = try #require(result.projects.first)
+        #expect(result.projects.count == 1)
+        #expect(group.sessions.count == 2)
+        #expect(group.sessions.map(\.session.id) == ["one", "two"])
+    }
+
+    /// A project whose every row was lifted away is not an empty group with a
+    /// "0" beside it — it is not a group at all.
+    @Test func aProjectWithNothingLeftToShowDoesNotRenderAHeader() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "blocked", project: "p", activity: "blocked"),
+                        row(host: host, id: "pinned", project: "p", pinned: true)]
+        let result = SidebarModel(sessions: rows, names: { _ in "Project" })
+        #expect(result.projects.isEmpty)
+    }
+
     @Test func deepLinksRoundTripAndRejectMalformedOrForeignLinks() {
         let ref = ScopedSessionID(hostId: UUID(), sessionId: "session / ? &= ü")
         #expect(ScopedSessionID(url: ref.url) == ref)

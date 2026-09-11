@@ -98,14 +98,47 @@ struct SessionSidebar: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
+                                    .font(.caption).foregroundStyle(Theme.textMuted)
                                 ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, icon: group.icon, api: settings.api(for: group.hostId), size: 16)
-                                Text(group.name)
-                                Spacer()
-                                if settings.hosts.count > 1 { Text(hostName(group.hostId)).font(.caption2) }
-                            }.foregroundStyle(Theme.textMuted)
+                                // A HEADER IS A HEADER BY ITS WEIGHT. In
+                                // `textMuted` at body size this named the
+                                // project more quietly than the rows it was
+                                // heading, so a group read as a list with a
+                                // label rather than as a project with its
+                                // conversations under it. The desktop's ratio
+                                // (project-group.tsx) is the row's own size at
+                                // semibold, near-full strength.
+                                Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
+                                    .lineLimit(1).truncationMode(.tail)
+                                if settings.hosts.count > 1 {
+                                    Text(hostName(group.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                        .lineLimit(1).padding(.horizontal, 4)
+                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                }
+                                Spacer(minLength: 4)
+                                // HOW MANY ARE IN HERE, which a collapsed group
+                                // otherwise cannot say at all — and which an
+                                // open one still answers without counting rows.
+                                Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
+                            }
                         }
-                        .accessibilityLabel("\(group.name), \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
+                        .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
                         .contextMenu {
+                            // THE DESKTOP'S HOVER "+", WHICH TOUCH HAS NO ROOM
+                            // FOR. A pointer can reveal a control on approach
+                            // and give the space back; a finger cannot hover,
+                            // so a permanent button would cost every header a
+                            // slot to serve the rare press. The long-press menu
+                            // is where this platform already keeps a row's
+                            // secondary verbs, so it goes there — the
+                            // affordance differs because the input does, the
+                            // action is the same one.
+                            Button("New conversation", systemImage: "square.and.pencil") {
+                                resumeDraft(MobileDraft(hostId: group.hostId,
+                                                        project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
+                                                        prompt: "", title: ""))
+                            }
+                            Divider()
                             Button("Move project up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
                             Button("Move project down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
                         }
