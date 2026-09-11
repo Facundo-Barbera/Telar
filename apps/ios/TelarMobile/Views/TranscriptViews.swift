@@ -30,17 +30,29 @@ struct TurnView: View {
     /// its ANSWER and folds everything that produced it, so history reads as
     /// conclusions. The split point is the LAST assistant message —
     /// narration in the middle folds with the work it narrates.
-    private var split: (activity: [JournalItem], closing: [JournalItem]) {
-        let lastProse = turn.items.lastIndex { item in
+    ///
+    /// It applies to the ANSWERING response only: that is the one whose final
+    /// message is the answer to the turn. An earlier response's prose is part
+    /// of what it did about a steer, not a conclusion.
+    private func split(_ items: [JournalItem]) -> (activity: [JournalItem], closing: [JournalItem]) {
+        let lastProse = items.lastIndex { item in
             if case .assistantMessage = item.detail { return true }
             return false
         }
-        guard let lastProse else { return (turn.items, []) }
-        return (Array(turn.items[..<lastProse]), Array(turn.items[lastProse...]))
+        guard let lastProse else { return (items, []) }
+        return (Array(items[..<lastProse]), Array(items[lastProse...]))
     }
 
     var body: some View {
-        let (activity, closing) = split
+        // THE TURN'S RESPONSES. A message sent into a running turn is a
+        // boundary in the conversation, so the work after it belongs to it and
+        // is drawn UNDER it. One response is every turn nobody steered, and it
+        // renders exactly as it did before.
+        let responses = splitAtMessageBoundaries(turn.items)
+        let answering = responses[responses.count - 1]
+        let earlier = responses.dropLast()
+        let orphans = spawnlessTasks(turn.items, tasks: turn.tasks)
+        let (activity, closing) = split(answering.items)
         // THE COMPACTION GESTURE IS NOT A MESSAGE: one quiet system line, and
         // the `context_compaction` row with the numbers when it arrived. The
         // web cockpit draws the same (SessionTurn).
@@ -67,15 +79,32 @@ struct TurnView: View {
         } else {
         VStack(alignment: .leading, spacing: 10) {
             UserBubble(text: turn.prompt)
+            // A BOUNDARY INTRODUCES THE WORK UNDER IT — the message first,
+            // then what the agent did about it. Every response but the last is
+            // finished work, cut at its seams with no rolling window.
+            ForEach(Array(earlier.enumerated()), id: \.element.boundary?.id) { _, response in
+                if let boundary = response.boundary {
+                    ItemRowView(item: boundary)
+                }
+                LiveActivityView(items: response.items, tasks: turn.tasks, liveTail: false)
+            }
+            if let boundary = answering.boundary {
+                ItemRowView(item: boundary)
+            }
             // LIVE, THE WHOLE TIMELINE IS CUT AT ITS SEAMS — each run of work
             // folds to its tally as the agent moves past it. The prose split
             // is for a FINISHED turn: only then is the last message the answer.
+            // Live and settled cut in the same place, so a reload cannot move
+            // a message.
             if turn.state.isActive {
-                LiveActivityView(items: turn.items, tasks: turn.tasks)
+                LiveActivityView(items: answering.items, tasks: turn.tasks, orphans: orphans)
             } else {
                 ActivityGroupView(items: activity, tasks: turn.tasks, live: false)
                 ForEach(closing) { item in
                     ItemRowView(item: item)
+                }
+                ForEach(orphans) { task in
+                    TaskRowView(task: task)
                 }
             }
             switch turn.state {
@@ -119,6 +148,10 @@ enum ActivitySegment: Equatable, Identifiable {
 func segmentActivity(_ items: [JournalItem]) -> [ActivitySegment] {
     var segments: [ActivitySegment] = []
     for item in items {
+        // The web's SEAM set, minus `provider_wait`: this build's `ItemDetail`
+        // has no such case, so there is nothing here to seam on. Add it here
+        // when the item arrives — a wait explains something the reader can
+        // otherwise only experience as the session hanging.
         switch item.detail {
         case .assistantMessage, .userMessage, .plan, .contextCompaction:
             segments.append(.row(item))
@@ -134,6 +167,140 @@ func segmentActivity(_ items: [JournalItem]) -> [ActivitySegment] {
     return segments
 }
 
+/// A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a
+/// running turn is a boundary in the CONVERSATION, not an event inside the
+/// work: what the agent does next is a response TO it.
+///
+/// The phone folded every item into one group, so a steer vanished into
+/// "N steps" and the work it caused was drawn above it. The first response has
+/// no boundary — its cause is the turn's prompt, drawn above. (The web's
+/// `splitAtMessageBoundaries`, 1:1.)
+struct TurnResponse: Equatable {
+    var boundary: JournalItem?
+    var items: [JournalItem]
+}
+
+func splitAtMessageBoundaries(_ items: [JournalItem]) -> [TurnResponse] {
+    var responses: [TurnResponse] = [TurnResponse(boundary: nil, items: [])]
+    for item in items {
+        if case .userMessage = item.detail {
+            responses.append(TurnResponse(boundary: item, items: []))
+        } else {
+            responses[responses.count - 1].items.append(item)
+        }
+    }
+    // A turn whose only message is its own prompt is one response, and renders
+    // exactly as it always did.
+    return responses.count > 1 && responses[0].items.isEmpty ? Array(responses.dropFirst()) : responses
+}
+
+/// THE ORDER THE TURN IS EMITTED IN — a boundary, then the work it introduced,
+/// for every response. `TurnView` renders exactly this sequence, so a test over
+/// it is a test of the assembly and not merely of the splitter's shape: a
+/// splitter can group correctly while the view still draws each response's
+/// work above the message that caused it.
+enum TurnRenderEntry: Equatable {
+    case boundary(JournalItem)
+    case work([JournalItem])
+}
+
+func turnRenderOrder(_ items: [JournalItem]) -> [TurnRenderEntry] {
+    splitAtMessageBoundaries(items).flatMap { response -> [TurnRenderEntry] in
+        var out: [TurnRenderEntry] = []
+        if let boundary = response.boundary { out.append(.boundary(boundary)) }
+        if !response.items.isEmpty { out.append(.work(response.items)) }
+        return out
+    }
+}
+
+/// The tasks the CONVERSATION shows, which is not every task in the turn.
+///
+/// A BACKGROUNDED SHELL IS NOT A DELEGATE. The tool call that backgrounded it
+/// is ALREADY an ordinary row in this same turn, so a chip would be a second,
+/// worse telling of something the transcript had said. A WARP RUN SURVIVES:
+/// its own row is `background` because it outlives its turn, but it carries
+/// warp linkage and it is the row that says a fan-out happened at all. Same
+/// rule as the web's `transcriptTasks` — the kind split happens AFTER the
+/// warp fold.
+func transcriptTasks(_ tasks: [JournalTask]) -> [JournalTask] {
+    tasks.filter { $0.task.kind != .background || $0.task.warp != nil }
+}
+
+/// Rows that will actually PAINT.
+///
+/// A `task` ITEM IS THE SPAWN ITSELF — the tool call that started a sub-agent —
+/// and it IS a row, in the run, at the place it happened. The phone used to
+/// drop it and hang every chip off the tail of the turn instead, so a fan-out
+/// that happened in the first minute was drawn under twenty minutes of later
+/// work. A spawn whose task the conversation does not show (a backgrounded
+/// shell) is dropped; one whose task is missing entirely is kept, because the
+/// transcript has nothing else that says it happened.
+///
+/// A reasoning block the provider opened and never filled paints nothing, and
+/// counting it makes the tally a visible lie.
+func renderable(_ items: [JournalItem], tasks: [JournalTask] = []) -> [JournalItem] {
+    items.filter { item in
+        switch item.detail {
+        case .task(let taskId):
+            guard let task = tasks.first(where: { $0.id == taskId }) else { return true }
+            return !transcriptTasks([task]).isEmpty
+        case .reasoning:
+            return !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        default:
+            return true
+        }
+    }
+}
+
+/// A SPAWN ROW NEVER FOLDS WHILE ITS AGENT IS OUT — a still-running fleet
+/// hidden behind "12 steps" is invisible exactly when the reader most wants to
+/// see it. A settled run is cut around its live spawns; each cut is tallied on
+/// its own and the spawn rows stand between them, in place. (The web's
+/// `cutAroundLiveAgents`.)
+enum ActivityCut: Equatable, Identifiable {
+    case run([JournalItem])
+    case agent(JournalItem)
+
+    var id: EngineID {
+        switch self {
+        case .run(let items): items[0].id
+        case .agent(let item): item.id
+        }
+    }
+}
+
+func cutAroundLiveAgents(_ items: [JournalItem], tasks: [JournalTask]) -> [ActivityCut] {
+    var out: [ActivityCut] = []
+    for item in items {
+        var live = false
+        if case .task(let taskId) = item.detail, let task = tasks.first(where: { $0.id == taskId }) {
+            live = task.task.state.isLive
+        }
+        if live {
+            out.append(.agent(item))
+            continue
+        }
+        if case .run(var run)? = out.last {
+            run.append(item)
+            out[out.count - 1] = .run(run)
+        } else {
+            out.append(.run([item]))
+        }
+    }
+    return out
+}
+
+/// Tasks with NO spawn row anywhere in the turn. Nothing in the timeline says
+/// they happened, so they cannot be drawn in place — the fold parks them at
+/// the end rather than losing a chip.
+func spawnlessTasks(_ items: [JournalItem], tasks: [JournalTask]) -> [JournalTask] {
+    let spawned = Set(items.compactMap { item -> EngineID? in
+        if case .task(let taskId) = item.detail { return taskId }
+        return nil
+    })
+    return transcriptTasks(tasks).filter { !spawned.contains($0.id) }
+}
+
 /// Before this, a live turn had ONE window over everything before its last
 /// narration and stacked every tool call after it as a flat row, folding only
 /// when the turn finished. Now a run compacts to its tally the moment the
@@ -141,6 +308,12 @@ func segmentActivity(_ items: [JournalItem]) -> [ActivitySegment] {
 struct LiveActivityView: View {
     let items: [JournalItem]
     let tasks: [JournalTask]
+    /// An EARLIER response is finished work even while the turn runs: its last
+    /// run is a tally, not a rolling window. Only the response the agent is
+    /// answering keeps the window.
+    var liveTail = true
+    /// Chips with no spawn row to stand on — parked at the end.
+    var orphans: [JournalTask] = []
 
     var body: some View {
         let segments = segmentActivity(items)
@@ -150,13 +323,11 @@ struct LiveActivityView: View {
             case .row(let item):
                 ItemRowView(item: item)
             case .run(let run):
-                ActivityGroupView(items: run, tasks: index == tail ? tasks : [], live: index == tail)
+                ActivityGroupView(items: run, tasks: tasks, live: liveTail && index == tail)
             }
         }
-        // Sub-agents hang off the tail. When the tail is prose there is no
-        // run to carry them, so an empty live group draws just the chips.
-        if case .run? = segments.last {} else {
-            ActivityGroupView(items: [], tasks: tasks, live: true)
+        ForEach(orphans) { task in
+            TaskRowView(task: task)
         }
     }
 }
@@ -166,60 +337,77 @@ struct LiveActivityView: View {
 /// scales, so the grammar is learned once.
 struct ActivityGroupView: View {
     let items: [JournalItem]
+    /// EVERY task in the turn — a `task` row inside `items` is looked up here
+    /// so its chip draws where the spawn happened.
+    let tasks: [JournalTask]
+    let live: Bool
+
+    var body: some View {
+        let rows = renderable(items, tasks: tasks)
+        if !rows.isEmpty {
+            let cuts = cutAroundLiveAgents(rows, tasks: tasks)
+            // Only the LAST run keeps the rolling window; the runs a live
+            // spawn was cut out of are behind it and are already tallies.
+            let lastRun = cuts.lastIndex { if case .run = $0 { return true } else { return false } }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(cuts.enumerated()), id: \.element.id) { index, cut in
+                    switch cut {
+                    case .agent(let item):
+                        // Never hidden by the fold: THAT a fan-out is out is
+                        // part of the conversation.
+                        TaskChipRow(item: item, tasks: tasks)
+                    case .run(let run):
+                        ActivityRunView(rows: run, tasks: tasks, live: live && index == lastRun)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A spawn row: the task it named, or — when the turn carries no such task —
+/// the row itself saying a sub-agent was started.
+struct TaskChipRow: View {
+    let item: JournalItem
+    let tasks: [JournalTask]
+
+    var body: some View {
+        if case .task(let taskId) = item.detail, let task = tasks.first(where: { $0.id == taskId }) {
+            TaskRowView(task: task)
+        } else {
+            ToolChipLabel(icon: "person.2", label: item.label, status: item.status)
+        }
+    }
+}
+
+/// One run of activity rows: a rolling window while live, a tally once
+/// settled — the web's ActivityGroup. Both are the same sentence at two
+/// scales, so the grammar is learned once. Its own fold state, so two runs in
+/// the same response open independently.
+struct ActivityRunView: View {
+    /// Already filtered by `renderable` — this view counts what it is given.
+    let rows: [JournalItem]
     let tasks: [JournalTask]
     let live: Bool
     @State private var expanded = false
 
-    /// Rows that will actually PAINT: a reasoning block the provider opened
-    /// and never filled renders nothing, and a `task` item is the spawn
-    /// itself — the agent it started is already on screen as its own chip.
-    /// Counting either makes the tally a visible lie.
-    private var rows: [JournalItem] {
-        items.filter { item in
-            switch item.detail {
-            case .task: false
-            case .reasoning: !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            default: true
-            }
-        }
-    }
-
-    /// The tasks the CONVERSATION shows, which is not every task in the turn.
-    ///
-    /// A BACKGROUNDED SHELL IS NOT A DELEGATE. This used to draw one as a chip
-    /// with a terminal glyph, a "Background job" title and a sheet explaining
-    /// that its output went somewhere else — dressing that made the row look
-    /// deliberate without making it useful. The tool call that backgrounded the
-    /// shell is ALREADY an ordinary row in this same turn, so the chip was a
-    /// second, worse telling of something the transcript had said, and the live
-    /// process belongs on a surface where it can be watched and stopped.
-    ///
-    /// A WARP RUN SURVIVES THE FILTER: its own row is `background` because it
-    /// outlives its turn, but it carries warp linkage and it is the row that
-    /// says a fan-out happened at all. Same rule as the web's
-    /// `transcriptTasks` — the kind split happens AFTER the warp fold.
-    private var delegates: [JournalTask] {
-        tasks.filter { $0.task.kind != .background || $0.task.warp != nil }
-    }
-
     /// A step that failed inside the fold must not be swallowed by the very
     /// mechanism that hid it.
     private var anyFailed: Bool {
-        rows.contains { $0.status == .failed } || delegates.contains { $0.task.state == .failed }
+        rows.contains { $0.status == .failed }
+            || rows.contains { item in
+                guard case .task(let taskId) = item.detail else { return false }
+                return tasks.first(where: { $0.id == taskId })?.task.state == .failed
+            }
     }
 
     var body: some View {
-        if !rows.isEmpty || !delegates.isEmpty {
+        if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 if live {
                     liveWindow
-                } else if !rows.isEmpty {
+                } else {
                     settledFold
-                }
-                // Sub-agents are never hidden by the fold: THAT a fan-out
-                // happened is part of the conversation.
-                ForEach(delegates) { task in
-                    TaskRowView(task: task)
                 }
             }
         }
@@ -245,6 +433,16 @@ struct ActivityGroupView: View {
             .buttonStyle(.plain)
         }
         ForEach(expanded ? rows : Array(rows.suffix(1))) { item in
+            row(item)
+        }
+    }
+
+    /// A settled spawn folds into the tally like any other step, but when it
+    /// is shown it is the agent it started, not an empty placeholder.
+    @ViewBuilder private func row(_ item: JournalItem) -> some View {
+        if case .task = item.detail {
+            TaskChipRow(item: item, tasks: tasks)
+        } else {
             ItemRowView(item: item)
         }
     }
@@ -277,7 +475,7 @@ struct ActivityGroupView: View {
             NestedDetail {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(rows) { item in
-                        ItemRowView(item: item)
+                        row(item)
                     }
                 }
             }
@@ -322,6 +520,7 @@ struct ActivityGroupView: View {
         case .browserAction: "Browser"
         case .reasoning: "Thought"
         case .userMessage: "You steered"
+        case .task: "Delegated"
         case .error: "Error"
         case .plan: "Planned"
         case .contextCompaction: "Compacted context"

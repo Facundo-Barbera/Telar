@@ -60,6 +60,39 @@ Files: `03_dataset.md`, `GUIA.md`, and it costs $5 to $10 a month.
 """
 
 
+# ---- a STEERED turn, so the transcript's message boundaries are visible ----
+# The desktop splits a turn at every message sent into it and draws the work
+# under the message that caused it; a spawn is a row where it happened, and a
+# task with no spawn row is parked at the end rather than lost. None of that
+# shows without a turn that was actually steered.
+
+def _item(id, type, detail, run='run_steered', status='completed'):
+    return dict(id=id, runId=run, sessionId='design', status=status,
+                detail=dict(type=type, **detail), startedAt=NOW - 60000)
+
+STEERED_TURN = dict(runId='run_steered', sessionId='design', sequence=1, state='completed',
+                    input='Port the desktop transcript rules to the phone.',
+                    acceptedAt=NOW - 70000, updatedAt=NOW - 10000)
+
+STEERED_ITEMS = [
+    _item('sx_read', 'file_read', dict(read=dict(path='apps/web/components/transcript.tsx'))),
+    _item('sx_spawn', 'task', dict(taskId='task_probe')),
+    _item('sx_cmd', 'command_execution', dict(command=dict(command='rg splitAtMessageBoundaries', exitCode=0))),
+    _item('sx_steer', 'user_message', dict(text='Actually — check the iPad path too, that is the one I use.')),
+    _item('sx_edit', 'file_change', dict(change=dict(path='apps/ios/TelarMobile/Views/TranscriptViews.swift', kind='modify', linesAdded=120, linesRemoved=18))),
+    _item('sx_done', 'assistant_message', dict(text='Ported. The iPad path was the one that needed it: a steer used to fold into the step tally.')),
+]
+
+STEERED_TASKS = [
+    # STILL OUT: its spawn row is cut out of the fold and stands in place,
+    # rather than being tallied as one of "3 steps".
+    dict(id='task_probe', sessionId='design', runId='run_steered', kind='agent', state='running',
+         title='Probe the desktop rules', startedAt=NOW - 65000, updatedAt=NOW - 30000),
+    # No spawn row anywhere in the turn — the fold parks it rather than losing it.
+    dict(id='task_orphan', sessionId='design', runId='run_steered', kind='agent', state='running',
+         title='Watch for regressions', startedAt=NOW - 20000, updatedAt=NOW - 5000),
+]
+
 # ---- the panel's fixtures: a checkout, a notebook, a table, plots, LaTeX ----
 
 FILES = {
@@ -191,6 +224,9 @@ class Handler(BaseHTTPRequestHandler):
             if chosen['id'] == 'design':
                 prose = [i for i in data['items'] if i['detail']['type'] == 'assistant_message']
                 if prose: prose[-1]['detail']['text'] = RICH_ANSWER
+                data['turns'] = data['turns'] + [STEERED_TURN]
+                data['items'] = data['items'] + STEERED_ITEMS
+                data['tasks'] = (data.get('tasks') or []) + STEERED_TASKS
         else: data = {}
         self._send(200, json.dumps(data).encode())
 
