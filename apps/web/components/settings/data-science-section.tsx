@@ -342,7 +342,9 @@ function ToolchainRows({ toolchain, loading, onJob }: { toolchain?: DataScienceT
       />
       <Row
         label="conda"
-        hint={toolchain.conda ? `${toolchain.conda.flavour} at ${toolchain.conda.path}` : "Not installed. Optional — for conda environments and conda-forge packages. Installs Miniforge."}
+        // Two sentences, not three: "Installs Miniforge" was the Install
+        // button's own effect said a second time, one column to the left.
+        hint={toolchain.conda ? `${toolchain.conda.flavour} at ${toolchain.conda.path}` : "Not installed. Optional — for conda environments and conda-forge packages, via Miniforge."}
         control={
           toolchain.conda ? <Badge variant="secondary">{toolchain.conda.version}</Badge> : (
             <Button variant="outline" size="sm" disabled={starting !== undefined} onClick={() => void bootstrap("conda")}>
