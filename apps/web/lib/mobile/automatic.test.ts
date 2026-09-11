@@ -45,16 +45,18 @@ test("a start receipt survives a refresh of the same start token, dies with a ne
   const dir=mkdtempSync(path.join(os.tmpdir(),"telar-auto-")),file=path.join(dir,"push.json");
   try {
     saveRegistration("phone",record(),file);
-    const r=readPushRecords(file)[0]!;r.automaticStartedAt=1000;
+    const r=readPushRecords(file)[0]!;r.automaticStartedAt=1000;r.automaticStarts=1;
     // Persist the worker's completed start, then emulate the token callback registration.
     writeFileSync(file,JSON.stringify([r]));
     saveRegistration("phone",record(),file);
     expect(readPushRecords(file)[0]!.automaticStartedAt).toBe(1000);
+    expect(readPushRecords(file)[0]!.automaticStarts).toBe(1);
     // A reinstall mints a new start token: the receipt belongs to the old one, which this
     // install never had, so it must not keep the gate shut on an activity it never ran.
     saveRegistration("phone",{...record(),pushToStartToken:"d".repeat(64)},file);
     const fresh=readPushRecords(file)[0]!;
     expect(fresh.automaticStartedAt).toBeUndefined();
+    expect(fresh.automaticStarts).toBeUndefined();
     expect(fresh.seen).toEqual(r.seen);
     const sent: Delivery[]=[];
     await deliverRecord(fresh,[work],async d=>{sent.push(d);return 200;},2000);
@@ -62,4 +64,28 @@ test("a start receipt survives a refresh of the same start token, dies with a ne
     expect(sent[0]!.payload.aps.event).toBe("start");
     expect(sent[0]!.token).toBe("d".repeat(64));
   } finally {rmSync(dir,{recursive:true,force:true});}
+});
+test("a start the phone never ran is retried after five minutes, three times per token, then idle resets it",async()=>{
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  let r=(await deliverRecord(record(),[work],send,1000))!;
+  expect(sent).toHaveLength(1);expect(r.automaticStarts).toBe(1);
+  // Inside the window the phone may still report the activity's token.
+  r=(await deliverRecord(r,[work],send,1299))!;expect(sent).toHaveLength(1);
+  r=(await deliverRecord(r,[work],send,1300))!;
+  expect(sent).toHaveLength(2);expect(sent[1]!.payload.aps.event).toBe("start");expect(r.automaticStarts).toBe(2);
+  r=(await deliverRecord(r,[work],send,1600))!;expect(sent).toHaveLength(3);expect(r.automaticStarts).toBe(3);
+  // Capped: a phone that cannot start activities at all is not pushed every five minutes forever.
+  r=(await deliverRecord(r,[work],send,1900))!;expect(sent).toHaveLength(3);
+  r=(await deliverRecord(r,[work],send,100000))!;expect(sent).toHaveLength(3);
+  r=(await deliverRecord(r,[],send,100010))!;expect(r.automaticStarts).toBeUndefined();
+  await deliverRecord(r,[work],send,100020);expect(sent).toHaveLength(4);
+});
+test("a registered automatic activity is updated, never restarted",async()=>{
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  const r={...record(),automaticStartedAt:1000,automaticStarts:1,activities:[{sessionId:AUTOMATIC_ACTIVITY,token:"c".repeat(64),startedAt:1000}]};
+  const next=(await deliverRecord(r,[work],send,9000))!;
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.payload.aps.event).toBe("update");
+  expect(sent[0]!.token).toBe("c".repeat(64));
+  expect(next.automaticStartedAt).toBe(1000);expect(next.automaticStarts).toBeUndefined();
 });
