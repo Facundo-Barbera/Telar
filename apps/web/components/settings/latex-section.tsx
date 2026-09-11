@@ -142,7 +142,12 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     <>
       <SettingsGroup
         title="LaTeX"
-        description="Enable compile tools for this project. The panel and agent can compile any .tex file; the default only fills in bare Compile."
+        // The second sentence was the "Default document" row's hint, written a
+        // second time three rows higher: that row already says the default only
+        // fills in a bare Compile and that agents can compile anything by path.
+        // A header that pre-explains a row it sits above makes the reader read
+        // the same fact twice and trust neither.
+        description="Compile tools for this project."
         action={
           <Button variant="outline" size="sm" onClick={askAgentToSetUp}>
             <DownloadIcon className="size-3" /> Ask agent to set up
@@ -207,7 +212,10 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
 
       <SettingsGroup
         title="Distributions"
-        description="What compiles this project. One is in use; anything missing installs from here."
+        // "One is in use; anything missing installs from here" narrated the
+        // cards below, which already carry an In use state and an Install
+        // button. A header describing its own list is a caption nobody needs.
+        description="What compiles this project."
         action={
           <Button variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>
             <RefreshCwIcon className={cn("size-3", loading && "animate-spin")} /> Detect again
