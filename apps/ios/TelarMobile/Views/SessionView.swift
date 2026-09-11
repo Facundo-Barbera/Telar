@@ -467,7 +467,7 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(draft: $draft, store: store)
+            ComposerView(draft: $draft, store: store, onSend: { pinToTail() })
         }
         .padding(.horizontal, 16)
         .readingColumn(gutter: Theme.readingGutter)
@@ -606,6 +606,10 @@ struct StatusCard<Content: View>: View {
 struct ComposerView: View {
     @Binding var draft: String
     let store: SessionStore
+    /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
+    /// up, so the composer says "sent" and the transcript decides what that
+    /// means for the viewport — the box has no business knowing about pins.
+    var onSend: () -> Void = {}
 
     @FocusState private var focused: Bool
     @State private var managingQueue = false
@@ -954,6 +958,11 @@ struct ComposerView: View {
         let text = draft
         draft = ""
         focused = false
+        // Whatever the scroll believed. Nothing here used to touch it, so a
+        // message sent after reading back through the transcript landed off
+        // screen and the conversation looked frozen. Unconditional, unlike
+        // `followTail` — you wrote it, so you are going to it.
+        onSend()
         Task { await store.send(text) }
     }
 
