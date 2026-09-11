@@ -1,6 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { forward, upstreamUrl } from "./proxy";
+import { HOST_HEADER } from "@/lib/remote/host-token";
 
 const host = { baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
 
@@ -18,7 +19,13 @@ describe("forward", () => {
   test("adds the remote's bearer and drops this cockpit's own credentials", async () => {
     let seen: RequestInit | undefined;
     const request = new Request("http://cockpit.local/api/hosts/h/projects?x=1", {
-      headers: { authorization: "Bearer tlr_local", cookie: "telar_device=abc", "content-type": "application/json", "x-telar-attachment-name": "a.png" },
+      headers: {
+        authorization: "Bearer tlr_local",
+        cookie: "telar_device=abc",
+        [HOST_HEADER]: "tlr_thismachineshostsecret",
+        "content-type": "application/json",
+        "x-telar-attachment-name": "a.png",
+      },
     });
     const response = await forward(request, host, ["projects"], fake((url, init) => {
       seen = init;
@@ -28,6 +35,9 @@ describe("forward", () => {
     const headers = new Headers(seen!.headers);
     expect(headers.get("authorization")).toBe("Bearer tlr_remote");
     expect(headers.get("cookie")).toBeNull();
+    // The desktop shell puts its launcher secret on every request to THIS
+    // cockpit; forwarding it would hand this machine's credential to another.
+    expect(headers.get(HOST_HEADER)).toBeNull();
     expect(headers.get("x-telar-attachment-name")).toBe("a.png");
     // The remote pairs a device; this cockpit does not become one.
     expect(response.headers.get("set-cookie")).toBeNull();
