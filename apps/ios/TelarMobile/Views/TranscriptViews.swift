@@ -744,7 +744,10 @@ struct ItemRowView: View {
     var body: some View {
         switch item.detail {
         case .assistantMessage:
-            MarkdownText(text: item.text)
+            // An OPEN message is still streaming, so it is paced — the tail
+            // polls once a second and would otherwise paint each second's
+            // deltas in one block. Mirrors the web's `running(item)`.
+            StreamingMarkdown(text: item.text, streaming: item.status == .inProgress)
         case .userMessage:
             // Steered messages land mid-run as user_message items.
             UserBubble(text: item.text)
