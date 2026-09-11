@@ -48,6 +48,51 @@ test("a mid-turn direct report is collapsed too", () => {
   expect(html).not.toContain("Private checkpoint");
 });
 
+// ── the notice on the row ───────────────────────────────────────────────────
+
+/** The engine's own string, the one its model was handed — see `Turn.agentNotice`. */
+const NOTICE = `[agent message · report] from session session_worker (run run_peer, 2,400 chars): "Capacity report"\n—\nThe message itself is not in this notice.`;
+
+test("a collapsed report labels itself with the notice its model was handed", () => {
+  const html = render({ ...machine, agentNotice: NOTICE, prompt: "Capacity report\n\nbody nobody needs up front" });
+  expect(html).toContain('aria-expanded="false"');
+  // The row says who, which run and how big — the same sentence the model read,
+  // not a second summary that could drift from it.
+  expect(html).toContain("run run_peer, 2,400 chars");
+  // Only the FIRST line: the notice's own fetch instruction is for the model.
+  expect(html).not.toContain("The message itself is not in this notice");
+  // And the body is still behind the disclosure, not gone.
+  expect(html).not.toContain("body nobody needs up front");
+});
+
+test("expanding a notice row reveals the stored body, not the notice", () => {
+  // The collapsed/expanded pair is a client-side toggle, so the contract under
+  // test here is what each branch RENDERS: `notice` labels, `text` expands.
+  const collapsed = renderToStaticMarkup(<AgentMessageBubble text="the whole report" notice={NOTICE} sender={{ sessionId: "session_worker" }} />);
+  expect(collapsed).toContain("Capacity report");
+  expect(collapsed).not.toContain("the whole report");
+});
+
+test("a peer's message steered mid-turn collapses to the same notice", () => {
+  // The mid-turn twin of the row above — same message, different landing site,
+  // and the transcript must not make it look like a different kind of thing.
+  const html = render({ ...machine, items: [{ id: "item_peer", runId: "run_peer", sessionId: "session_host", status: "completed", title: "Sent by an agent", detail: { type: "user_message", text: "the whole report", notice: NOTICE, sender: { sessionId: "session_worker" } }, streamedText: "", openedBy: 1, startedAt: 1 }] });
+  expect(html).toContain("run run_peer, 2,400 chars");
+  expect(html).not.toContain("the whole report");
+});
+
+test("a turn stored before notices existed keeps the sender label it always had", () => {
+  const html = renderToStaticMarkup(<AgentMessageBubble text="legacy report" sender={{ sessionId: "session_worker456789" }} />);
+  expect(html).toContain("agent · session …456789");
+});
+
+test("a task still renders in full, notice or no notice", () => {
+  const html = render({ ...machine, agentIntent: "task", agentNotice: NOTICE, prompt: "Rewrite the parser", assignmentScope: "packages/core" });
+  expect(html).toContain("Rewrite the parser");
+  expect(html).toContain("packages/core");
+  expect(html).toContain('aria-label="Task from another session"');
+});
+
 test("human steering into a machine turn remains visible", () => {
   const html = render({ ...machine, items: [{ id: "item_human", runId: "run_peer", sessionId: "session_host", status: "completed", title: "Message", detail: { type: "user_message", text: "Please change direction" }, streamedText: "", openedBy: 1, startedAt: 1 }] });
   expect(html).toContain("Please change direction");
