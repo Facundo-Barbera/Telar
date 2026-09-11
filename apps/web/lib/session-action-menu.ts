@@ -131,6 +131,19 @@ export type SessionActionTarget = {
    */
   branch?: string;
   settledOverride?: "settled" | "active";
+  /**
+   * OFF THE LIST RIGHT NOW, by whatever rule put it there — an explicit settle
+   * or the inactivity clock. Folded by the surface (the rail's `bandOf`, the
+   * cockpit's own `settled`) because `isSettled` needs the reader's inbox
+   * policy, and a menu definition has no business fetching one.
+   *
+   * Absent falls back to the explicit override, which is the honest answer for
+   * a caller that does not know: it never claims a session is shelved when it
+   * cannot tell. The distinction matters for ONE row — a drift-settled session
+   * has no override to clear, so its toggle must still read "Un-settle" and the
+   * handler must set an override before clearing it.
+   */
+  settled?: boolean;
   snoozedUntil?: number;
   snoozedAt?: number;
   /** The conversation is over — `Session.state === "archived"`. */
@@ -256,7 +269,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
       run: () => actions.pin(!pinned),
     });
 
-    const settled = session.settledOverride === "settled";
+    const settled = session.settled ?? session.settledOverride === "settled";
     items.push({
       id: "settle",
       label: settled ? "Un-settle" : "Settle",

@@ -155,6 +155,14 @@ describe("toggles swap in place", () => {
     ]);
   });
 
+  test("a drift-settled session reads Un-settle too, though it holds no override", () => {
+    // The rail's `bandOf` and the cockpit's `settled` both fold the clock; the
+    // menu takes their answer rather than re-deriving one it cannot.
+    const items = build({ session: target({ settled: true }) });
+    expect(byId(items, "settle").label).toBe("Un-settle");
+    expect(byId(items, "pin").label).toBe("Pin to the list");
+  });
+
   test("settle swaps to un-settle, and sends the opposite of where it is", () => {
     const { calls, handlers } = spies();
     const settled = byId(build({ session: target({ settledOverride: "settled" }) }, handlers), "settle");

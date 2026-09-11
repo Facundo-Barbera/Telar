@@ -1,11 +1,14 @@
 "use client";
 
-// The per-row overflow menu for the sidebar's session list. Ported from the
-// frozen app's components/session/session-inbox-menu.tsx.
+// The per-row action menu for the sidebar's session list — the `⋯` button and,
+// since the menu became a definition, the row's right-click menu as well.
 //
-// This is the LONG TAIL. The one gesture the inbox is actually for — retiring a
-// session — sits on the row itself; what is left here is everything that does
-// not earn permanent space beside every title.
+// WHAT THE MENU CONTAINS NO LONGER LIVES HERE. `lib/session-action-menu.ts`
+// holds the list, `session-action-menu.tsx` holds the markup, and this file
+// holds what only the rail can answer: which engine a verb lands on, what
+// "busy" looks like on a row, and where a deleted row hands the reader next.
+// The cockpit header renders the same list from its own record, which is the
+// whole point — labels, ordering and gating cannot drift between them.
 //
 // THE DONOR'S MENU WAS LONGER, AND MOST OF IT NOW HAS SOMETHING TO CALL. This
 // file used to say settle, unsettle, snooze and wake were transitions on state
@@ -25,13 +28,24 @@
 // way round: archive was the irreversible one and the one that looked
 // reversible, because the record survived and the row merely vanished. Settle
 // is reversible and touches no disk; delete says what it does and asks twice.
+//
+// Both of those arguments now guard a wider surface than this file, so
+// `lib/session-action-menu.test.ts` asserts neither verb can reappear in the
+// one list all three menus render.
 
 import { useState } from "react";
-import { AlarmClockIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { MoreHorizontalIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import type { SidebarSession } from "@/lib/session-list";
-import { canSnooze, isSnoozed, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
+import { canvasHref, type SidebarSession } from "@/lib/session-list";
+import { type SettlingActivity } from "@/lib/session-settling";
+import {
+  buildSessionActionMenuItems,
+  type SessionActionHandlers,
+  type SessionActionItem,
+  type SessionActionTarget,
+} from "@/lib/session-action-menu";
 
 /**
  * A ROW'S REQUESTS GO TO THE ROW'S MAC. The rail draws a paired Mac's
@@ -44,16 +58,10 @@ export function sessionFetch(session: Pick<SidebarSession, "hostId">, path: stri
   return hostFetcher(session.hostId ?? LOCAL_HOST_ID)(path, init);
 }
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { contextSessionMenuParts, dropdownSessionMenuParts, SessionActionMenuItems } from "./session-action-menu";
 
 /**
  * One PATCH, one shape. Both verbs are the same call with different fields,
@@ -108,16 +116,33 @@ export async function runSessionPatch(action: () => Promise<void>, onRefresh?: (
   }
 }
 
-export function SessionInboxMenu({
-  session,
-  active = false,
-  onRename,
-  onDone,
-  onLeave,
-  className,
-  activity = {},
-  now,
-}: {
+/**
+ * THE RAIL'S PROJECTION, FOLDED INTO WHAT THE MENU READS. Nine fields rather
+ * than a cast: `SidebarSession` names this session's branch `worktreeBranch`
+ * and carries `projectBranch` beside it — the PROJECT checkout's HEAD, which
+ * belongs to every local session in that project and to none of them in
+ * particular. Handing that one to an item that says "New session on <branch>"
+ * would attribute somebody else's branch to this conversation.
+ */
+function menuTarget(session: SidebarSession, settled?: boolean): SessionActionTarget {
+  return {
+    id: session.id,
+    title: session.title,
+    ...(session.projectId ? { projectId: session.projectId } : {}),
+    ...(session.projectName ? { projectName: session.projectName } : {}),
+    ...(session.hostId ? { hostId: session.hostId } : {}),
+    workspacePath: session.workspacePath,
+    ...(session.worktreeBranch ? { branch: session.worktreeBranch } : {}),
+    ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+    ...(settled === undefined ? {} : { settled }),
+    ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+    ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+    archived: session.archived,
+    updatedAt: session.updatedAt,
+  };
+}
+
+export type SessionRowMenuProps = {
   session: SidebarSession;
   /** What the list knows about this session right now — `settlingActivity` in
    *  lib/session-list.ts folds it out of the engine's report. */
@@ -126,21 +151,33 @@ export function SessionInboxMenu({
    *  reading its own `Date.now()` mid-render makes the component impure and
    *  gives two rows different ideas of "now" in the same paint. */
   now: number;
+  /** Off the list right now, by decision OR by the clock — the row already
+   *  folds this for its own settle button, and the menu's toggle must agree
+   *  with the button beside it. */
+  settled?: boolean;
   /**
-   * Whether this row is the session currently open in the main view. Archiving
+   * Whether this row is the session currently open in the main view. Deleting
    * THAT session must hand the reader somewhere else rather than leave them on
-   * a view whose row just left "Recent".
+   * a view whose row has gone.
    */
   active?: boolean;
   /** Switches the row into its inline editor. The row owns that state. */
   onRename?: () => void;
   onDone?: () => void;
   onLeave?: () => void;
-  className?: string;
-}) {
+};
+
+/**
+ * The rail's answers to the definition's questions: what each verb calls, and
+ * on which Mac. Shared by the `⋯` and the right-click menu so the two cannot
+ * bind the same label to different behaviour.
+ */
+function useSessionRowMenu({ session, activity = {}, now, settled, active, onRename, onDone, onLeave }: SessionRowMenuProps): {
+  items: SessionActionItem[];
+  busy: boolean;
+} {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
-  const snoozing = isSnoozed(session, activity, { now });
 
   // `onDone` is the list's refresh, and it runs on the failure path too — see
   // `runSessionPatch`, whose reasoning this shares: after a refusal the row
@@ -157,6 +194,84 @@ export function SessionInboxMenu({
       setBusy(false);
     }
   };
+
+  const actions: SessionActionHandlers = {
+    newSession: ({ projectId, hostId, baseRef }) => router.push(canvasHref(projectId, hostId, baseRef ? { baseRef } : undefined)),
+    pin: (pinned) => void run(() => patchSession(session, { settledOverride: pinned ? "active" : null })),
+    settle: (next) =>
+      void run(async () => {
+        if (next) {
+          await patchSession(session, { settledOverride: "settled" });
+          return;
+        }
+        // TWO PATCHES, AND THE FIRST IS NOT A NO-OP. A drift-settled session has
+        // no override to clear, and clearing nothing writes nothing — so nothing
+        // would change. Setting an override first makes the clearing patch a real
+        // change, and a real change stamps `updatedAt`, which is what actually
+        // restarts the inactivity clock. Same two-step as the row's own button.
+        if (session.settledOverride !== "settled") await patchSession(session, { settledOverride: "active" });
+        await patchSession(session, { settledOverride: null });
+      }),
+    snooze: (until) => void run(() => patchSession(session, { snoozedUntil: until })),
+    rename: () => onRename?.(),
+    copy: (text) => void copyToClipboard(text),
+    projectSettings: ({ projectId }) => router.push(`/projects/${encodeURIComponent(projectId)}/settings`),
+    remove: () => {
+      const name = session.title || "Untitled session";
+      // TWO PRESSES, AND THE SECOND ONE NAMES WHAT GOES. The first question is
+      // the one people learn to dismiss; the second states the consequence that
+      // is not recoverable. The transcript goes with the worktree, and there is
+      // no restore anywhere in this app.
+      if (!window.confirm(`Delete "${name}"?`)) return;
+      if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
+      void run(() => sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
+        if (active) onLeave?.();
+      });
+    },
+  };
+
+  const items = buildSessionActionMenuItems({
+    session: menuTarget(session, settled),
+    activity,
+    now,
+    // A row on a paired Mac cannot open that project's settings from here —
+    // there is no `/hosts/:id/projects/:id/settings` route, and this Mac's page
+    // for the same id would be a different project or none.
+    capabilities: { remote: Boolean(session.hostId && session.hostId !== LOCAL_HOST_ID) },
+    actions,
+  });
+  return { items, busy };
+}
+
+/** The shim in `lib/clipboard.ts` fills `writeText` in on an origin the browser
+ *  does not call secure, so this stays one call. A refusal is still reported —
+ *  a copy button that quietly did nothing is the bug that shim exists for. */
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    window.alert("The browser refused to copy that.");
+  }
+}
+
+/** The row's right-click menu. Same list as the `⋯` beside it, by construction. */
+export function SessionRowContextMenu({ children, ...props }: SessionRowMenuProps & { children: React.ReactNode }) {
+  const { items } = useSessionRowMenu(props);
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<div className="contents" />}>{children}</ContextMenuTrigger>
+      {/* `w-(--anchor-width)` is the primitive's default and would size this to
+          the whole row, which at a wide rail is a very empty menu. */}
+      <ContextMenuContent className="w-56">
+        <SessionActionMenuItems items={items} parts={contextSessionMenuParts} />
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+export function SessionInboxMenu({ className, ...props }: SessionRowMenuProps & { className?: string }) {
+  const { items, busy } = useSessionRowMenu(props);
+  const [open, setOpen] = useState(false);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -177,104 +292,8 @@ export function SessionInboxMenu({
       >
         {busy ? <Spinner className="size-3" /> : <MoreHorizontalIcon />}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-48">
-        {onRename ? (
-          <DropdownMenuItem disabled={session.archived} onClick={onRename}>
-            <PencilIcon />
-            Rename
-          </DropdownMenuItem>
-        ) : null}
-
-        {!session.archived && (
-          <>
-            <DropdownMenuSeparator />
-            {/**
-             * THE PIN, WHICH IS THE HALF PEOPLE FORGET TO BUILD. Settling gets
-             * a row out of the way; this keeps one the clock would otherwise
-             * take away. Without it, a long-running piece of work you have not
-             * touched this week silently leaves the list, and the only way back
-             * is to remember it exists.
-             */}
-            {session.settledOverride === "active" ? (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ settledOverride: null }))}>
-                <PinOffIcon />
-                Unpin
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ settledOverride: "active" }))}>
-                <PinIcon />
-                Pin to the list
-              </DropdownMenuItem>
-            )}
-
-            {snoozing ? (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ snoozedUntil: null }))}>
-                <AlarmClockIcon />
-                <span className="flex-1">Wake now</span>
-                <span className="text-xs text-muted-foreground">{wakeLabel(session.snoozedUntil!, now)}</span>
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Snooze until
-                </DropdownMenuLabel>
-                {/* Presets rather than a picker: the point of a snooze is that
-                    it costs one gesture. A date field would cost four and be
-                    used once. */}
-                {snoozePresets(new Date(now)).map((preset) => (
-                  <DropdownMenuItem
-                    key={preset.id}
-                    disabled={!canSnooze(activity)}
-                    onClick={() => void run(() => patchSession(session,{ snoozedUntil: preset.until }))}
-                  >
-                    <AlarmClockIcon />
-                    <span className="flex-1">{preset.label}</span>
-                    <span className="text-xs text-muted-foreground">{preset.when}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuGroup>
-            )}
-          </>
-        )}
-
-        <DropdownMenuSeparator />
-
-        {/**
-         * DELETE, WHERE ARCHIVE WAS — and archive is gone rather than demoted.
-         *
-         * Archiving and settling were two names for "off my list", and keeping
-         * both cost a chip, a menu item and a lifecycle field to insist they
-         * differed. They did differ in one respect nobody wanted: archive was
-         * the irreversible one, and it was the one that LOOKED reversible,
-         * because the record survived and the row simply vanished.
-         *
-         * So the pair is settle and delete now. Settle is reversible and does
-         * nothing to disk. Delete says exactly what it does and asks twice: the
-         * transcript goes with the worktree, and there is no restore anywhere
-         * in this app.
-         *
-         * A SESSION ARCHIVED BEFORE THIS still exists on disk and now appears in
-         * the settled shelf (see `isSettled`), which is where it always
-         * belonged — so the eleven of them are readable and deletable rather
-         * than stranded behind a chip that no longer exists.
-         */}
-        <DropdownMenuItem
-          variant="destructive"
-          onClick={() => {
-            const name = session.title || "Untitled session";
-            // TWO PRESSES, AND THE SECOND ONE NAMES WHAT GOES. The first
-            // question is the one people learn to dismiss; the second states
-            // the consequence that is not recoverable.
-            if (!window.confirm(`Delete "${name}"?`)) return;
-            if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
-            void run(() => sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
-              if (active) onLeave?.();
-            });
-          }}
-        >
-          <Trash2Icon />
-          Delete session
-        </DropdownMenuItem>
+      <DropdownMenuContent align="end" className="min-w-52">
+        <SessionActionMenuItems items={items} parts={dropdownSessionMenuParts} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
