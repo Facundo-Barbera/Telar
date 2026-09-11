@@ -59,9 +59,8 @@ export function sessionFetch(session: Pick<SidebarSession, "hostId">, path: stri
 }
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { contextSessionMenuParts, dropdownSessionMenuParts, SessionActionMenuItems } from "./session-action-menu";
+import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "./session-action-menu";
 
 /**
  * One PATCH, one shape. Both verbs are the same call with different fields,
@@ -257,16 +256,7 @@ async function copyToClipboard(text: string): Promise<void> {
 /** The row's right-click menu. Same list as the `⋯` beside it, by construction. */
 export function SessionRowContextMenu({ children, ...props }: SessionRowMenuProps & { children: React.ReactNode }) {
   const { items } = useSessionRowMenu(props);
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger render={<div className="contents" />}>{children}</ContextMenuTrigger>
-      {/* `w-(--anchor-width)` is the primitive's default and would size this to
-          the whole row, which at a wide rail is a very empty menu. */}
-      <ContextMenuContent className="w-56">
-        <SessionActionMenuItems items={items} parts={contextSessionMenuParts} />
-      </ContextMenuContent>
-    </ContextMenu>
-  );
+  return <SessionActionContextMenu items={items}>{children}</SessionActionContextMenu>;
 }
 
 export function SessionInboxMenu({ className, ...props }: SessionRowMenuProps & { className?: string }) {

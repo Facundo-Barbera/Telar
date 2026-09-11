@@ -41,11 +41,14 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ContextMenu,
+  ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
+  ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
 /**
@@ -171,5 +174,32 @@ export function SessionActionMenuItems({ items, parts }: { items: readonly Sessi
         );
       })}
     </>
+  );
+}
+
+/**
+ * RIGHT-CLICK ANYWHERE INSIDE `children` OPENS THE SAME LIST — the rail row,
+ * and the cockpit's whole breadcrumb.
+ *
+ * The trigger is a `display: contents` box rather than a real one, so wrapping
+ * an element in this cannot change what that element's parent lays out: a row
+ * inside a flex list and a breadcrumb with `flex-1` both keep the box they had.
+ *
+ * NO ITEMS MEANS NO MENU, not an empty popup. A fresh canvas has no session to
+ * act on, and a right-click that opens a blank card is worse than one that does
+ * the browser's usual thing.
+ */
+export function SessionActionContextMenu({ items, children }: { items?: readonly SessionActionItem[]; children: ReactNode }) {
+  if (!items || items.length === 0) return <>{children}</>;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<div className="contents" />}>{children}</ContextMenuTrigger>
+      {/* `w-(--anchor-width)` is the primitive's default, which would size the
+          popup to the width of whatever was right-clicked — a rail row, or the
+          full breadcrumb. Neither is a menu width. */}
+      <ContextMenuContent className="w-56">
+        <SessionActionMenuItems items={items} parts={contextSessionMenuParts} />
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PencilIcon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -76,15 +76,32 @@ import {
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
+import {
+  buildSessionActionMenuItems,
+  type SessionActionHandlers,
+  type SessionActionMenuState,
+} from "@/lib/session-action-menu";
+import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "./session/session-action-menu";
 import { ApprovalCard } from "./approval-card";
 import { MainSidebarTrigger, useMainIsLeftmost } from "./main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
+
+/**
+ * How long a mouse-opened title menu waits for a `dblclick` to cancel it.
+ *
+ * t3 waits 500 ms for its native menu; this is a web popup with nothing to
+ * marshal, and 500 ms of nothing after a click reads as a broken control. 250 ms
+ * is inside the platform double-click interval on both macOS and Windows
+ * defaults, so a real double-click still lands first.
+ */
+const TITLE_MENU_CLICK_DELAY_MS = 250;
 
 const api = createEngineApi();
 /** Below this the session rail, the conversation and the panel cannot all
@@ -185,11 +202,11 @@ function SessionMasthead({
   hostId,
   projectName,
   session,
-  sending,
   onRename,
   panel,
   readOnly = false,
   onWatchRun,
+  menu,
 }: {
   projectId: string;
   /** Which Mac the project is on — the breadcrumb's link must stay there. */
@@ -199,7 +216,10 @@ function SessionMasthead({
    *  `project_1a1649…` is addressing, not a name a person navigates by. */
   projectName?: string;
   session?: Session;
-  sending: boolean;
+  /** `sending` is gone from here: it gated the rename pencil, and renaming a
+   *  session is a PATCH on its title that has nothing to do with whether a turn
+   *  is being submitted. The verb lives in the menu now, gated on what actually
+   *  refuses it. */
   onRename: (title: string) => void;
   /** The session panel's triggers. Passed in rather than constructed here so the
    *  masthead stays identity-only and does not acquire the session record's
@@ -211,6 +231,17 @@ function SessionMasthead({
   /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
    *  Run control only configures, starts and stops. */
   onWatchRun?: () => void;
+  /**
+   * EVERYTHING THE TITLE MENU NEEDS EXCEPT THE RENAME, which is this
+   * component's own inline editor and cannot be handed in from outside. The
+   * rest is passed rather than assembled here for the same reason `panel` is:
+   * the masthead stays identity-only instead of acquiring an engine client, a
+   * router and a settling policy to build a list with.
+   *
+   * Absent on a fresh canvas. There is no session to act on, so there is no
+   * menu, no chevron and no right-click.
+   */
+  menu?: Omit<SessionActionMenuState, "actions"> & { actions: Omit<SessionActionHandlers, "rename"> };
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -233,6 +264,39 @@ function SessionMasthead({
     // Empty or unchanged is a silent cancel, not an error and not a write.
     if (next && next !== title) onRename(next.slice(0, 120));
   };
+
+  const beginRename = () => {
+    setDraftTitle(title);
+    setEditing(true);
+  };
+
+  /**
+   * THE TITLE IS THE MENU, which is what buys it: a header that spends no
+   * permanent space on a `⋯` and still reaches every verb. Same list the rail
+   * row draws — see `lib/session-action-menu.ts`, which exists so these two
+   * cannot disagree.
+   */
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuItems = menu ? buildSessionActionMenuItems({ ...menu, actions: { ...menu.actions, rename: beginRename } }) : undefined;
+
+  /**
+   * CLICK OPENS THE MENU, DOUBLE-CLICK RENAMES, AND THE RACE IS HANDLED RATHER
+   * THAN AVOIDED.
+   *
+   * A `dblclick` always arrives after a `click`, so an immediate menu would pop
+   * open under every rename the moment someone reached for the second press.
+   * The mouse-opened menu therefore waits out the double-click window; a second
+   * press inside it cancels the timer and edits instead.
+   *
+   * THE DELAY IS FOR THE MOUSE ONLY. A keyboard activation has no second press
+   * to wait for — `detail === 0` is how the DOM says a click came from Enter or
+   * Space rather than a pointer — and the chevron is an explicit "open the
+   * menu", so both skip the wait. Nobody who asked unambiguously is made to
+   * wait a quarter second to be believed.
+   */
+  const pendingOpen = useRef(0);
+  const cancelPendingOpen = () => window.clearTimeout(pendingOpen.current);
+  useEffect(() => cancelPendingOpen, []);
 
   return (
     /* `app-drag` because this row is the top of the window on the macOS shell,
@@ -263,65 +327,115 @@ function SessionMasthead({
         mainIsLeftmost ? "pl-[max(16px,calc(var(--titlebar-inset)+var(--app-island-inset)))]" : "pl-4",
       )}
     >
-      <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
-        {/* Only mounts while the rail is hidden, leaving the workspace at true
-            full width when it is not. The folder glyph stands in for it so the
-            breadcrumb does not shift sideways when the rail opens. */}
-        <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
-        {/* The breadcrumb names the PROJECT, so pressing it lands in that
-            project — on its canvas, which is what "this project, right now"
-            looks like. It pointed at the retired `/projects` table, which named
-            every project and therefore answered a question nobody had asked. */}
-        <Link
-          href={canvasHref(projectId, hostId)}
-          className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {projectName ?? session?.projectId ?? projectId}
-        </Link>
-        <span className="text-border">/</span>
-        {editing ? (
-          <Input
-            className="app-no-drag h-6 max-w-xs text-base font-semibold"
-            aria-label="Session title"
-            autoFocus
-            value={draftTitle}
-            onChange={(event) => setDraftTitle(event.target.value)}
-            onBlur={commit}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commit();
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setEditing(false);
-              }
-            }}
-          />
-        ) : (
-          <span className="group/title inline-flex min-w-0 items-center gap-1 font-semibold">
-            <span className="truncate" title={title}>
-              {title}
-            </span>
-            {session && !readOnly && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label="Rename session"
-                disabled={sending}
-                className="app-no-drag shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
-                onClick={() => {
-                  setDraftTitle(title);
-                  setEditing(true);
-                }}
-              >
-                <PencilIcon />
-              </Button>
-            )}
-          </span>
-        )}
-      </div>
+      {/* RIGHT-CLICK ANYWHERE IN THE BREADCRUMB, not only on the title: the
+          whole crumb is "this session", and a context menu that works on half
+          of a phrase is a context menu people stop trying. */}
+      <SessionActionContextMenu items={menuItems}>
+        <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
+          {/* Only mounts while the rail is hidden, leaving the workspace at true
+              full width when it is not. The folder glyph stands in for it so the
+              breadcrumb does not shift sideways when the rail opens. */}
+          <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
+          {/* The breadcrumb names the PROJECT, so pressing it lands in that
+              project — on its canvas, which is what "this project, right now"
+              looks like. It pointed at the retired `/projects` table, which named
+              every project and therefore answered a question nobody had asked. */}
+          <Link
+            href={canvasHref(projectId, hostId)}
+            className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {projectName ?? session?.projectId ?? projectId}
+          </Link>
+          <span className="text-border">/</span>
+          {editing ? (
+            <Input
+              className="app-no-drag h-6 max-w-xs text-base font-semibold"
+              aria-label="Session title"
+              autoFocus
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commit();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setEditing(false);
+                }
+              }}
+            />
+          ) : (
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <span className="group/title inline-flex min-w-0 items-center gap-1 font-semibold">
+                {menuItems ? (
+                  <button
+                    type="button"
+                    className="app-no-drag min-w-0 truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title={title}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={(event) => {
+                      cancelPendingOpen();
+                      // A CLICK WHILE IT IS OPEN IS A DISMISSAL. The popup's own
+                      // outside-press has already closed it by now; scheduling
+                      // another open here would reopen it a quarter second later,
+                      // which reads as a flicker rather than as a toggle.
+                      if (menuOpen) return;
+                      // `detail === 0`: Enter or Space, where no second press is
+                      // coming and waiting for one would just feel broken.
+                      if (event.detail === 0) {
+                        setMenuOpen(true);
+                        return;
+                      }
+                      pendingOpen.current = window.setTimeout(() => setMenuOpen(true), TITLE_MENU_CLICK_DELAY_MS);
+                    }}
+                    onDoubleClick={() => {
+                      cancelPendingOpen();
+                      if (!readOnly) beginRename();
+                    }}
+                  >
+                    {title}
+                  </button>
+                ) : (
+                  // A fresh canvas: "New conversation" is a statement about what
+                  // you are looking at, and there is nothing yet to act on.
+                  <span className="truncate" title={title}>
+                    {title}
+                  </span>
+                )}
+                {/* THE CHEVRON IS THE ADVERTISEMENT, not the control — it fades in
+                    on hover to say the title is pressable, and costs no permanent
+                    header space the way a `⋯` would. It is still a real button,
+                    so the keyboard reaches the menu without knowing the title is
+                    one, and it opens at once because pressing it is unambiguous. */}
+                {menuItems && (
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="Session actions"
+                        className="app-no-drag shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100 data-popup-open:opacity-100"
+                        onClick={cancelPendingOpen}
+                      />
+                    }
+                  >
+                    <ChevronDownIcon />
+                  </DropdownMenuTrigger>
+                )}
+              </span>
+              {menuItems && (
+                <DropdownMenuContent align="start" className="min-w-56">
+                  <SessionActionMenuItems items={menuItems} parts={dropdownSessionMenuParts} />
+                </DropdownMenuContent>
+              )}
+            </DropdownMenu>
+          )}
+        </div>
+      </SessionActionContextMenu>
       {/* The whole trailing cluster is controls, so it opts out as a block
           rather than one button at a time. `shrink-0`: these are fixed-size
           glyphs, and the title beside them is what absorbs a narrow window. */}
@@ -888,6 +1002,30 @@ export function SessionCockpit({
    *  and optionally the human's own name for its branch. Only meaningful with
    *  `envMode: "worktree"` — picking a base is what flips the mode there. */
   const [draftBase, setDraftBase] = useState<{ baseRef?: string; branchName?: string }>({});
+  /**
+   * A BASE REF THE CANVAS WAS OPENED WITH — `?base=<ref>`, which is what the
+   * session menu's "New session on <branch>" carries (see `canvasHref`).
+   *
+   * THE ITEM NAMES A BRANCH, SO THE CANVAS HAS TO HONOUR ONE. Without this the
+   * label would promise the new session is cut from where the old one works and
+   * the composer would then create it from the standing default — a menu item
+   * that lies about the only fact it states.
+   *
+   * SEEDED ONCE, AND ONLY WHILE FRESH. It is a create-time choice, so it has no
+   * meaning on a session that already exists; and `chooseEnvMode` marks the
+   * mode touched, which is what stops the standing preference arriving a moment
+   * later and putting it back to `local`. A render-phase adjustment rather than
+   * an effect, for the same reason the preference above is one — this app's lint
+   * enforces that shape for "adjust state when a value changes".
+   */
+  const searchParams = useSearchParams();
+  const requestedBase = fresh ? (searchParams.get("base") ?? undefined) : undefined;
+  const [seededBase, setSeededBase] = useState<string>();
+  if (requestedBase !== undefined && seededBase !== requestedBase) {
+    setSeededBase(requestedBase);
+    setDraftBase({ baseRef: requestedBase });
+    chooseEnvMode("worktree");
+  }
   /**
    * How much rope the session will start with.
    *
@@ -2171,6 +2309,97 @@ export function SessionCockpit({
     }
   };
 
+  /**
+   * THE TITLE MENU'S VERBS — the same list the rail row draws, answered with
+   * this screen's own record instead of the rail's projection.
+   *
+   * ON THE SESSION'S OWN MAC. The module-level `api` is this Mac's engine; a
+   * session being read on a paired Mac must have its verbs land where the
+   * record lives, for `sessionFetch`'s reason in session-inbox-menu.tsx — a
+   * local session sharing the id is a real possibility, not a theoretical one.
+   *
+   * FAILURES GO TO THE SCREEN'S EXISTING ERROR SURFACE rather than an alert.
+   * The rail has none and uses `window.alert`; the cockpit has `setError`, and
+   * a modal dialog over a conversation would be the louder of the two options
+   * for the same information.
+   */
+  const router = useRouter();
+  const menuApi = createEngineApi(hostFetcher(hostId));
+  const patchFromMenu = async (
+    patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null },
+    failure: string,
+  ) => {
+    if (!sessionId) return;
+    try {
+      const next = await menuApi.updateSession(sessionId, patch);
+      setSession(next.session);
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", failure));
+    }
+  };
+  const headerMenu: React.ComponentProps<typeof SessionMasthead>["menu"] =
+    session && sessionId
+      ? {
+          session: {
+            id: session.id,
+            title: session.title,
+            ...(session.projectId ? { projectId: session.projectId } : {}),
+            ...(projectName ? { projectName } : {}),
+            ...(hostId === LOCAL_HOST_ID ? {} : { hostId }),
+            workspacePath: session.workspace.path,
+            // Only a worktree session has a branch of its own; a local one runs
+            // on the project's checkout, whose HEAD belongs to no conversation.
+            ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
+            ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+            // The fold above, so the menu's toggle and the banner over the
+            // composer cannot say different things about the same session.
+            settled,
+            ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+            ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+            archived: session.state === "archived",
+            updatedAt: session.updatedAt,
+          },
+          activity: {
+            working: session.activity === "working" || session.activity === "queued",
+            waitingOnYou: session.activity === "blocked",
+          },
+          now,
+          capabilities: { remote: hostId !== LOCAL_HOST_ID, readOnly: observe },
+          actions: {
+            newSession: ({ projectId: target, hostId: host, baseRef }) =>
+              router.push(canvasHref(target, host, baseRef ? { baseRef } : undefined)),
+            pin: (pinned) =>
+              void patchFromMenu({ settledOverride: pinned ? "active" : null }, "Could not change the session's pin."),
+            // Un-settling reuses `unsettle` rather than restating its two-step:
+            // a drift-settled session has no override to clear, and clearing
+            // nothing would not stamp `updatedAt` or restart the clock.
+            settle: (next) =>
+              void (next ? patchFromMenu({ settledOverride: "settled" }, "Could not settle the session.") : unsettle()),
+            snooze: (until) => void patchFromMenu({ snoozedUntil: until }, "Could not change the session's snooze."),
+            copy: (text) => void navigator.clipboard.writeText(text).catch(() => window.alert("The browser refused to copy that.")),
+            projectSettings: ({ projectId: target }) => router.push(`/projects/${encodeURIComponent(target)}/settings`),
+            remove: () => {
+              const name = session.title || "Untitled session";
+              // The same two presses as the rail's, word for word: the first
+              // question is the one people learn to dismiss, the second states
+              // the consequence that is not recoverable.
+              if (!window.confirm(`Delete "${name}"?`)) return;
+              if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
+              void menuApi
+                .deleteSession(sessionId)
+                // DELETING THE SESSION YOU ARE READING MUST NOT MAROON YOU ON
+                // IT. A composer in the project you were just working in is
+                // where you were going anyway — the same landing the rail picks.
+                .then(() => router.push(canvasHref(session.projectId ?? projectId, hostId)))
+                .catch((cause: unknown) =>
+                  setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not delete the session.")),
+                );
+            },
+          },
+        }
+      : undefined;
+
   // A message sent mid-turn is steered into the running turn and renders as a
   // user_message row inside it; a second copy here would double it. The brief
   // `queued` state (an idle session's next turn, claimed within a heartbeat)
@@ -2291,7 +2520,7 @@ export function SessionCockpit({
           hostId={hostId}
           projectName={projectName}
           session={session}
-          sending={sending}
+          {...(headerMenu ? { menu: headerMenu } : {})}
           readOnly={observe}
           onRename={(next) => void rename(next)}
           // The masthead's Run control hands monitoring back to the panel
