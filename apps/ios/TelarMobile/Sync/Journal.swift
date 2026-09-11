@@ -96,8 +96,29 @@ struct JournalTurn: Identifiable, Equatable {
     var resultText: String
     var failure: String?
     var usage: UsageSnapshot?
+    /// Who sent this turn and what they meant by it — carried from `Turn` so
+    /// the transcript can tell a person's message from a peer's report and a
+    /// wake-up from either.
+    var origin: String?
+    var sender: MessageSender?
+    var agentIntent: String?
+    var assignmentScope: String?
+    var wakeReason: String?
+    var agentNotice: String?
 
     var id: EngineID { runId }
+
+    /// A turn another session sent. A wake is one too, but it is drawn as a
+    /// system line rather than as a message, so it is asked about separately.
+    var isFromAgent: Bool { origin == "session" && wakeReason == nil }
+
+    /// A turn the model woke itself into. `origin` alone is not enough: a peer
+    /// can send into a session and the engine stamps the same origin.
+    var isWake: Bool { wakeReason != nil && origin != "user" }
+
+    /// A peer HANDING WORK OVER is the reason this session is doing anything,
+    /// so it reads as a message. A peer TALKING stays collapsed.
+    var isAgentTask: Bool { isFromAgent && agentIntent == "task" }
 
     /// An open `context_compaction` item — the provider squeezing right now.
     var isCompacting: Bool {
@@ -162,6 +183,12 @@ private final class TurnBox {
     var resultText: String
     var failure: String?
     var usage: UsageSnapshot?
+    var origin: String?
+    var sender: MessageSender?
+    var agentIntent: String?
+    var assignmentScope: String?
+    var wakeReason: String?
+    var agentNotice: String?
     init(turn: Turn) {
         runId = turn.runId
         prompt = turn.input
@@ -171,6 +198,12 @@ private final class TurnBox {
         resultText = turn.resultText ?? ""
         failure = turn.failure?.message
         usage = turn.usage
+        origin = turn.origin
+        sender = turn.sender
+        agentIntent = turn.agentIntent
+        assignmentScope = turn.assignmentScope
+        wakeReason = turn.wakeReason
+        agentNotice = turn.agentNotice
     }
 }
 
@@ -345,7 +378,13 @@ func projectJournal(
             lastActivityAt: turn.lastActivityAt,
             resultText: turn.resultText,
             failure: turn.failure,
-            usage: turn.usage
+            usage: turn.usage,
+            origin: turn.origin,
+            sender: turn.sender,
+            agentIntent: turn.agentIntent,
+            assignmentScope: turn.assignmentScope,
+            wakeReason: turn.wakeReason,
+            agentNotice: turn.agentNotice
         )
     }
 }

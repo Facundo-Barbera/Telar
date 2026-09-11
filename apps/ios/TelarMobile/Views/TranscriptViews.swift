@@ -78,7 +78,18 @@ struct TurnView: View {
             }
         } else {
         VStack(alignment: .leading, spacing: 10) {
-            UserBubble(text: turn.prompt)
+            // WHO SENT THIS DECIDES WHAT IT LOOKS LIKE. A bubble on the right
+            // means "you said this"; a peer's report and a wake-up are neither,
+            // and drawing them as bubbles put words in the reader's mouth —
+            // twenty lines of another agent's status, right-aligned, as though
+            // they had typed it.
+            if turn.isWake {
+                WakeRow(turn: turn)
+            } else if turn.isFromAgent {
+                AgentMessageRow(turn: turn)
+            } else {
+                UserBubble(text: turn.prompt)
+            }
             // A BOUNDARY INTRODUCES THE WORK UNDER IT — the message first,
             // then what the agent did about it. Every response but the last is
             // finished work, cut at its seams with no rolling window.
@@ -527,6 +538,126 @@ struct ActivityRunView: View {
         case .mcpToolCall(let call), .dynamicToolCall(let call): displayToolName(call.name)
         default: item.label
         }
+    }
+}
+
+/// A TURN ANOTHER SESSION SENT. The desktop's `AgentMessageBubble`, ported.
+///
+/// An explicit TASK renders in full: a peer handing this session work is the
+/// reason the session is doing anything, and folding it into a collapsed row
+/// hides the instruction the transcript exists to explain. Everything else —
+/// a report, a result, a blocker — stays collapsed, because that is a peer
+/// TALKING rather than a peer asking, and it is not what the reader opened the
+/// conversation to read.
+///
+/// Either way it sits on the LEFT, in the assistant's lane. The attribution is
+/// the engine's, stamped from a claim token, so nothing a model writes can
+/// change whose name is on it.
+struct AgentMessageRow: View {
+    let turn: JournalTurn
+    @State private var open = false
+
+    /// The engine's own sentence when it wrote one; otherwise the first line
+    /// of what was sent, which is what a sender puts there anyway.
+    private var summary: String {
+        if let notice = turn.agentNotice, !notice.isEmpty { return notice }
+        return turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
+    }
+
+    var body: some View {
+        if turn.isAgentTask {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text(agentSenderLabel(turn.sender))
+                        .font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    if let scope = turn.assignmentScope, !scope.isEmpty {
+                        Text(scope).font(Theme.metaSmall).foregroundStyle(Theme.textTertiary).lineLimit(1)
+                    }
+                }
+                MarkdownText(text: turn.prompt)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.subtle)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
+            .overlay(alignment: .leading) { Rectangle().fill(Theme.accent.opacity(0.5)).frame(width: 3) }
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Task from another agent")
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { open.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        Text(turn.agentIntent.map { $0.capitalized } ?? "Agent message")
+                            .font(Theme.meta).foregroundStyle(Theme.textMuted)
+                        Text(summary)
+                            .font(Theme.meta).foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.textMuted.opacity(0.6))
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                    }
+                    .frame(minHeight: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Message from another agent")
+                .accessibilityHint(agentSenderLabel(turn.sender))
+                if open {
+                    NestedDetail {
+                        // BOUNDED, WITH ITS OWN SCROLL. An unbounded peer
+                        // report is how this looked before: a wall of someone
+                        // else's status between two of your own messages.
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(agentSenderLabel(turn.sender))
+                                    .font(Theme.monoSmall).foregroundStyle(Theme.textTertiary)
+                                MarkdownText(text: turn.prompt)
+                            }
+                        }
+                        .frame(maxHeight: 240)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A WAKE IS NOT A MESSAGE. Nobody said it: the engine woke the model because
+/// something it was waiting on happened. It is one muted line in the
+/// assistant's lane, shaped like the compaction row, and it never expands —
+/// the run it is about is the thing worth opening, and that is elsewhere.
+struct WakeRow: View {
+    let turn: JournalTurn
+
+    private var line: String {
+        if let notice = turn.agentNotice, !notice.isEmpty { return notice }
+        let first = turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
+        return first.isEmpty ? "Woken: \(turn.wakeReason ?? "something finished")" : first
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bell").font(.system(size: 11))
+            Text(line)
+                .font(Theme.meta)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Theme.textTertiary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Woken: \(line)")
     }
 }
 

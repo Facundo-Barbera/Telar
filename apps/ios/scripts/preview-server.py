@@ -94,6 +94,31 @@ STEERED_TASKS = [
          title='Watch for regressions', startedAt=NOW - 20000, updatedAt=NOW - 5000),
 ]
 
+# ---- turns another session sent, and a wake ----
+# A peer's report used to render as a full-size user bubble on the right: the
+# phone decoded none of `origin`, `sender`, `agentIntent` or `wakeReason`. One
+# of each, so the three shapes can be seen.
+
+AGENT_TURNS = [
+    dict(runId='run_agent_task', sessionId='design', sequence=2, state='completed',
+         input='Port the desktop transcript rules to the phone, then report back with the commit hashes.',
+         origin='session', sender=dict(sessionId='sess_9f21c4a1b2c3'), agentIntent='task',
+         agentDelivery='steer', assignmentScope='apps/ios',
+         acceptedAt=NOW - 50000, updatedAt=NOW - 45000),
+    dict(runId='run_agent_report', sessionId='design', sequence=3, state='completed',
+         input='PART 2 done.\n\nPorted `splitAtMessageBoundaries` and `turnRenderOrder`, plus `renderable` and '
+               '`cutAroundLiveAgents`.\n\n- unit 170/170\n- UI 4/4\n\nThe view assembly is where the desktop’s own '
+               'review found the bug, so there is a test that reads the source.',
+         origin='session', sender=dict(sessionId='sess_9f21c4a1b2c3'), agentIntent='report',
+         agentDelivery='passive', agentNotice='Ported the transcript rules; 170 unit tests green.',
+         acceptedAt=NOW - 40000, updatedAt=NOW - 38000),
+    dict(runId='run_wake', sessionId='design', sequence=4, state='completed',
+         input='[wake: completed] Session sess_9f21c4a1b2c3 — turn run_agent_report completed.\n\n'
+               'Read it with sessions_read(sessionId, runId).',
+         origin='session', wakeReason='completed', agentSourceRunId='run_agent_report',
+         acceptedAt=NOW - 30000, updatedAt=NOW - 29000),
+]
+
 # ---- the panel's fixtures: a checkout, a notebook, a table, plots, LaTeX ----
 
 FILES = {
@@ -232,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
             if chosen['id'] == 'design':
                 prose = [i for i in data['items'] if i['detail']['type'] == 'assistant_message']
                 if prose: prose[-1]['detail']['text'] = RICH_ANSWER
-                data['turns'] = data['turns'] + [STEERED_TURN]
+                data['turns'] = data['turns'] + [STEERED_TURN] + AGENT_TURNS
                 data['items'] = data['items'] + STEERED_ITEMS
                 data['tasks'] = (data.get('tasks') or []) + STEERED_TASKS
         else: data = {}
