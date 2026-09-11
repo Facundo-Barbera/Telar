@@ -30,6 +30,7 @@ import type {
   TaskState,
   TurnObservation,
   UsageSnapshot,
+  UserInputField,
 } from "@telar/engine-client";
 // The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
 // in engine-client. Every client renders these names too.
@@ -1725,7 +1726,7 @@ export function createClaudeDriver(
               const questions = Array.isArray(asRecord(input).questions)
                 ? (asRecord(input).questions as unknown[]).map(asRecord)
                 : [];
-              const fields = questions.flatMap((question) => {
+              const fields = questions.flatMap((question): UserInputField[] => {
                 const text = str(question.question);
                 if (!text) return [];
                 const choices = Array.isArray(question.options)
@@ -1734,7 +1735,20 @@ export function createClaudeDriver(
                 // KEYED BY THE QUESTION TEXT — that is AskUserQuestionOutput's
                 // own answer key. The label repeats it because the header is a
                 // 12-character chip, not a sentence a human can answer.
-                return [{ key: text, label: text, kind: "choice" as const, choices, required: true }];
+                //
+                // `multiSelect` is the tool's own flag for "pick several", and
+                // it is carried rather than dropped: without it the form asks
+                // for one answer to a question that offered many, and the
+                // human's other picks have nowhere to go. Only set when TRUE,
+                // so a single-select field stays exactly the shape it was.
+                return [{
+                  key: text,
+                  label: text,
+                  kind: "choice",
+                  choices,
+                  ...(question.multiSelect === true ? { multiple: true } : {}),
+                  required: true,
+                }];
               });
               if (fields.length > 0) {
                 try {
@@ -1752,7 +1766,21 @@ export function createClaudeDriver(
                     const answers: Record<string, string> = {};
                     for (const field of fields) {
                       const value = outcome.answers[field.key];
-                      if (value !== undefined) answers[field.key] = Array.isArray(value) ? value.join(", ") : String(value);
+                      if (value === undefined) continue;
+                      if (!Array.isArray(value)) {
+                        answers[field.key] = String(value);
+                        continue;
+                      }
+                      // SEVERAL PICKS ARE STILL ONE ANSWER to this tool —
+                      // `AskUserQuestionOutput` maps a question to a string,
+                      // not to a list — so a multi-select's labels join.
+                      //
+                      // An array on a SINGLE-select field is a client bug, and
+                      // the honest reading of it is the first pick. Joining
+                      // would manufacture a multi-answer out of a question that
+                      // never offered one, and the model would act on it.
+                      if (field.multiple) answers[field.key] = value.join(", ");
+                      else if (value.length > 0) answers[field.key] = String(value[0]);
                     }
                     return { behavior: "allow", updatedInput: { ...asRecord(input), answers } };
                   }
