@@ -15,8 +15,12 @@ without, and opens the notebook to a second app over MCP.
   It always was a create-time choice; `/local` and `/worktree` still drive it.
 - **Base-ref picker** (`BaseRefPicker`) — **kept whole**, the same popover's second row.
   Same props, same default-base effect, same Enter-takes-first-match.
-- The **dirty count** stays on the right edge in both states: it is the only path from
-  the composer to the Changes panel.
+- The third control's other half, the **branch readout on a live session**, is dropped
+  from the strip: it was never editable there, and `diff-surface.tsx` already names the
+  branch (with ahead/behind) in the Changes panel — which is exactly where the count
+  below opens.
+- The **dirty count** stays on the right edge in both states, and is now itself the
+  button: it is the only path from the composer to that panel.
 
 So a **fresh canvas** foot is `[Where this lands] · notes… · +`; an **existing session**
 foot is `notes… · +`; the count rides on either.
