@@ -11,8 +11,10 @@
  */
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 
-/** One installed app that can open a folder, as the shell discovered it. */
-export type WorkspaceOpener = { id: string; label: string; path: string };
+/** One installed app that can open a folder, as the shell discovered it.
+ *  `icon` names a brand mark the renderer carries (components/session/opener-icon.tsx);
+ *  absent on an app we have no mark for, which draws the neutral glyph. */
+export type WorkspaceOpener = { id: string; label: string; path: string; icon?: string };
 
 export type WorkspaceOpenBridge = {
   /** Absent on a shell too old to enumerate; the caller falls back to the
