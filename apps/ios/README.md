@@ -36,17 +36,29 @@ IP via NSExceptionDomains.
 ## Building
 
 No Bun involvement — `apps/ios` has no `package.json` on purpose, so the
-workspace tooling never sees it. Xcode 26+ required; `xcode-select` is not:
+workspace tooling never sees it. Xcode 27+ required, a RELEASE build (App
+Store Connect refuses uploads from a beta); `xcode-select` is not:
 
 ```
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
-  -destination 'generic/platform=iOS Simulator' \
+  -destination 'generic/platform=iOS' \
   -derivedDataPath apps/ios/DerivedData CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
-  -destination 'platform=iOS Simulator,name=iPhone 17' \
-  -derivedDataPath apps/ios/DerivedData test
 ```
+
+NO SIMULATORS, by decision (2026-09-11): a runtime is 16 GB and the phone is
+the test target. The unit suite runs on a connected device —
+`TELAR_IPHONE_UDID` names it, the same id `phone.sh` installs to:
+
+```
+xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
+  -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
+  -derivedDataPath apps/ios/DerivedData \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
+```
+
+If a simulator is ever wanted again, `xcodebuild -downloadPlatform iOS`
+fetches the runtime; delete it with `xcrun simctl runtime delete all`.
 
 The project uses Xcode's file-system-synchronized groups: dropping a
 `.swift` file into `TelarMobile/` or `TelarMobileTests/` adds it to the
@@ -61,8 +73,6 @@ iOS; each keeps its own pairing (Keychain is per-app), so pair each once
 and it survives reinstalls of that flavor.
 
 A paid developer account's profile lasts a year; no TestFlight required.
-The simulator needs no signing at all and shares the Mac's network stack,
-so it reaches the cockpit on either the tailnet IP or localhost.
 
 ## Nightlies over TestFlight
 
@@ -73,18 +83,18 @@ git tag ios-nightly-YYYYMMDD && git push origin ios-nightly-YYYYMMDD
 ```
 
 The Actions workflow (.github/workflows/nightly-ios.yml) runs
-`apps/ios/nightly.sh` on a macOS runner: archive, export (the re-sign to
-Apple Distribution — `destination: upload` ships a dev-signed binary Apple
-refuses), altool upload. The phone then updates itself through the
-TestFlight app (internal testing: no review, live minutes after
-processing, builds expire after 90 days).
+`apps/ios/nightly.sh` on the Mac mini's own self-hosted runner, with its one
+release Xcode: archive, export (the re-sign to Apple Distribution —
+`destination: upload` ships a dev-signed binary Apple refuses), altool
+upload. The phone then updates itself through the TestFlight app (internal
+testing: no review, live minutes after processing, builds expire after 90
+days). Why the Mac and not GitHub's macOS lane, and how every other workflow
+came to live there too: docs/operations/mac-mini-runner-plan-2026-09-11.md.
 
 Credentials are the repo secrets `APPLE_API_KEY_P8_BASE64` /
 `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — an ADMIN App Store Connect API
-key (cloud signing refuses less), shared with desktop notarization. The
-nightly does not ship from a dev Mac: a beta-Xcode build is refused by App
-Store Connect, and this Mac only has the beta. `nightly.sh --no-upload`
-still archives locally for debugging.
+key (cloud signing refuses less), shared with desktop notarization.
+`nightly.sh --no-upload` archives without them, for debugging.
 
 ## Mobile experience (iPhone and iPad)
 
@@ -272,12 +282,15 @@ Simulator builds and mocked push tests do not replace these device checks.
 The `TelarMobileUI` scheme runs native UI smoke tests against the preview
 server (start it first). It checks session selection, notification settings,
 and Live Activity start/stop. On iPad it also rotates to landscape and asserts
-that the conversation column does not overlap the sidebar:
+that the conversation column does not overlap the sidebar. With no simulator
+on the Mac these run on a connected device, which must reach the preview
+server over the network (the tailnet address, not loopback):
 
 ```
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobileUI \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -derivedDataPath /tmp/telar-mobile-tests CODE_SIGNING_ALLOWED=NO test
+  -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
+  -derivedDataPath /tmp/telar-mobile-tests \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
 ```
 
 Automatic background starts are verified through host/relay payload tests; a
