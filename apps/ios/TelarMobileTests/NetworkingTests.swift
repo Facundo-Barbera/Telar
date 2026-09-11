@@ -51,6 +51,55 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(a != b)
     }
 
+    @Test func filesRoutesCarryPathAndPrecondition() async throws {
+        StubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path(), request.url?.query()) {
+            case ("GET", "/api/sessions/s/files", nil):
+                return (200, Data(#"{"listing":{"workspacePath":"/x","repository":true,"files":["a.md"],"source":"git","truncated":false,"readAt":1}}"#.utf8))
+            case ("GET", "/api/sessions/s/files", "path=docs/a.md"):
+                return (200, Data(#"{"file":{"path":"docs/a.md","text":"hi","bytes":2,"sha256":"h1","binary":false,"truncated":false}}"#.utf8))
+            case ("PUT", "/api/sessions/s/files", "path=docs/a.md"):
+                let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+                #expect(body?["text"] as? String == "hello")
+                #expect(body?["expectedSha256"] as? String == "h1")
+                return (200, Data(#"{"written":false,"refusal":"conflict","sha256":"h9"}"#.utf8))
+            default:
+                Issue.record("unexpected \(request.httpMethod ?? "") \(request.url?.absoluteString ?? "")")
+                return (500, Data())
+            }
+        }
+        let api = stubAPI()
+        #expect(try await api.sessionFiles("s").files == ["a.md"])
+        #expect(try await api.sessionFile("s", path: "docs/a.md").sha256 == "h1")
+        let result = try await api.writeSessionFile("s", path: "docs/a.md", text: "hello", expectedSha256: "h1")
+        #expect(result == .refused(.conflict, sha256: "h9"))
+    }
+
+    @Test func pluginDoorsPostEachMethodSegment() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path() == "/api/sessions/s/ds/notebook/run")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["path"] as? String == "n.ipynb")
+            #expect(body?["cellId"] as? String == "c1")
+            return (200, Data(#"{"results":[],"notebook":{"path":"n.ipynb","sha256":"h","cellCount":0,"cells":[]}}"#.utf8))
+        }
+        let run = try await stubAPI().notebookRun("s", path: "n.ipynb", cellId: "c1")
+        #expect(run.notebook.path == "n.ipynb")
+    }
+
+    @Test func anUnreadableDoorAnswerIsItsOwnError() async {
+        StubURLProtocol.handler = { _ in (200, Data("[1,2,3]".utf8)) }
+        do {
+            _ = try await stubAPI().kernel("s")
+            Issue.record("expected a throw")
+        } catch let error as EngineAPIError {
+            if case .engine(let code, _, _) = error { #expect(code == "unexpected_answer") } else { Issue.record("wrong case \(error)") }
+        } catch {
+            Issue.record("wrong error \(error)")
+        }
+    }
+
     @Test func projectIconCarriesTheKeyAsTheCacheBuster() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.url?.path() == "/api/projects/project_dud/icon")

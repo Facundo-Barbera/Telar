@@ -6,9 +6,27 @@ struct SessionView: View {
     @State private var draft = ""
     @State private var renaming = false
     @State private var renameDraft = ""
-    @State private var showChanges = false
-    @State private var showInspector = false
+    /// The right panel: which tab, which files, whether it is showing.
+    @State private var panel: PanelModel
+    /// PRESENTATION IS STATE, NOT A COMPUTED BINDING. `.inspector` keeps its
+    /// `isPresented` binding and compares it to decide whether the split view
+    /// needs another update; a `Binding(get:set:)` built in `body` is a NEW
+    /// location on every pass, so the comparison always said "changed". The
+    /// inspector re-updated, that dirtied layout, layout re-ran `body`, and
+    /// the app's first CoreAnimation commit never converged — a hang before
+    /// anything was ever tapped, with no runaway of our own to find. A
+    /// `@State` projection is one location for the life of the view.
+    @State private var inspectorShown = false
+    @State private var pushShown = false
+    /// Which sidebar state the panel found so it can put it back on close.
+    @State private var sidebarWasVisible = false
+    /// `display.opened` events seen this mount — the journal replays from
+    /// zero on every load, and without the guard every reload re-opens last
+    /// week's file.
+    @State private var seenDisplays: Set<Int> = []
+    @State private var mountedAt = Timestamp(Date().timeIntervalSince1970 * 1000)
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.columnVisibility) private var columnVisibility
     /// Stick-to-bottom (t3's `use-stick-to-bottom`), the native iOS 18 way: a
     /// position pinned to an EDGE rather than an offset stays on that edge as
     /// the content grows, which is the whole behaviour. `isPositionedByUser`
@@ -43,6 +61,51 @@ struct SessionView: View {
         // re-render and keeps only the first store; a loop started from it
         // would outlive the store that was thrown away. `.task` starts it.
         _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId, cache: cache))
+        _panel = State(initialValue: PanelModel(hostId: hostId, sessionId: sessionId))
+    }
+
+    /// The same API, as the panel sees it — only the HTTP client conforms;
+    /// a test double is not a panel.
+    private var panelAPI: (any PanelAPI)? { api as? any PanelAPI }
+
+    /// The refresh signal every panel surface keys on: a turn settling.
+    private var turnActive: Bool { store.hasActiveTurn }
+
+    /// On a regular width the panel is a column beside the transcript; on a
+    /// compact one it is a full-screen push. One of the two flags is raised,
+    /// never both.
+    private var wantsColumn: Bool { sizeClass == .regular }
+
+    /// THE MODEL IS THE TRUTH: raise whichever presentation this width uses to
+    /// match it. Every write is guarded — a presentation modifier writes its
+    /// own binding back on layout, sometimes with the value it already holds.
+    private func raisePanel(_ open: Bool) {
+        let column = open && wantsColumn
+        let push = open && !wantsColumn
+        if inspectorShown != column { inspectorShown = column }
+        if pushShown != push { pushShown = push }
+    }
+
+    /// The other direction: the reader closed the column or popped the push.
+    private func panelPresented(_ open: Bool) {
+        guard open != panel.isOpen else { return }
+        if open { panel.open() } else { panel.close() }
+    }
+
+    /// There is room for sidebar, transcript and panel only in landscape, so
+    /// opening the panel hides the sidebar when the window is narrower than
+    /// all three need, and closing it puts the sidebar back if it was there.
+    private func syncSidebar(open: Bool) {
+        guard sizeClass == .regular, let visibility = columnVisibility else { return }
+        let width = UIScreen.main.bounds.width
+        let roomForThree = width >= 300 + Theme.readingMeasure + 440
+        if open, !roomForThree, visibility.wrappedValue != .detailOnly {
+            sidebarWasVisible = true
+            withAnimation { visibility.wrappedValue = .detailOnly }
+        } else if !open, sidebarWasVisible {
+            sidebarWasVisible = false
+            withAnimation { visibility.wrappedValue = .all }
+        }
     }
 
     /// Queued and steering messages live in the strip under the composer; a
@@ -189,13 +252,35 @@ struct SessionView: View {
         .onChange(of: store.sync.connection) { _, connection in
             if connection == .gone { dismiss() }
         }
-        .inspector(isPresented: $showInspector) {
-            NavigationStack { DiffView(api: api, sessionId: sessionId) }
-                .inspectorColumnWidth(min: 320, ideal: 420, max: 600)
+        .environment(\.panel, panel)
+        .inspector(isPresented: $inspectorShown) {
+            NavigationStack {
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
+                    .toolbar(.hidden, for: .navigationBar)
+            }
+            .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
         }
-        .navigationDestination(isPresented: $showChanges) {
-            DiffView(api: api, sessionId: sessionId)
+        .navigationDestination(isPresented: $pushShown) {
+            PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
+                .navigationTitle("Panel")
+                .navigationBarTitleDisplayMode(.inline)
         }
+        .onChange(of: panel.isOpen, initial: true) { _, open in
+            raisePanel(open)
+            syncSidebar(open: open)
+        }
+        .onChange(of: inspectorShown) { _, open in if wantsColumn { panelPresented(open) } }
+        .onChange(of: pushShown) { _, open in if !wantsColumn { panelPresented(open) } }
+        // A rotation or a multitasking resize moves the panel between the
+        // column and the push; the model says whether it is showing at all.
+        .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
+        .task(id: "\(sessionId):plugins") { await readPlugins() }
+        .onChange(of: panel.generation) {
+            // A file opened from a chip or a `display.opened` event: make
+            // sure the panel is showing and the sidebar has made room.
+            if panel.isOpen { syncSidebar(open: true) }
+        }
+        .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
         .navigationTitle(store.sync.session?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
@@ -204,6 +289,27 @@ struct SessionView: View {
             Button("Rename") { Task { await store.rename(renameDraft) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// Which tabs this session gets: the project's two opt-ins, read once
+    /// the way the web reads them. Off until known.
+    private func readPlugins() async {
+        guard let panelAPI else { return }
+        var projectId = store.sync.session?.projectId
+        if projectId == nil {
+            projectId = (try? await api.session(sessionId, window: SnapshotWindow(turns: 1)))?.session.projectId
+        }
+        guard let projectId, let projects = try? await panelAPI.projects(), let project = projects.first(where: { $0.id == projectId }) else { return }
+        panel.setPlugins(dataScience: project.dataScience?.enabled == true, latex: project.latex?.enabled == true)
+    }
+
+    /// The agent asked the cockpit to show a file. Only events newer than
+    /// this mount count, and each only once.
+    private func watchDisplayOpens() {
+        let fresh = store.sync.displayOpens.filter { $0.at >= mountedAt && !seenDisplays.contains($0.id) }
+        guard !fresh.isEmpty else { return }
+        for open in fresh { seenDisplays.insert(open.id) }
+        if let last = fresh.last { panel.openFile(last.path) }
     }
 
     private func recordVisit() {
@@ -331,8 +437,11 @@ struct SessionView: View {
                         ShareLink(item: session.cockpitURL(base: base)) { Label("Continue on your Mac", systemImage: "desktopcomputer") }
                     }
                 }
+                Button("Panel", systemImage: "sidebar.trailing") {
+                    panel.open()
+                }
                 Button("Changes", systemImage: "plus.forwardslash.minus") {
-                    if sizeClass == .regular { showInspector = true } else { showChanges = true }
+                    panel.open(.diff)
                 }
                 Button("Rename", systemImage: "pencil") {
                     renameDraft = store.sync.session?.title ?? ""
