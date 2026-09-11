@@ -394,7 +394,9 @@ export function Composer({
    * send button relabels. See composer-question-drawer.tsx.
    */
   question?: EngineRequest;
-  onAnswerQuestion?: (requestId: string, answers: Record<string, string>) => void;
+  /** A `multiple` choice field answers with the list of labels it was given;
+   *  every other field answers with one string. */
+  onAnswerQuestion?: (requestId: string, answers: Record<string, string | string[]>) => void;
   onCancelQuestion?: (requestId: string) => void;
   /** The provider is squeezing its context RIGHT NOW — an open
    *  context_compaction row on the live turn. Gates the compact button. */

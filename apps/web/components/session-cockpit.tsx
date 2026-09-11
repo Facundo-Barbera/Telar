@@ -2393,7 +2393,8 @@ export function SessionCockpit({
           {...(composerQuestion
             ? {
                 question: composerQuestion,
-                onAnswerQuestion: (requestId: string, answers: Record<string, string>) => void decideRequest(requestId, "accept", { answers }),
+                onAnswerQuestion: (requestId: string, answers: Record<string, string | string[]>) =>
+                  void decideRequest(requestId, "accept", { answers }),
                 onCancelQuestion: (requestId: string) => void decideRequest(requestId, "cancel"),
               }
             : {})}
