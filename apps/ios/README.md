@@ -103,7 +103,8 @@ one cockpit's remote-host keys cannot be reused as this phone's UUIDs.
 On iPad the sidebar and conversation share a split view; the panel opens as an
 inspector column on a regular-width display. Compact windows and iPhone push it
 full-screen instead. New-conversation text and session reply text
-survive navigation; photo attachments remain in memory until sent. Cmd-N
+survive navigation; photo attachments remain in memory until sent. Tapping or
+scrolling the conversation puts the keyboard away. Cmd-N
 starts a conversation and Cmd-comma opens Settings. Public cockpit links can
 be shared to a Mac; Handoff advertises the same link (the receiving device
 still needs network reachability and pairing).

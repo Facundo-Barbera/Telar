@@ -4,6 +4,9 @@ import PhotosUI
 struct SessionView: View {
     @State private var store: SessionStore
     @State private var draft = ""
+    /// The composer's focus, held here so the transcript can drop it — see
+    /// the ScrollView below and `ComposerView.focus`.
+    @FocusState private var composerFocused: Bool
     @State private var renaming = false
     @State private var renameDraft = ""
     /// The right panel: which tab, which files, whether it is showing.
@@ -99,19 +102,17 @@ struct SessionView: View {
     /// match it. Every write is guarded — a presentation modifier writes its
     /// own binding back on layout, sometimes with the value it already holds.
     private func raisePanel(_ open: Bool) {
-        // ONE AT A TIME. Leaving the column mounted behind a full-screen cover
-        // would run a second copy of every surface — two file reads, two
-        // kernels asked for their state, two editors over one draft.
-        let column = open && wantsColumn && !panel.isFullScreen
-        let push = open && !wantsColumn
+        let (column, push) = PanelRaise.flags(open: open, wantsColumn: wantsColumn, fullScreen: panel.isFullScreen)
         if inspectorShown != column { inspectorShown = column }
         if pushShown != push { pushShown = push }
     }
 
-    /// The other direction: the reader closed the column or popped the push.
-    private func panelPresented(_ open: Bool) {
-        guard open != panel.isOpen else { return }
-        if open { panel.open() } else { panel.close() }
+    /// The other direction, and ONLY that direction: the reader closed the
+    /// column or popped the push. A presentation raising its own flag is this
+    /// view's own write echoing — see `PanelRaise` for the ring it closed.
+    private func panelDismissed() {
+        guard panel.isOpen else { return }
+        panel.close()
     }
 
     /// There is room for sidebar, transcript and panel only in landscape, so
@@ -252,6 +253,16 @@ struct SessionView: View {
                 }
             }
             .scrollPosition($position)
+            // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
+            // scrolling it, puts the keyboard away — what every messaging app
+            // does, and the phone offered neither: the only exits were Send
+            // and the return key. `.immediately` rather than `.interactively`
+            // because scrolling UP to re-read is the common case, and the
+            // interactive mode only dismisses on a drag toward the keyboard.
+            // Buttons, links and long-presses inside the transcript still win;
+            // this catches only the tap nothing else wanted.
+            .scrollDismissesKeyboard(.immediately)
+            .onTapGesture { composerFocused = false }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height
                     >= geometry.contentSize.height - 40
@@ -396,19 +407,25 @@ struct SessionView: View {
                 .navigationTitle("Panel")
                 .navigationBarTitleDisplayMode(.inline)
         }
-        .onChange(of: panel.isOpen, initial: true) { _, open in
-            raisePanel(open)
-            syncSidebar(open: open)
+        .onChange(of: panel.isOpen, initial: true) { _, _ in
+            // THE MODEL AS IT IS NOW, never the value the change carried.
+            // `isOpen` can flip twice inside one update pass, and SwiftUI then
+            // delivers the superseded one too; raising the push off THAT put
+            // `pushShown` back up for a frame against a panel already closed.
+            raisePanel(panel.isOpen)
+            syncSidebar(open: panel.isOpen)
         }
         .onChange(of: inspectorShown) { _, open in
             // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
             // CLOSING THE PANEL. Without this guard, expanding read as a
             // dismissal: `panel.close()` ran, which also drops full screen, and
             // the whole thing collapsed instead of filling the window.
-            guard wantsColumn, !panel.isFullScreen else { return }
-            panelPresented(open)
+            guard wantsColumn, !panel.isFullScreen, PanelRaise.isDismissal(open) else { return }
+            panelDismissed()
         }
-        .onChange(of: pushShown) { _, open in if !wantsColumn { panelPresented(open) } }
+        .onChange(of: pushShown) { _, open in
+            if !wantsColumn, PanelRaise.isDismissal(open) { panelDismissed() }
+        }
         // A rotation or a multitasking resize moves the panel between the
         // column and the push; the model says whether it is showing at all.
         .onChange(of: wantsColumn) { raisePanel(panel.isOpen) }
@@ -566,7 +583,7 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(draft: $draft, store: store, onSend: { pinToTail() })
+            ComposerView(draft: $draft, focus: $composerFocused, store: store, onSend: { pinToTail() })
         }
         .padding(.horizontal, 16)
         .readingColumn(gutter: Theme.readingGutter)
@@ -704,13 +721,18 @@ struct StatusCard<Content: View>: View {
 /// toolbar row appearing under the card and the queue line under that.
 struct ComposerView: View {
     @Binding var draft: String
+    /// FOCUS LIVES A STRUCT UP. The transcript is what puts the keyboard away
+    /// (a tap on it, or a scroll), and it cannot reach a `@FocusState` that is
+    /// private here — so the session owns the flag and the composer binds to
+    /// it. Reads keep the old name below; writes go through the binding.
+    let focus: FocusState<Bool>.Binding
     let store: SessionStore
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
     /// means for the viewport — the box has no business knowing about pins.
     var onSend: () -> Void = {}
 
-    @FocusState private var focused: Bool
+    private var focused: Bool { focus.wrappedValue }
     @State private var managingQueue = false
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var pickingPhotos = false
@@ -784,7 +806,7 @@ struct ComposerView: View {
                     .lineLimit(focused ? 7 : 1)
                     .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                     .padding(.vertical, focused ? 8 : 0)
-                    .focused($focused)
+                    .focused(focus)
                     .onSubmit { submit() }
                 if !focused {
                     if !store.pendingAttachments.isEmpty {
@@ -807,7 +829,7 @@ struct ComposerView: View {
         .padding(.vertical, focused ? 12 : 5)
         .composerGlass(cornerRadius: focused ? 20 : 27)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
-        .onTapGesture { focused = true }
+        .onTapGesture { focus.wrappedValue = true }
         // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
         // hands something over. `.onDrop` rather than `.dropDestination`: a
         // provider carries its own registered types, which is what decides
@@ -1056,7 +1078,7 @@ struct ComposerView: View {
         guard canSend else { return }
         let text = draft
         draft = ""
-        focused = false
+        focus.wrappedValue = false
         // Whatever the scroll believed. Nothing here used to touch it, so a
         // message sent after reading back through the transcript landed off
         // screen and the conversation looked frozen. Unconditional, unlike
@@ -1091,7 +1113,7 @@ struct ComposerView: View {
         guard let taken = PromptStash.shared.take(entry.id, room: 0) else { return }
         draft = StashRules.appendPrompt(draft, taken.prompt)
         note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
-        focused = true
+        focus.wrappedValue = true
     }
 
     static let runtimeModes: [(String, String)] = [
