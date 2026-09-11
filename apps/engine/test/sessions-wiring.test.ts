@@ -427,6 +427,51 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
   expect((await client.session(made!.id)).turns[0]?.input).toBe("please review the diff");
 });
 
+test("a LONG task is handed to the provider as the assignment notice, with the body withheld", async () => {
+  /**
+   * The test above sends 22 characters, for which "the opening paragraph" and
+   * "the whole body" are the same string — so it can pin the ASSIGNMENT WORDING
+   * but not the withholding, which is the half the branch exists for. This one
+   * sends a task nobody would want quoted in full and pins both: the provider
+   * hears that it was assigned work and where to read it, the bulk never
+   * reaches the prompt, and the record still holds every byte.
+   */
+  const brief = `Rewrite the parser's error recovery.\nIt currently swallows the column.\n\n${"Background nobody needs up front. ".repeat(100)}`;
+  let made: Session | undefined;
+  const { client, hostId } = await turnWith(async (sessions) => {
+    const { projects } = await sessions.list();
+    made = await sessions.create({ projectId: projects[0]!.id, title: "the assignee", envMode: "local" });
+    await sessions.send(made.id, { intent: "task", runId: "run_brief", input: brief });
+  });
+
+  const prompts: string[] = [];
+  const worker = new EngineWorker({
+    client,
+    workerId: "worker_assignee",
+    driver: { async run({ prompt }) { prompts.push(prompt); return { text: "on it" }; } },
+    pollMs: 60_000,
+  });
+  workers.push(worker);
+  await worker.start();
+  await worker.tick();
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if ((await client.session(made!.id)).turns[0]?.state === "completed") break;
+    await Bun.sleep(5);
+  }
+  expect(prompts).toHaveLength(1);
+  // IT IS AN ASSIGNMENT, IN WORDS. This is the sentence the delivery
+  // investigation found missing: without it a peer's `intent: "task"` reads as
+  // a suggestion the model is free to park on the human.
+  expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_brief,`);
+  expect(prompts[0]).toContain("It opens: \"Rewrite the parser's error recovery.");
+  expect(prompts[0]).toContain(`Read the whole thing with sessions_read(sessionId: "${made!.id}", runId: "run_brief") before acting on it.`);
+  // AND THE BODY IS NOT THERE — the measurement, not the adjective.
+  expect(prompts[0]).not.toContain("Background nobody needs up front.");
+  expect(prompts[0]!.length).toBeLessThan(brief.length / 3);
+  // The record keeps what the notice stands in for, unabridged.
+  expect((await client.session(made!.id)).turns[0]?.input).toBe(brief);
+});
+
 test("a cockpit cannot forge a sender through /turns, and a bad proof on /turns/agent is refused", async () => {
   const daemon = await startEngine({ engineRoot: tmp("telar-sessions-forge-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
