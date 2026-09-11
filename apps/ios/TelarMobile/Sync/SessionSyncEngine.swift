@@ -50,6 +50,14 @@ enum SyncConnectionState: Equatable {
     /// Every `display.opened` the tail has carried: the agent asking for a
     /// file to be shown. The view decides which are fresh.
     private(set) var displayOpens: [DisplayOpen] = []
+    /// WHAT THE KERNEL HAS SAID SINCE THE SNAPSHOT. Counters rather than
+    /// flags, so a surface can key a `.task(id:)` on one and re-read when it
+    /// moves — which is the whole mechanism, since a turn settling is far too
+    /// coarse a signal for a person watching cells run.
+    ///
+    /// COUNTED, NEVER INCREMENTED. The fold runs again over the same event
+    /// array on every tick; a `+= 1` would climb without anything happening.
+    private(set) var kernelSignals = KernelSignals()
 
     struct DisplayOpen: Equatable, Identifiable {
         var id: Int
@@ -295,6 +303,7 @@ enum SyncConnectionState: Equatable {
         turns = folded.turns
         openRequests = folded.openRequests
         if folded.displayOpens != displayOpens { displayOpens = folded.displayOpens }
+        if folded.kernelSignals != kernelSignals { kernelSignals = folded.kernelSignals }
     }
 }
 
@@ -303,6 +312,7 @@ private struct Folded {
     var turns: [JournalTurn]
     var openRequests: [EngineRequest]
     var displayOpens: [SessionSyncEngine.DisplayOpen]
+    var kernelSignals: KernelSignals
 }
 
 private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded {
@@ -333,5 +343,55 @@ private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded 
         known.insert(request.id)
         all.append(request)
     }
-    return Folded(turns: turns, openRequests: all.filter { $0.isOpen && !resolved.contains($0.id) }, displayOpens: displayOpens)
+    return Folded(
+        turns: turns,
+        openRequests: all.filter { $0.isOpen && !resolved.contains($0.id) },
+        displayOpens: displayOpens,
+        // No cursor means nothing has been reflected yet, so every tail
+        // event is genuinely new.
+        kernelSignals: foldKernelSignals(events, after: snapshot.cursor ?? 0)
+    )
+}
+
+/// What the kernel has said, as numbers a view can watch.
+struct KernelSignals: Equatable {
+    /// Every `kernel.state.changed` since the snapshot.
+    var kernelRevision = 0
+    /// The last state seen in the tail. Nil means the tail has said nothing,
+    /// and the surface's own one-shot read on open is still the truth — a
+    /// session opened after the kernel started must not show "no kernel".
+    var kernelState: KernelState?
+    /// Outputs per producer: a notebook path, or a scratch door like
+    /// `ds_plot`. A notebook keys its re-read on its OWN entry so another
+    /// notebook's cell does not reload it.
+    var notebookRevision: [String: Int] = [:]
+    /// Outputs across every producer — what the variables view watches, since
+    /// any cell run can change the namespace.
+    var outputRevision = 0
+    /// Outputs that were pictures: a plot landing while the gallery is open.
+    var plotRevision = 0
+}
+
+/// COUNT, DO NOT INCREMENT, and count only what came AFTER the snapshot.
+///
+/// The journal replays from zero on every open. Without the cursor guard,
+/// opening a session with a hundred past cell outputs in it would look exactly
+/// like a hundred cells running right now, and every surface would re-read a
+/// hundred times before drawing anything.
+func foldKernelSignals(_ events: [EngineEvent], after cursor: Int) -> KernelSignals {
+    var signals = KernelSignals()
+    for event in events where event.id > cursor {
+        switch event.payload {
+        case .kernelStateChanged(let state, _):
+            signals.kernelRevision += 1
+            signals.kernelState = state
+        case .notebookCellOutput(_, _, let producer, let output):
+            signals.outputRevision += 1
+            if let producer { signals.notebookRevision[producer, default: 0] += 1 }
+            if case .image = output { signals.plotRevision += 1 }
+        default:
+            continue
+        }
+    }
+    return signals
 }

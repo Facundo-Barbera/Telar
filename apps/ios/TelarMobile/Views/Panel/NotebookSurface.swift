@@ -36,6 +36,11 @@ struct NotebookSurface: View {
     /// Set the moment a draft lands, cleared when the last one flushes: the
     /// header's dot and tick.
     @State private var saved = false
+    @Environment(\.kernelSignals) private var signals
+    /// The one-shot kernel read happens on the way in only; after that the
+    /// events are the truth. It also gates the debounce, so opening a notebook
+    /// is immediate and only later bursts are coalesced.
+    @State private var didFirstRead = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -80,9 +85,24 @@ struct NotebookSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: "\(path):\(active)") {
+        // THE KERNEL SPEAKING IS THE SIGNAL, not a turn settling. A cell the
+        // agent runs mid-turn used to change nothing here until the whole turn
+        // finished — which is what "tables don't render until you refresh the
+        // kernel" was. This notebook follows ITS OWN producer, so another
+        // notebook's cell does not reload it.
+        .task(id: "\(path):\(active):\(signals.notebookRevision[path] ?? 0):\(signals.kernelRevision)") {
+            // COALESCED. A cell emitting six outputs bumps the revision six
+            // times in a second; restarting the task cancels this sleep, so
+            // the burst costs one read rather than six.
+            if didFirstRead { try? await Task.sleep(for: .milliseconds(250)) }
+            guard !Task.isCancelled else { return }
             await read()
-            await readKernel()
+            // Only on the way in: after that the kernel's own events are the
+            // truth, and asking again would race them.
+            if !didFirstRead {
+                didFirstRead = true
+                await readKernel()
+            }
         }
         .onDisappear { flushAll() }
         // A markdown cell's `<img src="fig.png">` points into the checkout,
@@ -160,7 +180,7 @@ struct NotebookSurface: View {
                 Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.statusEmerald)
                     .accessibilityLabel("Saved")
             }
-            KernelPill(state: kernel)
+            KernelPill(state: signals.kernelState ?? kernel)
             Button { Task { await runAll() } } label: {
                 Image(systemName: runningAll ? "hourglass" : "play.fill").font(.system(size: 11))
             }

@@ -279,6 +279,7 @@ struct SessionView: View {
             if connection == .gone { dismiss() }
         }
         .environment(\.panel, panel)
+        .environment(\.kernelSignals, store.sync.kernelSignals)
         .inspector(isPresented: $inspectorShown) {
             NavigationStack {
                 PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })

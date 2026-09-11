@@ -245,6 +245,10 @@ private struct PanelModelKey: EnvironmentKey {
     static let defaultValue: PanelModel? = nil
 }
 
+private struct KernelSignalsKey: EnvironmentKey {
+    static let defaultValue = KernelSignals()
+}
+
 private struct ColumnVisibilityKey: EnvironmentKey {
     static let defaultValue: Binding<NavigationSplitViewVisibility>? = nil
 }
@@ -254,6 +258,15 @@ extension EnvironmentValues {
     var panel: PanelModel? {
         get { self[PanelModelKey.self] }
         set { self[PanelModelKey.self] = newValue }
+    }
+
+    /// WHAT THE KERNEL HAS SAID, handed to the panel so its surfaces can
+    /// re-read when a cell runs rather than only when a turn settles. Handed
+    /// down rather than re-created: there is one sync engine per session and
+    /// the panel must watch that one.
+    var kernelSignals: KernelSignals {
+        get { self[KernelSignalsKey.self] }
+        set { self[KernelSignalsKey.self] = newValue }
     }
 
     /// The split view's sidebar visibility, handed down so a session can

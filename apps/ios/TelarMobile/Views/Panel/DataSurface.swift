@@ -24,6 +24,7 @@ struct DataSurface: View {
     }
 
     @AppStorage("telar.data.subtab") private var subRaw = Sub.plots.rawValue
+    @Environment(\.kernelSignals) private var signals
     @State private var kernel: KernelState = .none
     @State private var acting = false
     private var sub: Sub { Sub(rawValue: subRaw) ?? .plots }
@@ -45,7 +46,7 @@ struct DataSurface: View {
                     .accessibilityAddTraits(sub == tab ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                KernelPill(state: kernel)
+                KernelPill(state: signals.kernelState ?? kernel)
                 if kernel.isLive {
                     Button { Task { await act(.interrupt) } } label: { Image(systemName: "stop.fill").font(.system(size: 11)) }
                         .buttonStyle(.plain).foregroundStyle(Theme.statusRed).disabled(acting).accessibilityLabel("Interrupt kernel")
@@ -65,7 +66,7 @@ struct DataSurface: View {
             case .environment: EnvironmentSurface(api: api, sessionId: sessionId, active: active)
             }
         }
-        .task(id: "\(sessionId):\(active)") { await readKernel() }
+        .task(id: "\(sessionId):\(active):\(signals.kernelRevision)") { await readKernel() }
     }
 
     private func readKernel() async {
@@ -96,6 +97,8 @@ struct PlotsSurface: View {
     @State private var plots: [TurnAttachment]?
     @State private var error: String?
     @State private var lightbox: EngineID?
+    @Environment(\.kernelSignals) private var signals
+    @State private var loadedOnce = false
 
     var body: some View {
         Group {
@@ -119,7 +122,14 @@ struct PlotsSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: "\(sessionId):\(active)") { await load() }
+        // A PLOT LANDING WHILE YOU WATCH. Only image outputs count: a cell
+        // printing a table should not reload the gallery.
+        .task(id: "\(sessionId):\(active):\(signals.plotRevision)") {
+            if loadedOnce { try? await Task.sleep(for: .milliseconds(250)) }
+            guard !Task.isCancelled else { return }
+            loadedOnce = true
+            await load()
+        }
         .sheet(item: Binding(get: { lightbox.map { Lightbox(id: $0) } }, set: { lightbox = $0?.id })) { item in
             ImageLightbox(api: api, sessionId: sessionId, hostId: hostId, attachmentId: item.id)
         }
@@ -191,6 +201,8 @@ private struct PlotCard: View {
 /// The kernel's namespace: one row per variable, tap to inspect. Opening
 /// this never starts a kernel.
 struct VariablesSurface: View {
+    @Environment(\.kernelSignals) private var signals
+    @State private var loadedOnce = false
     let api: any PanelAPI
     let sessionId: EngineID
     let active: Bool
@@ -242,7 +254,14 @@ struct VariablesSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: "\(sessionId):\(active):\(kernel.rawValue)") { await load() }
+        // ANY cell run can change the namespace, so this follows every
+        // output rather than one notebook's.
+        .task(id: "\(sessionId):\(active):\(kernel.rawValue):\(signals.outputRevision)") {
+            if loadedOnce { try? await Task.sleep(for: .milliseconds(250)) }
+            guard !Task.isCancelled else { return }
+            loadedOnce = true
+            await load()
+        }
     }
 
     private func load() async {

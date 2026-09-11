@@ -335,7 +335,12 @@ func projectJournal(
                 ),
                 openedBy: event.id
             )
-        case .requestOpened, .requestResolved, .sessionUpdated, .displayOpened:
+        case .requestOpened, .requestResolved, .sessionUpdated, .displayOpened,
+             .kernelStateChanged, .notebookCellOutput:
+            // The kernel's two events are not TIMELINE rows — a cell's output
+            // belongs to the notebook, not to the conversation. They are
+            // folded separately, into the revisions the panel's surfaces
+            // watch (`foldKernelSignals`).
             break
         case .none:
             // State transitions the payload enum does not carry ride the type
