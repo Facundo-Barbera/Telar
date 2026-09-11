@@ -1344,7 +1344,7 @@ export class EngineStore {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
       // Rolled back under this store's feet: anything read or written inside
       // the transaction describes a queue sqlite no longer has.
-      this.queueCache.clear();
+      this.queueCache.clear(); this.queueChangeAnnounced = false;
       this.pendingStopTasks.clear(); this.afterCommit = [];
       throw error;
     } finally { this.commandDepth -= 1; }
@@ -1357,6 +1357,11 @@ export class EngineStore {
 
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  /** See the constructor: the daemon's in-process nudge to its embedded worker,
+   *  absent unless the daemon injected it. */
+  private readonly onQueueChanged?: () => void;
+  /** One announcement per command, not one per `writeQueue` inside it. */
+  private queueChangeAnnounced = false;
   /** See the constructor: daemon-injected, absent means no computer use. */
   private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
   /** See the constructor: the real subprocess handshake unless a test says
@@ -3996,6 +4001,18 @@ export class EngineStore {
     options: {
       executionStorage?: "json" | "sqlite";
       notifier?: EngineNotifier;
+      /**
+       * SOMETHING IN SOME SESSION'S QUEUE CHANGED — a message accepted, a turn
+       * claimed or stopped, a steer promoted. Fired from `writeQueue`, which is
+       * the only writer, so no transition can forget it, and only AFTER the
+       * transaction commits so a rolled-back write announces nothing.
+       *
+       * INJECTED BY THE DAEMON, for the worker it hosts in-process: it is what
+       * lets that worker poll slowly while nothing is happening without putting
+       * the backoff's latency on the next thing the person types. Absent by
+       * default, so a store on its own announces nothing to anybody.
+       */
+      onQueueChanged?: () => void;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
@@ -4015,6 +4032,7 @@ export class EngineStore {
     } = {},
   ) {
     this.notifier = options.notifier;
+    this.onQueueChanged = options.onQueueChanged;
     this.readModels = options.models ?? readModelCatalogue;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
@@ -8630,9 +8648,34 @@ export class EngineStore {
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
     this.queueCache.delete(sessionId);
+    this.announceQueueChange();
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);
+  }
+
+  /**
+   * ONCE PER COMMAND, AND ONLY IF IT COMMITS.
+   *
+   * A single command rewrites several queues — a stop settles a turn and
+   * requeues the steers aimed at it — and the listener only needs to be told
+   * that SOMETHING moved, so the flag collapses them into one call. Deferred
+   * to `afterCommit` for the same reason the request notifier is: announcing a
+   * write the transaction then rolled back would wake a worker to look for
+   * work that does not exist.
+   */
+  private announceQueueChange(): void {
+    if (!this.onQueueChanged) return;
+    if (!this.executionStore || this.commandDepth === 0) {
+      this.onQueueChanged();
+      return;
+    }
+    if (this.queueChangeAnnounced) return;
+    this.queueChangeAnnounced = true;
+    this.afterCommit.push(() => {
+      this.queueChangeAnnounced = false;
+      this.onQueueChanged?.();
+    });
   }
 
   private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {
