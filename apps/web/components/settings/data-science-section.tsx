@@ -157,7 +157,12 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
     <>
       <SettingsGroup
         title="Data science"
-        description="Enable the project first. Then pick an environment here, create one, or ask the agent to set it up from the workspace."
+        // The order-of-operations sentence was the Enabled row's job, and that
+        // row already does it better because it knows the state: "On, but no
+        // environment is selected yet. Set one up below or ask the agent." A
+        // header can only give the generic version, and giving it first means
+        // the reader meets the vague form before the precise one.
+        description="Notebooks and ds_* tools for this project."
         action={
           <Button variant="outline" size="sm" onClick={askAgentToSetUp}>
             <FlaskConicalIcon className="size-3" /> Ask agent to set up
@@ -180,7 +185,9 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
       <SettingsGroup
         title="Tools"
-        description="What environments are made with. Anything missing installs from here."
+        // "Anything missing installs from here" is what the rows' own Install
+        // buttons say, in the place they can be pressed.
+        description="What environments are made with."
         action={
           <Button variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>
             <RefreshCwIcon className={cn("size-3", loading && "animate-spin")} /> Detect again
@@ -201,7 +208,8 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
       <SettingsGroup
         title="Environments"
-        description="Where the kernel runs and what it can import. One is in use."
+        // "One is in use" is a caption for a list whose cards carry that state.
+        description="Where the kernel runs and what it can import."
         action={
           <span className="flex items-center gap-1.5">
             <Button variant={adding === "existing" ? "secondary" : "outline"} size="sm" onClick={() => setAdding(adding === "existing" ? undefined : "existing")}>
@@ -275,7 +283,10 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
       </SettingsGroup>
 
       {currentEnv && (
-        <SettingsGroup title="Packages" description={`What is installed in ${currentEnv.name}. Installing here writes to that environment.`}>
+        // ONE SENTENCE, and it keeps the half that is a warning: the panel below
+        // writes into a real environment on disk, and which one is not obvious
+        // from a list of package names.
+        <SettingsGroup title="Packages" description={`What is installed in ${currentEnv.name} — installing here writes to that environment.`}>
           <div className="py-3">
             <PackagesPanel scope={{ projectId: project.id }} requirements={data?.requirements ?? []} />
           </div>
