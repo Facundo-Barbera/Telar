@@ -30,8 +30,23 @@ struct CellOutputView: View {
             OutputImage(api: api, sessionId: sessionId, attachmentId: attachmentId, dataB64: dataB64, onOpen: onOpenImage)
         case .dataframe(let columns, let dtypes, let rows, let shape, let truncated):
             DataframeGrid(columns: columns, dtypes: dtypes, rows: rows, shape: shape, truncated: truncated)
-        case .html(let html, _):
-            CodeBlockView(code: html)
+        case .html(let html, let truncated):
+            // THE FAST PATH FIRST. A pandas repr is the most common HTML a
+            // notebook produces, and a native grid is selectable, cheap, and
+            // identical to the `dataframe` kind the engine emits for runs it
+            // made itself — without it the same table looks like two different
+            // things depending on who ran the cell.
+            if let table = parsePandasHtmlTable(html) {
+                DataframeGrid(
+                    columns: table.columns,
+                    dtypes: [],
+                    rows: table.rows.map { $0.map { JSONValue.string($0) } },
+                    shape: [table.rows.count, max(0, table.columnCount - 1)],
+                    truncated: truncated ?? false
+                )
+            } else {
+                HtmlOutputView(html: html, truncated: truncated ?? false)
+            }
         case .json(let value):
             CodeBlockView(code: value.prettyPrinted)
         case .clear:
