@@ -106,8 +106,7 @@ full-screen instead. New-conversation text and session reply text
 survive navigation; photo attachments remain in memory until sent. Cmd-N
 starts a conversation and Cmd-comma opens Settings. Public cockpit links can
 be shared to a Mac; Handoff advertises the same link (the receiving device
-still needs network reachability and pairing). A local visit marker surfaces
-the latest result when a turn finishes while the reader is away.
+still needs network reachability and pairing).
 
 ## The panel
 

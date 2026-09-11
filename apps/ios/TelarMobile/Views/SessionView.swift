@@ -43,8 +43,6 @@ struct SessionView: View {
     private let sessionId: EngineID
     private let hostId: HostID?
     private let cockpitBaseURL: URL?
-    @State private var previousVisit: Int?
-    @State private var dismissedRecap = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
@@ -53,10 +51,6 @@ struct SessionView: View {
         self.sessionId = sessionId
         self.hostId = hostId
         self.cockpitBaseURL = cockpitBaseURL
-        if let hostId {
-            let value = UserDefaults.standard.integer(forKey: "telar.lastVisit.\(hostId).\(sessionId)")
-            _previousVisit = State(initialValue: value > 0 ? value : nil)
-        }
         if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
         // NOT STARTED HERE. SwiftUI runs this initialiser on every parent
         // re-render and keeps only the first store; a loop started from it
@@ -166,35 +160,6 @@ struct SessionView: View {
                 .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
                 .readingColumn(gutter: Theme.readingGutter)
             }
-            if let previousVisit, !dismissedRecap,
-               let ended = store.sync.session?.lastTurnEndedAt, ended > previousVisit {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "sparkle").foregroundStyle(Theme.accent)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Since your last visit").font(.subheadline.weight(.semibold))
-                        Text(store.sync.session?.lastTurnFailed == true ? "The last turn failed. Review its result below." : "A turn finished while you were away.").font(.caption)
-                        if let result = visibleTurns.last(where: { !$0.resultText.isEmpty })?.resultText {
-                            Text(result).font(.caption).lineLimit(3).foregroundStyle(Theme.textMuted)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    Button("Dismiss", systemImage: "xmark") { dismissedRecap = true }.labelStyle(.iconOnly)
-                }
-                .padding()
-                .background(Theme.messageSurface)
-                // A CARD, INSET, LIKE EVERY OTHER FILLED ROW HERE. The banner
-                // had no container at all, so its fill ran the full width of
-                // the detail while the transcript and the composer were both
-                // inset — on an iPad in landscape with the panel open it
-                // reached from the detail's leading edge, under the floating
-                // sidebar, all the way to the panel. The radius is the one
-                // `StatusCard` uses above the composer.
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("Recap banner")
-                .padding(.horizontal, 16)
-                .readingColumn(gutter: Theme.readingGutter)
-            }
             ScrollView {
                 VStack(spacing: 0) {
                     // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
@@ -260,7 +225,6 @@ struct SessionView: View {
             if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
                 MobileNotifications.shared.visibleSession = nil
             }
-            recordVisit()
         }
         .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
             guard let base = cockpitBaseURL, let session = store.sync.session else { return }
@@ -273,7 +237,7 @@ struct SessionView: View {
             if phase == .active {
                 store.sync.start()
                 if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
-            } else { store.sync.stop(); recordVisit(); MobileNotifications.shared.visibleSession = nil }
+            } else { store.sync.stop(); MobileNotifications.shared.visibleSession = nil }
         }
         .onChange(of: store.sync.connection) { _, connection in
             if connection == .gone { dismiss() }
@@ -380,10 +344,6 @@ struct SessionView: View {
         if let last = fresh.last { panel.openFile(last.path) }
     }
 
-    private func recordVisit() {
-        guard let hostId, store.sync.recordedAt == nil, store.sync.session != nil else { return }
-        UserDefaults.standard.set(Int(Date().timeIntervalSince1970 * 1000), forKey: "telar.lastVisit.\(hostId).\(sessionId)")
-    }
 
     /// Re-pin to the tail, unless the reader has taken the scroll — scrolled
     /// away means scrolled away, and nothing here yanks them back.

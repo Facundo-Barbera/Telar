@@ -88,11 +88,12 @@ extension View {
     /// THE COLUMN THE CONVERSATION LIVES IN — one definition, so every row at
     /// the top level of a session lands on the same two edges.
     ///
-    /// The banner did not have it. Its fill therefore ran the whole detail
-    /// view, and on an iPad in landscape with the panel open the sidebar is an
-    /// OVERLAY over a full-width detail: the banner drew underneath it and
-    /// showed at the screen's left edge, beside a transcript that was properly
-    /// inset. A row with no background hid the same mistake.
+    /// A row that skips it does not look wrong until it has a BACKGROUND: an
+    /// unfilled row merely sits too wide and nobody notices, while a filled
+    /// one runs the whole detail view and, on an iPad with the panel open,
+    /// reaches under the floating sidebar on one side and under the panel on
+    /// the other. That is how the recap banner looked before it was removed.
+    /// Use this for anything at the top level of a session.
     func readingColumn(gutter: CGFloat = 0) -> some View {
         self
             .frame(maxWidth: Theme.readingMeasure + gutter)
