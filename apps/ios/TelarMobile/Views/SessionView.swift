@@ -549,7 +549,9 @@ struct ComposerView: View {
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var pickingPhotos = false
     @State private var showingStash = false
-    @State private var stashNote: String?
+    /// What just happened to the box — a stash, or a file turned away.
+    @State private var note: String?
+    @State private var dropping = false
     @Environment(\.colorScheme) private var scheme
 
     private var isRunning: Bool { store.hasRunningTurn }
@@ -562,8 +564,8 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let stashNote {
-                Text(stashNote)
+            if let note {
+                Text(note)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -640,6 +642,34 @@ struct ComposerView: View {
         .composerGlass(cornerRadius: focused ? 20 : 27)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
         .onTapGesture { focused = true }
+        // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
+        // hands something over. `.onDrop` rather than `.dropDestination`: a
+        // provider carries its own registered types, which is what decides
+        // whether the bytes or a sandboxed URL are worth loading.
+        .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
+            intake(providers)
+            return true
+        }
+        .overlay {
+            if dropping {
+                RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous)
+                    .strokeBorder(Theme.accent, lineWidth: 2)
+            }
+        }
+    }
+
+    /// ONE PATH FOR BOTH. A paste and a drop deliver the same item providers,
+    /// and both end at the upload the picker already uses. A refusal is said
+    /// out loud above the composer — a file that simply never appears reads as
+    /// the app being broken.
+    private func intake(_ providers: [NSItemProvider]) {
+        Task {
+            let (files, refusals) = await composerFiles(from: providers)
+            for file in files {
+                await store.attach(data: file.data, name: file.name, mediaType: file.mediaType)
+            }
+            note = refusals.isEmpty ? nil : refusals.joined(separator: " ")
+        }
     }
 
     /// 72×72 radius-16 thumbs with a 22pt dark remove circle — the expanded
@@ -648,32 +678,12 @@ struct ComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(store.pendingAttachments) { attachment in
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 6) {
-                            Image(systemName: attachment.mediaType.hasPrefix("image/") ? "photo" : "doc")
-                                .font(.system(size: 20))
-                                .foregroundStyle(Theme.textMuted2)
-                            Text(attachment.name)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Theme.textMuted2)
-                                .lineLimit(1)
-                        }
-                        .frame(width: 72, height: 72)
-                        .background(Theme.subtle)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        Button {
-                            store.removeAttachment(attachment.id)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 22, height: 22)
-                                .background(Color.black.opacity(0.55))
-                                .clipShape(Circle())
-                        }
-                        .padding(4)
-                        .accessibilityLabel("Remove \(attachment.name)")
-                    }
+                    AttachmentChip(
+                        name: attachment.name,
+                        mediaType: attachment.mediaType,
+                        preview: store.attachmentPreviews[attachment.id],
+                        onRemove: { store.removeAttachment(attachment.id) }
+                    )
                 }
                 if store.uploading {
                     ProgressView()
@@ -711,6 +721,9 @@ struct ComposerView: View {
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
+                    // A SCREENSHOT ON THE CLIPBOARD, without a round trip
+                    // through Photos. Same intake as a drop.
+                    ComposerPasteButton { providers in intake(providers) }
                     // THE STASH sits beside the attach button because that
                     // cluster is already "things that go into this message".
                     StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -895,18 +908,18 @@ struct ComposerView: View {
         guard !text.isEmpty else { return }
         let ok = PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: []))
         guard ok else {
-            stashNote = "There was no room to stash this. Nothing was taken from the box."
+            note = "There was no room to stash this. Nothing was taken from the box."
             return
         }
         draft = ""
-        stashNote = store.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
+        note = store.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
     }
 
     /// A RESTORE NEVER EATS WHAT IS ALREADY IN THE BOX.
     private func restore(_ entry: StashEntry) {
         guard let taken = PromptStash.shared.take(entry.id, room: 0) else { return }
         draft = StashRules.appendPrompt(draft, taken.prompt)
-        stashNote = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
+        note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
         focused = true
     }
 

@@ -229,3 +229,37 @@ extension NavigationUITests {
         snap("Recap banner beside the panel")
     }
 }
+
+extension NavigationUITests {
+    /// PASTE PUTS A FILE IN THE BOX. The phone could only attach photos, and
+    /// only through the picker — a screenshot on the clipboard had no way in.
+    ///
+    /// The pasteboard is set from the runner so the test carries its own
+    /// clipboard rather than inheriting the machine's.
+    func testPastingAnImageBecomesAnAttachment() {
+        UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
+        app.launch()
+        let composer = app.textFields["Ask the agent, or run a command…"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        // The toolbar only exists while the field is focused, and the paste
+        // control lives there beside the picker.
+        composer.tap()
+        let paste = app.buttons["Paste an image or file"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "the composer offers a paste control")
+        paste.tap()
+
+        // A clipboard image has no name of its own, so the intake gives it one.
+        XCTAssertTrue(app.buttons["Remove pasted.png"].waitForExistence(timeout: 15),
+                      "the pasted image is in the attachment strip, removable")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "Composer — pasted image"; shot.lifetime = .keepAlways; add(shot)
+
+        app.buttons["Remove pasted.png"].tap()
+        XCTAssertTrue(app.buttons["Remove pasted.png"].waitForNonExistence(timeout: 5), "and removing it takes it out")
+    }
+}

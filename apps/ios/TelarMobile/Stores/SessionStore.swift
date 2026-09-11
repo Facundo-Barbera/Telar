@@ -22,6 +22,8 @@ import Observation
     private(set) var actionError: String?
     /// Uploaded-but-not-yet-sent files — thumbnails in the expanded composer.
     private(set) var pendingAttachments: [TurnAttachment] = []
+    /// Image bytes kept only to draw the composer's chips, dropped with them.
+    private(set) var attachmentPreviews: [EngineID: Data] = [:]
     private(set) var uploading = false
     /// Loaded lazily when the Model pill first opens.
     private(set) var catalogue: ModelCatalogue?
@@ -99,6 +101,12 @@ import Observation
         do {
             let attachment = try await api.uploadAttachment(sessionId, name: name, mediaType: mediaType, data: data)
             pendingAttachments.append(attachment)
+            // THE PICTURE OF IT. The engine has the file; this is the only
+            // copy the chip can draw from, and a pasted screenshot is exactly
+            // the case where seeing WHICH image landed matters.
+            if mediaType.hasPrefix("image/"), data.count <= ComposerIntake.previewCap {
+                attachmentPreviews[attachment.id] = data
+            }
             actionError = nil
         } catch {
             actionError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
@@ -107,6 +115,7 @@ import Observation
 
     func removeAttachment(_ id: EngineID) {
         pendingAttachments.removeAll { $0.id == id }
+        attachmentPreviews[id] = nil
     }
 
     /// The Model pill's list — fetched once per open session.
@@ -156,6 +165,7 @@ import Observation
             _ = try await api.submitTurn(sessionId, runId: pending.runId, input: pending.text, attachments: pending.attachments)
             discardPending()
             pendingAttachments = []
+            attachmentPreviews = [:]
             await sync.refresh()
         } catch {
             sendError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription

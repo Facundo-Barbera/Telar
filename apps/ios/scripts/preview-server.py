@@ -4,6 +4,7 @@ Launch a Debug app with -mobilePreviewURL http://127.0.0.1:8743.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 import json
 import struct
 import time
@@ -153,6 +154,10 @@ NOTEBOOK = {
 
 TABLE = {'path': 'data/rows.csv', 'columns': ['a', 'b'], 'dtypes': ['int64', 'object'], 'total': 2, 'offset': 0, 'rows': [[1, 'x'], [2, 'y']]}
 
+# What a paste or a drop uploaded this run, by id — so the chip can read its
+# own bytes back.
+UPLOADED = {}
+
 ATTACHMENTS = [
     {'id': 'att_plot_1', 'name': 'plot-1.png', 'mediaType': 'image/png', 'bytes': len(PLOT_PNG), 'tags': ['plot'], 'producer': 'c3', 'createdAt': NOW - 60000},
     {'id': 'att_plot_2', 'name': 'plot-2.png', 'mediaType': 'image/png', 'bytes': len(PLOT_PNG), 'tags': ['plot', 'pinned'], 'producer': 'ds_plot', 'createdAt': NOW - 120000},
@@ -207,6 +212,9 @@ class Handler(BaseHTTPRequestHandler):
             tag = q.get('tag')
             return self._send(200, json.dumps({'attachments': [a for a in ATTACHMENTS if not tag or tag in a['tags']]}).encode())
         if '/attachments/' in route:
+            att_id = route.rsplit('/', 2)[-2] if route.endswith('/bytes') else route.rsplit('/', 1)[-1]
+            if att_id in UPLOADED:
+                return self._send(200, UPLOADED[att_id], next((a['mediaType'] for a in ATTACHMENTS if a['id'] == att_id), 'application/octet-stream'))
             return self._send(200, PLOT_PNG, 'image/png')
         if route.endswith('/diff'):
             return self._send(200, json.dumps({'diff': {'repository': True, 'workspacePath': '/tmp/telar-preview', 'branch': 'mobile-experience', 'files': [{'path': 'notes/plan.md', 'status': 'modified', 'linesAdded': 2, 'linesRemoved': 1}], 'commits': [], 'linesAdded': 2, 'linesRemoved': 1, 'truncated': False}}).encode())
@@ -248,6 +256,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         route = self.path.split('?')[0]
         length = int(self.headers.get('Content-Length', 0))
+        # AN UPLOAD IS BYTES, NOT JSON — read it before anything tries to parse
+        # it. The name rides a header and the media type is the content type,
+        # exactly as the engine's route takes them.
+        if route.endswith('/attachments'):
+            raw = self.rfile.read(length)
+            name = unquote(self.headers.get('x-telar-attachment-name', 'attachment'))
+            attachment = {
+                'id': f'att_up_{len(ATTACHMENTS) + 1}', 'name': name,
+                'mediaType': self.headers.get('content-type', 'application/octet-stream'),
+                'bytes': len(raw), 'tags': [], 'createdAt': NOW,
+            }
+            ATTACHMENTS.append(attachment)
+            UPLOADED[attachment['id']] = raw
+            return self._send(200, json.dumps({'attachment': attachment}).encode())
         body = json.loads(self.rfile.read(length) or b'{}')
         parts = route.split('/')
         door = parts[4] if len(parts) > 4 else ''
