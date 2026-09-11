@@ -54,9 +54,27 @@ struct SessionSidebar: View {
                         Button("Discard draft", role: .destructive) { MobileDrafts.shared.remove(host: draft.hostId, project: draft.project.id) }
                     }
                 }
-                if !model.attention.filter(matches).isEmpty {
-                    Section("Needs you") {
-                        ForEach(model.attention.filter(matches)) { row in sessionRow(row) }
+                let attention = model.attention.filter(matches)
+                if !attention.isEmpty {
+                    Section {
+                        ForEach(attention) { row in sessionRow(row) }
+                    } header: {
+                        // NOT `Section("Needs you")`. A plain string header is
+                        // the system's generic caption, and this is the one
+                        // band on the rail that is ASKING FOR SOMETHING — the
+                        // desktop gives it a dot and a count for exactly that
+                        // reason (app-sidebar.tsx). The dot says "this band is
+                        // different" before the word is read, and the count
+                        // says how much of it there is without opening it.
+                        HStack(spacing: 6) {
+                            Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
+                            Text("Needs you")
+                            Spacer(minLength: 4)
+                            Text("\(attention.count)").monospacedDigit()
+                        }
+                        .bandCaption()
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Needs you, \(attention.count)")
                     }
                 }
                 if !model.pinned.filter(matches).isEmpty {
@@ -468,12 +486,26 @@ struct SessionSidebar: View {
                     if filtered.count > settledLimit { Button("Show more") { settledLimit += 25 } }
                 }
             } header: {
+                // THE DESKTOP'S `BandRule` (app-sidebar.tsx): chevron, the
+                // band's name as a CAPTION, a hairline that runs out to the
+                // count. The line is the point — a shelf divides what is above
+                // it from what it holds, and sentence-case text with a gap
+                // where the rule should be was the same control drawn as a
+                // plain row. The rule is drawn rather than left to the list's
+                // own separator because a section header in an inset-grouped
+                // list sits OUTSIDE the card, on the page, where the list draws
+                // no separator at all.
                 Button { open.wrappedValue.toggle() } label: {
-                    HStack {
+                    HStack(spacing: 6) {
                         Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
-                        Text(name); Spacer(); Text("\(filtered.count)").monospacedDigit()
+                            .font(.caption)
+                        Text(name)
+                        Rectangle().fill(Theme.border).frame(height: 1).accessibilityHidden(true)
+                        Text("\(filtered.count)").monospacedDigit()
                     }
-                }.foregroundStyle(Theme.textMuted)
+                    .bandCaption()
+                }
+                .accessibilityLabel("\(name), \(filtered.count), \(open.wrappedValue ? "expanded" : "collapsed")")
             }
         }
     }
