@@ -14,7 +14,7 @@ final class NavigationUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         let sidebarRightEdge = row.frame.maxX
         row.tap()
-        let composer = app.textFields["Ask the agent, or run a command…"]
+        let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         if isPad {
             XCTAssertTrue(row.exists)
@@ -51,7 +51,7 @@ extension NavigationUITests {
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
-        let composer = app.textFields["Ask the agent, or run a command…"]
+        let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
         // The search field exists only in the sidebar column; the session's
         // title also appears in the detail's navigation bar, so a row's text
@@ -88,7 +88,7 @@ extension NavigationUITests {
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
-        XCTAssertTrue(app.textFields["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.textViews["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
         // The search field exists only in the sidebar column.
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 10), "the sidebar starts visible")
@@ -181,8 +181,11 @@ extension NavigationUITests {
 }
 
 extension NavigationUITests {
-    /// PASTE PUTS A FILE IN THE BOX. The phone could only attach photos, and
-    /// only through the picker — a screenshot on the clipboard had no way in.
+    /// PASTE PUTS A FILE IN THE BOX — THE FIELD'S OWN PASTE. With only a
+    /// picture on the clipboard, iOS draws no Paste item for a plain text
+    /// field, so the long-press menu simply had nothing in it and the only way
+    /// in was a control of our own. This drives the gesture a person actually
+    /// makes: long-press the composer, tap Paste.
     ///
     /// The pasteboard is set from the runner so the test carries its own
     /// clipboard rather than inheriting the machine's.
@@ -194,13 +197,19 @@ extension NavigationUITests {
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
-        let composer = app.textFields["Ask the agent, or run a command…"]
+        let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
-        // The toolbar only exists while the field is focused, and the paste
-        // control lives there beside the picker.
+        // It is still a text field first: it takes focus and it types. The
+        // box may already hold a restored draft from a previous run, so what
+        // is pinned is that the typing LANDED, not that it is alone.
         composer.tap()
-        let paste = app.buttons["Paste an image or file"]
-        XCTAssertTrue(paste.waitForExistence(timeout: 5), "the composer offers a paste control")
+        composer.typeText("here")
+        XCTAssertTrue((composer.value as? String)?.hasSuffix("here") == true, "the composer still edits text")
+
+        composer.press(forDuration: 1.2)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5),
+                      "the field's own menu offers Paste for a picture")
         paste.tap()
 
         // A clipboard image has no name of its own, so the intake gives it one.
@@ -223,7 +232,7 @@ extension NavigationUITests {
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
-        XCTAssertTrue(app.textFields["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.textViews["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
 
         // Whatever the last run left persisted, start from closed.
         if app.buttons["Hide panel"].exists {
@@ -256,7 +265,7 @@ extension NavigationUITests {
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
-        let composer = app.textFields["Ask the agent, or run a command…"]
+        let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
         if app.buttons["Show panel"].exists { app.buttons["Show panel"].tap() }
         XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10))

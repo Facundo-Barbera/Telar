@@ -46,6 +46,25 @@ enum ComposerIntake {
             ?? types.first
     }
 
+    /// WHAT THE FIELD'S OWN PASTE MUST NOT SWALLOW. A composer's text field
+    /// pastes text, and a link IS text, so both stay its own business — an
+    /// attachment is everything else on the clipboard: a screenshot, a PDF, a
+    /// file handed over by another app. A file URL is asked about FIRST
+    /// because it is also a URL, and a file is a file.
+    static func isAttachment(_ identifiers: [String]) -> Bool {
+        guard let type = best(of: identifiers) else { return false }
+        if type.conforms(to: .fileURL) { return true }
+        return !type.conforms(to: .text) && !type.conforms(to: .url)
+    }
+
+    /// Is there anything on the clipboard for the attachment strip? ASKED OF
+    /// TYPE NAMES ONLY: loading the items is a read the person has not asked
+    /// for yet, and iOS says so out loud with a banner over the app. The menu
+    /// is built long before anyone taps Paste.
+    static func hasAttachment(in itemTypes: [[String]]) -> Bool {
+        itemTypes.contains { isAttachment($0) }
+    }
+
     /// The media type an attachment carries. The engine stores what it is told
     /// and the cockpit renders on it, so a wrong guess shows a picture as a
     /// download. `preferredMIMEType` is right whenever the system knows the

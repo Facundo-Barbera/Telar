@@ -269,7 +269,9 @@ struct NewSessionDraftView: View {
     /// turn must resume this session, never create a second one.
     @State private var createdSessionId: EngineID?
     @State private var submissionRunId = RunID.newRunId()
-    @FocusState private var focused: Bool
+    /// Plain state rather than `@FocusState`: the prompt is a `UITextView`
+    /// now (see `ComposerTextView`), which mirrors its own first responder.
+    @State private var focused = false
 
     private func saveTextDraft() {
         MobileDrafts.shared.save(MobileDraft(hostId: hostId, project: project, prompt: prompt, title: title, createdSessionId: createdSessionId, submissionRunId: submissionRunId))
@@ -290,10 +292,16 @@ struct NewSessionDraftView: View {
                 .padding(.vertical, 10)
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
                 .padding(.horizontal, 20)
-            TextField("Describe a coding task in \(project.name)", text: $prompt, axis: .vertical)
-                .font(.system(size: 18))
-                .foregroundStyle(Theme.text)
-                .focused($focused)
+            // The same UIKit field the session's composer uses, for the same
+            // reason: a screenshot on the clipboard has to have a Paste to tap.
+            ComposerTextView(
+                text: $prompt,
+                placeholder: "Describe a coding task in \(project.name)",
+                focused: $focused,
+                fontSize: 18,
+                maxLines: nil,
+                onPaste: { intake($0) }
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
@@ -349,7 +357,6 @@ struct NewSessionDraftView: View {
                                     .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                             }
                             .accessibilityLabel("Attach photos")
-                            ComposerPasteButton { providers in intake(providers) }
                             StashButton(
                                 hasDraft: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                                 onStash: {
