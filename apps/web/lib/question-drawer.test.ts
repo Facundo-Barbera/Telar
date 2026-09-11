@@ -25,7 +25,6 @@ const any = (key: string, choices: string[]): QuestionField => ({ key, label: ke
 
 const fields = [one("Which color?", ["Red", "Blue"]), one("Which size?", ["S", "M", "L"])];
 const color = fields[0]!;
-const size = fields[1]!;
 
 describe("mutual exclusion", () => {
   const q = one("q", ["Red", "Blue"]);
