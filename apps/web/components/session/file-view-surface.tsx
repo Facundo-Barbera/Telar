@@ -58,6 +58,7 @@ import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft } fro
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import type { EditorViewState } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
+import { createFileWriter, type FileWriter } from "@/lib/file-writer";
 import {
   isProseFile,
   NOWRAP_CLASS,
@@ -70,7 +71,7 @@ import {
 import { rawFileUrl } from "@/lib/file-urls";
 import { carryTokens, highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
 import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
-import { SaveCoordinator, type SaveOutcome } from "@/lib/save-coordinator";
+import { SaveCoordinator } from "@/lib/save-coordinator";
 import { FileKindIcon } from "@/components/session/file-icon";
 /**
  * THE TYPE GEOMETRY OF THE TWO STACKED LAYERS, AND THE LAYER ITSELF — from the
@@ -221,14 +222,22 @@ export function FileViewSurface({
    *  what gets saved. */
   const [draft, setDraft] = useState<string>();
   /**
-   * THE HASH EVERY WRITE FROM THIS EDITOR CARRIES.
+   * THE WRITER WHOSE FIRST READ HAS LANDED — the gate on building the saver, and
+   * NOTHING ELSE.
    *
-   * State rather than `file.sha256`, because they are not always the same
-   * thing: a file re-opened with unsaved text takes the baseline that text was
-   * EDITED AGAINST, not the one the fresh read returned — see `load`. Getting
-   * this wrong is how a refused edit would come back as a silent overwrite.
+   * It used to be the baseline hash itself, and that was the false-conflict bug:
+   * the hash advances on every successful write, so the saver was torn down and
+   * rebuilt by its own saves, and the rebuilt one carried a hash that went stale
+   * the moment the outgoing write landed. The hash now lives in the writer (see
+   * lib/file-writer.ts), which outlives every saver; this only says "there is
+   * one to write against", and it changes once per file rather than once per
+   * keystroke-burst.
    */
-  const [baseline, setBaseline] = useState<string>();
+  const [readied, setReadied] = useState<FileWriter>();
+  /** How many times this file has been deliberately re-read over — the refresh
+   *  button, or "Re-read from disk" after a refusal. See the effect that
+   *  restarts the saver on it. */
+  const [discarded, setDiscarded] = useState(0);
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState<{ refused: boolean; reason: string }>();
   const kind = fileKind(path);
@@ -266,13 +275,13 @@ export function FileViewSurface({
     saveStateRef.current = onSaveState;
   }, [onSaveState]);
   /**
-   * The newest text and the hash it is owed against — the two things the stash
-   * needs, readable from a callback that outlives the render that made it.
-   * Refs, because a coordinator callback answering after unmount cannot read
-   * state and must not read a closure from the render that opened the file.
+   * The newest text — one of the two things the stash needs (the other is the
+   * hash it is owed against, which the writer holds), readable from a callback
+   * that outlives the render that made it. A ref, because a coordinator callback
+   * answering after unmount cannot read state and must not read a closure from
+   * the render that opened the file.
    */
   const latest = useRef<string>("");
-  const baselineRef = useRef<string | undefined>(undefined);
   /** Which checkout on which Mac this path is in. Two sessions can hold the
    *  same path with different bytes, and two engines can mint the same session
    *  id — either would hand one editor another's unsaved text. */
@@ -290,6 +299,37 @@ export function FileViewSurface({
   /** The engine this file belongs to, pinned for the life of the mount so a
    *  flush that leaves after a navigation still goes to the right Mac. */
   const api = useMemo(() => engineFor(hostId), [hostId]);
+  /**
+   * THE ONE THING THAT KNOWS WHAT IS ON DISK — and it outlives every save
+   * coordinator built above it, which is the whole point (lib/file-writer.ts).
+   *
+   * Re-made only when the FILE changes. A write advancing the hash must not
+   * re-make it, or the next write goes out carrying what disk looked like
+   * before the last one landed and the engine correctly refuses it as a
+   * conflict — with a change that was nobody's but the person typing.
+   */
+  const writer = useMemo(
+    () =>
+      createFileWriter({
+        send: async (text, expected) => {
+          const result = sessionId
+            ? await api.writeSessionFile(sessionId, path, text, expected)
+            : await api.writeProjectFile(projectId!, path, text, expected);
+          if (!result.written) return { written: false, refusal: result.refusal };
+          /**
+           * AND THE HEADER HAS TO FOLLOW. `file` is what the last READ returned,
+           * so without this the size stays at whatever the file was when it was
+           * opened — a saved file reading "11 B" beside 41 bytes of text, which I
+           * only noticed because it sat next to a conflict banner and made the
+           * banner look wrong too.
+           */
+          setFile((known) => (known ? { ...known, ...result.file } : known));
+          return { written: true, sha256: result.file.sha256 };
+        },
+        describe: (cause) => (cause instanceof EngineApiError ? cause.message : "The save could not be sent."),
+      }),
+    [api, sessionId, projectId, path],
+  );
   /** Restored once — and only once it has actually LANDED (see the effect):
    *  doing it again would fight the caret you just moved. */
   const restored = useRef(false);
@@ -316,8 +356,21 @@ export function FileViewSurface({
   const load = useCallback(
     async (discard = false) => {
       if (!sessionId && !projectId) return;
+      /**
+       * WHAT WE HAD ALREADY WRITTEN WHEN THIS READ WENT OUT.
+       *
+       * A settled turn re-reads (the effect below), and that read can be issued
+       * a moment BEFORE an autosave lands — so it answers with the bytes and the
+       * hash from before the save. Adopting it would put the text back to what
+       * it was a second ago and re-baseline the next write against a hash disk
+       * has already moved past, which the engine then refuses as a conflict. So
+       * a read that our own write has overtaken is simply dropped: it is not
+       * news, it is an echo.
+       */
+      const before = writer.writes;
       try {
         const read = sessionId ? await api.sessionFile(sessionId, path) : await api.projectFile(projectId!, path);
+        if (!discard && writer.writes !== before) return read.file;
         setFile(read.file);
         /**
          * CLAIMED FIRST, whichever kind of read this is, and not merely read.
@@ -334,9 +387,18 @@ export function FileViewSurface({
         const text = read.file.binary ? undefined : (stashed?.text ?? read.file.text);
         const hash = read.file.binary ? undefined : (stashed?.baseline ?? read.file.sha256);
         latest.current = text ?? "";
-        baselineRef.current = hash;
+        writer.rebase(hash);
+        /**
+         * A DISCARD RESTARTS THE SAVER RATHER THAN REPLACING IT — see the effect
+         * that acts on this. "Re-read from disk" is the way out of a refusal,
+         * and a refusal STOPS the coordinator, so something has to tell it the
+         * argument is over. That used to be the baseline changing, which rebuilt
+         * the coordinator — and that rebuild is the false-conflict bug, so the
+         * restart is said out loud instead.
+         */
+        if (discard) setDiscarded((count) => count + 1);
         setDraft(text);
-        setBaseline(hash);
+        setReadied(hash ? writer : undefined);
         setProblem(stashed?.problem);
         setPending(Boolean(stashed) && !stashed?.problem);
         // The strip's dot says the same thing this header does — including that
@@ -349,7 +411,7 @@ export function FileViewSurface({
         return undefined;
       }
     },
-    [sessionId, projectId, path, scope, api],
+    [sessionId, projectId, path, scope, api, writer],
   );
 
   useEffect(() => {
@@ -372,43 +434,23 @@ export function FileViewSurface({
    * ONE COORDINATOR PER OPEN FILE, and it is torn down with the tab.
    *
    * A ref rather than state: it is not rendered, and re-creating it on a keystroke
-   * would reset the debounce it exists to hold. Re-made when the file's IDENTITY
-   * changes — a different path, or a re-read that produced a new baseline hash —
-   * because the hash it sends with every write comes from that read.
+   * would reset the debounce it exists to hold.
+   *
+   * BUILT ONCE PER FILE, AND NOT ONCE PER SAVE. It used to be re-made whenever
+   * the baseline hash changed — which is after every successful write, so the
+   * coordinator was rebuilt by its own saves, mid-typing. Two of them then
+   * overlapped: the outgoing one flushing its pending keystrokes on the way out,
+   * and the new one re-armed from the stash carrying the hash from BEFORE that
+   * flush. Whichever landed second was refused, and the panel said the file had
+   * changed on disk about a change that was only ever the person typing. The
+   * hash it sends now comes from the writer, which outlives all of this.
    */
   const saverRef = useRef<SaveCoordinator | null>(null);
   useEffect(() => {
-    if (!editable || !baseline) return;
-    let current = baseline;
-    const persist = async (text: string): Promise<SaveOutcome> => {
-      try {
-        const result = sessionId
-          ? await api.writeSessionFile(sessionId, path, text, current)
-          : await api.writeProjectFile(projectId!, path, text, current);
-        if (result.written) {
-          // The next write must carry the hash of what we just wrote, or the
-          // second keystroke after a save is refused as a conflict with itself.
-          current = result.file.sha256;
-          baselineRef.current = current;
-          setBaseline(current);
-          /**
-           * AND THE HEADER HAS TO FOLLOW. `file` is what the last READ returned,
-           * so without this the size stays at whatever the file was when it was
-           * opened — a saved file reading "11 B" beside 41 bytes of text, which I
-           * only noticed because it sat next to a conflict banner and made the
-           * banner look wrong too.
-           */
-          setFile((known) => (known ? { ...known, ...result.file } : known));
-          return { status: "saved" };
-        }
-        return { status: "refused", reason: result.refusal };
-      } catch (cause) {
-        return { status: "failed", reason: cause instanceof EngineApiError ? cause.message : "The save could not be sent." };
-      }
-    };
+    if (!editable || readied !== writer) return;
     const saver = new SaveCoordinator({
       debounceMs: SAVE_DEBOUNCE_MS,
-      persist,
+      persist: (text) => writer.persist(text),
       onPending: (value) => {
         setPending(value);
         // Told to the strip as well as to this header — see `onSaveState`.
@@ -428,16 +470,20 @@ export function FileViewSurface({
         // the next time this file was opened.
         forgetDraft(scope, path, owner.current);
         // Except for text typed WHILE that write was open — the coordinator is
-        // already saving it, and it must stay recoverable until it lands.
-        if (latest.current !== text) rememberDraft(scope, path, { text: latest.current, baseline: current }, owner.current);
+        // already saving it, and it must stay recoverable until it lands. Owed
+        // against the hash that write PRODUCED, which is where the writer is now.
+        const owed = writer.baseline;
+        if (owed && latest.current !== text) rememberDraft(scope, path, { text: latest.current, baseline: owed }, owner.current);
       },
       onProblem: (outcome) => {
         const failure = { refused: outcome.status === "refused", reason: outcome.reason };
         setProblem(failure);
         // THE ONE THAT MADE THIS STORE NECESSARY. A refusal means the only copy
         // of this text is in the box; kept with the baseline it was edited
-        // against, so a re-opened file is refused again rather than winning.
-        rememberDraft(scope, path, { text: latest.current, baseline: current, problem: failure }, owner.current);
+        // against — which a refusal leaves exactly where it was — so a re-opened
+        // file is refused a second time rather than winning.
+        const owed = writer.baseline;
+        if (owed) rememberDraft(scope, path, { text: latest.current, baseline: owed, problem: failure }, owner.current);
         saveStateRef.current?.("problem");
       },
     });
@@ -452,16 +498,37 @@ export function FileViewSurface({
      */
     // Ours to re-arm only if this mount still holds the key — claimed in `load`.
     const stashed = claimDraft(scope, path, owner.current);
-    if (stashed && stashed.baseline === baseline) saver.change(stashed.text);
+    if (stashed && stashed.baseline === writer.baseline) saver.change(stashed.text);
     return () => {
       // FLUSHES, not cancels — see `dispose`. Closing the tab a moment after
       // typing must not throw the last keystrokes away.
       saver.dispose();
       saverRef.current = null;
     };
-    // `scope` is derived from sessionId/projectId, which are already here — it
-    // is listed so the stash key and the coordinator can never disagree.
-  }, [editable, baseline, sessionId, projectId, path, scope, api]);
+    // `scope` is derived from sessionId/projectId, which the writer is keyed on —
+    // it is listed so the stash key and the coordinator can never disagree.
+  }, [editable, readied, writer, scope, path]);
+
+  /**
+   * A DELIBERATE RE-READ RESTARTS THE SAVER IN PLACE, rather than replacing it.
+   *
+   * Two things have to happen and only one of them is obvious. The obvious one:
+   * a refusal STOPS the coordinator, and "Re-read from disk" is the way out of
+   * a refusal, so it has to be startable again or the file is silently
+   * unsaveable from then on. The other one is why this is not a rebuild — a
+   * rebuild DISPOSES the old coordinator, and disposing FLUSHES rather than
+   * cancels, so the text you just asked to throw away would be written straight
+   * back over the version you asked to read. `resume` marks it saved instead,
+   * which is what a discard means.
+   *
+   * Below the effect that assigns `saverRef`, deliberately: the compiler's
+   * immutability rule forbids assigning a ref that an earlier hook already
+   * closed over.
+   */
+  useEffect(() => {
+    if (discarded === 0) return;
+    saverRef.current?.resume(latest.current);
+  }, [discarded]);
 
   /**
    * LINE NUMBERS AS A SEPARATE COLUMN, so selecting the text and copying it does
@@ -591,9 +658,10 @@ export function FileViewSurface({
       latest.current = text;
       setDraft(text);
       saverRef.current?.change(text);
-      if (baselineRef.current) rememberDraft(scope, path, { text, baseline: baselineRef.current }, owner.current);
+      const owed = writer.baseline;
+      if (owed) rememberDraft(scope, path, { text, baseline: owed }, owner.current);
     },
-    [scope, path],
+    [scope, path, writer],
   );
 
   const applyEdit = useCallback(
