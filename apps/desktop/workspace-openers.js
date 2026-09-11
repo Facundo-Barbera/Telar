@@ -20,20 +20,31 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-/** id → what to call it, and the bundle names to look for. */
+/**
+ * id → what to call it, the bundle names to look for, and the brand mark the
+ * renderer should wear.
+ *
+ * `icon` IS A SEPARATE FIELD FROM `id` on purpose. The id is this table's
+ * private key — it is what the renderer names when it asks to launch something,
+ * and renaming one would strand a person's remembered preference. The icon is a
+ * drawing, several openers can legitimately share one, and an opener whose
+ * brand mark we do not carry OMITS IT rather than borrowing a neighbour's: the
+ * renderer draws its neutral folder glyph, which is honest, where a wrong logo
+ * is a small lie told every time the menu opens.
+ */
 const KNOWN_EDITORS = [
-  { id: "vscode", label: "Visual Studio Code", bundles: ["Visual Studio Code.app"] },
-  { id: "cursor", label: "Cursor", bundles: ["Cursor.app"] },
-  { id: "windsurf", label: "Windsurf", bundles: ["Windsurf.app"] },
-  { id: "zed", label: "Zed", bundles: ["Zed.app"] },
-  { id: "sublime", label: "Sublime Text", bundles: ["Sublime Text.app"] },
-  { id: "webstorm", label: "WebStorm", bundles: ["WebStorm.app"] },
-  { id: "intellij", label: "IntelliJ IDEA", bundles: ["IntelliJ IDEA.app", "IntelliJ IDEA CE.app"] },
-  { id: "pycharm", label: "PyCharm", bundles: ["PyCharm.app", "PyCharm CE.app"] },
-  { id: "xcode", label: "Xcode", bundles: ["Xcode.app"] },
+  { id: "vscode", label: "Visual Studio Code", icon: "vscode", bundles: ["Visual Studio Code.app"] },
+  { id: "cursor", label: "Cursor", icon: "cursor", bundles: ["Cursor.app"] },
+  { id: "windsurf", label: "Windsurf", icon: "windsurf", bundles: ["Windsurf.app"] },
+  { id: "zed", label: "Zed", icon: "zed", bundles: ["Zed.app"] },
+  { id: "sublime", label: "Sublime Text", icon: "sublime", bundles: ["Sublime Text.app"] },
+  { id: "webstorm", label: "WebStorm", icon: "webstorm", bundles: ["WebStorm.app"] },
+  { id: "intellij", label: "IntelliJ IDEA", icon: "intellij", bundles: ["IntelliJ IDEA.app", "IntelliJ IDEA CE.app"] },
+  { id: "pycharm", label: "PyCharm", icon: "pycharm", bundles: ["PyCharm.app", "PyCharm CE.app"] },
+  { id: "xcode", label: "Xcode", icon: "xcode", bundles: ["Xcode.app"] },
   { id: "nova", label: "Nova", bundles: ["Nova.app"] },
   { id: "textmate", label: "TextMate", bundles: ["TextMate.app"] },
-  { id: "iterm", label: "iTerm", bundles: ["iTerm.app"] },
+  { id: "iterm", label: "iTerm", icon: "iterm", bundles: ["iTerm.app"] },
   { id: "terminal", label: "Terminal", bundles: ["Utilities/Terminal.app"] },
   { id: "ghostty", label: "Ghostty", bundles: ["Ghostty.app"] },
 ];
@@ -43,8 +54,12 @@ function searchRoots(home = os.homedir()) {
 }
 
 /**
- * The installed openers, in the curated order. `{ id, label, path }`.
+ * The installed openers, in the curated order. `{ id, label, path, icon? }`.
  * `roots`/`exists` are injected by tests; production probes the real disk.
+ *
+ * `icon` is absent, not null, when the table carries no mark for the app — the
+ * renderer's fallback is "no icon id", so an absent key says exactly that
+ * without a second sentinel to keep in step.
  */
 function discoverOpeners({ roots = searchRoots(), exists = fs.existsSync } = {}) {
   const found = [];
@@ -52,7 +67,7 @@ function discoverOpeners({ roots = searchRoots(), exists = fs.existsSync } = {})
     for (const root of roots) {
       const bundle = editor.bundles.map((name) => path.join(root, name)).find((candidate) => exists(candidate));
       if (bundle) {
-        found.push({ id: editor.id, label: editor.label, path: bundle });
+        found.push({ id: editor.id, label: editor.label, path: bundle, ...(editor.icon ? { icon: editor.icon } : {}) });
         break;
       }
     }
