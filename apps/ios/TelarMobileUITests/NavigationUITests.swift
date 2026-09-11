@@ -263,3 +263,36 @@ extension NavigationUITests {
         XCTAssertTrue(app.buttons["Remove pasted.png"].waitForNonExistence(timeout: 5), "and removing it takes it out")
     }
 }
+
+extension NavigationUITests {
+    /// THE PANEL HAS A BUTTON, opposite the sidebar's. Reaching it used to
+    /// mean opening the overflow menu; this pins that the toolbar toggle both
+    /// opens and closes it, and that it says which state you are in.
+    func testThePanelToggleOpensAndClosesIt() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
+        let app = XCUIApplication()
+        app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
+        app.launch()
+        XCTAssertTrue(app.textFields["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
+
+        // Whatever the last run left persisted, start from closed.
+        if app.buttons["Hide panel"].exists {
+            app.buttons["Hide panel"].tap()
+            XCTAssertTrue(app.buttons["Show panel"].waitForExistence(timeout: 5))
+        }
+        let show = app.buttons["Show panel"]
+        XCTAssertTrue(show.waitForExistence(timeout: 5), "the toolbar offers the panel")
+        XCTAssertFalse(show.isSelected, "unlit while the panel is closed")
+        snap("Panel toggle — closed")
+
+        show.tap()
+        XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10), "the panel opened")
+        let hide = app.buttons["Hide panel"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "the same button now closes it")
+        XCTAssertTrue(hide.isSelected, "lit while the panel is open")
+        snap("Panel toggle — open")
+
+        hide.tap()
+        XCTAssertTrue(app.buttons["Diff tab"].waitForNonExistence(timeout: 10), "and it closes again")
+    }
+}

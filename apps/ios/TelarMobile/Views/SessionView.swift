@@ -443,6 +443,32 @@ struct SessionView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        // THE PANEL'S OWN CONTROL, opposite the sidebar's. Reaching the panel
+        // meant opening the overflow menu and choosing from it — two taps and
+        // a memory, for the thing on the other side of the screen from a
+        // sidebar button that is always there. This mirrors it: same glyph
+        // family, same placement logic, and it is lit while the panel is up so
+        // the button says which state you are in rather than only what it does.
+        //
+        // Regular width only. On a compact one the panel is a full-screen push
+        // and the menu's "Panel" and "Changes" items are the way in; a toolbar
+        // toggle for something that covers the screen reads as a trap.
+        if wantsColumn {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    panel.toggle()
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .foregroundStyle(panel.isOpen ? Theme.accent : Theme.textMuted)
+                }
+                .accessibilityLabel(panel.isOpen ? "Hide panel" : "Show panel")
+                .accessibilityAddTraits(panel.isOpen ? .isSelected : [])
+                // Cmd-Option-I for the inspector, beside the sidebar's
+                // Cmd-Option-0. The other three (Cmd-N, Cmd-S, Cmd-,) are
+                // spoken for elsewhere.
+                .keyboardShortcut("i", modifiers: [.command, .option])
+            }
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 if let hostId, let session = store.sync.session {
