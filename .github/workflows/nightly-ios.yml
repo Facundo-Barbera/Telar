@@ -15,6 +15,15 @@ name: Nightly iOS build
 # APPLE_API_* secrets are the SAME key the desktop release uses to notarize —
 # one credential, both platforms (the key needs the App Manager role for
 # build uploads; notarization alone tolerates less).
+#
+# ON THE MAC MINI, like the desktop nightly. GitHub's hosted macOS lane was
+# the reason this workflow existed: the Mac only had a BETA Xcode, and App
+# Store Connect refuses beta-built uploads. Since 2026-09-11 the Mac carries
+# the release Xcode at /Applications/Xcode.app, so the one thing the hosted
+# runner offered is on the desk — and the hosted lane had stopped starting
+# jobs at all (billing). `DEVELOPER_DIR` rather than `xcode-select`: the
+# runner's user has no passwordless sudo, and every script here honours the
+# variable. See docs/operations/mac-mini-runner-plan-2026-09-11.md.
 on:
   push:
     tags:
@@ -30,22 +39,44 @@ concurrency:
 
 jobs:
   testflight:
-    runs-on: macos-15
+    # Only trusted release triggers use the personal Mac.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     timeout-minutes: 45
+    env:
+      # THE ONE XCODE ON THIS MAC, and it must be a release build: App Store
+      # Connect refuses uploads from a beta. A missing app fails the first
+      # xcodebuild loudly rather than falling back to whatever xcode-select
+      # names (the Command Line Tools, which cannot archive an iOS app).
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
 
-      # Newest RELEASE Xcode on the image — betas are excluded because App
-      # Store Connect refuses beta-built uploads (the reason the nightly
-      # ships from CI at all), and the default selection can lag versions
-      # behind what the image carries.
-      - name: Select the newest release Xcode
+      # Same rule, same enforcement as nightly-desktop.yml: a nightly installs
+      # itself on real phones, so it builds from main and nothing else.
+      - name: Refuse to build a tag that is not on main
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
-          ls -d /Applications/Xcode*.app
-          PICK=$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -Ev -i 'beta|rc' | sort -V | tail -1)
-          if [ -n "$PICK" ]; then sudo xcode-select -s "$PICK/Contents/Developer"; fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not an ancestor of origin/main. Releases come from main."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is on main."
+
+      - name: Confirm the release Xcode
+        run: |
+          set -euo pipefail
           xcodebuild -version
+          # A beta's build number ends in a letter (27A5252f); a release's does
+          # not (27A266a is an RC, which Apple accepts). Refuse the beta here,
+          # where it costs seconds, not after a ten-minute archive.
+          BUILD=$(xcodebuild -version | awk '/Build version/ {print $3}')
+          if /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DEVELOPER_DIR/../Info.plist" | grep -qi beta; then
+            echo "::error::$DEVELOPER_DIR is a beta Xcode (build $BUILD); App Store Connect refuses its uploads."
+            exit 1
+          fi
 
       - name: Materialize the App Store Connect API key
         env:
