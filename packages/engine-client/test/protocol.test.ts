@@ -522,6 +522,36 @@ describe("SpoolNote, SpoolSearchHit, tags and the socket card — the shelf/sear
     ).toBe(false);
   });
 
+  test("a ProjectNote mirrors the shelf note where the two mean the same thing, and diverges where they do not", () => {
+    const note = packageRoot.ProjectNote.parse({
+      id: "n-1",
+      projectId: "project_aurora",
+      title: "Deploy",
+      body: "bun run ship",
+      created: stamp,
+      updated: stamp,
+      author: "session",
+      futureKey: "kept", // z.looseObject — a later build's field survives
+    });
+    expect(note.schemaVersion).toBe(1);
+    expect((note as Record<string, unknown>).futureKey).toBe("kept");
+    // The same closed author set the shelf has: provenance has two hands here
+    // too, and deliberately is NOT a `{ sessionId }` — see the module header.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-2", projectId: "p", title: "t", body: "", created: stamp, updated: stamp, author: "model" }).success,
+    ).toBe(false);
+    // WHERE IT DIVERGES: `projectId` is required (a note with no project has no
+    // notebook to live in, unlike a shelf note, which may float), and there is
+    // no `retired` — this store deletes.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-3", title: "t", body: "", created: stamp, updated: stamp, author: "you" }).success,
+    ).toBe(false);
+    // An empty body parses: "+, type a title, come back to it" is the gesture.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-4", projectId: "p", title: "t", body: "", created: stamp, updated: stamp, author: "you" }).success,
+    ).toBe(true);
+  });
+
   test("a search hit's kind is the closed four, and `closed` is the marked-not-hidden channel", () => {
     const hit = packageRoot.SpoolSearchHit.parse({ kind: "note", id: "n-1", title: "t", snippet: "s", closed: true });
     expect(hit.closed).toBe(true);
