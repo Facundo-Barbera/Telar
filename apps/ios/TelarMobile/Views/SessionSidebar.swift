@@ -106,7 +106,23 @@ struct SessionSidebar: View {
                 ContentUnavailableView("Your work starts here", systemImage: "text.bubble", description: Text("Start a conversation or pick up work from your Mac."))
             }
         }
-        .listStyle(.sidebar)
+        // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
+        //
+        // `.sidebar` is not a look, it is TWO looks: in a compact width it
+        // falls back to inset-grouped, and in the split view's sidebar column
+        // it renders flat. So the phone drew every band as its own rounded card
+        // — the pinned pair as one card with a hairline between the rows, each
+        // project group as a card, the Settled shelf as a card — while the iPad
+        // drew the same rows directly on the column with SPACING as the only
+        // grouping cue. Same file, same sections, two different products, and
+        // the reported preference was for the phone's: a card is a visible
+        // boundary, and a gap is a boundary you have to infer.
+        //
+        // `.insetGrouped` renders the same at both widths, so the cards are now
+        // the grouping cue everywhere. Nothing about the CONTENT changes: the
+        // section spacing, the 30pt row floor, and the card/slim row variants
+        // are all untouched — this only decides what encloses them.
+        .listStyle(.insetGrouped)
         .listSectionSpacing(12)
         // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
         // row at the standard 44pt touch target. The slim rows are the whole
@@ -115,9 +131,34 @@ struct SessionSidebar: View {
         // still a comfortable tap because its content is a full line of text
         // plus the list's own padding.
         .environment(\.defaultMinListRowHeight, 30)
+        // THE PAGE STAYS OURS AT BOTH WIDTHS, and that is a deliberate choice
+        // against letting the iPad's floating sidebar panel show its own
+        // material through.
+        //
+        // A card reads as a card because of what is BEHIND it. On the phone
+        // that is `Theme.sheet` with the system's grouped-secondary fill on top
+        // — a fixed, known contrast, in both appearances. The panel's material
+        // is translucent and takes its colour from whatever the window happens
+        // to be showing underneath, so the same card would separate cleanly
+        // over a dark transcript and nearly vanish over a light one. Trading a
+        // dependable boundary for a prettier backdrop is the wrong way round
+        // when the boundary is the entire point of this change.
+        //
+        // `scrollContentBackground(.hidden)` hides the SCROLL VIEW's fill only;
+        // the cells keep the system's grouped-secondary background, which is
+        // why the cards still look like system cards rather than like our
+        // colour twice.
         .scrollContentBackground(.hidden)
         .background(Theme.sheet)
         .navigationTitle("Telar")
+        // LARGE AT BOTH WIDTHS. The sidebar column defaults to an inline title,
+        // which is what put "Telar" on the same line as the two toolbar buttons
+        // on the iPad and left the search field to collapse into the bar beside
+        // them. Asking for the large title gives the phone's arrangement back:
+        // the buttons on their own row, the title under them, and — because a
+        // navigation-bar DRAWER is a drawer under the title rather than a slot
+        // inside the bar — the search field under that.
+        .navigationBarTitleDisplayMode(.large)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -170,6 +211,15 @@ struct SessionSidebar: View {
     /// — pinned, and "Needs you" — keep the card.
     private enum RowVariant { case card, slim }
 
+    /// THE DISCLOSURE CHEVRON IS THE SYSTEM'S CALL, and is left to it.
+    ///
+    /// A `NavigationLink` in a compact width PUSHES, so it gets the chevron
+    /// that says so; in the split view's sidebar column the same link SELECTS,
+    /// and the row that is selected stays highlighted. Those are different
+    /// promises, and drawing a push affordance next to a row that does not push
+    /// would be the one place this file lied about what a tap does. The two
+    /// widths look alike everywhere it is a matter of taste; here it is a
+    /// matter of fact, so they are allowed to differ.
     private func sessionRow(_ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true) -> some View {
         NavigationLink(value: row.id) {
             Group {
