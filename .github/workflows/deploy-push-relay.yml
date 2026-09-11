@@ -11,7 +11,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # On the Mac mini: a node script calling Cloudflare needs no Linux, and the
+    # hosted lane stopped starting jobs (billing) on 2026-09-07.
+    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4

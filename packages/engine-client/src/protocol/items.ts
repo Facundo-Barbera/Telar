@@ -240,6 +240,14 @@ export const ItemDetail = z.discriminatedUnion("type", [
      *  The row is drawn as a peer's, never as the person's bubble. */
     sender: z.object({ sessionId: z.string().min(1).optional() }).optional(),
     /**
+     * The engine's short announcement of that message — sender, run, size and
+     * opening line. `text` is still the body: this is the COLLAPSED label, and
+     * expanding the row shows what the peer actually sent. It is also what the
+     * provider was handed, so the row and the model agree about what the turn
+     * was told. See `Turn.agentNotice`.
+     */
+    notice: z.string().optional(),
+    /**
      * Present when the ENGINE ITSELF wrote this mid-turn message: a wake, from
      * a session this one subscribed to. Nobody typed it and no agent sent it,
      * so it is neither the person's bubble nor a peer's report — it is the

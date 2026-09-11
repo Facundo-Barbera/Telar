@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { frameAgentMessage, framedSteerText, framedTurnInput, frameWakeMessage, steerRowTitle } from "../src/attribution";
+import { frameAgentMessage, frameAgentNotice, framedSteerText, framedTurnInput, frameWakeMessage, steerRowTitle } from "../src/attribution";
 
 /**
  * WHO IS SPEAKING, and the one rule that makes these functions worth having:
@@ -35,6 +35,21 @@ test("an agent's message stays a peer's report, and a person's stays bare", () =
   // REMOVE an authority the model would otherwise assume, and the person has it.
   expect(framedTurnInput({ input: "ship it" })).toBe("ship it");
   expect(framedSteerText({ text: "ship it" })).toBe("ship it");
+});
+
+test("a notice is framed as the ENGINE's, because that is who wrote it", () => {
+  const fromAgent = { sessionId: "session_boss" };
+  const notice = `[agent message · report] from session session_boss (run run_x, 12 chars): "ship it"`;
+  const framed = framedTurnInput({ input: "ship it", origin: "session", sender: fromAgent, agentNotice: notice });
+  expect(framed).toBe(frameAgentNotice(notice, fromAgent));
+  expect(framed).toEndWith(notice);
+  // The MESSAGE frame says "the text below was sent by another agent"; over a
+  // notice that sentence is false, and this is the difference that keeps it so.
+  expect(framed).not.toBe(frameAgentMessage(notice, fromAgent));
+  expect(framed).toContain("the ENGINE's own notice");
+  expect(framed).toContain("carries no human authorization");
+  // Both landing sites, one sentence — the same rule as the two wake paths.
+  expect(framedSteerText({ text: "ship it", notice, sender: fromAgent })).toBe(framed);
 });
 
 test("provenance is read from the stamp, never from the text", () => {

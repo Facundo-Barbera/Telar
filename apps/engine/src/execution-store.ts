@@ -16,6 +16,29 @@ export class ExecutionStore {
   private readonly db: Database;
   private depth = 0;
   private closed = false;
+  /**
+   * EVERY STATEMENT COMPILED ONCE, KEYED BY ITS OWN SQL.
+   *
+   * These are a fixed set of literals — there is no user input in any of them,
+   * and no path where the text varies — so the cache is bounded by the number
+   * of call sites rather than by anything a caller can grow. Preparing is not
+   * free: sqlite reparses and replans the statement each time, and with the
+   * worker beating ten times a second `prepare` was 8% of the engine's idle
+   * CPU on its own, entirely to recompile the same seven queries.
+   *
+   * Both runtimes finalize whatever they still hold when the database closes,
+   * so the cache needs no teardown beyond dropping its references.
+   */
+  private readonly statements = new Map<string, Statement>();
+
+  private statement(sql: string): Statement {
+    let cached = this.statements.get(sql);
+    if (!cached) {
+      cached = this.db.prepare(sql);
+      this.statements.set(sql, cached);
+    }
+    return cached;
+  }
   constructor(readonly root: string) {
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
@@ -41,40 +64,40 @@ export class ExecutionStore {
     return key === "task-stops.json" || key === "subscriptions.json" || /^sessions\/[A-Za-z0-9_-]+\/(session|queue|items|requests|tasks)\.json$/.test(key);
   }
   read(file: string): unknown {
-    const row = this.db.prepare("SELECT value FROM documents WHERE key=?").get(path.relative(this.root, file));
+    const row = this.statement("SELECT value FROM documents WHERE key=?").get(path.relative(this.root, file));
     return row ? JSON.parse(String(row.value)) : undefined;
   }
   write(file: string, value: unknown): void {
-    this.db.prepare("INSERT INTO documents(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    this.statement("INSERT INTO documents(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
       .run(path.relative(this.root, file), JSON.stringify(value));
     if (path.basename(file) === "session.json") this.fenceLegacy(path.basename(path.dirname(file)));
   }
   events(sessionId: string, after = 0): EngineEvent[] {
-    return this.db.prepare("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
+    return this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
       .map((row) => JSON.parse(String(row.value)) as EngineEvent);
   }
   cursor(sessionId: string): number {
-    return Number(this.db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+    return Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
   }
   append(event: EngineEvent): void {
-    this.db.prepare("INSERT INTO events(session_id,id,value) VALUES(?,?,?)").run(event.sessionId, event.id, JSON.stringify(event));
+    this.statement("INSERT INTO events(session_id,id,value) VALUES(?,?,?)").run(event.sessionId, event.id, JSON.stringify(event));
   }
   sessionIds(): string[] {
-    return this.db.prepare("SELECT key FROM documents WHERE key LIKE 'sessions/%/session.json'").all().map((row) => String(row.key).split("/")[1]!);
+    return this.statement("SELECT key FROM documents WHERE key LIKE 'sessions/%/session.json'").all().map((row) => String(row.key).split("/")[1]!);
   }
   deleteSession(sessionId: string): void {
     const prefix = `sessions/${sessionId}/`;
-    this.db.prepare("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
-    this.db.prepare("DELETE FROM events WHERE session_id=?").run(sessionId);
+    this.statement("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
+    this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
   }
   transaction<T>(command: string, operation: () => T, commandId?: string): T {
     if (this.depth > 0) return operation();
     const receiptId = commandId ?? crypto.randomUUID();
-    const changesBefore = Number(this.db.prepare("SELECT total_changes() AS count").get()?.count ?? 0);
+    const changesBefore = Number(this.statement("SELECT total_changes() AS count").get()?.count ?? 0);
     this.db.exec("BEGIN IMMEDIATE");
     this.depth += 1;
     try {
-      const known = this.db.prepare("SELECT command,result FROM receipts WHERE id=?").get(receiptId);
+      const known = this.statement("SELECT command,result FROM receipts WHERE id=?").get(receiptId);
       if (known) {
         if (known.command !== command) throw new Error("command id was already used for a different command");
         this.db.exec("COMMIT");
@@ -82,11 +105,11 @@ export class ExecutionStore {
       }
       const result = operation();
       if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("execution transactions must be synchronous");
-      const changed = Number(this.db.prepare("SELECT total_changes() AS count").get()?.count ?? 0) !== changesBefore;
+      const changed = Number(this.statement("SELECT total_changes() AS count").get()?.count ?? 0) !== changesBefore;
       if (commandId !== undefined || changed)
         // Internal receipts are audit markers, not replayable responses. In
         // particular, never retain a resolved worker claim's provider secrets.
-        this.db.prepare("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command,
+        this.statement("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command,
           JSON.stringify(commandId === undefined ? {} : { value: result }));
       this.db.exec("COMMIT");
       return result;
@@ -106,7 +129,7 @@ export class ExecutionStore {
       fs.writeFileSync(path.join(destination, "sessions", id, "events.ndjson"), events.map((event) => JSON.stringify(event) + "\n").join(""), { mode: 0o600 });
     }
   }
-  close(): void { if (!this.closed) { this.db.close(); this.closed = true; } }
+  close(): void { if (!this.closed) { this.statements.clear(); this.db.close(); this.closed = true; } }
   private fenceLegacy(sessionId: string): void {
     const file = path.join(this.root, "sessions", sessionId, "session.json");
     // Avoid a disk write per metadata update; this is an immutable downgrade fence.
@@ -141,7 +164,7 @@ export class ExecutionStore {
             }
           } else {
             const value = JSON.parse(raw);
-            this.db.prepare("INSERT INTO documents(key,value) VALUES(?,?)").run(`sessions/${entry.name}/${name}`, JSON.stringify(value));
+            this.statement("INSERT INTO documents(key,value) VALUES(?,?)").run(`sessions/${entry.name}/${name}`, JSON.stringify(value));
           }
         }
       }

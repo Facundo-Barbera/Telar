@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Archive and upload a Telar Mobile nightly to TestFlight. CI is the caller
 # (.github/workflows/nightly-ios.yml, on an ios-nightly-* tag) — pushing the
-# tag is how a nightly is cut. Running locally still works for debugging
-# (`--no-upload` to stop before credentials), but a build from this Mac's
-# BETA Xcode is refused by App Store Connect; the runner's release Xcode is
-# the one Apple accepts.
+# tag is how a nightly is cut. The runner is the Mac mini itself, with its
+# one release Xcode (a BETA's build is refused by App Store Connect).
+# Running by hand still works for debugging: `--no-upload` stops before
+# credentials.
 #
 # EXPORT THEN UPLOAD, deliberately two steps: exportArchive with
 # `destination: upload` ships the archive's DEVELOPMENT-signed binary and
@@ -24,10 +24,10 @@ BUNDLE="${TELAR_BUNDLE_ID:-com.telar.mobile}"
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 ARCHIVE="$DIR/DerivedData-nightly/Telar-$BUILD_NUMBER.xcarchive"
 EXPORT_DIR="$DIR/DerivedData-nightly/export-$BUILD_NUMBER"
-# The Mac's Xcode beta when present; whatever xcode-select says otherwise
-# (the CI runner's image Xcode).
-if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode-beta.app ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+# The Mac's one Xcode. Named here so a bare `xcode-select` pointing at the
+# Command Line Tools (which cannot archive an iOS app) never gets a chance.
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
 
 xcodebuild \

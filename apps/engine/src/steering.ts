@@ -71,6 +71,10 @@ export class TurnBoundary {
  *  turn's attachments. */
 export type SteerMessage = {
   text: string;
+  /** The engine's short announcement of an agent's message — what the PROVIDER
+   *  reads in place of `text`, while `text` remains the body the transcript row
+   *  expands to. Set only alongside `sender`. See `Turn.agentNotice`. */
+  notice?: string;
   attachments?: TurnAttachment[];
   /** Present when an AGENT sent it — the driver frames the words as a peer's
    *  and the transcript row says so. Absent means the person typed it. */

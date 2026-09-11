@@ -5,15 +5,14 @@
 #
 #   apps/ios/phone.sh
 #
-# The nightly does NOT ship from this Mac: push an ios-nightly-* tag and the
-# Actions workflow uploads to TestFlight (this Mac's beta Xcode produces
-# builds App Store Connect refuses; the runner's release Xcode is accepted).
+# The nightly is a tag, not this script: push an ios-nightly-* tag and the
+# Actions workflow archives on this same Mac and uploads to TestFlight.
 set -euo pipefail
 
 DEVICE="${TELAR_IPHONE_UDID:-00008150-001A7DC2367B401C}"
 TEAM="${DEVELOPMENT_TEAM:-MM74W7WGAM}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 MODE=dev
 CONFIG=Debug
