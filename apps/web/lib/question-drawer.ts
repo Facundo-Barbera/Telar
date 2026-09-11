@@ -20,20 +20,10 @@ import type { EngineRequest, UserInputField } from "@telar/engine-client";
  * there — so the two kinds differ in one fold instead of in two state shapes.
  */
 
-/**
- * THE CONTRACT, READ EARLY. `packages/engine-client`'s `UserInputField` does
- * not carry `multiple` yet — the sibling change adds it. Until then this alias
- * is the web's whole view of the flag, and `isMultiChoice` below is its only
- * reader. DELETE BOTH the alias and the cast inside `isMultiChoice` when the
- * package lands; nothing else in the app touches the shim.
- */
-type MultiCapableField = UserInputField & { multiple?: boolean };
-
 /** Whether the agent asked for any number of these choices rather than one.
- *  The drawer and the approval card share this reader so the shim above has a
- *  single home to delete. */
+ *  The drawer and the approval card share this one reader. */
 export function isMultiChoice(field: UserInputField): boolean {
-  return field.kind === "choice" && (field as MultiCapableField).multiple === true;
+  return field.kind === "choice" && field.multiple === true;
 }
 
 export type QuestionField = {
