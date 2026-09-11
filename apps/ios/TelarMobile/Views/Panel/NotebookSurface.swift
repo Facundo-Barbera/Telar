@@ -28,7 +28,14 @@ struct NotebookSurface: View {
     @State private var drafts: [String: String] = [:]
     @State private var saveTasks: [String: Task<Void, Never>] = [:]
     @State private var lightbox: EngineID?
-    @State private var outputsHidden: Set<String> = []
+    /// THE SELECTED CELL — JupyterLab's command mode, sized for touch. Tap
+    /// selects, tap the selected one edits. Without it every tap landed a
+    /// caret, and a notebook you could not scroll without typing in it.
+    @State private var selected: String?
+    @FocusState private var focusedCell: String?
+    /// Set the moment a draft lands, cleared when the last one flushes: the
+    /// header's dot and tick.
+    @State private var saved = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,11 +45,15 @@ struct NotebookSurface: View {
                 if let failure { staleBanner(failure) }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        insertBar(after: nil)
                         ForEach(notebook.cells) { cell in
                             cellView(cell)
-                            insertBar(after: cell.id)
+                            // BETWEEN CELLS ONLY WHEN ONE IS SELECTED. A row of
+                            // buttons between every pair is noise in a notebook
+                            // you are reading; it is exactly what you want in
+                            // the one you are editing.
+                            if selected == cell.id { insertBar(after: cell.id) }
                         }
+                        addBar
                     }
                     .padding(.vertical, 8)
                 }
@@ -74,6 +85,51 @@ struct NotebookSurface: View {
             await readKernel()
         }
         .onDisappear { flushAll() }
+        // THE CELL TOOLBAR RIDES THE KEYBOARD. Everything you do to a cell
+        // while typing in it was behind an ellipsis menu you had to dismiss
+        // the keyboard to reach.
+        .toolbar {
+            if let cell = selectedCell {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if cell.type == .code {
+                        Button { Task { await run(cell) } } label: { Image(systemName: "play.fill") }
+                            .accessibilityLabel("Run")
+                        Button { Task { await runAndAdvance(cell) } } label: { Image(systemName: "play.circle") }
+                            .accessibilityLabel("Run and advance")
+                    }
+                    Button { Task { await insert(after: cell.id, type: cell.type == .code ? "code" : "markdown") } } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Insert below")
+                    Button { Task { await setType(cell, cell.type == .code ? "markdown" : "code") } } label: {
+                        Image(systemName: "arrow.left.arrow.right")
+                    }
+                    .accessibilityLabel(cell.type == .code ? "Make text" : "Make code")
+                    Button { Task { await move(cell, by: -1) } } label: { Image(systemName: "arrow.up") }
+                        .accessibilityLabel("Move up")
+                    Button { Task { await move(cell, by: 1) } } label: { Image(systemName: "arrow.down") }
+                        .accessibilityLabel("Move down")
+                    Button(role: .destructive) { Task { await delete(cell) } } label: { Image(systemName: "trash") }
+                        .accessibilityLabel("Delete cell")
+                    Spacer()
+                    Button { endEditing(cell) } label: { Image(systemName: "keyboard.chevron.compact.down") }
+                        .accessibilityLabel("Dismiss keyboard")
+                }
+            }
+        }
+        // A HARDWARE KEYBOARD RUNS CELLS, the two chords every notebook uses.
+        // Zero-sized buttons rather than `onKeyPress`, so they are shortcuts
+        // and not controls in the layout.
+        .background {
+            ZStack {
+                Button("") { if let cell = selectedCell { Task { await runAndAdvance(cell) } } }
+                    .keyboardShortcut(.return, modifiers: .shift)
+                Button("") { if let cell = selectedCell { Task { await run(cell) } } }
+                    .keyboardShortcut(.return, modifiers: .command)
+            }
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         .sheet(item: Binding(get: { lightbox.map { LightboxItem(id: $0) } }, set: { lightbox = $0?.id })) { item in
             ImageLightbox(api: api, sessionId: sessionId, hostId: hostId, attachmentId: item.id)
         }
@@ -88,6 +144,15 @@ struct NotebookSurface: View {
             Image(systemName: "text.book.closed").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
             Text(path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted2).lineLimit(1).truncationMode(.head)
             Spacer(minLength: 4)
+            // UNSAVED WORK IS VISIBLE. A debounced autosave with no sign of
+            // itself is indistinguishable from one that is broken.
+            if !drafts.isEmpty {
+                Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                    .accessibilityLabel("Saving")
+            } else if saved {
+                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.statusEmerald)
+                    .accessibilityLabel("Saved")
+            }
             KernelPill(state: kernel)
             Button { Task { await runAll() } } label: {
                 Image(systemName: runningAll ? "hourglass" : "play.fill").font(.system(size: 11))
@@ -140,34 +205,65 @@ struct NotebookSurface: View {
     // MARK: cells
 
     private func insertBar(after: String?) -> some View {
-        HStack(spacing: 6) {
-            Spacer()
-            Button("+ code") { Task { await insert(after: after, type: "code") } }
-            Button("+ text") { Task { await insert(after: after, type: "markdown") } }
-            Spacer()
+        HStack(spacing: 10) {
+            Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+            Button("+ Code") { Task { await insert(after: after, type: "code") } }
+            Button("+ Text") { Task { await insert(after: after, type: "markdown") } }
+            Rectangle().fill(Theme.borderSubtle).frame(height: 1)
         }
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(Theme.textTertiary)
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(Theme.accent)
         .buttonStyle(.plain)
-        .frame(height: 16)
-        .opacity(0.7)
+        .frame(height: 32)
+        .padding(.horizontal, 10)
+    }
+
+    /// ALWAYS THERE, at the end. Adding the first cell to an empty notebook,
+    /// or one more at the bottom, should never require selecting something
+    /// first.
+    private var addBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                Task { await insert(after: notebook?.cells.last?.id, type: "code") }
+            } label: {
+                Label("Code", systemImage: "plus").frame(minHeight: 36)
+            }
+            Button {
+                Task { await insert(after: notebook?.cells.last?.id, type: "markdown") }
+            } label: {
+                Label("Text", systemImage: "plus").frame(minHeight: 36)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 12, weight: .medium))
+        .buttonStyle(.bordered)
+        .tint(Theme.textMuted)
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
     }
 
     private func cellView(_ cell: NotebookCell) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 if cell.type == .code {
+                    // A 44pt TARGET. An 11pt glyph is a dart-throw on a
+                    // touchscreen, and running a cell is the thing you do most.
                     Button { Task { await run(cell) } } label: {
-                        Image(systemName: running.contains(cell.id) ? "hourglass" : "play").font(.system(size: 11))
+                        Image(systemName: running.contains(cell.id) ? "hourglass" : "play.fill")
+                            .font(.system(size: 14))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(running.contains(cell.id))
                     .accessibilityLabel("Run cell")
-                    Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textTertiary)
+                    Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textTertiary)
                 } else {
-                    Image(systemName: "text.alignleft").font(.system(size: 10)).foregroundStyle(Theme.textTertiary).padding(.top, 4)
+                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                        .frame(width: 44, height: 44)
                 }
             }
-            .frame(width: 34)
+            .frame(width: 44)
             VStack(alignment: .leading, spacing: 6) {
                 if cell.type == .markdown && editing != cell.id {
                     MarkdownText(text: drafts[cell.id] ?? cell.source)
@@ -183,10 +279,8 @@ struct NotebookSurface: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(6)
                         .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                        .onTapGesture { editing = cell.id }
                         .accessibilityAddTraits(.isButton)
-                        .accessibilityHint("Edit this cell")
+                        .accessibilityHint(selected == cell.id ? "Edit this cell" : "Select this cell")
                 } else {
                     TextEditor(text: Binding(get: { drafts[cell.id] ?? cell.source }, set: { edit(cell, $0) }))
                         .font(.system(size: 12, design: .monospaced))
@@ -197,8 +291,11 @@ struct NotebookSurface: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(6)
                         .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                        .focused($focusedCell, equals: cell.id)
                 }
-                if let outputs = cell.outputs, !outputs.isEmpty, !outputsHidden.contains(cell.id) {
+                // Outputs are always shown now: long ones CLAMP with their own
+                // expander rather than being hidden wholesale from a menu.
+                if let outputs = cell.outputs, !outputs.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(outputs.enumerated()), id: \.offset) { _, output in
                             CellOutputView(output: output, api: api, sessionId: sessionId, onOpenImage: { lightbox = $0 })
@@ -207,24 +304,99 @@ struct NotebookSurface: View {
                     .padding(.leading, 4)
                 }
             }
-            Menu {
-                if cell.type == .markdown { Button("Edit text", systemImage: "pencil") { editing = cell.id } }
-                if cell.type == .markdown && editing == cell.id { Button("Done editing", systemImage: "checkmark") { editing = nil; flush(cell.id) } }
-                Button(cell.type == .code ? "Make text" : "Make code", systemImage: "arrow.left.arrow.right") {
-                    Task { await setType(cell, cell.type == .code ? "markdown" : "code") }
-                }
-                if let outputs = cell.outputs, !outputs.isEmpty {
-                    Button(outputsHidden.contains(cell.id) ? "Show outputs" : "Hide outputs", systemImage: "eye") {
-                        if outputsHidden.contains(cell.id) { outputsHidden.remove(cell.id) } else { outputsHidden.insert(cell.id) }
-                    }
-                }
-                Button("Delete cell", systemImage: "trash", role: .destructive) { Task { await delete(cell) } }
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(Theme.textTertiary).frame(width: 24, height: 24)
-            }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+        // THE SELECTED CELL IS VISIBLE. A ring and a wash, the way JupyterLab
+        // marks command mode — without it "tap again to edit" is a rule with
+        // nothing on screen to hang it on.
+        .background(selected == cell.id ? Theme.accent.opacity(0.05) : .clear)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(selected == cell.id ? Theme.accent : .clear)
+                .frame(width: 3)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tap selects; tap the selected one edits. Markdown keeps its
+            // double tap as well, which is the gesture people already know.
+            if selected == cell.id { beginEditing(cell) } else { select(cell) }
+        }
+        .contextMenu { cellMenu(cell) }
+    }
+
+    @ViewBuilder private func cellMenu(_ cell: NotebookCell) -> some View {
+        if editing == cell.id {
+            Button("Done editing", systemImage: "checkmark") { endEditing(cell) }
+        } else {
+            Button("Edit", systemImage: "pencil") { beginEditing(cell) }
+        }
+        if cell.type == .code {
+            Button("Run", systemImage: "play.fill") { Task { await run(cell) } }
+            Button("Run and advance", systemImage: "play.circle") { Task { await runAndAdvance(cell) } }
+        }
+        Button(cell.type == .code ? "Make text" : "Make code", systemImage: "arrow.left.arrow.right") {
+            Task { await setType(cell, cell.type == .code ? "markdown" : "code") }
+        }
+        Button("Insert below", systemImage: "plus") { Task { await insert(after: cell.id, type: cell.type == .code ? "code" : "markdown") } }
+        Button("Move up", systemImage: "arrow.up") { Task { await move(cell, by: -1) } }
+        Button("Move down", systemImage: "arrow.down") { Task { await move(cell, by: 1) } }
+        Button("Delete cell", systemImage: "trash", role: .destructive) { Task { await delete(cell) } }
+    }
+
+    // MARK: selection
+
+    private var selectedCell: NotebookCell? {
+        guard let selected else { return nil }
+        return notebook?.cells.first { $0.id == selected }
+    }
+
+    private func select(_ cell: NotebookCell) {
+        // Selecting away from a cell being edited ends that edit, so a draft
+        // is never left open behind a selection somewhere else.
+        if let editing, editing != cell.id, let previous = notebook?.cells.first(where: { $0.id == editing }) {
+            endEditing(previous)
+        }
+        selected = cell.id
+    }
+
+    private func beginEditing(_ cell: NotebookCell) {
+        selected = cell.id
+        editing = cell.id
+        focusedCell = cell.id
+    }
+
+    private func endEditing(_ cell: NotebookCell) {
+        if editing == cell.id { editing = nil }
+        focusedCell = nil
+        flush(cell.id)
+    }
+
+    /// Run, then select the next cell — Shift-Return's half that is not the
+    /// run. At the end it stays put rather than wrapping, which is what
+    /// JupyterLab does when there is nothing after.
+    private func runAndAdvance(_ cell: NotebookCell) async {
+        await run(cell)
+        editing = nil
+        focusedCell = nil
+        if let next = notebookNext(cell.id, in: (notebook?.cells ?? []).map(\.id)) { selected = next }
+    }
+
+    /// MOVE IS THE ENGINE'S JOB. Doing it here as delete-then-insert would
+    /// throw away the cell's outputs and its execution count, which is the
+    /// history of what actually ran. If a Mac's plugin does not know this
+    /// edit, its own sentence lands in the problem banner.
+    private func move(_ cell: NotebookCell, by offset: Int) async {
+        guard let cells = notebook?.cells,
+              let landing = notebookMove(cell.id, by: offset, in: cells.map(\.id)) else { return }
+        var edit: [String: JSONValue] = ["kind": .string("move"), "cellId": .string(cell.id)]
+        if let after = landing.after { edit["after"] = .string(after) }
+        do {
+            notebook = try await api.notebookEdit(sessionId, path: path, edit: .object(edit))
+            problem = nil
+        } catch {
+            problem = describe(error)
+        }
     }
 
     // MARK: reads
@@ -248,6 +420,7 @@ struct NotebookSurface: View {
 
     private func edit(_ cell: NotebookCell, _ text: String) {
         drafts[cell.id] = text
+        saved = false
         saveTasks[cell.id]?.cancel()
         saveTasks[cell.id] = Task {
             try? await Task.sleep(for: .milliseconds(600))
@@ -262,6 +435,7 @@ struct NotebookSurface: View {
             let fresh = try await api.notebookEdit(sessionId, path: path, edit: .object(["kind": .string("set"), "cellId": .string(cellId), "source": .string(text)]))
             notebook = fresh
             if drafts[cellId] == text { drafts[cellId] = nil }
+            if drafts.isEmpty { saved = true }
             problem = nil
         } catch {
             problem = describe(error)
@@ -442,4 +616,24 @@ struct ImageLightbox: View {
             .task { image = await AttachmentImageCache.shared.image(host: hostId, session: sessionId, attachmentId: attachmentId, api: api) }
         }
     }
+}
+
+/// WHERE SHIFT-RETURN LANDS. The cell after this one, or nowhere: at the end
+/// it stays put rather than wrapping to the top, which is what JupyterLab
+/// does and what anyone running a notebook top to bottom expects.
+func notebookNext(_ id: String, in ids: [String]) -> String? {
+    guard let index = ids.firstIndex(of: id), ids.indices.contains(index + 1) else { return nil }
+    return ids[index + 1]
+}
+
+/// WHICH CELL A MOVED ONE SHOULD FOLLOW. The engine's `move` edit is stated as
+/// "put this after that", so a move DOWN follows the neighbour it swaps with,
+/// while a move UP follows the one two places back — and follows nothing at
+/// all when it becomes the first cell. Off the ends there is nothing to do.
+func notebookMove(_ id: String, by offset: Int, in ids: [String]) -> (after: String?, index: Int)? {
+    guard offset != 0, let index = ids.firstIndex(of: id) else { return nil }
+    let target = index + offset
+    guard ids.indices.contains(target) else { return nil }
+    let afterIndex = offset < 0 ? target - 1 : target
+    return (ids.indices.contains(afterIndex) ? ids[afterIndex] : nil, target)
 }

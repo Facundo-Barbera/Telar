@@ -12,19 +12,15 @@ struct CellOutputView: View {
     var body: some View {
         switch output {
         case .text(let stream, let text, let truncated):
-            Text(text + (truncated ? " … truncated" : ""))
-                .font(.system(size: 11, design: .monospaced))
+            ClampedLines(text: text + (truncated ? " … truncated" : ""), size: 11)
                 .foregroundStyle(stream == "stderr" ? Theme.statusAmber : stream == "result" ? Theme.text : Theme.text.opacity(0.8))
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .error(let error):
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(error.ename): \(error.evalue)").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.statusRed)
                 if !error.traceback.isEmpty {
-                    Text(error.traceback.map(stripAnsi).joined(separator: "\n"))
-                        .font(.system(size: 10, design: .monospaced))
+                    ClampedLines(text: error.traceback.map(stripAnsi).joined(separator: "\n"), size: 10)
                         .foregroundStyle(Theme.textMuted)
-                        .textSelection(.enabled)
                 }
             }
             .padding(8)
@@ -42,6 +38,43 @@ struct CellOutputView: View {
             EmptyView()
         case .unknown(let kind):
             Text("[\(kind)]").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+        }
+    }
+}
+
+/// LONG OUTPUT IS CLAMPED, NOT HIDDEN. A cell that printed a thousand lines
+/// used to push every cell after it off the screen, and the only remedy was a
+/// "Hide outputs" item buried in an ellipsis menu — all or nothing, per cell,
+/// out of sight. Twelve lines is enough to see what happened; the rest is one
+/// tap away and says how much it is holding.
+struct ClampedLines: View {
+    let text: String
+    var size: CGFloat = 11
+    /// JupyterLab clamps around this too. Enough for a traceback's head and a
+    /// dataframe's first rows.
+    static let limit = 12
+
+    @State private var expanded = false
+
+    var body: some View {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let hidden = max(0, lines.count - Self.limit)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(expanded || hidden == 0 ? text : lines.prefix(Self.limit).joined(separator: "\n"))
+                .font(.system(size: size, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if hidden > 0 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    Text(expanded ? "Show less" : "\(hidden) more line\(hidden == 1 ? "" : "s")")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.accent)
+                        .frame(minHeight: 28)
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
