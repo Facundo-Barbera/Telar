@@ -4,6 +4,9 @@ import PhotosUI
 struct SessionView: View {
     @State private var store: SessionStore
     @State private var draft = ""
+    /// The composer's focus, held here so the transcript can drop it — see
+    /// the ScrollView below and `ComposerView.focus`.
+    @FocusState private var composerFocused: Bool
     @State private var renaming = false
     @State private var renameDraft = ""
     /// The right panel: which tab, which files, whether it is showing.
@@ -252,6 +255,16 @@ struct SessionView: View {
                 }
             }
             .scrollPosition($position)
+            // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD. A tap on it, or
+            // scrolling it, puts the keyboard away — what every messaging app
+            // does, and the phone offered neither: the only exits were Send
+            // and the return key. `.immediately` rather than `.interactively`
+            // because scrolling UP to re-read is the common case, and the
+            // interactive mode only dismisses on a drag toward the keyboard.
+            // Buttons, links and long-presses inside the transcript still win;
+            // this catches only the tap nothing else wanted.
+            .scrollDismissesKeyboard(.immediately)
+            .onTapGesture { composerFocused = false }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height
                     >= geometry.contentSize.height - 40
@@ -566,7 +579,7 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(draft: $draft, store: store, onSend: { pinToTail() })
+            ComposerView(draft: $draft, focus: $composerFocused, store: store, onSend: { pinToTail() })
         }
         .padding(.horizontal, 16)
         .readingColumn(gutter: Theme.readingGutter)
@@ -704,13 +717,18 @@ struct StatusCard<Content: View>: View {
 /// toolbar row appearing under the card and the queue line under that.
 struct ComposerView: View {
     @Binding var draft: String
+    /// FOCUS LIVES A STRUCT UP. The transcript is what puts the keyboard away
+    /// (a tap on it, or a scroll), and it cannot reach a `@FocusState` that is
+    /// private here — so the session owns the flag and the composer binds to
+    /// it. Reads keep the old name below; writes go through the binding.
+    let focus: FocusState<Bool>.Binding
     let store: SessionStore
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
     /// means for the viewport — the box has no business knowing about pins.
     var onSend: () -> Void = {}
 
-    @FocusState private var focused: Bool
+    private var focused: Bool { focus.wrappedValue }
     @State private var managingQueue = false
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var pickingPhotos = false
@@ -784,7 +802,7 @@ struct ComposerView: View {
                     .lineLimit(focused ? 7 : 1)
                     .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                     .padding(.vertical, focused ? 8 : 0)
-                    .focused($focused)
+                    .focused(focus)
                     .onSubmit { submit() }
                 if !focused {
                     if !store.pendingAttachments.isEmpty {
@@ -807,7 +825,7 @@ struct ComposerView: View {
         .padding(.vertical, focused ? 12 : 5)
         .composerGlass(cornerRadius: focused ? 20 : 27)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
-        .onTapGesture { focused = true }
+        .onTapGesture { focus.wrappedValue = true }
         // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
         // hands something over. `.onDrop` rather than `.dropDestination`: a
         // provider carries its own registered types, which is what decides
@@ -1056,7 +1074,7 @@ struct ComposerView: View {
         guard canSend else { return }
         let text = draft
         draft = ""
-        focused = false
+        focus.wrappedValue = false
         // Whatever the scroll believed. Nothing here used to touch it, so a
         // message sent after reading back through the transcript landed off
         // screen and the conversation looked frozen. Unconditional, unlike
@@ -1091,7 +1109,7 @@ struct ComposerView: View {
         guard let taken = PromptStash.shared.take(entry.id, room: 0) else { return }
         draft = StashRules.appendPrompt(draft, taken.prompt)
         note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
-        focused = true
+        focus.wrappedValue = true
     }
 
     static let runtimeModes: [(String, String)] = [
