@@ -12,17 +12,32 @@ import SwiftMath
 /// equation renders its own source in the muted colour rather than throwing.
 struct MarkdownText: View {
     let text: String
+    /// WHERE THE PROSE CAME FROM, which decides how much HTML it may be.
+    ///
+    /// A notebook markdown cell is the user's own file: an HTML block in it
+    /// renders, in the same cage the panel's HTML outputs use. A TRANSCRIPT IS
+    /// MODEL OUTPUT and never spawns a web view — text a model wrote is not
+    /// something to hand a renderer, however caged. Both get inline `<img>`,
+    /// because that is an image either way and goes through the image provider
+    /// a Markdown image already used.
+    var source: MarkdownSource = .transcript
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(splitMath(text).enumerated()), id: \.offset) { _, segment in
+            ForEach(Array(splitMath(rewriteInlineImages(text)).enumerated()), id: \.offset) { _, segment in
                 switch segment {
                 case .markdown(let body):
+                    if case .notebookCell(let notebookPath) = source, let block = soleHtmlBlock(body) {
+                        HtmlOutputView(html: block)
+                            .padding(.vertical, 2)
+                            .id(notebookPath)
+                    } else {
                     Markdown(body)
                         .markdownTheme(.telar)
-                        .markdownImageProvider(AttachmentImageProvider())
-                        .markdownInlineImageProvider(AttachmentImageProvider())
+                        .markdownImageProvider(imageProvider)
+                        .markdownInlineImageProvider(imageProvider)
                         .textSelection(.enabled)
+                    }
                 case .display(let tex):
                     MathBlock(tex: tex, display: true)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -32,6 +47,33 @@ struct MarkdownText: View {
             }
         }
     }
+
+    private var imageProvider: AttachmentImageProvider {
+        if case .notebookCell(let path) = source { return AttachmentImageProvider(notebookPath: path) }
+        return AttachmentImageProvider()
+    }
+}
+
+/// Whose words these are.
+enum MarkdownSource: Equatable {
+    case transcript
+    /// A notebook markdown cell, and the notebook it belongs to — needed to
+    /// resolve a relative `<img src>` against the right directory.
+    case notebookCell(path: String)
+}
+
+/// A segment that is NOTHING BUT an HTML block, which is the only shape worth
+/// handing to a web view. Prose with a `<div>` in the middle of it stays
+/// Markdown: rendering the whole paragraph as HTML would lose the Markdown
+/// around the tag, which is the more common intent.
+func soleHtmlBlock(_ markdown: String) -> String? {
+    let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("<"), trimmed.hasSuffix(">") else { return nil }
+    // A block, not a lone inline tag: `<span>x</span>` on its own line is
+    // still prose, and `<img>` has already been rewritten by the pre-pass.
+    guard trimmed.range(of: "^<(div|table|details|figure|section|article|blockquote|ul|ol|dl|pre|iframe|video|audio|p|h[1-6])\\b",
+                        options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
+    return trimmed
 }
 
 /// One equation, typeset once and cached by source. SwiftMath's label is a
@@ -91,13 +133,19 @@ private struct MathBlock: View {
 ///
 /// NOT YET WIRED TO A SESSION: without an API in the environment a relative
 /// URL renders as its alt text. Absolute `https://` images load directly.
-private struct AttachmentImageProvider: ImageProvider, InlineImageProvider {
+struct AttachmentImageProvider: ImageProvider, InlineImageProvider {
+    /// Set for a notebook cell: a relative `src` is resolved against this
+    /// file's directory and read through the workspace's raw-file route.
+    var notebookPath: String?
+
     func makeImage(url: URL?) -> some View {
         Group {
             if let url, url.scheme == "https" || url.scheme == "http" {
                 AsyncImage(url: url) { phase in
                     if let image = phase.image { image.resizable().scaledToFit() } else { EmptyView() }
                 }
+            } else if let notebookPath, let url {
+                WorkspaceImage(path: resolveNotebookImagePath(url.absoluteString, notebookPath: notebookPath))
             } else {
                 EmptyView()
             }
@@ -109,6 +157,42 @@ private struct AttachmentImageProvider: ImageProvider, InlineImageProvider {
         let (data, _) = try await URLSession.shared.data(from: url)
         guard let uiImage = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
         return Image(uiImage: uiImage)
+    }
+}
+
+/// A picture that lives in the checkout, read through the same raw-file route
+/// the Files tab uses. The panel's API is reached through the environment
+/// because a Markdown image provider has no way to be handed one.
+private struct WorkspaceImage: View {
+    let path: String?
+    @Environment(\.workspaceImages) private var loader
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+            } else {
+                Color.clear.frame(height: 1)
+            }
+        }
+        .task(id: path ?? "-") {
+            guard let path, let loader else { return }
+            image = await loader(path)
+        }
+    }
+}
+
+private struct WorkspaceImagesKey: EnvironmentKey {
+    static let defaultValue: (@Sendable (String) async -> UIImage?)? = nil
+}
+
+extension EnvironmentValues {
+    /// How a workspace-relative image is fetched, when there is a session to
+    /// fetch it from. Nil in the transcript, where every image is a URL.
+    var workspaceImages: (@Sendable (String) async -> UIImage?)? {
+        get { self[WorkspaceImagesKey.self] }
+        set { self[WorkspaceImagesKey.self] = newValue }
     }
 }
 

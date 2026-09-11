@@ -85,6 +85,13 @@ struct NotebookSurface: View {
             await readKernel()
         }
         .onDisappear { flushAll() }
+        // A markdown cell's `<img src="fig.png">` points into the checkout,
+        // and a Markdown image provider has no way to be handed an API — so
+        // the read is put where it can reach one.
+        .environment(\.workspaceImages) { [api, sessionId] path in
+            guard let raw = try? await api.sessionFileRaw(sessionId, path: path) else { return nil }
+            return UIImage(data: raw.data)
+        }
         // THE CELL TOOLBAR RIDES THE KEYBOARD. Everything you do to a cell
         // while typing in it was behind an ellipsis menu you had to dismiss
         // the keyboard to reach.
@@ -266,7 +273,7 @@ struct NotebookSurface: View {
             .frame(width: 44)
             VStack(alignment: .leading, spacing: 6) {
                 if cell.type == .markdown && editing != cell.id {
-                    MarkdownText(text: drafts[cell.id] ?? cell.source)
+                    MarkdownText(text: drafts[cell.id] ?? cell.source, source: .notebookCell(path: path))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { editing = cell.id }
