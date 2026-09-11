@@ -11,7 +11,7 @@
  * IDENTICAL GEOMETRY ON BOTH LAYERS, OR THE CARET DRIFTS — see `CODE_GEOMETRY`.
  */
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { highlight, type HighlightedLine } from "@/lib/highlight";
+import { carryTokens, highlight, type CarriedLines, type HighlightedLine } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
 export const CODE_GEOMETRY = "font-mono leading-[1.55] tracking-normal";
@@ -55,6 +55,12 @@ export const CODE_FONT_SIZE = { fontSize: "var(--app-font-mono-size, 0.6875rem)"
  * rule is one rule for both: a line with nothing VISIBLE in it draws that same
  * space, coloured or not. Nothing here touches the text — the textarea holds the
  * source, and this layer only paints under it.
+ *
+ * `coloured` MAY HAVE HOLES IN IT, and per-line fallback is the point rather
+ * than an accident: while Shiki catches up with the typing, the edited line has
+ * no tokens and every other line still does (`carryTokens`). A hole draws the
+ * plain source line, which is exactly what the whole layer did before any
+ * colours arrived.
  */
 export function CodeLines({
   lines,
@@ -64,7 +70,7 @@ export function CodeLines({
   minRows = 0,
 }: {
   lines: readonly string[];
-  coloured?: readonly HighlightedLine[] | undefined;
+  coloured?: CarriedLines | undefined;
   minRows?: number;
 }) {
   return (
@@ -126,7 +132,12 @@ export function OverlayEditor({
       window.clearTimeout(task);
     };
   }, [value, language]);
-  const coloured = tokenised && tokenised.of === value ? tokenised.lines : undefined;
+  /**
+   * Tokens for the text on screen — and, until they arrive, the tokens from the
+   * last answer for every line the typing did not touch. Dropping the lot on
+   * each keystroke is what made the file blink monochrome; see `carryTokens`.
+   */
+  const coloured = useMemo(() => (tokenised ? carryTokens(tokenised, value) : undefined), [tokenised, value]);
   const padded = Math.max(lines.length, minRows);
 
   return (
