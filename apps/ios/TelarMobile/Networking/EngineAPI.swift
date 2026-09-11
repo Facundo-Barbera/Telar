@@ -25,6 +25,13 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// A HUMAN WAS SHOWN THIS TURN'S ANSWER. Moves the engine's
+    /// `lastReadTurnSequence` forward and stamps `readAt`, which is what clears
+    /// the unread dot on every device — the phone used to send this NEVER, so a
+    /// session read on the phone stayed unread on the Mac, and once the
+    /// settling rule started honouring unread it would have stayed in the list
+    /// forever. Returns the session as the engine now has it.
+    func markSessionRead(_ id: EngineID, runId: String) async throws -> Session
     /// SEND NOW: a queued turn is promoted into the RUNNING turn — the model
     /// hears it without stopping. The engine validates queued-into-running.
     func promoteTurn(_ id: EngineID, runId: String) async throws
@@ -363,6 +370,12 @@ struct HTTPEngineAPI: EngineAPI {
 
     func promoteTurn(_ id: EngineID, runId: String) async throws {
         let _: IgnoredBody = try await post("api/sessions/\(escape(id))/turns/\(escape(runId))/promote", body: [:])
+    }
+
+    func markSessionRead(_ id: EngineID, runId: String) async throws -> Session {
+        struct Wrapped: Decodable { var session: Session }
+        let wrapped: Wrapped = try await post("api/sessions/\(escape(id))/read", body: ["runId": AnyEncodable(runId)])
+        return wrapped.session
     }
 
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session {

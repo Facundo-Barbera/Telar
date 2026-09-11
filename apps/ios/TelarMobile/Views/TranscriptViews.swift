@@ -6,6 +6,18 @@ import SwiftUI
 /// chips, not cards.
 struct TranscriptView: View {
     let turns: [JournalTurn]
+    /// WHICH TURN'S END CARRIES THE READ-RECEIPT MARKER, and nothing else does.
+    ///
+    /// Not "the bottom of the transcript": "is the reader at the bottom" is a
+    /// different question from "is the newest ANSWER on screen". A short answer
+    /// under a long tool log, a running turn below it, a composer that grew as
+    /// you typed — all move the bottom without moving the answer. The view that
+    /// IS the end of that turn can only be seen when that turn has been.
+    var receiptMarker: EngineID?
+    /// Called with the marker's own run id and whether it is on screen. The run
+    /// id travels so visibility is never INHERITED across answers: a marker
+    /// that was visible for turn 5 says nothing about turn 6.
+    var onReceiptMarkerVisible: ((EngineID, Bool) -> Void)?
 
     var body: some View {
         // EAGER, not lazy. A LazyVStack only estimates the height of rows it
@@ -17,9 +29,31 @@ struct TranscriptView: View {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(turns) { turn in
                 TurnView(turn: turn)
+                if let receiptMarker, turn.runId == receiptMarker, let onReceiptMarkerVisible {
+                    ReadReceiptMarker(runId: receiptMarker, onVisible: onReceiptMarkerVisible)
+                }
             }
         }
         .padding(.horizontal, 12)
+    }
+}
+
+/// The end of one answer, as a view.
+///
+/// Zero-height and hidden from accessibility: it is a POSITION, not content. A
+/// screen reader announcing "end of answer" would be reading out the
+/// implementation. `.id(runId)` so a new answer gets a NEW marker rather than
+/// inheriting the old one's reported visibility.
+struct ReadReceiptMarker: View {
+    let runId: EngineID
+    let onVisible: (EngineID, Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(height: 1)
+            .accessibilityHidden(true)
+            .onScrollVisibilityChange { visible in onVisible(runId, visible) }
+            .id(runId)
     }
 }
 

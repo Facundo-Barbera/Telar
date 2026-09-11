@@ -82,6 +82,14 @@ struct JournalTask: Identifiable, Equatable {
 
 struct JournalTurn: Identifiable, Equatable {
     var runId: EngineID
+    /// THE ENGINE'S OWN ORDERING of turns in this session, carried because the
+    /// read receipt compares against it: unread is `lastTurnSequence >
+    /// lastReadTurnSequence`, so a client that picked "the newest answer" any
+    /// other way — array position, a timestamp — would confirm a turn that
+    /// leaves the session still unread. Zero for a turn folded from an older
+    /// snapshot that carried no sequence, which simply never wins the
+    /// comparison.
+    var sequence: Int = 0
     var prompt: String
     /// The compaction gesture — a system row, not a bubble.
     var isCompactGesture: Bool = false
@@ -179,6 +187,7 @@ private final class TaskBox {
 
 private final class TurnBox {
     var runId: EngineID
+    var sequence: Int
     var prompt: String
     var isCompactGesture: Bool
     var state: TurnState
@@ -198,6 +207,7 @@ private final class TurnBox {
     var providerReason: ProviderReason?
     init(turn: Turn) {
         runId = turn.runId
+        sequence = turn.sequence
         prompt = turn.input
         isCompactGesture = turn.kind == "compact"
         state = turn.state
@@ -382,6 +392,7 @@ func projectJournal(
         }
         return JournalTurn(
             runId: turn.runId,
+            sequence: turn.sequence,
             prompt: turn.prompt,
             isCompactGesture: turn.isCompactGesture,
             state: turn.state,

@@ -19,13 +19,65 @@ enum Settling {
         session.activity == .working || session.activity == .queued
     }
 
+    /// IS THERE AN ANSWER ON THIS SESSION NOBODY HAS READ?
+    ///
+    /// Two engine-owned numbers and a `>`, exactly as the web has it. Both come
+    /// from the Mac, so the phone and the cockpit answer this identically and
+    /// the answer survives a reload — which is the whole reason it is not a
+    /// local flag.
+    ///
+    /// ABSENT `lastTurnSequence` MEANS "NOTHING TO READ", NOT "UNKNOWN". An
+    /// engine that models receipts always sets it once a turn has produced a
+    /// result, so the only session without one has never answered. Reading
+    /// absence as unread would make every row from a Mac too old to send the
+    /// field immortal in the list.
+    static func hasUnreadResult(_ session: Session) -> Bool {
+        guard let last = session.lastTurnSequence else { return false }
+        return last > (session.lastReadTurnSequence ?? 0)
+    }
+
+    /// DOES THIS ROW WEAR THE UNREAD DOT? The web's `showsUnreadMark`.
+    ///
+    /// A ROW SHOWS ITS STATUS OR ITS DOT, NEVER BOTH: a session that is working,
+    /// or parked on a question, has something louder and more current to say,
+    /// and an "unread answer" mark beside it is a claim about the past arguing
+    /// with a claim about the present. Monitoring keeps its dot — a background
+    /// watcher is not producing an answer, and the one it produced before it
+    /// started watching is still unread.
+    static func showsUnreadMark(_ session: Session) -> Bool {
+        if session.activity == .blocked || isWorking(session) { return false }
+        return hasUnreadResult(session)
+    }
+
+    /// WHEN THE INACTIVITY CLOCK STARTS COUNTING — `updatedAt` alone is the
+    /// wrong baseline twice over, and the web fixed both (`idleSince`):
+    ///
+    ///   - A SNOOZE MUST NOT EXPIRE INTO A SHELF. "Tomorrow at 9" on a Mac that
+    ///     shelves after three hours used to mean the row came back already
+    ///     shelved; counting from the wake gives it the full window.
+    ///   - READING IS NOT NOTHING. A read never stamps `updatedAt` (that is the
+    ///     session's work, and this clock is measured from it), so `readAt` is
+    ///     picked up here instead.
+    private static func idleSince(_ session: Session) -> Double {
+        Double(max(session.updatedAt, session.readAt ?? 0, session.snoozedUntil ?? 0))
+    }
+
     static func isSettled(_ session: Session, now: Timestamp, autoSettleAfterHours: Double?) -> Bool {
         if session.activity == .blocked || isWorking(session) { return false }
         if session.state == .archived { return true }
         if session.settledOverride == "settled" { return true }
         if session.settledOverride == "active" { return false }
+        // The two things the clock has no business overruling. A LIVE SNOOZE
+        // owns its whole interval — the row is hidden either way, so this only
+        // decides which shelf it lands on when it wakes. AN UNREAD RESULT IS
+        // NEVER SHELVED BY NEGLECT: the clock's premise is "nothing has
+        // happened here for hours", and an answer waiting to be read is
+        // something that happened. Both sit BELOW the pin, because a human
+        // settling a session with an unread answer in front of them means it.
+        if let until = session.snoozedUntil, until > now { return false }
+        if hasUnreadResult(session) { return false }
         guard let hours = autoSettleAfterHours else { return false }
-        return Double(session.updatedAt) < Double(now) - hours * hourMs
+        return idleSince(session) < Double(now) - hours * hourMs
     }
 
     /// Hidden until its wake time — unless it raised its hand: a parked

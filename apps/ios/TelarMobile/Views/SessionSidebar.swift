@@ -256,6 +256,7 @@ struct SessionSidebar: View {
                 statusSlot(row.session)
             }
             HStack(spacing: 6) {
+                unreadDot(row.session)
                 // ONE LINE. The title carries the card and is a size up
                 // from the lines around it; a second line makes the card a
                 // paragraph and pushes every row below it around.
@@ -309,11 +310,38 @@ struct SessionSidebar: View {
             } else {
                 ProviderIconView(driver: row.session.driver, size: 12).opacity(0.6)
             }
+            unreadDot(row.session)
             Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
-                .font(Theme.rowTitleSlim).foregroundStyle(Theme.text.opacity(0.85))
+                // A SLIM ROW DIMS ITS TITLE AT REST, which would read as "less
+                // important" on the one row that is asking to be opened. An
+                // unread row keeps its full weight, so the dot and the title
+                // agree.
+                .font(Settling.showsUnreadMark(row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
+                .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.85))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             statusSlot(row.session)
+        }
+    }
+
+    /// THERE IS AN ANSWER HERE NOBODY HAS READ — the mail convention, and
+    /// deliberately the whole of it.
+    ///
+    /// A FILLED DOT AT THE LEADING EDGE OF THE TITLE, no counter. A count would
+    /// be a number you audit ("three unread what?"), and the engine models one
+    /// bit: is the newest result newer than the newest receipt. The dot is that
+    /// bit, in the place every mail app has put it for thirty years, so it
+    /// needs no explaining.
+    ///
+    /// IT GOES AWAY BY ITSELF. Nothing in this sidebar clears it — opening the
+    /// session and actually seeing the answer does (Stores/ReadReceipt.swift),
+    /// the Mac moves `lastReadTurnSequence`, and the next poll draws a row with
+    /// no dot. Which is why this is a mark and not a button: "mark read" is
+    /// what you offer when reading does not count, and here it does.
+    @ViewBuilder private func unreadDot(_ session: Session) -> some View {
+        if Settling.showsUnreadMark(session) {
+            Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                .accessibilityLabel("Unread answer")
         }
     }
 

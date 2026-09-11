@@ -43,6 +43,15 @@ struct SessionView: View {
     private let sessionId: EngineID
     private let hostId: HostID?
     private let cockpitBaseURL: URL?
+    /// THE READ RECEIPT — see Stores/ReadReceipt.swift for why the phone needs
+    /// one at all. Built in `.task` rather than in `init`, because it reaches
+    /// back into the store this view owns and `init` runs on every parent
+    /// re-render.
+    @State private var receipt: ReadReceiptCourier?
+    /// WHICH answer's marker is on screen — not whether one is. A boolean would
+    /// carry the old answer's "yes" into a new one's first render, confirming a
+    /// turn nobody had seen yet.
+    @State private var visibleReceiptRunId: EngineID?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
@@ -148,6 +157,41 @@ struct SessionView: View {
         position.isPositionedByUser && !isAtBottom
     }
 
+    /// Everything the receipt rule reads, as one Equatable value — so the
+    /// courier is re-evaluated when any of it moves and NOT once per poll tick
+    /// that changed nothing it cares about.
+    private struct ReceiptWorld: Equatable {
+        var identity: ReceiptIdentity?
+        var candidate: ReceiptTurn?
+        var readSequence: Int?
+        var gate: ReceiptGate
+    }
+
+    private var receiptWorld: ReceiptWorld {
+        let candidate = newestResultTurn(
+            visibleTurns.map { ReceiptTurn(runId: $0.runId, state: $0.state, sequence: $0.sequence) }
+        )
+        return ReceiptWorld(
+            identity: store.sync.session == nil ? nil : ReceiptIdentity(sessionId: sessionId, hostId: hostId),
+            candidate: candidate,
+            readSequence: store.sync.session?.lastReadTurnSequence,
+            gate: ReceiptGate(
+                // A phone has one window, so the scene phase IS "is somebody
+                // looking": backgrounded, in the switcher, and under a locked
+                // screen are all somebody elsewhere.
+                foreground: scenePhase == .active,
+                // The candidate's OWN marker, never a previous answer's.
+                atLatestResult: candidate != nil && visibleReceiptRunId == candidate?.runId,
+                // NEVER BEFORE THE MAC HAS ANSWERED, and never off a
+                // PHOTOGRAPH: `recordedAt` means this transcript came out of
+                // the snapshot cache because the Mac is away, so the sequences
+                // on screen are as old as the picture and confirming them would
+                // claim a read of whatever has happened since.
+                loading: store.sync.session == nil || store.sync.recordedAt != nil
+            )
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let session = store.sync.session {
@@ -177,9 +221,19 @@ struct SessionView: View {
                     // 50rem; at the phone's larger body size the same feel is
                     // narrower, and on an iPad the column would otherwise
                     // run the full width of the detail pane.
-                    TranscriptView(turns: visibleTurns)
-                        .readingColumn()
-                        .padding(.vertical, 12)
+                    TranscriptView(
+                        turns: visibleTurns,
+                        receiptMarker: receiptWorld.candidate?.runId,
+                        onReceiptMarkerVisible: { runId, visible in
+                            // Only ever claims or releases ITS OWN run, so a
+                            // marker unmounting cannot blank the answer that
+                            // replaced it.
+                            if visible { visibleReceiptRunId = runId }
+                            else if visibleReceiptRunId == runId { visibleReceiptRunId = nil }
+                        }
+                    )
+                    .readingColumn()
+                    .padding(.vertical, 12)
                 }
             }
             .scrollPosition($position)
@@ -219,7 +273,22 @@ struct SessionView: View {
             footer
         }
         .background(Theme.canvas)
-        .task { store.sync.start() }
+        .task {
+            store.sync.start()
+            // One courier for the life of the mount. It owns an in-flight
+            // request and a dwell timer, so it is a subscription rather than a
+            // derived value — rebuilding it per render would lose both.
+            if receipt == nil {
+                let api = self.api
+                let sync = store.sync
+                receipt = ReadReceiptCourier(
+                    send: { identity, runId in try await api.markSessionRead(identity.sessionId, runId: runId) },
+                    onRead: { _, session in sync.applyRead(session) }
+                )
+                sendReceiptIfEarned()
+            }
+        }
+        .onChange(of: receiptWorld) { sendReceiptIfEarned() }
         .onAppear {
             if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
         }
@@ -235,6 +304,8 @@ struct SessionView: View {
 
         .onDisappear {
             store.sync.stop()
+            receipt?.dispose()
+            receipt = nil
             if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
                 MobileNotifications.shared.visibleSession = nil
             }
@@ -357,6 +428,12 @@ struct SessionView: View {
         if let last = fresh.last { panel.openFile(last.path) }
     }
 
+    /// Hand the courier the current world. It decides whether anything is owed
+    /// and holds the gate for a beat before sending — see ReadReceipt.swift.
+    private func sendReceiptIfEarned() {
+        let world = receiptWorld
+        receipt?.update(identity: world.identity, candidate: world.candidate, readSequence: world.readSequence, gate: world.gate)
+    }
 
     /// Re-pin to the tail, unless the reader has scrolled away and stayed
     /// away — scrolled away means scrolled away, and nothing here yanks them

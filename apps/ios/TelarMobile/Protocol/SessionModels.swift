@@ -78,6 +78,26 @@ struct Session: Codable, Identifiable, Equatable {
     var lastTurnEndedAt: Timestamp?
     var lastTurnFailed: Bool?
 
+    /// IS THERE AN ANSWER NOBODY HAS READ — the pair, and the two halves are
+    /// different kinds of thing (see `Session` in the contract).
+    ///
+    /// `lastTurnSequence` is DERIVED per read: the sequence of the newest turn
+    /// that left a RESULT. `lastReadTurnSequence` is PERSISTED and only moves
+    /// forward: the highest result a human was actually shown. Comparing the
+    /// two is the whole of unread (`Settling.hasUnreadResult`) — no counter, no
+    /// per-device bookkeeping, and the SAME answer on the phone and the Mac,
+    /// which is the entire reason it is engine state rather than a local flag.
+    ///
+    /// BOTH OPTIONAL AND LENIENT, like every other field here: a Mac running an
+    /// older build sends neither, and absent must mean "nothing to read" rather
+    /// than "unknown" — the other reading would mark every row on that Mac
+    /// unread forever.
+    var lastTurnSequence: Int?
+    var lastReadTurnSequence: Int?
+    /// When the newest receipt landed. Only the inactivity baseline reads it;
+    /// unread itself is decided on the sequences, never on a clock.
+    var readAt: Timestamp?
+
     var settledOverride: String?
     var settledAt: Timestamp?
     var snoozedUntil: Timestamp?
@@ -88,6 +108,7 @@ struct Session: Codable, Identifiable, Equatable {
         case workspace, runtimeMode, detached, usage, activity, activityAt
         case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt
         case snoozedUntil, snoozedAt
+        case lastTurnSequence, lastReadTurnSequence, readAt
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +136,9 @@ struct Session: Codable, Identifiable, Equatable {
         settledAt = try c.decodeIfPresent(Timestamp.self, forKey: .settledAt)
         snoozedUntil = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedUntil)
         snoozedAt = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedAt)
+        lastTurnSequence = try c.decodeIfPresent(Int.self, forKey: .lastTurnSequence)
+        lastReadTurnSequence = try c.decodeIfPresent(Int.self, forKey: .lastReadTurnSequence)
+        readAt = try c.decodeIfPresent(Timestamp.self, forKey: .readAt)
     }
 }
 

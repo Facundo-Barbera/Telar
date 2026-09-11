@@ -126,6 +126,21 @@ enum SyncConnectionState: Equatable {
         await hydrate()
     }
 
+    /// A read receipt's answer, folded into the session already on screen.
+    ///
+    /// ONLY THE TWO READ FIELDS, deliberately. The engine returns the whole
+    /// record, but it is a photograph from the moment the POST landed and the
+    /// poll behind this may already hold something newer — overwriting the
+    /// session wholesale would roll `activity` or `updatedAt` backwards for a
+    /// second. Folding the receipt in at all (rather than waiting for the next
+    /// poll) is what makes the unread dot go out the moment it is earned.
+    func applyRead(_ answer: Session) {
+        guard var current = session, current.id == answer.id else { return }
+        current.lastReadTurnSequence = answer.lastReadTurnSequence
+        current.readAt = answer.readAt
+        session = current
+    }
+
     private func run() async {
         await hydrate()
         while !Task.isCancelled {
