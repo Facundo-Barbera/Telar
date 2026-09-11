@@ -13,6 +13,10 @@
  * A "default editor" setting would be a second place to state a fact the last
  * click already stated, and the two would disagree.
  *
+ * ON EVERY OPEN, AND ONLY ON AN OPEN: revealing in Finder is in the same menu
+ * but teaches the button nothing, because it is a look rather than an open.
+ * `remembersOpener` is the one place that distinction lives.
+ *
  * KEYED PER MACHINE. The value is an opener id, and an opener id is only
  * meaningful against the app list of the machine that reported it — this Mac's
  * `zed` is not the Mac mini's anything if Zed is not installed there. One
@@ -44,9 +48,13 @@ export type WorkspaceOpenerEntryKind =
   /** Hand the folder to whatever the OS opens folders with. */
   | "system"
   /** Show it in the file manager instead of opening it. In T3's list and in
-   *  this one, revealing is an opener like any other rather than a separate
-   *  control — it is the same question ("where do I want this folder?") and
-   *  splitting it into its own button asks it twice. */
+   *  this one, revealing lives in the same menu rather than in a separate
+   *  control beside it — it is the same question ("where do I want this
+   *  folder?") and splitting it into its own button asks it twice.
+   *
+   *  IT IS STILL NOT AN OPEN, and `remembersOpener` is where that matters: a
+   *  reveal is a LOOK, and a primary button that reads "Reveal in Finder"
+   *  because you once glanced at the folder has learned the wrong lesson. */
   | "reveal"
   /** Nothing is installed. A row, not a missing row, so the menu explains its
    *  own shortness. */
@@ -58,8 +66,12 @@ export type WorkspaceOpenerEntry = {
   /** The row's own words. */
   label: string;
   /** The split button's left half when this entry is the preferred one. A verb
-   *  phrase, because that half is a button that acts rather than a label. */
-  primaryLabel: string;
+   *  phrase, because that half is a button that acts rather than a label.
+   *
+   *  ABSENT on an entry that can never BE the left half — see
+   *  `remembersOpener`. One field, so "cannot be remembered" and "has no label
+   *  to remember it by" cannot drift into disagreeing. */
+  primaryLabel?: string;
   kind: WorkspaceOpenerEntryKind;
   /** Brand mark id from the shell's opener table; absent means the neutral
    *  glyph. */
@@ -103,8 +115,9 @@ export function readPreferredOpener(hostId: string | undefined, storage: Pick<St
   }
 }
 
-/** Remember `id` for `hostId`. Called on every open, including the reveal and
- *  the system default — whatever you did last is what the button offers next. */
+/** Remember `id` for `hostId`. Called on every OPEN — the system default very
+ *  much included — and never on a reveal; `remembersOpener` holds that line and
+ *  says why. Whatever you last opened with is what the button offers next. */
 export function writePreferredOpener(
   hostId: string | undefined,
   id: string,
@@ -181,15 +194,14 @@ export function workspaceOpenerEntries(input: {
   }));
 
   const natural: WorkspaceOpenerEntry[] = [
-    ...(apps.length > 0
-      ? apps
-      : [{ id: "none", label: "No installed editors found", primaryLabel: "Open", kind: "empty" as const }]),
+    ...(apps.length > 0 ? apps : [{ id: "none", label: "No installed editors found", kind: "empty" as const }]),
     { id: SYSTEM_OPENER_ID, label: "System default", primaryLabel: "Open in the default app", kind: "system", icon: SYSTEM_OPENER_ID },
-    { id: REVEAL_OPENER_ID, label: "Reveal in Finder", primaryLabel: "Reveal in Finder", kind: "reveal", icon: REVEAL_OPENER_ID },
+    { id: REVEAL_OPENER_ID, label: "Reveal in Finder", kind: "reveal", icon: REVEAL_OPENER_ID },
   ];
 
-  // An "empty" row is never a choice, so it can never be the preferred one.
-  const chosen = natural.find((entry) => entry.id === input.preferred && entry.kind !== "empty");
+  // Applied on READ as well as on write, so a "reveal" stored by an earlier
+  // build is ignored rather than pinned to somebody's button forever.
+  const chosen = natural.find((entry) => entry.id === input.preferred && remembersOpener(entry));
   const ordered = chosen ? [chosen, ...natural.filter((entry) => entry !== chosen)] : natural;
 
   return ordered.map((entry, index) => ({
@@ -201,6 +213,22 @@ export function workspaceOpenerEntries(input: {
     // boolean means they cannot draw two.
     ...(index > 0 && ((index === 1 && Boolean(chosen)) || groupOf(entry) !== groupOf(ordered[index - 1]!)) ? { separatorBefore: true } : {}),
   }));
+}
+
+/**
+ * WHETHER USING THIS ENTRY TEACHES THE BUTTON ANYTHING.
+ *
+ * The button remembers the last app you OPENED the folder in. Revealing is not
+ * that: it is a look — you wanted to see where the folder lives, not to work in
+ * it — and a primary button that reads "Reveal in Finder" because of one glance
+ * has drawn the wrong conclusion from the gesture. The system default IS an
+ * open, and is remembered like any other app.
+ *
+ * The inert "nothing installed" row is excluded for the plainer reason that it
+ * is not a choice at all.
+ */
+export function remembersOpener(entry: Pick<WorkspaceOpenerEntry, "kind">): boolean {
+  return entry.kind === "opener" || entry.kind === "system";
 }
 
 /**

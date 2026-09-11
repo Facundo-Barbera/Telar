@@ -17,14 +17,16 @@
  * that beats opening a same-named folder on the wrong machine.
  *
  * Revealing in Finder is an entry in the same list rather than a control beside
- * it: it answers the same question ("where do I want this folder?"), and it can
- * be the thing you do most, in which case it is what the left half offers.
+ * it: it answers the same question ("where do I want this folder?"). It is the
+ * one entry the button never learns from, because a reveal is a look and not an
+ * open — see `remembersOpener`.
  */
 import { Fragment, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
 import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpener } from "@/lib/workspace-open";
 import {
   preferredOpenerSnapshot,
+  remembersOpener,
   serverPreferredOpenerSnapshot,
   subscribePreferredOpener,
   workspaceOpenerEntries,
@@ -94,12 +96,17 @@ export function OpenWorkspaceButton({
 
   const act = (entry: WorkspaceOpenerEntry) => {
     setError(undefined);
-    /** WRITTEN BEFORE THE SHELL ANSWERS, and on every open — including the
-     *  reveal and the system default. What you reached for is the choice; a
-     *  launch that fails for a transient reason should not throw it away, and
-     *  one that fails because the app is gone is dropped by the re-validation
-     *  above rather than by refusing to store it. */
-    writePreferredOpener(hostId, entry.id);
+    /** WRITTEN BEFORE THE SHELL ANSWERS, and on every open. What you reached
+     *  for is the choice; a launch that fails for a transient reason should not
+     *  throw it away, and one that fails because the app is gone is dropped by
+     *  the re-validation above rather than by refusing to store it.
+     *
+     *  EXCEPT A REVEAL, which teaches this button nothing: showing a folder in
+     *  Finder is a look, not an open, and a left half reading "Reveal in
+     *  Finder" because you once checked where the folder lives is the control
+     *  drawing the wrong conclusion from the gesture. The system default is a
+     *  real open and is remembered like any app. */
+    if (remembersOpener(entry)) writePreferredOpener(hostId, entry.id);
     void (entry.kind === "reveal" ? bridge!.reveal(path!) : bridge!.open(path!, entry.openerId))
       .then((result) => {
         if (!result.ok) setError(result.error ?? "That folder could not be opened.");
