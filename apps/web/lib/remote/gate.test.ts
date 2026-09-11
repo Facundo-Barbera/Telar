@@ -1,6 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { decideApiAccess, EXEMPT_API_PATHS } from "./gate";
+import { HOST_HEADER } from "./host-token";
 import { hashToken, type DeviceRole, type RemoteFile } from "./store";
 
 const RAW = "tlr_" + "a".repeat(43);
@@ -126,33 +127,86 @@ describe("api gate", () => {
 describe("the process that runs the server", () => {
   const HOST = "tlr_" + "h".repeat(43);
   const file = { version: 1 as const, requireAuth: true, devices: [] };
+  const asHost = (credentials: { deviceCookie?: string; hostHeader?: string; method?: string }) =>
+    decideApiAccess(
+      {
+        pathname: "/api/projects",
+        method: credentials.method ?? "GET",
+        authorization: null,
+        deviceCookie: credentials.deviceCookie ?? null,
+        hostHeader: credentials.hostHeader ?? null,
+      },
+      file,
+    );
 
   test("the host's secret is a full-role caller without a device record", () => {
     process.env.TELAR_HOST_TOKEN = HOST;
     try {
-      const decision = decideApiAccess({ pathname: "/api/projects", method: "POST", authorization: null, deviceCookie: HOST }, file);
-      expect(decision).toEqual({ allow: true, role: "full" });
+      expect(asHost({ deviceCookie: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
     } finally {
       delete process.env.TELAR_HOST_TOKEN;
     }
   });
 
-  test("with no secret set, nothing passes as the host", () => {
+  /**
+   * THE HEADER IS THE CARRIER THAT SURVIVES (issue #259). A cookie is seated
+   * once, per origin, in the network service's memory; the header is computed
+   * per request in the shell's own process. The gate must read it exactly as it
+   * reads the cookie — same role, same constant-time compare, same refusals.
+   */
+  test("the header alone admits the host, with no cookie at all", () => {
+    process.env.TELAR_HOST_TOKEN = HOST;
+    try {
+      expect(asHost({ hostHeader: HOST, method: "POST" })).toEqual({ allow: true, role: "full" });
+    } finally {
+      delete process.env.TELAR_HOST_TOKEN;
+    }
+  });
+
+  test("a near-miss header is refused, by length and by content", () => {
+    process.env.TELAR_HOST_TOKEN = HOST;
+    try {
+      expect(asHost({ hostHeader: HOST + "x" }).allow).toBe(false);
+      expect(asHost({ hostHeader: HOST.slice(0, -1) + "z" }).allow).toBe(false);
+      expect(asHost({ hostHeader: HOST.slice(0, -1) }).allow).toBe(false);
+    } finally {
+      delete process.env.TELAR_HOST_TOKEN;
+    }
+  });
+
+  test("with no secret set, an empty header is not a pass either", () => {
     delete process.env.TELAR_HOST_TOKEN;
-    // The dangerous shape: an absent env var must not let an empty cookie in.
-    expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: "" }, file)).toEqual({
-      allow: false,
-      code: "cockpit_unauthorized",
-    });
+    // The dangerous shape, for both carriers: an absent env var must not let an
+    // empty credential in.
+    expect(asHost({ deviceCookie: "" })).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(asHost({ hostHeader: "" })).toEqual({ allow: false, code: "cockpit_unauthorized" });
+    expect(asHost({ hostHeader: HOST })).toEqual({ allow: false, code: "cockpit_unauthorized" });
+  });
+
+  test("a wrong header does not spoil a right cookie", () => {
+    // The two are read in order, not as one credential: a stale header left on
+    // a request must not lock the window out of a jar that still works.
+    process.env.TELAR_HOST_TOKEN = HOST;
+    try {
+      expect(asHost({ hostHeader: "tlr_stale", deviceCookie: HOST })).toEqual({ allow: true, role: "full" });
+    } finally {
+      delete process.env.TELAR_HOST_TOKEN;
+    }
   });
 
   test("a near-miss is still refused", () => {
     process.env.TELAR_HOST_TOKEN = HOST;
     try {
-      expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: HOST + "x" }, file).allow).toBe(false);
-      expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: HOST.slice(0, -1) + "z" }, file).allow).toBe(false);
+      expect(asHost({ deviceCookie: HOST + "x" }).allow).toBe(false);
+      expect(asHost({ deviceCookie: HOST.slice(0, -1) + "z" }).allow).toBe(false);
     } finally {
       delete process.env.TELAR_HOST_TOKEN;
     }
+  });
+
+  test("the header name is the one the shell writes", () => {
+    // Pinned here as well as in apps/desktop's source contract, so a rename in
+    // this half is caught by this half's own suite.
+    expect(HOST_HEADER).toBe("x-telar-host");
   });
 });

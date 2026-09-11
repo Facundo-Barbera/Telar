@@ -29,21 +29,35 @@ export type GateDenial = { allow: false; code: "cockpit_unauthorized" | "cockpit
 export type GateDecision = { allow: true; deviceId?: string; role?: DeviceRole } | GateDenial;
 
 /**
+ * What a caller can prove about itself. `hostHeader` is OPTIONAL because most
+ * callers are guests and have none; a caller that omits it is exactly a caller
+ * that does not have it.
+ */
+export type GateCredentials = { authorization: string | null; deviceCookie: string | null; hostHeader?: string | null };
+
+/**
  * Which paired device is making this request — bearer first, then cookie,
  * the same precedence as the gate. For routes that report or scope by the
  * caller ("This device", revoke-all-others).
  */
-export function identifyCaller(
-  request: { authorization: string | null; deviceCookie: string | null },
-  file: RemoteFile,
-): PairedDevice | undefined {
+export function identifyCaller(request: GateCredentials, file: RemoteFile): PairedDevice | undefined {
   const bearer = request.authorization?.match(/^Bearer\s+(tlr_[A-Za-z0-9_-]+)$/)?.[1];
   const candidate = bearer ?? request.deviceCookie;
   return candidate ? matchDevice(file, candidate) : undefined;
 }
 
+/**
+ * Is this request the process that launched the server? Header first, cookie
+ * second — the header is the carrier that survives a network-service restart
+ * and a change of loopback spelling (host-token.ts). Both comparisons are
+ * `isHostToken`'s constant-time one, and a missing secret matches nothing.
+ */
+export function isHostCaller(request: GateCredentials): boolean {
+  return isHostToken(request.hostHeader) || isHostToken(request.deviceCookie);
+}
+
 export function decideApiAccess(
-  request: { pathname: string; method: string; authorization: string | null; deviceCookie: string | null },
+  request: GateCredentials & { pathname: string; method: string },
   file: RemoteFile,
 ): GateDecision {
   if (!file.requireAuth) return { allow: true };
@@ -51,8 +65,9 @@ export function decideApiAccess(
 
   // THE PROCESS THAT LAUNCHED THE SERVER IS NOT A GUEST. It carries a
   // per-launch secret rather than a device record — see host-token.ts for why
-  // pairing the host with itself was the wrong shape.
-  if (isHostToken(request.deviceCookie)) return { allow: true, role: "full" };
+  // pairing the host with itself was the wrong shape, and why the secret
+  // travels as a header as well as a cookie.
+  if (isHostCaller(request)) return { allow: true, role: "full" };
 
   const device = identifyCaller(request, file);
   if (!device) return { allow: false, code: "cockpit_unauthorized" };

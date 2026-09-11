@@ -20,6 +20,7 @@ const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
+const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
@@ -428,9 +429,22 @@ function nodeExecPath() {
 const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
 
 /**
+ * AND THE SAME SECRET ON EVERY REQUEST, AS A HEADER — the carrier that has
+ * neither of the cookie's failure modes (host-header.js explains both). Only
+ * `session.defaultSession`, which is this window's; the integrated browser's
+ * tabs live in their own partitions and must never carry it.
+ */
+function seatHostHeader(url) {
+  if (!attachHostHeader(session.defaultSession, { appUrl: url, token: HOST_TOKEN })) {
+    console.error(`[telar-desktop] could not attach the host header for ${url}; the window falls back to its cookie.`);
+  }
+}
+
+/**
  * Set BEFORE the first load, on the session that will make the request — an
  * Electron cookie is per-origin, so this is scoped to the URL the shell is
- * about to open and travels nowhere else.
+ * about to open and travels nowhere else. KEPT AS A BELT beside the header:
+ * this is what a request made before the listener is attached carries.
  */
 async function seatHostCookie(url) {
   try {
@@ -446,6 +460,69 @@ async function seatHostCookie(url) {
     // A cookie we cannot seat means the window pairs the old way rather than
     // failing to open — degraded, not broken.
   }
+}
+
+/**
+ * A CRASHED CHILD IS THE FIRST OF THE TWO WAYS THE HOST STOPPED PROVING ITSELF.
+ *
+ * Chromium's network service holds every session cookie in its own memory; when
+ * that utility process is restarted the jar comes back with the persistent
+ * cookies reloaded from disk and the session ones simply gone. The shell had no
+ * handler at all, so the event that emptied the jar left no trace and the
+ * window's sudden "pair this device" looked spontaneous.
+ *
+ * BOTH HALVES OF THE ANSWER ARE HERE: the line that names it, and the re-seat
+ * that repairs it. The header (host-header.js) is what makes the repair
+ * unnecessary in the first place — the listener lives in this process and
+ * cannot be dropped by a child restarting — but the cookie is still the belt,
+ * and a belt that is never re-fastened is not one.
+ */
+function wireShellDiagnostics() {
+  app.on("child-process-gone", (_event, details) => {
+    logShell(
+      "warn",
+      `child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode} service=${details.serviceName ?? ""}`,
+    );
+    // Whatever died, re-seating costs one IPC and is only meaningful for the
+    // network service — which is precisely the one whose name we cannot rely on
+    // matching across Electron versions.
+    if (lastWindowUrl) void seatHostCookie(lastWindowUrl);
+  });
+}
+
+/**
+ * AND THE SYMPTOM, FROM THE WINDOW'S SIDE. A 401 on a main-frame request, or a
+ * redirect to the pairing page, IS the bug as the user meets it — so the next
+ * occurrence writes a line instead of needing a story.
+ *
+ * THE ORIGIN ONLY, never the path or the query: this log is read by whoever is
+ * debugging, and a cockpit URL carries session and project ids. The origin is
+ * also the entire diagnostic — it says whether the window had wandered onto the
+ * other spelling of its own server.
+ */
+function watchForUnpairing(webContents) {
+  const originOf = (value) => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return "an unparseable URL";
+    }
+  };
+  webContents.on("did-navigate", (_event, url, httpResponseCode) => {
+    if (httpResponseCode === 401) logShell("warn", `the host window was refused (401) by ${originOf(url)}`);
+  });
+  webContents.on("did-redirect-navigation", (_event, url, _isInPlace, isMainFrame) => {
+    if (!isMainFrame) return;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    if (parsed.pathname === "/pair" || parsed.pathname.startsWith("/pair/")) {
+      logShell("warn", `the host window was sent to the pairing page by ${parsed.origin}`);
+    }
+  });
 }
 
 function readRemoteFile(home) {
@@ -897,6 +974,8 @@ function createWindow(url) {
     e.preventDefault();
     win.setTitle(title);
   });
+  // Issue #259's symptom, recorded from the window's own side.
+  watchForUnpairing(win.webContents);
   /**
    * A DEAD LOAD RETRIES INSTEAD OF STRANDING ON THE ERROR PAGE.
    *
@@ -925,10 +1004,12 @@ function createWindow(url) {
 
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
-  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads this cookie on
-  // the opening navigation, so loading first would send the shell's own window
-  // in as an unpaired stranger. `finally` because a cookie we could not set is
-  // a window that pairs the old way, not a window that never opens.
+  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads these on the
+  // opening navigation, so loading first would send the shell's own window in
+  // as an unpaired stranger. The header is attached synchronously — there is no
+  // await to lose the race on — and `finally` because a cookie we could not set
+  // is a window that pairs the old way, not a window that never opens.
+  seatHostHeader(url);
   seatHostCookie(url).finally(() => {
     if (!win.isDestroyed()) win.loadURL(url);
   });
@@ -1590,6 +1671,33 @@ function updateLogPath() {
   return path.join(app.getPath("userData"), "update.log");
 }
 
+/**
+ * THE SHELL'S OWN LOG, BESIDE update.log AND FOR THE SAME REASON.
+ *
+ * The un-pairing bug (issue #259) was reported several times over months and
+ * every report was a person describing a screen, because the app recorded
+ * nothing when its own window was refused: no crashed-child event, no 401, no
+ * redirect. The mechanism had to be reasoned out from a cookie's semantics
+ * rather than read off a line. So the two events that would have named it
+ * immediately are written here.
+ *
+ * Same shape as updateLogger: appended, in userData, never rotated — this is a
+ * handful of lines per launch, and it must never be the reason anything fails.
+ */
+function shellLogPath() {
+  return path.join(app.getPath("userData"), "shell.log");
+}
+
+function logShell(level, message) {
+  const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
+  try {
+    fs.appendFileSync(shellLogPath(), line);
+  } catch {
+    /* logging must never be the reason the shell fails */
+  }
+  console.log(`[telar-shell] ${level} ${message}`);
+}
+
 function updateLogger() {
   const write = (level, message) => {
     const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
@@ -1934,6 +2042,8 @@ if (SMOKE) {
 
     app.whenReady().then(async () => {
       try {
+        // First, so a child that dies during startup is still named.
+        wireShellDiagnostics();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
         // Before anything reads the update preferences, and before the updater

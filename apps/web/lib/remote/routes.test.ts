@@ -10,6 +10,7 @@ import { POST as pairingMint } from "@/app/api/remote/pairing/route";
 import { DELETE as deviceDelete, PATCH as devicePatch } from "@/app/api/remote/devices/[deviceId]/route";
 import { DELETE as devicesDeleteOthers } from "@/app/api/remote/devices/route";
 import { decideApiAccess } from "./gate";
+import { HOST_HEADER } from "./host-token";
 import { isTailnetIpv4, listEndpoints } from "./endpoints";
 import { machineName } from "./observe";
 import { readRemote } from "./store";
@@ -204,6 +205,20 @@ describe("pairing routes", () => {
         new Request("http://x/api/remote", { headers: { cookie: "telar_device=tlr_hostsecret" } }),
       ).json()) as { host?: { isCaller: boolean } };
       expect(fromHost.host?.isCaller).toBe(true);
+
+      // AND BY HEADER, WITH NO COOKIE (issue #259). The shell's window loses
+      // its cookie to a network-service restart or to the other spelling of
+      // loopback; if this row stopped saying "This device" then, the panel
+      // would be telling the user their app is not the host of its own server.
+      const byHeader = (await remoteGet(
+        new Request("http://x/api/remote", { headers: { [HOST_HEADER]: "tlr_hostsecret" } }),
+      ).json()) as { host?: { isCaller: boolean } };
+      expect(byHeader.host?.isCaller).toBe(true);
+
+      const wrongHeader = (await remoteGet(
+        new Request("http://x/api/remote", { headers: { [HOST_HEADER]: "tlr_hostsecre" } }),
+      ).json()) as { host?: { isCaller: boolean } };
+      expect(wrongHeader.host?.isCaller).toBe(false);
     } finally {
       if (savedToken === undefined) delete process.env.TELAR_HOST_TOKEN;
       else process.env.TELAR_HOST_TOKEN = savedToken;

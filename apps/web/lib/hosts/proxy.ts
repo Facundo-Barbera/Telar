@@ -1,4 +1,5 @@
 import type { Host } from "./book";
+import { HOST_HEADER } from "@/lib/remote/host-token";
 
 /**
  * ONE REQUEST, FORWARDED TO ANOTHER MAC'S COCKPIT — the hop behind
@@ -12,16 +13,17 @@ import type { Host } from "./book";
  * body, content type — so every existing error path on the client keeps
  * working: a 404 from over there is a 404 here.
  *
- * WHAT IS STRIPPED. The caller's own credentials (`authorization`, `cookie`)
- * name a device of THIS cockpit and would be nonsense — or a leak — over
- * there; `host` and the hop-by-hop headers belong to the connection, not the
- * request. The remote's `set-cookie` is dropped on the way back for the
- * mirror reason: the remote pairs a device, this cockpit does not become one.
+ * WHAT IS STRIPPED. The caller's own credentials (`authorization`, `cookie`,
+ * and the desktop shell's host header) name a device — or the launcher — of
+ * THIS cockpit and would be nonsense, or a leak, over there; `host` and the
+ * hop-by-hop headers belong to the connection, not the request. The remote's
+ * `set-cookie` is dropped on the way back for the mirror reason: the remote
+ * pairs a device, this cockpit does not become one.
  *
  * Pure over `fetch`, so the route is a one-liner and the rules are a test.
  */
 
-const REQUEST_HEADERS_DROPPED = new Set(["authorization", "cookie", "host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
+const REQUEST_HEADERS_DROPPED = new Set([HOST_HEADER, "authorization", "cookie", "host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
 const RESPONSE_HEADERS_DROPPED = new Set(["set-cookie", "connection", "content-length", "transfer-encoding", "keep-alive", "content-encoding"]);
 
 const UPSTREAM_TIMEOUT_MS = 60_000;
