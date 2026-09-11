@@ -55,7 +55,7 @@ describe("the baseline a write carries", () => {
     // before it — the file changed on disk, and we are what changed it.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
 
     expect(await writer.persist("one")).toEqual({ status: "saved" });
     expect(await writer.persist("two")).toEqual({ status: "saved" });
@@ -72,7 +72,7 @@ describe("the baseline a write carries", () => {
     // the rebuilt one carried the hash from before the write that rebuilt it.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
     const persist = writer.persist;
 
     expect(await persist("one")).toEqual({ status: "saved" });
@@ -86,7 +86,7 @@ describe("the baseline a write carries", () => {
     // conflict — a conflict between two of the user's own keystrokes.
     const file = disk();
     const writer = createFileWriter({ send: file.write(true) });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
 
     const first = writer.persist("one");
     const second = writer.persist("two");
@@ -108,7 +108,7 @@ describe("the baseline a write carries", () => {
     // mid-turn — must still stop the write rather than overwrite it.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
     await file.write()("the agent's version", "sha_0");
 
     expect(await writer.persist("mine")).toEqual({ status: "refused", reason: "conflict" });
@@ -122,7 +122,7 @@ describe("the baseline a write carries", () => {
     // silently destroyed the agent's".
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase("sha_0");
+    writer.rebase({ sha256: "sha_0" });
     await file.write()("moved", "sha_0");
 
     expect(await writer.persist("mine")).toEqual({ status: "refused", reason: "conflict" });
@@ -139,7 +139,7 @@ describe("the baseline a write carries", () => {
         return send(text, expected);
       },
     });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
 
     expect(await writer.persist("one")).toEqual({ status: "failed", reason: "The engine did not answer." });
     expect(writer.baseline).toBe("sha_0");
@@ -161,8 +161,8 @@ describe("the baseline a write carries", () => {
     // on disk now, and the next write is owed against THAT.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase("sha_9");
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: "sha_9" });
+    writer.rebase({ sha256: file.sha256 });
     expect(await writer.persist("one")).toEqual({ status: "saved" });
   });
 
@@ -170,13 +170,46 @@ describe("the baseline a write carries", () => {
     // What tells a read that raced a write that its bytes are already stale.
     const file = disk();
     const writer = createFileWriter({ send: file.write() });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
     expect(writer.writes).toBe(0);
     await writer.persist("one");
     expect(writer.writes).toBe(1);
-    writer.rebase("sha_nope");
+    writer.rebase({ sha256: "sha_nope" });
     await writer.persist("two");
     expect(writer.writes).toBe(1);
+  });
+
+  test("a CRLF file gets its carriage returns back", async () => {
+    // The editor works in LF because a textarea cannot hold anything else, so
+    // without this one keystroke rewrites every line ending in the file — a
+    // one-line change arriving in review as a whole-file diff.
+    const file = disk();
+    const writer = createFileWriter({ send: file.write() });
+    writer.rebase({ sha256: file.sha256, newline: "\r\n" });
+
+    expect(await writer.persist("alpha\nbeta\n")).toEqual({ status: "saved" });
+    expect(file.text).toBe("alpha\r\nbeta\r\n");
+  });
+
+  test("an LF file is written back exactly as the editor holds it", async () => {
+    const file = disk();
+    const writer = createFileWriter({ send: file.write() });
+    writer.rebase({ sha256: file.sha256 });
+
+    await writer.persist("alpha\nbeta\n");
+    expect(file.text).toBe("alpha\nbeta\n");
+  });
+
+  test("a re-read that finds different endings changes what the next write sends", async () => {
+    const file = disk();
+    const writer = createFileWriter({ send: file.write() });
+    writer.rebase({ sha256: file.sha256, newline: "\r\n" });
+    await writer.persist("a\nb");
+    expect(file.text).toBe("a\r\nb");
+
+    writer.rebase({ sha256: file.sha256, newline: "\n" });
+    await writer.persist("a\nb");
+    expect(file.text).toBe("a\nb");
   });
 
   test("the queue survives a failing write", async () => {
@@ -186,7 +219,7 @@ describe("the baseline a write carries", () => {
     const writer = createFileWriter({
       send: (text, expected) => (text === "one" ? Promise.reject(new Error("boom")) : send(text, expected)),
     });
-    writer.rebase(file.sha256);
+    writer.rebase({ sha256: file.sha256 });
     const first = writer.persist("one");
     const second = writer.persist("two");
     expect((await first).status).toBe("failed");

@@ -59,6 +59,7 @@ import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import type { EditorViewState } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { createFileWriter, type FileWriter } from "@/lib/file-writer";
+import { detectNewline, withNewline } from "@/lib/line-endings";
 import {
   isProseFile,
   NOWRAP_CLASS,
@@ -384,10 +385,21 @@ export function FileViewSurface({
         const claimed = read.file.binary ? undefined : claimDraft(scope, path, owner.current);
         if (discard) forgetDraft(scope, path, owner.current);
         const stashed = discard ? undefined : claimed;
-        const text = read.file.binary ? undefined : (stashed?.text ?? read.file.text);
+        /**
+         * THE EDITOR WORKS IN LF, WHATEVER THE FILE USES.
+         *
+         * Not a preference — a textarea's value is line-break normalised by the
+         * HTML spec, so the first keystroke would hand back LF for the whole
+         * file anyway and quietly rewrite every line ending. Normalising the
+         * READ too is what keeps the two layers holding the same text, and the
+         * write puts the file's own endings back (lib/line-endings.ts).
+         */
+        const newline = read.file.binary ? "\n" : detectNewline(read.file.text);
+        const onDisk = read.file.binary ? undefined : withNewline(read.file.text, "\n");
+        const text = read.file.binary ? undefined : (stashed?.text ?? onDisk);
         const hash = read.file.binary ? undefined : (stashed?.baseline ?? read.file.sha256);
         latest.current = text ?? "";
-        writer.rebase(hash);
+        writer.rebase({ sha256: hash, newline });
         /**
          * A DISCARD RESTARTS THE SAVER RATHER THAN REPLACING IT — see the effect
          * that acts on this. "Re-read from disk" is the way out of a refusal,

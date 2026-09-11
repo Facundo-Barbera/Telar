@@ -32,11 +32,22 @@
  * PURE AND FRAMEWORK-FREE, so the ordering rules can be tested without a
  * component, a browser or a real file.
  */
+import { withNewline, type Newline } from "./line-endings";
 import type { SaveOutcome } from "./save-coordinator";
 
 /** What the engine answers a write with. A refusal is an ANSWER, not an error —
  *  the same shape `WorkspaceWriteResult` has, narrowed to what this needs. */
 export type FileWriteAnswer = { written: true; sha256: string } | { written: false; refusal: string };
+
+/** What a read said about disk. Both facts belong to the same read, which is
+ *  why they are adopted together. */
+export type FileRead = {
+  /** The hash the next write is owed against. */
+  sha256: string | undefined;
+  /** How the file ends its lines. The editor works in LF whatever this says —
+   *  a textarea cannot hold a CR — so the write puts it back. Defaults to LF. */
+  newline?: Newline;
+};
 
 export type FileWriter = {
   /** The hash the NEXT write will carry. `undefined` until a read has landed. */
@@ -44,9 +55,10 @@ export type FileWriter = {
   /** How many writes have landed. A read issued before this changed is holding
    *  bytes we have already replaced — see `FileViewSurface.load`. */
   readonly writes: number;
-  /** Adopt the hash from a read. The one thing that may move the baseline
-   *  BACKWARDS, and only because a re-read is a deliberate re-baselining. */
-  rebase(sha256: string | undefined): void;
+  /** Adopt what a read says about disk. The one thing that may move the
+   *  baseline BACKWARDS, and only because a re-read is a deliberate
+   *  re-baselining. */
+  rebase(read: FileRead): void;
   /** Write, carrying whatever the baseline is when this write actually goes
    *  out — never what it was when this function was handed to somebody. */
   persist(text: string): Promise<SaveOutcome>;
@@ -62,6 +74,7 @@ export function createFileWriter(options: {
   describe?: (cause: unknown) => string;
 }): FileWriter {
   let baseline: string | undefined;
+  let newline: Newline = "\n";
   let writes = 0;
   /** The tail of the write queue. Awaiting it is what makes "one at a time"
    *  true even when two callers ask at once. */
@@ -75,7 +88,9 @@ export function createFileWriter(options: {
     const expected = baseline;
     if (expected === undefined) return { status: "failed", reason: "This file has not been read yet." };
     try {
-      const answer = await options.send(text, expected);
+      // The editor works in LF because a textarea cannot hold anything else;
+      // disk gets back the endings the read found — see lib/line-endings.ts.
+      const answer = await options.send(withNewline(text, newline), expected);
       if (!answer.written) return { status: "refused", reason: answer.refusal };
       // The next write must carry the hash of what we just wrote, or the second
       // keystroke after a save is refused as a conflict with itself.
@@ -95,8 +110,9 @@ export function createFileWriter(options: {
     get writes() {
       return writes;
     },
-    rebase(sha256) {
-      baseline = sha256;
+    rebase(read) {
+      baseline = read.sha256;
+      newline = read.newline ?? "\n";
     },
     persist(text) {
       // Chained rather than fired: `queue` never rejects (every failure above is
