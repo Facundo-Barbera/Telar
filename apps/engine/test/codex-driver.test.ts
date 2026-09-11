@@ -825,6 +825,20 @@ test("the app-server's requestUserInput becomes a user_input request, and the an
   ]);
 });
 
+test("Codex questions are SINGLE-select, so an array answer to one takes the first pick", async () => {
+  // `ToolRequestUserInputQuestion` (rust-v0.149.1) is
+  // `{id, header, question, isOther, isSecret, options}` — no flag asks for
+  // several, so no field here is `multiple` and the test above pins that by
+  // asserting the whole shape. An array arriving is therefore a client bug.
+  // The wire shape stays an array either way (`ToolRequestUserInputAnswer`);
+  // what changes is that only the honest pick goes in it, rather than
+  // answering a one-pick question with two.
+  const { result } = runTurn("request-user-input", {
+    onRequest: async () => ({ decision: "accept", answers: { "q-color": ["Blue", "Red"] } }),
+  });
+  await expect(result).resolves.toMatchObject({ text: 'answered={"q-color":{"answers":["Blue"]}}' });
+});
+
 test("a declined requestUserInput answers an EMPTY map — the tool's own no-answer arm, not a hang", async () => {
   const { result } = runTurn("request-user-input", { onRequest: async () => "decline" });
   await expect(result).resolves.toMatchObject({ text: "answered={}" });
