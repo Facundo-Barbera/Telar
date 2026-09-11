@@ -66,6 +66,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { ComposerMenu } from "./composer-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
+import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
@@ -74,7 +75,7 @@ import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
-import { WorkspaceEnvironment } from "./workspace-environment";
+import { ProjectNotesStrip } from "./project-notes-strip";
 import { cn } from "@/lib/utils";
 
 /** How long a first Escape stays armed. */
@@ -630,6 +631,14 @@ export function Composer({
    */
   const checkout = sessionId ?? (projectId ? `project:${projectId}` : "none");
   const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
+  /**
+   * THE NOTEBOOK, for the `@` menu. Read on mount rather than on the first `@`,
+   * unlike the path listing: that one is a git call over a whole checkout and
+   * most messages contain no mention, while this is one small document the foot
+   * two centimetres below is already showing. Both surfaces share the window
+   * event, so they cannot disagree about what the notebook holds.
+   */
+  const { notes } = useProjectNotes(projectId);
   const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel), session?.providerInstanceId);
 
   /**
@@ -671,7 +680,21 @@ export function Composer({
 
   const completions = useMemo<Completion[]>(() => {
     if (!trigger || dismissed) return [];
-    if (trigger.kind === "path") return rankPaths(paths ?? [], trigger.query);
+    /**
+     * `@` OFFERS THE NOTEBOOK BESIDE THE CHECKOUT, under ONE sigil.
+     *
+     * A `@note:` prefix would thread a second trigger kind through the editor
+     * for a gesture whose whole appeal is that `@arch` reaches "Architecture
+     * decisions" and `architecture.md` without the typist having decided which
+     * of the two they wanted. Notes take at most the first four rows — they are
+     * a handful and the checkout is thousands, so a cap is what stops a short
+     * query from burying every path — and the picked row inserts the note's
+     * BODY, exactly as dragging its chip does.
+     */
+    if (trigger.kind === "path") {
+      const noteRows = rankNotes(notes, trigger.query);
+      return [...noteRows, ...rankPaths(paths ?? [], trigger.query, Math.max(4, 12 - noteRows.length))];
+    }
     return rankCommands(
       availableCommands({
         busy,
@@ -684,7 +707,7 @@ export function Composer({
       }),
       trigger.query,
     );
-  }, [trigger, dismissed, paths, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
+  }, [trigger, dismissed, paths, notes, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
 
   // No completions while a question is active: the editor's text is an ANSWER,
   // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
@@ -1357,16 +1380,15 @@ export function Composer({
         </div>
       </form>
 
-      {/* The composer's foot: where this message lands. Outside the form and
-          fused to its bottom edge — see workspace-environment.tsx.
+      {/* The composer's foot: the project's notebook, plus the create-time
+          "where this lands" choice while there is still one to make. Outside the
+          form and fused to its bottom edge — see project-notes-strip.tsx.
 
-          A PROJECT-LESS CHAT HAS NO FOOT. This strip names a branch, a checkout
-          and a worktree choice, and every one of those is a property of a
-          repository. Rendering it empty would be a row of blanks claiming the
-          conversation lands somewhere; rendering it at all would be the widening
-          this component was careful not to do. */}
+          A PROJECT-LESS CHAT HAS NO FOOT. A note belongs to a project and so
+          does a worktree choice; rendering the strip empty would be a row of
+          blanks claiming the conversation belongs somewhere. */}
       {projectId && (
-      <WorkspaceEnvironment
+      <ProjectNotesStrip
         projectId={projectId}
         {...(projectName ? { projectName } : {})}
         {...(session ? { session } : {})}

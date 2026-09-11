@@ -17,12 +17,16 @@
  * close the menu before the pick landed.
  */
 
-import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, ShieldCheckIcon, SparklesIcon, SquareIcon } from "lucide-react";
+import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon } from "lucide-react";
 import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
 
 const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {
+  // Not a command, but it reaches the same table: a note row's glyph is the one
+  // the strip and the chip already use, so the three spellings of "a note" are
+  // recognisable as the same object.
+  note: NotebookPenIcon,
   access: ShieldCheckIcon,
   model: SparklesIcon,
   effort: GaugeIcon,
