@@ -81,7 +81,7 @@ import { MainSidebarTrigger, useMainIsLeftmost } from "./main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -662,7 +662,7 @@ function SessionTurnBody({
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
           {turn.origin === "session" && turn.sender ? (
-            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentNotice ? { notice: turn.agentNotice } : {})} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
           )}
@@ -962,6 +962,22 @@ export function SessionCockpit({
   /** Seeded from whether there is anything to load at all — a fresh canvas has
    *  no transcript to hydrate, so it must never paint a loading state. */
   const [loading, setLoading] = useState(Boolean(routeSessionId));
+  /**
+   * WHICH CONVERSATION'S OWN TRANSCRIPT IS ON SCREEN — the sync key the first
+   * read after a switch answered for, whether it answered with a transcript or
+   * with a failure.
+   *
+   * `turns` is not emptied when the route moves to another session (there would
+   * be nothing to put in its place), so for a moment this component is still
+   * holding the PREVIOUS session's rows; then the cached photograph replaces
+   * them; then the live read. All three are the same conversation OPENING, and
+   * the viewport has to place itself at the end of each without animating. This
+   * is how it tells them apart from a turn streaming into a transcript the
+   * reader is already sitting in. See components/ui/conversation.tsx.
+   */
+  const [readKey, setReadKey] = useState<string>();
+  /** The transcript's scroll layer, reachable from `submit`. */
+  const follow = useRef<ConversationFollowHandle>(null);
   const [sending, setSending] = useState(false);
   /**
    * The panel's open tabs, and whether the panel itself is showing.
@@ -1093,10 +1109,14 @@ export function SessionCockpit({
         setRequests(hydrated.requests);
         setEvents(hydrated.events);
         setPage(hydrated.page);
+        // IN THE SAME COMMIT as the rows it is about. Told a render later, the
+        // viewport would already have treated this transcript's arrival as
+        // ordinary growth and animated it.
+        setReadKey(syncKey);
         cursor.current = hydrated.cursor;
         remember(sessionId, hydrated);
       }),
-    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setPage, setRequests, setSession, setTasks, setTurns],
+    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setPage, setReadKey, setRequests, setSession, setTasks, setTurns],
   );
   const tail = useCallback(
     () => {
@@ -1632,7 +1652,15 @@ export function SessionCockpit({
     void hydrate()
       .then(
         () => !cancelled && setError(undefined),
-        (cause) => !cancelled && fail(cause, "Could not hydrate this session."),
+        (cause) => {
+          if (cancelled) return;
+          fail(cause, "Could not hydrate this session.");
+          // A READ THAT FAILED STILL ENDS THE OPENING. Whatever is on screen —
+          // the recording, or nothing — is what this session has, and a viewport
+          // still waiting to be placed pins itself to the bottom on every
+          // commit, so a reader under a dead engine could never scroll up.
+          setReadKey(syncKey);
+        },
       )
       .finally(() => !cancelled && setLoading(false));
     const interval = window.setInterval(() => {
@@ -1642,7 +1670,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [hydrate, tail, sessionId, hostId, fail]);
+  }, [hydrate, tail, sessionId, hostId, fail, syncKey]);
 
   /**
    * NO SESSION, NO JOURNAL. Ordinarily a canvas has nothing to project anyway —
@@ -1870,6 +1898,18 @@ export function SessionCockpit({
     const runId = draftRunId ?? newRunId();
     setDraftRunId(runId);
     setSending(true);
+    /**
+     * SENDING ALWAYS GOES TO THE END, whatever the scroll layer believed.
+     *
+     * Before the bubble exists, not after: the reply arrives by hydrate or by
+     * poll, and this only has to re-arm following so that the growth carrying
+     * it is followed. Unconditional on purpose — you wrote the message, so it
+     * is the thing you want to be looking at, and a reader who had scrolled up
+     * to quote something would otherwise send into a transcript that never
+     * moves. See lib/scroll-follow.ts for why the lock can be dropped without
+     * anyone asking.
+     */
+    follow.current?.toBottom();
     // Cleared OPTIMISTICALLY and before the round trip: the box emptying is the
     // acknowledgement, and waiting on the network to give it back is the thing
     // that makes queueing feel like a form submission.
@@ -2139,6 +2179,10 @@ export function SessionCockpit({
   // take it, and the person has to see what a pause (or a restart) is holding
   // in order to decide about it.
   const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
+  /** Whether what is on screen is this conversation's own transcript, rather
+   *  than the tail of the last one or a recording of this one. A fresh canvas
+   *  has nothing to read, so it is never mid-open. */
+  const transcriptLanded = !sessionId || readKey === syncKey;
   /**
    * THE ANSWER A READ RECEIPT WOULD BE ABOUT — the newest turn that left a
    * result, read off the RAW turns because only they carry the sequence the
@@ -2275,7 +2319,7 @@ export function SessionCockpit({
         />
         {/* `display: contents` — a click boundary, never a layout box. */}
         <div className="contents" onClickCapture={onConversationClick}>
-        <ConversationViewport className="min-w-0 flex-1">
+        <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow}>
           <ConversationContent>
             {projectId !== session?.projectId && session && (
               <Alert variant="destructive" className="mx-auto max-w-[50rem]">
@@ -2393,7 +2437,8 @@ export function SessionCockpit({
           {...(composerQuestion
             ? {
                 question: composerQuestion,
-                onAnswerQuestion: (requestId: string, answers: Record<string, string>) => void decideRequest(requestId, "accept", { answers }),
+                onAnswerQuestion: (requestId: string, answers: Record<string, string | string[]>) =>
+                  void decideRequest(requestId, "accept", { answers }),
                 onCancelQuestion: (requestId: string) => void decideRequest(requestId, "cancel"),
               }
             : {})}

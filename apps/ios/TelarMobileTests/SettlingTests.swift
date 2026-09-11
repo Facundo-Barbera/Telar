@@ -65,3 +65,167 @@ import Testing
         #expect(sections.snoozed.count == 1)
     }
 }
+
+/// UNREAD, on the same cases the web's session-settling.test.ts pins.
+///
+/// The wire test is first and is not optional: `lastTurnSequence` is DERIVED
+/// per read and never appears in the stored session document, so a fixture
+/// written from the persisted record would have "proved" the decode while the
+/// field the rule actually reads went missing. The JSON below is copied
+/// verbatim out of a live `GET /v2/sessions/live`.
+@Suite struct UnreadTests {
+    /// `state` is left OUT of the base rather than defaulted in it: Foundation
+    /// keeps the FIRST of duplicate JSON keys, so a `"state"` in the base would
+    /// silently swallow an override naming the other one. The decoder already
+    /// defaults an absent `state` to `active`.
+    private func session(_ overrides: String) -> Session {
+        let activity = overrides.contains("\"activity\"") ? "" : #","activity":"idle""#
+        let base = """
+        {"id":"s","projectId":"p","title":"T",
+         "createdAt":1,"updatedAt":1000,"driver":"claude",
+         "workspace":{"mode":"local","path":"/x"},"runtimeMode":"auto","detached":false\(activity)\(overrides.isEmpty ? "" : "," + overrides)}
+        """
+        return try! JSONDecoder().decode(Session.self, from: Data(base.utf8))
+    }
+
+    @Test func theUnreadPairDecodesOffTheLiveWire() throws {
+        // Verbatim from the live sessions API — an idle session whose newest
+        // result (25) is one ahead of the newest receipt (24).
+        let live = #"""
+        {
+          "id": "session_d016f60f8e27488d9f832539fb90b9fd",
+          "projectId": "project_c2011ca1ad3345eb8b0655138036a9cf",
+          "environmentId": "local",
+          "title": "I want to finish upgrading the voice engine of the project so that its responsiv",
+          "state": "active",
+          "createdAt": 1789073036516,
+          "updatedAt": 1789089647766,
+          "providerInstanceId": "claude",
+          "driver": "claude",
+          "model": { "instanceId": "claude", "effort": "medium" },
+          "workspace": {
+            "mode": "local",
+            "path": "/Users/facundo/Projects/iaware/NuSkills-Coach-v2",
+            "baseRef": "05a9ff2d67f1a0d16c9087d022514e51de234b3c"
+          },
+          "envMode": "local",
+          "runtimeMode": "auto",
+          "interactionMode": "default",
+          "detached": true,
+          "activity": "idle",
+          "lastReadTurnSequence": 24,
+          "readAt": 1789089090531,
+          "settledOverride": "settled",
+          "settledAt": 1789089647766,
+          "resumeCursor": "726727a6-5b2b-4ebd-ac86-463f052d2f41",
+          "lastTurnEndedAt": 1789089411275,
+          "lastTurnSequence": 25
+        }
+        """#
+        let session = try JSONDecoder().decode(Session.self, from: Data(live.utf8))
+        #expect(session.lastTurnSequence == 25)
+        #expect(session.lastReadTurnSequence == 24)
+        #expect(session.readAt == 1_789_089_090_531)
+        #expect(Settling.hasUnreadResult(session))
+        #expect(Settling.showsUnreadMark(session))
+        // And the pin still outranks it: a human settled this one.
+        #expect(Settling.isSettled(session, now: 1_789_089_647_800, autoSettleAfterHours: 3))
+    }
+
+    @Test func unreadIsTheTwoSequencesNotAClock() {
+        #expect(Settling.hasUnreadResult(session(#""lastTurnSequence":7"#)))
+        #expect(!Settling.hasUnreadResult(session(#""lastTurnSequence":7,"lastReadTurnSequence":7"#)))
+        #expect(Settling.hasUnreadResult(session(#""lastTurnSequence":8,"lastReadTurnSequence":7"#)))
+    }
+
+    @Test func aSessionWithNoResultAtAllHasNothingToRead() {
+        // Absent means "never answered", not "unknown" — a Mac too old to send
+        // the field must not have every one of its rows marked unread forever.
+        #expect(!Settling.hasUnreadResult(session("")))
+        #expect(!Settling.showsUnreadMark(session("")))
+        #expect(!Settling.showsUnreadMark(session(#""lastReadTurnSequence":4"#)))
+    }
+
+    @Test func theRowShowsItsStatusOrItsDotNeverBoth() {
+        #expect(Settling.showsUnreadMark(session(#""lastTurnSequence":7"#)))
+        #expect(!Settling.showsUnreadMark(session(#""lastTurnSequence":7,"activity":"working""#)))
+        #expect(!Settling.showsUnreadMark(session(#""lastTurnSequence":7,"activity":"queued""#)))
+        #expect(!Settling.showsUnreadMark(session(#""lastTurnSequence":7,"activity":"blocked""#)))
+        // Monitoring keeps its dot: a watcher is not producing an answer, and
+        // the one it produced before it started watching is still unread.
+        #expect(Settling.showsUnreadMark(session(#""lastTurnSequence":7,"activity":"monitoring""#)))
+    }
+
+    @Test func theInactivityWindowDoesNotHideAnUnreadAnswer() {
+        let fourHoursOn: Timestamp = 1000 + 4 * 3_600_000
+        #expect(!Settling.isSettled(session(#""lastTurnSequence":7"#), now: fourHoursOn, autoSettleAfterHours: 3))
+        // …and reading it hands the session back to the clock.
+        #expect(Settling.isSettled(session(#""lastTurnSequence":7,"lastReadTurnSequence":7"#), now: fourHoursOn, autoSettleAfterHours: 3))
+        // Read a moment ago: the window runs from the READ, not from the work.
+        #expect(!Settling.isSettled(
+            session(#""lastTurnSequence":7,"lastReadTurnSequence":7,"readAt":\#(1000 + 3 * 3_600_000)"#),
+            now: fourHoursOn, autoSettleAfterHours: 3
+        ))
+        // A NEWER answer makes a read session unread again.
+        #expect(!Settling.isSettled(session(#""lastTurnSequence":8,"lastReadTurnSequence":7"#), now: fourHoursOn, autoSettleAfterHours: 3))
+    }
+
+    @Test func butAnExplicitSettleStillShelvesIt() {
+        // A human settling a session with an unread answer in front of them
+        // means it — the pin sits above both guards.
+        let now: Timestamp = 1000 + 4 * 3_600_000
+        #expect(Settling.isSettled(session(#""lastTurnSequence":7,"settledOverride":"settled""#), now: now, autoSettleAfterHours: 3))
+        #expect(Settling.isSettled(session(#""lastTurnSequence":7,"settledOverride":"settled""#), now: now, autoSettleAfterHours: nil))
+        // An archived session is over whether or not anyone read it.
+        #expect(Settling.isSettled(session(#""lastTurnSequence":7,"state":"archived""#), now: now, autoSettleAfterHours: 3))
+    }
+}
+
+/// The snooze choices, on the same cases the web's session-settling.test.ts
+/// pins: calendar days not fixed offsets, "this evening" vanishing when it is
+/// nearly evening, and "next week" meaning the NEXT Monday on a Monday.
+@Suite struct SnoozePresetTests {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Mexico_City")!
+        return calendar
+    }
+    private func date(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
+    }
+    private func components(_ stamp: Timestamp) -> DateComponents {
+        calendar.dateComponents([.year, .month, .day, .hour, .minute, .weekday], from: Date(timeIntervalSince1970: TimeInterval(stamp) / 1000))
+    }
+
+    @Test func aMorningOffersAllFiveInOrder() {
+        // Wednesday 2026-09-09, 10:00.
+        let presets = snoozePresets(now: date(2026, 9, 9, 10), calendar: calendar)
+        #expect(presets.map(\.kind) == [.hour, .threeHours, .evening, .tomorrow, .nextWeek])
+        let evening = components(presets[2].until)
+        #expect(evening.day == 9 && evening.hour == 18)
+        let tomorrow = components(presets[3].until)
+        #expect(tomorrow.day == 10 && tomorrow.hour == 9)
+        let nextWeek = components(presets[4].until)
+        #expect(nextWeek.weekday == 2 && nextWeek.day == 14 && nextWeek.hour == 9)
+    }
+
+    @Test func thisEveningDisappearsOnceItIsNearlyEvening() {
+        let presets = snoozePresets(now: date(2026, 9, 9, 17, 30), calendar: calendar)
+        #expect(!presets.contains { $0.kind == .evening })
+        #expect(presets.count == 4)
+    }
+
+    @Test func nextWeekOnAMondayIsTheFollowingMonday() {
+        // Monday 2026-09-14.
+        let presets = snoozePresets(now: date(2026, 9, 14, 10), calendar: calendar)
+        let nextWeek = components(presets.first { $0.kind == .nextWeek }!.until)
+        #expect(nextWeek.weekday == 2 && nextWeek.day == 21)
+    }
+
+    @Test func everyPresetIsInTheFuture() {
+        let now = date(2026, 9, 9, 23, 30)
+        for preset in snoozePresets(now: now, calendar: calendar) {
+            #expect(Double(preset.until) > now.timeIntervalSince1970 * 1000)
+        }
+    }
+}

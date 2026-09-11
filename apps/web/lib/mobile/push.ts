@@ -28,6 +28,7 @@ export interface PushRecord extends MobileRegistration {
   revision: string;
   baselined?: boolean;
   automaticStartedAt?: number;
+  automaticStarts?: number;
   automaticSignal?: string;
   failures?: number;
   retryAt?: number;
@@ -78,7 +79,12 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
 export function saveRegistration(deviceId: string, registration: MobileRegistration, file = pushFile()): void {
   const records = readPushRecords(file);
   const old = records.find(r => r.deviceId === deviceId && r.topic === registration.topic);
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: registration.liveActivities && old?.liveActivities ? old.automaticStartedAt : undefined, automaticSignal: old?.automaticSignal, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  // A start receipt belongs to the token it was sent to. A reinstall mints a fresh
+  // pushToStartToken, so a receipt for the previous one proves nothing about this install
+  // and must not close the start gate; the attempt count travels with it for the same reason.
+  const keepStart = registration.liveActivities === true && old?.liveActivities === true
+    && registration.pushToStartToken !== undefined && registration.pushToStartToken === old.pushToStartToken;
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {

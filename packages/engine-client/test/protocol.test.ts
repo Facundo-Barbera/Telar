@@ -159,6 +159,30 @@ describe("Turn", () => {
   test("a negative sequence is rejected", () => {
     expect(Turn.safeParse({ ...turn, sequence: -1 }).success).toBe(false);
   });
+
+  test("an agent turn carries BOTH the message and the notice that stands in for it", () => {
+    // The two are not alternatives: `input` is the durable record a
+    // `sessions_read` hands back, `agentNotice` is what the recipient's model
+    // was given instead. A client that kept only one of them would either
+    // flood a context or lose a message.
+    const parsed = Turn.safeParse({
+      ...turn,
+      input: "the whole report",
+      origin: "session",
+      sender: { sessionId: "session_worker" },
+      agentIntent: "report",
+      agentDelivery: "passive",
+      agentNotice: '[agent message · report] from session session_worker (run r1, 16 chars): "the whole report"',
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.input).toBe("the whole report");
+      expect(parsed.data.agentNotice).toContain("16 chars");
+    }
+    // OPTIONAL BY CONSTRUCTION: turns stored before notices existed have none,
+    // and a decoder that required one would reject a session's own history.
+    expect(Turn.safeParse({ ...turn, origin: "session", sender: {} }).success).toBe(true);
+  });
 });
 
 describe("ItemDetail", () => {
@@ -183,6 +207,23 @@ describe("ItemDetail", () => {
 
   test("an unknown item type is representable, so a new row is never dropped", () => {
     expect(ItemDetail.safeParse({ type: "unknown", label: "something new" }).success).toBe(true);
+  });
+
+  test("a steered agent message keeps its notice beside the body it stands in for", () => {
+    // Declared on the schema rather than passed through untyped, because a zod
+    // object DROPS what it does not declare — an undeclared `notice` would be
+    // silently erased at exactly the seam that carries it to the transcript.
+    const parsed = ItemDetail.safeParse({
+      type: "user_message",
+      text: "the whole report",
+      sender: { sessionId: "session_worker" },
+      notice: '[agent message · report] from session session_worker (run r1, 16 chars): "the whole report"',
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.type === "user_message") {
+      expect(parsed.data.text).toBe("the whole report");
+      expect(parsed.data.notice).toContain("16 chars");
+    }
   });
 });
 
@@ -520,6 +561,36 @@ describe("SpoolNote, SpoolSearchHit, tags and the socket card — the shelf/sear
     expect(
       packageRoot.SpoolNote.safeParse({ id: "n-3", title: "t", body: "b", created: stamp, updated: stamp, author: "you", retired: { label: "Tue", at: 1 } }).success,
     ).toBe(false);
+  });
+
+  test("a ProjectNote mirrors the shelf note where the two mean the same thing, and diverges where they do not", () => {
+    const note = packageRoot.ProjectNote.parse({
+      id: "n-1",
+      projectId: "project_aurora",
+      title: "Deploy",
+      body: "bun run ship",
+      created: stamp,
+      updated: stamp,
+      author: "session",
+      futureKey: "kept", // z.looseObject — a later build's field survives
+    });
+    expect(note.schemaVersion).toBe(1);
+    expect((note as Record<string, unknown>).futureKey).toBe("kept");
+    // The same closed author set the shelf has: provenance has two hands here
+    // too, and deliberately is NOT a `{ sessionId }` — see the module header.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-2", projectId: "p", title: "t", body: "", created: stamp, updated: stamp, author: "model" }).success,
+    ).toBe(false);
+    // WHERE IT DIVERGES: `projectId` is required (a note with no project has no
+    // notebook to live in, unlike a shelf note, which may float), and there is
+    // no `retired` — this store deletes.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-3", title: "t", body: "", created: stamp, updated: stamp, author: "you" }).success,
+    ).toBe(false);
+    // An empty body parses: "+, type a title, come back to it" is the gesture.
+    expect(
+      packageRoot.ProjectNote.safeParse({ id: "n-4", projectId: "p", title: "t", body: "", created: stamp, updated: stamp, author: "you" }).success,
+    ).toBe(true);
   });
 
   test("a search hit's kind is the closed four, and `closed` is the marked-not-hidden channel", () => {

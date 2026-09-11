@@ -31,7 +31,15 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    # ON THE MAC MINI, like the nightly — the hosted macOS lane stopped starting
+    # jobs (billing) on 2026-09-07, and the Mac has everything this needs:
+    # codesign, a release Xcode's notarytool, bun, aws. Same keychain dance as
+    # nightly-desktop.yml, which has run here since August.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,9 +83,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-          # Prepend so electron-builder's cert auto-discovery finds it first.
-          IFS=$'\n' read -rd '' -a EXISTING < <(security list-keychains -d user | sed 's/[" ]//g') || true
-          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          # ON A PERSISTENT MAC, save the search list and search ONLY the CI
+          # keychain — the login keychain carries the same Developer ID cert,
+          # and two matches make name-based signing ambiguous. The cleanup
+          # step restores the exact prior list. Same rule as nightly-desktop.
+          security list-keychains -d user > "$RUNNER_TEMP/keychain-search-list.txt"
+          security list-keychains -d user -s "$KEYCHAIN"
 
           rm -f "$CERT_PATH"
 
@@ -101,6 +112,8 @@ jobs:
 
       - name: Build, sign, notarize, and publish to R2
         env:
+          # Restrict codesign to this job's keychain (see the import step).
+          CSC_KEYCHAIN: ${{ runner.temp }}/signing.keychain-db
           APPLE_API_KEY: ${{ runner.temp }}/apple_api_key.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -147,5 +160,12 @@ jobs:
       - name: Clean up temporary keychain
         if: always()
         run: |
+          if [ -f "$RUNNER_TEMP/keychain-search-list.txt" ]; then
+            python3 - <<'PYTHON'
+          import os, pathlib, shlex, subprocess
+          saved = pathlib.Path(os.environ["RUNNER_TEMP"]) / "keychain-search-list.txt"
+          subprocess.run(["security", "list-keychains", "-d", "user", "-s", *shlex.split(saved.read_text())], check=True)
+          PYTHON
+          fi
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/apple_api_key.p8" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/apple_api_key.p8" "$RUNNER_TEMP/keychain-search-list.txt" 2>/dev/null || true

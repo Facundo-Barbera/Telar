@@ -4,6 +4,8 @@ struct SidebarProject: Identifiable {
     let hostId: HostID
     let projectId: String
     let name: String
+    /// `ProjectRef.icon`, when the Mac listed one.
+    var icon: String? = nil
     var sessions: [HostedSession]
     var id: String { "\(hostId.uuidString):\(projectId)" }
 }
@@ -14,14 +16,14 @@ struct SidebarModel {
     var pinned: [HostedSession]
     var projects: [SidebarProject]
 
-    init(sessions: [HostedSession], names: (HostedSession) -> String?, orders: [HostID: [String]] = [:]) {
+    init(sessions: [HostedSession], names: (HostedSession) -> String?, icons: (HostedSession) -> String? = { _ in nil }, orders: [HostID: [String]] = [:]) {
         attention = sessions.filter { $0.session.activity == .blocked }
         pinned = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride == "active" }
         let ordinary = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride != "active" }
         let groups = Dictionary(grouping: ordinary) { "\($0.hostId):\($0.session.projectId ?? "")" }
         projects = groups.values.compactMap { rows in
             guard let first = rows.first else { return nil }
-            return SidebarProject(hostId: first.hostId, projectId: first.session.projectId ?? "", name: names(first) ?? "Other sessions", sessions: rows)
+            return SidebarProject(hostId: first.hostId, projectId: first.session.projectId ?? "", name: names(first) ?? "Other sessions", icon: icons(first), sessions: rows)
         }.sorted { a, b in
             if a.hostId != b.hostId { return a.hostId.uuidString < b.hostId.uuidString }
             if a.hostId == b.hostId {

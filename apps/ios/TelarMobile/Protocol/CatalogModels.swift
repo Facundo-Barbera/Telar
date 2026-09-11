@@ -37,12 +37,19 @@ struct ProviderInstance: Decodable, Identifiable, Equatable {
     var enabled: Bool
 }
 
-/// A stored attachment — written before the message that refers to it.
+/// A stored attachment — written before the message that refers to it. A
+/// plot is one tagged `plot`; a pinned plot also carries `pinned`.
 struct TurnAttachment: Decodable, Identifiable, Equatable {
     var id: EngineID
     var name: String
     var mediaType: String
     var bytes: Int
+    var tags: [String]?
+    /// The cell id or tool that drew it — a caption, when present.
+    var producer: String?
+    var createdAt: Timestamp?
+
+    var isPinned: Bool { tags?.contains("pinned") == true }
 }
 
 // MARK: - the session's review

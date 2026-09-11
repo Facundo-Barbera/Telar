@@ -82,6 +82,14 @@ struct JournalTask: Identifiable, Equatable {
 
 struct JournalTurn: Identifiable, Equatable {
     var runId: EngineID
+    /// THE ENGINE'S OWN ORDERING of turns in this session, carried because the
+    /// read receipt compares against it: unread is `lastTurnSequence >
+    /// lastReadTurnSequence`, so a client that picked "the newest answer" any
+    /// other way — array position, a timestamp — would confirm a turn that
+    /// leaves the session still unread. Zero for a turn folded from an older
+    /// snapshot that carried no sequence, which simply never wins the
+    /// comparison.
+    var sequence: Int = 0
     var prompt: String
     /// The compaction gesture — a system row, not a bubble.
     var isCompactGesture: Bool = false
@@ -96,8 +104,35 @@ struct JournalTurn: Identifiable, Equatable {
     var resultText: String
     var failure: String?
     var usage: UsageSnapshot?
+    /// Who sent this turn and what they meant by it — carried from `Turn` so
+    /// the transcript can tell a person's message from a peer's report and a
+    /// wake-up from either.
+    var origin: String?
+    var sender: MessageSender?
+    var agentIntent: String?
+    var assignmentScope: String?
+    var wakeReason: WakeReason?
+    var agentNotice: String?
+    var providerReason: ProviderReason?
 
     var id: EngineID { runId }
+
+    /// A turn another session sent. A wake is one too, but it is drawn as a
+    /// system line rather than as a message, so it is asked about separately.
+    var isFromAgent: Bool { origin == "session" && wakeReason == nil }
+
+    /// A turn the model woke itself into. `origin` alone is not enough: a peer
+    /// can send into a session and the engine stamps the same origin.
+    var isWake: Bool { wakeReason != nil && origin != "user" }
+
+    /// A turn THE PROVIDER started, with nobody's words in it: a background
+    /// task ending woke the model. Its `input` is empty, so drawing it as a
+    /// message produced an empty right-aligned bubble.
+    var isProviderStarted: Bool { origin == "provider" }
+
+    /// A peer HANDING WORK OVER is the reason this session is doing anything,
+    /// so it reads as a message. A peer TALKING stays collapsed.
+    var isAgentTask: Bool { isFromAgent && agentIntent == "task" }
 
     /// An open `context_compaction` item — the provider squeezing right now.
     var isCompacting: Bool {
@@ -152,6 +187,7 @@ private final class TaskBox {
 
 private final class TurnBox {
     var runId: EngineID
+    var sequence: Int
     var prompt: String
     var isCompactGesture: Bool
     var state: TurnState
@@ -162,8 +198,16 @@ private final class TurnBox {
     var resultText: String
     var failure: String?
     var usage: UsageSnapshot?
+    var origin: String?
+    var sender: MessageSender?
+    var agentIntent: String?
+    var assignmentScope: String?
+    var wakeReason: WakeReason?
+    var agentNotice: String?
+    var providerReason: ProviderReason?
     init(turn: Turn) {
         runId = turn.runId
+        sequence = turn.sequence
         prompt = turn.input
         isCompactGesture = turn.kind == "compact"
         state = turn.state
@@ -171,6 +215,13 @@ private final class TurnBox {
         resultText = turn.resultText ?? ""
         failure = turn.failure?.message
         usage = turn.usage
+        origin = turn.origin
+        sender = turn.sender
+        agentIntent = turn.agentIntent
+        assignmentScope = turn.assignmentScope
+        wakeReason = turn.wakeReason
+        agentNotice = turn.agentNotice
+        providerReason = turn.providerReason
     }
 }
 
@@ -302,7 +353,12 @@ func projectJournal(
                 ),
                 openedBy: event.id
             )
-        case .requestOpened, .requestResolved, .sessionUpdated:
+        case .requestOpened, .requestResolved, .sessionUpdated, .displayOpened,
+             .kernelStateChanged, .notebookCellOutput:
+            // The kernel's two events are not TIMELINE rows — a cell's output
+            // belongs to the notebook, not to the conversation. They are
+            // folded separately, into the revisions the panel's surfaces
+            // watch (`foldKernelSignals`).
             break
         case .none:
             // State transitions the payload enum does not carry ride the type
@@ -336,6 +392,7 @@ func projectJournal(
         }
         return JournalTurn(
             runId: turn.runId,
+            sequence: turn.sequence,
             prompt: turn.prompt,
             isCompactGesture: turn.isCompactGesture,
             state: turn.state,
@@ -345,7 +402,14 @@ func projectJournal(
             lastActivityAt: turn.lastActivityAt,
             resultText: turn.resultText,
             failure: turn.failure,
-            usage: turn.usage
+            usage: turn.usage,
+            origin: turn.origin,
+            sender: turn.sender,
+            agentIntent: turn.agentIntent,
+            assignmentScope: turn.assignmentScope,
+            wakeReason: turn.wakeReason,
+            agentNotice: turn.agentNotice,
+            providerReason: turn.providerReason
         )
     }
 }

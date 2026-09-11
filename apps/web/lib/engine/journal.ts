@@ -49,6 +49,9 @@ export type JournalTurn = {
   agentDelivery?: Turn["agentDelivery"];
   /** `task` renders as a full message; a report stays collapsed. */
   agentIntent?: Turn["agentIntent"];
+  /** The engine's one-line announcement of that message — the collapsed row's
+   *  label, and what the recipient's model was handed instead of `prompt`. */
+  agentNotice?: Turn["agentNotice"];
   /** What the sender said the task covers. Descriptive; confers nothing. */
   assignmentScope?: Turn["assignmentScope"];
   /** Files sent WITH this message. On the turn because that is what they
@@ -153,6 +156,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         ...(turn.sender ? { sender: turn.sender } : {}),
         ...(turn.agentDelivery ? { agentDelivery: turn.agentDelivery } : {}),
         ...(turn.agentIntent ? { agentIntent: turn.agentIntent } : {}),
+        ...(turn.agentNotice ? { agentNotice: turn.agentNotice } : {}),
         ...(turn.assignmentScope ? { assignmentScope: turn.assignmentScope } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
@@ -268,6 +272,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             ...(event.turn.sender ? { sender: event.turn.sender } : {}),
             ...(event.turn.agentDelivery ? { agentDelivery: event.turn.agentDelivery } : {}),
             ...(event.turn.agentIntent ? { agentIntent: event.turn.agentIntent } : {}),
+            ...(event.turn.agentNotice ? { agentNotice: event.turn.agentNotice } : {}),
             ...(event.turn.assignmentScope ? { assignmentScope: event.turn.assignmentScope } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,

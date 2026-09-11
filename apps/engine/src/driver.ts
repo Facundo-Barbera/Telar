@@ -30,6 +30,7 @@ import type {
   TaskState,
   TurnObservation,
   UsageSnapshot,
+  UserInputField,
 } from "@telar/engine-client";
 // The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
 // in engine-client. Every client renders these names too.
@@ -75,6 +76,7 @@ import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
+import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -199,6 +201,8 @@ type ClaudeTurnBindings = {
   canUseTool: SdkCanUseTool | undefined;
   spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
+  /** The project's notebook, scoped to this turn's project. */
+  notes: NotesCapability | undefined;
   ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
   latex: LatexCapability | undefined;
@@ -1148,6 +1152,7 @@ export function createClaudeDriver(
       plugins,
       spool,
       sessions,
+      notes,
       ds,
       display,
       latex,
@@ -1725,7 +1730,7 @@ export function createClaudeDriver(
               const questions = Array.isArray(asRecord(input).questions)
                 ? (asRecord(input).questions as unknown[]).map(asRecord)
                 : [];
-              const fields = questions.flatMap((question) => {
+              const fields = questions.flatMap((question): UserInputField[] => {
                 const text = str(question.question);
                 if (!text) return [];
                 const choices = Array.isArray(question.options)
@@ -1734,7 +1739,20 @@ export function createClaudeDriver(
                 // KEYED BY THE QUESTION TEXT — that is AskUserQuestionOutput's
                 // own answer key. The label repeats it because the header is a
                 // 12-character chip, not a sentence a human can answer.
-                return [{ key: text, label: text, kind: "choice" as const, choices, required: true }];
+                //
+                // `multiSelect` is the tool's own flag for "pick several", and
+                // it is carried rather than dropped: without it the form asks
+                // for one answer to a question that offered many, and the
+                // human's other picks have nowhere to go. Only set when TRUE,
+                // so a single-select field stays exactly the shape it was.
+                return [{
+                  key: text,
+                  label: text,
+                  kind: "choice",
+                  choices,
+                  ...(question.multiSelect === true ? { multiple: true } : {}),
+                  required: true,
+                }];
               });
               if (fields.length > 0) {
                 try {
@@ -1752,7 +1770,21 @@ export function createClaudeDriver(
                     const answers: Record<string, string> = {};
                     for (const field of fields) {
                       const value = outcome.answers[field.key];
-                      if (value !== undefined) answers[field.key] = Array.isArray(value) ? value.join(", ") : String(value);
+                      if (value === undefined) continue;
+                      if (!Array.isArray(value)) {
+                        answers[field.key] = String(value);
+                        continue;
+                      }
+                      // SEVERAL PICKS ARE STILL ONE ANSWER to this tool —
+                      // `AskUserQuestionOutput` maps a question to a string,
+                      // not to a list — so a multi-select's labels join.
+                      //
+                      // An array on a SINGLE-select field is a client bug, and
+                      // the honest reading of it is the first pick. Joining
+                      // would manufacture a multi-answer out of a question that
+                      // never offered one, and the model would act on it.
+                      if (field.multiple) answers[field.key] = value.join(", ");
+                      else if (value.length > 0) answers[field.key] = String(value[0]);
                     }
                     return { behavior: "allow", updatedInput: { ...asRecord(input), answers } };
                   }
@@ -1849,6 +1881,10 @@ export function createClaudeDriver(
               text: message.text,
               ...(attachments.length > 0 ? { attachments } : {}),
               ...(message.sender ? { sender: message.sender } : {}),
+              // The row keeps the BODY in `text` and the engine's notice beside
+              // it, so the transcript can collapse to the one line the model
+              // was handed and still expand to everything the peer sent.
+              ...(message.notice ? { notice: message.notice } : {}),
               // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
               // turn used to land here bare and draw as the person's bubble.
               ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
@@ -1893,6 +1929,7 @@ export function createClaudeDriver(
         canUseTool,
         spool,
         sessions,
+        notes,
         ds,
         display,
         latex,
@@ -1923,6 +1960,7 @@ export function createClaudeDriver(
       const telarParts: TelarWallPart[] = [
         { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
+        { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
         { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
         { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
         { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
@@ -1968,6 +2006,10 @@ export function createClaudeDriver(
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
+        // Same rule: the toolkits are baked into the query at creation, so a
+        // project-less session gaining a project must cold-start rather than
+        // keep advertising a wall it no longer lacks.
+        notes: Boolean(notes),
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
@@ -2051,6 +2093,18 @@ export function createClaudeDriver(
        * `sessions_create` is fan-out wearing another hat.
        */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
+
+        /**
+         * THE PROJECT'S NOTEBOOK, WHEN THE TURN CARRIES ONE — so "what does the
+         * deploy note say?" is answerable, and "keep this where we can find it"
+         * lands somewhere the human will actually see it.
+         *
+         * NO APPROVAL GATE, the spool's judgement again: nothing here lands
+         * anything, and writing a note changes no branch and queues no turn. The
+         * one guard that matters is the wall's own — `notes_delete` removes only
+         * notes an agent wrote, and refuses the user's in a sentence.
+         */
+        if (notes && sdk.tool) telarTools.push(...notesTools(sdk.tool, delegatingCapability(() => bindings.current.notes)));
 
         /**
          * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval

@@ -30,6 +30,32 @@ import crypto from "node:crypto";
  *  by hand, and absent is simply "no host here", not an error. */
 export const HOST_TOKEN_ENV = "TELAR_HOST_TOKEN";
 
+/**
+ * AND THE HEADER THE SHELL PUTS ON EVERY REQUEST TO ITS OWN SERVER.
+ *
+ * The cookie above is seated once, on one origin, in the network service's
+ * memory — and it stopped arriving in both of the ways that description
+ * invites. Chromium can restart the network process, which drops every SESSION
+ * cookie (persistent ones reload from disk; these do not). And the app treats
+ * `localhost:<port>` and `127.0.0.1:<port>` as the same server on purpose, so a
+ * navigation that spells it the other way carries no cookie at all. Either way
+ * the host's own window was told to pair itself.
+ *
+ * A header is recomputed per request from a value the shell holds in memory, so
+ * neither failure can reach it. The cookie stays — it is what the very first
+ * request carries — and this is checked first.
+ *
+ * THE SHELL DECLARES THE SAME NAME (apps/desktop/host-header.js) and
+ * apps/desktop/host-header.test.js pins that the two agree: a drift between
+ * them is not a type error in either half, it is this bug again.
+ */
+export const HOST_HEADER = "x-telar-host";
+
+/** The host secret off a plain Request, or null. Header first — see above. */
+export function readHostHeader(request: { headers: { get(name: string): string | null } }): string | null {
+  return request.headers.get(HOST_HEADER);
+}
+
 /** Long enough that guessing is not a strategy, and the same shape as a device
  *  token so nothing downstream has to special-case its parsing. */
 export function mintHostToken(): string {

@@ -36,17 +36,29 @@ IP via NSExceptionDomains.
 ## Building
 
 No Bun involvement — `apps/ios` has no `package.json` on purpose, so the
-workspace tooling never sees it. Xcode 26+ required; `xcode-select` is not:
+workspace tooling never sees it. Xcode 27+ required, a RELEASE build (App
+Store Connect refuses uploads from a beta); `xcode-select` is not:
 
 ```
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
-  -destination 'generic/platform=iOS Simulator' \
+  -destination 'generic/platform=iOS' \
   -derivedDataPath apps/ios/DerivedData CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
-  -destination 'platform=iOS Simulator,name=iPhone 17' \
-  -derivedDataPath apps/ios/DerivedData test
 ```
+
+NO SIMULATORS, by decision (2026-09-11): a runtime is 16 GB and the phone is
+the test target. The unit suite runs on a connected device —
+`TELAR_IPHONE_UDID` names it, the same id `phone.sh` installs to:
+
+```
+xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobile \
+  -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
+  -derivedDataPath apps/ios/DerivedData \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
+```
+
+If a simulator is ever wanted again, `xcodebuild -downloadPlatform iOS`
+fetches the runtime; delete it with `xcrun simctl runtime delete all`.
 
 The project uses Xcode's file-system-synchronized groups: dropping a
 `.swift` file into `TelarMobile/` or `TelarMobileTests/` adds it to the
@@ -61,8 +73,6 @@ iOS; each keeps its own pairing (Keychain is per-app), so pair each once
 and it survives reinstalls of that flavor.
 
 A paid developer account's profile lasts a year; no TestFlight required.
-The simulator needs no signing at all and shares the Mac's network stack,
-so it reaches the cockpit on either the tailnet IP or localhost.
 
 ## Nightlies over TestFlight
 
@@ -73,18 +83,18 @@ git tag ios-nightly-YYYYMMDD && git push origin ios-nightly-YYYYMMDD
 ```
 
 The Actions workflow (.github/workflows/nightly-ios.yml) runs
-`apps/ios/nightly.sh` on a macOS runner: archive, export (the re-sign to
-Apple Distribution — `destination: upload` ships a dev-signed binary Apple
-refuses), altool upload. The phone then updates itself through the
-TestFlight app (internal testing: no review, live minutes after
-processing, builds expire after 90 days).
+`apps/ios/nightly.sh` on the Mac mini's own self-hosted runner, with its one
+release Xcode: archive, export (the re-sign to Apple Distribution —
+`destination: upload` ships a dev-signed binary Apple refuses), altool
+upload. The phone then updates itself through the TestFlight app (internal
+testing: no review, live minutes after processing, builds expire after 90
+days). Why the Mac and not GitHub's macOS lane, and how every other workflow
+came to live there too: docs/operations/mac-mini-runner-plan-2026-09-11.md.
 
 Credentials are the repo secrets `APPLE_API_KEY_P8_BASE64` /
 `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — an ADMIN App Store Connect API
-key (cloud signing refuses less), shared with desktop notarization. The
-nightly does not ship from a dev Mac: a beta-Xcode build is refused by App
-Store Connect, and this Mac only has the beta. `nightly.sh --no-upload`
-still archives locally for debugging.
+key (cloud signing refuses less), shared with desktop notarization.
+`nightly.sh --no-upload` archives without them, for debugging.
 
 ## Mobile experience (iPhone and iPad)
 
@@ -94,20 +104,79 @@ text drafts first. Search includes every session shelf. Mac and project filters
 narrow the list; a session retains its host-qualified identity throughout
 navigation, notification taps, and local Live Activity links.
 
+Each band announces itself the way the desktop's does. **Needs you** wears a
+dot, the small uppercase caption and its count; **Snoozed** and **Settled** are
+the desktop's `BandRule` — chevron, caption, a hairline out to the count. A
+project's header carries its avatar, its name at header weight, its Mac when
+there is more than one, and the number of rows it is showing; its long-press
+menu starts a conversation in that project (the desktop reveals a `+` on
+hover, which touch has no equivalent for) alongside Move up/down. A card in a
+live band wears a hairline on its leading edge in the status colour — amber
+when it is waiting on you, accent while it works. The footer is a muted gear,
+not a full-width button; there is no Usage page on the phone and no update
+control, because this app updates through TestFlight.
+
+Two things deliberately differ from the desktop. The title is **large** at both
+widths, so the search field lands in a navigation-bar drawer under it rather
+than collapsing into the bar beside the toolbar buttons. And a slim row's
+project mark keeps its colour at rest: the desktop desaturates it and restores
+it on hover, and touch has no hover to restore it with.
+
 Project ordering reads and writes each Mac's `/api/sidebar-layout` document.
 Drag a project onto another project on the same Mac, or use its context menu's
 Move up/down actions. Hidden project keys are preserved. Cross-Mac global
 ordering is not synchronized: host IDs belong to each cockpit's host book, so
 one cockpit's remote-host keys cannot be reused as this phone's UUIDs.
 
-On iPad the sidebar and conversation share a split view; Changes opens an
-inspector on a regular-width display. Compact windows and iPhone use a
-navigation stack for changes. New-conversation text and session reply text
-survive navigation; photo attachments remain in memory until sent. Cmd-N
+On iPad the sidebar and conversation share a split view; the panel opens as an
+inspector column on a regular-width display. Compact windows and iPhone push it
+full-screen instead. New-conversation text and session reply text
+survive navigation; photo attachments remain in memory until sent. Tapping or
+scrolling the conversation puts the keyboard away. Cmd-N
 starts a conversation and Cmd-comma opens Settings. Public cockpit links can
 be shared to a Mac; Handoff advertises the same link (the receiving device
-still needs network reachability and pairing). A local visit marker surfaces
-the latest result when a turn finishes while the reader is away.
+still needs network reachability and pairing).
+
+## The panel
+
+A conversation's menu opens **Panel**, the phone's version of the desktop
+cockpit's right panel. It carries four surfaces; Data and LaTeX appear only when
+the session's project has that plugin enabled, which the app learns from
+`GET /api/projects` the same way the web does.
+
+- **Diff** — the working tree's changes, the view Changes used to open.
+- **Files** — the checkout as a tree (directories first, natural order, single
+  child chains collapsed) beside the open file. Code and binaries are read-only
+  monospace with line numbers; Markdown and plain text are editable with a
+  sha256 precondition, a 600 ms autosave and the engine's own refusal sentence
+  when the file moved underneath. Notebooks render as cells with outputs,
+  `.csv`/`.tsv`/`.parquet` as a windowed grid, PDFs through PDFKit, images as
+  themselves.
+- **Data** — plots from the session's attachments, kernel variables with an
+  inspector, and the Python environment. The kernel's pill, Interrupt and
+  Restart sit at the strip's trailing edge.
+- **LaTeX** — compile a target, read the diagnostics as rows that open their own
+  file in Files, and open the built PDF.
+
+The panel is a trailing column on a regular width and a full-screen push on a
+compact one. Where the window cannot hold sidebar, conversation and panel at
+once — an iPad in portrait — opening the panel stands the sidebar aside and
+closing it brings the sidebar back. Which tab is up, which files are open and
+whether the panel is showing are remembered per Mac **and** session, since two
+Macs can mint the same session id.
+
+Inside the panel the tree and the open file share the width below 560 pt: the
+strip's leading toggle is the way between them, and opening a file — from the
+tree, from a transcript chip's *Open in panel*, or from a `display.opened` event
+the agent sent — shows the file. A `display.opened` only counts when it is newer
+than the moment the conversation was opened; the journal replays from zero on
+every load, and without that guard every reload would re-open last week's file.
+
+Presentation is driven by `@State` flags rather than a computed `Binding`.
+`.inspector` keeps its `isPresented` binding and compares it to decide whether
+the split view needs another update, so a `Binding(get:set:)` built in `body` is
+a new location on every pass: the inspector re-updated, that dirtied layout,
+layout re-ran `body`, and the app's first CoreAnimation commit never converged.
 
 ## Push notifications and Live Activities
 
@@ -177,6 +246,28 @@ subscription. APNs acceptance is also not proof of delivery to a device.
 Removing a Mac attempts to disable its registration and ends local activities;
 if it is offline, revoke the phone on that Mac to stop its stored registration.
 
+### Wire-facing changes
+
+**Every new decoded field ships with one test whose JSON is copied verbatim
+from the live journal — never from a fixture the author wrote.**
+
+```
+sqlite3 ~/Library/Application\ Support/Telar/engine/execution.sqlite \
+  "select value from events where value like '%\"origin\":\"provider\"%' limit 1;"
+```
+
+The reason is that this app's snapshot lists decode through `Skippable`, which
+swallows a decode failure and drops the row. That is the right behaviour for a
+shape the build does not know — and it cannot tell that case apart from a field
+*we* declared with the wrong type. A single wrong optional does not fail
+loudly; it deletes every row carrying that field, silently.
+
+It has happened: `Turn.wakeReason` was `String?` while the engine sends an
+object, so every wake-up turn vanished from the transcript on every read while
+the suite stayed green, because the fixture asserted the shape the author had
+imagined. A fixture can only confirm what someone already believed; the journal
+is the only thing that can contradict it.
+
 ### Local verification and device acceptance
 
 Run the iOS suite with the commands above, and the push tests with:
@@ -209,12 +300,15 @@ Simulator builds and mocked push tests do not replace these device checks.
 The `TelarMobileUI` scheme runs native UI smoke tests against the preview
 server (start it first). It checks session selection, notification settings,
 and Live Activity start/stop. On iPad it also rotates to landscape and asserts
-that the conversation column does not overlap the sidebar:
+that the conversation column does not overlap the sidebar. With no simulator
+on the Mac these run on a connected device, which must reach the preview
+server over the network (the tailnet address, not loopback):
 
 ```
 xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobileUI \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -derivedDataPath /tmp/telar-mobile-tests CODE_SIGNING_ALLOWED=NO test
+  -destination "platform=iOS,id=$TELAR_IPHONE_UDID" \
+  -derivedDataPath /tmp/telar-mobile-tests \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=MM74W7WGAM test
 ```
 
 Automatic background starts are verified through host/relay payload tests; a

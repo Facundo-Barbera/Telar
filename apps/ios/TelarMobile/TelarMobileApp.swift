@@ -48,12 +48,53 @@ struct RootView: View {
                     SessionSidebar(settings: settings, inbox: inbox, selection: $selection,
                         newSession: { resumedDraft = nil; showNewSession = true }, openSettings: { showSettings = true },
                         resumeDraft: { resumedDraft = $0; showNewSession = true })
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                        // ONE WIDTH, NO DRAG. Dragging the sidebar's edge felt
+                        // wrong because it bought the reader nothing and moved
+                        // everything: the transcript is capped at
+                        // `Theme.readingMeasure` and CENTRED, so widening the
+                        // sidebar does not widen the conversation — it slides
+                        // the same column sideways under your finger. With the
+                        // panel open it is worse: the detail is squeezed from
+                        // both ends at once, and past a point the conversation
+                        // drops below its measure and re-lays-out mid-drag
+                        // while the panel keeps its width.
+                        //
+                        // What the extra 80pt would buy is a few more
+                        // characters of a session title that is truncated to
+                        // one line anyway. So the drag is removed rather than
+                        // smoothed: min = ideal = max, and 300 is the width
+                        // `syncSidebar` already assumes when it works out
+                        // whether sidebar, conversation and panel fit at once.
+                        .navigationSplitViewColumnWidth(300)
                 } detail: {
                     NavigationStack {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
-                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId))
+                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
+                                        // The one place both surfaces are in
+                                        // scope: a read confirmed in the
+                                        // transcript clears the dot on the
+                                        // sidebar row beside it, rather than
+                                        // waiting out that host's next poll.
+                                        onRead: { answer in inbox.applyRead(ref, answer: answer) })
                                 .id("\(settings.apiFingerprint(ref.hostId)):\(ref.sessionId)")
+                                // The session can hide the sidebar when its
+                                // panel needs the room, and put it back.
+                                .environment(\.columnVisibility, $columnVisibility)
+                                // THE WAY BACK. The split view's own toggle is a
+                                // system placement the detail's toolbar can
+                                // displace, and once it did there was no control
+                                // left that could show the sidebar again. This
+                                // one appears only while the sidebar is hidden.
+                                .toolbar {
+                                    if columnVisibility == .detailOnly {
+                                        ToolbarItem(placement: .topBarLeading) {
+                                            Button("Show sidebar", systemImage: "sidebar.leading") {
+                                                withAnimation { columnVisibility = .all }
+                                            }
+                                            .keyboardShortcut("0", modifiers: [.command, .option])
+                                        }
+                                    }
+                                }
                         } else {
                             ContentUnavailableView {
                                 Label("Your work, within reach", systemImage: "text.bubble")

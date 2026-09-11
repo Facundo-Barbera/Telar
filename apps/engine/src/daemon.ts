@@ -78,6 +78,15 @@ import {
   sessionsSocketConnectCard,
 } from "./sessions-tools/socket";
 import type { SessionsCapability } from "./sessions-tools/tools";
+import {
+  collectNotesWallTools,
+  ensureNotesSocketSecret,
+  handleNotesSocketMessage,
+  notesSocketConnectCard,
+} from "./notes-tools/socket";
+import type { NotesCapability } from "./notes-tools/tools";
+import * as notebook from "./notes";
+import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
 import type { AsyncGitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
@@ -156,7 +165,7 @@ export type EngineDaemonOptions = {
    * started without an embedded worker never loads the Claude SDK. Every test
    * in this repo depends on that.
    */
-  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
+  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; idlePollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
   /**
    * Read the provider transcripts into the usage scan cache shortly after
    * start-up, so the first Usage page after an update does not pay for a
@@ -209,6 +218,11 @@ function errorFor(error: unknown): HttpError {
   if (error instanceof HttpError) return error;
   if (error instanceof EngineStateError) {
     return new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
+  }
+  // The notebook's own refusals, carried out whole: they are sentences written
+  // for a person, and a 500 would replace each one with "internal error".
+  if (error instanceof ProjectNotesError) {
+    return new HttpError(error.code === "not_found" ? 404 : 400, error.code, error.message);
   }
   return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
@@ -496,9 +510,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     process.stdout.write(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/\n`);
   }
   const lock = acquireDaemonLock(statePaths(root));
+  /**
+   * THE EMBEDDED WORKER'S DOORBELL, set by whichever generation is current and
+   * absent when the daemon hosts no worker at all. Declared here because the
+   * store is built long before the worker is, and the store is what rings it.
+   */
+  let wakeEmbeddedWorker: (() => void) | undefined;
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
+    onQueueChanged: () => wakeEmbeddedWorker?.(),
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -599,6 +620,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let embeddedRegistration: RegisteredWorker | undefined;
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
+  /**
+   * WHAT THE EMBEDDED WORKER'S LOOP SLOWS TO WITH NOTHING TO DO.
+   *
+   * A tenth of the fast rate, and it costs nothing a person can feel because
+   * the store rings `wake()` the instant a queue moves — a message, a Stop, a
+   * claim — so the interval is only ever this long while genuinely nothing is
+   * happening. The one thing that does NOT ring it is stopping a background
+   * task in a session with no live turn (`task-stops.json` is not a queue), so
+   * that single action can take up to a second longer than it used to.
+   * Comfortably inside the lease either way: the watchdog runs at lease/3.
+   */
+  const DEFAULT_EMBEDDED_IDLE_POLL_MS = 1_000;
   /**
    * INJECTED so a test never shells out to a real CLI. The default probes for
    * real; every engine test in this repo passes its own, which is also what
@@ -783,6 +816,48 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     return sessionsToolsCache;
   };
 
+  /**
+   * THE NOTES SOCKET'S SECRET AND TOOLS — the third door, lazy like the other
+   * two and minted separately from both: three doors, three keys.
+   */
+  let notesSecretCache: string | undefined;
+  const notesSecret = () => (notesSecretCache ??= ensureNotesSocketSecret(store.paths));
+  let notesToolsCache: SocketTool[] | undefined;
+  const notesSocketTools = (): SocketTool[] => {
+    if (notesToolsCache) return notesToolsCache;
+    /**
+     * NO `self`: a chat client on this socket is not in a session and has no
+     * project to default to, so `notes_list` asks it for one by name — exactly
+     * as the sessions socket's absent `self` makes the subscription tools
+     * refuse. Every member lands on `notes.ts`, the same functions the HTTP
+     * routes below call, so there is one implementation of every rule.
+     *
+     * `getProject` IS THE GATE ON EVERY WRITE, here as on the routes: an id
+     * nobody registered must not be able to mint a notebook file.
+     */
+    const capability: NotesCapability = {
+      projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
+      list: async (projectId) => {
+        store.getProject(projectId);
+        return notebook.readNotes(store.paths, projectId);
+      },
+      read: async (noteId) => notebook.findNote(store.paths, noteId),
+      create: async (projectId, input) => {
+        store.getProject(projectId);
+        // THE WALL DECLARES `author: "session"`, never a caller: no tool shape
+        // carries it. Same construction as the spool's `source: "session"`.
+        return notebook.createNote(store.paths, projectId, { ...input, author: "session" });
+      },
+      update: async (projectId, noteId, patch) => {
+        store.getProject(projectId);
+        return notebook.updateNote(store.paths, projectId, noteId, patch);
+      },
+      remove: async (projectId, noteId) => notebook.deleteNote(store.paths, projectId, noteId),
+    };
+    notesToolsCache = collectNotesWallTools(capability);
+    return notesToolsCache;
+  };
+
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {
         stringValue(workerId, "worker id");
@@ -914,6 +989,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         writeJson(response, 405, { error: { code: "invalid_request", message: "the sessions socket is POST-only — it keeps no stream open" } });
+        return;
+      }
+      /**
+       * THE NOTES SOCKET — the user's "other app" door, beside the two above and
+       * before the bearer check for the identical reason: it answers to its OWN
+       * secret in both directions. The engine token does not open it, and its
+       * secret opens nothing else — a client holding it can read and write this
+       * machine's project notebooks and cannot touch a session, a file or a turn.
+       */
+      if (url.pathname === "/v2/notes/mcp") {
+        if (!bearerIsValid(request.headers.authorization, notesSecret())) {
+          writeJson(response, 401, {
+            error: { code: "engine_unauthorized", message: "the notes socket answers to its own secret — see /v2/notes/mcp-info" },
+          });
+          return;
+        }
+        if (request.method === "POST") {
+          const message = await body(request);
+          const answer = await handleNotesSocketMessage(notesSocketTools(), message);
+          if (answer === undefined) {
+            response.writeHead(202).end();
+            return;
+          }
+          writeJson(response, 200, answer);
+          return;
+        }
+        if (request.method === "DELETE") {
+          writeJson(response, 200, {});
+          return;
+        }
+        writeJson(response, 405, { error: { code: "invalid_request", message: "the notes socket is POST-only — it keeps no stream open" } });
         return;
       }
       if (!bearerIsValid(request.headers.authorization, token)) {
@@ -1685,6 +1791,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /** The notebook socket's card, behind the normal bearer for the reason
+       *  stated above: it mints and reveals a credential. */
+      if (request.method === "GET" && url.pathname === "/v2/notes/mcp-info") {
+        const bound = server.address();
+        const port = bound && typeof bound === "object" ? bound.port : 0;
+        writeJson(response, 200, {
+          mcp: notesSocketConnectCard(`http://127.0.0.1:${port}/v2/notes/mcp`, notesSecret()),
+        });
+        return;
+      }
       /**
        * THE MAP — every subject's open questions, in one read.
        *
@@ -2185,6 +2301,79 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
       if (request.method === "GET" && projectGit) {
         writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
+        return;
+      }
+      /**
+       * THE PROJECT NOTEBOOK — `docs/design/project-notes.md`. Under
+       * `/v2/projects/:id/` for the same reason the git route is: notes belong
+       * to the PROJECT, and every session on it opens the same notebook.
+       *
+       * `store.getProject` FIRST ON EVERY ONE OF THESE. It is the registration
+       * check (an unknown id 404s rather than minting a file) and it is also
+       * what keeps a caller-supplied id from being treated as a path before
+       * anything has vouched for it — `notesPath` re-checks the shape anyway,
+       * which is belt and braces on the one route family where a string becomes
+       * a filename.
+       */
+      const projectNotes = /^\/v2\/projects\/([^/]+)\/notes$/.exec(url.pathname);
+      if (projectNotes && (request.method === "GET" || request.method === "POST")) {
+        const projectId = decodeURIComponent(projectNotes[1]);
+        store.getProject(projectId);
+        if (request.method === "GET") {
+          writeJson(response, 200, { notes: notebook.readNotes(store.paths, projectId) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 201, {
+          // ABSENT `author` MEANS THE HUMAN'S. Only the tool wall declares
+          // "session", exactly as the spool's notes do — so a note that arrives
+          // with no declaration is a hand's.
+          note: notebook.createNote(store.paths, projectId, {
+            title: input.title as string,
+            body: (input.body ?? "") as string,
+            ...(input.pinned !== undefined ? { pinned: Boolean(input.pinned) } : {}),
+            author: input.author === "session" ? "session" : "you",
+          }),
+        });
+        return;
+      }
+      const projectNote = /^\/v2\/projects\/([^/]+)\/notes\/([^/]+)$/.exec(url.pathname);
+      if (projectNote && (request.method === "GET" || request.method === "PATCH" || request.method === "DELETE")) {
+        const projectId = decodeURIComponent(projectNote[1]);
+        const noteId = decodeURIComponent(projectNote[2]);
+        store.getProject(projectId);
+        if (request.method === "DELETE") {
+          // `deleted: false` RATHER THAN A 404 on a note that is already gone:
+          // a retried delete has reached the state it asked for, and the strip's
+          // optimistic removal must not be undone by an error on the retry.
+          writeJson(response, 200, { deleted: notebook.deleteNote(store.paths, projectId, noteId) });
+          return;
+        }
+        if (request.method === "GET") {
+          const note = notebook.getNote(store.paths, projectId, noteId);
+          if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
+          writeJson(response, 200, { note });
+          return;
+        }
+        const patch = await body(request);
+        const note = notebook.updateNote(store.paths, projectId, noteId, patch);
+        if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
+        writeJson(response, 200, { note });
+        return;
+      }
+      /** Pin or unpin. Its own route rather than a PATCH field on the caller's
+       *  side, because it is one gesture from one control and the surface should
+       *  not have to compose a patch to express a toggle. */
+      const projectNotePin = /^\/v2\/projects\/([^/]+)\/notes\/([^/]+)\/pin$/.exec(url.pathname);
+      if (request.method === "POST" && projectNotePin) {
+        const projectId = decodeURIComponent(projectNotePin[1]);
+        store.getProject(projectId);
+        const input = await body(request);
+        const note = notebook.updateNote(store.paths, projectId, decodeURIComponent(projectNotePin[2]), {
+          pinned: input.pinned === undefined ? true : Boolean(input.pinned),
+        });
+        if (!note) throw new HttpError(404, "not_found", "no note goes by that id in this project's notebook");
+        writeJson(response, 200, { note });
         return;
       }
       /**
@@ -3805,14 +3994,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // ./worker-diagnostics.ts.
             onDiagnostic: createWorkerDiagnostics(store.paths.root, workerId),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
+            /**
+             * IN-PROCESS, SO IT CAN AFFORD TO WAIT. An embedded worker is the
+             * one that can be TOLD the instant a queue moves (see the store's
+             * `onQueueChanged` below), so it does not have to discover work by
+             * asking ten times a second forever. A worker in its own process
+             * has no such doorbell and is left on its fixed interval.
+             */
+            idlePollMs: config.idlePollMs ?? DEFAULT_EMBEDDED_IDLE_POLL_MS,
             onConnectionLost,
           });
+          // Whichever generation is current owns the doorbell; the `stop`
+          // wrapper below hands it back when this one is retired.
+          const wakeThisGeneration = () => worker.wake();
+          wakeEmbeddedWorker = wakeThisGeneration;
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
           worker.stop = async (reason) => {
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            // Same fence for the doorbell: a retired generation must not keep
+            // receiving nudges, and must not silence its replacement's.
+            if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
              * exempt from. That is the FENCE: a late request carrying the dead

@@ -8,6 +8,7 @@ import { CodeSurface } from "@/components/ui/code-surface";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { isMultiChoice } from "@/lib/question-drawer";
 
 /**
  * A parked request.
@@ -77,12 +78,50 @@ const EYEBROW = "font-mono text-[0.625rem] tracking-[0.08em] text-muted-foregrou
 /** One field of a `user_input` request, in the kind the agent asked for. */
 function Field({ field, value, onChange }: { field: UserInputField; value: unknown; onChange: (next: unknown) => void }) {
   const id = `request-field-${field.key}`;
+  const title = (
+    <span className="text-xs font-medium" id={`${id}-label`}>
+      {field.label}
+      {field.required && <span className="ml-0.5 text-warning">*</span>}
+    </span>
+  );
+
+  /**
+   * A MULTI CHOICE IS A CHECKBOX LIST, NOT A DROPDOWN. A `Select` can only
+   * hold one value, so a field asking for several would silently keep the
+   * last click and throw the rest away — the human would have answered and
+   * watched the answer disappear. Checkboxes also show the whole set at once,
+   * which is what a person needs to pick ACROSS options rather than between
+   * them.
+   *
+   * Its own element rather than a branch inside the label below: a label may
+   * not contain the per-option labels this needs, so the group names itself
+   * through `aria-labelledby` instead.
+   */
+  if (isMultiChoice(field)) {
+    const chosen = Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : [];
+    return (
+      <div className="flex flex-col gap-1" role="group" aria-labelledby={`${id}-label`}>
+        {title}
+        {(field.choices ?? []).map((choice) => (
+          <label
+            key={choice}
+            className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-sm has-checked:border-warning/60"
+          >
+            <input
+              type="checkbox"
+              checked={chosen.includes(choice)}
+              onChange={(event) => onChange(event.target.checked ? [...chosen, choice] : chosen.filter((one) => one !== choice))}
+            />
+            <span className="min-w-0 flex-1">{choice}</span>
+          </label>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <label className="flex flex-col gap-1" htmlFor={id}>
-      <span className="text-xs font-medium">
-        {field.label}
-        {field.required && <span className="ml-0.5 text-warning">*</span>}
-      </span>
+      {title}
       {field.kind === "boolean" ? (
         <Switch id={id} checked={value === true} onCheckedChange={onChange} />
       ) : field.kind === "choice" ? (
@@ -129,6 +168,10 @@ function QuestionCard({
   const missing = fields.some((field) => {
     if (!field.required) return false;
     const value = answers[field.key];
+    // A multi field holds a list, and an EMPTY list is the unanswered state —
+    // ticking a box and unticking it must leave the submit as locked as it
+    // was before the first tick.
+    if (Array.isArray(value)) return value.length === 0;
     return value === undefined || value === "" || value === null;
   });
 

@@ -11,7 +11,7 @@ describe("discovering installed openers", () => {
     const installed = new Set(["/Applications/Zed.app", "/Applications/Visual Studio Code.app"]);
     const found = discoverOpeners({ roots, exists: (candidate) => installed.has(candidate) });
     expect(found.map((entry) => entry.id)).toEqual(["vscode", "zed"]);
-    expect(found[0]).toEqual({ id: "vscode", label: "Visual Studio Code", path: "/Applications/Visual Studio Code.app" });
+    expect(found[0]).toEqual({ id: "vscode", label: "Visual Studio Code", icon: "vscode", path: "/Applications/Visual Studio Code.app" });
   });
 
   test("a machine with none installed answers an empty list, not an error", () => {
@@ -20,7 +20,23 @@ describe("discovering installed openers", () => {
 
   test("a user-local install is found too", () => {
     const found = discoverOpeners({ roots, exists: (candidate) => candidate === "/Users/x/Applications/Cursor.app" });
-    expect(found).toEqual([{ id: "cursor", label: "Cursor", path: "/Users/x/Applications/Cursor.app" }]);
+    expect(found).toEqual([{ id: "cursor", label: "Cursor", icon: "cursor", path: "/Users/x/Applications/Cursor.app" }]);
+  });
+
+  test("an app we carry no mark for reports NO icon key rather than an empty one", () => {
+    // The renderer's fallback is keyed on absence. A `icon: ""` or `icon: null`
+    // would be a second way to say the same thing, and the two drift.
+    const found = discoverOpeners({ roots, exists: (candidate) => candidate === "/Applications/TextMate.app" });
+    expect(found).toEqual([{ id: "textmate", label: "TextMate", path: "/Applications/TextMate.app" }]);
+    expect("icon" in found[0]).toBe(false);
+  });
+
+  test("every icon id names a real app in the table, and none is blank", () => {
+    for (const editor of KNOWN_EDITORS) {
+      if (!("icon" in editor)) continue;
+      expect(typeof editor.icon).toBe("string");
+      expect(editor.icon.length).toBeGreaterThan(0);
+    }
   });
 
   test("an app is listed once even when several bundle names match", () => {

@@ -85,6 +85,15 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         return stores[session.hostId]?.projectNames[projectId]
     }
 
+    func project(_ session: HostedSession) -> ProjectRef? {
+        guard let projectId = session.session.projectId else { return nil }
+        return stores[session.hostId]?.projects[projectId]
+    }
+
+    func project(_ id: EngineID, on hostId: HostID) -> ProjectRef? {
+        stores[hostId]?.projects[id]
+    }
+
     /// Reconcile the store set with the host book. Unchanged hosts keep
     /// their store (no poll churn, no flash of empty).
     func sync(hosts: [Host], settings: AppSettings) {
@@ -130,5 +139,12 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
 
     func setSettled(_ ref: ScopedSessionID, _ settled: Bool) async {
         await stores[ref.hostId]?.setSettled(ref.sessionId, settled)
+    }
+
+    /// A read receipt landed. ROUTED BY THE HOST, never broadcast: two Macs can
+    /// mint the same session id, so applying it everywhere would clear the dot
+    /// on a different Mac's session that happens to share one.
+    func applyRead(_ ref: ScopedSessionID, answer: Session) {
+        stores[ref.hostId]?.applyRead(ref.sessionId, answer: answer)
     }
 }

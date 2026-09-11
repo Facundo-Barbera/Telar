@@ -56,6 +56,7 @@ import type {
   McpServerSpec,
   ModelSelection,
   Project,
+  ProjectNote,
   TurnAttachment,
   TurnModelSelection,
   ProviderDriverKind,
@@ -286,6 +287,42 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       ),
     projectGit: (projectId: string) =>
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
+    /**
+     * THE PROJECT'S NOTEBOOK — the composer's foot and the `@` menu.
+     *
+     * Already ordered by the engine (pinned first, then the user's own order),
+     * so nothing on this side re-sorts. Uncached, because the user's other app
+     * writes to the same store over the notebook's MCP socket and a copy held
+     * here would hide what it wrote.
+     */
+    projectNotes: (projectId: string) =>
+      request<{ notes: ProjectNote[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/notes`),
+    projectNote: (projectId: string, noteId: string) =>
+      request<{ note: ProjectNote }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
+    /** A body may be empty: "+, type a title, come back to it" is the gesture,
+     *  and refusing the half-written note would lose the title just typed. */
+    createProjectNote: (projectId: string, input: { title: string; body?: string; pinned?: boolean }) =>
+      request<{ note: ProjectNote }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/notes`, input),
+    /** The author NEVER changes — the engine refuses a patch that names it, so a
+     *  note an agent wrote stays marked as one after the user rewrites it. */
+    updateProjectNote: (projectId: string, noteId: string, patch: { title?: string; body?: string; pinned?: boolean; order?: number }) =>
+      request<{ note: ProjectNote }>(
+        fetcher,
+        "PATCH",
+        `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
+        patch,
+      ),
+    /** A REAL delete, unlike the Spool shelf's retire — a project note is a
+     *  scratchpad. `deleted: false` means it was already gone, never an error. */
+    deleteProjectNote: (projectId: string, noteId: string) =>
+      request<{ deleted: boolean }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
+    pinProjectNote: (projectId: string, noteId: string, pinned: boolean) =>
+      request<{ note: ProjectNote }>(
+        fetcher,
+        "POST",
+        `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}/pin`,
+        { pinned },
+      ),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
      *  `refresh` is what the button sends, and nothing else may send it. */
     projectGitHub: (projectId: string, options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}) =>

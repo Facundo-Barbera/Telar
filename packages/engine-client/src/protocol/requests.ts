@@ -68,12 +68,32 @@ export type RequestDecision = z.infer<typeof RequestDecision>;
 export const RequestResolver = z.enum(["human", "policy", "timeout", "cancelled", "session"]);
 export type RequestResolver = z.infer<typeof RequestResolver>;
 
-/** One field the agent wants filled in. Only present on `user_input`. */
+/**
+ * One field the agent wants filled in. Only present on `user_input`.
+ *
+ * THE ANSWER SHAPE IS PART OF THIS TYPE, not a client convention. `answers` on
+ * the resolve body is `Record<string, unknown>`, so nothing on the wire forces
+ * a shape and a client that guesses wrong is not rejected — it is silently
+ * misread, which is how a multi-select answer becomes one label and the other
+ * two vanish. The rule, per field:
+ *
+ *   `kind: "choice"` with `multiple: true`   answers with `string[]` of labels
+ *   `kind: "choice"` without it              answers with a single `string`
+ *
+ * Absent and `false` are the same thing: a field that does not say `multiple`
+ * is single-select, which is what every field written before this existed is.
+ * A client MUST send the shape its field asked for — an array to a single-select
+ * field is a client bug, and the engine takes the first element rather than
+ * inventing a joined answer out of it.
+ */
 export const UserInputField = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   kind: z.enum(["text", "secret", "choice", "boolean"]),
   choices: z.array(z.string()).optional(),
+  /** Pick several of `choices`, not one. Only meaningful on `kind: "choice"`;
+   *  see the answer-shape rule above, which is the whole point of the flag. */
+  multiple: z.boolean().optional(),
   required: z.boolean().optional(),
 });
 export type UserInputField = z.infer<typeof UserInputField>;
@@ -203,6 +223,11 @@ export const EngineRequest = z.object({
   /**
    * Answers to a `user_input` request, keyed by `UserInputField.key` — and the
    * item pick of a `secret_access` request, under the key `item`.
+   *
+   * DELIBERATELY `unknown` PER KEY, because the shape is the FIELD's to state:
+   * a `choice` field with `multiple: true` answers with a `string[]`, one
+   * without it answers with a `string`. `UserInputField` documents that rule;
+   * this record only carries it.
    *
    * `remember: true` on a `secret_access` answer is the human ticking the
    * card's opt-in box: it authorizes LATER fills of the same item, in the same

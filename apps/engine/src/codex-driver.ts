@@ -46,7 +46,7 @@
  */
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
-import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, steerRowTitle } from "./attribution";
@@ -412,7 +412,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       const answerUserInput = async (request: CodexServerRequest): Promise<void> => {
         const params = record(request.params);
         const questions = Array.isArray(params.questions) ? params.questions.map(record) : [];
-        const fields = questions.flatMap((question) => {
+        const fields = questions.flatMap((question): UserInputField[] => {
           const id = str(question.id);
           const text = str(question.question);
           if (!id || !text) return [];
@@ -423,6 +423,12 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           // options is free text. Both fall to the cockpit's form card rather
           // than the drawer, which only takes all-choice requests.
           const kind = question.isSecret === true ? ("secret" as const) : choices.length > 0 ? ("choice" as const) : ("text" as const);
+          // NO `multiple` HERE, and that is the protocol's answer rather than
+          // an omission: `ToolRequestUserInputQuestion` (rust-v0.149.1) is
+          // `{id, header, question, isOther, isSecret, options}` — there is no
+          // flag that asks for several, so Codex questions are single-select
+          // and inventing a multi form for one would offer the human picks the
+          // app-server has no way to be told about.
           return [{ key: id, label: text, kind, ...(choices.length > 0 ? { choices } : {}), required: true }];
         });
         let outcome: { decision: RequestDecision; answers?: Record<string, unknown> } = { decision: "decline" };
@@ -446,7 +452,21 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         if ((outcome.decision === "accept" || outcome.decision === "acceptForSession") && outcome.answers) {
           for (const field of fields) {
             const value = outcome.answers[field.key];
-            if (value !== undefined) answers[field.key] = { answers: Array.isArray(value) ? value.map(String) : [String(value)] };
+            if (value === undefined) continue;
+            if (!Array.isArray(value)) {
+              answers[field.key] = { answers: [String(value)] };
+              continue;
+            }
+            // THE WIRE SHAPE IS AN ARRAY EITHER WAY — that is Codex's own
+            // `ToolRequestUserInputAnswer` — but what may go IN it is the
+            // field's call, not the transport's. Nothing here is multi today,
+            // so an array arriving is a client bug and only the first pick is
+            // an honest reading of it; passing all of them through would
+            // answer a one-pick question with several. The guard reads
+            // `multiple` rather than assuming "never", so a Codex that grows
+            // the flag needs no second edit in this loop.
+            const picks = field.multiple ? value.map(String) : value.slice(0, 1).map(String);
+            if (picks.length > 0) answers[field.key] = { answers: picks };
           }
         }
         // An empty map is the graceful "the user did not answer" — the tool's
@@ -819,6 +839,9 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                         text: message.text,
                         ...(files.length > 0 ? { attachments: files } : {}),
                         ...(message.sender ? { sender: message.sender } : {}),
+                        // Body in `text`, the engine's one-line notice beside
+                        // it — the same pair the Claude seam emits.
+                        ...(message.notice ? { notice: message.notice } : {}),
                         ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
                       },
                       title: steerRowTitle(message),

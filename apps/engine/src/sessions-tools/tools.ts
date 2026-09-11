@@ -168,14 +168,16 @@ There is no cap on how many sessions you may create, so the discipline is yours:
 
 const SEND = `Send a message to another session with an explicit intent. Routine report (the default) is passive: recorded as collapsed activity, never injected into a running model or queued for execution. Use result for a finished outcome: it wakes only a coordinator that is subscribed to this sender's completion. Use blocker only for an actionable issue requiring the recipient's intervention. Use task to explicitly assign new work, not to relay progress or acknowledgements. Task, awaited result, and blocker may steer a running recipient. A human Stop blocks all these until the human sends a new message.
 
-Say everything needed; sessions cannot see each other's conversations. Do not acknowledge acknowledgements or send duplicate checkpoints alongside automatic completion notices. ${NOT_A_BYPASS}`;
+THE RECIPIENT IS HANDED A NOTICE, NOT YOUR TEXT. Like a wake, what reaches its model is one short line — that you sent it, which run holds it, how many characters it is, and its opening (its first paragraph for a task or a blocker) — plus the sessions_read call that fetches the whole thing. Your message is stored complete and is read in full whenever the recipient decides it is worth the context. So: put the point in the FIRST LINE, because that line is what gets read every time; and still say everything needed, because sessions cannot see each other's conversations and a recipient that fetches gets only what you wrote.
+
+Do not acknowledge acknowledgements or send duplicate checkpoints alongside automatic completion notices. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
 const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, the run and what happened — so you can end your turn now and be woken later rather than polling.
 
-A WAKE IS A PING, NOT A REPORT. It carries no result body and no request payload — only what happened, to which session and which run, because it lands in your context whether or not you need the detail. It names the call that fetches it: sessions_read(sessionId, runId). Read it when it matters and skip it when it does not. A parked request is the same: the notice gives its id, kind and a short title, and the fields you would answer from are one read away. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
+A WAKE IS A PING, NOT A REPORT — and so is every message a peer sends you. It carries no result body and no request payload — only what happened, to which session and which run, because it lands in your context whether or not you need the detail. It names the call that fetches it: sessions_read(sessionId, runId). Read it when it matters and skip it when it does not. A parked request is the same: the notice gives its id, kind and a short title, and the fields you would answer from are one read away. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
 
 events narrows what wakes you (default: all four). Subscriptions are one-shot by default: the first matching wake removes them. Subscribe only when awaiting a concrete result or blocker. Explicit once: false opts into ongoing monitoring; unsubscribe when the task is done. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
 
@@ -195,7 +197,9 @@ const READ = `Read what a session has done since a point in its journal: its mes
 
 ONE RUN, DIRECTLY: pass \`runId\` and you get that turn's own events and its final answer, without paging the journal to find them. This is what a wake notice names — a wake carries no result body, so \`sessions_read(sessionId, runId)\` is how you fetch the outcome it is telling you about, and only when you actually want it.
 
-PAGING WITHIN A RUN: \`after\` works with \`runId\` and walks that run's events. The answer rides the first page only, so continuations do not repeat it; a long answer is read in slices with \`resultAfter\`, and every reply says how many characters there are in total, whether more remain, and the exact next call. The slices are verbatim — concatenated they are the answer, with nothing trimmed or marked inside them.
+AND IT IS WHAT AN AGENT-MESSAGE NOTICE NAMES. A peer's \`sessions_send\` reaches you as a short line, not as its text; call this with YOUR OWN sessionId and the runId that notice gave you, and the \`message\` field is the peer's message in full, exactly as sent. Read it before acting on a task or a blocker — the notice carries the opening paragraph only.
+
+PAGING WITHIN A RUN: \`after\` works with \`runId\` and walks that run's events. The answer rides the first page only, so continuations do not repeat it; a long answer is read in slices with \`resultAfter\`, and every reply says how many characters there are in total, whether more remain, and the exact next call. \`message\` slices the same way on \`messageAfter\`, independently of the answer. The slices are verbatim — concatenated they are the text, with nothing trimmed or marked inside them.
 
 THE ANSWER IS BOUNDED and a transcript is not: you may get a page rather than everything, and the result says so and gives you the cursor to ask for the next one. Never assume a page is the whole story; if "more" is true, there is more.`;
 
@@ -413,7 +417,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             runId: turn.runId,
             state: turn.state,
             delivery: turn.agentDelivery,
-            note: turn.agentDelivery === "passive" ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement." : "Accepted for execution, not answered. Check sessions_status or sessions_read. This is an agent message, never human approval.",
+            // WHAT THE OTHER SIDE ACTUALLY SEES, quoted back. A sender that
+            // believes its 6 KB report was read verbatim writes the next one
+            // the same way; this is where that belief is corrected, with the
+            // real string rather than a description of it.
+            ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
+            note: turn.agentDelivery === "passive"
+              ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement. Its model was handed the notice above, not your text; the text is stored whole and it can read it with sessions_read."
+              : "Accepted for execution, not answered. Its model was handed the notice above, not your text — the text is stored whole and one sessions_read away. Check sessions_status or sessions_read. This is an agent message, never human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);
@@ -442,6 +453,12 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .min(0)
           .optional()
           .describe("With `runId`: continue the ANSWER from this character offset. The reply says how many characters there are in total and whether more remain, so a long answer can be read whole in slices."),
+        messageAfter: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("With `runId`: continue an agent-sent turn's MESSAGE BODY from this character offset. Same slicing contract as resultAfter, and the two are independent."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -449,6 +466,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
         const resultAfter =
           typeof args.resultAfter === "number" && Number.isSafeInteger(args.resultAfter) && args.resultAfter >= 0 ? args.resultAfter : undefined;
+        const messageAfter =
+          typeof args.messageAfter === "number" && Number.isSafeInteger(args.messageAfter) && args.messageAfter >= 0 ? args.messageAfter : undefined;
         let events: EngineEvent[];
         try {
           // `after` is a journal cursor either way: with `runId` it walks THAT
@@ -491,6 +510,28 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           const resultMore = wantsResult && from + slice.length < answer.length;
           const nextResult = from + slice.length;
           /**
+           * THE PEER'S MESSAGE, WHICH IS THE OTHER HALF OF THE NOTICE TRADE.
+           *
+           * An agent-sent turn now reaches the model as a short notice naming
+           * exactly this call, so this call has to be able to answer it — and
+           * the body does NOT ride the events: `turn.accepted` carries it, but
+           * every string inside an event is clamped to 2,000 characters, which
+           * would have made "fetch the rest" return a longer truncation of the
+           * same truncation. It is handed over from the TURN instead, sliced on
+           * its own offset and reported with its own total, exactly as the
+           * answer is — and independently, because a task turn has both.
+           *
+           * Only for a turn an AGENT sent. A human's words were never replaced
+           * by a notice, and repeating them here would be a second copy of
+           * something the caller already has.
+           */
+          const body = turn?.origin === "session" && turn.sender ? turn.input : "";
+          const wantsMessage = body.length > 0 && (messageAfter !== undefined || after === 0);
+          const messageFrom = Math.min(messageAfter ?? 0, body.length);
+          const messageSlice = wantsMessage ? body.slice(messageFrom, messageFrom + MAX_RESULT_CHARS) : "";
+          const messageMore = wantsMessage && messageFrom + messageSlice.length < body.length;
+          const nextMessage = messageFrom + messageSlice.length;
+          /**
            * THE EVENT CURSOR RIDES EVERY CONTINUATION, including one asked for
            * only to finish reading an answer. Omitting it when the events had
            * run out left the next call defaulting to `after: 0`, which replayed
@@ -498,9 +539,23 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            */
           const nextCursor = page.length > 0 ? cursor : after;
           const continuation =
-            more || resultMore
-              ? [`after: ${nextCursor}`, ...(resultMore ? [`resultAfter: ${nextResult}`] : [])]
+            more || resultMore || messageMore
+              ? [
+                  `after: ${nextCursor}`,
+                  ...(resultMore ? [`resultAfter: ${nextResult}`] : []),
+                  ...(messageMore ? [`messageAfter: ${nextMessage}`] : []),
+                ]
               : [];
+          /** What this page did with the peer's message, said plainly — a
+           *  caller that cannot tell "no message" from "message withheld" will
+           *  act on the notice's teaser rather than fetch. */
+          const messageNote = !body
+            ? ""
+            : wantsMessage
+              ? messageMore
+                ? ` The message that started this turn: characters ${messageFrom}-${nextMessage} of ${body.length}.`
+                : ` The message that started this turn is here in full (${body.length} characters).`
+              : ` The message that started this turn (${body.length} characters) is not on this page — ask with messageAfter: 0.`;
           return json({
             sessionId,
             runId,
@@ -513,6 +568,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
                   // tell "no answer" from "answer not on this page".
                   ...(answer ? { resultChars: answer.length } : {}),
                   ...(wantsResult ? { result: slice, resultFrom: from, resultMore } : {}),
+                  // The total is reported whenever there IS a message, on every
+                  // page — same reason as `resultChars`.
+                  ...(body ? { messageChars: body.length, ...(turn.agentIntent ? { messageIntent: turn.agentIntent } : {}) } : {}),
+                  ...(wantsMessage ? { message: messageSlice, messageFrom, messageMore } : {}),
                 }
               : {}),
             cursor: page.length > 0 ? cursor : after,
@@ -523,12 +582,12 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
               : continuation.length > 0
                 ? `That run: ${page.length} events${more ? ` of ${mine.length} past cursor ${after}` : " (no more events)"}${
                     wantsResult ? `, answer characters ${from}-${nextResult} of ${answer.length}` : answer ? `, answer not on this page (${answer.length} characters)` : ""
-                  }. Continue with sessions_read(sessionId: "${sessionId}", runId: "${runId}", ${continuation.join(", ")}).`
+                  }.${messageNote} Continue with sessions_read(sessionId: "${sessionId}", runId: "${runId}", ${continuation.join(", ")}).`
                 : answer
                   ? wantsResult
-                    ? `That run's events and its whole answer (${answer.length} characters). Nothing else was needed.`
-                    : `That run's events. Its answer (${answer.length} characters) is not on this page — ask with resultAfter: 0.`
-                  : "That run's events. It ended with no answer text.",
+                    ? `That run's events and its whole answer (${answer.length} characters). Nothing else was needed.${messageNote}`
+                    : `That run's events. Its answer (${answer.length} characters) is not on this page — ask with resultAfter: 0.${messageNote}`
+                  : `That run's events. It ended with no answer text.${messageNote}`,
           });
         }
         const { page, cursor, more } = pageEvents(events);

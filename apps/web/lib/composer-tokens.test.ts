@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { chipBasename, chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft } from "./composer-tokens";
-import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, pageReference, pullReference, taskReference } from "./drag-reference";
+import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, noteReference, pageReference, pullReference, taskReference } from "./drag-reference";
 
 describe("what the caret is in the middle of", () => {
   test("an at-sign opens the path menu and carries what follows it", () => {
@@ -171,6 +171,27 @@ describe("which runs of a draft draw as chips", () => {
     const kinds = segmentDraft(draft).map((segment) => (segment.type === "chip" ? segment.reference.kind : "text"));
     expect(kinds).toEqual(["text", "issue", "text", "file"]);
     expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("a project note chips on its HEAD LINE and leaves its body in the draft", () => {
+    // The rule a failing check's log already set: the chip must not swallow the
+    // block the reader dropped it FOR — the body is what the model reads.
+    const draft = `summarise ${noteReference({ id: "n-abc123", title: "Deploy", body: "bun run ship" }).text}`;
+    const segments = segmentDraft(draft);
+    const chip = segments.find((segment) => segment.type === "chip");
+    expect(chip?.reference.kind).toBe("note");
+    expect(chip?.reference.label).toBe("Deploy");
+    expect(chip?.reference.text).toBe('the "Deploy" project note (n-abc123)');
+    // The fence survives as prose after the chip, and the draft is unchanged.
+    expect(segments.at(-1)).toEqual({ type: "text", text: ":\n\n```note\nbun run ship\n```" });
+    expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("prose that merely mentions a project note is prose", () => {
+    // The id shape is literal in the pattern precisely so a sentence a person
+    // typed does not half-render as a reference that goes nowhere.
+    const draft = 'check the "Deploy" project note before you ship';
+    expect(segmentDraft(draft).filter((segment) => segment.type === "chip")).toEqual([]);
   });
 
   test("an empty draft has no segments at all", () => {

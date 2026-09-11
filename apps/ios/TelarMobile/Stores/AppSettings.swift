@@ -87,7 +87,7 @@ import Observation
             defaults.removeObject(forKey: key)
         }
         MobileDrafts.shared.remove(host: id)
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("telar.draft.\(id).") || key.hasPrefix("telar.lastVisit.\(id).") { defaults.removeObject(forKey: key) }
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("telar.draft.\(id).") { defaults.removeObject(forKey: key) }
         Task { await MobileNotifications.shared.removeHost(id, api: pushAPI) }
         book.remove(id)
         persist()
