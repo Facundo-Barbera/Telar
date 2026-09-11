@@ -196,7 +196,12 @@ export function RunHeaderControl({
         render={
           <Button
             type="button"
-            variant="ghost"
+            // One family with Open and the pinned summary beside it: bordered,
+            // h-7, so the cockpit's controls read as controls rather than as
+            // glyphs you have to hover to discover. `outline` is the variant
+            // that carries an aria-expanded state, which all three of them —
+            // being popover triggers — actually have.
+            variant="outline"
             size="sm"
             aria-label={active ? `Run: ${label}` : "Run this project"}
             className="h-7 gap-1.5 px-2 text-xs font-medium"

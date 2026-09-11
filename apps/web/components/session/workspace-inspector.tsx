@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { isBackgroundWork, type GitOverview, type Session, type Task } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { browserPanelTab, type BrowserState, type PanelTab } from "@/components/right-panel";
@@ -195,15 +196,19 @@ export function WorkspaceInspector({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           render={
-            <button
+            // One family with Run and Open beside it — bordered, h-7, and the
+            // shared <Button>, which is also what gives it a focus ring it
+            // never had as a hand-rolled <button>. `outline` already paints the
+            // open state through aria-expanded, so this no longer carries its
+            // own.
+            <Button
               type="button"
+              variant="outline"
+              size="icon-sm"
               aria-label={open ? "Close pinned summary" : "Open pinned summary"}
               aria-expanded={open}
               title="Pinned summary"
-              className={cn(
-                "relative flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-                open && "bg-muted text-foreground",
-              )}
+              className="relative text-muted-foreground"
             />
           }
         >
