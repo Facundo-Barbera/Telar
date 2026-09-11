@@ -47,6 +47,15 @@ enum SyncConnectionState: Equatable {
     private(set) var connection: SyncConnectionState = .idle
     /// A fetch of earlier turns is in flight — the button's spinner state.
     private(set) var loadingOlder = false
+    /// Every `display.opened` the tail has carried: the agent asking for a
+    /// file to be shown. The view decides which are fresh.
+    private(set) var displayOpens: [DisplayOpen] = []
+
+    struct DisplayOpen: Equatable, Identifiable {
+        var id: Int
+        var at: Timestamp
+        var path: String
+    }
     /// When the shown snapshot was recorded by this phone — set while it is a
     /// cached one, nil once a live read has replaced it.
     private(set) var recordedAt: Timestamp?
@@ -285,6 +294,7 @@ enum SyncConnectionState: Equatable {
         guard generation == foldGeneration else { return }
         turns = folded.turns
         openRequests = folded.openRequests
+        if folded.displayOpens != displayOpens { displayOpens = folded.displayOpens }
     }
 }
 
@@ -292,6 +302,7 @@ enum SyncConnectionState: Equatable {
 private struct Folded {
     var turns: [JournalTurn]
     var openRequests: [EngineRequest]
+    var displayOpens: [SessionSyncEngine.DisplayOpen]
 }
 
 private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded {
@@ -299,6 +310,12 @@ private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded 
         turns: snapshot.turns, items: snapshot.items,
         events: events, tasks: snapshot.tasks
     )
+    let displayOpens: [SessionSyncEngine.DisplayOpen] = events.compactMap { event in
+        if case .displayOpened(let path, _) = event.payload {
+            return SessionSyncEngine.DisplayOpen(id: event.id, at: event.at, path: path)
+        }
+        return nil
+    }
     // Requests: the snapshot's list, corrected by any resolutions the tail
     // has seen since — the same journal-wins rule as items.
     var resolved = Set<EngineID>()
@@ -316,5 +333,5 @@ private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded 
         known.insert(request.id)
         all.append(request)
     }
-    return Folded(turns: turns, openRequests: all.filter { $0.isOpen && !resolved.contains($0.id) })
+    return Folded(turns: turns, openRequests: all.filter { $0.isOpen && !resolved.contains($0.id) }, displayOpens: displayOpens)
 }

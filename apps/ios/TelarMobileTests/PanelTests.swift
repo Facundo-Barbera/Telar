@@ -5,6 +5,46 @@ import Testing
 /// The panel's pure rules: the tree from a flat list, the file-view decision,
 /// the editor's open/close arithmetic, the notebook-read classifier, and the
 /// wire shapes every surface decodes.
+@Suite struct FileTreeTests {
+    @Test func directoriesFirstThenNaturalOrder() {
+        let tree = buildFileTree(["b.txt", "a/step-10.md", "a/step-2.md", "README.md", "a/z", "package.json"])
+        #expect(tree.map(\.name) == ["a", "b.txt", "package.json", "README.md"])
+        #expect(tree[0].children.map(\.name) == ["step-2.md", "step-10.md", "z"])
+    }
+
+    @Test func singleChildChainsCollapse() {
+        let tree = buildFileTree(["src/main/java/App.java", "src/main/java/Util.java"])
+        #expect(tree.count == 1)
+        #expect(tree[0].name == "src/main/java")
+        #expect(tree[0].path == "src/main/java")
+        #expect(tree[0].children.map(\.name) == ["App.java", "Util.java"])
+    }
+
+    @Test func flattenHonoursExpansion() {
+        let tree = buildFileTree(["a/x.md", "a/b/y.md", "c.md"])
+        let closed = flattenTree(tree, expanded: [])
+        #expect(closed.map(\.node.name) == ["a", "c.md"])
+        let open = flattenTree(tree, expanded: ["a"])
+        #expect(open.map(\.node.name) == ["a", "b", "x.md", "c.md"])
+        #expect(open.map(\.depth) == [0, 1, 1, 0])
+    }
+
+    @Test func searchMatchesTheWholePathAndCaps() {
+        let paths = (0..<500).map { "apps/engine/file\($0).ts" } + ["docs/panel.md"]
+        let (matches, dropped) = matchFiles(paths, query: "ENGINE")
+        #expect(matches.count == maxSearchMatches)
+        #expect(dropped == 100)
+        #expect(matchFiles(paths, query: "panel").matches == ["docs/panel.md"])
+        #expect(matchFiles(paths, query: "  ").matches.count == paths.count)
+    }
+
+    @Test func ancestorsAndDirectories() {
+        #expect(ancestorsOf(["a/b/c.md", "d.md"]) == ["a", "a/b"])
+        let tree = buildFileTree(["a/b/c.md", "a/d.md"])
+        #expect(Set(directoryPaths(tree)) == ["a", "a/b"])
+    }
+}
+
 @Suite struct PanelModelTests {
     @Test func viewDecisionMirrorsTheDesktop() {
         #expect(panelView(for: "nb.ipynb", dataScience: true) == .notebook)
@@ -125,5 +165,14 @@ import Testing
     @Test func projectListSkipsARowItCannotRead() throws {
         let list = try decode(ProjectList.self, #"{"projects":[{"id":"p","name":"P","dataScience":{"enabled":true}},{"id":"q"}]}"#)
         #expect(list.projects.count == 1 && list.projects[0].dataScience?.enabled == true && list.projects[0].latex == nil)
+    }
+
+    @Test func displayOpenedIsDecoded() throws {
+        let event = try decode(EngineEvent.self, #"{"id":9,"at":5,"sessionId":"s","type":"display.opened","path":"out/report.pdf","title":"Report"}"#)
+        if case .displayOpened(let path, let title) = event.payload {
+            #expect(path == "out/report.pdf" && title == "Report")
+        } else {
+            Issue.record("expected displayOpened")
+        }
     }
 }

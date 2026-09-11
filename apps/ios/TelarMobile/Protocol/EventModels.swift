@@ -42,6 +42,8 @@ struct EngineEvent {
         case usageUpdated(usage: UsageSnapshot)
         /// The §6 shared-browser control model: whose hands are on the wheel.
         case browserControlChanged(controller: String)
+        /// The agent asked the cockpit to show a file — the panel opens it.
+        case displayOpened(path: String, title: String?)
         /// Everything else — recognised-but-unused and unknown alike.
         case none
     }
@@ -52,7 +54,7 @@ extension EngineEvent: Decodable {
         case id, at, sessionId, runId, type
         case turn, replayed, resultText, usage, code, message, reason
         case item, itemId, stream, text, request, requestId, decision
-        case task, session, controller
+        case task, session, controller, path, title
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +117,8 @@ extension EngineEvent: Decodable {
             payload = (try? c.decode(UsageSnapshot.self, forKey: .usage)).map { .usageUpdated(usage: $0) } ?? .none
         case "browser.control.changed":
             payload = (try? c.decode(String.self, forKey: .controller)).map { .browserControlChanged(controller: $0) } ?? .none
+        case "display.opened":
+            payload = (try? c.decode(String.self, forKey: .path)).map { .displayOpened(path: $0, title: try? c.decodeIfPresent(String.self, forKey: .title)) } ?? .none
         default:
             payload = .none
         }

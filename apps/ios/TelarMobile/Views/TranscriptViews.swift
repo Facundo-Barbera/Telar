@@ -480,6 +480,23 @@ struct ItemRowView: View {
             .sheet(isPresented: $showDetail) {
                 ToolDetailSheet(item: item)
             }
+            .contextMenu {
+                // A file row can open its file in the panel — the path is
+                // workspace-relative, the same space the tree lists.
+                if let path = openablePath, let panel {
+                    Button("Open in panel", systemImage: "sidebar.trailing") { panel.openFile(path) }
+                }
+            }
+        }
+    }
+
+    @Environment(\.panel) private var panel
+
+    private var openablePath: String? {
+        switch item.detail {
+        case .fileChange(let change): change.kind == "delete" ? nil : change.path
+        case .fileRead(let read): read.path
+        default: nil
         }
     }
 

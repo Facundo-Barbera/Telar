@@ -302,7 +302,7 @@ func projectJournal(
                 ),
                 openedBy: event.id
             )
-        case .requestOpened, .requestResolved, .sessionUpdated:
+        case .requestOpened, .requestResolved, .sessionUpdated, .displayOpened:
             break
         case .none:
             // State transitions the payload enum does not carry ride the type
