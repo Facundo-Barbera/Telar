@@ -11,7 +11,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   probe:
-    runs-on: ubuntu-latest
+    # On the Mac mini, for the same reason as deploy-push-relay.yml.
+    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

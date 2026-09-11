@@ -44,10 +44,14 @@ concurrency:
 
 jobs:
   nightly:
-    # Only trusted release triggers use the personal Mac; PR CI stays hosted.
+    # Only trusted release triggers use the personal Mac.
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, telar-nightly]
     timeout-minutes: 45
+    env:
+      # The Mac's one Xcode, named explicitly so this job and the iOS nightly
+      # cannot drift onto different toolchains.
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:

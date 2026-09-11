@@ -9,6 +9,7 @@
     "worker": "bun run src/worker-main.ts",
     "test": "bun test",
     "bench:journal": "bun run bench/journal-append.ts",
+    "bench:idle": "bun run bench/idle-heartbeat.ts",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

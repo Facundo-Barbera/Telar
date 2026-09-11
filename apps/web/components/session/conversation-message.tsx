@@ -145,14 +145,37 @@ function TaskMessage({
   );
 }
 
+/**
+ * THE COLLAPSED ROW SAYS WHAT THE MODEL WAS TOLD, VERBATIM.
+ *
+ * A peer's message no longer reaches the recipient's model as its text: the
+ * engine mints a one-line notice — sender, run, size, opening line — and hands
+ * the model that (see `Turn.agentNotice`). The row shows the SAME string rather
+ * than a summary of its own, because a person opening this transcript to work
+ * out why a session did something needs the sentence it actually acted on, not
+ * a second rendering of the same facts that could drift from it.
+ *
+ * The engine ids in it are deliberate duplication with the sender chip beside
+ * it: the chip is the link a person clicks, the line is the text a model read.
+ *
+ * Falls back to the old label for turns stored before notices existed.
+ */
+function noticeLine(notice: string): string {
+  return notice.split("\n", 1)[0] ?? notice;
+}
+
 export function AgentMessageBubble({
   text,
+  notice,
   sender,
   attachments,
   intent,
   scope,
 }: {
   text: string;
+  /** The engine's announcement of this message — the collapsed label, and what
+   *  the recipient's model was handed in place of `text`. */
+  notice?: string;
   sender: MessageSender;
   attachments?: readonly TurnAttachment[];
   /** `task` renders in full; everything else stays collapsed. */
@@ -174,10 +197,14 @@ export function AgentMessageBubble({
       >
         <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">Agent message</span>
-        <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{agentSenderLabel(sender)}</span>
+        <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">
+          {notice ? noticeLine(notice) : agentSenderLabel(sender)}
+        </span>
         <ChevronRightIcon className={`size-3 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
       </button>
       {open && (
+        // EXPANDS TO WHAT WAS SENT, not to the notice. The body is stored whole
+        // and this is the surface that never had to economise on it.
         <div className="max-h-96 min-w-0 overflow-auto break-words px-1.5 py-2">
           <MessageResponse streaming={false}>{text}</MessageResponse>
           <MessageAttachments {...(attachments ? { attachments } : {})} />

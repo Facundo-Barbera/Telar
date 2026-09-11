@@ -138,3 +138,106 @@ test("human Stop keeps agent traffic blocked across restart until a fresh human 
   expect(reopened.getSession("session_one").agentMessagesBlocked).toBeUndefined();
   expect(reopened.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
 });
+
+/**
+ * A CACHED STATEMENT MUST NOT CARRY THE PREVIOUS CALL'S BINDINGS. Preparing
+ * each query once is what stops sqlite recompiling the same seven statements
+ * ten times a second, and the only way that can go wrong is a reused statement
+ * answering for the row it was last run with — so this interleaves several
+ * sessions through every cached path and demands each one's own answer back.
+ */
+test("statements reused across calls still answer for the row they were asked about", () => {
+  const { store } = setup();
+  for (const id of ["session_two", "session_three"]) store.createSession({ id, projectId: "project_one" });
+  const sessions = ["session_one", "session_two", "session_three"];
+  for (const sessionId of sessions) store.submitTurn(sessionId, { runId: `run_${sessionId}`, input: `text for ${sessionId}` });
+  // Interleaved, and twice, so any statement is run against a different
+  // session than the one that prepared it.
+  for (let round = 0; round < 2; round += 1) {
+    for (const sessionId of sessions) {
+      expect(store.turns(sessionId).map((turn) => turn.input)).toEqual([`text for ${sessionId}`]);
+      expect(store.eventCursor(sessionId)).toBeGreaterThan(0);
+      expect(store.readEvents(sessionId).every((event) => event.sessionId === sessionId)).toBe(true);
+    }
+  }
+  store.stopTurn("session_two", "run_session_two");
+  store.deleteSession("session_two");
+  expect(store.turns("session_one")).toHaveLength(1);
+  expect(store.turns("session_three")).toHaveLength(1);
+  expect(() => store.getSession("session_two")).toThrow();
+});
+
+/**
+ * THE SCAN CACHE MUST NEVER OUTLIVE THE QUEUE IT DESCRIBES.
+ *
+ * Serving an unchanged queue from memory is what takes the worker heartbeat
+ * from ten milliseconds to a tenth of one, and the only way it can be wrong is
+ * by answering with a queue that has since moved. Each of these writes a queue
+ * behind a scan that already ran and demands the new answer.
+ */
+test("a queue written after a scan is seen by the next scan", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_one");
+  // Populates the cache while there is nothing to report.
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  store.stopSession("session_one", "user");
+  expect(store.cancellationsForWorker("worker_one").map((cancel) => cancel.runId)).toEqual(["run_one"]);
+});
+
+test("a rolled-back stop is not reported to the worker that would have acted on it", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(() => store.executeCommand("broken-stop", () => {
+    store.stopSession("session_one", "user");
+    throw new Error("injected disk failure");
+  })).toThrow("injected disk failure");
+  // The transaction took the stop back, so there is nothing to cancel — and
+  // the turn is still the claimed one it was before.
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(store.turns("session_one").map((turn) => turn.state)).toEqual(["claimed"]);
+});
+
+test("a session id reused after a delete does not inherit the old queue", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  store.stopSession("session_one", "user");
+  expect(store.cancellationsForWorker("worker_one")).toHaveLength(1);
+  store.deleteSession("session_one");
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.turns("session_one")).toEqual([]);
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+});
+
+/**
+ * A DEAD CLAIM IS NOT FREE TO LEAVE LYING ABOUT.
+ *
+ * `stopSession` keeps the claim on a turn it stops so the worker holding it
+ * hears about the stop — but the token names a registration, and none survives
+ * a restart. Left there it is not inert: `queueConcernsAWorker` counts it, so
+ * every Stop anybody ever pressed kept a session in the set the heartbeat
+ * walks, for ever and across every restart.
+ */
+test("a restart retires the claim on a stopped turn without disturbing the session", () => {
+  const { home, store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  store.stopSession("session_one", "user");
+  expect(store.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
+  const before = store.getSession("session_one").updatedAt;
+  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+
+  const reopened = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(reopened);
+  reopened.recover(); // what the daemon runs at boot
+  const turn = reopened.turns("session_one")[0]!;
+  expect(turn.claim).toBeUndefined();
+  // Only the token went. The turn still says what it was and how it ended,
+  // and nothing about the session moved.
+  expect(turn).toMatchObject({ runId: "run_one", input: "hello", state: "stopped", stopReason: "user" });
+  expect(reopened.getSession("session_one").updatedAt).toBe(before);
+  // And with no claim left, no worker is asked about this session again.
+  expect(reopened.cancellationsForWorker("worker_one")).toEqual([]);
+});

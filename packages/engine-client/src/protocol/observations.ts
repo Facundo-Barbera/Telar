@@ -356,6 +356,17 @@ export const WorkerStatus = z.object({
          *  can deliver it as a peer's report rather than as the person. */
         sender: z.object({ sessionId: Id.optional() }).optional(),
         /**
+         * The engine's short announcement of that message — what the PROVIDER
+         * is handed instead of `text`, which stays the body so the transcript
+         * row can still expand to it. See `Turn.agentNotice`.
+         *
+         * IT TRAVELS FOR THE SAME REASON `sender` DOES: this seam is where a
+         * queued turn becomes a mid-turn delivery, and a notice left behind
+         * here would mean a peer's whole report reaches the model whenever the
+         * recipient happened to be busy — the one case where it costs most.
+         */
+        notice: z.string().optional(),
+        /**
          * Present when this is a WAKE the engine queued and then promoted into
          * the running turn — a session this one subscribed to did something.
          *

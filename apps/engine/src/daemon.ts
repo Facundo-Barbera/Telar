@@ -156,7 +156,7 @@ export type EngineDaemonOptions = {
    * started without an embedded worker never loads the Claude SDK. Every test
    * in this repo depends on that.
    */
-  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
+  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; idlePollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
   /**
    * Read the provider transcripts into the usage scan cache shortly after
    * start-up, so the first Usage page after an update does not pay for a
@@ -496,9 +496,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     process.stdout.write(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/\n`);
   }
   const lock = acquireDaemonLock(statePaths(root));
+  /**
+   * THE EMBEDDED WORKER'S DOORBELL, set by whichever generation is current and
+   * absent when the daemon hosts no worker at all. Declared here because the
+   * store is built long before the worker is, and the store is what rings it.
+   */
+  let wakeEmbeddedWorker: (() => void) | undefined;
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
+    onQueueChanged: () => wakeEmbeddedWorker?.(),
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -599,6 +606,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let embeddedRegistration: RegisteredWorker | undefined;
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
+  /**
+   * WHAT THE EMBEDDED WORKER'S LOOP SLOWS TO WITH NOTHING TO DO.
+   *
+   * A tenth of the fast rate, and it costs nothing a person can feel because
+   * the store rings `wake()` the instant a queue moves — a message, a Stop, a
+   * claim — so the interval is only ever this long while genuinely nothing is
+   * happening. The one thing that does NOT ring it is stopping a background
+   * task in a session with no live turn (`task-stops.json` is not a queue), so
+   * that single action can take up to a second longer than it used to.
+   * Comfortably inside the lease either way: the watchdog runs at lease/3.
+   */
+  const DEFAULT_EMBEDDED_IDLE_POLL_MS = 1_000;
   /**
    * INJECTED so a test never shells out to a real CLI. The default probes for
    * real; every engine test in this repo passes its own, which is also what
@@ -3805,14 +3824,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // ./worker-diagnostics.ts.
             onDiagnostic: createWorkerDiagnostics(store.paths.root, workerId),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
+            /**
+             * IN-PROCESS, SO IT CAN AFFORD TO WAIT. An embedded worker is the
+             * one that can be TOLD the instant a queue moves (see the store's
+             * `onQueueChanged` below), so it does not have to discover work by
+             * asking ten times a second forever. A worker in its own process
+             * has no such doorbell and is left on its fixed interval.
+             */
+            idlePollMs: config.idlePollMs ?? DEFAULT_EMBEDDED_IDLE_POLL_MS,
             onConnectionLost,
           });
+          // Whichever generation is current owns the doorbell; the `stop`
+          // wrapper below hands it back when this one is retired.
+          const wakeThisGeneration = () => worker.wake();
+          wakeEmbeddedWorker = wakeThisGeneration;
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
           worker.stop = async (reason) => {
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            // Same fence for the doorbell: a retired generation must not keep
+            // receiving nudges, and must not silence its replacement's.
+            if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
              * exempt from. That is the FENCE: a late request carrying the dead

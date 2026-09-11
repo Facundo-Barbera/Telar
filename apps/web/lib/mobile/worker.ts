@@ -3,6 +3,16 @@ import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
 import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type PushRecord, type SessionSignal } from "./push";
 
+/** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
+ *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
+ *  300s therefore means the start never landed — Apple accepted it for a token from a previous
+ *  install, or Live Activities are off in Settings — so the receipt is dropped and the start retried. */
+const AUTOMATIC_START_STALE = 300;
+/** But a phone that can never start one must not be pushed every 5 minutes forever: at most 3
+ *  accepted starts per push-to-start token. The count resets when the token changes (a reinstall)
+ *  and when work goes idle, so recovering never needs a reinstall. */
+const AUTOMATIC_START_ATTEMPTS = 3;
+
 /** Fold after successful delivery only. First sight baselines history, not a burst of old alerts. */
 export async function deliverRecord(record: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<number>, now = Date.now() / 1000): Promise<PushRecord | undefined> {
   if ((record.retryAt ?? 0) > now) return record;
@@ -28,15 +38,20 @@ export async function deliverRecord(record: PushRecord, sessions: SessionSignal[
   const active = automaticSessions(sessions);
   const automatic = record.activities.filter(a => a.sessionId === AUTOMATIC_ACTIVITY);
   const aggregateSignal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)])]);
-  if (!active.length) next.automaticStartedAt = undefined;
-  if (record.liveActivities && active.length && !automatic.length && !record.automaticStartedAt && record.pushToStartToken) {
+  // A receipt with no activity registered against it is evidence of nothing; it must not gate
+  // the start forever. Failed sends are held off by retryAt instead and never spend an attempt.
+  const staleStart = record.automaticStartedAt !== undefined && !automatic.length && now - record.automaticStartedAt >= AUTOMATIC_START_STALE;
+  if (!active.length) { next.automaticStartedAt = undefined; next.automaticStarts = undefined; }
+  if (record.liveActivities && active.length && !automatic.length && (!record.automaticStartedAt || staleStart)
+      && record.pushToStartToken && (record.automaticStarts ?? 0) < AUTOMATIC_START_ATTEMPTS) {
     const status = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
-    if (status === 200) next.automaticStartedAt = now;
+    if (status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
     // Expiration of a start token must never unregister ordinary phone notifications.
     if (status === 410) next.pushToStartToken = undefined;
   }
   for (const follow of automatic) {
-    if (active.length && record.liveActivities) next.automaticStartedAt = follow.startedAt;
+    // The activity exists, so the start it came from worked: the attempt count has done its job.
+    if (active.length && record.liveActivities) { next.automaticStartedAt = follow.startedAt; next.automaticStarts = undefined; }
     if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
     const status = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
     if (status === 410 || (status === 200 && (!active.length || !record.liveActivities))) {
@@ -96,6 +111,9 @@ export function startMobilePushWorker(): void {
               && r.liveActivities && r.pushToStartToken === record.pushToStartToken);
             if (refreshed && !refreshed.automaticStartedAt) {
               refreshed.automaticStartedAt = result.automaticStartedAt;
+              // Carry the attempt count with the receipt, or a phone re-registering on every
+              // start push would reset the cap and be pushed forever.
+              refreshed.automaticStarts = result.automaticStarts;
               writePushRecords(current);
             }
           }
