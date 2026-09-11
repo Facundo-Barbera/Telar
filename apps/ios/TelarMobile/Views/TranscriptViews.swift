@@ -643,7 +643,7 @@ struct WakeRow: View {
     private var line: String {
         if let notice = turn.agentNotice, !notice.isEmpty { return notice }
         let first = turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
-        return first.isEmpty ? "Woken: \(turn.wakeReason ?? "something finished")" : first
+        return first.isEmpty ? describeWake(turn.wakeReason) : first
     }
 
     var body: some View {

@@ -103,7 +103,7 @@ struct JournalTurn: Identifiable, Equatable {
     var sender: MessageSender?
     var agentIntent: String?
     var assignmentScope: String?
-    var wakeReason: String?
+    var wakeReason: WakeReason?
     var agentNotice: String?
 
     var id: EngineID { runId }
@@ -187,7 +187,7 @@ private final class TurnBox {
     var sender: MessageSender?
     var agentIntent: String?
     var assignmentScope: String?
-    var wakeReason: String?
+    var wakeReason: WakeReason?
     var agentNotice: String?
     init(turn: Turn) {
         runId = turn.runId

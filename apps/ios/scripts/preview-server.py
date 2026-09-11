@@ -115,7 +115,10 @@ AGENT_TURNS = [
     dict(runId='run_wake', sessionId='design', sequence=4, state='completed',
          input='[wake: completed] Session sess_9f21c4a1b2c3 — turn run_agent_report completed.\n\n'
                'Read it with sessions_read(sessionId, runId).',
-         origin='session', wakeReason='completed', agentSourceRunId='run_agent_report',
+         origin='session', agentSourceRunId='run_agent_report',
+         # THE REAL SHAPE: an object naming what happened and where. A real
+         # wake carries no `sender` and no `agentIntent` either.
+         wakeReason=dict(kind='turn_completed', sessionId='sess_9f21c4a1b2c3', runId='run_agent_report'),
          acceptedAt=NOW - 30000, updatedAt=NOW - 29000),
 ]
 

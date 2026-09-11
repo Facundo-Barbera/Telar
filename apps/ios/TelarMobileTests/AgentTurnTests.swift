@@ -38,12 +38,55 @@ import Testing
     }
 
     @Test func aWakeCarriesItsReasonAndTheRunItIsAbout() throws {
+        // THE LIVE SHAPE, copied from the journal: an OBJECT, with no `sender`
+        // and no `agentIntent`. Declared as a `String?` this turn did not
+        // merely render wrong — the snapshot decodes turns through
+        // `Skippable`, so a type mismatch DROPPED it.
         let turn = try decode(#"""
-        {"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"[wake: completed] …",
-         "acceptedAt":1,"updatedAt":1,"origin":"session","wakeReason":"completed","agentSourceRunId":"run_y"}
+        {"runId":"r","sessionId":"s","sequence":0,"state":"completed",
+         "input":"[wake: completed] Session session_abc — turn run_def completed.",
+         "acceptedAt":1,"updatedAt":1,"origin":"session",
+         "wakeReason":{"kind":"turn_completed","sessionId":"session_abc","runId":"run_def"}}
         """#)
-        #expect(turn.wakeReason == "completed")
-        #expect(turn.agentSourceRunId == "run_y")
+        #expect(turn.wakeReason?.kind == "turn_completed")
+        #expect(turn.wakeReason?.sessionId == "session_abc")
+        #expect(turn.wakeReason?.runId == "run_def")
+        #expect(turn.sender == nil)
+        #expect(turn.agentIntent == nil)
+    }
+
+    @Test func aRequestOpenedWakeCarriesTheRequestRatherThanARun() throws {
+        let turn = try decode(#"""
+        {"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"","acceptedAt":1,"updatedAt":1,
+         "origin":"session","wakeReason":{"kind":"request_opened","sessionId":"session_abc","requestId":"req_1"}}
+        """#)
+        #expect(turn.wakeReason?.kind == "request_opened")
+        #expect(turn.wakeReason?.requestId == "req_1")
+        #expect(turn.wakeReason?.runId == nil)
+    }
+
+    @Test func anUnknownWakeKindIsKeptRatherThanDropped() {
+        // A newer engine's vocabulary must still be a wake, or the turn goes
+        // back to rendering as somebody's bubble.
+        let reason = try? JSONDecoder().decode(WakeReason.self, from: Data(#"{"kind":"peer_settled","sessionId":"s"}"#.utf8))
+        #expect(reason?.kind == "peer_settled")
+    }
+
+    @Test func aBareStringWakeReasonStillDecodes() {
+        // An older engine, or a fixture written before the shape was
+        // understood: losing the turn over it would be the same bug again.
+        let reason = try? JSONDecoder().decode(WakeReason.self, from: Data("\"completed\"".utf8))
+        #expect(reason?.kind == "completed")
+        #expect(reason?.sessionId == nil)
+    }
+
+    @Test func aWakeRowSaysWhatHappenedWhenThePromptIsEmpty() {
+        #expect(describeWake(WakeReason(kind: "turn_completed")) == "A turn finished in another session.")
+        #expect(describeWake(WakeReason(kind: "turn_failed")) == "A turn failed in another session.")
+        #expect(describeWake(WakeReason(kind: "turn_stopped")) == "A turn was stopped in another session.")
+        #expect(describeWake(WakeReason(kind: "request_opened")) == "Another session is waiting on an answer.")
+        #expect(describeWake(WakeReason(kind: "peer_settled")) == "Another session woke this one.")
+        #expect(describeWake(nil) == "Another session woke this one.")
     }
 
     @Test func theEnginesOwnNoticeIsCarriedVerbatim() throws {
@@ -102,7 +145,8 @@ import Testing
     @Test func aWakeIsNeitherABubbleNorAnAgentMessage() throws {
         let turn = try #require(folded(#"""
         {"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"[wake: completed] …",
-         "acceptedAt":1,"updatedAt":1,"origin":"session","wakeReason":"completed"}
+         "acceptedAt":1,"updatedAt":1,"origin":"session",
+         "wakeReason":{"kind":"turn_completed","sessionId":"session_abc","runId":"run_def"}}
         """#))
         #expect(turn.isWake)
         // Nobody said it, so it is not a message from anyone.
@@ -121,7 +165,7 @@ import Testing
         // `wakeReason` alone is not enough: the guard also asks who sent it.
         let turn = try #require(folded(#"""
         {"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"carry on","acceptedAt":1,"updatedAt":1,
-         "origin":"user","wakeReason":"completed"}
+         "origin":"user","wakeReason":{"kind":"turn_completed","sessionId":"session_abc"}}
         """#))
         #expect(!turn.isWake)
     }

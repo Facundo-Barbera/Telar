@@ -63,9 +63,9 @@ struct Turn: Codable, Identifiable, Equatable {
     var agentDelivery: String?
     var agentSourceRunId: EngineID?
     var assignmentScope: String?
-    /// Set when this turn is a wake-up rather than a message: the engine's own
-    /// short reason, e.g. "completed".
-    var wakeReason: String?
+    /// Set when this turn is a wake-up rather than a message: WHAT happened
+    /// and WHERE. An object on the wire, not a string — see `WakeReason`.
+    var wakeReason: WakeReason?
     /// A one-line summary the engine writes for a collapsed row. Preferred
     /// verbatim when present; derived locally when it is not.
     var agentNotice: String?
@@ -78,6 +78,67 @@ struct Turn: Codable, Identifiable, Equatable {
 struct MessageSender: Codable, Equatable {
     var sessionId: EngineID?
     var name: String?
+}
+
+/// WHY AN `origin: "session"` TURN WAS QUEUED — the engine's `WakeReason`
+/// (packages/engine-client/src/protocol/entities.ts): an OBJECT naming what
+/// happened and where, not a word.
+///
+/// This was declared as a `String?` and it cost more than a wrong label. The
+/// snapshot decodes its turns through `Skippable`, so a type mismatch does not
+/// throw — it DROPS THE TURN. Every real wake was disappearing from the
+/// transcript on every read, and the shape the tests asserted was one the
+/// engine has never sent.
+///
+/// Lenient in three directions, because the alternative is losing the turn
+/// again: an unknown `kind` is kept as its raw string, every field but `kind`
+/// is optional, and a BARE STRING still decodes — an older engine, or a
+/// fixture written before this was understood, should not vanish.
+struct WakeReason: Codable, Equatable {
+    /// `turn_completed` | `turn_failed` | `turn_stopped` | `request_opened`,
+    /// or whatever a newer engine has learned to say.
+    var kind: String
+    /// The session that did the thing.
+    var sessionId: EngineID?
+    /// Its turn, for the three turn kinds — and for `request_opened`, the turn
+    /// the request belongs to.
+    var runId: EngineID?
+    var requestId: EngineID?
+
+    init(kind: String, sessionId: EngineID? = nil, runId: EngineID? = nil, requestId: EngineID? = nil) {
+        self.kind = kind
+        self.sessionId = sessionId
+        self.runId = runId
+        self.requestId = requestId
+    }
+
+    init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let raw = try? single.decode(String.self) {
+            kind = raw
+            sessionId = nil
+            runId = nil
+            requestId = nil
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(String.self, forKey: .kind)) ?? ""
+        sessionId = try? c.decodeIfPresent(EngineID.self, forKey: .sessionId)
+        runId = try? c.decodeIfPresent(EngineID.self, forKey: .runId)
+        requestId = try? c.decodeIfPresent(EngineID.self, forKey: .requestId)
+    }
+}
+
+/// What a wake row says when the prompt itself has nothing to show. The
+/// engine's own `agentNotice` and the prompt's first line both come first;
+/// this is the floor, and it names the KIND rather than repeating the id.
+func describeWake(_ reason: WakeReason?) -> String {
+    switch reason?.kind {
+    case "turn_completed": "A turn finished in another session."
+    case "turn_failed": "A turn failed in another session."
+    case "turn_stopped": "A turn was stopped in another session."
+    case "request_opened": "Another session is waiting on an answer."
+    default: "Another session woke this one."
+    }
 }
 
 /// THE DESKTOP'S `agentSenderLabel`, 1:1. A session id is long and meaningless
