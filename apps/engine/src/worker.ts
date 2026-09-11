@@ -141,7 +141,15 @@ const WORKER_MEMORY_BUDGET_PER_TURN = 512 * 1024 * 1024;
 const MIN_WORKER_CONCURRENCY = 4;
 const MAX_WORKER_CONCURRENCY = 24;
 
-export function defaultWorkerConcurrency(totalBytes: number = os.totalmem()): number {
+/**
+ * READ ONCE. How much RAM the machine has cannot change while this process
+ * runs, and this sits on the claim path: `startClaiming` asks for the cap on
+ * every tick, so at ten ticks a second the syscall alone was 6.2% of the
+ * engine's idle profile — spent re-learning a constant.
+ */
+let physicalMemoryBytes: number | undefined;
+
+export function defaultWorkerConcurrency(totalBytes: number = (physicalMemoryBytes ??= os.totalmem())): number {
   const affordable = Math.floor(totalBytes / 2 / WORKER_MEMORY_BUDGET_PER_TURN);
   return Math.min(MAX_WORKER_CONCURRENCY, Math.max(MIN_WORKER_CONCURRENCY, affordable));
 }
