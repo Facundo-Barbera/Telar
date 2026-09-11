@@ -55,7 +55,7 @@ export const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
 };
 
 /** The kinds a chip can be that are NOT a file: the panel rows you can drag. */
-export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check";
+export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check" | "note";
 
 export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   directory: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
@@ -64,6 +64,9 @@ export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   page: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   task: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
   check: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
+  // lucide `notebook-pen` — a page with a hand on it, which is what a project
+  // note is: something a person wrote down, not a file the repository holds.
+  note: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.4 3.6a2.1 2.1 0 0 1 0 3L15 13l-4 1 1-4 6.4-6.4a2.1 2.1 0 0 1 3 0Z"/>',
 };
 
 /**
@@ -86,6 +89,10 @@ export const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
   // A check is dragged in when it went red. Rose is the honest colour for the
   // only case this chip is ever created in.
   check: "text-tint-red",
+  // The one chip that is not a GitHub object and should not borrow a GitHub
+  // colour. Muted: a note is the user's own handwriting, and nothing about it
+  // is a state to be alarmed or reassured by.
+  note: "text-muted-foreground",
 };
 
 /**

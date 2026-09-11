@@ -184,6 +184,11 @@ const PATTERNS: { kind: ReferenceKind; pattern: RegExp; label: (match: RegExpExe
   // underneath, and a chip that swallowed the fence would hide the thing the
   // reader dropped it FOR.
   { kind: "check", pattern: /the "([^"]*)" check \([^)]*\)(?: — \S+)?/g, label: (match) => match[1] ?? "check" },
+  // A project note, whose body follows in a fence for the same reason and is
+  // left out of the chip for the same one — see `noteReference`. The id shape is
+  // literal (`n-` plus hex) so a sentence that merely says "the X project note"
+  // is prose, not a half-recognised reference.
+  { kind: "note", pattern: /the "([^"]*)" project note \(n-[0-9a-f]+\)/g, label: (match) => match[1] || "note" },
   { kind: "file", pattern: /`([^`\n]+)`/g, label: (match) => chipBasename(match[1] ?? "") },
   { kind: "page", pattern: /https?:\/\/\S+/g, label: (match) => match[0].replace(/^https?:\/\//, "").replace(/\/$/, "") },
 ];
