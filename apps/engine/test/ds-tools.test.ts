@@ -78,6 +78,30 @@ test("notebook_open lists cells by id and notebook_edit_cell refuses an empty ed
   expect(edit.isError).toBe(true);
 });
 
+test("notebook_edit_cell takes moveTo and hands the capability an absolute move", async () => {
+  // The agent-facing half of the iPad's Move up / Move down: a model that can
+  // insert and delete should be able to reorder without losing what ran.
+  const edits: unknown[] = [];
+  const tools = build({
+    notebookEdit: async (_path, edit) => {
+      edits.push(edit);
+      return { path: "a.ipynb", sha256: "abc", cellCount: 1, cells: [{ id: "c1", index: 0, type: "code" as const, source: "x = 1" }] };
+    },
+  });
+  const edit = tools.find((t) => t.name === "notebook_edit_cell")!;
+  expect(edit.shape).toHaveProperty("moveTo");
+
+  const moved = await edit.run({ path: "a.ipynb", cellId: "c2", moveTo: 0 });
+  expect(moved.isError).toBeUndefined();
+  expect(edits[0]).toEqual({ kind: "move", to: 0, cellId: "c2" });
+
+  await edit.run({ path: "a.ipynb", index: 3, moveTo: 1 });
+  expect(edits[1]).toEqual({ kind: "move", to: 1, index: 3 });
+
+  // moveTo: 0 is a real edit, not a falsy "nothing to change".
+  expect(edits).toHaveLength(2);
+});
+
 test("ds_diff reads 'now' as snapshot-then-compare and reports each change", async () => {
   const snapshots: string[] = [];
   const tools = build({
