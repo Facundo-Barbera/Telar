@@ -89,6 +89,57 @@ import Testing
         #expect(describeWake(nil) == "Another session woke this one.")
     }
 
+    // MARK: the provider starting a turn by itself
+
+    @Test func aProviderStartedTurnDecodesItsReason() throws {
+        // COPIED VERBATIM FROM THE LIVE JOURNAL. These turns carry an EMPTY
+        // input, so before this they fell through every branch and drew as an
+        // empty right-aligned bubble.
+        let turn = try decode(#"""
+        {"runId":"run_x","sessionId":"s","sequence":56,"input":"","origin":"provider",
+         "providerReason":{"kind":"unknown"},"state":"running","acceptedAt":1,"updatedAt":1}
+        """#)
+        #expect(turn.origin == "provider")
+        #expect(turn.providerReason?.kind == "unknown")
+        #expect(turn.input.isEmpty)
+    }
+
+    @Test func aTaskNotificationCarriesTheTaskThatEnded() throws {
+        // The other kind seen in the journal.
+        let turn = try decode(#"""
+        {"runId":"r","sessionId":"s","sequence":8,"state":"running","input":"","origin":"provider",
+         "providerReason":{"kind":"task_notification","taskId":"task_toolu_018xTNcatJ4JixVgR56vdQMk"},
+         "acceptedAt":1,"updatedAt":1}
+        """#)
+        #expect(turn.providerReason?.kind == "task_notification")
+        #expect(turn.providerReason?.taskId == "task_toolu_018xTNcatJ4JixVgR56vdQMk")
+    }
+
+    @Test func aProviderStartedTurnIsAQuietLineAndNotAMessage() throws {
+        let turn = try #require(folded(#"""
+        {"runId":"r","sessionId":"s","sequence":0,"state":"running","input":"","origin":"provider",
+         "providerReason":{"kind":"task_notification"},"acceptedAt":1,"updatedAt":1}
+        """#))
+        #expect(turn.isProviderStarted)
+        // Nobody typed it and no peer sent it.
+        #expect(!turn.isFromAgent)
+        #expect(!turn.isWake)
+        #expect(!turn.isAgentTask)
+    }
+
+    @Test func aProviderLineNamesWhatHappened() {
+        #expect(describeProviderWake(ProviderReason(kind: "task_notification")) == "A background task finished.")
+        #expect(describeProviderWake(ProviderReason(kind: "unknown")) == "The provider resumed on its own.")
+        #expect(describeProviderWake(nil) == "The provider resumed on its own.")
+        // A kind this build has not met is still a provider turn, not a bubble.
+        #expect(describeProviderWake(ProviderReason(kind: "tool_result")) == "The provider resumed on its own.")
+    }
+
+    @Test func aPersonsTurnIsNotProviderStarted() throws {
+        let turn = try #require(folded(#"{"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"hi","acceptedAt":1,"updatedAt":1}"#))
+        #expect(!turn.isProviderStarted)
+    }
+
     @Test func theEnginesOwnNoticeIsCarriedVerbatim() throws {
         let turn = try decode(#"""
         {"runId":"r","sessionId":"s","sequence":0,"state":"completed","input":"long body",

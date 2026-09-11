@@ -105,6 +105,7 @@ struct JournalTurn: Identifiable, Equatable {
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
+    var providerReason: ProviderReason?
 
     var id: EngineID { runId }
 
@@ -115,6 +116,11 @@ struct JournalTurn: Identifiable, Equatable {
     /// A turn the model woke itself into. `origin` alone is not enough: a peer
     /// can send into a session and the engine stamps the same origin.
     var isWake: Bool { wakeReason != nil && origin != "user" }
+
+    /// A turn THE PROVIDER started, with nobody's words in it: a background
+    /// task ending woke the model. Its `input` is empty, so drawing it as a
+    /// message produced an empty right-aligned bubble.
+    var isProviderStarted: Bool { origin == "provider" }
 
     /// A peer HANDING WORK OVER is the reason this session is doing anything,
     /// so it reads as a message. A peer TALKING stays collapsed.
@@ -189,6 +195,7 @@ private final class TurnBox {
     var assignmentScope: String?
     var wakeReason: WakeReason?
     var agentNotice: String?
+    var providerReason: ProviderReason?
     init(turn: Turn) {
         runId = turn.runId
         prompt = turn.input
@@ -204,6 +211,7 @@ private final class TurnBox {
         assignmentScope = turn.assignmentScope
         wakeReason = turn.wakeReason
         agentNotice = turn.agentNotice
+        providerReason = turn.providerReason
     }
 }
 
@@ -389,7 +397,8 @@ func projectJournal(
             agentIntent: turn.agentIntent,
             assignmentScope: turn.assignmentScope,
             wakeReason: turn.wakeReason,
-            agentNotice: turn.agentNotice
+            agentNotice: turn.agentNotice,
+            providerReason: turn.providerReason
         )
     }
 }

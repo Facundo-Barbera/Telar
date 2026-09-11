@@ -83,7 +83,7 @@ struct TurnView: View {
             // and drawing them as bubbles put words in the reader's mouth —
             // twenty lines of another agent's status, right-aligned, as though
             // they had typed it.
-            if turn.isWake {
+            if turn.isWake || turn.isProviderStarted {
                 WakeRow(turn: turn)
             } else if turn.isFromAgent {
                 AgentMessageRow(turn: turn)
@@ -643,7 +643,10 @@ struct WakeRow: View {
     private var line: String {
         if let notice = turn.agentNotice, !notice.isEmpty { return notice }
         let first = turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
-        return first.isEmpty ? describeWake(turn.wakeReason) : first
+        if !first.isEmpty { return first }
+        // A provider-started turn has NO prompt at all — that is its whole
+        // shape — so the kind is the only thing there is to say.
+        return turn.isProviderStarted ? describeProviderWake(turn.providerReason) : describeWake(turn.wakeReason)
     }
 
     var body: some View {

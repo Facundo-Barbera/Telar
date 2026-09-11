@@ -211,6 +211,10 @@ struct SessionSnapshot: Decodable {
         cursor = try c.decodeIfPresent(Int.self, forKey: .cursor)
         page = try? c.decodeIfPresent(SnapshotPage.self, forKey: .page)
         session = try c.decode(Session.self, forKey: .session)
+        // SKIPPABLE HIDES OUR OWN MISTAKES TOO. A row whose shape this build
+        // does not know is meant to drop; a row whose field WE declared with
+        // the wrong type drops identically and just as quietly. Before
+        // changing a type here, read the note on `Skippable`.
         turns = try c.decode([Skippable<Turn>].self, forKey: .turns).compactMap(\.value)
         items = try c.decode([Skippable<Item>].self, forKey: .items).compactMap(\.value)
         requests = try c.decode([Skippable<EngineRequest>].self, forKey: .requests).compactMap(\.value)

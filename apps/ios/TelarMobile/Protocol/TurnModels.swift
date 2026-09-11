@@ -69,6 +69,10 @@ struct Turn: Codable, Identifiable, Equatable {
     /// A one-line summary the engine writes for a collapsed row. Preferred
     /// verbatim when present; derived locally when it is not.
     var agentNotice: String?
+    /// Why the PROVIDER started a turn nobody asked for — a background task
+    /// ending, usually. These turns carry an EMPTY `input`, so without this
+    /// they drew as an empty right-aligned bubble.
+    var providerReason: ProviderReason?
 
     var id: EngineID { runId }
 }
@@ -125,6 +129,43 @@ struct WakeReason: Codable, Equatable {
         sessionId = try? c.decodeIfPresent(EngineID.self, forKey: .sessionId)
         runId = try? c.decodeIfPresent(EngineID.self, forKey: .runId)
         requestId = try? c.decodeIfPresent(EngineID.self, forKey: .requestId)
+    }
+}
+
+/// WHY THE PROVIDER RESUMED ON ITS OWN. Live shapes, from the journal:
+/// `{"kind":"task_notification","taskId":"task_…"}` and `{"kind":"unknown"}`.
+///
+/// Lenient for the same reason `WakeReason` is: a turn carrying a kind this
+/// build has not met must still be a turn, not a dropped row.
+struct ProviderReason: Codable, Equatable {
+    var kind: String
+    var taskId: EngineID?
+
+    init(kind: String, taskId: EngineID? = nil) {
+        self.kind = kind
+        self.taskId = taskId
+    }
+
+    init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let raw = try? single.decode(String.self) {
+            kind = raw
+            taskId = nil
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(String.self, forKey: .kind)) ?? ""
+        taskId = try? c.decodeIfPresent(EngineID.self, forKey: .taskId)
+    }
+}
+
+/// What a provider-started turn's quiet line says. The desktop names the task
+/// when it can find it; here the kind carries it, since the phone's row is one
+/// line and an id nobody can read is worse than a sentence.
+func describeProviderWake(_ reason: ProviderReason?) -> String {
+    switch reason?.kind {
+    case "task_notification": "A background task finished."
+    case "unknown", nil: "The provider resumed on its own."
+    default: "The provider resumed on its own."
     }
 }
 

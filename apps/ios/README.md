@@ -218,6 +218,28 @@ subscription. APNs acceptance is also not proof of delivery to a device.
 Removing a Mac attempts to disable its registration and ends local activities;
 if it is offline, revoke the phone on that Mac to stop its stored registration.
 
+### Wire-facing changes
+
+**Every new decoded field ships with one test whose JSON is copied verbatim
+from the live journal — never from a fixture the author wrote.**
+
+```
+sqlite3 ~/Library/Application\ Support/Telar/engine/execution.sqlite \
+  "select value from events where value like '%\"origin\":\"provider\"%' limit 1;"
+```
+
+The reason is that this app's snapshot lists decode through `Skippable`, which
+swallows a decode failure and drops the row. That is the right behaviour for a
+shape the build does not know — and it cannot tell that case apart from a field
+*we* declared with the wrong type. A single wrong optional does not fail
+loudly; it deletes every row carrying that field, silently.
+
+It has happened: `Turn.wakeReason` was `String?` while the engine sends an
+object, so every wake-up turn vanished from the transcript on every read while
+the suite stayed green, because the fixture asserted the shape the author had
+imagined. A fixture can only confirm what someone already believed; the journal
+is the only thing that can contradict it.
+
 ### Local verification and device acceptance
 
 Run the iOS suite with the commands above, and the push tests with:
