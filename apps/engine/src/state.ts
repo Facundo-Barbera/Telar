@@ -8671,6 +8671,19 @@ export class EngineStore {
       if (queueConcernsAWorker(this.scanQueue(sessionId))) index.add(sessionId);
     }
     this.liveQueueIndex = index;
+    /**
+     * AND THE COLD BUILD LETS GO OF WHAT IT READ TO GET HERE.
+     *
+     * This is the one scan that touches every session on disk, so without
+     * this the cache would hold every conversation ever started, in parsed
+     * form, for the life of the daemon — the same unbounded growth with age
+     * that the index itself was written to stop. Everything still in the
+     * cache afterwards is in the index, and `writeQueue` drops the two
+     * together from then on.
+     */
+    for (const sessionId of this.queueCache.keys()) {
+      if (!index.has(sessionId)) this.queueCache.delete(sessionId);
+    }
     return index;
   }
 
