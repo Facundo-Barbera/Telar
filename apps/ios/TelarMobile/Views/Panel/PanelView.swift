@@ -25,6 +25,9 @@ struct PanelView: View {
     let active: Bool
     let panel: PanelModel
     var presentation: PanelPresentation = .page
+    /// A compact width's panel already fills the screen; offering to fill it
+    /// again would be a button that does nothing.
+    var canFillWindow = false
     let onClose: () -> Void
 
     var body: some View {
@@ -58,6 +61,24 @@ struct PanelView: View {
                 .accessibilityAddTraits(panel.active == tab ? .isSelected : [])
             }
             Spacer(minLength: 0)
+            // FILL THE WINDOW. A 440pt column is a keyhole for a notebook or a
+            // diff; the desktop keeps the whole strip visible in fullscreen and
+            // so does this — it is the same view with the screen to itself, not
+            // a second one, so nothing unmounts and no draft is lost crossing.
+            if canFillWindow {
+                Button {
+                    panel.setFullScreen(!panel.isFullScreen)
+                } label: {
+                    Image(systemName: panel.isFullScreen
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted)
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(panel.isFullScreen ? "Leave full screen" : "Fill the window")
+            }
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))

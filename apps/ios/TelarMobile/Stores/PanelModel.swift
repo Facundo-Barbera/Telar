@@ -108,6 +108,11 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
 /// for a file to be opened without a closure threaded through four views.
 @MainActor @Observable final class PanelModel {
     private(set) var isOpen = false
+    /// Filling the window rather than sharing it. THE MODEL IS THE TRUTH for
+    /// this too, so moving between the column and full screen carries the tab,
+    /// the open files and their drafts with it — the surfaces never unmount
+    /// into a different owner.
+    private(set) var isFullScreen = false
     private(set) var active: PanelTab = .diff
     private(set) var editor = EditorState()
     /// Off until the project record has been read — the same rule the web
@@ -128,6 +133,9 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
         var isOpen: Bool
         var active: PanelTab
         var editor: EditorState
+        /// Optional: a save written before full screen existed decodes with
+        /// the panel merely open, which is the honest reading of it.
+        var isFullScreen: Bool?
     }
 
     init(hostId: HostID?, sessionId: EngineID, defaults: UserDefaults = .standard) {
@@ -138,6 +146,7 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
             isOpen = saved.isOpen
             active = saved.active
             editor = saved.editor
+            isFullScreen = saved.isFullScreen ?? false
         }
     }
 
@@ -170,8 +179,21 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     }
 
     func close() {
-        guard isOpen else { return }
+        guard isOpen || isFullScreen else { return }
         isOpen = false
+        // Closing is closing. Coming back to a panel that reopens filling the
+        // window, because that is how it was left three days ago, is the
+        // surprise this guards against.
+        isFullScreen = false
+        persist()
+    }
+
+    /// Fill the window, or come back to the column. Opening full screen opens
+    /// the panel, so the two flags can never disagree about whether it shows.
+    func setFullScreen(_ full: Bool) {
+        guard full != isFullScreen else { return }
+        isFullScreen = full
+        if full, !isOpen { isOpen = true }
         persist()
     }
 
@@ -213,7 +235,7 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(Persisted(isOpen: isOpen, active: active, editor: editor)) {
+        if let data = try? JSONEncoder().encode(Persisted(isOpen: isOpen, active: active, editor: editor, isFullScreen: isFullScreen)) {
             defaults.set(data, forKey: key)
         }
     }

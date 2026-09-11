@@ -296,3 +296,39 @@ extension NavigationUITests {
         XCTAssertTrue(app.buttons["Diff tab"].waitForNonExistence(timeout: 10), "and it closes again")
     }
 }
+
+extension NavigationUITests {
+    /// FULL SCREEN IS THE SAME PANEL. A 440pt column is a keyhole for a diff or
+    /// a notebook; this pins that the expand control fills the window, that the
+    /// panel's own state crosses with it, and that it comes back.
+    func testThePanelCanFillTheWindowAndComeBack() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
+        let app = XCUIApplication()
+        app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
+        app.launch()
+        let composer = app.textFields["Ask the agent, or run a command…"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        if app.buttons["Show panel"].exists { app.buttons["Show panel"].tap() }
+        XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10))
+        select(app.buttons["Files tab"])
+        openFromTree(app, "README.md")
+        XCTAssertTrue(app.staticTexts["README.md"].firstMatch.waitForExistence(timeout: 10))
+
+        let expand = app.buttons["Fill the window"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "the panel offers full screen")
+        expand.tap()
+        XCTAssertTrue(app.buttons["Leave full screen"].waitForExistence(timeout: 10), "it filled the window")
+        // The conversation is gone and the file it was showing is still open:
+        // the model carried the tab and the open file across.
+        // `exists` stays true for a covered view; hittability is what says
+        // the cover is over it.
+        XCTAssertFalse(composer.isHittable, "the conversation is covered")
+        XCTAssertTrue(app.staticTexts["README.md"].firstMatch.exists, "the open file crossed with it")
+        snap("Panel — full screen")
+
+        app.buttons["Leave full screen"].tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10), "and the conversation is back")
+        XCTAssertTrue(app.buttons["Fill the window"].waitForExistence(timeout: 5), "back in the column")
+        snap("Panel — back in the column")
+    }
+}

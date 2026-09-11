@@ -18,6 +18,7 @@ struct SessionView: View {
     /// `@State` projection is one location for the life of the view.
     @State private var inspectorShown = false
     @State private var pushShown = false
+    @State private var fullScreenShown = false
     /// Which sidebar state the panel found so it can put it back on close.
     @State private var sidebarWasVisible = false
     /// `display.opened` events seen this mount — the journal replays from
@@ -80,7 +81,10 @@ struct SessionView: View {
     /// match it. Every write is guarded — a presentation modifier writes its
     /// own binding back on layout, sometimes with the value it already holds.
     private func raisePanel(_ open: Bool) {
-        let column = open && wantsColumn
+        // ONE AT A TIME. Leaving the column mounted behind a full-screen cover
+        // would run a second copy of every surface — two file reads, two
+        // kernels asked for their state, two editors over one draft.
+        let column = open && wantsColumn && !panel.isFullScreen
         let push = open && !wantsColumn
         if inspectorShown != column { inspectorShown = column }
         if pushShown != push { pushShown = push }
@@ -270,13 +274,44 @@ struct SessionView: View {
         .environment(\.panel, panel)
         .inspector(isPresented: $inspectorShown) {
             NavigationStack {
-                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, onClose: { panel.close() })
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .column, canFillWindow: true, onClose: { panel.close() })
                     .toolbar(.hidden, for: .navigationBar)
             }
             // The card draws its own surface, so the column behind it is the
             // canvas the conversation sits on rather than a second sheet.
             .background(Theme.canvas)
             .inspectorColumnWidth(min: 360, ideal: 440, max: 640)
+        }
+        // FULL SCREEN IS THE SAME VIEW WITH THE SCREEN TO ITSELF. `PanelModel`
+        // owns the state, so the tab, the open files and their unsaved drafts
+        // cross unchanged — nothing is handed to a second instance.
+        //
+        // Its flag is `@State` for the reason every presentation flag here is:
+        // a `Binding` built in `body` is a new location on every pass, and
+        // `.fullScreenCover` compares the one it was given.
+        .fullScreenCover(isPresented: $fullScreenShown) {
+            NavigationStack {
+                PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, presentation: .page, canFillWindow: true, onClose: { panel.close() })
+                    .toolbar(.hidden, for: .navigationBar)
+                    .background {
+                        // A hardware Escape leaves full screen, the way it
+                        // leaves one on every other platform. Zero-sized so it
+                        // is a shortcut and not a control.
+                        Button("") { panel.setFullScreen(false) }
+                            .keyboardShortcut(.escape, modifiers: [])
+                            .opacity(0)
+                            .accessibilityHidden(true)
+                    }
+            }
+        }
+        .onChange(of: panel.isFullScreen, initial: true) { _, full in
+            let wanted = full && wantsColumn
+            if fullScreenShown != wanted { fullScreenShown = wanted }
+            raisePanel(panel.isOpen)
+        }
+        .onChange(of: fullScreenShown) { _, shown in
+            // The cover was pulled down by a gesture rather than the button.
+            if !shown, panel.isFullScreen { panel.setFullScreen(false) }
         }
         .navigationDestination(isPresented: $pushShown) {
             PanelView(api: api, panelAPI: panelAPI, sessionId: sessionId, hostId: hostId, active: turnActive, panel: panel, onClose: { panel.close() })
@@ -287,7 +322,14 @@ struct SessionView: View {
             raisePanel(open)
             syncSidebar(open: open)
         }
-        .onChange(of: inspectorShown) { _, open in if wantsColumn { panelPresented(open) } }
+        .onChange(of: inspectorShown) { _, open in
+            // THE COLUMN CLOSING BECAUSE WE WENT FULL SCREEN IS NOT THE READER
+            // CLOSING THE PANEL. Without this guard, expanding read as a
+            // dismissal: `panel.close()` ran, which also drops full screen, and
+            // the whole thing collapsed instead of filling the window.
+            guard wantsColumn, !panel.isFullScreen else { return }
+            panelPresented(open)
+        }
         .onChange(of: pushShown) { _, open in if !wantsColumn { panelPresented(open) } }
         // A rotation or a multitasking resize moves the panel between the
         // column and the push; the model says whether it is showing at all.
