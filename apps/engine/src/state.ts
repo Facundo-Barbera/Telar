@@ -1342,6 +1342,9 @@ export class EngineStore {
     try { result = this.executionStore.transaction(command, action, commandId); }
     catch (error) {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
+      // Rolled back under this store's feet: anything read or written inside
+      // the transaction describes a queue sqlite no longer has.
+      this.queueCache.clear();
       this.pendingStopTasks.clear(); this.afterCommit = [];
       throw error;
     } finally { this.commandDepth -= 1; }
@@ -5730,7 +5733,9 @@ export class EngineStore {
       activity: "idle",
     };
     this.writeDocument(metadata, storedSession(session));
-    this.writeDocument(sessionQueueFile(this.paths, id), emptyQueue(id));
+    // Through `writeQueue` like every other queue write: an id reused after a
+    // delete must not find the old session's cached queue waiting for it.
+    this.writeQueue(id, emptyQueue(id));
     this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
   }
@@ -6837,7 +6842,9 @@ export class EngineStore {
      */
     const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
     for (const sessionId of this.liveQueueSessionIds()) {
-      const queue = this.readQueue(sessionId);
+      // A SCAN, so the shared copy: the one session that wins is claimed
+      // through `claimTurn`, which reads a queue of its own to write.
+      const queue = this.scanQueue(sessionId);
       // One turn per session at a time — the engine's own invariant, checked
       // here so a busy session costs nothing further.
       if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
@@ -6867,12 +6874,18 @@ export class EngineStore {
         continue;
       }
       if (selection === "failed") {
-        this.failQueuedTurn(
-          sessionId,
-          queue,
-          next,
-          "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
-        );
+        // The one branch of this scan that WRITES, so it takes a queue of its
+        // own rather than editing the copy every other reader is sharing.
+        const own = this.readQueue(sessionId);
+        const failing = own.turns.find((candidate) => candidate.runId === next.runId);
+        if (failing) {
+          this.failQueuedTurn(
+            sessionId,
+            own,
+            failing,
+            "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
+          );
+        }
         continue;
       }
       candidates.push({ sessionId, acceptedAt: next.acceptedAt });
@@ -7673,6 +7686,7 @@ export class EngineStore {
     // this id from the live index. Drop it here or a worker keeps asking about
     // a session that no longer exists.
     this.liveQueueIndex?.delete(sessionId);
+    this.queueCache.delete(sessionId);
     // The journal is gone with the directory; a session recreated under this
     // id starts a new one from 1, not from where the old one stopped.
     this.journalHead.delete(sessionId);
@@ -8061,7 +8075,7 @@ export class EngineStore {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
       const claimed = new Map(
-        this.readQueue(sessionId).turns
+        this.scanQueue(sessionId).turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
           .map((turn) => [turn.runId, turn] as const),
       );
@@ -8088,7 +8102,7 @@ export class EngineStore {
   steerForWorker(workerId: string): WorkerStatus["steer"] {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
-      const queue = this.readQueue(sessionId);
+      const queue = this.scanQueue(sessionId);
       const claimed = new Map(
         queue.turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
@@ -8499,7 +8513,7 @@ export class EngineStore {
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) =>
-      this.readQueue(sessionId).turns.flatMap((turn) =>
+      this.scanQueue(sessionId).turns.flatMap((turn) =>
         turn.state === "stopped" && turn.claim?.workerId === workerId
           ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token }]
           : [],
@@ -8557,11 +8571,48 @@ export class EngineStore {
    */
   private liveQueueIndex: Set<string> | undefined;
 
+  /**
+   * THE INDEX SAYS WHICH QUEUES TO LOOK AT; THIS SAYS WHAT IS IN THEM.
+   *
+   * Narrowing the scan to the live sessions was only half the problem. Each of
+   * those queues was still fetched from sqlite, JSON-parsed and validated
+   * through zod on EVERY question — three per heartbeat, ten heartbeats a
+   * second — and a real conversation's queue is not small: on the machine that
+   * produced this, 45 live sessions held 3.3 MB over 1233 turns, so the daemon
+   * re-parsed about ten megabytes a second to conclude, every time, that
+   * nothing had changed. `readQueue` alone was 43.9% of a profile taken at
+   * rest, split between sqlite, `JSON.parse` and `TurnSchema`.
+   *
+   * VALID UNTIL `writeQueue` DROPS IT, which is sound for exactly the reason
+   * `liveQueueIndex` above is: one writer, in this process, and the store is
+   * the daemon's alone. Dropped rather than replaced on write — a caller
+   * mutates its queue in place and writes when it is done, and seeding the
+   * cache from that object would hand the next reader something the caller may
+   * still be editing. Re-reading once after a write is the cheap half.
+   */
+  private readonly queueCache = new Map<string, SessionQueue>();
+
+  /**
+   * A queue for READING ONLY — the shared parsed copy, not a caller's to edit.
+   *
+   * Every use is a scan that asks a question and keeps nothing: which sessions
+   * concern a worker, what was cancelled, answered or steered, which turn could
+   * be claimed next. Anything that intends to CHANGE a queue calls `readQueue`
+   * and gets an object of its own, so the two uses cannot be confused.
+   */
+  private scanQueue(sessionId: string): SessionQueue {
+    const cached = this.queueCache.get(sessionId);
+    if (cached) return cached;
+    const queue = this.readQueue(sessionId);
+    this.queueCache.set(sessionId, queue);
+    return queue;
+  }
+
   private liveQueueSessionIds(): Set<string> {
     if (this.liveQueueIndex) return this.liveQueueIndex;
     const index = new Set<string>();
     for (const sessionId of this.sessionIds()) {
-      if (queueConcernsAWorker(this.readQueue(sessionId))) index.add(sessionId);
+      if (queueConcernsAWorker(this.scanQueue(sessionId))) index.add(sessionId);
     }
     this.liveQueueIndex = index;
     return index;
@@ -8573,10 +8624,12 @@ export class EngineStore {
     return parseQueue(stored, sessionId);
   }
 
-  /** THE ONLY WRITER, which is what lets `liveQueueIndex` be maintained in one
-   *  place rather than at each of the thirteen transitions that call this. */
+  /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
+   *  maintained in one place rather than at each of the thirteen transitions
+   *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
+    this.queueCache.delete(sessionId);
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);

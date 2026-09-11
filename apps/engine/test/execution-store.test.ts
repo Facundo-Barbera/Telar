@@ -166,3 +166,48 @@ test("statements reused across calls still answer for the row they were asked ab
   expect(store.turns("session_three")).toHaveLength(1);
   expect(() => store.getSession("session_two")).toThrow();
 });
+
+/**
+ * THE SCAN CACHE MUST NEVER OUTLIVE THE QUEUE IT DESCRIBES.
+ *
+ * Serving an unchanged queue from memory is what takes the worker heartbeat
+ * from ten milliseconds to a tenth of one, and the only way it can be wrong is
+ * by answering with a queue that has since moved. Each of these writes a queue
+ * behind a scan that already ran and demands the new answer.
+ */
+test("a queue written after a scan is seen by the next scan", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_one");
+  // Populates the cache while there is nothing to report.
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  store.stopSession("session_one", "user");
+  expect(store.cancellationsForWorker("worker_one").map((cancel) => cancel.runId)).toEqual(["run_one"]);
+});
+
+test("a rolled-back stop is not reported to the worker that would have acted on it", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(() => store.executeCommand("broken-stop", () => {
+    store.stopSession("session_one", "user");
+    throw new Error("injected disk failure");
+  })).toThrow("injected disk failure");
+  // The transaction took the stop back, so there is nothing to cancel — and
+  // the turn is still the claimed one it was before.
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(store.turns("session_one").map((turn) => turn.state)).toEqual(["claimed"]);
+});
+
+test("a session id reused after a delete does not inherit the old queue", () => {
+  const { store } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claimTurn("session_one", "worker_one");
+  store.stopSession("session_one", "user");
+  expect(store.cancellationsForWorker("worker_one")).toHaveLength(1);
+  store.deleteSession("session_one");
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.turns("session_one")).toEqual([]);
+  expect(store.cancellationsForWorker("worker_one")).toEqual([]);
+});
