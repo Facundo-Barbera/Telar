@@ -14,6 +14,7 @@ import {
   fileReference,
   insertReference,
   issueReference,
+  noteReference,
   pageReference,
   pullReference,
   readReferenceDrag,
@@ -81,6 +82,42 @@ describe("what a reference says", () => {
     // It has no address a tool can fetch, so the reference is the transcript's
     // own words plus the part you are usually asking about.
     expect(taskReference({ id: "task_1", title: "reviewer", state: "failed" }).text).toBe('the "reviewer" sub-agent (failed)');
+  });
+});
+
+describe("project notes", () => {
+  const note = { id: "n-abc123", title: "Deploy", body: "run `bun run ship` from main" };
+
+  test("A NOTE CARRIES ITS BODY — a reference that inserted only a title is a link the model cannot follow", () => {
+    // The second and last exception in this module, earned the way the check's
+    // log is: the note lives in the engine's notebook, and there is no address
+    // an ordinary agent could dereference.
+    const reference = noteReference(note);
+    expect(reference.kind).toBe("note");
+    expect(reference.label).toBe("Deploy");
+    expect(reference.text).toBe('the "Deploy" project note (n-abc123):\n\n```note\nrun `bun run ship` from main\n```');
+  });
+
+  test("the id rides in the head line, so an agent holding notes_write can edit what it was shown", () => {
+    expect(noteReference(note).text.startsWith('the "Deploy" project note (n-abc123)')).toBe(true);
+  });
+
+  test("a note containing its own fence cannot close the block early", () => {
+    // The rule markdown itself uses: one backtick longer than the longest run
+    // inside. A note ABOUT fenced code is an ordinary note.
+    const text = noteReference({ id: "n-1", title: "Snippet", body: "```ts\nexport const a = 1;\n```" }).text;
+    expect(text).toContain("````note\n```ts\nexport const a = 1;\n```\n````");
+  });
+
+  test("an empty note is its head line and nothing else", () => {
+    // "+, type a title, come back to it" is a real state, and a fence around
+    // nothing would be noise in the middle of a sentence.
+    expect(noteReference({ id: "n-2", title: "Later", body: "   " }).text).toBe('the "Later" project note (n-2)');
+  });
+
+  test("a title's double quotes become single ones here too, for the same reason", () => {
+    // The chip pattern finds a note BY the quotes around its title.
+    expect(noteReference({ id: "n-3", title: 'The "why" file', body: "x" }).text).toContain("the \"The 'why' file\" project note (n-3)");
   });
 });
 

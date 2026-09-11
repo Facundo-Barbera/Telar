@@ -3,13 +3,14 @@ import type { TelarToolSocket } from "./telar-socket";
 import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SpoolCapability } from "./spool/tools";
 import type { SessionsCapability } from "./sessions-tools/tools";
+import type { NotesCapability } from "./notes-tools/tools";
 import type { DsCapability } from "./ds/capability";
 import type { DisplayCapability } from "./display/tools";
 import type { RunCapability } from "./run/capability";
 import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
-export type { SpoolCapability, SessionsCapability, DsCapability, DisplayCapability, LatexCapability };
+export type { SpoolCapability, SessionsCapability, NotesCapability, DsCapability, DisplayCapability, LatexCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -86,6 +87,19 @@ export type DriverRun = {
    * the design rather than a gap in it.
    */
   sessions?: SessionsCapability;
+  /**
+   * The session's door to the PROJECT'S NOTEBOOK — the quick notes the person
+   * keeps beside the code, which the composer's foot also draws.
+   *
+   * PER-RUN and SCOPED, like the spool and for the same reason: it carries
+   * `self.projectId`, so `notes_list()` with no argument means "this project"
+   * and an agent asked "what does the deploy note say?" has somewhere to look.
+   *
+   * ABSENT MEANS NO NOTES TOOLS — a project-less session, an older worker, a
+   * test. Never an empty notebook: a model told "there are no notes" would
+   * report that as the truth.
+   */
+  notes?: NotesCapability;
   /**
    * The session's kernel, notebooks and analysis tools — present only when
    * the project opted in (the claim carried `dataScience`). Per-run like the

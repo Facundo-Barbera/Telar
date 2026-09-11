@@ -50,6 +50,9 @@ import {
   type SpoolLookOutcome,
   type SpoolMcpInfo,
   type SpoolNote,
+  type ProjectNote,
+  type ProjectNoteAuthor,
+  type NotesMcpInfo,
   type SpoolSearchHit,
   type SpoolMemoryFact,
   type SpoolTerrain,
@@ -1419,6 +1422,63 @@ export class EngineClient {
    *  underneath the engine, and a stale branch name is worse than a slow one. */
   projectGit(projectId: string): Promise<{ git: GitOverview }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
+  }
+
+  /**
+   * THE PROJECT NOTEBOOK — `docs/design/project-notes.md`.
+   *
+   * Notes hang off the PROJECT, so every session on it reads the same notebook,
+   * and the composer's foot draws this list. Already ordered — pinned first,
+   * then the user's own order — so no caller re-sorts.
+   */
+  projectNotes(projectId: string): Promise<{ notes: ProjectNote[] }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/notes`);
+  }
+
+  projectNote(projectId: string, noteId: string): Promise<{ note: ProjectNote }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`);
+  }
+
+  /** A body may be empty — the gesture is "+, type a title, come back to it",
+   *  and a store that refused the half-written note would lose the title. */
+  createProjectNote(
+    projectId: string,
+    input: {
+      title: string;
+      body?: string;
+      pinned?: boolean;
+      /** Whose hand. ABSENT MEANS THE HUMAN'S ("you") — only the engine's own
+       *  tool wall declares "session", exactly as spool notes do. */
+      author?: ProjectNoteAuthor;
+    },
+  ): Promise<{ note: ProjectNote }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes`, input);
+  }
+
+  /** The author NEVER changes — the engine refuses a patch that names it, so
+   *  provenance survives every edit, as it does on the shelf. */
+  updateProjectNote(
+    projectId: string,
+    noteId: string,
+    patch: { title?: string; body?: string; pinned?: boolean; order?: number },
+  ): Promise<{ note: ProjectNote }> {
+    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`, patch);
+  }
+
+  /** A REAL DELETE, unlike the shelf's retire: a project note is a scratchpad,
+   *  and `deleted: false` means it was already gone — never an error. */
+  deleteProjectNote(projectId: string, noteId: string): Promise<{ deleted: boolean }> {
+    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`);
+  }
+
+  pinProjectNote(projectId: string, noteId: string, pinned: boolean): Promise<{ note: ProjectNote }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}/pin`, { pinned });
+  }
+
+  /** The notebook socket's connect card — what the user's OTHER app is
+   *  configured with. Its own secret, not the engine token. */
+  notesMcpInfo(): Promise<{ mcp: NotesMcpInfo }> {
+    return this.request("GET", "/v2/notes/mcp-info");
   }
 
   /**

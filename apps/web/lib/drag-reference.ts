@@ -28,7 +28,7 @@
  *  these. Vendor-prefixed and suffixed per RFC 6839. */
 export const REFERENCE_MIME = "application/x-telar-reference+json";
 
-export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check";
+export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check" | "note";
 
 export type TelarReference = {
   kind: ReferenceKind;
@@ -170,6 +170,40 @@ export function failingChecksReference(
     label: `${checks.length} failing checks`,
     text: `${checks.length} failing checks:\n\n${checks.map((check) => checkReference(check).text).join("\n\n")}`,
   };
+}
+
+/**
+ * A PROJECT NOTE, AND ITS BODY.
+ *
+ * THE SECOND REFERENCE THAT CARRIES CONTENT, and it is earned the same way a
+ * check's log is. Every address-shaped reference above works because the agent
+ * can fetch the thing itself — a path for its Read tool, an issue number for its
+ * `gh`. A note is neither: it lives in the engine's notebook, and a reference
+ * that inserted only a title would be a link the model cannot follow. So the
+ * body rides along, and "summarise the deploy note" is one drag rather than a
+ * tool call the agent has to guess it should make.
+ *
+ * INSERTED HERE RATHER THAN EXPANDED AT SUBMIT, which was the tempting version:
+ * a `@note:<id>` token the engine swapped for the body when the turn was sent.
+ * That is exactly the divergence this module's header refuses — `turn.input`
+ * would say one thing and the model would be given another — and the note is
+ * small enough that there is nothing to buy with the lie.
+ *
+ * THE ID RIDES IN THE HEAD LINE because an agent holding `notes_write` can then
+ * edit the note it was shown, which is the obvious next request ("add the
+ * staging URL to that note") and is otherwise unanswerable.
+ *
+ * A VARIABLE-LENGTH FENCE, one backtick longer than the longest run inside the
+ * body — the rule markdown itself uses. A note about fenced code is an ordinary
+ * note, and a fixed ``` would let its own fence close the block early.
+ */
+export function noteReference(note: { id: string; title: string; body: string }): TelarReference {
+  const head = `the "${safeTitle(note.title)}" project note (${note.id})`;
+  const body = note.body.trim();
+  if (!body) return { kind: "note", label: note.title, text: head };
+  const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((run) => run[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return { kind: "note", label: note.title, text: `${head}:\n\n${fence}note\n${body}\n${fence}` };
 }
 
 export function taskReference(task: { id: string; title?: string; state: string }): TelarReference {

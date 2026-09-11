@@ -6,6 +6,7 @@ import {
   directoryReference,
   fileReference,
   issueReference,
+  noteReference,
   pageReference,
   pullReference,
   taskReference,
@@ -13,7 +14,7 @@ import {
 } from "./drag-reference";
 
 /** One of every kind `drag-reference.ts` can produce. The point of the list is
- *  that it is exhaustive — a seventh kind added there fails the count below. */
+ *  that it is exhaustive — an eighth kind added there fails the count below. */
 const EVERY_KIND: Record<ReferenceKind, ReturnType<typeof fileReference>> = {
   file: fileReference("apps/engine/src/driver.ts"),
   issue: issueReference({ number: 1, title: "t", url: "https://example.test/i/1" }),
@@ -21,6 +22,7 @@ const EVERY_KIND: Record<ReferenceKind, ReturnType<typeof fileReference>> = {
   page: pageReference({ url: "https://example.test/" }),
   task: taskReference({ id: "task_a", title: "Audit", state: "completed" }),
   check: checkReference({ name: "typecheck", status: "completed", conclusion: "failure" }),
+  note: noteReference({ id: "n-abc123", title: "Deploy", body: "bun run ship" }),
 };
 
 describe("a chip can draw every reference there is", () => {
@@ -32,7 +34,7 @@ describe("a chip can draw every reference there is", () => {
       expect(glyph.markup.length, `${kind} has markup`).toBeGreaterThan(0);
       expect(glyph.tint.length, `${kind} has a tint`).toBeGreaterThan(0);
     }
-    expect(Object.keys(EVERY_KIND)).toHaveLength(6);
+    expect(Object.keys(EVERY_KIND)).toHaveLength(7);
   });
 
   test("a file asks the second question and a directory does not", () => {
