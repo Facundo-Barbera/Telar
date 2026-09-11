@@ -29,14 +29,96 @@
  * the ones React commits (below) and the ones the library observes for itself
  * (`resize`). Only growth after that — a streaming answer under a reader who
  * is already at the bottom — animates.
+ *
+ * TWO MORE THINGS THE LIBRARY CANNOT DO FOR ITSELF, added here:
+ *
+ *   • It drops its lock for reasons that are not a reader's decision, and
+ *     growth alone never restores it — see lib/scroll-follow.ts for the whole
+ *     mechanism. `ConversationFollow` undoes the escapes nobody asked for and
+ *     leaves the ones the reader performed.
+ *   • Sending a message must ALWAYS land at the end, whatever the lock says.
+ *     That one is the caller's moment rather than a rule this file could infer,
+ *     so it arrives through `followRef`.
  */
 
-import type { ComponentProps, ReactNode } from "react";
-import { useCallback, useLayoutEffect, useRef } from "react";
+import type { ComponentProps, ReactNode, Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from "react";
 import { ArrowDownIcon } from "lucide-react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { Button } from "@/components/ui/button";
+import { shouldRefollow } from "@/lib/scroll-follow";
 import { cn } from "@/lib/utils";
+
+/** What a caller can ask the scroll layer to do from outside a render. */
+export type ConversationFollowHandle = {
+  /** Put the viewport at the end and follow again, whatever the lock says. */
+  toBottom: () => void;
+};
+
+/**
+ * The gestures that mean the READER moved this viewport.
+ *
+ * Pointer events on the scroll element itself, so a mousedown in the composer
+ * or a wheel over the sidebar is not mistaken for one. `wheel` covers trackpad
+ * and mouse, `touchmove` the drag on a touchscreen, `mousedown` both the
+ * scrollbar and a text selection begun inside the transcript — the last is the
+ * one the library reads as `isSelecting()`.
+ */
+const READER_GESTURES = ["wheel", "touchmove", "mousedown"] as const;
+
+/**
+ * Undoes the escapes nobody performed.
+ *
+ * Renders nothing; it exists to be INSIDE the provider, which is the only place
+ * the scroll state can be reached from. It acts on the EDGE — the commit where
+ * `escapedFromLock` becomes true — because that is the one moment where the
+ * question is answerable: either a gesture landed a few milliseconds ago and
+ * the escape is the reader's, or none did and it is the library's own spring,
+ * wheel rebound or stale selection.
+ */
+const ConversationFollow = ({ handle }: { handle?: Ref<ConversationFollowHandle> }) => {
+  const { escapedFromLock, scrollToBottom, scrollRef, state } = useStickToBottomContext();
+  const gestureAt = useRef(Number.NEGATIVE_INFINITY);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const mark = () => {
+      gestureAt.current = performance.now();
+    };
+    for (const kind of READER_GESTURES) element.addEventListener(kind, mark, { passive: true });
+    return () => {
+      for (const kind of READER_GESTURES) element.removeEventListener(kind, mark);
+    };
+  }, [scrollRef]);
+
+  useImperativeHandle(
+    handle,
+    () => ({
+      toBottom: () => {
+        // A send is not a gesture the reader made against this viewport, and
+        // leaving the stamp behind would make the next spurious escape look
+        // like theirs. Clearing it is part of arriving at the end.
+        gestureAt.current = Number.NEGATIVE_INFINITY;
+        void scrollToBottom({ animation: "instant" });
+      },
+    }),
+    [scrollToBottom],
+  );
+
+  useEffect(() => {
+    if (!shouldRefollow({ escaped: escapedFromLock, distance: state.scrollDifference, gestureAgo: performance.now() - gestureAt.current })) {
+      return;
+    }
+    // Re-arms `isAtBottom` (useStickToBottom.js ~135-137), which is the flag
+    // the follow animation actually gates on (~153-156). `escapedFromLock` is
+    // NOT cleared by this — the library has no API for it — but nothing reads
+    // that flag except its own re-arm branch, so following resumes regardless.
+    void scrollToBottom({ animation: "instant" });
+  }, [escapedFromLock, scrollToBottom, state]);
+
+  return null;
+};
 
 /**
  * The placement rule, as a decision rather than an effect — so the sequence a
@@ -92,23 +174,29 @@ export type ConversationViewportProps = ComponentProps<typeof StickToBottom> & {
   conversation?: string;
   /** Whether `conversation`'s own transcript has arrived (or failed to). */
   landed?: boolean;
+  /** Lets a caller put the viewport back at the end on its own events —
+   *  sending a message, above all. */
+  followRef?: Ref<ConversationFollowHandle>;
 };
 
 export const ConversationViewport = ({
   className,
   conversation,
   landed = true,
+  followRef,
   children,
   ...props
 }: ConversationViewportProps) => {
-  // LAST, so its layout effect runs after the transcript's own: React flushes
-  // the layout phase in tree order, and a measurement taken before a sibling
-  // subtree has settled is a measurement of the wrong height.
+  // LAST, so their effects run after the transcript's own: React flushes each
+  // phase in tree order, and a measurement taken before a sibling subtree has
+  // settled is a measurement of the wrong height.
   const placement = conversation === undefined ? null : <ConversationPlacement at={conversation} landed={landed} />;
+  const follow = useMemo(() => <ConversationFollow {...(followRef ? { handle: followRef } : {})} />, [followRef]);
   const compose = (rendered: ReactNode) => (
     <>
       {rendered}
       {placement}
+      {follow}
     </>
   );
   return (

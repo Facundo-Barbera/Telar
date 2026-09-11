@@ -81,7 +81,7 @@ import { MainSidebarTrigger, useMainIsLeftmost } from "./main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -976,6 +976,8 @@ export function SessionCockpit({
    * reader is already sitting in. See components/ui/conversation.tsx.
    */
   const [readKey, setReadKey] = useState<string>();
+  /** The transcript's scroll layer, reachable from `submit`. */
+  const follow = useRef<ConversationFollowHandle>(null);
   const [sending, setSending] = useState(false);
   /**
    * The panel's open tabs, and whether the panel itself is showing.
@@ -1896,6 +1898,18 @@ export function SessionCockpit({
     const runId = draftRunId ?? newRunId();
     setDraftRunId(runId);
     setSending(true);
+    /**
+     * SENDING ALWAYS GOES TO THE END, whatever the scroll layer believed.
+     *
+     * Before the bubble exists, not after: the reply arrives by hydrate or by
+     * poll, and this only has to re-arm following so that the growth carrying
+     * it is followed. Unconditional on purpose — you wrote the message, so it
+     * is the thing you want to be looking at, and a reader who had scrolled up
+     * to quote something would otherwise send into a transcript that never
+     * moves. See lib/scroll-follow.ts for why the lock can be dropped without
+     * anyone asking.
+     */
+    follow.current?.toBottom();
     // Cleared OPTIMISTICALLY and before the round trip: the box emptying is the
     // acknowledgement, and waiting on the network to give it back is the thing
     // that makes queueing feel like a form submission.
@@ -2305,7 +2319,7 @@ export function SessionCockpit({
         />
         {/* `display: contents` — a click boundary, never a layout box. */}
         <div className="contents" onClickCapture={onConversationClick}>
-        <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded}>
+        <ConversationViewport className="min-w-0 flex-1" conversation={syncKey} landed={transcriptLanded} followRef={follow}>
           <ConversationContent>
             {projectId !== session?.projectId && session && (
               <Alert variant="destructive" className="mx-auto max-w-[50rem]">

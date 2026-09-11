@@ -36,7 +36,7 @@
  * list of front doors, which is CAP-1's whole point. The master is ensured, not
  * created: every arrival returns the same session.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2Icon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import type { EngineRequest, RequestDecision, Session, SpoolMcpInfo, Turn } from "@telar/engine-client";
 import { createEngineApi, newRunId } from "@/lib/engine/client";
@@ -55,7 +55,7 @@ async function tailSession(_api: unknown, id: string, after: number) {
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/composer";
 import { SessionTurn } from "@/components/session-cockpit";
@@ -221,6 +221,8 @@ export function MasterChat({
   const [cursor, setCursor] = useState(0);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  /** The transcript's scroll layer, reachable from `send`. */
+  const follow = useRef<ConversationFollowHandle>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   /**
@@ -367,6 +369,9 @@ export function MasterChat({
     (text: string, fromDraft: boolean) => {
       if (!text || !session) return;
       setSending(true);
+      // Sending always goes to the end — the same rule the cockpit's composer
+      // follows, and for the same reason (lib/scroll-follow.ts).
+      follow.current?.toBottom();
       void (async () => {
         try {
           await api.submitTurn(session.id, { runId: newRunId(), input: context ? `${context}\n${text}` : text });
@@ -520,7 +525,7 @@ export function MasterChat({
           )}
         </div>
 
-        <ConversationViewport className="min-h-0 flex-1">
+        <ConversationViewport className="min-h-0 flex-1" followRef={follow}>
           {/* The default gap-8 between turns stands — the transcript's rhythm
               needs the air; only the horizontal padding is narrowed. ROOM
               ADDS `min-h-full justify-end`: the content div sits inside the
