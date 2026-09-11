@@ -197,6 +197,19 @@ struct SessionView: View {
                 followTail()
             }
             .onChange(of: contentFingerprint) { followTail() }
+            // AND AS THE REVEAL PAINTS IT, not only as it arrives.
+            // `contentFingerprint` counts the RAW `streamedText`, so it moves
+            // when a poll lands — before the pacer has drawn a character of it.
+            // The height then grows for about a second with nothing re-pinning,
+            // and the last chunk of a reply has no arrival after it to correct
+            // the drift. Height is the signal that matches what the reader
+            // sees; re-pinning moves the offset, never the height, so this
+            // cannot feed itself.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height
+            } action: { _, _ in
+                followTail()
+            }
             .overlay(alignment: .bottomTrailing) {
                 jumpToBottomButton()
                     .opacity(showsJumpButton ? 1 : 0)
@@ -345,12 +358,23 @@ struct SessionView: View {
     }
 
 
-    /// Re-pin to the tail, unless the reader has taken the scroll — scrolled
-    /// away means scrolled away, and nothing here yanks them back.
+    /// Re-pin to the tail, unless the reader has scrolled away and stayed
+    /// away — scrolled away means scrolled away, and nothing here yanks them
+    /// back. Coming back to the end re-arms it; see `TranscriptFollow` for why
+    /// that second half had to exist.
+    private func followTail() {
+        guard TranscriptFollow.shouldFollow(takenByReader: position.isPositionedByUser, atBottom: isAtBottom) else { return }
+        pinToTail()
+    }
+
+    /// The tail, unconditionally — for the moments that ARE the reader asking
+    /// for the end rather than content arriving on its own.
+    ///
     /// No animation: following should read as content growing under a fixed
     /// viewport, and an animation per delta is what made it visibly pump.
-    private func followTail() {
-        guard !position.isPositionedByUser else { return }
+    /// Setting the position also clears `isPositionedByUser`, which is how a
+    /// reader who scrolled earlier gets their follow back.
+    private func pinToTail() {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
