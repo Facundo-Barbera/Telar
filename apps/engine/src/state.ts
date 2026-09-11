@@ -228,6 +228,7 @@ import { searchSpool } from "./spool/search";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { commitSessionWork, gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
+import { agentNotice } from "./agent-notice";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -6243,6 +6244,9 @@ export class EngineStore {
       agentIntent?: Turn["agentIntent"];
       agentDelivery?: Turn["agentDelivery"];
       agentSourceRunId?: string;
+      /** The short line the MODEL reads in place of `input` — minted by
+       *  `submitAgentTurn` and by nothing else. See `Turn.agentNotice`. */
+      agentNotice?: string;
       assignmentScope?: string;
       origin?: "session";
       wakeReason?: WakeReason;
@@ -6343,6 +6347,7 @@ export class EngineStore {
       ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+      ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
       ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
       ...(passive ? { completedAt: at, resultText: "" } : {}),
       state: passive ? "completed" : "queued",
@@ -6545,14 +6550,36 @@ export class EngineStore {
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
       : undefined;
     const delivery = intent === "task" || intent === "blocker" || waiting ? "wake" : "passive";
+    /**
+     * THE NOTICE IS MINTED HERE, ONCE, AND STORED — see `agent-notice.ts`.
+     *
+     * Here rather than in a driver or a client because this is the only place
+     * that knows all of it at once: the recipient (so the fetch call can name
+     * the session whose turn holds the body), the run id being created, the
+     * proven sender, and the intent the delivery was decided from. And STORED
+     * rather than derived on read because a turn's presentation must not depend
+     * on which reader computed it — the provider prompt, the desktop row, the
+     * phone and a later `sessions_read` all quote this same string.
+     *
+     * MINTED FOR EVERY INTENT, including the passive ones that never reach a
+     * model: the transcript row collapses to this line whatever the delivery
+     * was, and a report whose row had to invent its own summary would be the
+     * per-reader drift this field exists to prevent.
+     */
+    const scope = intent === "task" ? input.scope : undefined;
     const result = this.submitTurn(sessionId, {
       runId: input.runId, input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
       ...(proof ? { agentSourceRunId: proof.runId } : {}),
+      agentNotice: agentNotice({
+        recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
+        ...(sender.sessionId ? { sender } : {}),
+        ...(scope ? { scope } : {}),
+      }),
       // Only a TASK carries a scope. A report that named one would read as an
       // assignment in every surface that folds these turns.
-      ...(intent === "task" && input.scope ? { assignmentScope: input.scope } : {}),
+      ...(scope ? { assignmentScope: scope } : {}),
     });
     if (!result.replayed && waiting?.once) {
       this.writeSubscriptions(this.readSubscriptions().filter((sub) => sub.id !== waiting.id));
@@ -8112,6 +8139,11 @@ export class EngineStore {
             // And so does WHO SAID THEM: an agent's message steered into a
             // running turn used to reach the provider as the person's own.
             ...(turn.origin === "session" && turn.sender ? { sender: turn.sender } : {}),
+            // AND THE NOTICE RIDES WITH THE SENDER. Without it a peer's message
+            // would be short when the recipient was idle and full-size when it
+            // was mid-turn — the same message costing different amounts by an
+            // accident of timing.
+            ...(turn.origin === "session" && turn.sender && turn.agentNotice ? { notice: turn.agentNotice } : {}),
             // A WAKE KEEPS ITS IDENTITY THROUGH THE PROMOTION. `submitTurn`
             // steers whatever it accepts when a turn is running, and a wake is
             // accepted the same way — so the engine's own announcement about a

@@ -553,6 +553,7 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
 function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?: OpenTab }) {
   const attachments = item.detail.type === "user_message" ? item.detail.attachments : undefined;
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
+  const notice = item.detail.type === "user_message" ? item.detail.notice : undefined;
   const wakeReason = item.detail.type === "user_message" ? item.detail.wakeReason : undefined;
   // A WAKE IS NOBODY'S BUBBLE. The engine wrote it because a subscribed
   // session did something; the person did not type it and no agent sent it.
@@ -563,7 +564,7 @@ function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?:
   if (wakeReason) return <SteeredWakeRow item={item} reason={wakeReason} />;
   // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE — the same dashed, labelled
   // shape the cockpit gives an agent-sent turn, so the two read alike.
-  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
+  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(notice ? { notice } : {})} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
   return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
 }
 

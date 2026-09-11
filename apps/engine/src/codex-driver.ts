@@ -839,6 +839,9 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                         text: message.text,
                         ...(files.length > 0 ? { attachments: files } : {}),
                         ...(message.sender ? { sender: message.sender } : {}),
+                        // Body in `text`, the engine's one-line notice beside
+                        // it — the same pair the Claude seam emits.
+                        ...(message.notice ? { notice: message.notice } : {}),
                         ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
                       },
                       title: steerRowTitle(message),
