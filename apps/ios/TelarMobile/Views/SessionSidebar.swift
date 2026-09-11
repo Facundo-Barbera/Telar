@@ -42,7 +42,13 @@ struct SessionSidebar: View {
                 // asked, so every row in it is equally relevant and density
                 // beats detail — the desktop's rule, same reason.
                 ForEach(all.filter(matches)) { row in sessionRow(row, variant: .slim) }
-                if all.filter(matches).isEmpty { Text("No matching sessions").foregroundStyle(Theme.textMuted) }
+                // THE DESKTOP'S WORDS, because a reader who has both open
+                // should not have to work out that two different sentences are
+                // the same answer (`SidebarEmpty`, app-sidebar.tsx). The detail
+                // line is the part that earns its space: it says what to try.
+                if all.filter(matches).isEmpty {
+                    ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
+                }
             } else {
                 ForEach(MobileDrafts.shared.drafts.filter { draft in
                     settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
@@ -54,9 +60,27 @@ struct SessionSidebar: View {
                         Button("Discard draft", role: .destructive) { MobileDrafts.shared.remove(host: draft.hostId, project: draft.project.id) }
                     }
                 }
-                if !model.attention.filter(matches).isEmpty {
-                    Section("Needs you") {
-                        ForEach(model.attention.filter(matches)) { row in sessionRow(row) }
+                let attention = model.attention.filter(matches)
+                if !attention.isEmpty {
+                    Section {
+                        ForEach(attention) { row in sessionRow(row) }
+                    } header: {
+                        // NOT `Section("Needs you")`. A plain string header is
+                        // the system's generic caption, and this is the one
+                        // band on the rail that is ASKING FOR SOMETHING — the
+                        // desktop gives it a dot and a count for exactly that
+                        // reason (app-sidebar.tsx). The dot says "this band is
+                        // different" before the word is read, and the count
+                        // says how much of it there is without opening it.
+                        HStack(spacing: 6) {
+                            Circle().fill(Theme.statusRed).frame(width: 6, height: 6)
+                            Text("Needs you")
+                            Spacer(minLength: 4)
+                            Text("\(attention.count)").monospacedDigit()
+                        }
+                        .bandCaption()
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Needs you, \(attention.count)")
                     }
                 }
                 if !model.pinned.filter(matches).isEmpty {
@@ -80,14 +104,47 @@ struct SessionSidebar: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
+                                    .font(.caption).foregroundStyle(Theme.textMuted)
                                 ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, icon: group.icon, api: settings.api(for: group.hostId), size: 16)
-                                Text(group.name)
-                                Spacer()
-                                if settings.hosts.count > 1 { Text(hostName(group.hostId)).font(.caption2) }
-                            }.foregroundStyle(Theme.textMuted)
+                                // A HEADER IS A HEADER BY ITS WEIGHT. In
+                                // `textMuted` at body size this named the
+                                // project more quietly than the rows it was
+                                // heading, so a group read as a list with a
+                                // label rather than as a project with its
+                                // conversations under it. The desktop's ratio
+                                // (project-group.tsx) is the row's own size at
+                                // semibold, near-full strength.
+                                Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
+                                    .lineLimit(1).truncationMode(.tail)
+                                if settings.hosts.count > 1 {
+                                    Text(hostName(group.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                        .lineLimit(1).padding(.horizontal, 4)
+                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                }
+                                Spacer(minLength: 4)
+                                // HOW MANY ARE IN HERE, which a collapsed group
+                                // otherwise cannot say at all — and which an
+                                // open one still answers without counting rows.
+                                Text("\(group.sessions.count)").font(Theme.metaSmall).foregroundStyle(Theme.textMuted).monospacedDigit()
+                            }
                         }
-                        .accessibilityLabel("\(group.name), \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
+                        .accessibilityLabel("\(group.name), \(group.sessions.count) shown, \(collapsed.contains(group.id) ? "collapsed" : "expanded")")
                         .contextMenu {
+                            // THE DESKTOP'S HOVER "+", WHICH TOUCH HAS NO ROOM
+                            // FOR. A pointer can reveal a control on approach
+                            // and give the space back; a finger cannot hover,
+                            // so a permanent button would cost every header a
+                            // slot to serve the rare press. The long-press menu
+                            // is where this platform already keeps a row's
+                            // secondary verbs, so it goes there — the
+                            // affordance differs because the input does, the
+                            // action is the same one.
+                            Button("New conversation", systemImage: "square.and.pencil") {
+                                resumeDraft(MobileDraft(hostId: group.hostId,
+                                                        project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
+                                                        prompt: "", title: ""))
+                            }
+                            Divider()
                             Button("Move project up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
                             Button("Move project down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
                         }
@@ -177,10 +234,34 @@ struct SessionSidebar: View {
                 } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
             }
         }
+        // AN ICON ROW, NOT A SENTENCE. The desktop's footer
+        // (app-sidebar-footer.tsx) is a row of muted glyphs on the left, and
+        // that is the right shape for a destination you reach twice a week: a
+        // full-width tinted "Settings" was the loudest thing on the rail,
+        // reading as the sidebar's primary action directly beneath the work
+        // that actually is.
+        //
+        // ONE GLYPH, BECAUSE THERE IS ONE PAGE. The desktop puts Usage beside
+        // it; the phone has no usage screen to open, and a disabled or absent
+        // twin would be chrome. The desktop's update control has no counterpart
+        // either — this app updates through TestFlight, which is the App
+        // Store's job and not a button's.
+        //
+        // The glyph keeps the web's size and the tap target does not: 32pt is a
+        // mouse target, and a finger is owed the full 44.
         .safeAreaInset(edge: .bottom) {
-            Button(action: openSettings) {
-                Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity, alignment: .leading).padding()
-            }.keyboardShortcut(",", modifiers: .command).background(Theme.sheet)
+            HStack(spacing: 0) {
+                Button(action: openSettings) {
+                    Image(systemName: "gearshape").font(.system(size: 17))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .accessibilityLabel("Settings")
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.textMuted)
+            .padding(.horizontal, 8)
+            .background(Theme.sheet)
         }
         .refreshable { await inbox.refresh(); await loadOrders() }
         .task {
@@ -229,6 +310,24 @@ struct SessionSidebar: View {
                 }
             }
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
+            // THREE WEIGHTS, NOT TWO, AND THE THIRD IS THE ONE THAT MATTERS —
+            // the desktop's rule (session-row.tsx), ported because the phone
+            // had only the two. Card versus slim separates live from history;
+            // inside the live band a session that is WORKING or WAITING ON YOU
+            // is not the same as one that merely happens to be recent. A
+            // hairline in the status colour on the leading edge reads down a
+            // column of twenty rows without adding a pixel of height, and it
+            // reuses the colour the status slot already established rather than
+            // inventing a second language for the same fact.
+            //
+            // It rides OUTSIDE the content, in the cell's own leading inset, so
+            // that it cannot push the row's text sideways: a bar that moved the
+            // title would make a row jump every time its turn started.
+            .overlay(alignment: .leading) {
+                if variant == .card, let tone = accentTone(row.session) {
+                    Capsule().fill(tone).frame(width: 2).padding(.vertical, 2).offset(x: -8)
+                }
+            }
         }
         // MAIL'S GRAMMAR: the leading edge is the one-tap toggle you reach
         // for most (pin), the trailing edge is where a row LEAVES the list
@@ -366,8 +465,13 @@ struct SessionSidebar: View {
                 // important" on the one row that is asking to be opened. An
                 // unread row keeps its full weight, so the dot and the title
                 // agree.
+                // The desktop dims a resting slim title to 70% and restores it
+                // on hover; 85% was a hedge against having no hover to restore
+                // it with, and what it actually cost was the DIFFERENCE — at
+                // 85% a slim row and a card's title read as the same weight, so
+                // the two volumes stopped being two.
                 .font(Settling.showsUnreadMark(row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
-                .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.85))
+                .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.7))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             statusSlot(row.session)
@@ -392,6 +496,21 @@ struct SessionSidebar: View {
         if Settling.showsUnreadMark(session) {
             Circle().fill(Theme.accent).frame(width: 6, height: 6)
                 .accessibilityLabel("Unread answer")
+        }
+    }
+
+    /// THE LEADING HAIRLINE'S COLOUR, or nothing when the row is at rest.
+    ///
+    /// The bands are the desktop's `activityBadge` (lib/session-activity.ts)
+    /// exactly: a row wears the bar when it has a badge to wear, so an idle
+    /// row — which shows an age rather than a status — has none. Blocked takes
+    /// the attention tone and everything live takes the accent, which is the
+    /// same pairing the status slot already uses two lines below.
+    private func accentTone(_ session: Session) -> Color? {
+        switch session.activity {
+        case .blocked: return Theme.statusAmber
+        case .working, .queued, .monitoring: return Theme.accent
+        case .idle: return nil
         }
     }
 
@@ -468,12 +587,26 @@ struct SessionSidebar: View {
                     if filtered.count > settledLimit { Button("Show more") { settledLimit += 25 } }
                 }
             } header: {
+                // THE DESKTOP'S `BandRule` (app-sidebar.tsx): chevron, the
+                // band's name as a CAPTION, a hairline that runs out to the
+                // count. The line is the point — a shelf divides what is above
+                // it from what it holds, and sentence-case text with a gap
+                // where the rule should be was the same control drawn as a
+                // plain row. The rule is drawn rather than left to the list's
+                // own separator because a section header in an inset-grouped
+                // list sits OUTSIDE the card, on the page, where the list draws
+                // no separator at all.
                 Button { open.wrappedValue.toggle() } label: {
-                    HStack {
+                    HStack(spacing: 6) {
                         Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
-                        Text(name); Spacer(); Text("\(filtered.count)").monospacedDigit()
+                            .font(.caption)
+                        Text(name)
+                        Rectangle().fill(Theme.border).frame(height: 1).accessibilityHidden(true)
+                        Text("\(filtered.count)").monospacedDigit()
                     }
-                }.foregroundStyle(Theme.textMuted)
+                    .bandCaption()
+                }
+                .accessibilityLabel("\(name), \(filtered.count), \(open.wrappedValue ? "expanded" : "collapsed")")
             }
         }
     }

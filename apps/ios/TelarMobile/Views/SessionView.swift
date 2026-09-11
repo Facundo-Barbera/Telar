@@ -6,7 +6,7 @@ struct SessionView: View {
     @State private var draft = ""
     /// The composer's focus, held here so the transcript can drop it — see
     /// the ScrollView below and `ComposerView.focus`.
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var renaming = false
     @State private var renameDraft = ""
     /// The right panel: which tab, which files, whether it is showing.
@@ -262,6 +262,14 @@ struct SessionView: View {
             // Buttons, links and long-presses inside the transcript still win;
             // this catches only the tap nothing else wanted.
             .scrollDismissesKeyboard(.immediately)
+            // AND THE SCROLL HALF, SAID OURSELVES. `.scrollDismissesKeyboard`
+            // works through SwiftUI's own focus, and the composer's field is a
+            // `UITextView` — outside that system, so the modifier alone scrolled
+            // the transcript with the keyboard still standing. `.interacting` is
+            // the finger on the glass, which is what `.immediately` means.
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting, composerFocused { composerFocused = false }
+            }
             .onTapGesture { composerFocused = false }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height
@@ -722,10 +730,14 @@ struct StatusCard<Content: View>: View {
 struct ComposerView: View {
     @Binding var draft: String
     /// FOCUS LIVES A STRUCT UP. The transcript is what puts the keyboard away
-    /// (a tap on it, or a scroll), and it cannot reach a `@FocusState` that is
-    /// private here — so the session owns the flag and the composer binds to
-    /// it. Reads keep the old name below; writes go through the binding.
-    let focus: FocusState<Bool>.Binding
+    /// (a tap on it, or a scroll), and it cannot reach a flag that is private
+    /// here — so the session owns it and the composer binds to it. Reads keep
+    /// the old name below; writes go through the binding.
+    ///
+    /// PLAIN STATE, NOT `@FocusState`: the field is a `UITextView` now, and
+    /// SwiftUI's focus system has no view of its own to move focus to. The
+    /// field mirrors its first-responder state into this flag instead.
+    let focus: Binding<Bool>
     let store: SessionStore
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
@@ -800,14 +812,17 @@ struct ComposerView: View {
             // its last line. Bottom-aligning a 36pt field against a 44pt
             // button at rest was the placeholder sitting low in the pill.
             HStack(alignment: focused ? .bottom : .center, spacing: 8) {
-                TextField("Ask the agent, or run a command…", text: $draft, axis: .vertical)
-                    .font(.system(size: 16))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(focused ? 7 : 1)
-                    .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
-                    .padding(.vertical, focused ? 8 : 0)
-                    .focused(focus)
-                    .onSubmit { submit() }
+                // A UIKit field, so that the system's own Paste offers a
+                // picture at all — see ComposerTextView.
+                ComposerTextView(
+                    text: $draft,
+                    placeholder: "Ask the agent, or run a command…",
+                    focused: focus,
+                    maxLines: focused ? 7 : 1,
+                    onPaste: { intake($0) }
+                )
+                .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
+                .padding(.vertical, focused ? 8 : 0)
                 if !focused {
                     if !store.pendingAttachments.isEmpty {
                         Text("+\(store.pendingAttachments.count)")
@@ -829,6 +844,11 @@ struct ComposerView: View {
         .padding(.vertical, focused ? 12 : 5)
         .composerGlass(cornerRadius: focused ? 20 : 27)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
+        // THE WHOLE PILL IS THE TARGET, its margins included. The glass used
+        // to make the padding hit-testable as a side effect of wrapping the
+        // box; behind it, a tap beside the text would fall through to the
+        // transcript — which dismisses the keyboard.
+        .contentShape(RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous))
         .onTapGesture { focus.wrappedValue = true }
         // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
         // hands something over. `.onDrop` rather than `.dropDestination`: a
@@ -909,9 +929,9 @@ struct ComposerView: View {
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
-                    // A SCREENSHOT ON THE CLIPBOARD, without a round trip
-                    // through Photos. Same intake as a drop.
-                    ComposerPasteButton { providers in intake(providers) }
+                    // NO PASTE CONTROL HERE ANY MORE. A screenshot on the
+                    // clipboard goes in through the field's own Paste, which
+                    // is where a person looks for it.
                     // THE STASH sits beside the attach button because that
                     // cluster is already "things that go into this message".
                     StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -1182,7 +1202,15 @@ extension View {
         // and its builds fall to the opaque surface everywhere.
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            self.glassEffect(.regular.interactive(), in: shape)
+            // BEHIND THE PILL, NOT AROUND IT. `glassEffect` applied to the
+            // composer swallowed every touch bound for the field inside it —
+            // tapping the box did nothing at all, no caret and no keyboard.
+            // SwiftUI's own controls are routed through the glass; a
+            // `UIViewRepresentable` is not, and the field is one now. As a
+            // background that answers no touches it draws the same material
+            // and the pill takes taps again. (`.interactive()` is gone with
+            // it: a layer nothing can touch cannot respond to being touched.)
+            self.background { Color.clear.glassEffect(.regular, in: shape).allowsHitTesting(false) }
         } else {
             self.background(Theme.composerSurface)
                 .clipShape(shape)

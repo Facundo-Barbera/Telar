@@ -61,21 +61,3 @@ struct AttachmentChip: View {
         .accessibilityLabel(name)
     }
 }
-
-/// The paste control, in the composer's own vocabulary. NOT `.onPasteCommand`:
-/// that modifier is macOS-only, so on iOS there is nothing to hang a Cmd-V off
-/// for a field whose own paste handles text. `PasteButton` is the system's
-/// answer — one tap, no pasteboard read until the person asks for one, and the
-/// same `NSItemProvider` list a drop delivers, so both go through one path.
-struct ComposerPasteButton: View {
-    let onPaste: ([NSItemProvider]) -> Void
-
-    var body: some View {
-        PasteButton(supportedContentTypes: ComposerIntake.accepted, payloadAction: onPaste)
-            .labelStyle(.iconOnly)
-            .buttonBorderShape(.circle)
-            .tint(Theme.subtle)
-            .frame(width: 44, height: 44)
-            .accessibilityLabel("Paste an image or file")
-    }
-}

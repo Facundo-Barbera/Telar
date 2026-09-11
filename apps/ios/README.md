@@ -104,6 +104,24 @@ text drafts first. Search includes every session shelf. Mac and project filters
 narrow the list; a session retains its host-qualified identity throughout
 navigation, notification taps, and local Live Activity links.
 
+Each band announces itself the way the desktop's does. **Needs you** wears a
+dot, the small uppercase caption and its count; **Snoozed** and **Settled** are
+the desktop's `BandRule` — chevron, caption, a hairline out to the count. A
+project's header carries its avatar, its name at header weight, its Mac when
+there is more than one, and the number of rows it is showing; its long-press
+menu starts a conversation in that project (the desktop reveals a `+` on
+hover, which touch has no equivalent for) alongside Move up/down. A card in a
+live band wears a hairline on its leading edge in the status colour — amber
+when it is waiting on you, accent while it works. The footer is a muted gear,
+not a full-width button; there is no Usage page on the phone and no update
+control, because this app updates through TestFlight.
+
+Two things deliberately differ from the desktop. The title is **large** at both
+widths, so the search field lands in a navigation-bar drawer under it rather
+than collapsing into the bar beside the toolbar buttons. And a slim row's
+project mark keeps its colour at rest: the desktop desaturates it and restores
+it on hover, and touch has no hover to restore it with.
+
 Project ordering reads and writes each Mac's `/api/sidebar-layout` document.
 Drag a project onto another project on the same Mac, or use its context menu's
 Move up/down actions. Hidden project keys are preserved. Cross-Mac global

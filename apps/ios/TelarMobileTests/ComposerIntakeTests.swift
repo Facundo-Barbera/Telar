@@ -31,6 +31,49 @@ import UniformTypeIdentifiers
         #expect(ComposerIntake.best(of: ["not.a.real.type", "public.png"]) == .png)
     }
 
+    // MARK: what the field's own paste hands over
+
+    @Test func aClipboardImageIsAnAttachmentRatherThanText() {
+        // The whole point: the field's Paste must offer the picture, which it
+        // only does once something says the clipboard is worth taking.
+        #expect(ComposerIntake.isAttachment(["public.png"]))
+        #expect(ComposerIntake.isAttachment(["public.jpeg"]))
+        // Safari copies a picture AND its text in one item; the picture wins.
+        #expect(ComposerIntake.isAttachment(["public.png", "public.utf8-plain-text"]))
+    }
+
+    @Test func textIsLeftToTheFieldThatIsAlreadyGoodAtIt() {
+        #expect(ComposerIntake.isAttachment(["public.utf8-plain-text"]) == false)
+        #expect(ComposerIntake.isAttachment(["public.plain-text"]) == false)
+        // Rich text and markup are still text: pasting a copied paragraph
+        // must type it out, not attach an .rtf.
+        #expect(ComposerIntake.isAttachment(["public.rtf"]) == false)
+        #expect(ComposerIntake.isAttachment(["public.html"]) == false)
+        #expect(ComposerIntake.isAttachment([]) == false)
+    }
+
+    @Test func aLinkIsTextButAFileIsAFile() {
+        // A copied link pastes as its address; a file URL is a file even
+        // though it is also a URL, which is why it is asked about first.
+        #expect(ComposerIntake.isAttachment(["public.url"]) == false)
+        #expect(ComposerIntake.isAttachment(["public.url", "public.utf8-plain-text"]) == false)
+        #expect(ComposerIntake.isAttachment(["public.file-url"]))
+    }
+
+    @Test func documentsAndMediaGoInTheStrip() {
+        #expect(ComposerIntake.isAttachment(["com.adobe.pdf"]))
+        #expect(ComposerIntake.isAttachment(["public.movie"]))
+        #expect(ComposerIntake.isAttachment(["public.mp3"]))
+    }
+
+    @Test func oneAttachableItemIsEnoughToOfferPaste() {
+        // An image-only clipboard is the case that had no Paste at all.
+        #expect(ComposerIntake.hasAttachment(in: [["public.png"]]))
+        #expect(ComposerIntake.hasAttachment(in: [["public.utf8-plain-text"], ["public.png"]]))
+        #expect(ComposerIntake.hasAttachment(in: [["public.utf8-plain-text"]]) == false)
+        #expect(ComposerIntake.hasAttachment(in: []) == false)
+    }
+
     // MARK: what the engine is told
 
     @Test func theMediaTypeComesFromTheSystemWhereverItKnowsOne() {
