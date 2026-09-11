@@ -126,7 +126,7 @@ export function OpenWorkspaceButton({
         // popover says why.
         <PopoverTrigger
           render={
-            <Button type="button" variant="ghost" size="icon-sm" aria-label="Open workspace" title={blocker}>
+            <Button type="button" variant="outline" size="icon-sm" aria-label="Open workspace" title={blocker}>
               <ExternalLinkIcon />
             </Button>
           }
@@ -135,20 +135,28 @@ export function OpenWorkspaceButton({
         <ButtonGroup>
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
             size="sm"
             // Only a machine with no editor at all reaches the second branch;
             // there is nothing to name, so this half shows the list.
             onClick={primary ? () => act(primary) : () => setOpen(true)}
             title={primary ? `${primaryLabel} — ${path}` : "Open this session's folder"}
+            // THE MARK NAMES THE APP; THE WORD NAMES THE VERB. Spelling both out
+            // ("Open in Visual Studio Code") says the app twice — once in the
+            // logo everyone recognises and once in a phrase wide enough to eat
+            // the session title beside it, since the title is what gives up
+            // width in this header. So the half is compact and the full promise
+            // lives where there is room for it: the tooltip, the menu row, and
+            // the accessible name, which is the one place the logo says nothing.
+            aria-label={primary ? primaryLabel : "Open this session's folder"}
           >
             <OpenerIcon icon={primary?.icon} />
-            <span className="max-w-40 truncate">{primaryLabel}</span>
+            <span>Open</span>
           </Button>
           <ButtonGroupSeparator />
           <PopoverTrigger
             render={
-              <Button type="button" variant="ghost" size="icon-sm" aria-label="Choose an app to open this folder with">
+              <Button type="button" variant="outline" size="icon-sm" aria-label="Choose an app to open this folder with">
                 <ChevronDownIcon />
               </Button>
             }
