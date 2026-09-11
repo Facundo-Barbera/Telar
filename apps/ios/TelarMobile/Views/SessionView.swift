@@ -151,7 +151,9 @@ struct SessionView: View {
                     Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
                     Spacer()
                     Text(session.workspace.branch ?? session.driver).lineLimit(1)
-                }.font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
+                }
+                .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
+                .readingColumn(gutter: Theme.readingGutter)
             }
             if let previousVisit, !dismissedRecap,
                let ended = store.sync.session?.lastTurnEndedAt, ended > previousVisit {
@@ -166,7 +168,21 @@ struct SessionView: View {
                     }
                     Spacer(minLength: 0)
                     Button("Dismiss", systemImage: "xmark") { dismissedRecap = true }.labelStyle(.iconOnly)
-                }.padding().background(Theme.messageSurface)
+                }
+                .padding()
+                .background(Theme.messageSurface)
+                // A CARD, INSET, LIKE EVERY OTHER FILLED ROW HERE. The banner
+                // had no container at all, so its fill ran the full width of
+                // the detail while the transcript and the composer were both
+                // inset — on an iPad in landscape with the panel open it
+                // reached from the detail's leading edge, under the floating
+                // sidebar, all the way to the panel. The radius is the one
+                // `StatusCard` uses above the composer.
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("Recap banner")
+                .padding(.horizontal, 16)
+                .readingColumn(gutter: Theme.readingGutter)
             }
             ScrollView {
                 VStack(spacing: 0) {
@@ -186,8 +202,7 @@ struct SessionView: View {
                     // narrower, and on an iPad the column would otherwise
                     // run the full width of the detail pane.
                     TranscriptView(turns: visibleTurns)
-                        .frame(maxWidth: Theme.readingMeasure)
-                        .frame(maxWidth: .infinity)
+                        .readingColumn()
                         .padding(.vertical, 12)
                 }
             }
@@ -418,8 +433,7 @@ struct SessionView: View {
             ComposerView(draft: $draft, store: store)
         }
         .padding(.horizontal, 16)
-        .frame(maxWidth: Theme.readingMeasure + 32)
-        .frame(maxWidth: .infinity)
+        .readingColumn(gutter: Theme.readingGutter)
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(alignment: .bottom) { ComposerScrim() }

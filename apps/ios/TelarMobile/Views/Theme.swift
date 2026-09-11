@@ -41,6 +41,9 @@ enum Theme {
     /// The transcript and composer lane, in points. About 70 characters of
     /// body text per line — the web's 50rem measure at its smaller type.
     static let readingMeasure: CGFloat = 680
+    /// The gutter the composer's lane adds around that measure, so a pill's
+    /// edges sit outside the text it holds rather than on it.
+    static let readingGutter: CGFloat = 32
     static let body = Font.system(.body)
     static let bodyMedium = Font.system(.body, weight: .medium)
     static let rowTitle = Font.system(.subheadline, weight: .medium)
@@ -78,5 +81,21 @@ struct SteppedPulseDot: View {
                     .opacity(Int(context.date.timeIntervalSinceReferenceDate) % 2 == 0 ? 1 : 0.5)
             }
         }
+    }
+}
+
+extension View {
+    /// THE COLUMN THE CONVERSATION LIVES IN — one definition, so every row at
+    /// the top level of a session lands on the same two edges.
+    ///
+    /// The banner did not have it. Its fill therefore ran the whole detail
+    /// view, and on an iPad in landscape with the panel open the sidebar is an
+    /// OVERLAY over a full-width detail: the banner drew underneath it and
+    /// showed at the screen's left edge, beside a transcript that was properly
+    /// inset. A row with no background hid the same mistake.
+    func readingColumn(gutter: CGFloat = 0) -> some View {
+        self
+            .frame(maxWidth: Theme.readingMeasure + gutter)
+            .frame(maxWidth: .infinity)
     }
 }

@@ -179,3 +179,53 @@ extension NavigationUITests {
         screenshot.name = name; screenshot.lifetime = .keepAlways; add(screenshot)
     }
 }
+
+extension NavigationUITests {
+    /// EVERY ROW AT THE TOP OF A SESSION SHARES ONE COLUMN. The recap banner
+    /// did not: it had no reading-measure container, so its filled background
+    /// ran wider than the conversation under it — most visibly on an iPad in
+    /// landscape with the panel open, where the banner reached the panel's
+    /// edge while the transcript stopped well short of it.
+    ///
+    /// Measured against the composer, which is the same column by definition.
+    func testTheRecapBannerKeepsTheConversationColumn() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "done",
+            // A visit older than the fixture's last turn is what raises the
+            // banner at all. The preview host's id is fixed.
+            "-telar.lastVisit.11111111-1111-1111-1111-111111111111.done", "1",
+        ]
+        app.launch()
+        let composer = app.textFields["Ask the agent, or run a command…"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Since your last visit"].waitForExistence(timeout: 10), "the recap banner")
+
+        app.buttons["Session actions"].tap()
+        app.buttons["Panel"].tap()
+        XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10))
+
+        // THE BANNER'S OWN FILL, not its text: the defect was the filled
+        // background reaching edges nothing else reaches, which a label's
+        // frame cannot see. The container carries the identifier for exactly
+        // this reason.
+        let banner = app.otherElements["Recap banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 5), "the banner's container")
+        // MEASURED AGAINST THE TRANSCRIPT, which is what it must line up with:
+        // a prompt bubble sits at the column's trailing edge and the agent's
+        // prose at its leading one.
+        let bubble = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Use your telar-browser")).firstMatch
+        let prose = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The page title is")).firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "the prompt bubble")
+        XCTAssertTrue(prose.exists, "the agent's prose")
+        // The tolerance is a few points of differing inner padding, not a
+        // licence to overhang: the defect was 20pt on the trailing edge and
+        // the whole leading inset on the other, both far outside it.
+        XCTAssertLessThanOrEqual(banner.frame.maxX, bubble.frame.maxX + 8,
+                                 "the banner's fill runs past the conversation's trailing edge")
+        XCTAssertGreaterThanOrEqual(banner.frame.minX, prose.frame.minX - 8,
+                                    "the banner's fill starts left of the conversation's leading edge")
+        snap("Recap banner beside the panel")
+    }
+}
