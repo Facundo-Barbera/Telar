@@ -51,6 +51,7 @@
       "browser-tab-store.js",
       "command-keys.js",
       "helper-exec.js",
+      "host-header.js",
       "dev-update.js",
       "dev-update-core.js",
       "dev-update-preload.js",

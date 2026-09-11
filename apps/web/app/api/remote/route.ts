@@ -1,11 +1,11 @@
 import { listEndpoints } from "@/lib/remote/endpoints";
 import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
-import { identifyCaller } from "@/lib/remote/gate";
+import { identifyCaller, isHostCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
 import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure, setTailscaleServe } from "@/lib/remote/store";
 import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
 import { machineName, observeIdentity } from "@/lib/remote/observe";
-import { HOST_TOKEN_ENV, isHostToken } from "@/lib/remote/host-token";
+import { HOST_TOKEN_ENV, readHostHeader } from "@/lib/remote/host-token";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -45,12 +45,19 @@ export function GET(request: Request) {
   try {
     const file = readRemote();
     const cookie = readDeviceCookie(request);
-    const caller = identifyCaller({ authorization: request.headers.get("authorization"), deviceCookie: cookie }, file);
+    const credentials = {
+      authorization: request.headers.get("authorization"),
+      deviceCookie: cookie,
+      // The shell's own window proves itself by header now; a request that
+      // arrived before the listener was attached still proves it by cookie.
+      hostHeader: readHostHeader(request),
+    };
+    const caller = identifyCaller(credentials, file);
     const host = hostRow();
     return Response.json({
       // Present only when a shell launched this server, and flagged as the
       // caller when this very request carries the host secret.
-      host: host ? { ...host, isCaller: isHostToken(cookie) } : undefined,
+      host: host ? { ...host, isCaller: isHostCaller(credentials) } : undefined,
       requireAuth: file.requireAuth,
       exposure: file.exposure ?? "local-only",
       tailscaleServe: file.tailscaleServe === true,

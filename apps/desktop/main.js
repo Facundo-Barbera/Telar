@@ -20,6 +20,7 @@ const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
+const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
@@ -428,9 +429,22 @@ function nodeExecPath() {
 const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
 
 /**
+ * AND THE SAME SECRET ON EVERY REQUEST, AS A HEADER — the carrier that has
+ * neither of the cookie's failure modes (host-header.js explains both). Only
+ * `session.defaultSession`, which is this window's; the integrated browser's
+ * tabs live in their own partitions and must never carry it.
+ */
+function seatHostHeader(url) {
+  if (!attachHostHeader(session.defaultSession, { appUrl: url, token: HOST_TOKEN })) {
+    console.error(`[telar-desktop] could not attach the host header for ${url}; the window falls back to its cookie.`);
+  }
+}
+
+/**
  * Set BEFORE the first load, on the session that will make the request — an
  * Electron cookie is per-origin, so this is scoped to the URL the shell is
- * about to open and travels nowhere else.
+ * about to open and travels nowhere else. KEPT AS A BELT beside the header:
+ * this is what a request made before the listener is attached carries.
  */
 async function seatHostCookie(url) {
   try {
@@ -925,10 +939,12 @@ function createWindow(url) {
 
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
-  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads this cookie on
-  // the opening navigation, so loading first would send the shell's own window
-  // in as an unpaired stranger. `finally` because a cookie we could not set is
-  // a window that pairs the old way, not a window that never opens.
+  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads these on the
+  // opening navigation, so loading first would send the shell's own window in
+  // as an unpaired stranger. The header is attached synchronously — there is no
+  // await to lose the race on — and `finally` because a cookie we could not set
+  // is a window that pairs the old way, not a window that never opens.
+  seatHostHeader(url);
   seatHostCookie(url).finally(() => {
     if (!win.isDestroyed()) win.loadURL(url);
   });
