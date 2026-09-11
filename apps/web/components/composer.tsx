@@ -1120,7 +1120,11 @@ export function Composer({
           <ComposerMenu
             completions={completions}
             active={Math.min(active, Math.max(0, completions.length - 1))}
-            heading={trigger.kind === "path" ? "Files and folders" : "Commands"}
+            // The heading NAMES WHAT IS IN THE LIST, which is why it is not a
+            // constant: `@` reaches the checkout and the notebook, and a list
+            // headed "Files and folders" with a note at the top of it is a
+            // label contradicting the rows underneath it.
+            heading={trigger.kind !== "path" ? "Commands" : notes.length > 0 ? "Notes, files and folders" : "Files and folders"}
             {...(trigger.kind === "path" && reading ? { loading: true } : {})}
             emptyText="No matches."
             onActive={setActive}
