@@ -33,6 +33,10 @@ struct TextFileView: View {
     @State private var dirty = false
     @State private var saveTask: Task<Void, Never>?
     @AppStorage("telar.editor.wrap") private var wrap = false
+    /// The read-only view's colours, one entry per line. Nil until the pass
+    /// lands, and nil forever for a language nothing knows.
+    @State private var highlighted: [AttributedString]?
+    @Environment(\.colorScheme) private var scheme
     @FocusState private var focused: Bool
 
     private var draftKey: String { "telar.fileDraft.\(hostId?.uuidString ?? "local").\(sessionId).\(path)" }
@@ -74,10 +78,19 @@ struct TextFileView: View {
                             .foregroundStyle(Theme.textTertiary)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 8)
-                        Text(String(line))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(Theme.text)
-                            .textSelection(.enabled)
+                        // The colours arrive a beat after the text and replace
+                        // it in place; nothing waits on the highlighter to draw
+                        // a first frame, and an unknown language stays plain.
+                        if let coloured = highlighted?[safe: index] {
+                            Text(coloured)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                        } else {
+                            Text(String(line))
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(Theme.text)
+                                .textSelection(.enabled)
+                        }
                     }
                     .frame(minHeight: 18)
                 }
@@ -91,6 +104,11 @@ struct TextFileView: View {
             .padding(10)
         }
         .background(Theme.codeBackground)
+        .task(id: "\(path):\(file.sha256):\(scheme == .dark)") {
+            highlighted = await CodeHighlighter.shared.highlightedLines(
+                file.text, language: CodeLanguage.named(path), dark: scheme == .dark
+            )
+        }
     }
 
     // MARK: the editor

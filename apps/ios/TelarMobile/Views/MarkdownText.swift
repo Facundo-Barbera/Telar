@@ -147,11 +147,22 @@ extension MarkdownUI.Theme {
         }
         .codeBlock { configuration in
             ScrollView(.horizontal, showsIndicators: false) {
-                configuration.label
-                    .fixedSize(horizontal: false, vertical: true)
-                    .relativeLineSpacing(.em(0.2))
-                    .markdownTextStyle { FontFamilyVariant(.monospaced); FontSize(.em(0.88)) }
-                    .padding(10)
+                // A FENCE THAT NAMES ITS LANGUAGE GETS COLOURED. MarkdownUI's
+                // own label is used whenever it does not — an unfenced block,
+                // or one whose info string nothing knows — so a block never
+                // renders worse than it did before.
+                if let language = CodeLanguage.fenced(configuration.language) {
+                    HighlightedCode(text: configuration.content, language: language,
+                                    font: .system(size: 13, design: .monospaced))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                } else {
+                    configuration.label
+                        .fixedSize(horizontal: false, vertical: true)
+                        .relativeLineSpacing(.em(0.2))
+                        .markdownTextStyle { FontFamilyVariant(.monospaced); FontSize(.em(0.88)) }
+                        .padding(10)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(TelarMobile.Theme.codeBackground)

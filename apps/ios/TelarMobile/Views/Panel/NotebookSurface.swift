@@ -174,6 +174,19 @@ struct NotebookSurface: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { editing = cell.id }
+                } else if cell.type == .code && editing != cell.id {
+                    // A CELL AT REST IS READ, NOT TYPED IN. A `TextEditor` per
+                    // cell means no colour and a caret wherever you touch; the
+                    // editor now appears when you ask for it, and until then
+                    // the code is coloured like every other code in the app.
+                    HighlightedCode(text: drafts[cell.id] ?? cell.source, language: "python")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                        .onTapGesture { editing = cell.id }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Edit this cell")
                 } else {
                     TextEditor(text: Binding(get: { drafts[cell.id] ?? cell.source }, set: { edit(cell, $0) }))
                         .font(.system(size: 12, design: .monospaced))
