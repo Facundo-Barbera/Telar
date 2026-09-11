@@ -141,7 +141,15 @@ const WORKER_MEMORY_BUDGET_PER_TURN = 512 * 1024 * 1024;
 const MIN_WORKER_CONCURRENCY = 4;
 const MAX_WORKER_CONCURRENCY = 24;
 
-export function defaultWorkerConcurrency(totalBytes: number = os.totalmem()): number {
+/**
+ * READ ONCE. How much RAM the machine has cannot change while this process
+ * runs, and this sits on the claim path: `startClaiming` asks for the cap on
+ * every tick, so at ten ticks a second the syscall alone was 6.2% of the
+ * engine's idle profile — spent re-learning a constant.
+ */
+let physicalMemoryBytes: number | undefined;
+
+export function defaultWorkerConcurrency(totalBytes: number = (physicalMemoryBytes ??= os.totalmem())): number {
   const affordable = Math.floor(totalBytes / 2 / WORKER_MEMORY_BUDGET_PER_TURN);
   return Math.min(MAX_WORKER_CONCURRENCY, Math.max(MIN_WORKER_CONCURRENCY, affordable));
 }
@@ -213,6 +221,18 @@ export type EngineWorkerOptions = {
   concurrency?: number;
   /** Short testable polling loop; production process supervision is outside this leaf. */
   pollMs?: number;
+  /**
+   * WHAT THE LOOP SLOWS TO WHEN THERE IS NOTHING HAPPENING, and 0 to never slow
+   * down at all. See `retune`: the fast interval exists to make a Stop, an
+   * approval and a steer land promptly, and none of those can exist while this
+   * worker holds no turn.
+   *
+   * SAFE ONLY WITH A WAY BACK. A backed-off worker that learned about new work
+   * on its next beat would put a second of latency on every message somebody
+   * typed, which is a worse bug than the CPU it saves — so `wake()` is the
+   * other half, and the daemon calls it from the one place a queue can change.
+   */
+  idlePollMs?: number;
   /** Used by the process supervisor to rediscover a restarted daemon. */
   onConnectionLost?: () => void;
   /**
@@ -256,10 +276,19 @@ const SETTLE_TIMEOUT_MS = 10_000;
  *  endpoint is polled at a bounded rate rather than every tick. */
 const SETTLE_RETRY_MIN_MS = 250;
 const SETTLE_RETRY_MAX_MS = 30_000;
+/** How many empty-handed beats in a row before `retune` slows the loop. Small,
+ *  because `wake()` undoes it the instant anything happens — the hysteresis is
+ *  only there so the pause between two messages does not count as idle. */
+const QUIET_TICKS_BEFORE_BACKOFF = 5;
 
 /** A worker is an executor only: every observable lifecycle event travels back through the engine API. */
 export class EngineWorker {
   private readonly pollMs: number;
+  private readonly idlePollMs: number;
+  /** What `timer` is currently running at, so `retune` can leave it alone. */
+  private intervalMs: number;
+  /** Consecutive beats that carried nothing and found nothing to do. */
+  private quietTicks = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   /** Evaluates the lease deadline even while a request is hung — see `start`. */
   private watchdog: ReturnType<typeof setInterval> | undefined;
@@ -424,6 +453,10 @@ export class EngineWorker {
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
+    // Never slower than the fast interval, so a caller cannot configure the
+    // backoff into a speed-up, and 0 opts out entirely.
+    this.idlePollMs = Math.max(this.pollMs, options.idlePollMs ?? 0);
+    this.intervalMs = this.pollMs;
   }
 
   async start(): Promise<void> {
@@ -467,7 +500,54 @@ export class EngineWorker {
       this.watchdog = undefined;
       return;
     }
-    this.timer = setInterval(() => void this.tick(), this.pollMs);
+    this.timer = setInterval(() => void this.tick(), this.intervalMs);
+    // The first tick may already have been a quiet one.
+    this.retune();
+  }
+
+  /**
+   * THE INTERVAL FOLLOWS WHETHER THERE IS ANYTHING TO CARRY.
+   *
+   * The fast loop exists for the things that ride the heartbeat — a Stop, an
+   * answered approval, a steer into a running turn — and every one of them
+   * presupposes a turn this worker is holding. With none, ten beats a second
+   * is ten round trips a second to an engine with nothing to say, and on the
+   * machine that prompted this the daemon spent most of a core answering them.
+   * `QUIET_TICKS_BEFORE_BACKOFF` is the hysteresis: a beat or two of quiet is
+   * the gap between two messages, not an idle engine.
+   *
+   * NOTHING HERE TOUCHES THE LEASE. `lastAckAt` is still anchored at the moment
+   * each beat was ISSUED and the watchdog still runs at lease/3, so a slower
+   * loop spends the same budget more thriftily rather than a different one —
+   * see `tick` and `checkLease`.
+   */
+  private retune(): void {
+    if (this.idlePollMs === this.pollMs || !this.timer) return;
+    const wanted = this.quietTicks >= QUIET_TICKS_BEFORE_BACKOFF ? this.idlePollMs : this.pollMs;
+    if (wanted === this.intervalMs) return;
+    clearInterval(this.timer);
+    this.intervalMs = wanted;
+    this.timer = setInterval(() => void this.tick(), wanted);
+  }
+
+  /**
+   * SOMETHING HAPPENED THAT THIS WORKER SHOULD NOT WAIT TO HEAR ABOUT.
+   *
+   * The daemon calls this in-process from the store's single queue writer, so
+   * a message, a Stop, an approval or a promoted steer puts the loop back on
+   * its fast interval and beats IMMEDIATELY rather than at the end of a backed
+   * off one. A worker already running fast does nothing here, which is every
+   * call during an active conversation.
+   *
+   * An out-of-process worker never receives it and keeps its own interval,
+   * which is why the backoff is off unless a caller asks for it.
+   */
+  wake(): void {
+    if (this.stopped || this.connectionLost) return;
+    const wasSlow = this.intervalMs !== this.pollMs;
+    this.quietTicks = 0;
+    this.retune();
+    if (wasSlow) void this.tick();
   }
 
   /** The clock, injectable so a test can drive the lease without sleeping. */
@@ -904,6 +984,21 @@ export class EngineWorker {
       // with it cancellations, approvals and steers — behind it. Those are all
       // already delivered above, before this line.
       this.startClaiming();
+      /**
+       * QUIET MEANS THE ENGINE HAD NOTHING AND THIS WORKER IS HOLDING NOTHING.
+       *
+       * Both halves are required. An empty status while a turn is running is
+       * an ordinary moment in a conversation — the next thing the person does
+       * is a Stop or an answer that has to arrive promptly — so a worker with
+       * live work never counts as idle however quiet the engine is. Counted
+       * after the claim is STARTED rather than after it answers: a claim that
+       * finds a turn wakes the loop through `wake()` anyway.
+       */
+      const carried = status.cancel.length > 0 || status.resolved.length > 0 ||
+        (status.steer?.length ?? 0) > 0 || (status.stopTask?.length ?? 0) > 0;
+      const busy = this.active.size > 0 || this.inFlight.size > 0 || this.pendingSettlements.size > 0;
+      this.quietTicks = carried || busy ? 0 : this.quietTicks + 1;
+      this.retune();
     } catch (error) {
       // Our own heartbeat bound firing is an outage, not a caller hanging up.
       if (error instanceof DOMException && error.name === "TimeoutError") this.noteConnectivityFailure(new EngineClientError("engine_unavailable", "engine did not answer in time", undefined, { operation: "workerHeartbeat", transport: "timeout" }), tickIssuedAt);

@@ -1343,6 +1343,9 @@ export class EngineStore {
     try { result = this.executionStore.transaction(command, action, commandId); }
     catch (error) {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
+      // Rolled back under this store's feet: anything read or written inside
+      // the transaction describes a queue sqlite no longer has.
+      this.queueCache.clear(); this.queueChangeAnnounced = false;
       this.pendingStopTasks.clear(); this.afterCommit = [];
       throw error;
     } finally { this.commandDepth -= 1; }
@@ -1355,6 +1358,11 @@ export class EngineStore {
 
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  /** See the constructor: the daemon's in-process nudge to its embedded worker,
+   *  absent unless the daemon injected it. */
+  private readonly onQueueChanged?: () => void;
+  /** One announcement per command, not one per `writeQueue` inside it. */
+  private queueChangeAnnounced = false;
   /** See the constructor: daemon-injected, absent means no computer use. */
   private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
   /** See the constructor: the real subprocess handshake unless a test says
@@ -3994,6 +4002,18 @@ export class EngineStore {
     options: {
       executionStorage?: "json" | "sqlite";
       notifier?: EngineNotifier;
+      /**
+       * SOMETHING IN SOME SESSION'S QUEUE CHANGED — a message accepted, a turn
+       * claimed or stopped, a steer promoted. Fired from `writeQueue`, which is
+       * the only writer, so no transition can forget it, and only AFTER the
+       * transaction commits so a rolled-back write announces nothing.
+       *
+       * INJECTED BY THE DAEMON, for the worker it hosts in-process: it is what
+       * lets that worker poll slowly while nothing is happening without putting
+       * the backoff's latency on the next thing the person types. Absent by
+       * default, so a store on its own announces nothing to anybody.
+       */
+      onQueueChanged?: () => void;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
@@ -4013,6 +4033,7 @@ export class EngineStore {
     } = {},
   ) {
     this.notifier = options.notifier;
+    this.onQueueChanged = options.onQueueChanged;
     this.readModels = options.models ?? readModelCatalogue;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
@@ -5731,7 +5752,9 @@ export class EngineStore {
       activity: "idle",
     };
     this.writeDocument(metadata, storedSession(session));
-    this.writeDocument(sessionQueueFile(this.paths, id), emptyQueue(id));
+    // Through `writeQueue` like every other queue write: an id reused after a
+    // delete must not find the old session's cached queue waiting for it.
+    this.writeQueue(id, emptyQueue(id));
     this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
   }
@@ -6864,7 +6887,9 @@ export class EngineStore {
      */
     const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
     for (const sessionId of this.liveQueueSessionIds()) {
-      const queue = this.readQueue(sessionId);
+      // A SCAN, so the shared copy: the one session that wins is claimed
+      // through `claimTurn`, which reads a queue of its own to write.
+      const queue = this.scanQueue(sessionId);
       // One turn per session at a time — the engine's own invariant, checked
       // here so a busy session costs nothing further.
       if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
@@ -6894,12 +6919,18 @@ export class EngineStore {
         continue;
       }
       if (selection === "failed") {
-        this.failQueuedTurn(
-          sessionId,
-          queue,
-          next,
-          "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
-        );
+        // The one branch of this scan that WRITES, so it takes a queue of its
+        // own rather than editing the copy every other reader is sharing.
+        const own = this.readQueue(sessionId);
+        const failing = own.turns.find((candidate) => candidate.runId === next.runId);
+        if (failing) {
+          this.failQueuedTurn(
+            sessionId,
+            own,
+            failing,
+            "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
+          );
+        }
         continue;
       }
       candidates.push({ sessionId, acceptedAt: next.acceptedAt });
@@ -7700,6 +7731,7 @@ export class EngineStore {
     // this id from the live index. Drop it here or a worker keeps asking about
     // a session that no longer exists.
     this.liveQueueIndex?.delete(sessionId);
+    this.queueCache.delete(sessionId);
     // The journal is gone with the directory; a session recreated under this
     // id starts a new one from 1, not from where the old one stopped.
     this.journalHead.delete(sessionId);
@@ -8088,7 +8120,7 @@ export class EngineStore {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
       const claimed = new Map(
-        this.readQueue(sessionId).turns
+        this.scanQueue(sessionId).turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
           .map((turn) => [turn.runId, turn] as const),
       );
@@ -8115,7 +8147,7 @@ export class EngineStore {
   steerForWorker(workerId: string): WorkerStatus["steer"] {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
-      const queue = this.readQueue(sessionId);
+      const queue = this.scanQueue(sessionId);
       const claimed = new Map(
         queue.turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
@@ -8126,8 +8158,16 @@ export class EngineStore {
         if (turn.state !== "steering" || !turn.steer) return [];
         const claimToken = claimed.get(turn.steer.intoRunId);
         if (!claimToken) return [];
+        /**
+         * CLONED, because `queue` here is the SHARED scan copy. Everything
+         * else this heartbeat returns is strings the engine built; a delivery
+         * is the one thing that would otherwise hand an embedded worker live
+         * references into the cache — its attachments array, its sender — and
+         * anything downstream that edited one would be editing the store's
+         * idea of the queue. Steers are rare; a copy of one costs nothing.
+         */
         return [
-          {
+          structuredClone({
             sessionId,
             runId: turn.steer.intoRunId,
             claimToken,
@@ -8151,7 +8191,7 @@ export class EngineStore {
             // the provider and the transcript as a person's typed message. The
             // stamp is the turn's; it rides the delivery.
             ...(turn.origin === "session" && turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
-          },
+          }),
         ];
       });
     });
@@ -8337,6 +8377,10 @@ export class EngineStore {
         this.closeOpenRequestsForRuns(session.id, settledRuns, sweptAt);
       }
       let changed = false;
+      /** Housekeeping, kept apart from `changed`: retiring a dead claim must
+       *  rewrite the queue but must NOT touch the session — nothing happened
+       *  to it, and a bumped `updatedAt` would reorder somebody's sidebar. */
+      let claimsRetired = false;
       const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
       const at = this.now();
       const recoveredProviderSessionId = latestProviderSessionId(queue);
@@ -8419,6 +8463,32 @@ export class EngineStore {
         changed = true;
       }
       /**
+       * AND A STOPPED TURN LETS GO OF ITS CLAIM.
+       *
+       * `stopSession` leaves the claim ON a turn it stops, deliberately: that
+       * is how the worker holding it learns over its heartbeat that the work
+       * ended. But the claim names a worker registration, and no registration
+       * survives a restart — so after this boot the token identifies nobody,
+       * can be delivered to nobody, and has nothing left to say.
+       *
+       * IT IS NOT INERT WHILE IT SITS THERE. `queueConcernsAWorker` counts a
+       * stopped turn that still carries a claim, which is what puts a session
+       * in `liveQueueSessionIds` — so every Stop anybody had ever pressed left
+       * a session in the set the heartbeat walks, permanently and across every
+       * restart. Measured on the machine that prompted this: 155 such turns
+       * held 45 of 129 sessions in an index that existed to describe the 2
+       * that were running.
+       *
+       * The turn itself is untouched. Its state, its text, its items and its
+       * `stopReason` all stay exactly as they were; only a token nobody can
+       * use goes.
+       */
+      for (const turn of queue.turns) {
+        if (turn.state !== "stopped" || !turn.claim) continue;
+        delete turn.claim;
+        claimsRetired = true;
+      }
+      /**
        * AND THE PAUSE LATCH COMES OFF. It is the same trap from the session's
        * side: a session paused by the old Stop button would open with a banner
        * and a Resume for a backlog this sweep has just settled. Pause is not a
@@ -8444,7 +8514,7 @@ export class EngineStore {
        * shell of the session, whichever turn started them.
        */
       const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
-      if (changed) {
+      if (changed || claimsRetired) {
         this.writeQueue(session.id, queue);
       }
       if (changed || metadataChanged || swept.length > 0) {
@@ -8531,7 +8601,7 @@ export class EngineStore {
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
     assertId(workerId, "worker id");
     return [...this.liveQueueSessionIds()].flatMap((sessionId) =>
-      this.readQueue(sessionId).turns.flatMap((turn) =>
+      this.scanQueue(sessionId).turns.flatMap((turn) =>
         turn.state === "stopped" && turn.claim?.workerId === workerId
           ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token }]
           : [],
@@ -8589,13 +8659,63 @@ export class EngineStore {
    */
   private liveQueueIndex: Set<string> | undefined;
 
+  /**
+   * THE INDEX SAYS WHICH QUEUES TO LOOK AT; THIS SAYS WHAT IS IN THEM.
+   *
+   * Narrowing the scan to the live sessions was only half the problem. Each of
+   * those queues was still fetched from sqlite, JSON-parsed and validated
+   * through zod on EVERY question — three per heartbeat, ten heartbeats a
+   * second — and a real conversation's queue is not small: on the machine that
+   * produced this, 45 live sessions held 3.3 MB over 1233 turns, so the daemon
+   * re-parsed about ten megabytes a second to conclude, every time, that
+   * nothing had changed. `readQueue` alone was 43.9% of a profile taken at
+   * rest, split between sqlite, `JSON.parse` and `TurnSchema`.
+   *
+   * VALID UNTIL `writeQueue` DROPS IT, which is sound for exactly the reason
+   * `liveQueueIndex` above is: one writer, in this process, and the store is
+   * the daemon's alone. Dropped rather than replaced on write — a caller
+   * mutates its queue in place and writes when it is done, and seeding the
+   * cache from that object would hand the next reader something the caller may
+   * still be editing. Re-reading once after a write is the cheap half.
+   */
+  private readonly queueCache = new Map<string, SessionQueue>();
+
+  /**
+   * A queue for READING ONLY — the shared parsed copy, not a caller's to edit.
+   *
+   * Every use is a scan that asks a question and keeps nothing: which sessions
+   * concern a worker, what was cancelled, answered or steered, which turn could
+   * be claimed next. Anything that intends to CHANGE a queue calls `readQueue`
+   * and gets an object of its own, so the two uses cannot be confused.
+   */
+  private scanQueue(sessionId: string): SessionQueue {
+    const cached = this.queueCache.get(sessionId);
+    if (cached) return cached;
+    const queue = this.readQueue(sessionId);
+    this.queueCache.set(sessionId, queue);
+    return queue;
+  }
+
   private liveQueueSessionIds(): Set<string> {
     if (this.liveQueueIndex) return this.liveQueueIndex;
     const index = new Set<string>();
     for (const sessionId of this.sessionIds()) {
-      if (queueConcernsAWorker(this.readQueue(sessionId))) index.add(sessionId);
+      if (queueConcernsAWorker(this.scanQueue(sessionId))) index.add(sessionId);
     }
     this.liveQueueIndex = index;
+    /**
+     * AND THE COLD BUILD LETS GO OF WHAT IT READ TO GET HERE.
+     *
+     * This is the one scan that touches every session on disk, so without
+     * this the cache would hold every conversation ever started, in parsed
+     * form, for the life of the daemon — the same unbounded growth with age
+     * that the index itself was written to stop. Everything still in the
+     * cache afterwards is in the index, and `writeQueue` drops the two
+     * together from then on.
+     */
+    for (const sessionId of this.queueCache.keys()) {
+      if (!index.has(sessionId)) this.queueCache.delete(sessionId);
+    }
     return index;
   }
 
@@ -8605,13 +8725,40 @@ export class EngineStore {
     return parseQueue(stored, sessionId);
   }
 
-  /** THE ONLY WRITER, which is what lets `liveQueueIndex` be maintained in one
-   *  place rather than at each of the thirteen transitions that call this. */
+  /** THE ONLY WRITER, which is what lets `liveQueueIndex` and `queueCache` be
+   *  maintained in one place rather than at each of the thirteen transitions
+   *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
+    this.queueCache.delete(sessionId);
+    this.announceQueueChange();
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);
+  }
+
+  /**
+   * ONCE PER COMMAND, AND ONLY IF IT COMMITS.
+   *
+   * A single command rewrites several queues — a stop settles a turn and
+   * requeues the steers aimed at it — and the listener only needs to be told
+   * that SOMETHING moved, so the flag collapses them into one call. Deferred
+   * to `afterCommit` for the same reason the request notifier is: announcing a
+   * write the transaction then rolled back would wake a worker to look for
+   * work that does not exist.
+   */
+  private announceQueueChange(): void {
+    if (!this.onQueueChanged) return;
+    if (!this.executionStore || this.commandDepth === 0) {
+      this.onQueueChanged();
+      return;
+    }
+    if (this.queueChangeAnnounced) return;
+    this.queueChangeAnnounced = true;
+    this.afterCommit.push(() => {
+      this.queueChangeAnnounced = false;
+      this.onQueueChanged?.();
+    });
   }
 
   private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {

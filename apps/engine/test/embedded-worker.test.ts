@@ -12,6 +12,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
+import { EngineStore } from "../src/state";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -369,4 +370,44 @@ test("shutdown disposes the selected OpenCode adapter and its session-lived runt
   try { await eventually(() => expect(daemon.store.turns("session_dispose")[0]?.state).toBe("completed")); }
   finally { await daemon.close(); }
   expect(disposed).toBe(1);
+});
+
+/**
+ * AN IDLE ENGINE SHOULD NOT BE A BUSY ONE.
+ *
+ * The embedded worker beat ten times a second forever, and each beat asks the
+ * store what was cancelled, answered and steered. With nothing running there
+ * is no answer any of those can have, so this proves the loop actually slows
+ * down — and, in the same breath, that slowing down costs nobody anything: the
+ * backoff here is five seconds, so a message picked up in under two can only
+ * have arrived through `wake()`, which the store rings when it writes a queue.
+ */
+test("an idle embedded worker slows its loop, and a new message still starts at once", async () => {
+  const beats = spyOn(EngineStore.prototype, "cancellationsForWorker");
+  try {
+    const daemon = await startEngine({
+      engineRoot: root(),
+      workerLeaseMs: 60_000,
+      embeddedWorker: { createDriver: () => echo, pollMs: 20, idlePollMs: 5_000 },
+    });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    // Long enough for the quiet run to be counted and the interval to change.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const settled = beats.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    // Three, generously: at 20 ms this window would hold about thirty.
+    expect(beats.mock.calls.length - settled).toBeLessThan(5);
+
+    // The doorbell. Without it this turn would wait out a five-second interval.
+    await client.submitTurn("session_one", { runId: "run_one", input: "hello" });
+    await eventually(async () => {
+      expect((await client.session("session_one")).turns[0]).toMatchObject({ state: "completed", resultText: "echo:hello" });
+    }, 2_000);
+  } finally {
+    beats.mockRestore();
+  }
 });
