@@ -76,6 +76,7 @@ import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
+import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -200,6 +201,8 @@ type ClaudeTurnBindings = {
   canUseTool: SdkCanUseTool | undefined;
   spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
+  /** The project's notebook, scoped to this turn's project. */
+  notes: NotesCapability | undefined;
   ds: DsCapability | undefined;
   display: DisplayCapability | undefined;
   latex: LatexCapability | undefined;
@@ -1149,6 +1152,7 @@ export function createClaudeDriver(
       plugins,
       spool,
       sessions,
+      notes,
       ds,
       display,
       latex,
@@ -1921,6 +1925,7 @@ export function createClaudeDriver(
         canUseTool,
         spool,
         sessions,
+        notes,
         ds,
         display,
         latex,
@@ -1951,6 +1956,7 @@ export function createClaudeDriver(
       const telarParts: TelarWallPart[] = [
         { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
+        { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
         { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
         { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
         { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
@@ -1996,6 +2002,10 @@ export function createClaudeDriver(
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
+        // Same rule: the toolkits are baked into the query at creation, so a
+        // project-less session gaining a project must cold-start rather than
+        // keep advertising a wall it no longer lacks.
+        notes: Boolean(notes),
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
@@ -2079,6 +2089,18 @@ export function createClaudeDriver(
        * `sessions_create` is fan-out wearing another hat.
        */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
+
+        /**
+         * THE PROJECT'S NOTEBOOK, WHEN THE TURN CARRIES ONE — so "what does the
+         * deploy note say?" is answerable, and "keep this where we can find it"
+         * lands somewhere the human will actually see it.
+         *
+         * NO APPROVAL GATE, the spool's judgement again: nothing here lands
+         * anything, and writing a note changes no branch and queues no turn. The
+         * one guard that matters is the wall's own — `notes_delete` removes only
+         * notes an agent wrote, and refuses the user's in a sentence.
+         */
+        if (notes && sdk.tool) telarTools.push(...notesTools(sdk.tool, delegatingCapability(() => bindings.current.notes)));
 
         /**
          * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval

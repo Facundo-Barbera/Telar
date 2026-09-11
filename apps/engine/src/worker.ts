@@ -8,6 +8,7 @@ import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
 import { sessionsTools } from "./sessions-tools/tools";
+import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { dsTools } from "./ds/ds-tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { latexTools } from "./latex/latex-tools";
@@ -68,6 +69,14 @@ type WorkerClient = Pick<
   | "createSpoolNote"
   | "updateSpoolNote"
   | "spoolSearch"
+  // The project notebook's verbs, same rule again. `projects` rides along
+  // because `notes_projects` is how a caller finds the id the others take.
+  | "listProjects"
+  | "projectNotes"
+  | "projectNote"
+  | "createProjectNote"
+  | "updateProjectNote"
+  | "deleteProjectNote"
   // The `sessions` verbs. Same rule as the spool's above: no store handle,
   // everything back over the loopback socket, so the toolkit is identical in
   // the embedded worker and the out-of-process one. See `SessionsCapability`.
@@ -1181,6 +1190,51 @@ export class EngineWorker {
           (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
       };
       /**
+       * THE PROJECT'S NOTEBOOK, SCOPED TO THIS TURN'S PROJECT.
+       *
+       * `self.projectId` is what lets `notes_list()` with no argument mean "this
+       * project" — the outward socket has no session and is asked for one by
+       * name instead. A session with NO project has no notebook, so the
+       * capability is absent rather than empty: a model told "there are no
+       * notes" would report that as the truth.
+       *
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, the rule the spool's states:
+       * the toolkit exercises the same routes the composer's foot does, so
+       * there is exactly one implementation of every rule about a note —
+       * including the `getProject` check that keeps an unknown id from minting
+       * a notebook.
+       */
+      const notesCapability: NotesCapability | undefined = claim.projectId
+        ? {
+            self: { projectId: claim.projectId },
+            projects: async () => (await this.options.client.listProjects()).projects.map((project) => ({ id: project.id, name: project.name })),
+            list: async (projectId) => (await this.options.client.projectNotes(projectId)).notes,
+            // The worker has no cross-notebook read, so "find it by id alone"
+            // is answered within the session's own project — which is the only
+            // notebook an agent inside a session can reach anyway.
+            read: async (noteId) => {
+              if (!claim.projectId) return null;
+              try {
+                return { note: (await this.options.client.projectNote(claim.projectId, noteId)).note, projectId: claim.projectId };
+              } catch {
+                return null;
+              }
+            },
+            // The toolkit's own handler declares `author: "session"`; the
+            // capability forwards it, exactly as the spool's `createNote` does.
+            create: async (projectId, input) => (await this.options.client.createProjectNote(projectId, { ...input, author: "session" })).note,
+            update: async (projectId, noteId, patch) => {
+              try {
+                return (await this.options.client.updateProjectNote(projectId, noteId, patch)).note;
+              } catch {
+                return null;
+              }
+            },
+            remove: async (projectId, noteId) => (await this.options.client.deleteProjectNote(projectId, noteId)).deleted,
+          }
+        : undefined;
+
+      /**
        * THE SESSIONS WALL FOR CODEX, leased on the worker-hosted socket —
        * see `sessions-tools/run-socket.ts`. Bound only for a Codex claim:
        * Claude gets the same capability in-process, so a lease for it would
@@ -1225,6 +1279,7 @@ export class EngineWorker {
       const telarCapabilities: Record<string, unknown> = {
         get spool() { return spoolCapability; },
         sessions: sessionsCapability,
+        ...(notesCapability ? { notes: notesCapability } : {}),
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         ...pluginCapabilities,
@@ -1240,6 +1295,7 @@ export class EngineWorker {
             collectTelarWall([
               { name: "spool", build: spoolTools as never, capability: () => box.current.spool },
               { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
+              { name: "notes", build: notesTools as never, capability: () => box.current.notes },
               { name: "ds", build: dsTools as never, capability: () => box.current.ds },
               { name: "notebook", build: notebookTools as never, capability: () => box.current.ds },
               { name: "latex", build: latexTools as never, capability: () => box.current.latex },
@@ -1374,6 +1430,9 @@ export class EngineWorker {
         }),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
+        // The project notebook, hoisted above for the same reason. Absent on a
+        // project-less session, which is no notebook rather than an empty one.
+        ...(notesCapability ? { notes: notesCapability } : {}),
         // The sessions wall over HTTP, for the provider that takes servers as
         // config. Same absent-means-absent rule as `browserSocket`.
         ...(sessionsLease ? { sessionsSocket: { url: sessionsLease.url, token: sessionsLease.token } } : {}),
