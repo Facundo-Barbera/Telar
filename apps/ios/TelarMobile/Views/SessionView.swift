@@ -102,13 +102,20 @@ struct SessionView: View {
     private func syncSidebar(open: Bool) {
         guard sizeClass == .regular, let visibility = columnVisibility else { return }
         let width = UIScreen.main.bounds.width
+        // The sidebar is a fixed 300 (see `navigationSplitViewColumnWidth`),
+        // so this is an exact question rather than an estimate.
         let roomForThree = width >= 300 + Theme.readingMeasure + 440
+        // NAMED AND SLOWER THAN THE DEFAULT. The sidebar leaving is a column
+        // disappearing and the conversation re-centring in what is left; at
+        // the default spring that reads as a jump rather than as room being
+        // made.
+        let motion = Animation.easeInOut(duration: 0.28)
         if open, !roomForThree, visibility.wrappedValue != .detailOnly {
             sidebarWasVisible = true
-            withAnimation { visibility.wrappedValue = .detailOnly }
+            withAnimation(motion) { visibility.wrappedValue = .detailOnly }
         } else if !open, sidebarWasVisible {
             sidebarWasVisible = false
-            withAnimation { visibility.wrappedValue = .all }
+            withAnimation(motion) { visibility.wrappedValue = .all }
         }
     }
 

@@ -48,7 +48,24 @@ struct RootView: View {
                     SessionSidebar(settings: settings, inbox: inbox, selection: $selection,
                         newSession: { resumedDraft = nil; showNewSession = true }, openSettings: { showSettings = true },
                         resumeDraft: { resumedDraft = $0; showNewSession = true })
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                        // ONE WIDTH, NO DRAG. Dragging the sidebar's edge felt
+                        // wrong because it bought the reader nothing and moved
+                        // everything: the transcript is capped at
+                        // `Theme.readingMeasure` and CENTRED, so widening the
+                        // sidebar does not widen the conversation — it slides
+                        // the same column sideways under your finger. With the
+                        // panel open it is worse: the detail is squeezed from
+                        // both ends at once, and past a point the conversation
+                        // drops below its measure and re-lays-out mid-drag
+                        // while the panel keeps its width.
+                        //
+                        // What the extra 80pt would buy is a few more
+                        // characters of a session title that is truncated to
+                        // one line anyway. So the drag is removed rather than
+                        // smoothed: min = ideal = max, and 300 is the width
+                        // `syncSidebar` already assumes when it works out
+                        // whether sidebar, conversation and panel fit at once.
+                        .navigationSplitViewColumnWidth(300)
                 } detail: {
                     NavigationStack {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
