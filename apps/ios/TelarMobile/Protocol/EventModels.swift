@@ -42,6 +42,16 @@ struct EngineEvent {
         case usageUpdated(usage: UsageSnapshot)
         /// The §6 shared-browser control model: whose hands are on the wheel.
         case browserControlChanged(controller: String)
+        /// The agent asked the cockpit to show a file — the panel opens it.
+        case displayOpened(path: String, title: String?)
+        /// THE KERNEL SPOKE. Without these two the panel only re-read when a
+        /// TURN settled, so cells the agent ran mid-turn showed nothing until
+        /// it finished — the "tables don't render until you refresh the
+        /// kernel" the user hit on a fresh session.
+        case kernelStateChanged(state: KernelState, reason: String?)
+        /// One output from one cell execution. `producer` names the notebook
+        /// it belongs to, or a scratch door like `ds_plot`.
+        case notebookCellOutput(execId: String, cellId: String?, producer: String?, output: CellOutput?)
         /// Everything else — recognised-but-unused and unknown alike.
         case none
     }
@@ -52,7 +62,8 @@ extension EngineEvent: Decodable {
         case id, at, sessionId, runId, type
         case turn, replayed, resultText, usage, code, message, reason
         case item, itemId, stream, text, request, requestId, decision
-        case task, session, controller
+        case task, session, controller, path, title
+        case state, execId, cellId, producer, output
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +126,25 @@ extension EngineEvent: Decodable {
             payload = (try? c.decode(UsageSnapshot.self, forKey: .usage)).map { .usageUpdated(usage: $0) } ?? .none
         case "browser.control.changed":
             payload = (try? c.decode(String.self, forKey: .controller)).map { .browserControlChanged(controller: $0) } ?? .none
+        case "display.opened":
+            payload = (try? c.decode(String.self, forKey: .path)).map { .displayOpened(path: $0, title: try? c.decodeIfPresent(String.self, forKey: .title)) } ?? .none
+        case "kernel.state.changed":
+            // An unrecognised state already decodes to `.unknown`, so a newer
+            // engine's vocabulary still moves the revision.
+            payload = (try? c.decode(KernelState.self, forKey: .state))
+                .map { .kernelStateChanged(state: $0, reason: try? c.decodeIfPresent(String.self, forKey: .reason)) } ?? .none
+        case "notebook.cell.output":
+            // The OUTPUT is optional: a body this build cannot read is still
+            // an execution that happened, and the revision it bumps is what
+            // makes the surface re-read.
+            payload = (try? c.decode(String.self, forKey: .execId)).map {
+                .notebookCellOutput(
+                    execId: $0,
+                    cellId: try? c.decodeIfPresent(String.self, forKey: .cellId),
+                    producer: try? c.decodeIfPresent(String.self, forKey: .producer),
+                    output: try? c.decodeIfPresent(CellOutput.self, forKey: .output)
+                )
+            } ?? .none
         default:
             payload = .none
         }
@@ -181,6 +211,10 @@ struct SessionSnapshot: Decodable {
         cursor = try c.decodeIfPresent(Int.self, forKey: .cursor)
         page = try? c.decodeIfPresent(SnapshotPage.self, forKey: .page)
         session = try c.decode(Session.self, forKey: .session)
+        // SKIPPABLE HIDES OUR OWN MISTAKES TOO. A row whose shape this build
+        // does not know is meant to drop; a row whose field WE declared with
+        // the wrong type drops identically and just as quietly. Before
+        // changing a type here, read the note on `Skippable`.
         turns = try c.decode([Skippable<Turn>].self, forKey: .turns).compactMap(\.value)
         items = try c.decode([Skippable<Item>].self, forKey: .items).compactMap(\.value)
         requests = try c.decode([Skippable<EngineRequest>].self, forKey: .requests).compactMap(\.value)

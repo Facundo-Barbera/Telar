@@ -38,9 +38,21 @@ enum Theme {
     static let radiusBubble: CGFloat = 18
     static let radiusComposer: CGFloat = 22
     static let radiusDrawer: CGFloat = 16
+    /// The transcript and composer lane, in points. About 70 characters of
+    /// body text per line — the web's 50rem measure at its smaller type.
+    static let readingMeasure: CGFloat = 680
+    /// The gutter the composer's lane adds around that measure, so a pill's
+    /// edges sit outside the text it holds rather than on it.
+    static let readingGutter: CGFloat = 32
     static let body = Font.system(.body)
     static let bodyMedium = Font.system(.body, weight: .medium)
     static let rowTitle = Font.system(.subheadline, weight: .medium)
+    /// A SLIM SIDEBAR ROW'S TITLE — one step below `rowTitle`, and the reason
+    /// a row under a project header reads as an item rather than as another
+    /// header. The ratio is the desktop's (session-row.tsx): a card's title is
+    /// a size up from the caption beside it, a slim row's title sits between
+    /// the two and carries no extra weight.
+    static let rowTitleSlim = Font.system(.footnote)
     static let meta = Font.system(.caption)
     static let metaSmall = Font.system(.caption2)
     static let mono = Font.system(.caption, design: .monospaced)
@@ -75,5 +87,22 @@ struct SteppedPulseDot: View {
                     .opacity(Int(context.date.timeIntervalSinceReferenceDate) % 2 == 0 ? 1 : 0.5)
             }
         }
+    }
+}
+
+extension View {
+    /// THE COLUMN THE CONVERSATION LIVES IN — one definition, so every row at
+    /// the top level of a session lands on the same two edges.
+    ///
+    /// A row that skips it does not look wrong until it has a BACKGROUND: an
+    /// unfilled row merely sits too wide and nobody notices, while a filled
+    /// one runs the whole detail view and, on an iPad with the panel open,
+    /// reaches under the floating sidebar on one side and under the panel on
+    /// the other. That is how the recap banner looked before it was removed.
+    /// Use this for anything at the top level of a session.
+    func readingColumn(gutter: CGFloat = 0) -> some View {
+        self
+            .frame(maxWidth: Theme.readingMeasure + gutter)
+            .frame(maxWidth: .infinity)
     }
 }

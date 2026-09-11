@@ -40,6 +40,20 @@ struct ModelSelection: Codable, Equatable {
 /// the stream. Swift's unkeyed containers advance their index only when an
 /// element is consumed, so per-element recovery must swallow the throw inside
 /// the element's own decode — which is exactly what this wrapper does.
+///
+/// WHAT IT PROTECTS AGAINST IS AN UNKNOWN FIELD, NOT A FIELD WE TYPED WRONG.
+/// It cannot tell those apart: both throw, and both are swallowed. A single
+/// optional declared with the wrong type therefore does not fail loudly — it
+/// DELETES EVERY ROW THAT CARRIES THAT FIELD, silently, forever.
+///
+/// That is not hypothetical. `Turn.wakeReason` was declared `String?` while the
+/// engine sends an object; the result was not a wrong label, it was every
+/// wake-up turn vanishing from the transcript on every read, with a green test
+/// suite the whole time, because the fixtures asserted the shape the author had
+/// imagined rather than the one on the wire.
+///
+/// So: a new decoded field ships with a test whose JSON is copied VERBATIM from
+/// the live journal. See "Wire-facing changes" in apps/ios/README.md.
 struct Skippable<T: Decodable>: Decodable {
     let value: T?
     init(from decoder: Decoder) {

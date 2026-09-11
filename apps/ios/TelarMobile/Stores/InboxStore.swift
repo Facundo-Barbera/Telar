@@ -36,6 +36,30 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     return sections
 }
 
+/// PURE — a read receipt's answer, folded into whichever band holds that row.
+///
+/// THE BANDING IS DELIBERATELY LEFT ALONE. Re-running `groupInbox` here would
+/// be the obvious thing and the wrong one: the row would be free to jump to
+/// another shelf under the reader, at the exact moment they are reading it. It
+/// also cannot be needed — `Settling.idleSince` counts from `readAt`, so a
+/// receipt RESTARTS the inactivity clock rather than expiring it, and the next
+/// poll re-bands from the Mac's own word anyway.
+func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadMark) -> InboxSections {
+    func fold(_ rows: [Session]) -> [Session] {
+        rows.map { row in
+            guard row.id == sessionId else { return row }
+            var next = row
+            next.applyReadMark(answer)
+            return next
+        }
+    }
+    var next = sections
+    next.active = fold(sections.active)
+    next.snoozed = fold(sections.snoozed)
+    next.settled = fold(sections.settled)
+    return next
+}
+
 /// One Mac's inbox. THE LAST READ SURVIVES THE MAC: a store built with a
 /// cache opens on what this phone last recorded for that Mac — stamped
 /// `recordedAt` so a row can dim itself and a banner can say when — and keeps
@@ -44,6 +68,9 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 @MainActor @Observable final class InboxStore {
     private(set) var sections = InboxSections()
     private(set) var projectNames: [EngineID: String] = [:]
+    /// The projects as the Mac listed them — name AND icon key — so a row can
+    /// draw the project's mark, not just say its name.
+    private(set) var projects: [EngineID: ProjectRef] = [:]
     private(set) var lastError: String?
     /// A retry can't fix a credential — the merged view escalates this one.
     private(set) var unauthorized = false
@@ -57,10 +84,18 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     private let api: any EngineAPI
     private let cache: HostSnapshotCache?
     private var loop: Task<Void, Never>?
+    /// The cache read seeding the first frame — off the main thread, the
+    /// same reason as SessionSyncEngine's.
+    private var restoring: Task<Void, Never>?
     private var anythingLive = false
     /// The engine's default (3 days) until the real policy arrives; a policy
     /// fetch failure keeps the last known answer rather than rebanding.
     private var autoSettleAfterHours: Double? = 72
+    /// The policy is one answer per machine and changes by hand, so it is
+    /// re-read once a minute, not on every three-second poll — against a Mac
+    /// that is slow to answer, the second request per poll was the one that
+    /// kept the list a poll behind.
+    private var policyReadAt: ContinuousClock.Instant?
     private var lastInboxData: Data?
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
@@ -87,6 +122,28 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
         loop = nil
     }
 
+    /// A read receipt landed on a session this store lists. Clear its dot NOW.
+    ///
+    /// THE POLL IS TOO SLOW TO BE THE ANSWER HERE, and on the iPad that is
+    /// visible rather than theoretical: the sidebar and the transcript are on
+    /// screen together, so a reader opening a session with an unread answer
+    /// watched the dot sit there for up to ten seconds and then go out as they
+    /// moved away — which reads as "it clears when you LEAVE", the opposite of
+    /// what it means. (On the phone the sidebar is hidden while you read, so
+    /// the poll always landed before anyone could see it.) The same reason
+    /// `setSettled` refreshes instead of waiting.
+    ///
+    /// IN PLACE RATHER THAN A REFRESH. A refresh would be a whole extra round
+    /// trip to the Mac to learn one number this call is already holding, and it
+    /// would be the SLOWER of the two on exactly the connection where this
+    /// matters most. The fold is monotonic, so a poll already carrying a higher
+    /// mark cannot be dragged backwards by it.
+    func applyRead(_ sessionId: EngineID, answer: Session) {
+        let folded = applyReadMark(sections, sessionId: sessionId, answer: answer.readMark)
+        guard folded != sections else { return }
+        sections = folded
+    }
+
     /// Settle or unsettle straight off a row — a context-menu action, so the
     /// refresh must be immediate rather than waiting for the next poll.
     func setSettled(_ id: EngineID, _ settled: Bool) async {
@@ -100,20 +157,37 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 
     /// The first frame, from the phone's own copy. `loaded` stays false: the
     /// rows are shown, but "nothing here" is not a claim this copy can make.
+    /// Read and decoded off the main thread; only the rows land.
     private func restore() {
-        guard let entry = cache?.readInbox(),
-              let live = try? JSONDecoder().decode(LiveSessions.self, from: entry.data)
-        else { return }
+        guard let cache else { return }
+        restoring = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let entry = cache.readInbox(),
+                  let live = try? JSONDecoder().decode(LiveSessions.self, from: entry.data)
+            else { return }
+            await self?.applyRestored(live, entry: entry)
+        }
+    }
+
+    /// The Mac may have answered first — its word wins.
+    private func applyRestored(_ live: LiveSessions, entry: SnapshotCache.Entry) {
+        guard !loaded else { return }
         lastInboxData = entry.data
         recordedAt = entry.savedAt
         apply(live)
     }
 
+    /// Tests: wait for the cache read to land.
+    func awaitPendingWork() async {
+        await restoring?.value
+    }
+
     func refresh() async {
         do {
             let live = try await api.liveSessions()
-            if let policy = try? await api.inboxPolicy() {
+            if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+               let policy = try? await api.inboxPolicy() {
                 autoSettleAfterHours = policy.autoSettleAfterHours
+                policyReadAt = .now
             }
             apply(live)
             lastError = nil
@@ -129,6 +203,7 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 
     private func apply(_ live: LiveSessions) {
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
+        projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         sections = groupInbox(
             live.sessions,
             now: Timestamp(Date().timeIntervalSince1970 * 1000),

@@ -18,6 +18,9 @@
 
 /* Begin PBXBuildFile section */
         B20000000000000000000010 = {isa = PBXBuildFile; fileRef = B20000000000000000000001; settings = {ATTRIBUTES = (RemoveHeadersOnCopy,); }; };
+        D40000000000000000000021 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000011; };
+        D40000000000000000000022 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000012; };
+        D40000000000000000000023 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000013; };
 /* End PBXBuildFile section */
 /* Begin PBXCopyFilesBuildPhase section */
         B20000000000000000000011 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (B20000000000000000000010,); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
@@ -58,6 +61,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D40000000000000000000021 /* MarkdownUI in Frameworks */,
+				D40000000000000000000022 /* SwiftMath in Frameworks */,
+				D40000000000000000000023 /* Highlightr in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -115,6 +121,11 @@
  B20000000000000000000003,
 			);
 			name = TelarMobile;
+			packageProductDependencies = (
+				D40000000000000000000011 /* MarkdownUI */,
+				D40000000000000000000012 /* SwiftMath */,
+				D40000000000000000000013 /* Highlightr */,
+			);
 			productName = TelarMobile;
 			productReference = A100000000000000000000AE /* TelarMobile.app */;
 			productType = "com.apple.product-type.application";
@@ -168,6 +179,11 @@
 				Base,
 			);
 			mainGroup = A100000000000000000000AA;
+			packageReferences = (
+				D40000000000000000000001 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+				D40000000000000000000002 /* XCRemoteSwiftPackageReference "SwiftMath" */,
+				D40000000000000000000003 /* XCRemoteSwiftPackageReference "Highlightr" */,
+			);
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A100000000000000000000AD /* Products */;
@@ -226,6 +242,18 @@
 		};
         B20000000000000000000007 = {isa = PBXTargetDependency; target = B20000000000000000000004; };
 /* End PBXTargetDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+        D40000000000000000000001 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui"; requirement = {kind = upToNextMajorVersion; minimumVersion = 2.4.1; }; };
+        D40000000000000000000002 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/mgriebling/SwiftMath"; requirement = {kind = upToNextMajorVersion; minimumVersion = 1.7.3; }; };
+        D40000000000000000000003 /* XCRemoteSwiftPackageReference "Highlightr" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/raspu/Highlightr"; requirement = {kind = upToNextMajorVersion; minimumVersion = 2.3.0; }; };
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+        D40000000000000000000011 /* MarkdownUI */ = {isa = XCSwiftPackageProductDependency; package = D40000000000000000000001; productName = MarkdownUI; };
+        D40000000000000000000012 /* SwiftMath */ = {isa = XCSwiftPackageProductDependency; package = D40000000000000000000002; productName = SwiftMath; };
+        D40000000000000000000013 /* Highlightr */ = {isa = XCSwiftPackageProductDependency; package = D40000000000000000000003; productName = Highlightr; };
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A100000000000000000000C1 /* Debug */ = {

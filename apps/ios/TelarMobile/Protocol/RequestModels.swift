@@ -19,8 +19,15 @@ struct UserInputField: Codable, Identifiable, Equatable {
     var kind: String // text | secret | choice | boolean
     var choices: [String]?
     var required: Bool?
+    /// `choice` only: the person may pick several, and the answer goes back as
+    /// an array of the chosen labels rather than one string. Absent — which is
+    /// every request the engine has sent until now — means one pick.
+    var multiple: Bool?
 
     var id: String { key }
+
+    /// Nothing downstream should have to remember that absent means single.
+    var isMultiSelect: Bool { kind == "choice" && multiple == true }
 }
 
 /// One password-manager item a `secret_access` request may fill from.

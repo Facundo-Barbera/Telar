@@ -100,10 +100,7 @@ struct NewSessionView: View {
                         ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
                             NavigationLink(value: project) {
                                 HStack(spacing: 12) {
-                                    Image(systemName: "folder.fill")
-                                        .font(.system(size: 17))
-                                        .foregroundStyle(Theme.textMuted2)
-                                        .frame(width: 27, height: 27)
+                                    ProjectAvatar(name: project.name, projectId: project.id, hostId: hostId, icon: project.icon, api: settings.api(for: hostId), size: 27)
                                     Text(project.name)
                                         .font(.system(size: 16, weight: .bold))
                                         .foregroundStyle(Theme.text)
@@ -263,7 +260,11 @@ struct NewSessionDraftView: View {
     @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var submitting = false
     @State private var pickingBranch = false
+    @State private var showingStash = false
     @State private var error: String?
+    /// A file the intake turned away — said out loud, never swallowed.
+    @State private var intakeNote: String?
+    @State private var dropping = false
     /// Set the moment the create succeeds: a retry after a failed upload or
     /// turn must resume this session, never create a second one.
     @State private var createdSessionId: EngineID?
@@ -298,6 +299,19 @@ struct NewSessionDraftView: View {
                 .padding(.top, 8)
                 .contentShape(Rectangle())
                 .onTapGesture { focused = true }
+                // The whole message area takes a drag, not just a small target:
+                // on an iPad the drop lands wherever the finger lets go.
+                .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
+                    intake(providers)
+                    return true
+                }
+                .overlay {
+                    if dropping {
+                        RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                            .strokeBorder(Theme.accent, lineWidth: 2)
+                            .padding(.horizontal, 12)
+                    }
+                }
 
             VStack(spacing: 0) {
                 Rectangle().fill(Theme.border).frame(height: 1)
@@ -305,6 +319,14 @@ struct NewSessionDraftView: View {
                     Text(error)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.statusRed)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                }
+                if let intakeNote {
+                    Text(intakeNote)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
@@ -327,6 +349,19 @@ struct NewSessionDraftView: View {
                                     .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                             }
                             .accessibilityLabel("Attach photos")
+                            ComposerPasteButton { providers in intake(providers) }
+                            StashButton(
+                                hasDraft: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                onStash: {
+                                    let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: [])) {
+                                        prompt = ""
+                                    } else {
+                                        error = "There was no room to stash this. Nothing was taken from the box."
+                                    }
+                                },
+                                onOpen: { showingStash = true }
+                            )
                             ModelPillView(
                                 catalogues: catalogues,
                                 choice: choice,
@@ -413,6 +448,14 @@ struct NewSessionDraftView: View {
             await loadCatalogues()
             git = try? await api.projectGit(project.id)
         }
+        .sheet(isPresented: $showingStash) {
+            StashSheet { entry in
+                if let taken = PromptStash.shared.take(entry.id, room: 0) {
+                    prompt = StashRules.appendPrompt(prompt, taken.prompt)
+                    focused = true
+                }
+            }
+        }
         .sheet(isPresented: $pickingBranch) {
             BranchPickerSheet(git: git, selected: baseRef) { picked in
                 baseRef = picked
@@ -444,38 +487,32 @@ struct NewSessionDraftView: View {
         }
     }
 
+    /// A paste or a drop, through the same rules the session composer uses.
+    /// Nothing is uploaded here: this sheet has no session id until the arrow
+    /// is pressed, so the bytes wait in the draft.
+    private func intake(_ providers: [NSItemProvider]) {
+        Task {
+            let (files, refusals) = await composerFiles(from: providers)
+            for file in files {
+                draftAttachments.append(DraftAttachment(data: file.data, name: file.name, mediaType: file.mediaType))
+            }
+            intakeNote = refusals.isEmpty ? nil : refusals.joined(separator: " ")
+        }
+    }
+
     /// The composer's 72×72 strip, held locally: uploads need the session id,
     /// which doesn't exist until the arrow is pressed.
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(draftAttachments) { attachment in
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 6) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 20))
-                                .foregroundStyle(Theme.textMuted2)
-                            Text(attachment.name)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Theme.textMuted2)
-                                .lineLimit(1)
-                        }
-                        .frame(width: 72, height: 72)
-                        .background(Theme.subtle)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        Button {
-                            draftAttachments.removeAll { $0.id == attachment.id }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 22, height: 22)
-                                .background(Color.black.opacity(0.55))
-                                .clipShape(Circle())
-                        }
-                        .padding(4)
-                        .accessibilityLabel("Remove \(attachment.name)")
-                    }
+                    AttachmentChip(
+                        name: attachment.name,
+                        mediaType: attachment.mediaType,
+                        // Nothing is uploaded yet, so the bytes are right here.
+                        preview: attachment.data.count <= ComposerIntake.previewCap ? attachment.data : nil,
+                        onRemove: { draftAttachments.removeAll { $0.id == attachment.id } }
+                    )
                 }
             }
         }

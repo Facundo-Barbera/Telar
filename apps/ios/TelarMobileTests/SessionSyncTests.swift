@@ -39,12 +39,14 @@ actor RecordingEngineAPI: EngineAPI {
 
     func sessionData(_ id: EngineID) async throws -> Data { fatalError("unused") }
     func liveSessionsData() async throws -> Data { fatalError("unused") }
+    func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data { fatalError("unused") }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
     func stopSession(_ id: EngineID) async throws {}
     func stopTurn(_ id: EngineID, runId: String) async throws {}
     func resolveRequest(_ id: EngineID, requestId: EngineID, decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?) async throws {}
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {}
+    func markSessionRead(_ id: EngineID, runId: String) async throws -> Session { fatalError("unused") }
     func promoteTurn(_ id: EngineID, runId: String) async throws {}
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session { fatalError("unused") }
     func inboxPolicy() async throws -> InboxPolicy { InboxPolicy(autoSettleAfterHours: 72) }

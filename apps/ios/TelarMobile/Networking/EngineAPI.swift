@@ -14,6 +14,9 @@ protocol EngineAPI: Sendable {
     /// is the cockpit's own JSON; these hand it over unparsed.
     func sessionData(_ id: EngineID) async throws -> Data
     func liveSessionsData() async throws -> Data
+    /// The bytes behind `ProjectRef.icon`. `icon` rides as `?v=` so the
+    /// cockpit's immutable cache header is honest; the route does not read it.
+    func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stopSession(_ id: EngineID) async throws
     func stopTurn(_ id: EngineID, runId: String) async throws
@@ -22,6 +25,13 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// A HUMAN WAS SHOWN THIS TURN'S ANSWER. Moves the engine's
+    /// `lastReadTurnSequence` forward and stamps `readAt`, which is what clears
+    /// the unread dot on every device — the phone used to send this NEVER, so a
+    /// session read on the phone stayed unread on the Mac, and once the
+    /// settling rule started honouring unread it would have stayed in the list
+    /// forever. Returns the session as the engine now has it.
+    func markSessionRead(_ id: EngineID, runId: String) async throws -> Session
     /// SEND NOW: a queued turn is promoted into the RUNNING turn — the model
     /// hears it without stopping. The engine validates queued-into-running.
     func promoteTurn(_ id: EngineID, runId: String) async throws
@@ -74,6 +84,70 @@ extension EngineAPI {
     }
 }
 
+/// A raw read that keeps the content type: the PDF viewer and the image
+/// viewer need to know what the bytes are, and the route says so.
+struct RawFile: Sendable {
+    var data: Data
+    var contentType: String?
+}
+
+/// THE PANEL'S API — the checkout, the kernel, notebooks and LaTeX. A second
+/// protocol rather than more methods on `EngineAPI`, so the two test doubles
+/// that stand in for the transcript's needs keep compiling, and so a view
+/// that only reads files can say so in its type.
+///
+/// `ds` and `latex` are catch-all doors: every verb is a POST to one path,
+/// the same door the agent's own tools use, so a cell run from here and one
+/// the model ran land in the same kernel. Their answers decode to the caller's
+/// type; a body this build does not model decodes to `JSONValue`, never to
+/// the "very different versions" error a snapshot mismatch earns.
+protocol PanelAPI: Sendable {
+    func projects() async throws -> [Project]
+    func sessionFiles(_ id: EngineID) async throws -> WorkspaceListing
+    func sessionFile(_ id: EngineID, path: String) async throws -> WorkspaceFile
+    func writeSessionFile(_ id: EngineID, path: String, text: String, expectedSha256: String) async throws -> WorkspaceWriteResult
+    func sessionFileRaw(_ id: EngineID, path: String) async throws -> RawFile
+    func sessionTable(_ id: EngineID, path: String, offset: Int, limit: Int, sort: String?, desc: Bool) async throws -> TableWindow
+    func attachments(_ id: EngineID, tag: String?) async throws -> [TurnAttachment]
+    func attachmentBytes(_ id: EngineID, attachmentId: EngineID) async throws -> RawFile
+    func tagAttachment(_ id: EngineID, attachmentId: EngineID, tags: [String]) async throws -> TurnAttachment
+    func ds<T: Decodable & Sendable>(_ id: EngineID, method: String, body: JSONValue) async throws -> T
+    func latex<T: Decodable & Sendable>(_ id: EngineID, method: String, body: JSONValue) async throws -> T
+}
+
+extension PanelAPI {
+    func kernel(_ id: EngineID) async throws -> KernelStatus { try await ds(id, method: "kernel", body: .object([:])) }
+    func kernelInterrupt(_ id: EngineID) async throws { let _: JSONValue = try await ds(id, method: "interrupt", body: .object([:])) }
+    func kernelRestart(_ id: EngineID) async throws { let _: JSONValue = try await ds(id, method: "restart", body: .object([:])) }
+    func kernelVars(_ id: EngineID, limit: Int = 200) async throws -> [VarRow] {
+        try await ds(id, method: "vars", body: .object(["limit": .number(Double(limit))]))
+    }
+    func kernelInspect(_ id: EngineID, name: String, depth: Int = 10) async throws -> JSONValue {
+        try await ds(id, method: "inspect", body: .object(["name": .string(name), "depth": .number(Double(depth))]))
+    }
+    func packages(_ id: EngineID) async throws -> PackageList { try await ds(id, method: "packages", body: .object([:])) }
+    func notebookRead(_ id: EngineID, path: String, withOutputs: Bool = true) async throws -> NotebookRead {
+        try await ds(id, method: "notebook/read", body: .object(["path": .string(path), "withOutputs": .bool(withOutputs)]))
+    }
+    func notebookEdit(_ id: EngineID, path: String, edit: JSONValue) async throws -> NotebookRead {
+        try await ds(id, method: "notebook/edit", body: .object(["path": .string(path), "edit": edit]))
+    }
+    func notebookRun(_ id: EngineID, path: String, cellId: String?, all: Bool = false) async throws -> NotebookRunResult {
+        var body: [String: JSONValue] = ["path": .string(path)]
+        if let cellId { body["cellId"] = .string(cellId) }
+        if all { body["all"] = .bool(true) }
+        return try await ds(id, method: "notebook/run", body: .object(body))
+    }
+    func latexStatus(_ id: EngineID) async throws -> LatexCompileStatus { try await latex(id, method: "status", body: .object([:])) }
+    func latexCompile(_ id: EngineID, path: String?) async throws -> LatexCompileAnswer {
+        try await latex(id, method: "compile", body: .object(path.map { ["path": .string($0)] } ?? [:]))
+    }
+    func latexLog(_ id: EngineID, tail: Int = 200) async throws -> LatexLog {
+        try await latex(id, method: "log", body: .object(["tail": .number(Double(tail))]))
+    }
+    func latexToolchain(_ id: EngineID) async throws -> LatexToolchain { try await latex(id, method: "toolchain", body: .object([:])) }
+}
+
 struct InboxPolicy: Decodable, Equatable {
     /// `nil` = the clock is off: nothing settles by neglect, only by decision.
     var autoSettleAfterHours: Double?
@@ -91,17 +165,20 @@ struct NewSessionInput: Encodable {
     var branchName: String?
 }
 
-/// The only two shapes a `user_input` answer takes (`UserInputField.kind`
-/// text/secret/choice all answer with a string; boolean with a bool).
+/// The shapes a `user_input` answer takes (`UserInputField.kind`
+/// text/secret/choice all answer with a string; boolean with a bool; a
+/// `choice` field marked `multiple` with an array of the chosen labels).
 enum AnswerValue: Encodable, Equatable {
     case text(String)
     case bool(Bool)
+    case list([String])
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .text(let s): try c.encode(s)
         case .bool(let b): try c.encode(b)
+        case .list(let labels): try c.encode(labels)
         }
     }
 }
@@ -259,6 +336,10 @@ struct HTTPEngineAPI: EngineAPI {
         try await raw(makeRequest(url("api/sessions/live")))
     }
 
+    func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data {
+        try await raw(makeRequest(url("api/projects/\(escape(projectId))/icon", query: [URLQueryItem(name: "v", value: icon)])))
+    }
+
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {
         // 202 fresh and 200 replayed are BOTH success — the idempotent retry.
         var body: [String: AnyEncodable] = ["runId": AnyEncodable(runId), "input": AnyEncodable(input)]
@@ -292,6 +373,12 @@ struct HTTPEngineAPI: EngineAPI {
 
     func promoteTurn(_ id: EngineID, runId: String) async throws {
         let _: IgnoredBody = try await post("api/sessions/\(escape(id))/turns/\(escape(runId))/promote", body: [:])
+    }
+
+    func markSessionRead(_ id: EngineID, runId: String) async throws -> Session {
+        struct Wrapped: Decodable { var session: Session }
+        let wrapped: Wrapped = try await post("api/sessions/\(escape(id))/read", body: ["runId": AnyEncodable(runId)])
+        return wrapped.session
     }
 
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session {
@@ -437,21 +524,48 @@ struct HTTPEngineAPI: EngineAPI {
         try await send("POST", path, body: body)
     }
 
-    private func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, body: B) async throws -> T {
-        var request = makeRequest(url(path))
+    private func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, query: [URLQueryItem] = [], body: B) async throws -> T {
+        var request = makeRequest(url(path, query: query))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONEncoder().encode(body)
         return try await perform(request)
     }
 
-    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let (data, status) = try await raw(request)
+    /// A raw read that keeps the response's content type.
+    private func rawFile(_ request: URLRequest) async throws -> RawFile {
+        let data: Data
+        let response: URLResponse
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            (data, response) = try await session.data(for: request)
         } catch {
-            throw EngineAPIError.incompatible(status: status)
+            throw EngineAPIError.transport(error)
         }
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            if let body = try? JSONDecoder().decode(EngineErrorBody.self, from: data) {
+                throw EngineAPIError.engine(code: body.error.code, message: body.error.message, status: status)
+            }
+            throw EngineAPIError.badResponse(status: status)
+        }
+        return RawFile(data: data, contentType: http?.value(forHTTPHeaderField: "content-type"))
+    }
+
+    /// DECODED OFF THE CALLER'S EXECUTOR. Every store that calls this is
+    /// `@MainActor`, and a struct method inherits the caller's isolation, so
+    /// a session snapshot with its tool outputs was being parsed on the main
+    /// thread — on a reconnect, at the same moment as the inbox's. The bytes
+    /// go to a detached task and only the value comes back.
+    private func perform<T: Decodable & Sendable>(_ request: URLRequest) async throws -> T {
+        let (data, status) = try await raw(request)
+        return try await Task.detached(priority: .userInitiated) {
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw EngineAPIError.incompatible(status: status)
+            }
+        }.value
     }
 
     private func raw(_ request: URLRequest) async throws -> Data {
@@ -477,6 +591,99 @@ struct HTTPEngineAPI: EngineAPI {
             throw EngineAPIError.badResponse(status: status)
         }
         return (data, status)
+    }
+}
+
+extension HTTPEngineAPI: PanelAPI {
+    func projects() async throws -> [Project] {
+        let list: ProjectList = try await get("api/projects")
+        return list.projects
+    }
+
+    func sessionFiles(_ id: EngineID) async throws -> WorkspaceListing {
+        struct Wrapped: Decodable { var listing: WorkspaceListing }
+        let wrapped: Wrapped = try await get("api/sessions/\(escape(id))/files")
+        return wrapped.listing
+    }
+
+    func sessionFile(_ id: EngineID, path: String) async throws -> WorkspaceFile {
+        struct Wrapped: Decodable { var file: WorkspaceFile }
+        let wrapped: Wrapped = try await get("api/sessions/\(escape(id))/files", query: [URLQueryItem(name: "path", value: path)])
+        return wrapped.file
+    }
+
+    func writeSessionFile(_ id: EngineID, path: String, text: String, expectedSha256: String) async throws -> WorkspaceWriteResult {
+        try await send(
+            "PUT", "api/sessions/\(escape(id))/files",
+            query: [URLQueryItem(name: "path", value: path)],
+            body: ["text": AnyEncodable(text), "expectedSha256": AnyEncodable(expectedSha256)]
+        )
+    }
+
+    func sessionFileRaw(_ id: EngineID, path: String) async throws -> RawFile {
+        try await rawFile(makeRequest(url("api/sessions/\(escape(id))/files/raw", query: [URLQueryItem(name: "path", value: path)])))
+    }
+
+    func sessionTable(_ id: EngineID, path: String, offset: Int, limit: Int, sort: String?, desc: Bool) async throws -> TableWindow {
+        var query = [
+            URLQueryItem(name: "path", value: path),
+            URLQueryItem(name: "offset", value: String(offset)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        if let sort { query.append(URLQueryItem(name: "sort", value: sort)) }
+        if desc { query.append(URLQueryItem(name: "desc", value: "1")) }
+        return try await get("api/sessions/\(escape(id))/data/table", query: query)
+    }
+
+    func attachments(_ id: EngineID, tag: String?) async throws -> [TurnAttachment] {
+        struct Wrapped: Decodable {
+            var attachments: [TurnAttachment]
+            private enum CodingKeys: String, CodingKey { case attachments }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                attachments = try c.decode([Skippable<TurnAttachment>].self, forKey: .attachments).compactMap(\.value)
+            }
+        }
+        let wrapped: Wrapped = try await get("api/sessions/\(escape(id))/attachments", query: tag.map { [URLQueryItem(name: "tag", value: $0)] } ?? [])
+        return wrapped.attachments
+    }
+
+    func attachmentBytes(_ id: EngineID, attachmentId: EngineID) async throws -> RawFile {
+        try await rawFile(makeRequest(url("api/sessions/\(escape(id))/attachments/\(escape(attachmentId))")))
+    }
+
+    func tagAttachment(_ id: EngineID, attachmentId: EngineID, tags: [String]) async throws -> TurnAttachment {
+        struct Wrapped: Decodable { var attachment: TurnAttachment }
+        let wrapped: Wrapped = try await send("PATCH", "api/sessions/\(escape(id))/attachments/\(escape(attachmentId))", body: ["tags": AnyEncodable(tags)])
+        return wrapped.attachment
+    }
+
+    func ds<T: Decodable & Sendable>(_ id: EngineID, method: String, body: JSONValue) async throws -> T {
+        try await door("ds", id, method: method, body: body)
+    }
+
+    func latex<T: Decodable & Sendable>(_ id: EngineID, method: String, body: JSONValue) async throws -> T {
+        try await door("latex", id, method: method, body: body)
+    }
+
+    /// The plugin doors. A decode failure here is a body this build does not
+    /// model, not a cockpit on another version, so it surfaces as its own
+    /// sentence rather than the snapshot's "very different versions".
+    private func door<T: Decodable & Sendable>(_ door: String, _ id: EngineID, method: String, body: JSONValue) async throws -> T {
+        // `method` may carry a slash (`notebook/run`); each segment is its own path part.
+        let path = "api/sessions/\(escape(id))/\(door)/" + method.split(separator: "/").map { escape(String($0)) }.joined(separator: "/")
+        var request = makeRequest(url(path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, status) = try await raw(request)
+        return try await Task.detached(priority: .userInitiated) {
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw EngineAPIError.engine(code: "unexpected_answer", message: "The Mac answered \(door)/\(method) in a shape this app cannot read.", status: status)
+            }
+        }.value
     }
 }
 
