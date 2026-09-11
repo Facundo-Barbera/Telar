@@ -138,3 +138,31 @@ test("human Stop keeps agent traffic blocked across restart until a fresh human 
   expect(reopened.getSession("session_one").agentMessagesBlocked).toBeUndefined();
   expect(reopened.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
 });
+
+/**
+ * A CACHED STATEMENT MUST NOT CARRY THE PREVIOUS CALL'S BINDINGS. Preparing
+ * each query once is what stops sqlite recompiling the same seven statements
+ * ten times a second, and the only way that can go wrong is a reused statement
+ * answering for the row it was last run with — so this interleaves several
+ * sessions through every cached path and demands each one's own answer back.
+ */
+test("statements reused across calls still answer for the row they were asked about", () => {
+  const { store } = setup();
+  for (const id of ["session_two", "session_three"]) store.createSession({ id, projectId: "project_one" });
+  const sessions = ["session_one", "session_two", "session_three"];
+  for (const sessionId of sessions) store.submitTurn(sessionId, { runId: `run_${sessionId}`, input: `text for ${sessionId}` });
+  // Interleaved, and twice, so any statement is run against a different
+  // session than the one that prepared it.
+  for (let round = 0; round < 2; round += 1) {
+    for (const sessionId of sessions) {
+      expect(store.turns(sessionId).map((turn) => turn.input)).toEqual([`text for ${sessionId}`]);
+      expect(store.eventCursor(sessionId)).toBeGreaterThan(0);
+      expect(store.readEvents(sessionId).every((event) => event.sessionId === sessionId)).toBe(true);
+    }
+  }
+  store.stopTurn("session_two", "run_session_two");
+  store.deleteSession("session_two");
+  expect(store.turns("session_one")).toHaveLength(1);
+  expect(store.turns("session_three")).toHaveLength(1);
+  expect(() => store.getSession("session_two")).toThrow();
+});
