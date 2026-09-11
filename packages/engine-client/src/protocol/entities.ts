@@ -1089,6 +1089,25 @@ export const Turn = z.object({
   agentDelivery: z.enum(["passive", "wake"]).optional(),
   agentSourceRunId: Id.optional(),
   /**
+   * WHAT THE MODEL IS HANDED INSTEAD OF `input`, on an agent-sent turn.
+   *
+   * A short notice in the wake's register — who sent it, which run holds it,
+   * how many characters it is, its opening line (its opening PARAGRAPH for a
+   * task or a blocker), and the `sessions_read` call that fetches the rest.
+   * `input` still holds the message exactly as sent; nothing is abridged on
+   * disk. Only the recipient's CONTEXT stopped paying for a peer's whole
+   * report on arrival.
+   *
+   * MINTED BY THE ENGINE AT SUBMIT TIME (`submitAgentTurn` → `agentNotice()`)
+   * and stored here, so the provider prompt, the desktop transcript row and a
+   * phone all read one string rather than each deriving their own.
+   *
+   * ABSENT ON EVERY AGENT TURN STORED BEFORE THIS EXISTED, and on wakes and
+   * human messages, which were never the body-sized problem. A reader that
+   * finds it missing falls back to `input` — see `framedTurnInput`.
+   */
+  agentNotice: z.string().max(4_000).optional(),
+  /**
    * WHAT THE SENDER SAID THIS TASK COVERS, on the task turn itself.
    *
    * DELIBERATELY NOT A SECOND QUEUE. An assignment is DERIVED from the task

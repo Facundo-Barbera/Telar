@@ -876,6 +876,7 @@ export class EngineWorker {
             text: delivery.text,
             ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}),
             ...(delivery.sender ? { sender: delivery.sender } : {}),
+            ...(delivery.notice ? { notice: delivery.notice } : {}),
             ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),
           })
         )

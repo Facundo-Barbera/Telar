@@ -414,8 +414,16 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
   }
   expect(prompts).toHaveLength(1);
   expect(prompts[0]).toStartWith(`[agent message from session ${hostId}]`);
-  expect(prompts[0]).toContain("not typed by the user");
-  expect(prompts[0]).toEndWith("please review the diff");
+  expect(prompts[0]).toContain("carries no human authorization");
+  /**
+   * AND THE PROVIDER IS HANDED THE NOTICE, NOT THE BODY — end to end, over the
+   * real HTTP surface and a real worker, which is the only place the whole
+   * chain (tool → `/turns/agent` → store → claim → `framedTurnInput`) is
+   * exercised at once. A task's notice carries its opening paragraph and names
+   * the read; the RECORD still holds the message exactly as sent.
+   */
+  expect(prompts[0]).toContain(`[agent message · task] session ${hostId} ASSIGNED this session work (run run_peer, 22 chars).`);
+  expect(prompts[0]).toContain(`sessions_read(sessionId: "${made!.id}", runId: "run_peer")`);
   expect((await client.session(made!.id)).turns[0]?.input).toBe("please review the diff");
 });
 

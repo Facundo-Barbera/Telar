@@ -1877,6 +1877,10 @@ export function createClaudeDriver(
               text: message.text,
               ...(attachments.length > 0 ? { attachments } : {}),
               ...(message.sender ? { sender: message.sender } : {}),
+              // The row keeps the BODY in `text` and the engine's notice beside
+              // it, so the transcript can collapse to the one line the model
+              // was handed and still expand to everything the peer sent.
+              ...(message.notice ? { notice: message.notice } : {}),
               // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
               // turn used to land here bare and draw as the person's bubble.
               ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
