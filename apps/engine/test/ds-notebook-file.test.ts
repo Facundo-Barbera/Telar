@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { emptyNotebook, findCell, fromNbOutputs, parseNotebook, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
+import { emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
 import { diffSnapshots } from "../src/ds/store-capability";
 import { namesIn } from "../src/ds/state-files";
 import { parseDelimited, windowCsv } from "../src/ds/table";
@@ -64,6 +64,47 @@ test("findCell addresses by id or index and refuses the rest", () => {
   expect(findCell(nb, { index: 0 })).toBe(0);
   expect(() => findCell(nb, { index: 9 })).toThrow(/out of range/);
   expect(() => findCell(nb, {})).toThrow(/id or index/);
+});
+
+/**
+ * MOVE KEEPS THE RECORD OF WHAT RAN. The reason the engine owns a `move` at
+ * all is that a client faking one as delete-then-insert mints a new id and
+ * loses `outputs` and `execution_count` — so these cases assert the cell comes
+ * out the other side as the same object, not merely the same text.
+ */
+test("a cell moves down and up carrying its outputs, execution count and metadata", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  const [markdown, code] = [nb.cells[0]!, nb.cells[1]!];
+
+  // DOWN is the same verb as up: `to` is where it lands, either way.
+  moveCell(nb, 0, 1);
+  expect(nb.cells.map((c) => c.id)).toEqual([code.id, markdown.id]);
+
+  moveCell(nb, 1, 0);
+  expect(nb.cells.map((c) => c.id)).toEqual([markdown.id, code.id]);
+
+  // The same object, not a copy — which is what makes the outputs survive.
+  expect(nb.cells[1]).toBe(code);
+  expect(nb.cells[1]!.execution_count).toBe(2);
+  expect(nb.cells[1]!.outputs).toEqual([{ output_type: "stream", name: "stdout", text: ["hi\n"] }]);
+  expect(nb.cells[1]!.metadata).toEqual({ tags: ["keep"] });
+});
+
+test("moving a cell to the index it already holds leaves the file byte-identical", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  const before = serializeNotebook(nb);
+  moveCell(nb, 1, 1);
+  expect(nb.cells.map((c) => c.id)).toEqual(parseNotebook(before).cells.map((c) => c.id));
+  expect(serializeNotebook(nb)).toBe(before);
+});
+
+test("a move target outside the notebook is refused rather than clamped", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  expect(() => moveCell(nb, 0, 2)).toThrow(/out of range \(0\.\.1\)/);
+  expect(() => moveCell(nb, 0, -1)).toThrow(/out of range/);
+  expect(() => moveCell(nb, 0, 0.5)).toThrow(/out of range/);
+  // Refused means UNCHANGED: a rejected move must not leave a hole behind.
+  expect(nb.cells).toHaveLength(2);
 });
 
 test("nbformat other than 4 and non-JSON are refused", () => {

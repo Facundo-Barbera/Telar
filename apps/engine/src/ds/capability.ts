@@ -99,6 +99,15 @@ export type NotebookEdit =
   | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }
   | { kind: "insert"; after?: string | number; source: string; cellType?: "code" | "markdown" | "raw" }
   | { kind: "delete"; cellId?: string; index?: number }
+  /**
+   * Reorder one cell, keeping its outputs and execution count — the thing
+   * delete-then-insert throws away. `to` is ABSOLUTE (the index the cell ends
+   * up at), not a relative `by`, because every other member of this union
+   * names a position rather than a step, and because absolute survives the
+   * sha-fenced write: two clients that each say "move it up one" compound into
+   * two steps, while two that say "put it at 3" agree. Move-up is `to - 1`.
+   */
+  | { kind: "move"; cellId?: string; index?: number; to: number }
   | { kind: "create" };
 
 export type SnapshotDiff = {

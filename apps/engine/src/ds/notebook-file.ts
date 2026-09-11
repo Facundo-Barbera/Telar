@@ -181,6 +181,28 @@ export function fromNbOutputs(outputs: unknown[]): CellOutput[] {
   return result;
 }
 
+/**
+ * Reorder, carrying THE CELL OBJECT rather than its text.
+ *
+ * A move expressed as delete-then-insert would mint a new id and drop
+ * `outputs` and `execution_count` — the record of what actually ran, and the
+ * reason a person scrolls back up a notebook at all. So the cell is spliced
+ * out and back in whole: id, source, type, metadata, outputs and count are the
+ * same object at a different index, and every unknown vendor key rides along
+ * with it.
+ *
+ * `to` is the index the cell OCCUPIES AFTERWARDS, so `to === from` leaves the
+ * array — and therefore the file — untouched. Out of range is refused rather
+ * than clamped, in `findCell`'s voice: a caller asking to move the top cell up
+ * has a bug in its own disabled-button state, and a silent no-op hides it the
+ * way an out-of-range `index` on `set` is not allowed to.
+ */
+export function moveCell(nb: Notebook, from: number, to: number): void {
+  if (!Number.isInteger(to) || to < 0 || to >= nb.cells.length) throw new Error(`move target ${to} is out of range (0..${nb.cells.length - 1})`);
+  const [cell] = nb.cells.splice(from, 1);
+  if (cell) nb.cells.splice(to, 0, cell);
+}
+
 export function findCell(nb: Notebook, ref: { cellId?: string; index?: number }): number {
   if (ref.cellId !== undefined) {
     const at = nb.cells.findIndex((cell) => cell.id === ref.cellId);
