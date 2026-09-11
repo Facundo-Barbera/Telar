@@ -100,14 +100,55 @@ Move up/down actions. Hidden project keys are preserved. Cross-Mac global
 ordering is not synchronized: host IDs belong to each cockpit's host book, so
 one cockpit's remote-host keys cannot be reused as this phone's UUIDs.
 
-On iPad the sidebar and conversation share a split view; Changes opens an
-inspector on a regular-width display. Compact windows and iPhone use a
-navigation stack for changes. New-conversation text and session reply text
+On iPad the sidebar and conversation share a split view; the panel opens as an
+inspector column on a regular-width display. Compact windows and iPhone push it
+full-screen instead. New-conversation text and session reply text
 survive navigation; photo attachments remain in memory until sent. Cmd-N
 starts a conversation and Cmd-comma opens Settings. Public cockpit links can
 be shared to a Mac; Handoff advertises the same link (the receiving device
 still needs network reachability and pairing). A local visit marker surfaces
 the latest result when a turn finishes while the reader is away.
+
+## The panel
+
+A conversation's menu opens **Panel**, the phone's version of the desktop
+cockpit's right panel. It carries four surfaces; Data and LaTeX appear only when
+the session's project has that plugin enabled, which the app learns from
+`GET /api/projects` the same way the web does.
+
+- **Diff** — the working tree's changes, the view Changes used to open.
+- **Files** — the checkout as a tree (directories first, natural order, single
+  child chains collapsed) beside the open file. Code and binaries are read-only
+  monospace with line numbers; Markdown and plain text are editable with a
+  sha256 precondition, a 600 ms autosave and the engine's own refusal sentence
+  when the file moved underneath. Notebooks render as cells with outputs,
+  `.csv`/`.tsv`/`.parquet` as a windowed grid, PDFs through PDFKit, images as
+  themselves.
+- **Data** — plots from the session's attachments, kernel variables with an
+  inspector, and the Python environment. The kernel's pill, Interrupt and
+  Restart sit at the strip's trailing edge.
+- **LaTeX** — compile a target, read the diagnostics as rows that open their own
+  file in Files, and open the built PDF.
+
+The panel is a trailing column on a regular width and a full-screen push on a
+compact one. Where the window cannot hold sidebar, conversation and panel at
+once — an iPad in portrait — opening the panel stands the sidebar aside and
+closing it brings the sidebar back. Which tab is up, which files are open and
+whether the panel is showing are remembered per Mac **and** session, since two
+Macs can mint the same session id.
+
+Inside the panel the tree and the open file share the width below 560 pt: the
+strip's leading toggle is the way between them, and opening a file — from the
+tree, from a transcript chip's *Open in panel*, or from a `display.opened` event
+the agent sent — shows the file. A `display.opened` only counts when it is newer
+than the moment the conversation was opened; the journal replays from zero on
+every load, and without that guard every reload would re-open last week's file.
+
+Presentation is driven by `@State` flags rather than a computed `Binding`.
+`.inspector` keeps its `isPresented` binding and compares it to decide whether
+the split view needs another update, so a `Binding(get:set:)` built in `body` is
+a new location on every pass: the inspector re-updated, that dirtied layout,
+layout re-ran `body`, and the app's first CoreAnimation commit never converged.
 
 ## Push notifications and Live Activities
 
