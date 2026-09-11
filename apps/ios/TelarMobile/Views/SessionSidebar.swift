@@ -280,6 +280,24 @@ struct SessionSidebar: View {
                 }
             }
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
+            // THREE WEIGHTS, NOT TWO, AND THE THIRD IS THE ONE THAT MATTERS —
+            // the desktop's rule (session-row.tsx), ported because the phone
+            // had only the two. Card versus slim separates live from history;
+            // inside the live band a session that is WORKING or WAITING ON YOU
+            // is not the same as one that merely happens to be recent. A
+            // hairline in the status colour on the leading edge reads down a
+            // column of twenty rows without adding a pixel of height, and it
+            // reuses the colour the status slot already established rather than
+            // inventing a second language for the same fact.
+            //
+            // It rides OUTSIDE the content, in the cell's own leading inset, so
+            // that it cannot push the row's text sideways: a bar that moved the
+            // title would make a row jump every time its turn started.
+            .overlay(alignment: .leading) {
+                if variant == .card, let tone = accentTone(row.session) {
+                    Capsule().fill(tone).frame(width: 2).padding(.vertical, 2).offset(x: -8)
+                }
+            }
         }
         // MAIL'S GRAMMAR: the leading edge is the one-tap toggle you reach
         // for most (pin), the trailing edge is where a row LEAVES the list
@@ -417,8 +435,13 @@ struct SessionSidebar: View {
                 // important" on the one row that is asking to be opened. An
                 // unread row keeps its full weight, so the dot and the title
                 // agree.
+                // The desktop dims a resting slim title to 70% and restores it
+                // on hover; 85% was a hedge against having no hover to restore
+                // it with, and what it actually cost was the DIFFERENCE — at
+                // 85% a slim row and a card's title read as the same weight, so
+                // the two volumes stopped being two.
                 .font(Settling.showsUnreadMark(row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
-                .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.85))
+                .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.7))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             statusSlot(row.session)
@@ -443,6 +466,21 @@ struct SessionSidebar: View {
         if Settling.showsUnreadMark(session) {
             Circle().fill(Theme.accent).frame(width: 6, height: 6)
                 .accessibilityLabel("Unread answer")
+        }
+    }
+
+    /// THE LEADING HAIRLINE'S COLOUR, or nothing when the row is at rest.
+    ///
+    /// The bands are the desktop's `activityBadge` (lib/session-activity.ts)
+    /// exactly: a row wears the bar when it has a badge to wear, so an idle
+    /// row — which shows an age rather than a status — has none. Blocked takes
+    /// the attention tone and everything live takes the accent, which is the
+    /// same pairing the status slot already uses two lines below.
+    private func accentTone(_ session: Session) -> Color? {
+        switch session.activity {
+        case .blocked: return Theme.statusAmber
+        case .working, .queued, .monitoring: return Theme.accent
+        case .idle: return nil
         }
     }
 
