@@ -38,6 +38,21 @@
 export const SYSTEM_OPENER_ID = "system";
 export const REVEAL_OPENER_ID = "reveal";
 
+/** WHAT "OPEN" MEANS BEFORE YOU HAVE MEANT ANYTHING BY IT.
+ *
+ *  A first run used to read "Open" and do nothing but show the menu, which
+ *  makes the common case — one editor, opened constantly — cost two clicks
+ *  forever until you happen to notice the button learns. It is the same known
+ *  answer the module note describes, one step earlier: most people here have
+ *  VS Code, so the button offers it and the first pick that disagrees replaces
+ *  it for good.
+ *
+ *  A DEFAULT IS NOT A PREFERENCE, and the two stay separate below: this one is
+ *  never written to storage, never hoists its row, and never carries the
+ *  shortcut hint — it only decides what the left half does until a real choice
+ *  is made. */
+export const DEFAULT_OPENER_ID = "vscode";
+
 /** What the shell reported: an installed app that can open a folder. Structural
  *  rather than imported so this module stays free of the desktop bridge. */
 export type OpenerLike = { id: string; label: string; path?: string; icon?: string };
@@ -232,15 +247,25 @@ export function remembersOpener(entry: Pick<WorkspaceOpenerEntry, "kind">): bool
 }
 
 /**
- * What the split button's left half says.
+ * What the split button's left half does, and therefore says.
  *
- * "Open" on first run, and that half opens the menu instead of acting — a
- * button whose label cannot name what it will do should not do it. The moment
- * there is an answer, the label states it.
+ * THREE ANSWERS, IN ORDER. What you last opened with; failing that VS Code,
+ * because it is the one most people here would have picked anyway
+ * (`DEFAULT_OPENER_ID`); failing that whatever editor the machine does have,
+ * in the shell's own order. Only a machine with no editor at all falls through
+ * to undefined, and there the half goes back to reading "Open" and showing the
+ * menu — a button whose label cannot name what it will do should not do it.
+ *
+ * The fallbacks look at `kind === "opener"` only. The system default and the
+ * reveal are deliberately not guessed into: handing a folder to whatever the OS
+ * happens to associate with it is a fine thing to CHOOSE and a poor thing to be
+ * given, and a reveal is not an open at all (`remembersOpener`).
  */
 export function workspaceOpenerPrimary(entries: readonly WorkspaceOpenerEntry[]): WorkspaceOpenerEntry | undefined {
   const first = entries[0];
-  return first?.preferred ? first : undefined;
+  if (first?.preferred) return first;
+  const apps = entries.filter((entry) => entry.kind === "opener");
+  return apps.find((entry) => entry.id === DEFAULT_OPENER_ID) ?? apps[0];
 }
 
 export function workspaceOpenerPrimaryLabel(entries: readonly WorkspaceOpenerEntry[]): string {

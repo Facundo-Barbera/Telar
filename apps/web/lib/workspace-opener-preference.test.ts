@@ -100,8 +100,11 @@ describe("what an open teaches the button", () => {
     // reveals because a previous version remembered a glance.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: REVEAL_OPENER_ID });
     expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
-    expect(workspaceOpenerPrimary(entries)).toBeUndefined();
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open");
+    expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
+    // It falls through to the ordinary default, so the half opens an editor
+    // rather than ever reaching for Finder.
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode", kind: "opener" });
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Visual Studio Code");
   });
 
   test("the system default still reaches the left half", () => {
@@ -175,7 +178,9 @@ describe("the list", () => {
     // errors when pressed, for an app that is no longer on the machine.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: "cursor" });
     expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
-    expect(workspaceOpenerPrimary(entries)).toBeUndefined();
+    expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
+    // The half names something installed instead — never the app that is gone.
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode" });
   });
 
   test("an installed app carries its brand mark; one we have no mark for carries none", () => {
@@ -236,10 +241,36 @@ describe("hairlines", () => {
 });
 
 describe("what the left half says", () => {
-  test("nothing remembered: 'Open', and no entry claims the primary slot", () => {
+  test("nothing remembered: VS Code, because that is the answer most people would have given", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open");
-    expect(workspaceOpenerPrimary(entries)).toBeUndefined();
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Visual Studio Code");
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode", icon: "vscode" });
+  });
+
+  test("no VS Code: the first editor the machine does have, in the shell's order", () => {
+    const entries = workspaceOpenerEntries({ openers: INSTALLED.filter((opener) => opener.id !== "vscode") });
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "zed" });
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Zed");
+  });
+
+  test("a default is not a preference: it hoists nothing and is not marked", () => {
+    // The list stays in the shell's own order, and no row claims to be the
+    // remembered one — the only thing the default decides is the left half.
+    const entries = workspaceOpenerEntries({ openers: INSTALLED });
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
+  });
+
+  test("what you actually chose beats the default", () => {
+    const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: "zed" });
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "zed", preferred: true });
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Zed");
+  });
+
+  test("a preference for something uninstalled falls back to the default, not to 'Open'", () => {
+    // The module re-validates on read; the button should still offer the best
+    // guess it has rather than forgetting how to open anything.
+    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: "emacs" }))).toBe("Open in Visual Studio Code");
   });
 
   test("it names the app, so the button says what pressing it will do", () => {
@@ -247,7 +278,10 @@ describe("what the left half says", () => {
     expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: SYSTEM_OPENER_ID }))).toBe("Open in the default app");
   });
 
-  test("an empty list still answers", () => {
+  test("no editors at all: 'Open', and the menu rather than a guess", () => {
+    // The system default and the reveal are in the list and are deliberately
+    // not guessed into — see workspaceOpenerPrimary.
+    expect(workspaceOpenerPrimary(workspaceOpenerEntries({ openers: [] }))).toBeUndefined();
     expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: [] }))).toBe("Open");
     expect(workspaceOpenerPrimaryLabel([])).toBe("Open");
   });

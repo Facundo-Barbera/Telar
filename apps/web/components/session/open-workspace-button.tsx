@@ -7,9 +7,11 @@
  * click and wears its brand mark; the chevron lists every app the shell found.
  * The preference is written on every open (lib/workspace-opener-preference.ts),
  * so this becomes "Open in Zed" the first time you pick Zed and there is no
- * setting anywhere to keep in step with it. Before there is an answer the left
- * half reads "Open" and opens the list, because a button whose label cannot
- * name what it will do should not do it.
+ * setting anywhere to keep in step with it. Before you have picked anything it
+ * offers VS Code, or whatever editor the machine does have — a first run is
+ * still one click, and one pick replaces the guess for good. Only a machine
+ * with no editor at all leaves the half reading "Open" and showing the list,
+ * because a button whose label cannot name what it will do should not do it.
  *
  * The apps listed are the ones the shell actually found installed
  * (workspace-openers.js); the renderer names an id, never a path. On a remote
@@ -135,7 +137,8 @@ export function OpenWorkspaceButton({
             type="button"
             variant="ghost"
             size="sm"
-            // With no preference this half opens the list instead of guessing.
+            // Only a machine with no editor at all reaches the second branch;
+            // there is nothing to name, so this half shows the list.
             onClick={primary ? () => act(primary) : () => setOpen(true)}
             title={primary ? `${primaryLabel} — ${path}` : "Open this session's folder"}
           >
