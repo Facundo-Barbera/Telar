@@ -4,10 +4,11 @@
 // components/settings/settings-shell.tsx. A fixed side-nav (never scrolls) and
 // an internally-scrolling content pane with a sticky sub-header. Colors come
 // from theme tokens only; nothing hard-codes a palette.
-import { useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { settingsRowId } from "@/lib/settings-search";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -21,6 +22,24 @@ export type SettingsSection = {
   count?: number;
   group?: string; // optional side-nav grouping header
 };
+
+/**
+ * WHERE A ROW IS, WITHOUT EVERY ROW BEING TOLD.
+ *
+ * A row's anchor has to name its pane and its group, or two panes with a
+ * "Model" row cannot both be linked to. Neither fact is a row's business: the
+ * pane is whatever the shell has selected and the group is the heading directly
+ * above, and threading both through every `<Row>` in a dozen section files
+ * would be a prop nobody reads and one more thing to get wrong on a move.
+ *
+ * So the frame states them once — the shell for the pane, the group for its own
+ * title — and `Row` derives the id it renders from `lib/settings-search.ts`,
+ * which is the SAME function the search index uses to point at rows that have
+ * never been rendered. Outside a shell (a Row mounted alone in a test) both are
+ * undefined and the id is the label's slug, which is still unique there.
+ */
+const SettingsPaneContext = createContext<string | undefined>(undefined);
+const SettingsGroupContext = createContext<string | undefined>(undefined);
 
 export function SettingsShell({
   title,
@@ -295,7 +314,9 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
+          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>
+            <SettingsPaneContext.Provider value={activeSection.id}>{children}</SettingsPaneContext.Provider>
+          </div>
         </div>
       </div>
     </div>
@@ -344,7 +365,13 @@ export function SettingsGroup({
           space above the first field, and the next group supplies it below the
           last. A Row cannot know that — it also lives inside Panels, where
           eating its own padding pressed the text against the border. */}
-      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">{children}</div>
+      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+        {/* Only a plain-string title names a group for the rows beneath it. A
+            title spliced from a value ("Telar's servers") would put the project
+            name into every anchor under it, so those rows fall back to the
+            pane-and-label id rather than to an anchor that moves with data. */}
+        <SettingsGroupContext.Provider value={typeof title === "string" ? title : undefined}>{children}</SettingsGroupContext.Provider>
+      </div>
     </section>
   );
 }
@@ -386,8 +413,17 @@ export function SettingsGroup({
  * width and the row wraps on a narrow pane rather than compressing the label
  * into a ribbon of one word per line — which is exactly what happened when a
  * caller handed `control` three buttons.
+ *
+ * EVERY ROW IS A DESTINATION. It carries an id and takes focus programmatically
+ * (`tabIndex={-1}`, which keeps it out of the tab order for everyone who did
+ * not ask to go there) so settings search can scroll to it, focus it and pulse
+ * it once. The id is derived from the pane and group around it — see
+ * `settingsRowId` — so it exists without anybody maintaining a table of them.
+ * `id` is for the rows the derivation cannot serve: a label that is a component
+ * or carries a value, where the slug would be unstable or absent.
  */
 export function Row({
+  id,
   label,
   hint,
   icon: Icon,
@@ -397,6 +433,8 @@ export function Row({
   unavailable,
   children,
 }: {
+  /** Overrides the derived anchor. Needed only when `label` is not a string. */
+  id?: string;
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
@@ -409,12 +447,26 @@ export function Row({
   unavailable?: { reason: ReactNode };
   children?: ReactNode;
 }) {
+  const page = useContext(SettingsPaneContext);
+  const group = useContext(SettingsGroupContext);
+  const anchor =
+    id ??
+    (typeof label === "string"
+      ? settingsRowId({ ...(page ? { page } : {}), ...(group ? { group } : {}), label })
+      : undefined);
   // The reason REPLACES the hint rather than joining it: a sentence about how
   // the setting behaves, printed under the sentence saying it does not apply
   // here, is one sentence the reader has to work out is moot.
   const explanation = unavailable ? unavailable.reason : hint;
+
   return (
-    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3">
+    <div
+      {...(anchor ? { id: anchor } : {})}
+      // Focusable only on purpose: -1 answers `.focus()` and stays out of the
+      // tab order, so arriving from a search result lands the caret on the row
+      // while tabbing through the pane still goes control to control.
+      tabIndex={-1}
+      className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 outline-none">
       <div className="flex min-w-48 flex-1 items-start gap-2.5">
         {Icon && (
           <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
@@ -548,6 +600,7 @@ export function Tabs<T extends string>({
 // toggle is a Row, and a switch that does not apply here is the commonest case
 // `unavailable` exists for.
 export function ToggleRow({
+  id,
   label,
   hint,
   icon,
@@ -556,6 +609,8 @@ export function ToggleRow({
   onCheckedChange,
   unavailable,
 }: {
+  /** Passed straight through — a toggle row is a Row, and is a search destination like any other. */
+  id?: string;
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
@@ -566,6 +621,7 @@ export function ToggleRow({
 }) {
   return (
     <Row
+      {...(id ? { id } : {})}
       label={label}
       hint={hint}
       icon={icon}

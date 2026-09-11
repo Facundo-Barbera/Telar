@@ -1,15 +1,17 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Row, ToggleRow } from "./settings-shell";
+import { Row, SettingsGroup, ToggleRow } from "./settings-shell";
 
 /**
- * ROW ANATOMY v2 — the three parts a caller can now reach.
+ * ROW ANATOMY v2, AND THE ANCHOR EVERY SEARCH RESULT AIMS AT.
  *
- * Rendered rather than read from source, because each of these is a claim about
- * what arrives in the DOM: a control that is only VISUALLY dimmed still takes a
- * click, and a revert slot that is only DOCUMENTED as reserved still shifts the
- * row. Neither would fail a test that read the props back.
+ * Rendered rather than read from source, because every claim here is a claim
+ * about what reaches the DOM: a control that is only VISUALLY dimmed still
+ * takes a click, a revert slot that is only DOCUMENTED as reserved still
+ * shifts the row, and an id the index computes but the row does not stamp is a
+ * result that navigates and then lands nowhere. None of the three would fail a
+ * test that read the props back.
  */
 
 test("an unavailable control is inert, and the reason stands in for the hint", () => {
@@ -71,4 +73,41 @@ test("a toggle row carries status and unavailable through to the Row", () => {
   expect(html).toContain("Beta");
   expect(html).toContain("inert=");
   expect(html).toContain("No provider is configured to name them.");
+});
+
+test("a row inside a group carries the derived anchor and takes focus", () => {
+  const html = renderToStaticMarkup(
+    <SettingsGroup title="Settling">
+      <Row label="Settle quiet sessions" hint="Off means nothing leaves the list on its own." />
+    </SettingsGroup>,
+  );
+  // No pane around it here, so the id is group + label — the same derivation
+  // the shell completes with its selected pane.
+  expect(html).toContain('id="settings-row-settling-settle-quiet-sessions"');
+  expect(html).toContain('tabindex="-1"');
+});
+
+test("the group's title only names rows when it is a plain string", () => {
+  // "Telar's servers" is spliced from a project name; a row under it must not
+  // take an anchor that moves when the project is renamed.
+  const html = renderToStaticMarkup(
+    <SettingsGroup title={<span>Acme&apos;s servers</span>}>
+      <Row label="Add a server" />
+    </SettingsGroup>,
+  );
+  expect(html).toContain('id="settings-row-add-a-server"');
+});
+
+test("an explicit id wins, for labels that are not text", () => {
+  const html = renderToStaticMarkup(<Row id="settings-row-paired-device" label={<strong>iPhone</strong>} />);
+  expect(html).toContain('id="settings-row-paired-device"');
+});
+
+test("a toggle row is a destination too", () => {
+  const html = renderToStaticMarkup(
+    <SettingsGroup title="Generated text">
+      <ToggleRow label="Name sessions" checked={false} onCheckedChange={() => undefined} />
+    </SettingsGroup>,
+  );
+  expect(html).toContain('id="settings-row-generated-text-name-sessions"');
 });
