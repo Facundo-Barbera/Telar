@@ -748,6 +748,78 @@ describe("sessions_read is bounded", () => {
   });
 });
 
+// ── the other half of the notice ────────────────────────────────────────────
+
+/**
+ * A PEER'S MESSAGE ARRIVES AS A NOTICE NAMING THIS CALL, so this call has to be
+ * able to answer it — in ONE call, with the body whole. Anything less and the
+ * recipient acts on the teaser, which is worse than the flood the notice
+ * replaced.
+ */
+describe("sessions_read returns the message a notice stands in for", () => {
+  test("one call, and the body comes back exactly as sent", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const body = `Findings\n\n${"The parser drops the column on recovery. ".repeat(60)}`;
+    const sent = await call(tools, "sessions_send", { sessionId: id, input: body });
+    const runId = sent.json!.runId as string;
+    // The SENDER is told what the other side actually sees, in the real string.
+    expect(String(sent.json!.recipientSees)).toContain(`sessions_read(sessionId: "${id}", runId: "${runId}")`);
+
+    const read = await call(tools, "sessions_read", { sessionId: id, runId });
+    expect(read.json!.message).toBe(body);
+    expect(read.json!.messageChars).toBe(body.length);
+    expect(read.json!.messageMore).toBe(false);
+    expect(read.json!.messageIntent).toBe("report");
+    /**
+     * AND IT ESCAPES THE EVENT CLAMP, which is the whole reason `message` is
+     * handed over from the TURN rather than left to be dug out of the journal.
+     * The same body inside `turn.accepted` is cut at 2,000 characters and
+     * marked — so a recipient that followed the notice into the events would
+     * have got a longer truncation of the thing it was fetching.
+     */
+    const accepted = (read.json!.events as Array<{ type: string; turn?: { input: string } }>).find((event) => event.type === "turn.accepted");
+    expect(accepted!.turn!.input).toContain("more characters, not shown");
+    expect(String(read.json!.message)).not.toContain("more characters, not shown");
+  });
+
+  test("a body past the budget is read whole in verbatim slices", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    const body = "z".repeat(20_000);
+    const runId = (await call(tools, "sessions_send", { sessionId: id, input: body })).json!.runId as string;
+
+    let assembled = "";
+    let cursor: number | undefined = 0;
+    for (let lap = 0; lap < 5 && cursor !== undefined; lap += 1) {
+      const page = await call(tools, "sessions_read", { sessionId: id, runId, messageAfter: cursor });
+      assembled += page.json!.message as string;
+      cursor = page.json!.messageMore === true ? (page.json!.messageFrom as number) + (page.json!.message as string).length : undefined;
+    }
+    expect(assembled).toBe(body);
+  });
+
+  test("a human's turn has no message to fetch — it was never replaced by a notice", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    store.submitTurn(id, { runId: "run_typed", input: "please fix the editor" });
+    const read = await call(tools, "sessions_read", { sessionId: id, runId: "run_typed" });
+    expect(read.json!.message).toBeUndefined();
+    expect(read.json!.messageChars).toBeUndefined();
+  });
+
+  test("the wall tells senders and recipients what actually travels", () => {
+    const { store } = engine();
+    const tools = wall(store);
+    expect(tools.get("sessions_send")!.description).toContain("THE RECIPIENT IS HANDED A NOTICE, NOT YOUR TEXT");
+    expect(tools.get("sessions_read")!.description).toContain("AND IT IS WHAT AN AGENT-MESSAGE NOTICE NAMES");
+    expect(tools.get("sessions_subscribe")!.description).toContain("so is every message a peer sends you");
+  });
+});
+
 // ── subscriptions and answering a peer ──────────────────────────────────────
 
 describe("subscribing and answering", () => {
