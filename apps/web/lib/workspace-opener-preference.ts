@@ -115,6 +115,38 @@ export function writePreferredOpener(
   } catch {
     // A browser that will not store it still opened the folder. Nothing to say.
   }
+  cached.set(workspaceOpenerPreferenceKey(hostId), id);
+  for (const listener of listeners) listener();
+}
+
+/**
+ * Read through `useSyncExternalStore`, the shape editor-wrap.ts already uses:
+ * the preference lives outside React, and the hook's server snapshot is what
+ * keeps the first client render agreeing with the markup the server produced —
+ * there is no `localStorage` there, so both start at "no preference" and the
+ * value arrives in the same commit as everything else.
+ *
+ * The snapshot is CACHED because the hook compares by identity and would spin
+ * on a fresh read each render. One entry per machine, so two hosts do not share
+ * one cached answer.
+ */
+const listeners = new Set<() => void>();
+const cached = new Map<string, string | undefined>();
+
+export function subscribePreferredOpener(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+}
+
+export function preferredOpenerSnapshot(hostId?: string): string | undefined {
+  const key = workspaceOpenerPreferenceKey(hostId);
+  if (!cached.has(key)) cached.set(key, readPreferredOpener(hostId));
+  return cached.get(key);
+}
+
+/** The server has no storage, so it renders "Open" and hydration agrees. */
+export function serverPreferredOpenerSnapshot(): string | undefined {
+  return undefined;
 }
 
 /**

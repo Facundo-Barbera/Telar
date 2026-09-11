@@ -6,8 +6,11 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  preferredOpenerSnapshot,
   readPreferredOpener,
   REVEAL_OPENER_ID,
+  serverPreferredOpenerSnapshot,
+  subscribePreferredOpener,
   SYSTEM_OPENER_ID,
   workspaceOpenerEntries,
   workspaceOpenerPreferenceKey,
@@ -74,6 +77,40 @@ describe("remembering the app", () => {
   test("no storage at all (server render) is not an error", () => {
     expect(readPreferredOpener("local", undefined)).toBeUndefined();
     expect(() => writePreferredOpener("local", "zed", undefined)).not.toThrow();
+  });
+});
+
+describe("the store the button reads through", () => {
+  test("the server renders no preference, so the first client render can agree with it", () => {
+    expect(serverPreferredOpenerSnapshot()).toBeUndefined();
+  });
+
+  test("an open notifies subscribers and changes that machine's snapshot only", () => {
+    const storage = fakeStorage();
+    let notified = 0;
+    const unsubscribe = subscribePreferredOpener(() => void (notified += 1));
+    try {
+      writePreferredOpener("snapshot_host_a", "zed", storage);
+      expect(notified).toBe(1);
+      expect(preferredOpenerSnapshot("snapshot_host_a")).toBe("zed");
+      // The other Mac is untouched — one cached answer per machine.
+      expect(preferredOpenerSnapshot("snapshot_host_b")).toBeUndefined();
+
+      writePreferredOpener("snapshot_host_a", REVEAL_OPENER_ID, storage);
+      expect(notified).toBe(2);
+      // The cache follows the write; a stale snapshot here would leave the
+      // button naming the app you just stopped using.
+      expect(preferredOpenerSnapshot("snapshot_host_a")).toBe(REVEAL_OPENER_ID);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("unsubscribing stops the notices", () => {
+    let notified = 0;
+    subscribePreferredOpener(() => void (notified += 1))();
+    writePreferredOpener("snapshot_host_c", "zed", fakeStorage());
+    expect(notified).toBe(0);
   });
 });
 
