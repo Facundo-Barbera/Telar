@@ -324,15 +324,16 @@ class Handler(BaseHTTPRequestHandler):
                 elif edit.get('kind') == 'delete':
                     cells[:] = [c for c in cells if c['id'] != edit.get('cellId')]
                 elif edit.get('kind') == 'move':
-                    # "Put this cell after that one", or first when `after` is
-                    # absent. Outputs and execution counts ride along, which is
-                    # the whole reason a move is not a delete plus an insert.
+                    # `to` is the ABSOLUTE index the cell occupies afterwards.
+                    # Outputs and execution counts ride along, which is the
+                    # whole reason a move is not a delete plus an insert.
                     moving = next((c for c in cells if c['id'] == edit.get('cellId')), None)
-                    if moving is not None:
-                        cells.remove(moving)
-                        after = edit.get('after')
-                        idx = next((i for i, c in enumerate(cells) if c['id'] == after), -1) + 1 if after else 0
-                        cells.insert(idx, moving)
+                    to = edit.get('to')
+                    if moving is None or not isinstance(to, int) or not (0 <= to < len(cells)):
+                        return self._send(400, json.dumps({'error': {'code': 'invalid_request',
+                            'message': f'move target {to} is out of range (0..{len(cells) - 1})'}}).encode())
+                    cells.remove(moving)
+                    cells.insert(to, moving)
                 for i, c in enumerate(cells): c['index'] = i
                 NOTEBOOK['cellCount'] = len(cells)
                 return self._send(200, json.dumps(NOTEBOOK).encode())

@@ -28,32 +28,34 @@ import Testing
 
     // MARK: move
 
-    @Test func movingDownFollowsTheNeighbourItSwapsWith() {
-        let landing = notebookMove("a", by: 1, in: cells)
-        #expect(landing?.after == "b")
-        #expect(landing?.index == 1)
+    @Test func movingDownIsOneIndexLater() {
+        // `to` is the ABSOLUTE index the cell occupies afterwards, which is
+        // what the engine's edit takes.
+        #expect(notebookMove("a", by: 1, in: cells) == 1)
+        #expect(notebookMove("b", by: 1, in: cells) == 2)
     }
 
-    @Test func movingUpFollowsTheCellTwoPlacesBack() {
-        // The edit says "put this after that", so moving c up past b means
-        // following a — not b, which is what it is swapping with.
-        let landing = notebookMove("c", by: -1, in: cells)
-        #expect(landing?.after == "a")
-        #expect(landing?.index == 1)
+    @Test func movingUpIsOneIndexEarlier() {
+        #expect(notebookMove("c", by: -1, in: cells) == 1)
     }
 
-    @Test func movingToTheFrontFollowsNothing() {
-        let landing = notebookMove("b", by: -1, in: cells)
-        #expect(landing?.after == nil)
-        #expect(landing?.index == 0)
+    @Test func movingToTheFrontIsIndexZero() {
+        // The old "put it after that one" shape needed a special case for
+        // reaching the front; an absolute index does not.
+        #expect(notebookMove("b", by: -1, in: cells) == 0)
     }
 
     @Test func movingOffEitherEndIsNotAMove() {
+        // The engine refuses an out-of-range target and leaves the file alone,
+        // but a refusal the reader cannot act on does not belong in the
+        // problem banner — so nothing is sent.
         #expect(notebookMove("a", by: -1, in: cells) == nil)
         #expect(notebookMove("c", by: 1, in: cells) == nil)
     }
 
     @Test func movingNowhereIsNotAMove() {
+        // A same-index move is a byte-identical no-op on the engine; there is
+        // no reason to make the round trip.
         #expect(notebookMove("b", by: 0, in: cells) == nil)
     }
 

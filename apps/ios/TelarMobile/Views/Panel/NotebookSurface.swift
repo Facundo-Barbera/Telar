@@ -384,13 +384,18 @@ struct NotebookSurface: View {
 
     /// MOVE IS THE ENGINE'S JOB. Doing it here as delete-then-insert would
     /// throw away the cell's outputs and its execution count, which is the
-    /// history of what actually ran. If a Mac's plugin does not know this
-    /// edit, its own sentence lands in the problem banner.
+    /// history of what actually ran.
+    ///
+    /// `to` is the ABSOLUTE index the cell occupies afterwards, which is the
+    /// shape the engine's edit takes. Out of range is refused there with its
+    /// own sentence and the file left untouched; this does not send one, so
+    /// the banner stays for things the reader can do something about.
     private func move(_ cell: NotebookCell, by offset: Int) async {
         guard let cells = notebook?.cells,
-              let landing = notebookMove(cell.id, by: offset, in: cells.map(\.id)) else { return }
-        var edit: [String: JSONValue] = ["kind": .string("move"), "cellId": .string(cell.id)]
-        if let after = landing.after { edit["after"] = .string(after) }
+              let to = notebookMove(cell.id, by: offset, in: cells.map(\.id)) else { return }
+        let edit: [String: JSONValue] = [
+            "kind": .string("move"), "cellId": .string(cell.id), "to": .number(Double(to)),
+        ]
         do {
             notebook = try await api.notebookEdit(sessionId, path: path, edit: .object(edit))
             problem = nil
@@ -626,14 +631,18 @@ func notebookNext(_ id: String, in ids: [String]) -> String? {
     return ids[index + 1]
 }
 
-/// WHICH CELL A MOVED ONE SHOULD FOLLOW. The engine's `move` edit is stated as
-/// "put this after that", so a move DOWN follows the neighbour it swaps with,
-/// while a move UP follows the one two places back — and follows nothing at
-/// all when it becomes the first cell. Off the ends there is nothing to do.
-func notebookMove(_ id: String, by offset: Int, in ids: [String]) -> (after: String?, index: Int)? {
+/// WHERE A MOVED CELL ENDS UP — the ABSOLUTE index it occupies afterwards,
+/// which is what the engine's `move` edit takes. Up is one less, down is one
+/// more, and that is the whole rule; the earlier "put it after that one"
+/// phrasing needed a special case for reaching the front and this does not.
+///
+/// Off either end returns nil and nothing is sent: the engine would refuse it
+/// ("move target N is out of range") and leave the file alone, but a refusal
+/// the reader cannot act on does not belong in the problem banner. Moving
+/// nowhere is nil for the same reason — it is a byte-identical no-op there.
+func notebookMove(_ id: String, by offset: Int, in ids: [String]) -> Int? {
     guard offset != 0, let index = ids.firstIndex(of: id) else { return nil }
     let target = index + offset
     guard ids.indices.contains(target) else { return nil }
-    let afterIndex = offset < 0 ? target - 1 : target
-    return (ids.indices.contains(afterIndex) ? ids[afterIndex] : nil, target)
+    return target
 }
