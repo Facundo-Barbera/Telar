@@ -428,7 +428,13 @@ export function RemoteSection() {
       {status.requireAuth && (
         <SettingsGroup
           title="Pair a device"
-          description="One code, one device: it lives five minutes and is destroyed after five wrong tries. Each browser pairs per address — the tailnet IP and a ts.net name are different origins."
+          // THE CODE'S LIFETIME IS THE CODE'S BUSINESS, and the per-address rule
+          // is the endpoint picker's. Both used to sit here, in a header read
+          // before either thing is on screen — so the lifetime was forgotten by
+          // the time a code existed, and the origins rule was abstract until
+          // there was a list of addresses to choose between. Each now sits on
+          // the thing it governs, below.
+          description="One code, one device."
           action={
             <Button variant="outline" size="sm" disabled={busy} onClick={() => void mint()}>
               {minted && !expired ? "New code" : "Show pairing code"}
@@ -444,11 +450,20 @@ export function RemoteSection() {
                     code, not a second secret. */}
                 <div className="flex flex-wrap items-center gap-3">
                   <PairingCode code={minted.code} />
-                  <span className="min-w-0 text-xs text-muted-foreground">Type it into the pairing page on the other device.</span>
+                  <span className="min-w-0 text-xs text-muted-foreground">
+                    Type it into the pairing page on the other device. It lives five minutes, and is destroyed after five wrong tries.
+                  </span>
                 </div>
                 {endpoints.length > 1 && (
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs text-muted-foreground">Reach this machine via</span>
+                    {/* WHY THE CHOICE MATTERS, beside the choice. A browser
+                        pairs per ORIGIN, so picking the tailnet IP here and
+                        opening the ts.net name later is two pairings, not one —
+                        which is only worth saying when there is a list to pick
+                        from, and is noise in a header when there is not. */}
+                    <span className="text-xs text-muted-foreground">
+                      Reach this machine via — each browser pairs per address, so the tailnet IP and a ts.net name are different origins.
+                    </span>
                     {endpoints.map((endpoint) => (
                       <EndpointRow key={endpoint.url} endpoint={endpoint} selected={endpoint.url === selectedUrl} onSelect={() => setEndpointUrl(endpoint.url)} />
                     ))}
@@ -473,19 +488,29 @@ export function RemoteSection() {
           ) : (
             <Row
               label="Pairing code"
-              hint={expired ? "Expired — mint a new one." : "Codes are shown once and never stored."}
+              // The lifetime, on the row that is about the code. Five minutes
+              // and five wrong tries is what a person needs when deciding
+              // whether to mint one now or walk to the other device first.
+              hint={expired ? "Expired — mint a new one." : "Shown once and never stored. A code lives five minutes, and is destroyed after five wrong tries."}
               control={null}
             />
           )}
         </SettingsGroup>
       )}
 
+      {/* THREE SENTENCES OF INSTRUCTIONS BECAME ONE OF SCOPE. The header taught
+          renaming, explained what "view only" means and described what revoking
+          does — a paragraph to hold while looking down a list for one device.
+          Each of those belongs to a control that is already on the row: the name
+          is a button that says "Rename", the roles are a segmented control whose
+          two options can carry their own tooltips, and the ✕ says what it does
+          and what it leaves alone. */}
       <SettingsGroup
         title="Paired devices"
         description={
           status.requireAuth
-            ? "Rename by clicking the name. View-only devices may read everything and change nothing. Revoking logs the device out on its next request."
-            : "Pairing is off — anything that can reach this address has full control. These credentials matter again when you turn it on."
+            ? "Devices that may reach this cockpit."
+            : "Pairing is off — these credentials only matter again when you turn it back on."
         }
       >
         {status.host && <HostRow host={status.host} />}
@@ -503,10 +528,21 @@ export function RemoteSection() {
             onRevoke={() => void revoke(device.id)}
           />
         ))}
-        {status.devices.length > 1 && status.callerDeviceId && (
-          <RevokeOthersRow count={status.devices.length - 1} onConfirm={() => void revokeOthers()} />
-        )}
       </SettingsGroup>
+
+      {/* DANGER, AT THE FLOOR OF THE PANE. A plain label and no red panel — the
+          separation is structural, so the one action that logs several devices
+          out is never adjacent to the per-device controls it resembles. It used
+          to be the last row inside "Paired devices", one hairline below a ✕ that
+          revokes exactly one.
+          Per-device revoke stays on its own row: it belongs to the device it
+          names, and a Danger group that hoisted every list affordance out of its
+          list would be a worse page, not a safer one. */}
+      {status.devices.length > 1 && status.callerDeviceId && (
+        <SettingsGroup title="Danger">
+          <RevokeOthersRow count={status.devices.length - 1} onConfirm={() => void revokeOthers()} />
+        </SettingsGroup>
+      )}
     </>
   );
 }
@@ -622,12 +658,23 @@ function DeviceRow({
             onChange={(role) => {
               if (!busy && role !== device.role) onRole(role);
             }}
+            // WHAT EACH ROLE MEANS, on the option rather than in a header —
+            // the same `<span title>` the transport picker uses in
+            // mcp-section.tsx, so "view only" is defined where it is chosen.
             options={[
-              { value: "full", label: "Full" },
-              { value: "observer", label: "View only" },
+              { value: "full", label: <span title="Reads and changes everything, like this app">Full</span> },
+              { value: "observer", label: <span title="Reads everything, changes nothing">View only</span> },
             ]}
           />
-          <Button variant="ghost" size="icon-sm" aria-label={`Revoke ${device.name}`} onClick={onRevoke}>
+          {/* What revoking does NOT do: nothing on the device itself changes,
+              and it can pair again with a new code. */}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Revoke ${device.name}`}
+            title="Logs this device out on its next request. Nothing on the device changes, and it can pair again."
+            onClick={onRevoke}
+          >
             <XIcon className="size-3.5" />
           </Button>
         </div>
@@ -647,7 +694,7 @@ function RevokeOthersRow({ count, onConfirm }: { count: number; onConfirm: () =>
   return (
     <Row
       label="Revoke all other devices"
-      hint="Keeps this one. The lost-phone button."
+      hint="Keeps this one — the lost-phone button. Nothing on those devices changes, and any of them can pair again with a new code."
       control={
         <Button
           variant={armed ? "destructive" : "outline"}
