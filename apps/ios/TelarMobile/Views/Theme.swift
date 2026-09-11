@@ -47,6 +47,12 @@ enum Theme {
     static let body = Font.system(.body)
     static let bodyMedium = Font.system(.body, weight: .medium)
     static let rowTitle = Font.system(.subheadline, weight: .medium)
+    /// A SLIM SIDEBAR ROW'S TITLE — one step below `rowTitle`, and the reason
+    /// a row under a project header reads as an item rather than as another
+    /// header. The ratio is the desktop's (session-row.tsx): a card's title is
+    /// a size up from the caption beside it, a slim row's title sits between
+    /// the two and carries no extra weight.
+    static let rowTitleSlim = Font.system(.footnote)
     static let meta = Font.system(.caption)
     static let metaSmall = Font.system(.caption2)
     static let mono = Font.system(.caption, design: .monospaced)

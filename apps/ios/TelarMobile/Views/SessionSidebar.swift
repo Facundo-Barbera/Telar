@@ -38,7 +38,10 @@ struct SessionSidebar: View {
             }
             if let layoutError { Text(layoutError).font(.caption).foregroundStyle(Theme.statusRed) }
             if !query.isEmpty {
-                ForEach(all.filter(matches)) { row in sessionRow(row) }
+                // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
+                // asked, so every row in it is equally relevant and density
+                // beats detail — the desktop's rule, same reason.
+                ForEach(all.filter(matches)) { row in sessionRow(row, variant: .slim) }
                 if all.filter(matches).isEmpty { Text("No matching sessions").foregroundStyle(Theme.textMuted) }
             } else {
                 ForEach(MobileDrafts.shared.drafts.filter { draft in
@@ -64,7 +67,11 @@ struct SessionSidebar: View {
                 ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
                     Section {
                         if !collapsed.contains(group.id) {
-                            ForEach(group.sessions) { row in sessionRow(row, showsProject: false) }
+                            // SLIM: the header above already names the project,
+                            // and a card's status and branch lines are mostly
+                            // empty on an idle row — so the card was spending
+                            // three lines to restate the header.
+                            ForEach(group.sessions) { row in sessionRow(row, variant: .slim) }
                         }
                     } header: {
                         Button {
@@ -101,6 +108,13 @@ struct SessionSidebar: View {
         }
         .listStyle(.sidebar)
         .listSectionSpacing(12)
+        // A ONE-LINE ROW CANNOT BE ONE LINE TALL while the list floors every
+        // row at the standard 44pt touch target. The slim rows are the whole
+        // point of the two volumes, so the floor comes down to meet them; a
+        // card is taller than either number and is unaffected, and a row is
+        // still a comfortable tap because its content is a full line of text
+        // plus the list's own padding.
+        .environment(\.defaultMinListRowHeight, 30)
         .scrollContentBackground(.hidden)
         .background(Theme.sheet)
         .navigationTitle("Telar")
@@ -143,62 +157,27 @@ struct SessionSidebar: View {
 
     private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
 
-    private func sessionRow(_ row: HostedSession, showsProject: Bool = true) -> some View {
+    /// HOW MUCH ROOM A ROW HAS EARNED — the desktop's `variant: "card" |
+    /// "slim"` (apps/web/components/session/session-row.tsx), ported because
+    /// the phone only ever drew the card.
+    ///
+    /// THE SPLIT IS THE WHOLE POINT. A card costs three lines, and three lines
+    /// under a project header is the same volume as the header itself — which
+    /// is exactly how the iPad's list stopped reading as "section, then the
+    /// conversations in it" and started reading as a stack of sections. A
+    /// session in a project group, on a shelf, or in a search result is one
+    /// line that gives its space back; the bands that are ASKING FOR SOMETHING
+    /// — pinned, and "Needs you" — keep the card.
+    private enum RowVariant { case card, slim }
+
+    private func sessionRow(_ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true) -> some View {
         NavigationLink(value: row.id) {
-            // THE CARD, as the desktop draws it: three lines, each answering
-            // a different question.
-            //   project + status   whose is this, and what is it doing
-            //   title              the only thing anyone scans for
-            //   branch + provider  where the work lands, and who is doing it
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    if row.session.settledOverride == "active" {
-                        Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.textMuted.opacity(0.7))
-                    }
-                    // The attention and pinned bands, search and the shelves
-                    // mix projects, so the row names its own. A row under its
-                    // project's own header says nothing the header has not.
-                    if showsProject, let project = inbox.project(row) {
-                        ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
-                        Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    if settings.hosts.count > 1 {
-                        Text(hostName(row.hostId)).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
-                            .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                    }
-                    // THE STATUS SITS WHERE THE TIMESTAMP WOULD, never beside
-                    // it: a row showing "Working" and "8h ago" invites the
-                    // question of which one is now.
-                    statusSlot(row.session)
-                }
-                HStack(spacing: 6) {
-                    // ONE LINE. The title carries the card and is a size up
-                    // from the lines around it; a second line makes the card a
-                    // paragraph and pushes every row below it around.
-                    Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
-                        .font(Theme.rowTitle).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 0)
-                    // The provider mark is IDENTITY, not status, so it rides
-                    // at the end at reduced opacity. It sits on the title line
-                    // so it survives the third line's absence.
-                    if row.session.workspace.branch == nil {
-                        ProviderIconView(driver: row.session.driver, size: 11).opacity(0.5)
-                    }
-                }
-                // NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD
-                // SAY. A branch differs per row; the model does not.
-                if let branch = row.session.workspace.branch {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
-                        Text(branch).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 4)
-                        ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
-                    }
-                    .foregroundStyle(Theme.textMuted.opacity(0.7))
+            Group {
+                switch variant {
+                case .card: cardBody(row, showsProject: showsProject)
+                case .slim: slimBody(row)
                 }
             }
-            .padding(.vertical, 4)
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
         }
         // MAIL'S GRAMMAR: the leading edge is the one-tap toggle you reach
@@ -245,6 +224,96 @@ struct SessionSidebar: View {
             if let base = settings.host(row.hostId)?.baseURL {
                 ShareLink(item: row.session.cockpitURL(base: base)) { Label("Share cockpit link", systemImage: "link") }
             }
+        }
+    }
+
+    /// THE CARD, as the desktop draws it: three lines, each answering a
+    /// different question.
+    ///   project + status   whose is this, and what is it doing
+    ///   title              the only thing anyone scans for
+    ///   branch + provider  where the work lands, and who is doing it
+    @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                if row.session.settledOverride == "active" {
+                    Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                }
+                // The attention and pinned bands, search and the shelves
+                // mix projects, so the row names its own. A row under its
+                // project's own header says nothing the header has not.
+                if showsProject, let project = inbox.project(row) {
+                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
+                    Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if settings.hosts.count > 1 {
+                    Text(hostName(row.hostId)).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                        .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                }
+                // THE STATUS SITS WHERE THE TIMESTAMP WOULD, never beside
+                // it: a row showing "Working" and "8h ago" invites the
+                // question of which one is now.
+                statusSlot(row.session)
+            }
+            HStack(spacing: 6) {
+                // ONE LINE. The title carries the card and is a size up
+                // from the lines around it; a second line makes the card a
+                // paragraph and pushes every row below it around.
+                Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
+                    .font(Theme.rowTitle).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+                // The provider mark is IDENTITY, not status, so it rides
+                // at the end at reduced opacity. It sits on the title line
+                // so it survives the third line's absence.
+                if row.session.workspace.branch == nil {
+                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.5)
+                }
+            }
+            // NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD
+            // SAY. A branch differs per row; the model does not.
+            if let branch = row.session.workspace.branch {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
+                    Text(branch).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    ProviderIconView(driver: row.session.driver, size: 11).opacity(0.6)
+                }
+                .foregroundStyle(Theme.textMuted.opacity(0.7))
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// THE SLIM ROW: one line, and it gives its space back.
+    ///
+    /// Three things go, and each of them was costing a line for something the
+    /// reader was not asking this row: the project NAME (a row in a project
+    /// group sits under a header that already says it, and on a shelf the mark
+    /// alone answers "whose"), the branch, and the second provider mark. What
+    /// is left is the desktop's own slim body — a mark, the title, and the one
+    /// right-hand slot that is either a status or an age.
+    ///
+    /// THE MARK IS THE PROJECT'S WHERE THERE IS ONE, as on the desktop: whose
+    /// work this is cannot be read off a title, and under a project header the
+    /// mark doubles as the indent that puts the row below its header. The
+    /// provider is identity that the card already carries, so it is only the
+    /// fallback for an orphan session with no project.
+    @ViewBuilder private func slimBody(_ row: HostedSession) -> some View {
+        HStack(spacing: 6) {
+            if row.session.settledOverride == "active" {
+                Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(Theme.textMuted.opacity(0.7))
+            }
+            if let project = inbox.project(row) {
+                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 13)
+                    .opacity(0.8)
+            } else {
+                ProviderIconView(driver: row.session.driver, size: 12).opacity(0.6)
+            }
+            Text(row.session.title.isEmpty ? "Untitled session" : row.session.title)
+                .font(Theme.rowTitleSlim).foregroundStyle(Theme.text.opacity(0.85))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            statusSlot(row.session)
         }
     }
 
@@ -314,7 +383,10 @@ struct SessionSidebar: View {
         if !filtered.isEmpty {
             Section {
                 if open.wrappedValue {
-                    ForEach(filtered.prefix(settledLimit)) { row in sessionRow(row) }
+                    // A SHELF IS OFF THE LIST — history behind you, or work
+                    // deferred ahead of you — so its rows give their space
+                    // back, one line each.
+                    ForEach(filtered.prefix(settledLimit)) { row in sessionRow(row, variant: .slim) }
                     if filtered.count > settledLimit { Button("Show more") { settledLimit += 25 } }
                 }
             } header: {
