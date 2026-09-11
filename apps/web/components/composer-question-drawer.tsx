@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, ChevronDownIcon, MessageCircleQuestionIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, MessageCircleQuestionIcon, SquareCheckIcon, SquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   advance,
@@ -28,6 +28,12 @@ import {
  * The submit gesture is the COMPOSER'S send button and Enter, not a button
  * here: the drawer shows and selects, the composer submits. That is what
  * makes answering feel like typing a message rather than filling in a form.
+ *
+ * A MULTI QUESTION IS THE SAME DRAWER WITH TWO THINGS TAKEN AWAY: the pick no
+ * longer auto-advances (a hop 200ms after the first of several picks would
+ * carry the human off the question mid-answer), and the round check becomes a
+ * checkbox on the LEADING edge — the one mark a person reads as "several are
+ * allowed" before they have picked anything at all.
  */
 export function ComposerQuestionDrawer({
   fields,
@@ -58,12 +64,14 @@ export function ComposerQuestionDrawer({
 
   const pick = (label: string) => {
     if (!field) return;
-    const next = selectOption(draft, field.key, label);
+    const next = selectOption(draft, field, label);
     onDraft(next);
     // Single-select auto-advances after a beat — long enough to see the check
     // land, short enough to feel like one gesture. Never past the last
-    // question: submitting is the composer's send, a deliberate press.
-    if (!isLastQuestion(fields, next) && answerFor(next, field.key) !== undefined) {
+    // question: submitting is the composer's send, a deliberate press. And
+    // never on a MULTI, where the first pick is rarely the last one: hopping
+    // there would answer the question on the human's behalf.
+    if (!field.multiple && !isLastQuestion(fields, next) && answerFor(next, field) !== undefined) {
       window.clearTimeout(hop.current);
       hop.current = window.setTimeout(() => onDraft(advance(next)), 200);
     }
@@ -129,26 +137,36 @@ export function ComposerQuestionDrawer({
             <p className="text-sm leading-snug">{field.label}</p>
             <div className="mt-2 flex flex-col gap-1">
               {field.choices.map((choice, at) => {
-                const selected = draft.selected[field.key] === choice;
+                const selected = (draft.selected[field.key] ?? []).includes(choice);
+                const digit = at < 9 && (
+                  <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-[0.625rem] text-muted-foreground">{at + 1}</kbd>
+                );
                 return (
                   <button
                     key={choice}
                     type="button"
                     disabled={sending}
+                    // A multi row is a toggle and says so; a single row picks
+                    // one of a set, which `aria-pressed` would misdescribe.
+                    {...(field.multiple ? { "aria-pressed": selected } : {})}
                     onClick={() => pick(choice)}
                     className={cn(
                       "flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition-colors",
                       selected ? "border-warning/60 bg-warning/10" : "border-border/60 hover:bg-muted/60",
                     )}
                   >
+                    {/* The box leads on a multi, and is drawn EMPTY as well as
+                        filled: the affordance has to be legible before the
+                        first pick, which a mark that only appears once
+                        something is chosen never is. */}
+                    {field.multiple &&
+                      (selected ? (
+                        <SquareCheckIcon className="size-3.5 shrink-0 text-warning" />
+                      ) : (
+                        <SquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                      ))}
                     <span className="min-w-0 flex-1 truncate">{choice}</span>
-                    {selected ? (
-                      <CheckIcon className="size-3.5 shrink-0 text-warning" />
-                    ) : (
-                      at < 9 && (
-                        <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-[0.625rem] text-muted-foreground">{at + 1}</kbd>
-                      )
-                    )}
+                    {field.multiple ? digit : selected ? <CheckIcon className="size-3.5 shrink-0 text-warning" /> : digit}
                   </button>
                 );
               })}
@@ -163,12 +181,18 @@ export function ComposerQuestionDrawer({
                   Previous
                 </button>
               )}
+              {/* ON A MULTI THE HINT KEEPS SAYING "Pick any" AFTER THE FIRST
+                  PICK. Without auto-advance the only thing telling the human
+                  more are allowed is this line, and swapping it for a bare
+                  "Enter continues" the moment one lands would read as "that
+                  was the answer" — the exact misreading the checkbox is there
+                  to prevent. */}
               <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-muted-foreground">
                 {canAdvance(fields, draft)
-                  ? isLastQuestion(fields, draft)
-                    ? "Enter submits"
-                    : "Enter continues"
-                  : "Pick one, or type your own"}
+                  ? `${field.multiple ? "Pick any, " : ""}${isLastQuestion(fields, draft) ? "Enter submits" : "Enter continues"}`
+                  : field.multiple
+                    ? "Pick any, or type your own"
+                    : "Pick one, or type your own"}
               </span>
               <button
                 type="button"
