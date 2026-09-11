@@ -8,7 +8,8 @@ import { createContext, useContext, useEffect, useRef, useState, type ComponentT
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { settingsRowId } from "@/lib/settings-search";
+import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
+import { SettingsSearchNav } from "./settings-search-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -41,6 +42,46 @@ export type SettingsSection = {
 const SettingsPaneContext = createContext<string | undefined>(undefined);
 const SettingsGroupContext = createContext<string | undefined>(undefined);
 
+/**
+ * ARRIVING AT A ROW: scroll it to the middle, focus it, say so once.
+ *
+ * All three, because each covers a different reader. Centring is what makes a
+ * row findable on a pane of twenty; focus is what a screen reader follows and
+ * where the next Tab continues from; the pulse is what tells a sighted reader
+ * WHICH of the rows now on screen was the one they asked for — a scroll alone
+ * leaves that to guesswork.
+ *
+ * THE PULSE IS RE-ARMED BY HAND. Re-adding a class the element already carries
+ * does not restart a CSS animation, so choosing the same result twice would
+ * flash once and then go quiet; removing it and reading `offsetWidth` forces
+ * the reflow that makes the second press look like the first.
+ *
+ * Both motions are dropped for `prefers-reduced-motion`: the jump becomes an
+ * instant one and the pulse does not run. The row is still centred and still
+ * focused, which is the part that carries the meaning.
+ */
+function revealSettingsRow(id: string): boolean {
+  const row = document.getElementById(id);
+  if (!row) return false;
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  row.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
+  // `preventScroll`, or focusing would jump the pane a second time and undo the
+  // centring we just asked for.
+  row.focus({ preventScroll: true });
+  if (!still) {
+    row.classList.remove("settings-search-target-pulse");
+    void row.offsetWidth;
+    row.classList.add("settings-search-target-pulse");
+    row.addEventListener("animationend", () => row.classList.remove("settings-search-target-pulse"), { once: true });
+  }
+  return true;
+}
+
+/** How long to keep looking for a row after switching to its pane. Sections
+ *  fetch before they render — Updates has no rows until the shell answers — so
+ *  the anchor may be a few frames or a round-trip away. */
+const REVEAL_TIMEOUT_MS = 2_000;
+
 export function SettingsShell({
   title,
   subtitle,
@@ -52,6 +93,7 @@ export function SettingsShell({
   saving,
   onSave,
   headerActions,
+  search,
   wide,
   children,
 }: {
@@ -65,6 +107,13 @@ export function SettingsShell({
   saving?: boolean;
   onSave?: () => void;
   headerActions?: ReactNode;
+  /**
+   * Rows this shell's panes hold, for the search field at the top of the nav.
+   * Omitted where there is no index to offer — project settings is a handful of
+   * panes with a project id in every route, and is not indexed (see
+   * settings-registry.ts). Without it the nav is exactly what it was.
+   */
+  search?: SettingsSearchIndex;
   /**
    * OPT OUT OF THE READING COLUMN. Every pane here is a list of rows, and a
    * list of rows wants a measure — hence the `max-w-2xl` that has held since
@@ -120,6 +169,37 @@ export function SettingsShell({
     };
   }, [dragWidth]);
 
+  /**
+   * The row a search result asked for, held until it exists.
+   *
+   * Choosing a result switches panes, and the pane it switches to renders on
+   * the next commit — and often fetches before it has any rows at all. So the
+   * id is parked here and an animation-frame loop looks for it until it turns
+   * up or the deadline passes; a row that never appears (its section is behind
+   * a toggle that is off) costs a couple of seconds of looking and nothing
+   * else, having already navigated to the right pane.
+   */
+  const [pendingRow, setPendingRow] = useState<string>();
+  useEffect(() => {
+    if (!pendingRow) return;
+    const deadline = Date.now() + REVEAL_TIMEOUT_MS;
+    let frame = 0;
+    const look = () => {
+      if (revealSettingsRow(pendingRow) || Date.now() > deadline) {
+        setPendingRow(undefined);
+        return;
+      }
+      frame = window.requestAnimationFrame(look);
+    };
+    frame = window.requestAnimationFrame(look);
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingRow]);
+
+  const jumpTo = (entry: SettingsSearchEntry) => {
+    onSelect(entry.pageId);
+    setPendingRow(entry.id);
+  };
+
   // Group the nav if any section declares a group; otherwise flat.
   const groups = sections.some((s) => s.group)
     ? Array.from(new Set(sections.map((s) => s.group ?? ""))).map((g) => ({
@@ -127,6 +207,40 @@ export function SettingsShell({
         items: sections.filter((s) => (s.group ?? "") === g),
       }))
     : [{ group: "", items: sections }];
+
+  // The panes themselves — a value rather than inline JSX because search
+  // REPLACES this list while a query is live, and the two states read better
+  // side by side than as a condition wrapped around forty lines.
+  const paneList = (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {groups.map(({ group, items }) => (
+        <div key={group} className="flex flex-col gap-0.5">
+          {group && (
+            <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">{group}</div>
+          )}
+          {items.map((s) => {
+            const Icon = s.icon;
+            const on = s.id === active;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => onSelect(s.id)}
+                className={cn(
+                  "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                  on ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
+              >
+                <Icon className={cn("size-4 shrink-0", on ? "text-foreground" : "text-muted-foreground/70")} />
+                <span className="flex-1 truncate">{s.label}</span>
+                {s.count != null && <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">{s.count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     // TWO ISLANDS ON THE SHELL'S GROUND, like the cockpit. `data-surfaces` is
@@ -196,47 +310,17 @@ export function SettingsShell({
             )}
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4">
-          {groups.map(({ group, items }) => (
-            <div key={group} className="flex flex-col gap-0.5">
-              {group && (
-                <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">
-                  {group}
-                </div>
-              )}
-              {items.map((s) => {
-                const Icon = s.icon;
-                const on = s.id === active;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => onSelect(s.id)}
-                    className={cn(
-                      "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                      on
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                    )}
-                  >
-                    <Icon
-                      className={cn(
-                        "size-4 shrink-0",
-                        on ? "text-foreground" : "text-muted-foreground/70",
-                      )}
-                    />
-                    <span className="flex-1 truncate">{s.label}</span>
-                    {s.count != null && (
-                      <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">
-                        {s.count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+        {/* THE FIELD STANDS WHERE THE PANE LIST STARTS, and the results take
+            the list's place while there is a query — see settings-search-nav.tsx
+            for why this is not an overlay. A shell with no index (project
+            settings) renders exactly the nav it always had. */}
+        {search ? (
+          <SettingsSearchNav index={search} onChoose={jumpTo}>
+            {paneList}
+          </SettingsSearchNav>
+        ) : (
+          paneList
+        )}
         {/* THE ROAD OUT, AT THE FLOOR. The app rail keeps Settings in its
             footer; this nav keeps the way back in the same slot — the inverse
             door, where the hand already knows to look. Top of the nav is
