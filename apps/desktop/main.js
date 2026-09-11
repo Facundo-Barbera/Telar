@@ -462,6 +462,69 @@ async function seatHostCookie(url) {
   }
 }
 
+/**
+ * A CRASHED CHILD IS THE FIRST OF THE TWO WAYS THE HOST STOPPED PROVING ITSELF.
+ *
+ * Chromium's network service holds every session cookie in its own memory; when
+ * that utility process is restarted the jar comes back with the persistent
+ * cookies reloaded from disk and the session ones simply gone. The shell had no
+ * handler at all, so the event that emptied the jar left no trace and the
+ * window's sudden "pair this device" looked spontaneous.
+ *
+ * BOTH HALVES OF THE ANSWER ARE HERE: the line that names it, and the re-seat
+ * that repairs it. The header (host-header.js) is what makes the repair
+ * unnecessary in the first place — the listener lives in this process and
+ * cannot be dropped by a child restarting — but the cookie is still the belt,
+ * and a belt that is never re-fastened is not one.
+ */
+function wireShellDiagnostics() {
+  app.on("child-process-gone", (_event, details) => {
+    logShell(
+      "warn",
+      `child-process-gone type=${details.type} reason=${details.reason} exitCode=${details.exitCode} service=${details.serviceName ?? ""}`,
+    );
+    // Whatever died, re-seating costs one IPC and is only meaningful for the
+    // network service — which is precisely the one whose name we cannot rely on
+    // matching across Electron versions.
+    if (lastWindowUrl) void seatHostCookie(lastWindowUrl);
+  });
+}
+
+/**
+ * AND THE SYMPTOM, FROM THE WINDOW'S SIDE. A 401 on a main-frame request, or a
+ * redirect to the pairing page, IS the bug as the user meets it — so the next
+ * occurrence writes a line instead of needing a story.
+ *
+ * THE ORIGIN ONLY, never the path or the query: this log is read by whoever is
+ * debugging, and a cockpit URL carries session and project ids. The origin is
+ * also the entire diagnostic — it says whether the window had wandered onto the
+ * other spelling of its own server.
+ */
+function watchForUnpairing(webContents) {
+  const originOf = (value) => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return "an unparseable URL";
+    }
+  };
+  webContents.on("did-navigate", (_event, url, httpResponseCode) => {
+    if (httpResponseCode === 401) logShell("warn", `the host window was refused (401) by ${originOf(url)}`);
+  });
+  webContents.on("did-redirect-navigation", (_event, url, _isInPlace, isMainFrame) => {
+    if (!isMainFrame) return;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    if (parsed.pathname === "/pair" || parsed.pathname.startsWith("/pair/")) {
+      logShell("warn", `the host window was sent to the pairing page by ${parsed.origin}`);
+    }
+  });
+}
+
 function readRemoteFile(home) {
   try {
     return JSON.parse(fs.readFileSync(path.join(home, "remote", "remote.json"), "utf8"));
@@ -911,6 +974,8 @@ function createWindow(url) {
     e.preventDefault();
     win.setTitle(title);
   });
+  // Issue #259's symptom, recorded from the window's own side.
+  watchForUnpairing(win.webContents);
   /**
    * A DEAD LOAD RETRIES INSTEAD OF STRANDING ON THE ERROR PAGE.
    *
@@ -1606,6 +1671,33 @@ function updateLogPath() {
   return path.join(app.getPath("userData"), "update.log");
 }
 
+/**
+ * THE SHELL'S OWN LOG, BESIDE update.log AND FOR THE SAME REASON.
+ *
+ * The un-pairing bug (issue #259) was reported several times over months and
+ * every report was a person describing a screen, because the app recorded
+ * nothing when its own window was refused: no crashed-child event, no 401, no
+ * redirect. The mechanism had to be reasoned out from a cookie's semantics
+ * rather than read off a line. So the two events that would have named it
+ * immediately are written here.
+ *
+ * Same shape as updateLogger: appended, in userData, never rotated — this is a
+ * handful of lines per launch, and it must never be the reason anything fails.
+ */
+function shellLogPath() {
+  return path.join(app.getPath("userData"), "shell.log");
+}
+
+function logShell(level, message) {
+  const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
+  try {
+    fs.appendFileSync(shellLogPath(), line);
+  } catch {
+    /* logging must never be the reason the shell fails */
+  }
+  console.log(`[telar-shell] ${level} ${message}`);
+}
+
 function updateLogger() {
   const write = (level, message) => {
     const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
@@ -1950,6 +2042,8 @@ if (SMOKE) {
 
     app.whenReady().then(async () => {
       try {
+        // First, so a child that dies during startup is still named.
+        wireShellDiagnostics();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
         // Before anything reads the update preferences, and before the updater
