@@ -14,6 +14,13 @@
  * group sits where the reader dragged it (`SidebarLayout.projectOrder`, on the
  * engine), and a group nobody has placed falls in after the placed ones,
  * alphabetically. Nothing about a conversation moves its project.
+ *
+ * AND SO IS WHERE A ROW SITS INSIDE ONE. `SidebarLayout.sessionOrder` (per
+ * group) and `pinnedOrder` (the band) are the same decision one level down: a
+ * row the reader has placed sits there, an unplaced one falls in after the
+ * placed ones in the recency order this list already produced. A row moves
+ * within its own band only — carrying a conversation into another project is a
+ * different verb, with a worktree behind it.
  */
 import { useCallback, useEffect, useState } from "react";
 import { sessionKey, type SidebarSession, type SessionListResult } from "./session-list";
@@ -189,6 +196,22 @@ export function needsAttention(session: SidebarSession): boolean {
 export const PROJECT_GROUP_MIME = "application/x-telar-project-group";
 
 /**
+ * A ROW'S OWN DRAG TYPE, AND THAT IT IS A SECOND TYPE IS THE POINT. A row
+ * carried over a project header must not look like a group being dropped there
+ * — moving a conversation between projects is a different verb, with a
+ * worktree behind it — so the two gestures cannot be confused by a drop
+ * handler that only asked "is something being dragged".
+ */
+export const SESSION_ROW_MIME = "application/x-telar-session-row";
+
+/**
+ * THE SCOPE A ROW DRAG IS CONFINED TO: one project group, by key, or the pinned
+ * band. Carried beside the row's own key so a drop target can refuse a row from
+ * somewhere else without having to look the row up.
+ */
+export const PINNED_ROW_SCOPE = "pinned";
+
+/**
  * Place the groups: the ones the reader has arranged first, in that order,
  * then the rest alphabetically. Two groups with one name — the same project
  * registered on this Mac and a paired one — put this Mac's first, so the copy
@@ -229,6 +252,22 @@ export function moveProjectGroup(
   target: string,
   position: "above" | "below",
 ): string[] {
+  return movedOrder(stored, drawn, dragged, target, position);
+}
+
+/**
+ * THE MOVE ITSELF, over bare keys — shared by the group drag above and the row
+ * drag below, which are the same arithmetic on two different lists. Spelled
+ * once so a row drop and a group drop cannot come to disagree about what
+ * "above" means, or about which unseen keys survive a write.
+ */
+function movedOrder(
+  stored: readonly string[],
+  drawn: readonly string[],
+  dragged: string,
+  target: string,
+  position: "above" | "below",
+): string[] {
   const without = drawn.filter((key) => key !== dragged);
   const anchor = without.indexOf(target);
   if (dragged === target || anchor < 0 || !drawn.includes(dragged)) return [...drawn];
@@ -245,6 +284,59 @@ export function moveProjectGroup(
     after += 1;
   }
   return next;
+}
+
+/**
+ * The order of the ROWS inside one band after a drop — a project group's rows,
+ * or the pinned band's.
+ *
+ * THE SAME WRITE THE GROUP DRAG MAKES, deliberately: the whole drawn list is
+ * returned, so every row on screen keeps the place it had and a row nobody had
+ * placed is placed by this drop rather than left to drift back up the list the
+ * next time something happens to it. Rows the rail is not drawing — a later
+ * page of a long project, a row filtered out by scope — keep their slot
+ * relative to the ones it is.
+ *
+ * ONE BAND AT A TIME, AND THAT IS ENFORCED BY WHAT THIS TAKES. It is handed one
+ * band's drawn keys; a row dropped on a different group is not in them, the
+ * anchor is not found, and the drawn order comes back unchanged. Moving a
+ * conversation between projects is a different verb with a worktree behind it.
+ */
+export function moveSessionRow(
+  stored: readonly string[],
+  drawn: readonly string[],
+  dragged: string,
+  target: string,
+  position: "above" | "below",
+): string[] {
+  return movedOrder(stored, drawn, dragged, target, position);
+}
+
+/**
+ * Place the rows: the ones the reader has arranged first, in that order, then
+ * the rest in the order they arrived — which is the rail's existing recency
+ * sort, untouched.
+ *
+ * A STABLE SORT IS NOT ENOUGH ON ITS OWN, so this partitions rather than sorts:
+ * a comparator would have to answer "which of two unplaced rows comes first",
+ * and the only correct answer is "whichever `deriveSessionList` already put
+ * first", which a comparator cannot see.
+ */
+export function orderSessions<T extends Pick<SidebarSession, "id" | "hostId">>(
+  sessions: readonly T[],
+  order: readonly string[] = [],
+): T[] {
+  if (order.length === 0) return [...sessions];
+  const rank = new Map(order.map((key, index) => [key, index] as const));
+  const placed: { at: number; session: T }[] = [];
+  const rest: T[] = [];
+  for (const session of sessions) {
+    const at = rank.get(sessionKey(session));
+    if (at === undefined) rest.push(session);
+    else placed.push({ at, session });
+  }
+  placed.sort((left, right) => left.at - right.at);
+  return [...placed.map((entry) => entry.session), ...rest];
 }
 
 /**
@@ -271,7 +363,22 @@ export function moveProjectGroupStep(
   return moveProjectGroup(stored, drawn, key, neighbour, direction === "up" ? "above" : "below");
 }
 
-export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions">, order: readonly string[] = []): GroupedSessions {
+/**
+ * The arrangement of the ROWS, as the engine holds it: one list per project
+ * group key, plus the pinned band's own. Optional at every level — a rail whose
+ * engine has not answered yet, or whose reader has never dragged a row, draws
+ * exactly the recency order it always did.
+ */
+export type SessionOrders = {
+  sessions?: Readonly<Record<string, readonly string[]>>;
+  pinned?: readonly string[];
+};
+
+export function groupSessions(
+  list: Pick<SessionListResult, "pinned" | "sessions">,
+  order: readonly string[] = [],
+  rows: SessionOrders = {},
+): GroupedSessions {
   const attention: SidebarSession[] = [];
   const pinned: SidebarSession[] = [];
   const groups = new Map<string, ProjectGroup>();
@@ -301,7 +408,20 @@ export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions
   for (const session of list.pinned) place(session, true);
   for (const session of list.sessions) place(session, false);
 
-  return { attention, pinned, groups: orderProjectGroups([...groups.values()], order) };
+  /**
+   * ATTENTION IS NOT ARRANGED, and that is a decision rather than an omission.
+   * "Needs you" is a queue the engine fills, not a shelf you keep — a row leaves
+   * it by being answered — so a place dragged into it would be a place for a row
+   * that is about to disappear.
+   */
+  return {
+    attention,
+    pinned: orderSessions(pinned, rows.pinned),
+    groups: orderProjectGroups([...groups.values()], order).map((group) => ({
+      ...group,
+      sessions: orderSessions(group.sessions, rows.sessions?.[group.key]),
+    })),
+  };
 }
 
 /**
