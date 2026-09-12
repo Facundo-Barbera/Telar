@@ -197,9 +197,41 @@ function errorResult(error) {
   };
 }
 
+/** Where words that are not an address go. Google for now; a setting can
+ *  choose another engine later. */
+const SEARCH_URL = "https://www.google.com/search?q=";
+
+/** An IPv4 address, or a bracketed IPv6 one — a host with no dot in it
+ *  (`[::1]`) still has to read as an address rather than as words. */
+const IP_HOST = /^(\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:]+\])$/;
+
+/**
+ * IS THIS AN ADDRESS, OR WORDS TO SEARCH FOR? The bar takes both, the way
+ * every browser's does — "hello world" used to be normalized to
+ * `http://hello world`, which throws, and the panel surfaced "Invalid URL"
+ * at somebody who had simply typed a question into it.
+ *
+ * An address is: an absolute path (which means the file), an explicit
+ * scheme, or — with no whitespace anywhere in it — something that names a
+ * host: it contains a dot, or it is `localhost`, or it is an IP, each with
+ * an optional port. Everything else is a search.
+ */
+function looksLikeAddress(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("/")) return true;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)) return true;
+  if (/\s/.test(trimmed)) return false;
+  if (trimmed.includes(".")) return true;
+  const host = trimmed.split(/[/?#]/, 1)[0].replace(/:\d+$/, "");
+  return host === "localhost" || IP_HOST.test(host);
+}
+
 function normalizeUrl(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed === "about:blank") return "about:blank";
+  // Words rather than an address: search for them instead of failing.
+  if (!looksLikeAddress(trimmed)) return `${SEARCH_URL}${encodeURIComponent(trimmed)}`;
   // A bare local path in the address bar means the file, the way every
   // browser reads it. Only absolute paths — a relative one has no base here.
   const candidate = trimmed.startsWith("/")
@@ -2999,4 +3031,4 @@ class DesktopBrowserManager {
   }
 }
 
-module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
+module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };

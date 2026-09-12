@@ -43,7 +43,9 @@ import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { clampSidebarWidth, setSidebarWidth, useSidebarPrefs } from "@/lib/sidebar-width";
 import {
   RIGHT_PANEL_DEFAULT_WIDTH,
@@ -1601,6 +1603,9 @@ export function RightPanel({
 }) {
   const [fullscreen, setFullscreen] = useState(false);
   const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
+  // The native browser view is composited above this DOM; drop it while the
+  // chooser is open so the menu is the thing on top. No-op on the web build.
+  useNativeViewOverlay(surfaceChooserOpen);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
@@ -1620,6 +1625,8 @@ export function RightPanel({
    * nothing flags is the worse of the two errors.
    */
   const roster = useMemo(() => splitRoster(tasks), [tasks]);
+  /** Starting a browser is offered only when there is none to open a tab for. */
+  const canStartBrowser = Boolean(onOpenBrowser) && (browser?.tabs.length ?? 0) === 0;
   /** A plot opened large, from any surface that shows one. */
   const [lightbox, setLightbox] = useState<string>();
   const agentSide = [...roster.groups.flatMap(warpAgents), ...roster.agents];
@@ -1807,14 +1814,39 @@ export function RightPanel({
               </span>
             );
           })}
-          {openable.length > 0 && (
-            <button type="button" aria-label="Open a surface" title="Open a surface"
-              aria-expanded={surfaceChooserOpen} aria-controls="right-panel-surface-chooser"
-              onKeyDown={(event) => { if (event.key === "Escape") setSurfaceChooserOpen(false); }}
-              onClick={() => setSurfaceChooserOpen((value) => !value)}
-              className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground">
-              <PlusIcon className="size-4" />
-            </button>
+          {/* THE "+" IS A MENU AGAIN. It was one until ece446e8, which turned
+              it into a bar under the strip because the native browser view is
+              composited above the DOM and hid the portal. `useNativeViewOverlay`
+              takes that view down while the menu is open, so a list is a list
+              again — and the strip stops jumping every time you open it. */}
+          {(openable.length > 0 || canStartBrowser) && (
+            <DropdownMenu open={surfaceChooserOpen} onOpenChange={setSurfaceChooserOpen}>
+              <DropdownMenuTrigger
+                render={
+                  <button type="button" aria-label="Open a surface" title="Open a surface"
+                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground">
+                    <PlusIcon className="size-4" />
+                  </button>
+                }
+              />
+              <DropdownMenuContent align="start" sideOffset={6} className="w-48">
+                {openable.map((candidate) => (
+                  <DropdownMenuItem key={candidate.id} onClick={() => onOpenTab(candidate.id)}>
+                    <candidate.icon className="size-3.5" />
+                    <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
+                  </DropdownMenuItem>
+                ))}
+                {/* Last, and only when there is no browser yet to open a tab
+                    for: starting one is a different act from opening a surface
+                    that already exists. */}
+                {canStartBrowser && (
+                  <DropdownMenuItem disabled={browserStart.status === "pending"} onClick={() => onOpenBrowser?.()}>
+                    <GlobeIcon className="size-3.5" />
+                    <span className="min-w-0 flex-1 truncate">{browserStart.status === "pending" ? "Starting the browser…" : "Open a browser"}</span>
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -1838,27 +1870,6 @@ export function RightPanel({
           </button>
         </div>
       </div>
-
-      {surfaceChooserOpen && (
-        <div id="right-panel-surface-chooser" role="group" aria-label="Open a surface"
-          onKeyDown={(event) => { if (event.key === "Escape") setSurfaceChooserOpen(false); }}
-          className="flex shrink-0 flex-wrap gap-1 border-b border-border p-2">
-          {openable.map((candidate) => (
-            <button key={candidate.id} type="button"
-              onClick={() => { setSurfaceChooserOpen(false); onOpenTab(candidate.id); }}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
-              <candidate.icon className="size-3.5" /><span>{candidate.label}</span>
-            </button>
-          ))}
-          {onOpenBrowser && (browser?.tabs.length ?? 0) === 0 && (
-            <button type="button" disabled={browserStart.status === "pending"}
-              onClick={() => { setSurfaceChooserOpen(false); onOpenBrowser(); }}
-              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
-              <GlobeIcon className="size-3.5" />{browserStart.status === "pending" ? "Starting the browser…" : "Open a browser"}
-            </button>
-          )}
-        </div>
-      )}
 
       <div
         {...(tab ? { id: `right-panel-${tab}`, role: "tabpanel" } : {})}

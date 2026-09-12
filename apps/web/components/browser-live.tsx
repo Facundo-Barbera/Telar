@@ -19,11 +19,13 @@
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, UserRoundIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
+import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { cn } from "@/lib/utils";
@@ -202,7 +204,7 @@ export function desktopBrowserBridge(): DesktopBrowserBridge | undefined {
  * the sidebar. Bounds are always published with the LATEST rect, and the
  * host serializes them per tab (browser-manager applyGeometry).
  */
-function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: string, hostRef: RefObject<HTMLDivElement | null>, layoutKey: string, mode: ViewportMode) {
+function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: string, hostRef: RefObject<HTMLDivElement | null>, layoutKey: string, mode: ViewportMode, overlayRef: RefObject<boolean>) {
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -217,6 +219,14 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       if (disposed) return;
       // The zero-area latch — see the header comment.
       if (rect.width === 0 || rect.height === 0) {
+        visibilityRequested = false;
+        return;
+      }
+      // A MENU IS OPEN OVER THE PANEL. The native view is down so it can be
+      // seen at all (`lib/native-view-overlay.ts`), and a bounds sync must not
+      // put it back. Latched like the zero-area case, so the next sync after
+      // the menu closes re-asserts visibility on its own.
+      if (overlayRef.current) {
         visibilityRequested = false;
         return;
       }
@@ -247,7 +257,7 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       window.removeEventListener("scroll", sync, true);
       void bridge.setVisible(scopeKey, false);
     };
-  }, [bridge, hostRef, scopeKey, mode]);
+  }, [bridge, hostRef, scopeKey, mode, overlayRef]);
   // The republish: same rect, re-sent — the host re-places the view.
   useEffect(() => {
     const host = hostRef.current;
@@ -426,6 +436,11 @@ function DeviceFrame({ viewport, mode, hostSize, preview, onPreview, onCommit, r
   );
 }
 
+/** One row in either of the toolbar's menus — the cockpit's popover-row shape,
+ *  with the leading slot every row reserves for its check. */
+const menuRow =
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50";
+
 /** The address a human sees: the page's URL, or empty on the blank tab. */
 export function addressValue(url: string | undefined): string {
   return !url || url === "about:blank" ? "" : url;
@@ -459,6 +474,16 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
    *  waits for, so its first suggestions read is never against an unbound
    *  scope. Reset with the scope (see the generation effect below). */
   const [bound, setBound] = useState(false);
+  /**
+   * WHICH OF THE TOOLBAR'S MENUS IS OPEN — at most one, which is also what
+   * `useNativeViewOverlay` is told. One state rather than a boolean each, so
+   * a menu cannot be added here without joining the thing that hides the
+   * native view underneath it (see `lib/native-view-overlay.ts`).
+   */
+  const [openOverlay, setOpenOverlay] = useState<"profile" | "viewport" | null>(null);
+  useNativeViewOverlay(openOverlay !== null);
+  /** Which pane the profile menu shows: its list, or one of its two forms. */
+  const [profilePane, setProfilePane] = useState<"menu" | "rename" | "new">("menu");
   const firstScopeRef = useRef(true);
   const partitionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -470,6 +495,11 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     setExtension(undefined);
     setActionError(undefined);
     setExtensionError(undefined);
+    // A SESSION SWITCH UNMOUNTS AN OPEN MENU with no `onOpenChange` to close
+    // it, and an overlay left claimed would keep the native view hidden for
+    // the session you just arrived at.
+    setOpenOverlay(null);
+    setProfilePane("menu");
   }, [scope, sessionId, projectId]);
 
   // Typing an address is the human's hands on the tab BEFORE submit; the
@@ -485,17 +515,39 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   }, [bridge, scope, sessionId]);
   const activeTab = state?.tabs.find((tab) => tab.active);
   // Advisory, per tab: the mark speaks about the tab you are LOOKING at.
-  /** The inline profile row: open/closed, and a new profile being typed. */
-  const [profileOpen, setProfileOpen] = useState(false);
   const [newProfileLabel, setNewProfileLabel] = useState("");
   const [newProfileAccount, setNewProfileAccount] = useState("");
-  /** The inline viewport row: open/closed, and a custom size being typed. */
-  const [viewportOpen, setViewportOpen] = useState(false);
+  /** A custom viewport size being typed into the viewport menu. */
   const [customSize, setCustomSize] = useState("");
+  /** Shut whichever menu is open, back on its list pane for next time. */
+  const closeOverlay = () => {
+    setOpenOverlay(null);
+    setProfilePane("menu");
+  };
   /** A rail drag in progress — shown live, committed on release. */
   const [dragPreview, setDragPreview] = useState<{ width: number; height: number }>();
   const hostSize = useHostSize(hostRef);
   const viewportMode: ViewportMode = activeTab?.viewport?.mode ?? "fit";
+
+  /**
+   * WHILE A MENU IS OPEN ANYWHERE IN THE RIGHT PANEL, THIS VIEW IS DOWN.
+   * The native `WebContentsView` is composited above the renderer's DOM, so
+   * this is what lets the panel's menus be real portals rather than inline
+   * rows — see `lib/native-view-overlay.ts`. The ref is also read by the
+   * viewport hook, which must not re-show the view under an open menu.
+   */
+  const overlayRef = useRef(false);
+  useEffect(
+    () =>
+      onNativeViewOverlay((hidden) => {
+        if (overlayRef.current === hidden) return;
+        overlayRef.current = hidden;
+        // Showing restores the scope's own remembered rect (see setVisible),
+        // so nothing has to be republished here.
+        void bridge.setVisible(sessionId, !hidden).catch(() => undefined);
+      }),
+    [bridge, sessionId],
+  );
 
   const refresh = useCallback(async () => {
     const gen = scope.capture();
@@ -547,8 +599,9 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     bridge,
     sessionId,
     hostRef,
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, viewportOpen, profileOpen, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
     viewportMode,
+    overlayRef,
   );
 
   // BIND, THEN read the extension status — the status is per partition, so it
@@ -819,42 +872,276 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             agent sees the same page (its snapshot and clicks are in this
             size) and can change it too, through browser_resize. */}
         {activeTab?.viewport ? (
-          <button
-            type="button"
-            aria-label={`Viewport: ${describeViewport(activeTab.viewport, viewportMode)}`}
-            aria-expanded={viewportOpen}
-            aria-controls="telar-browser-viewport-row"
-            title={`Viewport ${describeViewport(activeTab.viewport, viewportMode)}${state?.presentation && state.presentation.scale < 1 ? ` · shown at ${Math.round(state.presentation.scale * 100)}%` : ""}`}
-            onClick={() => setViewportOpen((open) => !open)}
-            className={cn(
-              "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground",
-              viewportOpen && "bg-muted text-foreground",
-            )}
-          >
-            <ScalingIcon className="size-3.5" />
-            <span>{viewportMode === "fit" ? "Fit panel" : `${activeTab.viewport.width}×${activeTab.viewport.height}`}</span>
-            {viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
-          </button>
+          <Popover open={openOverlay === "viewport"} onOpenChange={(open) => (open ? setOpenOverlay("viewport") : closeOverlay())}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Viewport: ${describeViewport(activeTab.viewport, viewportMode)}`}
+                  title={`Viewport ${describeViewport(activeTab.viewport, viewportMode)}${state?.presentation && state.presentation.scale < 1 ? ` · shown at ${Math.round(state.presentation.scale * 100)}%` : ""}`}
+                  className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                >
+                  <ScalingIcon className="size-3.5" />
+                  <span>{viewportMode === "fit" ? "Fit panel" : `${activeTab.viewport.width}×${activeTab.viewport.height}`}</span>
+                  {viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
+                </button>
+              }
+            />
+            <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Viewport size" className="w-60 gap-0 p-1">
+              {/* FIT PANEL: the page's size follows the panel (scale 1, no
+                  letterbox) while it is shown, and keeps the last shown size
+                  while hidden so an agent working in the background sees the
+                  layout the human last did. Fixed keeps the size where it is. */}
+              <button
+                type="button"
+                aria-pressed={viewportMode === "fit"}
+                title="Follow the panel's size"
+                onClick={() => void act({ action: "resize", index: activeTab.index, mode: viewportMode === "fit" ? "fixed" : "fit" })}
+                className={cn(menuRow, viewportMode === "fit" && "text-foreground")}
+              >
+                <CheckIcon className={cn("size-3.5 shrink-0", viewportMode === "fit" ? "opacity-100" : "opacity-0")} />
+                <span className="min-w-0 flex-1">Fit panel</span>
+              </button>
+              <div aria-hidden className="my-1 h-px bg-border" />
+              {VIEWPORT_PRESETS.map((preset) => {
+                const on = viewportMode === "fixed" && activeTab.viewport?.preset === preset.key;
+                return (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => void act({ action: "resize", index: activeTab.index, preset: preset.key })}
+                    className={cn(menuRow, on && "text-foreground")}
+                  >
+                    <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">{preset.label}</span>
+                    <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">{preset.width}×{preset.height}</span>
+                  </button>
+                );
+              })}
+              <div aria-hidden className="my-1 h-px bg-border" />
+              <form
+                className="flex items-center gap-1 px-1 pb-0.5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const parsed = parseViewportInput(customSize);
+                  if (!parsed) return;
+                  setCustomSize("");
+                  void act({ action: "resize", index: activeTab.index, width: parsed.width, height: parsed.height });
+                }}
+              >
+                <input
+                  aria-label="Custom viewport size"
+                  placeholder="e.g. 1024×768"
+                  value={customSize}
+                  onChange={(event) => setCustomSize(event.target.value)}
+                  // A portal's events still bubble through the REACT tree, so
+                  // the panel's browser chords would read what is typed here.
+                  onKeyDown={(event) => event.stopPropagation()}
+                  className="h-6 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
+                />
+                <Button type="submit" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[0.6875rem]" disabled={!parseViewportInput(customSize)}>
+                  Set
+                </Button>
+              </form>
+            </PopoverContent>
+          </Popover>
         ) : null}
         {/* WHICH IDENTITY THIS SESSION BROWSES AS. Always visible when the
             shell knows: a person with several accounts should never have to
             guess which one a page was loaded with. */}
         {state?.profile && bridge.setScopeProfile ? (
-          <button
-            type="button"
-            aria-label={`Browser profile: ${state.profile.label}${state.profile.account ? ` (${state.profile.account})` : ""}`}
-            aria-expanded={profileOpen}
-            aria-controls="telar-browser-profile-row"
-            title={`Browser profile ${state.profile.label}${state.profile.account ? ` · expected account ${state.profile.account}` : ""}\nNew tabs open signed in as this profile.`}
-            onClick={() => setProfileOpen((open) => !open)}
-            className={cn(
-              "flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground",
-              profileOpen && "bg-muted text-foreground",
-            )}
-          >
-            <UserRoundIcon className="size-3.5 shrink-0" />
-            <span className="max-w-28 truncate">{state.profile.label}</span>
-          </button>
+          <Popover open={openOverlay === "profile"} onOpenChange={(open) => (open ? setOpenOverlay("profile") : closeOverlay())}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Browser profile: ${state.profile.label}${state.profile.account ? ` (${state.profile.account})` : ""}`}
+                  title={`Browser profile ${state.profile.label}${state.profile.account ? ` · expected account ${state.profile.account}` : ""}\nNew tabs open signed in as this profile.`}
+                  className="flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                >
+                  <UserRoundIcon className="size-3.5 shrink-0" />
+                  <span className="max-w-28 truncate">{state.profile.label}</span>
+                </button>
+              }
+            />
+            {/* THE PROFILE MENU, on the 1Password mini menu's shape: who this
+                session browses as at the top, every identity under it with the
+                current one checked, then what can be done about it.
+
+                SWITCHING CHANGES WHERE THE NEXT TAB OPENS. Tabs already open
+                keep the identity they were signed into — Chromium cannot move
+                a live page between cookie jars, and doing it silently would
+                put the agent on the wrong account — so the menu says so. */}
+            <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Browser profile" className="w-64 gap-0 p-1">
+              {profilePane === "menu" ? (
+                <>
+                  <div className="px-2 pt-1 pb-1.5">
+                    <p className="truncate text-[0.75rem] font-medium">{state.profile.label}</p>
+                    <p className="truncate font-mono text-[0.625rem] text-muted-foreground">
+                      {state.profile.account || "No expected account"}
+                    </p>
+                  </div>
+                  <div aria-hidden className="my-1 h-px bg-border" />
+                  {(state.profiles ?? []).map((profile) => {
+                    const current = profile.id === state.profile?.id;
+                    return (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        aria-pressed={current}
+                        title={[
+                          profile.account ? `Expected account ${profile.account}` : "No expected account set",
+                          profile.projects?.length ? `Used by ${profile.projects.length} project${profile.projects.length === 1 ? "" : "s"}` : "Not assigned to a project",
+                          profile.isDefault ? "The default for new projects" : "",
+                        ].filter(Boolean).join("\n")}
+                        onClick={() => {
+                          closeOverlay();
+                          void profileAction(() => bridge.setScopeProfile!(sessionId, profile.id));
+                        }}
+                        className={cn(menuRow, current && "text-foreground")}
+                      >
+                        <CheckIcon className={cn("size-3.5 shrink-0", current ? "opacity-100" : "opacity-0")} />
+                        <span className="min-w-0 flex-1 truncate">{profile.label}</span>
+                        {profile.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">default</span>}
+                      </button>
+                    );
+                  })}
+                  <div aria-hidden className="my-1 h-px bg-border" />
+                  {bridge.assignProjectProfile && state.profileKey && state.profileKey !== "none" && (
+                    <button
+                      type="button"
+                      title="Every session of this project opens in this profile from now on."
+                      onClick={() => {
+                        closeOverlay();
+                        void profileAction(() => bridge.assignProjectProfile!({ scopeKey: sessionId, profileId: state.profile!.id }));
+                      }}
+                      className={cn(menuRow, "pl-9")}
+                    >
+                      Use for this project
+                    </button>
+                  )}
+                  {bridge.setDefaultProfile && !state.profile.isDefault && (
+                    <button
+                      type="button"
+                      title="New projects with no browsing history of their own join this profile. Projects already signed in somewhere are not moved."
+                      onClick={() => {
+                        closeOverlay();
+                        void profileAction(() => bridge.setDefaultProfile!(state.profile!.id));
+                      }}
+                      className={cn(menuRow, "pl-9")}
+                    >
+                      Make default
+                    </button>
+                  )}
+                  {bridge.offerLoginMemory && (
+                    <button
+                      type="button"
+                      title={"Already signed in on this page? Let agents reuse that login here.\nOpens Telar's own window; you pick the 1Password item there."}
+                      onClick={() => {
+                        closeOverlay();
+                        void profileAction(async () => {
+                          const result = await bridge.offerLoginMemory!(sessionId);
+                          // The shell's refusal ("open an http(s) page first") is
+                          // the panel's error, same as any profile action's.
+                          if (!result.ok && result.error) throw new Error(result.error);
+                        });
+                      }}
+                      className={cn(menuRow, "pl-9")}
+                    >
+                      Let agents use a login…
+                    </button>
+                  )}
+                  {bridge.updateProfile && (
+                    <button type="button" onClick={() => setProfilePane("rename")} className={cn(menuRow, "pl-9")}>
+                      Rename…
+                    </button>
+                  )}
+                  {bridge.createProfile && (
+                    <button type="button" onClick={() => setProfilePane("new")} className={cn(menuRow, "pl-9")}>
+                      New profile…
+                    </button>
+                  )}
+                  <p className="px-2 pt-1.5 pb-1 text-[0.625rem] leading-snug text-muted-foreground">
+                    Switching changes where the next tab opens. Tabs already open stay signed in as the profile they were opened with — an
+                    expected account is what you intend, not a verified login.
+                  </p>
+                </>
+              ) : profilePane === "rename" ? (
+                <form
+                  className="flex flex-col gap-1.5 p-1.5"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const label = new FormData(event.currentTarget).get("label");
+                    if (typeof label !== "string" || !label.trim()) return;
+                    closeOverlay();
+                    void profileAction(() => bridge.updateProfile!({ profileId: state.profile!.id, label }));
+                  }}
+                >
+                  <label htmlFor="telar-browser-profile-rename" className="text-[0.6875rem] text-muted-foreground">Rename this profile</label>
+                  <input
+                    id="telar-browser-profile-rename"
+                    key={state.profile.id}
+                    name="label"
+                    autoFocus
+                    defaultValue={state.profile.label}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    className="h-7 rounded-md border border-border bg-background px-2 text-[0.75rem] outline-none focus:border-ring"
+                  />
+                  <div className="flex justify-end gap-1">
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]" onClick={() => setProfilePane("menu")}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" size="sm" variant="outline" className="h-6 px-2 text-[0.6875rem]">
+                      Rename
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  className="flex flex-col gap-1.5 p-1.5"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!newProfileLabel.trim()) return;
+                    const label = newProfileLabel;
+                    const account = newProfileAccount.trim();
+                    setNewProfileLabel("");
+                    setNewProfileAccount("");
+                    closeOverlay();
+                    void profileAction(() => bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey: sessionId }));
+                  }}
+                >
+                  <label htmlFor="telar-browser-profile-new" className="text-[0.6875rem] text-muted-foreground">New profile</label>
+                  <input
+                    id="telar-browser-profile-new"
+                    aria-label="New profile name"
+                    placeholder="Name"
+                    autoFocus
+                    value={newProfileLabel}
+                    onChange={(event) => setNewProfileLabel(event.target.value)}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    className="h-7 rounded-md border border-border bg-background px-2 text-[0.75rem] outline-none focus:border-ring"
+                  />
+                  <input
+                    aria-label="Expected account for the new profile"
+                    placeholder="account (optional)"
+                    value={newProfileAccount}
+                    onChange={(event) => setNewProfileAccount(event.target.value)}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    className="h-7 rounded-md border border-border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
+                  />
+                  <div className="flex justify-end gap-1">
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]" onClick={() => setProfilePane("menu")}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" size="sm" variant="outline" disabled={!newProfileLabel.trim()} className="h-6 px-2 text-[0.6875rem]">
+                      Add and use
+                    </Button>
+                  </div>
+                </form>
+              )}
+            </PopoverContent>
+          </Popover>
         ) : null}
         {/* Opening the extension does not take control of the browser. */}
         {extension && extension.phase !== "unavailable" ? (
@@ -890,203 +1177,6 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
           </button>
         ) : null}
       </form>
-      {/* THE PROFILE ROW — inline for the same reason the viewport row is:
-          the native view is composited above the DOM, so a portal menu would
-          be hidden behind the page.
-
-          SWITCHING CHANGES WHERE THE NEXT TAB OPENS. Tabs already open keep
-          the identity they were signed into — Chromium cannot move a live page
-          between cookie jars, and doing it silently would put the agent on the
-          wrong account — so the row says so instead of pretending. */}
-      {profileOpen && state?.profile && (
-        <div id="telar-browser-profile-row" role="group" aria-label="Browser profile" className="flex shrink-0 flex-col gap-1.5 border-b border-border px-2 py-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            {(state.profiles ?? []).map((profile) => (
-              <button
-                key={profile.id}
-                type="button"
-                aria-pressed={profile.id === state.profile?.id}
-                title={[
-                  profile.account ? `Expected account ${profile.account}` : "No expected account set",
-                  profile.projects?.length ? `Used by ${profile.projects.length} project${profile.projects.length === 1 ? "" : "s"}` : "Not assigned to a project",
-                  profile.isDefault ? "The default for new projects" : "",
-                ].filter(Boolean).join("\n")}
-                onClick={() => void profileAction(() => bridge.setScopeProfile!(sessionId, profile.id))}
-                className={cn(
-                  "flex items-center gap-1 rounded-md px-2 py-0.5 text-[0.6875rem]",
-                  profile.id === state.profile?.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                )}
-              >
-                <span className="max-w-40 truncate">{profile.label}</span>
-                {profile.account && <span className="max-w-40 truncate font-mono text-[0.625rem] opacity-70">{profile.account}</span>}
-                {profile.isDefault && <span className="text-[0.625rem] opacity-70">default</span>}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-1">
-            {bridge.assignProjectProfile && state.profileKey && state.profileKey !== "none" && (
-              <button
-                type="button"
-                title="Every session of this project opens in this profile from now on."
-                onClick={() => void profileAction(() => bridge.assignProjectProfile!({ scopeKey: sessionId, profileId: state.profile!.id }))}
-                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              >
-                Use for this project
-              </button>
-            )}
-            {bridge.setDefaultProfile && !state.profile.isDefault && (
-              <button
-                type="button"
-                title="New projects with no browsing history of their own join this profile. Projects already signed in somewhere are not moved."
-                onClick={() => void profileAction(() => bridge.setDefaultProfile!(state.profile!.id))}
-                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              >
-                Make default
-              </button>
-            )}
-            {bridge.offerLoginMemory && (
-              <button
-                type="button"
-                title={"Already signed in on this page? Let agents reuse that login here.\nOpens Telar's own window; you pick the 1Password item there."}
-                onClick={() =>
-                  void profileAction(async () => {
-                    const result = await bridge.offerLoginMemory!(sessionId);
-                    // The shell's refusal ("open an http(s) page first") is the
-                    // row's error, same as any other profile action's.
-                    if (!result.ok && result.error) throw new Error(result.error);
-                  })
-                }
-                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              >
-                Let agents use a login…
-              </button>
-            )}
-            {bridge.updateProfile && (
-              <form
-                className="ml-auto flex items-center gap-1"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const label = new FormData(event.currentTarget).get("label");
-                  if (typeof label !== "string" || !label.trim()) return;
-                  void profileAction(() => bridge.updateProfile!({ profileId: state.profile!.id, label }));
-                }}
-              >
-                <input
-                  key={state.profile.id}
-                  name="label"
-                  aria-label="Rename this profile"
-                  defaultValue={state.profile.label}
-                  className="h-6 w-32 rounded-md border border-transparent bg-muted/60 px-2 text-[0.6875rem] outline-none focus:border-ring"
-                />
-                <Button type="submit" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]">
-                  Rename
-                </Button>
-              </form>
-            )}
-          </div>
-          {bridge.createProfile && (
-            <form
-              className="flex items-center gap-1"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!newProfileLabel.trim()) return;
-                const label = newProfileLabel;
-                const account = newProfileAccount.trim();
-                setNewProfileLabel("");
-                setNewProfileAccount("");
-                void profileAction(() =>
-                  bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey: sessionId }),
-                );
-              }}
-            >
-              <input
-                aria-label="New profile name"
-                placeholder="New profile"
-                value={newProfileLabel}
-                onChange={(event) => setNewProfileLabel(event.target.value)}
-                className="h-6 w-32 rounded-md border border-transparent bg-muted/60 px-2 text-[0.6875rem] outline-none focus:border-ring"
-              />
-              <input
-                aria-label="Expected account for the new profile"
-                placeholder="account (optional)"
-                value={newProfileAccount}
-                onChange={(event) => setNewProfileAccount(event.target.value)}
-                className="h-6 w-40 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-[0.625rem] outline-none focus:border-ring"
-              />
-              <Button type="submit" size="sm" variant="ghost" disabled={!newProfileLabel.trim()} className="h-6 px-2 text-[0.6875rem]">
-                Add and use
-              </Button>
-            </form>
-          )}
-          <p className="text-[0.625rem] text-muted-foreground">
-            Switching changes where the next tab opens. Tabs already open stay signed in as the profile they were opened with — an
-            expected account is what you intend, not a verified login.
-          </p>
-        </div>
-      )}
-      {/* THE VIEWPORT ROW — INLINE, NOT A POPOVER. The native WebContentsView
-          is composited ABOVE the renderer's DOM, so a portal menu dropped
-          over the page would be hidden behind it. This row lives in the
-          column above the host: opening it shrinks the host, the viewport
-          hook republishes the bounds, and nothing ever sits under the page. */}
-      {viewportOpen && activeTab?.viewport && (
-        <div id="telar-browser-viewport-row" role="group" aria-label="Viewport size" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
-          {/* FIT PANEL: the page's size follows the panel (scale 1, no
-              letterbox) while it is shown, and keeps the last shown size
-              while hidden so an agent working in the background sees the
-              layout the human last did. Fixed keeps the size where it is. */}
-          <button
-            type="button"
-            aria-pressed={viewportMode === "fit"}
-            title="Follow the panel's size"
-            onClick={() => void act({ action: "resize", index: activeTab.index, mode: viewportMode === "fit" ? "fixed" : "fit" })}
-            className={cn(
-              "rounded-md px-2 py-0.5 text-[0.6875rem]",
-              viewportMode === "fit" ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-            )}
-          >
-            Fit panel
-          </button>
-          <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
-          {VIEWPORT_PRESETS.map((preset) => (
-            <button
-              key={preset.key}
-              type="button"
-              aria-pressed={viewportMode === "fixed" && activeTab.viewport?.preset === preset.key}
-              title={`${preset.width}×${preset.height}`}
-              onClick={() => void act({ action: "resize", index: activeTab.index, preset: preset.key })}
-              className={cn(
-                "rounded-md px-2 py-0.5 text-[0.6875rem]",
-                viewportMode === "fixed" && activeTab.viewport?.preset === preset.key ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-              )}
-            >
-              {preset.label} <span className="font-mono text-[0.625rem] opacity-70">{preset.width}×{preset.height}</span>
-            </button>
-          ))}
-          <form
-            className="ml-auto flex items-center gap-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const parsed = parseViewportInput(customSize);
-              if (!parsed) return;
-              setCustomSize("");
-              void act({ action: "resize", index: activeTab.index, width: parsed.width, height: parsed.height });
-            }}
-          >
-            <input
-              aria-label="Custom viewport size"
-              placeholder="e.g. 1024×768"
-              value={customSize}
-              onChange={(event) => setCustomSize(event.target.value)}
-              onKeyDown={(event) => event.stopPropagation()}
-              className="h-6 w-28 min-w-0 rounded-md border border-border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
-            />
-            <Button type="submit" size="sm" variant="outline" className="h-6 px-2 text-[0.6875rem]" disabled={!parseViewportInput(customSize)}>
-              Set
-            </Button>
-          </form>
-        </div>
-      )}
       {/* A GENUINE BROWSER-ACTION FAILURE on this scope, surfaced rather than
           swallowed by the silent refresh (which hid real toolbar errors).
           Dismissible; it also clears on the next successful action. */}

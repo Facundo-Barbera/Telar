@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
-const { download, MAX_DOWNLOAD_BYTES, classifyWorkerError, ExtensionHost, clampRect, readIconDataUrl } = require("./extension-host");
+const { download, MAX_DOWNLOAD_BYTES, classifyWorkerError, ExtensionHost, clampRect, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS } = require("./extension-host");
 
 describe("popup geometry stays inside its region", () => {
   const region = { x: 100, y: 50, width: 400, height: 300 }; // e.g. window content ∩ work area
@@ -18,6 +18,58 @@ describe("popup geometry stays inside its region", () => {
   });
   test("a popup already inside is unchanged", () => {
     expect(clampRect({ x: 150, y: 80, width: 200, height: 150 }, region)).toEqual({ x: 150, y: 80, width: 200, height: 150 });
+  });
+});
+
+describe("the 1Password popup is rounded rather than a white rectangle", () => {
+  /** Enough of a BrowserWindow to see what was asked of it. */
+  function fakePopup() {
+    const listeners = new Map();
+    const inserted = [];
+    return {
+      destroyed: false,
+      backgroundColor: "#ffffff",
+      inserted,
+      isDestroyed() { return this.destroyed; },
+      setBackgroundColor(value) { this.backgroundColor = value; },
+      emit(event) { for (const fn of listeners.get(event) ?? []) fn(); },
+      webContents: {
+        on(event, fn) { listeners.set(event, [...(listeners.get(event) ?? []), fn]); },
+        insertCSS(css) { inserted.push(css); return Promise.resolve("key"); },
+      },
+    };
+  }
+
+  test("the window's white background goes and the document gets a radius", () => {
+    const popup = fakePopup();
+    roundPopupCorners(popup);
+    expect(popup.backgroundColor).toBe("#00000000");
+    expect(popup.inserted).toHaveLength(1);
+    // A radius alone would still let the content scroll past the corner.
+    expect(popup.inserted[0]).toContain(`border-radius:${POPUP_CORNER_RADIUS}px`);
+    expect(popup.inserted[0]).toContain("overflow:hidden");
+    expect(popup.inserted[0]).toMatch(/^html,body\{/);
+  });
+
+  test("it is re-applied on every load, because the popup navigates itself", () => {
+    const popup = fakePopup();
+    roundPopupCorners(popup);
+    // 1Password walks from its unlock screen to its item list inside the same
+    // window; `insertCSS` does not survive that.
+    popup.emit("did-finish-load");
+    popup.emit("did-finish-load");
+    expect(popup.inserted).toHaveLength(3);
+    // …but never into a window that has already gone.
+    popup.destroyed = true;
+    popup.emit("did-finish-load");
+    expect(popup.inserted).toHaveLength(3);
+  });
+
+  test("a window too old to clear its background still gets the CSS", () => {
+    const popup = fakePopup();
+    popup.setBackgroundColor = () => { throw new Error("unsupported"); };
+    expect(() => roundPopupCorners(popup)).not.toThrow();
+    expect(popup.inserted).toHaveLength(1);
   });
 });
 
