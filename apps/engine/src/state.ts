@@ -6164,11 +6164,22 @@ export class EngineStore {
    *
    * Pages are read by turn position in queue order (append order), so the
    * cursor is just a runId — no timestamp ties, no index.
+   *
+   * REQUESTS FOLLOW THEIR TURNS TOO, plus every OPEN one wherever it sits.
+   * They were the one key that ignored the window: on the dogfood store the
+   * largest session's snapshot carried 549 requests / 315 KB, of which 44
+   * belonged to the window and zero were unresolved — 292 KB, re-read every
+   * second per open cockpit, that nothing could render. An open request rides
+   * along regardless of the page because an unanswered question on a paged-out
+   * turn must still reach the composer, and it rides along on EVERY page
+   * because a client replaces the key rather than merging it
+   * (`SessionSyncEngine.swift`).
    */
   snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
     turns: Turn[];
     items: Item[];
     tasks: Task[];
+    requests: EngineRequest[];
     page: { before: string | null; more: boolean };
   } {
     this.getSession(sessionId);
@@ -6190,6 +6201,7 @@ export class EngineStore {
       turns,
       items: [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId)),
       tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
+      requests: [...this.readRequests(sessionId).values()].filter((request) => chosen.has(request.runId) || request.state === "open"),
       page: { before: start > 0 ? (paged[0]?.runId ?? null) : null, more: start > 0 },
     });
   }

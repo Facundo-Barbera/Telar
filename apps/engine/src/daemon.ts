@@ -3331,6 +3331,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
                   // still working" must be answerable from the FIRST fetch of
                   // a cold session, before any event has streamed.
                   tasks: store.tasks(session.sessionId),
+                  requests: store.requests(session.sessionId),
                 }
               : store.snapshotWindow(session.sessionId, { limit, ...(before === undefined ? {} : { before }) });
           /**
@@ -3353,7 +3354,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             session: store.getSession(session.sessionId),
             ...window,
             items,
-            requests: store.requests(session.sessionId),
             // Folded over the WHOLE queue, not the window above: a client
             // paging its transcript must not have to guess at a carrier it
             // cannot see. See `sessionAssignments`.

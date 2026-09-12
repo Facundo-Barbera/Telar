@@ -166,6 +166,51 @@ test("a windowed snapshot is the newest settled turns plus everything unsettled,
   expect(() => store.snapshotWindow("session_one", { limit: 2, before: "run_nope" })).toThrow(EngineStateError);
 });
 
+test("a windowed snapshot carries the window's requests and every open one, not the whole history", () => {
+  // THE KEY THAT USED TO IGNORE THE WINDOW. On the dogfood store this was 549
+  // requests / 315 KB per read, of which 44 were in the window and none were
+  // unresolved — re-read every second by every open cockpit.
+  const stateRoot = root();
+  const store = new EngineStore(stateRoot, () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.createSession({ id: "session_one", projectId: "project_one", detached: false });
+
+  for (const n of [1, 2, 3, 4, 5]) {
+    const runId = `run_${n}`;
+    store.submitTurn("session_one", { runId, input: `Turn ${n}` });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", runId, token);
+    store.openRequest("session_one", runId, token, {
+      requestId: `req_${n}`,
+      kind: "command_execution",
+      detail: { kind: "command_execution", command: { command: `echo ${n}` } },
+    });
+    store.resolveRequest("session_one", `req_${n}`, { decision: "accept" });
+    store.completeTurn("session_one", runId, token, { text: `Answer ${n}` });
+  }
+  // …and one still running, holding the question nobody has answered.
+  store.submitTurn("session_one", { runId: "run_live", input: "Now" });
+  const liveToken = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_live", liveToken);
+  store.openRequest("session_one", "run_live", liveToken, {
+    requestId: "req_open",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "rm -rf build" } },
+  });
+
+  const first = store.snapshotWindow("session_one", { limit: 2 });
+  expect(first.requests.map((request) => request.id)).toEqual(["req_4", "req_5", "req_open"]);
+
+  // An older page drops the newer turns' settled requests — but NOT the open
+  // one: a client replaces this key rather than merging it, so a question left
+  // off a page is a question the composer stops being able to answer.
+  const older = store.snapshotWindow("session_one", { limit: 2, before: "run_4" });
+  expect(older.requests.map((request) => request.id)).toEqual(["req_2", "req_3", "req_open"]);
+
+  // The unwindowed read is unchanged: everything the session ever opened.
+  expect(store.requests("session_one")).toHaveLength(6);
+});
+
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
