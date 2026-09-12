@@ -31,7 +31,7 @@ const flat = (name: string) => code(name).replace(/\s+/g, " ");
 /** Every file this round puts a menu on. Grown one surface per commit, so the
  *  cross-surface rules below hold at every point in the series rather than
  *  only at the end of it. */
-const SURFACES = ["transcript.tsx", "session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
+const SURFACES = ["transcript.tsx", "composer.tsx", "session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
 
 describe("one primitive, composed per surface", () => {
   test("every surface imports the SHARED context-menu module and defines none of its own", () => {
@@ -338,5 +338,57 @@ describe("the transcript's message and tool rows", () => {
     const body = cockpit.slice(cockpit.indexOf("function SessionTurnBody("), cockpit.indexOf("const [draftDriver"));
     expect(body).not.toContain("{...(onOpenAgent ? { onOpenAgent } : {})}");
     expect((body.match(/\{\.\.\.rowGestures\}/g) ?? []).length).toBeGreaterThanOrEqual(7);
+  });
+});
+
+/**
+ * THE COMPOSER'S CHROME — and, just as importantly, NOT the box you type in.
+ *
+ * A `<textarea>` already has a menu and it is the browser's: cut, copy, paste,
+ * undo, spell-check, Look Up, Share. Replacing it with our four rows would take
+ * away six useful things to add two, and take away the one menu on this screen
+ * nobody had to learn.
+ */
+describe("the composer's chrome, and the textarea it leaves alone", () => {
+  const cmp = () => code("composer.tsx");
+
+  test("the menu is on the chips and the control strip, and the editor is untouched", () => {
+    const source = cmp();
+    // The chips.
+    expect(source).toContain("<AttachmentChip file={file} onRemove={() => onAttach(attachments.filter((_, at) => at !== index))} />");
+    expect(source).toContain("onRemoveAttachment={() => onAttach(attachments.filter((_, at) => at !== index))}");
+    // The foot strip: the trigger IS the left cluster, so the addon's flex
+    // layout is unchanged.
+    expect(source).toContain('className="flex min-w-0 flex-wrap items-center gap-1"');
+    // And nothing wraps the editor.
+    expect(source).not.toMatch(/<ContextMenu[\s\S]{0,400}<ComposerEditor/);
+    expect(source).not.toMatch(/<ComposerEditor[\s\S]{0,200}<\/ContextMenuTrigger>/);
+  });
+
+  test("the rule is written down where the next person would undo it", () => {
+    expect(read("composer.tsx")).toContain("THE COMPOSER'S CHROME ANSWERS A RIGHT-CLICK; THE BOX YOU TYPE IN DOES NOT");
+  });
+
+  test("Clear draft and Stash draft fire what the box and the ⌘S chord already fire", () => {
+    const source = cmp();
+    expect(source).toContain('onClear={() => onDraftChange("")}');
+    expect(source).toContain("onStash={() => void doStash()}");
+    // `doStash` is the SAME callback ⌘S calls — one stash path, not two.
+    expect(source).toContain("if (draft.trim() || attachments.some((file) => file.type.startsWith(\"image/\"))) void doStash();");
+  });
+
+  test("stashable is ONE rule, so the key and the menu cannot disagree about what can be stashed", () => {
+    expect(cmp()).toContain('const stashable = Boolean(draft.trim() || attachments.some((file) => file.type.startsWith("image/")));');
+  });
+
+  test("rows that would do nothing are DISABLED, not hidden — the menu keeps its shape as you type", () => {
+    const source = cmp();
+    expect(source).toContain("<ContextMenuItem disabled={!draft} onClick={onClear}>");
+    expect(source).toContain("<ContextMenuItem disabled={stashing || !stashable} onClick={onStash}>");
+  });
+
+  test("Remove attachment appears only on a chip, which is the only place it means anything", () => {
+    expect(cmp()).toContain("{onRemoveAttachment && (");
+    expect(cmp()).toContain("<ContextMenuItem onClick={onRemoveAttachment}>Remove attachment</ContextMenuItem>");
   });
 });
