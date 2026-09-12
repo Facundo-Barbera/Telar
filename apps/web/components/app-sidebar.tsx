@@ -864,9 +864,6 @@ function SidebarBody() {
   const onRowDragStart = (scope: string, key: string) => (event: React.DragEvent) => {
     event.dataTransfer.setData(SESSION_ROW_MIME, key);
     event.dataTransfer.effectAllowed = "move";
-    // The row's own drag image, not the group's: the press started here, and
-    // `stopPropagation` keeps an ancestor header from claiming the gesture.
-    event.stopPropagation();
     setDraggingRow({ scope, key });
   };
   const onRowDragEnd = () => {
@@ -877,8 +874,9 @@ function SidebarBody() {
     if (!event.dataTransfer.types.includes(SESSION_ROW_MIME)) return;
     if (!draggingRow || draggingRow.scope !== scope || draggingRow.key === key) return;
     event.preventDefault();
-    // Stops the project header under this row from drawing its own insert mark
-    // while a row is being carried over it.
+    // The group around this row is a drop target too. It would decline a row
+    // on its own (wrong MIME), but stopping here is what keeps a future drop
+    // target from having to know about this one.
     event.stopPropagation();
     event.dataTransfer.dropEffect = "move";
     const rect = event.currentTarget.getBoundingClientRect();
