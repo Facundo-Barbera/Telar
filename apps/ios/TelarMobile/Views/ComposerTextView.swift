@@ -86,12 +86,25 @@ struct ComposerTextView: UIViewRepresentable {
     /// The height the box asks for: as tall as its text, capped. The caller's
     /// own `.frame(minHeight:alignment:)` still decides where a short line
     /// sits — centred in the resting pill, at the top of the focused card.
+    ///
+    /// WHAT THE LAYOUT OFFERED IS A CAP TOO, and it is the one that was
+    /// missing. `maxLines` says how far a growing draft may push the card
+    /// open; the proposal says how far the page can actually let it — and with
+    /// the keyboard up the page is the smaller of the two, because the
+    /// transcript and the composer are dividing what is left above the
+    /// keyboard. Answering with more than was offered does not win the room:
+    /// SwiftUI places the field at the size it asked for while the card behind
+    /// it is drawn for the size it was granted, and the difference is the last
+    /// line of the draft, rendered on the page below the card.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ComposerUITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
         let line = uiView.font?.lineHeight ?? UIFont.systemFont(ofSize: fontSize).lineHeight
         let content = max(uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height, line)
-        let cap = maxLines.map { line * CGFloat($0) } ?? (proposal.height ?? content)
-        return CGSize(width: width, height: min(content, cap))
+        let offered = proposal.height.flatMap { $0.isFinite ? $0 : nil } ?? .greatestFiniteMagnitude
+        let cap = min(maxLines.map { line * CGFloat($0) } ?? .greatestFiniteMagnitude, offered)
+        // NEVER BELOW ONE LINE: a zero-height proposal is the layout asking how
+        // small the box could be, not an offer to draw it away.
+        return CGSize(width: width, height: max(min(content, cap), line))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, focused: $focused) }
