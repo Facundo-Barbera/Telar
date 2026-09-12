@@ -62,7 +62,7 @@ describe("engine route adapters", () => {
     expect((await response.json()).error.code).toBe("invalid_request");
   });
 
-  test("the live list carries every project's sessions minus the ones a loom owns", async () => {
+  test("the live list carries every project's sessions minus the ones a loom owns, and the rail's arrangement", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);
     process.env.TELAR_HOME = home;
@@ -79,11 +79,18 @@ describe("engine route adapters", () => {
     // more than on the per-project list — the phone reads this route.
     saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_two", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
 
+    // THE ARRANGEMENT RIDES THE RAIL'S OWN READ (#306). This is how a drop made
+    // on the phone reaches a browser tab: the rail polls this route anyway, so
+    // propagation costs no second request and no connection of its own.
+    await client.setSidebarLayout({ projectOrder: ["project_two", "project_one"] });
+    await client.setSidebarLayout({ pinnedOrder: ["session_plain"] });
+
     const response = await liveGet();
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.sessions.map((s: { id: string }) => s.id)).toEqual(["session_plain"]);
     expect(body.projects.map((p: { id: string }) => p.id).sort()).toEqual(["project_one", "project_two"]);
+    expect(body.layout).toEqual({ projectOrder: ["project_two", "project_one"], sessionOrder: {}, pinnedOrder: ["session_plain"] });
   });
 
   test("keeps the legacy discard endpoint harmless after boot stops interrupted work", async () => {

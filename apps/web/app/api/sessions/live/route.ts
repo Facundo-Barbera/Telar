@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const client = await engineClient();
-    const [{ sessions }, { projects }] = await Promise.all([client.liveSessions(), client.listProjects()]);
+    const [{ sessions, layout }, { projects }] = await Promise.all([client.liveSessions(), client.listProjects()]);
     // DETACHMENT (docs/loom-model-v1.md): same subtraction as the per-project
     // list — loom-owned sessions do not exist on ordinary surfaces, and this
     // route is an ordinary surface.
@@ -20,6 +20,10 @@ export async function GET() {
     return Response.json({
       sessions: sessions.filter((session) => !owned.has(session.id)),
       projects,
+      // WHERE THE RAIL PUTS THINGS, forwarded rather than fetched again: this
+      // is how a drag on the phone or another window reaches this one, on the
+      // poll the rail was making anyway. Omitted by an engine that predates it.
+      ...(layout ? { layout } : {}),
     });
   } catch (error) {
     return engineErrorResponse(error);

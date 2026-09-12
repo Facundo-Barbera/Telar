@@ -21,6 +21,14 @@
  * OPTIMISTIC. The group lands where it was dropped on the same frame, and the
  * write follows; an engine that refuses puts it back. A drag that waited for a
  * round trip before the group moved would read as a drop that missed.
+ *
+ * AND IT ARRIVES FROM ELSEWHERE. The arrangement is one document per Mac, so a
+ * drop on the phone or in another browser tab changes what THIS rail should be
+ * drawing — and until #306 nothing said so, leaving a second device on a copy
+ * it would later write back. The engine now carries the whole layout on
+ * `/v2/sessions/live`, the read the rail already makes every few seconds, and
+ * `observeSidebarLayout` is where the rail hands it back here. No new request,
+ * no timer of its own, no second connection.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -30,11 +38,48 @@ import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
 const api = createEngineApi(hostFetcher(LOCAL_HOST_ID));
 
-/** Same-window propagation, carrying what the engine returned. */
+/** Same-window propagation, carrying what the engine returned. STILL NEEDED
+ *  beside the poll: one window can hold several rails (the cockpit's and a
+ *  sheet's), and a drop in one must move the others on the same frame rather
+ *  than up to ten seconds later. */
 const CHANGED = "telar:sidebar-layout";
 
 function announce(layout: SidebarLayout): void {
   window.dispatchEvent(new CustomEvent<SidebarLayout>(CHANGED, { detail: layout }));
+}
+
+/** Are two arrangements the same document? Field by field, because the poll
+ *  answers several times a minute and a fresh object per pass would re-render
+ *  every rail for news it did not carry. */
+export function sameSidebarLayout(left: SidebarLayout, right: SidebarLayout): boolean {
+  const same = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every((key, at) => key === b[at]);
+  if (!same(left.projectOrder, right.projectOrder) || !same(left.pinnedOrder, right.pinnedOrder)) return false;
+  const groups = left.sessionOrder ?? {};
+  const others = right.sessionOrder ?? {};
+  const keys = new Set([...Object.keys(groups), ...Object.keys(others)]);
+  for (const key of keys) if (!same(groups[key], others[key])) return false;
+  return true;
+}
+
+/**
+ * HOW MANY WRITES ARE IN FLIGHT, module-wide.
+ *
+ * A poll that started before a drop lands after it, carrying the arrangement
+ * from BEFORE the drag — and applying that would put the group back under the
+ * pointer, which reads as a drop that missed. So an observed layout is ignored
+ * while this rail is mid-write; the write's own answer is authoritative and
+ * `announce` delivers it.
+ */
+let writing = 0;
+
+/**
+ * An arrangement read from the engine by somebody else's request — the rail's
+ * live-session poll. Applied to every rail in this window, unless a write of
+ * our own is in flight (see `writing`).
+ */
+export function observeSidebarLayout(layout: SidebarLayout | undefined): void {
+  if (!layout || writing > 0 || typeof window === "undefined") return;
+  announce(layout);
 }
 
 export type SidebarLayoutHandle = {
@@ -76,7 +121,9 @@ export function useSidebarLayout(): SidebarLayoutHandle {
     }, 0);
     const onChanged = (event: Event) => {
       const next = (event as CustomEvent<SidebarLayout>).detail;
-      if (next) setLayout(next);
+      // Unchanged is not news: the poll re-announces the same document several
+      // times a minute, and re-setting it would re-render the whole rail.
+      if (next && !sameSidebarLayout(next, latest.current)) setLayout(next);
     };
     window.addEventListener(CHANGED, onChanged);
     return () => {
@@ -95,6 +142,7 @@ export function useSidebarLayout(): SidebarLayoutHandle {
   const patch = useCallback(async (change: Partial<SidebarLayout>) => {
     const previous = latest.current;
     setLayout({ ...previous, ...change });
+    writing += 1;
     try {
       // ONE FIELD PER CALL. The engine leaves an absent field alone, so a drop
       // in the pinned band cannot overwrite the groups this same rail arranged
@@ -107,6 +155,8 @@ export function useSidebarLayout(): SidebarLayoutHandle {
       // The engine refused or is away: the group goes back where it was. The
       // rail's own "did not answer" line is what says why.
       setLayout(previous);
+    } finally {
+      writing -= 1;
     }
   }, []);
 

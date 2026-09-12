@@ -125,7 +125,7 @@ import {
   useCollapsedGroups,
   withholdFollowedRows,
 } from "@/lib/session-groups";
-import { useSidebarLayout } from "@/lib/sidebar-layout";
+import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -497,7 +497,16 @@ function SidebarBody() {
         result.assignments?.[session.id],
       ),
     );
-    return { projects: result.projects, sessions, ...(daemonId ? { daemonId } : {}), ...(policy ? { policy } : {}) };
+    return {
+      projects: result.projects,
+      sessions,
+      ...(daemonId ? { daemonId } : {}),
+      ...(policy ? { policy } : {}),
+      // WHERE THINGS SIT, straight off the read that was happening anyway —
+      // only meaningful for THIS Mac, whose document holds the keys this rail
+      // mints. A remote Mac's own arrangement is of ITS rail, not of ours.
+      ...(result.layout ? { layout: result.layout } : {}),
+    };
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -528,6 +537,12 @@ function SidebarBody() {
       }
       setUnavailable(false);
       setProjects(local.value.projects);
+      // THE ARRANGEMENT ANOTHER DEVICE MADE. It rides this Mac's live read, so
+      // a drag on the phone or in another tab reaches this rail on the poll it
+      // was making anyway — and `observeSidebarLayout` drops it while a drag of
+      // our own is still being written, so a poll in flight across a drop
+      // cannot put the group back under the pointer.
+      observeSidebarLayout(local.value.layout);
       const away = new Set<string>();
       const reads: { daemonId?: string; sessions: SidebarSession[] }[] = [local.value];
       const remoteProjects: RemoteProject[] = [];
