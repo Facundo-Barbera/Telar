@@ -1211,7 +1211,20 @@ extension View {
             // background that answers no touches it draws the same material
             // and the pill takes taps again. (`.interactive()` is gone with
             // it: a layer nothing can touch cannot respond to being touched.)
-            self.background { Color.clear.glassEffect(.regular, in: shape).allowsHitTesting(false) }
+            //
+            // THE CARD HAS ITS OWN BODY UNDER THE GLASS. Liquid glass samples
+            // whatever is behind it, and the transcript scrolls under the
+            // composer — so the last line read through the card's top edge at
+            // reduced contrast. The fill is what the glass samples now, and
+            // the glass is left to tint the rim. 0.85 rather than 1 so it
+            // still reads as a material and not as an opaque bar.
+            self.background {
+                ZStack {
+                    shape.fill(Theme.composerSurface.opacity(0.85))
+                    Color.clear.glassEffect(.regular, in: shape)
+                }
+                .allowsHitTesting(false)
+            }
         } else {
             self.background(Theme.composerSurface)
                 .clipShape(shape)
