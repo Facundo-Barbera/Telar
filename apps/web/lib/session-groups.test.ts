@@ -1,6 +1,15 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { dedupeAcrossHosts, groupSessions, moveProjectGroup, orderProjectGroups, projectGroupKey, type ProjectGroup } from "./session-groups";
+import {
+  dedupeAcrossHosts,
+  foldedAfter,
+  groupSessions,
+  moveProjectGroup,
+  moveProjectGroupStep,
+  orderProjectGroups,
+  projectGroupKey,
+  type ProjectGroup,
+} from "./session-groups";
 import type { SidebarSession } from "./session-list";
 
 const row = (id: string, over: Partial<SidebarSession> = {}): SidebarSession => ({
@@ -157,5 +166,68 @@ describe("dedupeAcrossHosts", () => {
     const local = { daemonId: "d1", sessions: [row("a")] };
     const unknown = { sessions: [row("a", { hostId: "host_x", hostName: "mini" })] };
     expect(dedupeAcrossHosts([local, unknown])).toHaveLength(2);
+  });
+});
+
+/**
+ * THE FOUR FOLD MOVES the project header's menu and the rail's empty-space menu
+ * fire. Asserted on the set rather than through a rendered menu: what is being
+ * pinned is which keys a gesture may touch, and that is decidable without a DOM.
+ */
+describe("foldedAfter", () => {
+  const drawn = ["a", "b", "c"];
+
+  test("toggle swaps one key and leaves the rest alone", () => {
+    expect([...foldedAfter(new Set(), drawn, { kind: "toggle", key: "b" })]).toEqual(["b"]);
+    expect([...foldedAfter(new Set(["b"]), drawn, { kind: "toggle", key: "b" })]).toEqual([]);
+  });
+
+  test("collapse others folds every drawn group but this one — and unfolds this one", () => {
+    // The lobby's verb: you asked to see THIS project, so a folded one you
+    // named must come open rather than stay shut.
+    expect([...foldedAfter(new Set(["b"]), drawn, { kind: "others", key: "b" })].sort()).toEqual(["a", "c"]);
+  });
+
+  test("collapse all and expand all move exactly the drawn keys", () => {
+    expect([...foldedAfter(new Set(), drawn, { kind: "all" })].sort()).toEqual(["a", "b", "c"]);
+    expect([...foldedAfter(new Set(drawn), drawn, { kind: "none" })]).toEqual([]);
+  });
+
+  test("a fold for a group NOT on screen survives every move — it is not this gesture's to clear", () => {
+    // `away` is a paired Mac's project that did not answer this tick. Expanding
+    // all must not silently un-fold it, or it springs open the moment that Mac
+    // comes back.
+    const withAway = new Set(["away"]);
+    expect([...foldedAfter(withAway, drawn, { kind: "none" })]).toEqual(["away"]);
+    expect([...foldedAfter(withAway, drawn, { kind: "all" })].sort()).toEqual(["a", "away", "b", "c"]);
+    expect([...foldedAfter(withAway, drawn, { kind: "others", key: "a" })].sort()).toEqual(["away", "b", "c"]);
+  });
+
+  test("pure: the set handed in is never mutated", () => {
+    const current = new Set(["a"]);
+    foldedAfter(current, drawn, { kind: "all" });
+    expect([...current]).toEqual(["a"]);
+  });
+});
+
+describe("moveProjectGroupStep", () => {
+  const drawn = ["a", "b", "c"];
+
+  test("one place up, one place down — the same write the drop makes", () => {
+    expect(moveProjectGroupStep([], drawn, "c", "up")).toEqual(["a", "c", "b"]);
+    expect(moveProjectGroupStep([], drawn, "a", "down")).toEqual(["b", "a", "c"]);
+    // Identical to resolving the neighbour by hand and dropping on it.
+    expect(moveProjectGroupStep([], drawn, "c", "up")).toEqual(moveProjectGroup([], drawn, "c", "b", "above"));
+  });
+
+  test("undefined at either end, which is what disables the menu row", () => {
+    expect(moveProjectGroupStep([], drawn, "a", "up")).toBeUndefined();
+    expect(moveProjectGroupStep([], drawn, "c", "down")).toBeUndefined();
+    expect(moveProjectGroupStep([], drawn, "zz", "up")).toBeUndefined();
+  });
+
+  test("keys the rail is not drawing keep their slot, exactly as a drop leaves them", () => {
+    const stored = ["a", "away", "b", "c"];
+    expect(moveProjectGroupStep(stored, drawn, "c", "up")).toEqual(["a", "away", "c", "b"]);
   });
 });

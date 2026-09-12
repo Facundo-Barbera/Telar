@@ -458,8 +458,20 @@ export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "
  * is showing a canvas or a session by COMPARING the pathname to this string, so
  * a second spelling anywhere would be a screen that never resets.
  */
-export function canvasHref(projectId: string, hostId?: string): string {
-  return `${hostPrefix(hostId)}/projects/${encodeURIComponent(projectId)}/sessions/new`;
+export function canvasHref(projectId: string, hostId?: string, options?: { baseRef?: string }): string {
+  const canvas = `${hostPrefix(hostId)}/projects/${encodeURIComponent(projectId)}/sessions/new`;
+  /**
+   * THE BASE RIDES AS A QUERY, NOT AS A PATH SEGMENT, and that is what keeps
+   * the sentence above true: the cockpit decides canvas-or-session by comparing
+   * `usePathname()` to this string, and a pathname carries no query — so
+   * `?base=…` cannot make a canvas stop recognising itself.
+   *
+   * It exists for the session menu's "New session on <branch>", which promises
+   * the new worktree is cut from where this session works. Without carrying the
+   * ref the label would name a branch the canvas then ignored, which is the one
+   * thing a menu item that names a branch must not do.
+   */
+  return options?.baseRef ? `${canvas}?base=${encodeURIComponent(options.baseRef)}` : canvas;
 }
 
 /**

@@ -44,7 +44,7 @@ import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
-import { SessionInboxMenu, patchSession, runSessionPatch } from "@/components/session/session-inbox-menu";
+import { SessionInboxMenu, SessionRowContextMenu, patchSession, runSessionPatch, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -491,7 +491,27 @@ export function SessionRow({
 
   const rowBody = variant === "card" ? cardBody : slimBody;
 
-  return (
+  /**
+   * ONE SET OF ANSWERS FOR BOTH MENUS ON THIS ROW. The `⋯` and the right-click
+   * menu render the same definition, so giving them the same props is what
+   * stops the two disagreeing about, say, whether this row is settled — which
+   * would show a "Settle" in one and an "Un-settle" in the other on one row.
+   */
+  const menuProps: SessionRowMenuProps = {
+    session,
+    active,
+    // No longer the default `{}`: the engine reports what this session is
+    // doing, so the menu's own guards can finally apply.
+    activity: sessionActivity,
+    now: renderedAt,
+    // The same fold the settle button beside it uses, drift included.
+    settled: unsettles,
+    onRename: beginRename,
+    onDone: onRefresh,
+    onLeave: leaveIfActive,
+  };
+
+  const row = (
     /**
      * THREE WEIGHTS, NOT TWO, AND THE THIRD IS THE ONE THAT MATTERS.
      *
@@ -713,19 +733,17 @@ export function SessionRow({
               </DropdownMenu>
             )
           )}
-          <SessionInboxMenu
-            session={session}
-            active={active}
-            // No longer the default `{}`: the engine reports what this session
-            // is doing, so the menu's own guards can finally apply.
-            activity={sessionActivity}
-            now={renderedAt}
-            onRename={beginRename}
-            onDone={onRefresh}
-            onLeave={leaveIfActive}
-          />
+          <SessionInboxMenu {...menuProps} />
         </span>
       )}
     </div>
   );
+
+  /**
+   * RIGHT-CLICK ANYWHERE ON THE ROW IS THE SAME MENU. t3's row has no hover
+   * quick-actions at all and treats right-click as the way to act on a thread;
+   * Telar keeps its two one-click verbs and adds the gesture, so the long tail
+   * is reachable without first finding a 20px glyph that only appears on hover.
+   */
+  return <SessionRowContextMenu {...menuProps}>{row}</SessionRowContextMenu>;
 }

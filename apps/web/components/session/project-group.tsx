@@ -1,13 +1,119 @@
 "use client";
 
-import { ChevronRightIcon, MessageSquarePlusIcon, MonitorIcon } from "lucide-react";
+import { useCallback, useState, useSyncExternalStore } from "react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  FolderOpenIcon,
+  FoldVerticalIcon,
+  MessageSquarePlusIcon,
+  MonitorIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { OpenerIcon } from "@/components/session/opener-icon";
 import { SessionRow } from "@/components/session/session-row";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectGroup as Group } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpener } from "@/lib/workspace-open";
+import {
+  preferredOpenerSnapshot,
+  remembersOpener,
+  serverPreferredOpenerSnapshot,
+  subscribePreferredOpener,
+  workspaceOpenerEntries,
+  workspaceOpenerPrimary,
+  writePreferredOpener,
+  type WorkspaceOpenerEntry,
+} from "@/lib/workspace-opener-preference";
 import { cn } from "@/lib/utils";
+
+/**
+ * THE PROJECT FOLDER, IN THE APPS THIS MACHINE ACTUALLY HAS — the same bridge,
+ * the same remembered opener and the same three fallbacks as the cockpit's
+ * `OpenWorkspaceButton`, reached from a menu instead of a split button.
+ *
+ * NOTHING NEW IS OFFERED HERE. `workspaceOpenBlocker` is the one place that
+ * decides whether a folder can be opened from this window at all — no bridge (a
+ * browser tab), another Mac, or no path — and the two rows are ABSENT rather
+ * than disabled when it says no. A disabled "Reveal in Finder" in a browser tab
+ * would be a row explaining the platform on every project header forever.
+ *
+ * THE LIST IS ASKED FOR WHEN THE MENU OPENS, not on mount. A rail with eight
+ * project groups would otherwise make eight IPC round trips per paint to fill
+ * in a label nobody is looking at. Until it lands the row reads "Open", which is
+ * the split button's own first-run wording.
+ */
+function useProjectFolder(group: Pick<Group, "hostId" | "hostName">, root: string | undefined) {
+  const [openers, setOpeners] = useState<WorkspaceOpener[]>();
+  const preferred = useSyncExternalStore(
+    subscribePreferredOpener,
+    useCallback(() => preferredOpenerSnapshot(group.hostId), [group.hostId]),
+    serverPreferredOpenerSnapshot,
+  );
+  const bridge = workspaceOpener();
+  const blocker = workspaceOpenBlocker({
+    path: root,
+    hostId: group.hostId,
+    hostLabel: group.hostName,
+    hasBridge: Boolean(bridge),
+  });
+
+  const load = useCallback(() => {
+    if (blocker || !bridge?.openers) return;
+    void bridge
+      .openers()
+      .then((answer) => setOpeners(answer.openers))
+      .catch(() => setOpeners([]));
+  }, [blocker, bridge]);
+
+  const entries = workspaceOpenerEntries({ openers: openers ?? [], preferred });
+  /**
+   * A MACHINE WITH NO EDITOR STILL GETS A ROW THAT NAMES WHAT IT WILL DO.
+   * `workspaceOpenerPrimary` answers `undefined` there — the split button
+   * responds by showing its list, which a menu row cannot — so the system
+   * default stands in, and it says so in its own words ("Open in the default
+   * app") rather than hiding behind a bare "Open".
+   */
+  const primary =
+    openers === undefined ? undefined : (workspaceOpenerPrimary(entries) ?? entries.find((entry) => entry.kind === "system"));
+
+  /** The shell's refusal is reported, never swallowed — this rail has no error
+   *  surface of its own, which is the argument `runSessionPatch` makes for the
+   *  same alert one file over. */
+  const act = (entry: WorkspaceOpenerEntry | "reveal") => {
+    if (blocker || !bridge || !root) return;
+    if (entry !== "reveal" && remembersOpener(entry)) writePreferredOpener(group.hostId, entry.id);
+    void (entry === "reveal" ? bridge.reveal(root) : bridge.open(root, entry.openerId))
+      .then((result) => {
+        if (!result.ok) window.alert(result.error ?? "That folder could not be opened.");
+      })
+      .catch((cause: unknown) => window.alert(cause instanceof Error ? cause.message : "That folder could not be opened."));
+  };
+
+  return {
+    /** Both rows are hidden together: they answer one question, and half an
+     *  answer is worse than none. */
+    available: !blocker,
+    load,
+    label: primary?.primaryLabel ?? "Open",
+    icon: primary?.icon,
+    /** Nothing to open with until the shell has answered; the row is disabled
+     *  for that beat rather than opening whatever it guesses. */
+    open: primary ? () => act(primary) : undefined,
+    reveal: () => act("reveal"),
+  };
+}
 
 /**
  * One project's active sessions under a collapsible header. The header is
@@ -26,6 +132,17 @@ import { cn } from "@/lib/utils";
  * change the group's height the instant it appeared and shove every row under
  * the pointer — the exact mechanism behind a lobby bug this app already fixed
  * once. An inset shadow draws the same 2px line and changes no box.
+ *
+ * RIGHT-CLICK IS THE HEADER'S OWN MENU, and every row in it fires a callback
+ * this component was already given — the `+`'s canvas, the picker's settings
+ * route, the chevron's fold, the drag's reorder. The one thing it adds is a
+ * SECOND GESTURE for each, which is the whole point: the reorder was
+ * drag-or-nothing, and "collapse others" had no control at all.
+ *
+ * THE TRIGGER WRAPS THE LABEL, NEVER THE BUTTON. That button is the drag
+ * handle, and base-ui's trigger renders an element of its own — one carrying
+ * `draggable` would make a right-press and a grab compete for the same node,
+ * which is the race the Spool's board card avoids the same way.
  */
 export function ProjectGroupSection({
   group,
@@ -43,6 +160,12 @@ export function ProjectGroupSection({
   onDragOver,
   onDragLeave,
   onDrop,
+  root,
+  onNewConversation,
+  onProjectSettings,
+  onCollapseOthers,
+  onMoveUp,
+  onMoveDown,
 }: {
   group: Group;
   open: boolean;
@@ -63,10 +186,27 @@ export function ProjectGroupSection({
   onDragOver: (event: React.DragEvent) => void;
   onDragLeave: () => void;
   onDrop: (event: React.DragEvent) => void;
+  /**
+   * THE PROJECT'S CHECKOUT, from the registry rather than from a session: a
+   * session's `workspacePath` is its own worktree, and revealing that when
+   * somebody asked for the project would open a folder they did not name.
+   * Absent for a paired Mac's project — this cockpit reads its id and its name,
+   * never its path — which is the same case `workspaceOpenBlocker` refuses.
+   */
+  root?: string;
+  onNewConversation: () => void;
+  /** Absent where there is no page to send anyone to: per-project settings are
+   *  a local-only route, exactly as the session menu's own item states. */
+  onProjectSettings?: () => void;
+  onCollapseOthers: () => void;
+  /** Absent at the end of the list, which is what disables the row. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const headingId = `project-group-${group.key}`;
   const shown = group.sessions.length;
   const countLabel = `${shown} shown`;
+  const folder = useProjectFolder(group, root);
   return (
     <SidebarGroup
       className={cn(
@@ -90,20 +230,97 @@ export function ProjectGroupSection({
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
           title="Drag to move this project"
-          className="flex min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+          className="flex min-w-0 flex-1 cursor-grab rounded text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
         >
-          <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
-          <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />
-          <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>
-          {group.hostName && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] text-sidebar-foreground/60" title={`On ${group.hostName}`}>
-              <MonitorIcon className="size-2.5" />
-              <span className="max-w-16 truncate">{group.hostName}</span>
-            </span>
-          )}
-          <span className="ml-auto shrink-0 tabular-nums text-[0.6875rem] text-sidebar-foreground/45" title={countLabel} aria-label={countLabel}>
-            {shown}
-          </span>
+          {/*
+            THE TRIGGER IS THE HEADER'S FLEX ROW, PADDING AND ALL — it took the
+            button's own layout classes rather than adding a box beside them.
+
+            IT CANNOT BE `display: contents`, AND THAT COST A SCREENSHOT TO
+            LEARN. A `contents` box is not painted and is therefore never an
+            event target: only its CHILDREN are, so a right-press landing in the
+            row's padding or in a gap between the chevron and the name had the
+            <button> as its target, bubbled straight past this menu and opened
+            the rail's instead. The row now has one hit area and it is this
+            element.
+
+            STILL A SPAN, AND STILL INSIDE THE BUTTON. The button is the drag
+            handle — base-ui renders the trigger as an element of its own, and
+            one carrying `draggable` would put a right-press and a grab on the
+            same node — and a <button>'s content model is phrasing, which a div
+            is not.
+
+            `onOpenChange` is where the installed-app list is asked for; see
+            `useProjectFolder` for why it waits until the menu opens.
+          */}
+          <ContextMenu onOpenChange={(next: boolean) => next && folder.load()}>
+            <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1.5" />}>
+              <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
+              <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />
+              <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>
+              {group.hostName && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] text-sidebar-foreground/60" title={`On ${group.hostName}`}>
+                  <MonitorIcon className="size-2.5" />
+                  <span className="max-w-16 truncate">{group.hostName}</span>
+                </span>
+              )}
+              <span className="ml-auto shrink-0 tabular-nums text-[0.6875rem] text-sidebar-foreground/45" title={countLabel} aria-label={countLabel}>
+                {shown}
+              </span>
+            </ContextMenuTrigger>
+            {/* `w-(--anchor-width)` is the primitive's default and would size the
+                popup to the header it was opened from. A rail is not a menu
+                width — the same fix `SessionActionContextMenu` makes. */}
+            <ContextMenuContent className="w-56">
+              <ContextMenuItem onClick={onNewConversation}>
+                <MessageSquarePlusIcon />
+                New conversation here
+              </ContextMenuItem>
+
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                disabled={!onProjectSettings}
+                title={onProjectSettings ? undefined : "Project settings open on the Mac that owns the project."}
+                {...(onProjectSettings ? { onClick: onProjectSettings } : {})}
+              >
+                <SlidersHorizontalIcon />
+                Project settings
+              </ContextMenuItem>
+              {/* ABSENT, NOT DISABLED, without the bridge: see `useProjectFolder`. */}
+              {folder.available && (
+                <>
+                  <ContextMenuItem onClick={folder.reveal}>
+                    <FolderOpenIcon />
+                    Reveal in Finder
+                  </ContextMenuItem>
+                  <ContextMenuItem disabled={!folder.open} {...(folder.open ? { onClick: folder.open } : {})}>
+                    <OpenerIcon icon={folder.icon} />
+                    {folder.label}
+                  </ContextMenuItem>
+                </>
+              )}
+
+              <ContextMenuSeparator />
+              <ContextMenuItem onClick={onToggle}>
+                <ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+                {open ? "Collapse" : "Expand"}
+              </ContextMenuItem>
+              <ContextMenuItem onClick={onCollapseOthers}>
+                <FoldVerticalIcon />
+                Collapse others
+              </ContextMenuItem>
+
+              <ContextMenuSeparator />
+              <ContextMenuItem disabled={!onMoveUp} {...(onMoveUp ? { onClick: onMoveUp } : {})}>
+                <ChevronUpIcon />
+                Move up
+              </ContextMenuItem>
+              <ContextMenuItem disabled={!onMoveDown} {...(onMoveDown ? { onClick: onMoveDown } : {})}>
+                <ChevronDownIcon />
+                Move down
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         </button>
         <Link
           href={canvasHref(group.projectId, group.hostId)}
