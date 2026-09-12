@@ -1198,14 +1198,16 @@ ipcMain.handle("telar:browser:bind-profile", (_event, input) =>
   requireBrowserManager().declareProfile(input?.scopeKey, input?.profileKey),
 );
 /**
- * NAMED PROFILES, MANAGED FROM THE BROWSER PANEL. Create and rename identities,
- * name the account one is MEANT to be signed into (intent — nothing here
- * verifies a login), choose the global default, assign this session's project,
- * and switch which identity this session's next tab opens in.
+ * NAMED PROFILES, MANAGED FROM SETTINGS → INTEGRATIONS AND FROM THE BROWSER
+ * PANEL. Create and rename identities, name the account one is MEANT to be
+ * signed into (intent — nothing here verifies a login), choose the global
+ * default, assign this session's project, switch which identity this session's
+ * next tab opens in, and forget one nothing points at.
  *
- * Nothing here deletes a profile, and that is deliberate: a profile record is
- * the only thing that names a live cookie jar, so removing one would either
- * strand or destroy an identity a person is still signed into.
+ * DELETING FORGETS A RECORD, NEVER A COOKIE JAR. The registry refuses a profile
+ * that is the default or that any project is assigned to, and the partition
+ * directory is left on disk either way — so the worst a mistaken delete costs is
+ * making the profile again, and no live identity is ever stranded mid-session.
  */
 ipcMain.handle("telar:browser:profiles", (_event, scopeKey) => {
   const manager = requireBrowserManager();
@@ -1224,6 +1226,9 @@ ipcMain.handle("telar:browser:create-profile", (_event, input) => {
     const projectKey = manager.profileOf(input.scopeKey);
     if (projectKey) manager.profiles.assign(projectKey, profile.id);
   }
+  // A profile made in Settings has to appear in every open panel's picker, and
+  // one made from a panel has to appear in the others'.
+  manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
 });
 ipcMain.handle("telar:browser:update-profile", (_event, input) => {
@@ -1234,6 +1239,21 @@ ipcMain.handle("telar:browser:update-profile", (_event, input) => {
   });
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
+});
+ipcMain.handle("telar:browser:delete-profile", (_event, input) => {
+  const manager = requireBrowserManager();
+  /**
+   * A SESSION CURRENTLY POINTED AT IT IS A REFUSAL, not a silent re-bind. The
+   * registry only knows about project assignments; a scope switched to this
+   * profile by hand is live state only the manager has, and deleting under it
+   * would leave that panel naming a profile that no longer exists.
+   */
+  if ([...manager.scopeProfiles.values()].includes(input?.profileId)) {
+    throw new Error("A session is browsing in that profile right now. Switch that session to another profile first.");
+  }
+  const removed = manager.profiles.remove(input?.profileId);
+  manager.emitAllStates();
+  return { profiles: manager.listProfiles(), removed };
 });
 ipcMain.handle("telar:browser:set-default-profile", (_event, input) => {
   const manager = requireBrowserManager();

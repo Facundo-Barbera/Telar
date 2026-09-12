@@ -66,10 +66,13 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     bindProfile: (scopeKey, profileKey) => ipcRenderer.invoke("telar:browser:bind-profile", { scopeKey, profileKey }),
     // NAMED, REUSABLE PROFILES: several projects may share one identity, and a
     // person switches which one a session's next tab opens in from the panel.
-    // No delete: a profile record is the only name a live cookie jar has.
+    // Managed in full from Settings → Integrations; deleting forgets the record
+    // and is refused while anything — a project, a session, the default — still
+    // points at it. The cookie jar on disk is never removed.
     profiles: (scopeKey) => ipcRenderer.invoke("telar:browser:profiles", scopeKey),
     createProfile: (input) => ipcRenderer.invoke("telar:browser:create-profile", input),
     updateProfile: (input) => ipcRenderer.invoke("telar:browser:update-profile", input),
+    deleteProfile: (profileId) => ipcRenderer.invoke("telar:browser:delete-profile", { profileId }),
     setDefaultProfile: (profileId) => ipcRenderer.invoke("telar:browser:set-default-profile", { profileId }),
     assignProjectProfile: (input) => ipcRenderer.invoke("telar:browser:assign-project-profile", input),
     setScopeProfile: (scopeKey, profileId) => ipcRenderer.invoke("telar:browser:set-scope-profile", { scopeKey, profileId }),
