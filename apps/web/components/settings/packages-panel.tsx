@@ -15,7 +15,7 @@
  * start. The panel says so and offers the restart rather than doing it, since
  * a restart drops every variable.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { DownloadIcon, PackageIcon, RotateCwIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import type { DataScienceInstallCommand, DataScienceManager, DataSciencePackage, DataScienceRequirementsSource } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { JobLog, type JobHandle } from "./job-log";
+import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -41,6 +42,22 @@ const COMMAND_HINT: Record<DataScienceInstallCommand, string> = {
   conda: "Installs run conda install.",
   pip: "Installs run pip install.",
 };
+
+/**
+ * The frame around the three fields, which is the only part of the grammar
+ * that is scope-dependent.
+ *
+ * In project settings this is a `SettingsGroup` like any other pane's — a
+ * heading, hairlines between the rows, the group's own tail. In a session's
+ * right column there is no room for a heading (the surface already has one)
+ * and no pane to be a group OF, so the rows keep their hairlines and lose the
+ * frame. The rows themselves are identical either way: the labelling is what
+ * the port was for, and it is not the group that supplies it.
+ */
+function Fields({ dense, children }: { dense?: boolean; children: ReactNode }) {
+  if (dense) return <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">{children}</div>;
+  return <SettingsGroup title="Environment">{children}</SettingsGroup>;
+}
 
 export function PackagesPanel({
   scope, requirements = [], kernelLive, onRestartKernel, dense,
@@ -127,39 +144,76 @@ export function PackagesPanel({
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", dense ? "gap-2 p-2" : "gap-3")}>
-      {environment && (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <Badge variant="secondary">{MANAGER_LABEL[environment.manager]}</Badge>
-          <code className="min-w-0 truncate font-mono text-[0.6875rem]" title={environment.python}>{environment.root}</code>
-          {packages && <span className="ml-auto shrink-0 tabular-nums">{packages.length} packages</span>}
-        </div>
-      )}
+      {/*
+        THE FIELDS AT THE TOP ARE ROWS NOW. They were three unlabelled blocks —
+        a bare badge-and-path line, an input with only an aria-label, and a
+        sentence with buttons in it — each inventing its own spacing and none of
+        them saying what it was. On `Row` they are a field with a name, a hint
+        and a control, the same anatomy as every other setting in the app.
 
-      <div className="flex items-center gap-2">
-        <Input
-          value={specs}
-          onChange={(event) => setSpecs(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") install(); }}
-          placeholder="seaborn  polars>=1.0  scikit-learn"
-          className="font-mono text-[0.6875rem]"
-          aria-label="Packages to install"
-          disabled={busy || !environment}
+        `dense` KEEPS THE ROWS AND DROPS THE FRAME. The session's right column
+        is too narrow for a SettingsGroup's title and its 28px of tail, but the
+        rows themselves are what carries the labelling, so it is the group that
+        is conditional rather than the grammar.
+      */}
+      <Fields dense={dense}>
+        {environment && (
+          <Row
+            icon={PackageIcon}
+            label="Environment"
+            hint={environment.python}
+            status={<Badge variant="secondary">{MANAGER_LABEL[environment.manager]}</Badge>}
+            control={
+              packages && <span className="text-xs text-muted-foreground tabular-nums">{packages.length} packages</span>
+            }
+          >
+            <code className="mt-0.5 block min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{environment.root}</code>
+          </Row>
+        )}
+
+        <Row
+          icon={DownloadIcon}
+          label="Install packages"
+          // The command hint is the row's own edge case — `uv add` writes the
+          // manifest and `uv pip` does not — so it belongs here rather than as
+          // a loose line under the field.
+          hint={environment?.command ? COMMAND_HINT[environment.command] : "Names, optionally with versions. Enter installs."}
+          {...(environment ? {} : { unavailable: { reason: "No Python environment was resolved for this project." } })}
+          control={
+            <div className="flex items-center gap-2">
+              <Input
+                value={specs}
+                onChange={(event) => setSpecs(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") install(); }}
+                placeholder="seaborn  polars>=1.0  scikit-learn"
+                className="h-8 w-56 font-mono text-[0.6875rem]"
+                aria-label="Packages to install"
+                disabled={busy || !environment}
+              />
+              <Button size="sm" disabled={busy || !specs.trim() || !environment} onClick={install}>
+                {busy ? <Spinner className="size-3" /> : <DownloadIcon className="size-3" />} Install
+              </Button>
+            </div>
+          }
         />
-        <Button size="sm" disabled={busy || !specs.trim() || !environment} onClick={install}>
-          {busy ? <Spinner className="size-3" /> : <DownloadIcon className="size-3" />} Install
-        </Button>
-      </div>
-      {environment?.command && <p className="text-[0.625rem] text-muted-foreground">{COMMAND_HINT[environment.command]}</p>}
-      {installable.length > 0 && !dense && (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Or the project&apos;s own dependencies:</span>
-          {installable.map((source) => (
-            <Button key={source} variant="outline" size="xs" disabled={busy} onClick={() => void change(`Installing from ${source}`, { requirements: source })}>
-              <code className="font-mono text-[0.625rem]">{source}</code>
-            </Button>
-          ))}
-        </div>
-      )}
+
+        {installable.length > 0 && !dense && (
+          <Row
+            icon={PackageIcon}
+            label="The project's own dependencies"
+            hint="Install everything the checkout already declares."
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {installable.map((source) => (
+                  <Button key={source} variant="outline" size="xs" disabled={busy} onClick={() => void change(`Installing from ${source}`, { requirements: source })}>
+                    <code className="font-mono text-[0.625rem]">{source}</code>
+                  </Button>
+                ))}
+              </div>
+            }
+          />
+        )}
+      </Fields>
 
       {job && (
         <JobLog

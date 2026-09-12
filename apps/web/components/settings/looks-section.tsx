@@ -65,9 +65,10 @@ function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
 }
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Panel, PanelBody, PanelHeader, PanelRow } from "@/components/ui/panel";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
+import { Row } from "./settings-shell";
 
 /** The one word the HOST row still needs — a row has no thumbnail to say it
  *  with. The cards do, so they carry no subtitle at all. */
@@ -280,40 +281,72 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
     setAttempt((count) => count + 1);
   }, []);
 
+  const ready = state.status === "ready";
   return (
-    <PanelRow tone="info" className="border-b border-border">
-      {state.status === "ready" ? (
-        <LookStrip look={state.look} />
-      ) : (
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground [&_svg]:size-4">
-          <MonitorSmartphoneIcon />
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="font-medium">{following ? "Following the host's look" : "Host's look"}</div>
-        <div className="truncate text-xs text-muted-foreground">
-          {state.status === "ready"
+    // ON THE SETTINGS GRAMMAR, INSIDE A PANEL. This row had hand-rolled `Row`'s
+    // whole anatomy — a `font-medium` div for the label, a muted `text-xs` one
+    // for the hint, controls pushed right — which is exactly the duplication
+    // the shared grammar exists to end. `Row` eats no padding of its own, so a
+    // Panel supplies the horizontal inset the way a SettingsGroup would
+    // (settings-shell.tsx says so); the hairline stays, the `tone="info"` rail
+    // goes, because a rail on the one row a panel has says nothing the row does
+    // not already say.
+    <div className="border-b border-border px-3">
+      <Row
+        // The label carries the thumbnail, so it is not a string and cannot
+        // derive its own anchor.
+        id="settings-row-appearance-host-look"
+        label={
+          <span className="flex items-center gap-2">
+            {ready ? (
+              <LookStrip look={state.look} />
+            ) : (
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground [&_svg]:size-4">
+                <MonitorSmartphoneIcon />
+              </span>
+            )}
+            <span>{following ? "Following the host's look" : "Host's look"}</span>
+          </span>
+        }
+        hint={
+          ready
             ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
-            : HOST_LOOK_HINT[state.status]}
-        </div>
-      </div>
-      {state.status === "ready" && !following && (
-        <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
-          Open
-        </Button>
-      )}
-      {state.status !== "ready" && (
-        <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
-          {state.status === "loading" ? "Loading…" : "Retry"}
-        </Button>
-      )}
-      <Switch
-        checked={following}
-        onCheckedChange={(next) => (next ? follow() : detach())}
-        aria-label="Follow the host's look"
-        title={following ? "Stop following the host's look" : "Wear the host's look, and keep wearing it as it changes"}
+            : HOST_LOOK_HINT[state.status]
+        }
+        control={
+          <div className="flex items-center gap-2">
+            {ready && !following && (
+              <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
+                Open
+              </Button>
+            )}
+            {!ready && (
+              <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
+                {state.status === "loading" ? "Loading…" : "Retry"}
+              </Button>
+            )}
+            {/* NOT `unavailable`, deliberately. There is nothing to follow until
+                the host publishes something — but Retry is the whole point of
+                the not-ready states, and `unavailable` would take the control
+                column inert as a unit and disable the one control that still
+                works. The switch says no for itself. */}
+            <Switch
+              checked={following}
+              disabled={!ready && !following}
+              onCheckedChange={(next) => (next ? follow() : detach())}
+              aria-label="Follow the host's look"
+              title={
+                ready
+                  ? following
+                    ? "Stop following the host's look"
+                    : "Wear the host's look, and keep wearing it as it changes"
+                  : "The host has not published a look to follow."
+              }
+            />
+          </div>
+        }
       />
-    </PanelRow>
+    </div>
   );
 }
 
