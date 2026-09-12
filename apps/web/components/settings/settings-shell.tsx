@@ -362,6 +362,26 @@ export function SettingsGroup({
  * that costs nothing when there is nothing to undo, and saves a reader who
  * changed something an hour ago from having to remember what it was.
  *
+ * THE REVERT SLOT IS RESERVED WHETHER OR NOT IT HOLDS ANYTHING. The arrow comes
+ * and goes with the value, and rendered conditionally into the middle of the
+ * label line it re-laid out the row under the pointer — you changed a setting
+ * and the label you had just read moved sideways. The slot now sits at the END
+ * of the label line and is always present: empty it is invisible trailing
+ * space, and filled it pushes nothing.
+ *
+ * `status` IS THE ROW'S STATE, NOT ITS VALUE. "Not connected", "Beta", "Failed
+ * to start" — a word about the row itself, which is why it reads beside the
+ * label rather than inside `control`, where it would be mistaken for the thing
+ * you are meant to press. The value stays in `control`; the explanation stays
+ * in `hint`.
+ *
+ * `unavailable` IS THE THIRD STATE A SETTING CAN BE IN: not on, not off, not
+ * applicable — the plugin failed to start, this build has no desktop shell. The
+ * control stays VISIBLE and goes inert, because a row that silently vanished
+ * teaches the reader nothing and a row whose control is live teaches them the
+ * app is broken; the reason takes the hint slot, which is where they are
+ * already looking when a control does not answer.
+ *
  * THE CONTROL COLUMN NEVER SQUEEZES THE LABEL. Both sides declare their own
  * width and the row wraps on a narrow pane rather than compressing the label
  * into a ribbon of one word per line — which is exactly what happened when a
@@ -371,18 +391,28 @@ export function Row({
   label,
   hint,
   icon: Icon,
+  status,
   control,
   onRevert,
+  unavailable,
   children,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
+  /** A word for the row's own state, beside the label — not its value. */
+  status?: ReactNode;
   control?: ReactNode;
-  /** Shown as a revert arrow beside the label; omit when the value is default. */
+  /** Shown as a revert arrow at the end of the label line; omit when the value is default. */
   onRevert?: () => void;
+  /** Renders `control` inert and puts `reason` where the hint would be. */
+  unavailable?: { reason: ReactNode };
   children?: ReactNode;
 }) {
+  // The reason REPLACES the hint rather than joining it: a sentence about how
+  // the setting behaves, printed under the sentence saying it does not apply
+  // here, is one sentence the reader has to work out is moot.
+  const explanation = unavailable ? unavailable.reason : hint;
   return (
     <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3">
       <div className="flex min-w-48 flex-1 items-start gap-2.5">
@@ -394,23 +424,40 @@ export function Row({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-foreground">{label}</span>
-            {onRevert && (
-              <button
-                type="button"
-                title="Back to the default"
-                aria-label="Revert to the default"
-                onClick={onRevert}
-                className="text-muted-foreground/60 transition-colors hover:text-foreground"
-              >
-                <Undo2Icon className="size-3" />
-              </button>
-            )}
+            {status && <span className="shrink-0">{status}</span>}
+            {/* The reserved slot — `size-3` is the arrow's own box, so the row
+                measures the same with it and without it. */}
+            <span className="flex size-3 shrink-0 items-center justify-center">
+              {onRevert && (
+                <button
+                  type="button"
+                  title="Back to the default"
+                  aria-label="Revert to the default"
+                  onClick={onRevert}
+                  className="text-muted-foreground/60 transition-colors hover:text-foreground"
+                >
+                  <Undo2Icon className="size-3" />
+                </button>
+              )}
+            </span>
           </div>
-          {hint && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>}
+          {explanation && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{explanation}</p>}
           {children}
         </div>
       </div>
-      {control && <div className="flex shrink-0 items-center justify-end">{control}</div>}
+      {control && (
+        // `inert` is what makes an ARBITRARY control inert. This slot holds
+        // switches, buttons, selects and whole forms, and Row cannot reach into
+        // any of them to pass a `disabled` — one attribute takes the lot out of
+        // the tab order and out of the accessibility tree. The reason stays
+        // OUTSIDE it, where a screen reader still reaches it.
+        <div
+          inert={unavailable ? true : undefined}
+          className={cn("flex shrink-0 items-center justify-end", unavailable && "opacity-50")}
+        >
+          {control}
+        </div>
+      )}
     </div>
   );
 }
@@ -497,25 +544,33 @@ export function Tabs<T extends string>({
   );
 }
 
-// Labelled toggle row.
+// Labelled toggle row. `status` and `unavailable` pass straight through: a
+// toggle is a Row, and a switch that does not apply here is the commonest case
+// `unavailable` exists for.
 export function ToggleRow({
   label,
   hint,
   icon,
+  status,
   checked,
   onCheckedChange,
+  unavailable,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
+  status?: ReactNode;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
+  unavailable?: { reason: ReactNode };
 }) {
   return (
     <Row
       label={label}
       hint={hint}
       icon={icon}
+      {...(status ? { status } : {})}
+      {...(unavailable ? { unavailable } : {})}
       control={<Switch checked={checked} onCheckedChange={onCheckedChange} />}
     />
   );
