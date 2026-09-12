@@ -655,6 +655,62 @@ describe("a provider wait is a row, not silence", () => {
     expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 500ms after a connection error (attempt 1 of 3)");
   });
 
+  /**
+   * THE SILENCE THAT #261 WAS ACTUALLY ABOUT.
+   *
+   * A request that stalls before its response headers emits nothing at all
+   * while it stalls — measured against CLI 2.1.267, sixty seconds with not one
+   * frame — and then this retry, carrying `no_response.waited_ms`: the only
+   * account that exists of the time already lost. Read as an ordinary
+   * connection error the row said "retrying in 1s", which is true about the
+   * second ahead and silent about the two minutes behind.
+   */
+  test("a stalled request reports the time it already lost, not just the backoff ahead", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 1,
+          retry_delay_ms: 1_000,
+          error_status: null,
+          // `retry_wait_ms` is the NEXT attempt's first-byte budget, not a wait
+          // anyone is serving, so it must not reach the row.
+          no_response: { waited_ms: 132_000, retry_wait_ms: 60_000 },
+        };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 1, maxAttempts: 1, delayMs: 1_000, waitedMs: 132_000 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 1s after 132s with no response (attempt 1 of 1)");
+  });
+
+  test("a retry with no no_response block is unchanged, and a malformed one is ignored", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        // A shape the contract does not know must not become a row that claims
+        // a wait of unknown length — it falls back to the status.
+        yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 400, error_status: 529, no_response: { waited_ms: "soon" } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 1, maxAttempts: 3, delayMs: 400, status: 529 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 400ms after HTTP 529 (attempt 1 of 3)");
+  });
+
   test("a rejected limit is a wait; a warning is one finished row; an allowed event is nothing", async () => {
     const driver = createClaudeDriver(async () => ({
       async *query() {

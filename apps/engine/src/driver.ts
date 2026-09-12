@@ -925,12 +925,26 @@ export function providerWaitFrom(item: {
   max_retries?: number;
   retry_delay_ms?: number;
   error_status?: number | null;
+  no_response?: unknown;
   rate_limit_info?: unknown;
 }): { detail: ProviderWaitDetail; blocking: boolean } | undefined {
   const int = (candidate: unknown): number | undefined =>
     typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? Math.trunc(candidate) : undefined;
 
   if (item.type === "system" && item.subtype === "api_retry") {
+    /**
+     * THE ATTEMPT THAT GOT NOTHING BACK. The SDK attaches `no_response` only
+     * when the API sent no response headers inside the first-byte window, and
+     * its `waited_ms` is how long that attempt sat there — the part of the
+     * pause that already happened, as opposed to `retry_delay_ms`, which is
+     * the second or two still to come. Measured against CLI 2.1.267: a request
+     * that stalls before its headers emits NO frame at all until this one, so
+     * `waited_ms` is the only account of the silence that precedes it.
+     *
+     * Its sibling `retry_wait_ms` is deliberately dropped: that is the NEXT
+     * attempt's first-byte budget, not a wait anyone is serving.
+     */
+    const waited = int(asRecord(item.no_response).waited_ms);
     return {
       blocking: true,
       detail: {
@@ -941,6 +955,7 @@ export function providerWaitFrom(item: {
         // A connection error has no HTTP response, and the SDK reports that as
         // a null status. Absent says "no response" rather than inventing a 0.
         ...(int(item.error_status) === undefined ? {} : { status: int(item.error_status)! }),
+        ...(waited === undefined ? {} : { waitedMs: waited }),
       },
     };
   }
@@ -981,11 +996,30 @@ export function titleForProviderWait(detail: ProviderWaitDetail): string {
     return detail.limitStatus === "rejected" ? `Rate limit reached${limit}` : `Approaching the rate limit${limit}`;
   }
   const attempt = detail.attempt === undefined ? "" : detail.maxAttempts ? ` (attempt ${detail.attempt} of ${detail.maxAttempts})` : ` (attempt ${detail.attempt})`;
-  const delay = detail.delayMs === undefined ? "" : ` in ${detail.delayMs < 1000 ? `${detail.delayMs}ms` : `${Math.round(detail.delayMs / 100) / 10}s`}`;
-  // The status is the one honest word about WHY; absent means no response came
-  // back at all, which is a connection failure rather than a rejection.
-  const because = detail.status === undefined ? "after a connection error" : `after HTTP ${detail.status}`;
+  const delay = detail.delayMs === undefined ? "" : ` in ${durationText(detail.delayMs)}`;
+  /**
+   * WHY, in the one clause a person reads before deciding whether to wait.
+   *
+   * `waitedMs` wins when it is there, because it is the bigger number and the
+   * true story: the attempt stalled for that long with no response at all, and
+   * calling that "a connection error" describes the least of it. Otherwise the
+   * status is the honest word; absent means nothing came back, which is a
+   * connection failure rather than a rejection.
+   */
+  const because =
+    detail.waitedMs === undefined
+      ? detail.status === undefined
+        ? "after a connection error"
+        : `after HTTP ${detail.status}`
+      : `after ${durationText(detail.waitedMs)} with no response`;
   return `Retrying${delay} ${because}${attempt}`;
+}
+
+/** Milliseconds as a person would say them. Sub-second stays in ms; anything
+ *  longer reads in seconds to one decimal, because "1085ms" is a measurement
+ *  and "1.1s" is a duration. */
+function durationText(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 100) / 10}s`;
 }
 
 /**
