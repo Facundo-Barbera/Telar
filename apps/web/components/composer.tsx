@@ -64,6 +64,7 @@ import {
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { ComposerMenu } from "./composer-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
@@ -194,6 +195,71 @@ function fileSize(bytes: number): string {
  * handle rather than a round trip. The URL is revoked on unmount because a leak
  * here holds the whole file.
  */
+/**
+ * THE COMPOSER'S CHROME ANSWERS A RIGHT-CLICK; THE BOX YOU TYPE IN DOES NOT.
+ *
+ * A `<textarea>` already has a menu, and it is the browser's: cut, copy, paste,
+ * undo, spell-check, the dictionary, "Look Up", "Share". Replacing it with four
+ * rows of ours would be taking away six useful things to add two, and taking
+ * away the one menu on this screen a person did not have to learn.
+ *
+ * So the menu lives on the parts that are OURS — the strip of controls under
+ * the box, and the attachment chips above it — and carries only what the
+ * composer can already do to itself: drop an attachment, empty the box, put
+ * what is in it on the stash. Every item is the callback its visible control
+ * (or its keyboard chord) already fires.
+ *
+ * BOTH ARE DISABLED RATHER THAN HIDDEN when they would do nothing. An empty
+ * box has nothing to clear and nothing to stash, and a menu whose rows appear
+ * and disappear as you type is a menu you cannot learn the shape of.
+ */
+function ComposerChromeMenu({
+  draft,
+  attachments,
+  stashing,
+  onClear,
+  onStash,
+  onRemoveAttachment,
+  className,
+  children,
+}: {
+  draft: string;
+  attachments: readonly File[];
+  stashing: boolean;
+  onClear: () => void;
+  onStash: () => void;
+  /** Present only on a chip: the one item that is about THIS attachment. */
+  onRemoveAttachment?: () => void;
+  /** The trigger IS the element it wraps, rather than a box around it — the
+   *  foot strip is a flex child of the addon and an extra wrapper would take
+   *  its `min-w-0` away from the cluster that needs it. */
+  className?: string;
+  children: React.ReactNode;
+}) {
+  // The same condition ⌘S uses to decide between stashing and opening the
+  // list — one rule, so the key and the menu agree about what is stashable.
+  const stashable = Boolean(draft.trim() || attachments.some((file) => file.type.startsWith("image/")));
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger {...(className ? { className } : {})}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        {onRemoveAttachment && (
+          <>
+            <ContextMenuItem onClick={onRemoveAttachment}>Remove attachment</ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
+        <ContextMenuItem disabled={!draft} onClick={onClear}>
+          Clear draft
+        </ContextMenuItem>
+        <ContextMenuItem disabled={stashing || !stashable} onClick={onStash}>
+          Stash draft
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
 function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   /**
    * MADE DURING RENDER, RELEASED ON UNMOUNT.
@@ -1221,16 +1287,29 @@ export function Composer({
           {attachments.length > 0 && (
             <InputGroupAddon align="block-start" className="flex-wrap gap-1.5 px-2.5 pt-2.5">
               {attachments.map((file, index) => (
-                <AttachmentChip
+                <ComposerChromeMenu
                   key={`${file.name}-${file.size}-${index}`}
-                  file={file}
-                  onRemove={() => onAttach(attachments.filter((_, at) => at !== index))}
-                />
+                  draft={draft}
+                  attachments={attachments}
+                  stashing={stashing}
+                  onClear={() => onDraftChange("")}
+                  onStash={() => void doStash()}
+                  onRemoveAttachment={() => onAttach(attachments.filter((_, at) => at !== index))}
+                >
+                  <AttachmentChip file={file} onRemove={() => onAttach(attachments.filter((_, at) => at !== index))} />
+                </ComposerChromeMenu>
               ))}
             </InputGroupAddon>
           )}
           <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <ComposerChromeMenu
+              draft={draft}
+              attachments={attachments}
+              stashing={stashing}
+              onClear={() => onDraftChange("")}
+              onStash={() => void doStash()}
+              className="flex min-w-0 flex-wrap items-center gap-1"
+            >
               {/* Present but inert: attachments are a contract the engine does
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
@@ -1339,7 +1418,7 @@ export function Composer({
                   </div>
                 </>
               )}
-            </div>
+            </ComposerChromeMenu>
             <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
             <ContextPill
               {...(usage ? { usage } : {})}

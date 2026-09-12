@@ -181,6 +181,51 @@ export function fromNbOutputs(outputs: unknown[]): CellOutput[] {
   return result;
 }
 
+/**
+ * Reorder, carrying THE CELL OBJECT rather than its text.
+ *
+ * A move expressed as delete-then-insert would mint a new id and drop
+ * `outputs` and `execution_count` — the record of what actually ran, and the
+ * reason a person scrolls back up a notebook at all. So the cell is spliced
+ * out and back in whole: id, source, type, metadata, outputs and count are the
+ * same object at a different index, and every unknown vendor key rides along
+ * with it.
+ *
+ * `to` is the index the cell OCCUPIES AFTERWARDS, so `to === from` leaves the
+ * array — and therefore the file — untouched. Out of range is refused rather
+ * than clamped, in `findCell`'s voice: a caller asking to move the top cell up
+ * has a bug in its own disabled-button state, and a silent no-op hides it the
+ * way an out-of-range `index` on `set` is not allowed to.
+ */
+export function moveCell(nb: Notebook, from: number, to: number): void {
+  if (!Number.isInteger(to) || to < 0 || to >= nb.cells.length) throw new Error(`move target ${to} is out of range (0..${nb.cells.length - 1})`);
+  const [cell] = nb.cells.splice(from, 1);
+  if (cell) nb.cells.splice(to, 0, cell);
+}
+
+/**
+ * Drop one cell's outputs and the count beside them.
+ *
+ * THE COUNT GOES WITH THEM. `execution_count` is not a separate fact from the
+ * outputs — it is the label on them ("[7]" beside what [7] printed) — so a
+ * cell left holding a count with nothing under it claims to have run and to
+ * have said nothing, which is a different and untrue thing. `null` is
+ * nbformat's own "never ran", and it is what `emptyNotebook` and the type
+ * change in `set` already write.
+ *
+ * A CELL THAT CANNOT HAVE OUTPUTS IS REFUSED, in `notebookRun`'s voice and for
+ * its reason: markdown and raw cells carry no `outputs` key at all (`set`
+ * deletes it on the way out of `code`), so clearing one is a caller asking for
+ * something that does not exist, and answering "done" would hide the bug in
+ * whatever offered the verb.
+ */
+export function clearCellOutputs(nb: Notebook, at: number): void {
+  const cell = nb.cells[at]!;
+  if (cell.cell_type !== "code") throw new Error(`cell ${cell.id} is ${cell.cell_type}, not code`);
+  cell.outputs = [];
+  cell.execution_count = null;
+}
+
 export function findCell(nb: Notebook, ref: { cellId?: string; index?: number }): number {
   if (ref.cellId !== undefined) {
     const at = nb.cells.findIndex((cell) => cell.id === ref.cellId);

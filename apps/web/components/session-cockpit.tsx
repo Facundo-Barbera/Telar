@@ -33,6 +33,7 @@ import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
@@ -90,7 +91,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
-import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
+import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
 
@@ -657,6 +658,8 @@ function SessionTurnBody({
   onOpenAgent,
   onOpenTab,
   onResumeNow,
+  onInsert,
+  onOpenFile,
   roster = [],
 }: {
   /**
@@ -677,6 +680,15 @@ function SessionTurnBody({
    *  reference was actionable enough for the agent; it should be actionable for
    *  the person who wrote it. */
   onOpenTab?: (tab: PanelTab) => void;
+  /**
+   * THE TWO GESTURES A TRANSCRIPT ROW CAN OFFER AND NOT PERFORM — both the
+   * cockpit's, both threaded exactly as `onOpenAgent` and `onOpenTab` above
+   * already are. `onInsert` puts a quote or a file reference into the draft
+   * this component does not own; `onOpenFile` routes a path through
+   * `showPanelTab`, which is the ONE door into the Editor.
+   */
+  onInsert?: (text: string) => void;
+  onOpenFile?: (path: string) => void;
   turn: JournalTurn;
   /** The session's whole task roster, for a wake-up row: the task that woke
    *  a provider turn belongs to the turn that started it, not to this one. */
@@ -713,6 +725,15 @@ function SessionTurnBody({
    */
   /** What the line under the turn says it is doing — see `turnActivity`. */
   const doing = turnActivity(turn);
+  /** The gestures a transcript row can OFFER and not perform, spread onto
+   *  every row this turn renders so no branch of the layout quietly drops
+   *  one — a menu that exists on a settled turn and not on a live one would
+   *  be the bug this single object prevents. */
+  const rowGestures = {
+    ...(onOpenAgent ? { onOpenAgent } : {}),
+    ...(onInsert ? { onInsert } : {}),
+    ...(onOpenFile ? { onOpenFile } : {}),
+  };
   /**
    * THE TURN'S RESPONSES. A message sent into a running turn is a boundary in
    * the conversation, so the work after it belongs to it and is drawn under
@@ -745,7 +766,7 @@ function SessionTurnBody({
     return (
       <div className="flex flex-col gap-2">
         {turn.items.filter((item) => item.detail.type === "context_compaction").map((item) => (
-          <TranscriptItem key={item.id} item={item} />
+          <TranscriptItem key={item.id} item={item} {...rowGestures} />
         ))}
         {turn.items.every((item) => item.detail.type !== "context_compaction") && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -770,7 +791,14 @@ function SessionTurnBody({
           looks like — the same one a message steered into a running turn now
           uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
       {turn.origin !== "provider" && turn.origin !== "session" && (
-        <div className="mb-6"><ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} /></div>
+        // `markdown={false}`: this is the draft the person typed, chips and
+        // all — "Copy as Markdown" would offer the same string again under a
+        // name that claims something about it which is not true.
+        <div className="mb-6">
+          <MessageMenu text={turn.prompt} markdown={false} {...(onInsert ? { onQuote: onInsert } : {})}>
+            <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          </MessageMenu>
+        </div>
       )}
 
       {/* The initiating machine message precedes every response and steer. */}
@@ -795,7 +823,7 @@ function SessionTurnBody({
         <Fragment key={response.boundary?.id ?? "opening"}>
           {response.boundary && (
             <div className={cn("mx-auto w-full min-w-0 max-w-[50rem]", response.boundary.detail.type === "user_message" && !response.boundary.detail.sender && !response.boundary.detail.wakeReason && "my-6")}>
-              <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+              <TranscriptItem item={response.boundary} tasks={turn.tasks} {...rowGestures} {...(onOpenTab ? { onOpenTab } : {})} />
             </div>
           )}
           {response.items.length > 0 && (
@@ -805,7 +833,7 @@ function SessionTurnBody({
                     items into one group hid the assistant's prose — including
                     prose still streaming when the steer landed — inside a
                     collapsed step. See `LiveActivity`. */}
-                <LiveActivity items={response.items} tasks={turn.tasks} liveTail={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                <LiveActivity items={response.items} tasks={turn.tasks} liveTail={false} {...rowGestures} />
               </MessageContent>
             </Message>
           )}
@@ -813,7 +841,7 @@ function SessionTurnBody({
       ))}
       {answering.boundary && (
         <div className={cn("mx-auto w-full min-w-0 max-w-[50rem]", answering.boundary.detail.type === "user_message" && !answering.boundary.detail.sender && !answering.boundary.detail.wakeReason && "my-6")}>
-          <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...rowGestures} {...(onOpenTab ? { onOpenTab } : {})} />
         </div>
       )}
 
@@ -830,14 +858,14 @@ function SessionTurnBody({
             // The ANSWERING response's items only — the boundaries and the work
             // before them were drawn above, so live and settled cut the turn in
             // the same place and a reload cannot move a message.
-            <LiveActivity items={answering.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+            <LiveActivity items={answering.items} tasks={turn.tasks} {...rowGestures} />
           ) : (
             <>
               {!folded && (
-                <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...rowGestures} />
               )}
               {closing.map((item) => (
-                <TranscriptItem key={item.id} item={item} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                <TranscriptItem key={item.id} item={item} tasks={turn.tasks} {...rowGestures} />
               ))}
             </>
           )}
@@ -886,7 +914,7 @@ function SessionTurnBody({
               </button>
               {workShown && (
                 <div className="mt-2 space-y-2">
-                  <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                  <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...rowGestures} />
                   {turn.usage && (
                     <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
                       {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
@@ -1480,6 +1508,37 @@ export function SessionCockpit({
     },
     [makeRoomForPanel, updatePanel, updateEditor, dataScience],
   );
+
+  /**
+   * PUT TEXT INTO THE MESSAGE BEING WRITTEN — the keyboard-and-menu twin of the
+   * drag every panel row already offers (`lib/drag-reference.ts`).
+   *
+   * WHAT IT INSERTS IS TEXT, AND THAT IS THE WHOLE DESIGN, for the reason that
+   * module's header gives at length: nothing is resolved behind the scenes, so
+   * `turn.input` says exactly what the model was sent. A quote is the words you
+   * are looking at; a reference is a path in backticks. Both are what you would
+   * have typed.
+   *
+   * APPENDED, NOT SPLICED AT THE CARET. The caret lives inside `ComposerEditor`
+   * and this component cannot see it — a drop knows where it landed and this
+   * gesture does not, so it goes where a person's next sentence goes. The
+   * spacing is `insertReference`'s own, which is what stops "fix " becoming
+   * "fix  `a.ts`"; a MULTI-LINE insert (a quoted message) is a paragraph of its
+   * own instead, because a block quote welded onto the end of a sentence is not
+   * a quote of anything.
+   *
+   * The debounced `writeDraft` below persists it like any keystroke.
+   */
+  const insertIntoComposer = useCallback((text: string) => {
+    if (!text) return;
+    setDraft((current) => {
+      if (!current.trim()) return text;
+      return text.includes("\n") ? `${current.replace(/\s+$/, "")}\n\n${text}` : insertReference(current, text, current.length).draft;
+    });
+    // A draft that came back from a turn stops being that turn's recall the
+    // moment anything is added to it — the same rule `onDraftChange` follows.
+    setDraftRunId(undefined);
+  }, [setDraft, setDraftRunId]);
 
   /**
    * LINK CLICKS IN THE CONVERSATION, when the Links setting says "keep them
@@ -2652,6 +2711,8 @@ export function SessionCockpit({
                 sending={sending}
                 onOpenAgent={showAgent}
                 onOpenTab={showPanelTab}
+                onInsert={insertIntoComposer}
+                onOpenFile={(path) => showPanelTab(`file:${path}`)}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 {...(turn.failureCode === "rate_limited" && turn.state === "failed"
@@ -2752,6 +2813,7 @@ export function SessionCockpit({
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}
           onTabChange={(tab) => updatePanel((current) => ({ ...current, activeTab: tab }))}
           onOpenTab={showPanelTab}
+          onInsertReference={insertIntoComposer}
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
           // Persisted through the same `updatePanel` every other tab gesture
           // writes, so a reordered strip comes back reordered.

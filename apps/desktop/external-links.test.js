@@ -7,7 +7,7 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { createExternalLinkPolicy } = require("./browser-manager");
+const { createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 
 const APP_URL = "http://127.0.0.1:42731/";
 
@@ -172,5 +172,91 @@ describe("loopback aliases are the same server", () => {
     expect(policy.decide("https://localhost:42731/").openExternal).toBe("https://localhost:42731/");
     // And a real host that merely CONTAINS a loopback name is not loopback.
     expect(policy.decide("http://localhost.evil.com:42731/").openExternal).toBe("http://localhost.evil.com:42731/");
+  });
+});
+
+/**
+ * "OPEN IN SYSTEM BROWSER" — the tab strip's own verb (#274), and the second
+ * route from Telar to `shell.openExternal`. It gets the same allowlist the
+ * clicked-link policy applies, for the same reason: that call hands whatever
+ * it is given to the operating system.
+ */
+describe("externalOpenTarget", () => {
+  test("http and https pass, and what comes back is the PARSED href", () => {
+    expect(externalOpenTarget("https://example.com/a?b=1#c")).toBe("https://example.com/a?b=1#c");
+    expect(externalOpenTarget("http://example.com")).toBe("http://example.com/");
+    // Normalised on the way through, so the OS receives exactly what was
+    // validated rather than the caller's original string.
+    expect(externalOpenTarget("HTTPS://Example.COM/Path")).toBe("https://example.com/Path");
+  });
+
+  test("every other scheme is refused — openExternal would hand it to the OS", () => {
+    for (const url of [
+      "file:///etc/passwd",
+      "file://localhost/Users/someone/.ssh/id_rsa",
+      "smb://server/share",
+      "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "vscode://file/etc/passwd",
+      "ms-msdt:/id",
+      "chrome://settings",
+      "about:blank",
+      "mailto:someone@example.com",
+      "ftp://example.com/x",
+    ]) {
+      expect(externalOpenTarget(url), `${url} does not reach the OS`).toBeNull();
+    }
+  });
+
+  test("a string that is not a URL, or is not a string, is refused rather than guessed at", () => {
+    for (const value of ["", "   ", "example.com", "//example.com", null, undefined, 42, {}]) {
+      expect(externalOpenTarget(value), `${JSON.stringify(value)} is refused`).toBeNull();
+    }
+  });
+
+  test("a sloppy but genuinely-http(s) string is NORMALISED, not refused — and the OS gets the normal form", () => {
+    // WHATWG parsing is what decides, and it accepts both of these as http(s).
+    // That is the right answer: what comes back is an ordinary web request to
+    // an ordinary host, and the caller is handed the canonical spelling rather
+    // than the one somebody typed. A prefix test would pass the raw string
+    // through instead, which is the failure mode this function exists to avoid.
+    expect(externalOpenTarget("https:/evil")).toBe("https://evil/");
+    expect(externalOpenTarget(" https://example.com")).toBe("https://example.com/");
+  });
+});
+
+/**
+ * The main-process wiring, held to source contracts — main.js cannot be
+ * required outside an Electron process, which is the same idiom the other
+ * main.js assertions in this suite and in browser-manager.test.js use.
+ */
+describe("the open-external IPC handler", () => {
+  const main = readFileSync(path.join(__dirname, "main.js"), "utf8");
+
+  test("it decides with externalOpenTarget rather than a test of its own", () => {
+    expect(main).toContain('ipcMain.handle("telar:browser:open-external"');
+    expect(main).toContain("const target = externalOpenTarget(input?.url);");
+    expect(main).toContain("if (!target) return { ok: false, error:");
+  });
+
+  test("only the cockpit window's own top frame may ask — not a tab, a subframe, or anything an agent reaches", () => {
+    const handler = main.slice(
+      main.indexOf('ipcMain.handle("telar:browser:open-external"'),
+      main.indexOf('ipcMain.handle("telar:browser:tool"'),
+    );
+    expect(handler).toContain("event.sender !== cockpit.webContents");
+    expect(handler).toContain("event.senderFrame !== cockpit.webContents.mainFrame");
+    // And the refusal is a throw, not a quiet no-op.
+    expect(handler).toContain("throw new Error(\"Only the Telar window may open a page in the system browser.\")");
+  });
+
+  test("the refusal comes BEFORE the hand-off, so no unvalidated string reaches shell.openExternal", () => {
+    const handler = main.slice(
+      main.indexOf('ipcMain.handle("telar:browser:open-external"'),
+      main.indexOf('ipcMain.handle("telar:browser:tool"'),
+    );
+    expect(handler.indexOf("if (!target)")).toBeLessThan(handler.indexOf("openInSystemBrowser(target)"));
+    // It hands on the VALIDATED target, never `input.url`.
+    expect(handler).not.toContain("openInSystemBrowser(input");
   });
 });

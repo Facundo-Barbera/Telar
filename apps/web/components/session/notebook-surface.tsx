@@ -21,6 +21,7 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import type { CellOutput, KernelState, NotebookCell, NotebookRead } from "@/lib/ds";
 import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { MessageResponse } from "@/components/ui/message";
@@ -360,11 +361,20 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
             <div key={cell.id}>
               <Cell
                 cell={cell}
+                count={cells.length}
                 draft={drafts.get(cell.id)}
                 running={running.has(cell.id) || running.has("*")}
                 sessionId={sessionId}
                 onEdit={(source) => edit(cell.id, source)}
                 onRun={() => void run(cell.id)}
+                onRunAll={() => void run()}
+                onInsert={(where) =>
+                  // ABOVE IS `after: index - 1`, which is -1 at the top — the
+                  // same number the strip above the first cell already sends.
+                  void structural({ kind: "insert", after: where === "above" ? cell.index - 1 : cell.id, source: "", cellType: "code" })
+                }
+                onMove={(to) => void structural({ kind: "move", cellId: cell.id, to })}
+                onClearOutputs={() => void structural({ kind: "clearOutputs", cellId: cell.id })}
                 onDelete={() => void structural({ kind: "delete", cellId: cell.id })}
                 onType={(type) => void structural({ kind: "set", cellId: cell.id, cellType: type })}
                 {...(onOpenImage ? { onOpenImage } : {})}
@@ -410,15 +420,112 @@ function InsertBar({ onInsert }: { onInsert: (type: "code" | "markdown") => void
   );
 }
 
-function Cell({
-  cell, draft, running, sessionId, onEdit, onRun, onDelete, onType, onOpenImage,
+/**
+ * THE CELL'S OWN MENU — every verb on it is a callback the cell already wires
+ * to a VISIBLE control, so right-click reaches the same run, the same delete,
+ * the same type toggle the buttons do. Nothing here is a second write path.
+ *
+ * ITS THREE NEW VERBS ARE NEW EVERYWHERE, not new here: Move up, Move down and
+ * Clear outputs are `ds/notebook/edit` members the engine gained in this same
+ * pass, for the reason those commits give — a client faking either one loses
+ * the cell's id and the record of what it ran.
+ *
+ * MOVE IS DISABLED AT THE ENDS rather than clamped, matching the engine, which
+ * refuses an out-of-range `to` precisely so a caller's broken disabled state
+ * shows up instead of silently doing nothing.
+ *
+ * DELETE IS THE ONE DESTRUCTIVE ITEM in this app's menus so far, and it earns
+ * the colour the primitive carries: it is the only row here that throws work
+ * away, and the button it mirrors (`Trash2Icon`, `hover:text-destructive`)
+ * already says so.
+ */
+function CellMenu({
+  cell, count, source, collapsed, running, onRun, onRunAll, onInsert, onMove, onClearOutputs, onDelete, onType, onCollapse, children,
 }: {
   cell: NotebookCell;
+  count: number;
+  /** The DRAFT if there is one — copying must give you what is on screen. */
+  source: string;
+  collapsed: boolean;
+  running: boolean;
+  onRun: () => void;
+  onRunAll: () => void;
+  onInsert: (where: "above" | "below") => void;
+  onMove: (to: number) => void;
+  onClearOutputs: () => void;
+  onDelete: () => void;
+  onType: (type: "code" | "markdown") => void;
+  onCollapse: () => void;
+  children: React.ReactNode;
+}) {
+  const code = cell.type === "code";
+  const outputs = cell.outputs?.length ?? 0;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>{children}</ContextMenuTrigger>
+      {/* `w-auto` because the primitive sizes to `--anchor-width`, which a
+          context menu's cursor-point anchor reports as zero — so the popup is
+          pinned at `min-w-40` and an item as long as "Insert markdown below"
+          wraps. Per-surface rather than in the shared primitive, which other
+          menus in this same pass are editing. */}
+      <ContextMenuContent className="w-auto">
+        {code && (
+          <ContextMenuItem disabled={running} onClick={onRun}>
+            Run cell
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem disabled={running} onClick={onRunAll}>
+          Run all
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* TWO ITEMS, AND BOTH MAKE A CODE CELL. The type is deliberately not
+            offered here: the hover strip between every pair of cells already
+            gives both types in place, with one click and no menu — and a
+            markdown-above/markdown-below pair would double this list to say
+            what the strip says better. A cell inserted as the wrong type is
+            one "Change to Markdown" away, three rows down. */}
+        <ContextMenuItem onClick={() => onInsert("above")}>Insert cell above</ContextMenuItem>
+        <ContextMenuItem onClick={() => onInsert("below")}>Insert cell below</ContextMenuItem>
+        <ContextMenuItem disabled={cell.index === 0} onClick={() => onMove(cell.index - 1)}>
+          Move up
+        </ContextMenuItem>
+        <ContextMenuItem disabled={cell.index >= count - 1} onClick={() => onMove(cell.index + 1)}>
+          Move down
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onType(code ? "markdown" : "code")}>{code ? "Change to Markdown" : "Change to Code"}</ContextMenuItem>
+        <ContextMenuItem variant="destructive" onClick={onDelete}>
+          Delete cell
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void navigator.clipboard.writeText(source)}>Copy source</ContextMenuItem>
+        {code && outputs > 0 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={onCollapse}>{collapsed ? "Expand outputs" : "Collapse outputs"}</ContextMenuItem>
+            <ContextMenuItem onClick={onClearOutputs}>Clear outputs</ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+function Cell({
+  cell, count, draft, running, sessionId, onEdit, onRun, onRunAll, onInsert, onMove, onClearOutputs, onDelete, onType, onOpenImage,
+}: {
+  cell: NotebookCell;
+  /** How many cells the notebook has — the whole of what the menu needs to
+   *  know whether Move down is the bottom cell's no-op. */
+  count: number;
   draft?: string;
   running: boolean;
   sessionId: string;
   onEdit: (source: string) => void;
   onRun: () => void;
+  onRunAll: () => void;
+  onInsert: (where: "above" | "below") => void;
+  onMove: (to: number) => void;
+  onClearOutputs: () => void;
   onDelete: () => void;
   onType: (type: "code" | "markdown") => void;
   onOpenImage?: (attachmentId: string) => void;
@@ -439,6 +546,21 @@ function Cell({
   };
 
   return (
+    <CellMenu
+      cell={cell}
+      count={count}
+      source={source}
+      collapsed={collapsed}
+      running={running}
+      onRun={onRun}
+      onRunAll={onRunAll}
+      onInsert={onInsert}
+      onMove={onMove}
+      onClearOutputs={onClearOutputs}
+      onDelete={onDelete}
+      onType={onType}
+      onCollapse={() => setCollapsed((v) => !v)}
+    >
     <div className={cn("group/cell mx-2 my-1 rounded-md border border-border/70 bg-background/40", running && "border-primary/50", failed && !running && "border-destructive/40")}>
       <div className="flex items-start gap-1">
         <div className="flex w-10 shrink-0 flex-col items-center gap-0.5 pt-1.5">
@@ -491,5 +613,6 @@ function Cell({
         </div>
       )}
     </div>
+    </CellMenu>
   );
 }

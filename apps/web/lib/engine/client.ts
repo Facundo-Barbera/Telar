@@ -639,6 +639,8 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }
         | { kind: "insert"; after?: string | number; source: string; cellType?: "code" | "markdown" | "raw" }
         | { kind: "delete"; cellId?: string; index?: number }
+        | { kind: "move"; cellId?: string; index?: number; to: number }
+        | { kind: "clearOutputs"; cellId?: string; index?: number }
         | { kind: "create" },
     ) => request<NotebookRead>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/notebook/edit`, { path, edit }),
     notebookRun: (sessionId: string, path: string, input: { cellId?: string; all?: boolean; stopOnError?: boolean }) =>

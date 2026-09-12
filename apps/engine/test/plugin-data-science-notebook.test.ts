@@ -69,7 +69,7 @@ const door = <T,>(client: EngineClient, method: string, body?: unknown) => clien
 /** The generic door: `POST /v2/sessions/:id/plugins/data-science/<method>`. */
 const generic = <T,>(client: EngineClient, method: string, body?: unknown) => client.plugin<T>("session_nb", "data-science", method, body);
 
-type NotebookRead = { path: string; cells: Array<{ id: string; cellType: string; source: string }> };
+type NotebookRead = { path: string; cells: Array<{ id: string; cellType: string; source: string; executionCount?: number | null }> };
 
 test("the plugin claims the notebook prefix AND routes every notebook verb", () => {
   // The manifest said `notebook` was this plugin's; the route table did not.
@@ -113,6 +113,115 @@ test("insert, set and delete all route, and the file on disk follows", async () 
 
   const deleted = await door<NotebookRead>(client, "notebook/edit", { path: "work.ipynb", edit: { kind: "delete", cellId: cell!.id } });
   expect(deleted.cells.find((each) => each.id === cell!.id)).toBeUndefined();
+});
+
+/**
+ * MOVE, THROUGH THE DOOR THE iPAD KNOCKS ON.
+ *
+ * The panel's Move up / Move down send `{"kind":"move", …}` here. The client
+ * could have faked it as delete-then-insert and did not, because that mints a
+ * new id and discards the outputs and execution count — so what this case
+ * really asserts is that a cell arrives at its new index with the record of
+ * what it ran still attached, in the .ipynb on disk and not only in the reply.
+ */
+test("move reorders a cell through the door, outputs and execution count intact", async () => {
+  const { client, checkout } = await ready();
+  // Written straight to disk, with outputs a kernel would have left, so the
+  // case needs no Python to prove the thing it is about.
+  fs.writeFileSync(
+    path.join(checkout, "order.ipynb"),
+    JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        { id: "one", cell_type: "code", source: "first", metadata: {}, execution_count: 1, outputs: [] },
+        { id: "two", cell_type: "code", source: "second", metadata: { tags: ["keep"] }, execution_count: 7, outputs: [{ output_type: "stream", name: "stdout", text: ["ran\n"] }] },
+        { id: "three", cell_type: "markdown", source: "# third", metadata: {} },
+      ],
+    }),
+  );
+
+  // UP, by id: the iPad's Move up on the second cell.
+  const up = await door<NotebookRead>(client, "notebook/edit", { path: "order.ipynb", edit: { kind: "move", cellId: "two", to: 0 } });
+  expect(up.cells.map((each) => each.id)).toEqual(["two", "one", "three"]);
+  expect(up.cells.find((each) => each.id === "two")!.executionCount).toBe(7);
+
+  // DOWN, by index: the same verb, the other direction, addressed the other way.
+  const down = await door<NotebookRead>(client, "notebook/edit", { path: "order.ipynb", edit: { kind: "move", index: 0, to: 2 } });
+  expect(down.cells.map((each) => each.id)).toEqual(["one", "three", "two"]);
+
+  // The .ipynb itself: the moved cell kept its outputs, its count and its
+  // metadata, which delete-then-insert would have thrown away.
+  const onDisk = JSON.parse(fs.readFileSync(path.join(checkout, "order.ipynb"), "utf8")) as { cells: Array<{ id: string; execution_count?: number; outputs?: unknown[]; metadata: unknown }> };
+  expect(onDisk.cells.map((each) => each.id)).toEqual(["one", "three", "two"]);
+  const moved = onDisk.cells[2]!;
+  expect(moved.execution_count).toBe(7);
+  expect(moved.outputs).toEqual([{ output_type: "stream", name: "stdout", text: ["ran\n"] }]);
+  expect(moved.metadata).toEqual({ tags: ["keep"] });
+
+  // A move to where it already is answers, and changes nothing.
+  const still = await door<NotebookRead>(client, "notebook/edit", { path: "order.ipynb", edit: { kind: "move", cellId: "two", to: 2 } });
+  expect(still.cells.map((each) => each.id)).toEqual(["one", "three", "two"]);
+
+  // And a target past the end is refused in words, not clamped to the end.
+  const refused = await door(client, "notebook/edit", { path: "order.ipynb", edit: { kind: "move", cellId: "two", to: 9 } }).then(
+    () => "",
+    (error: EngineClientError) => error.message,
+  );
+  expect(refused).toContain("out of range");
+  const after = await door<NotebookRead>(client, "notebook/read", { path: "order.ipynb" });
+  expect(after.cells.map((each) => each.id)).toEqual(["one", "three", "two"]);
+});
+
+/**
+ * CLEAR OUTPUTS, THROUGH THE SAME DOOR — the notebook cell menu's own verb.
+ *
+ * The client could not fake this one either: `set` with the same source is a
+ * no-op the engine writes straight back out, and the only other way to empty a
+ * cell is to delete and re-insert it, which loses its id. So what this asserts
+ * is that the .ipynb on disk comes back with an empty `outputs` and a null
+ * count under UNCHANGED source.
+ */
+test("clearOutputs empties one cell through the door and leaves its source and its neighbours alone", async () => {
+  const { client, checkout } = await ready();
+  fs.writeFileSync(
+    path.join(checkout, "loud.ipynb"),
+    JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        { id: "one", cell_type: "code", source: "print('a')", metadata: {}, execution_count: 3, outputs: [{ output_type: "stream", name: "stdout", text: ["a\n"] }] },
+        { id: "two", cell_type: "code", source: "print('b')", metadata: { tags: ["keep"] }, execution_count: 4, outputs: [{ output_type: "stream", name: "stdout", text: ["b\n"] }] },
+        { id: "three", cell_type: "markdown", source: "# note", metadata: {} },
+      ],
+    }),
+  );
+
+  const cleared = await door<NotebookRead>(client, "notebook/edit", { path: "loud.ipynb", edit: { kind: "clearOutputs", cellId: "two" } });
+  expect(cleared.cells.map((each) => each.id)).toEqual(["one", "two", "three"]);
+  expect(cleared.cells.find((each) => each.id === "two")!.executionCount).toBeNull();
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(checkout, "loud.ipynb"), "utf8")) as { cells: Array<{ id: string; source: unknown; execution_count?: number | null; outputs?: unknown[]; metadata: unknown }> };
+  const [first, second] = [onDisk.cells[0]!, onDisk.cells[1]!];
+  expect(second.outputs).toEqual([]);
+  expect(second.execution_count).toBeNull();
+  // The source and the metadata are untouched — this is not a retype.
+  // (nbformat's own line-list form, which the serializer writes.)
+  expect(second.source).toEqual(["print('b')"]);
+  expect(second.metadata).toEqual({ tags: ["keep"] });
+  // And the cell beside it still holds what IT ran.
+  expect(first.execution_count).toBe(3);
+  expect(first.outputs).toEqual([{ output_type: "stream", name: "stdout", text: ["a\n"] }]);
+
+  // A markdown cell has no outputs to clear, and is told so rather than
+  // answered — the same refusal a run gets.
+  const refused = await door(client, "notebook/edit", { path: "loud.ipynb", edit: { kind: "clearOutputs", index: 2 } }).then(
+    () => "",
+    (error: EngineClientError) => error.message,
+  );
+  expect(refused).toContain("is markdown, not code");
 });
 
 test("a windowed read passes its options through rather than dropping them", async () => {

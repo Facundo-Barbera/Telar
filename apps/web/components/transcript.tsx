@@ -50,7 +50,9 @@ import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client"
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
 import { attachmentUrl } from "@/lib/ds";
-import { MessageResponse } from "@/components/ui/message";
+import { fileReference } from "@/lib/drag-reference";
+import { MessageMenu, MessageResponse } from "@/components/ui/message";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
@@ -127,6 +129,30 @@ const running = (item: JournalItem) => item.status === "inProgress";
 
 const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
 
+/**
+ * THE TWO GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
+ *
+ * Both belong to the cockpit — it owns the draft and it owns the panel — and
+ * both are threaded rather than reached for, exactly as `onOpenAgent` and
+ * `onOpenTab` already are. Absent means the item is not rendered; nothing here
+ * falls back to a second route.
+ */
+export type RowGestures = {
+  /** Put text into the message being written — `insertIntoComposer` in the
+   *  cockpit. A quote and a file reference both land through it. */
+  onInsert?: (text: string) => void;
+  /** Open a path in the Editor — the cockpit's own `showPanelTab`, which reads
+   *  a file-shaped id and routes it there. */
+  onOpenFile?: (path: string) => void;
+};
+
+/** The path a row is ABOUT, when it is about one. */
+function rowPath(item: JournalItem): string | undefined {
+  if (item.detail.type === "file_change") return item.detail.change.path;
+  if (item.detail.type === "file_read") return item.detail.read.path;
+  return undefined;
+}
+
 /** A diff is SOURCE: read as written, never wrapped, cut at 24 lines like any
  *  other tool body — copy still writes the whole patch. */
 function DiffBody({ diff }: { diff: string }) {
@@ -173,7 +199,7 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-function ToolRow({ item }: { item: JournalItem }) {
+function ToolRow({ item, onInsert, onOpenFile }: { item: JournalItem } & RowGestures) {
   const [open, setOpen] = useState(false);
   const change = item.detail.type === "file_change" ? item.detail.change : undefined;
   const output = toolOutput(item);
@@ -181,8 +207,13 @@ function ToolRow({ item }: { item: JournalItem }) {
   const label = actionLabel(item);
   const isError = failed(item);
   const RowIcon = TOOL_ICON[item.detail.type] ?? WrenchIcon;
+  const command = item.detail.type === "command_execution" ? item.detail.command.command : undefined;
+  const path = rowPath(item);
+  // A row about nothing copyable gets no menu at all, rather than an empty
+  // popup that opens and offers you the choice of nothing.
+  const hasMenu = Boolean(command || body || path);
 
-  return (
+  const row = (
     <div className={cn("rounded-md", isError && "bg-destructive/10")}>
       <button
         type="button"
@@ -226,6 +257,37 @@ function ToolRow({ item }: { item: JournalItem }) {
         </div>
       )}
     </div>
+  );
+  if (!hasMenu) return row;
+
+  /**
+   * THE ROW'S MENU IS ABOUT WHAT THE ROW IS ABOUT. A command row offers the
+   * command; a file row offers the file — its path, its reference, and the one
+   * thing the row cannot do by itself, which is open it.
+   *
+   * NOTHING HERE IS A VERB. A transcript is a record, and a menu on a record
+   * that could re-run a command or undo an edit would be offering to change
+   * what happened. "Retry from here" is the item this list is missing on
+   * purpose: there is no engine route for it, and faking one by re-submitting
+   * the prompt would write a NEW turn while reading as a correction to an old
+   * one.
+   */
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>{row}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        {command && <ContextMenuItem onClick={() => void navigator.clipboard.writeText(command)}>Copy command</ContextMenuItem>}
+        {body && (
+          <ContextMenuItem onClick={() => void navigator.clipboard.writeText(body)}>
+            {change?.unifiedDiff ? "Copy patch" : "Copy output"}
+          </ContextMenuItem>
+        )}
+        {path && (command || body) && <ContextMenuSeparator />}
+        {path && onOpenFile && <ContextMenuItem onClick={() => onOpenFile(path)}>Open file in the Editor</ContextMenuItem>}
+        {path && <ContextMenuItem onClick={() => void navigator.clipboard.writeText(path)}>Copy path</ContextMenuItem>}
+        {path && onInsert && <ContextMenuItem onClick={() => onInsert(fileReference(path).text)}>Insert as reference</ContextMenuItem>}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -338,7 +400,7 @@ function PlanRow({ item }: { item: JournalItem }) {
  * stays on the panel, for the reason the chip's comment gave: a fan-out of
  * twenty-nine tool calls addressed to nobody must not bury the conversation.
  */
-function AgentRow({ item, task, onOpen }: { item: JournalItem; task: JournalTask | undefined; onOpen?: (taskId: string) => void }) {
+function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: JournalTask | undefined; onOpen?: (taskId: string) => void } & Pick<RowGestures, "onInsert">) {
   const [open, setOpen] = useState(false);
   const state = task?.state ?? (item.status === "inProgress" ? "running" : item.status === "failed" ? "failed" : "completed");
   const live = state === "running" || state === "pending" || state === "waiting";
@@ -350,7 +412,7 @@ function AgentRow({ item, task, onOpen }: { item: JournalItem; task: JournalTask
   const status = AGENT_STATE[state];
   const taskId = item.detail.type === "task" ? item.detail.taskId : task?.id;
 
-  return (
+  const row = (
     <div className={cn("rounded-md", isError && "bg-destructive/10")}>
       <div className={cn(ROW, "gap-2")}>
         <button
@@ -400,6 +462,35 @@ function AgentRow({ item, task, onOpen }: { item: JournalItem; task: JournalTask
         </div>
       )}
     </div>
+  );
+
+  /**
+   * THE AGENT ROW'S MENU IS THE MESSAGE MENU PLUS THE VERB ONLY IT HAS.
+   *
+   * What the agent SAID is a message like any other — copyable, quotable — and
+   * "Open in the Agents panel" is the row's own `Open ▸` button under another
+   * name, offered here only where that button is offered, which is exactly
+   * where `onOpen` and a `taskId` both exist.
+   *
+   * An agent that has not answered yet has nothing to copy; `MessageMenu`
+   * renders its child bare in that case, so a live fan-out's rows keep their
+   * ordinary right-click rather than opening a menu of one disabled row.
+   */
+  const jump =
+    onOpen && taskId ? <ContextMenuItem onClick={() => onOpen(taskId)}>Open in the Agents panel</ContextMenuItem> : undefined;
+  if (!body && !jump) return row;
+  if (!body && jump) {
+    return (
+      <ContextMenu>
+        <ContextMenuTrigger>{row}</ContextMenuTrigger>
+        <ContextMenuContent className="w-auto">{jump}</ContextMenuContent>
+      </ContextMenu>
+    );
+  }
+  return (
+    <MessageMenu text={body ?? ""} {...(onInsert ? { onQuote: onInsert } : {})} {...(jump ? { items: jump } : {})}>
+      {row}
+    </MessageMenu>
   );
 }
 
@@ -550,7 +641,7 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
  * way that same origin is drawn when it arrives idle. There is no badge, no
  * compact variant and no card earned merely by arriving mid-run.
  */
-function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?: OpenTab }) {
+function SteeredMessageRow({ item, onOpenTab, onInsert }: { item: JournalItem; onOpenTab?: OpenTab } & Pick<RowGestures, "onInsert">) {
   const attachments = item.detail.type === "user_message" ? item.detail.attachments : undefined;
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
   const notice = item.detail.type === "user_message" ? item.detail.notice : undefined;
@@ -565,7 +656,14 @@ function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?:
   // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE — the same dashed, labelled
   // shape the cockpit gives an agent-sent turn, so the two read alike.
   if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(notice ? { notice } : {})} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
-  return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
+  // A PERSON'S MESSAGE IS NOT MARKDOWN. It is the draft they typed, chips and
+  // all, so "Copy as Markdown" would offer the same string a second time under
+  // a name that claims something about it which is not true.
+  return (
+    <MessageMenu text={itemText(item)} markdown={false} {...(onInsert ? { onQuote: onInsert } : {})}>
+      <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+    </MessageMenu>
+  );
 }
 
 /**
@@ -583,29 +681,30 @@ function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: stri
   );
 }
 
-export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab }: {
+export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, onOpenFile }: {
   item: JournalItem;
   tasks?: readonly JournalTask[];
   onOpenAgent?: (taskId: string) => void;
   /** So a message steered into a running turn opens its references exactly
    *  as the same message sent idle does. */
   onOpenTab?: OpenTab;
-}) {
+} & RowGestures) {
+  const gestures = { ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
   if (item.detail.type === "task") {
     const taskId = item.detail.taskId;
     const task = tasks?.find((candidate) => candidate.id === taskId);
     // A backgrounded SHELL spawned as a task is the `Ran command` row already
     // beside it; only a delegate (or a warp run) earns an agent row.
     if (task && !transcriptTasks([task]).length) return null;
-    return <AgentRow item={item} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />;
+    return <AgentRow item={item} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} {...(onInsert ? { onInsert } : {})} />;
   }
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
-  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} />;
+  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} {...(onInsert ? { onInsert } : {})} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
-  if (isToolItem(item)) return <ToolRow item={item} />;
+  if (isToolItem(item)) return <ToolRow item={item} {...gestures} />;
   if (item.detail.type === "error") {
     return (
       <p role="alert" className="flex items-start gap-1.5 rounded-md bg-destructive/10 px-1.5 py-1 text-xs text-destructive">
@@ -615,7 +714,16 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab }: {
     );
   }
   if (item.detail.type === "assistant_message") {
-    return <MessageResponse streaming={running(item)}>{itemText(item)}</MessageResponse>;
+    // NO MENU WHILE IT IS STILL BEING WRITTEN. Copying or quoting half a
+    // sentence gives you half a sentence, and the reader cannot tell from the
+    // clipboard that the rest arrived a moment later.
+    const text = itemText(item);
+    if (running(item)) return <MessageResponse streaming>{text}</MessageResponse>;
+    return (
+      <MessageMenu text={text} {...(onInsert ? { onQuote: onInsert } : {})}>
+        <MessageResponse>{text}</MessageResponse>
+      </MessageMenu>
+    );
   }
   // Forward compatibility: an unrecognised row is still a row. A silently
   // missing one is worse than an unstyled one.
@@ -808,15 +916,17 @@ export function LiveActivity({
   tasks,
   liveTail = true,
   onOpenAgent,
+  onInsert,
+  onOpenFile,
 }: {
   items: JournalItem[];
   tasks: JournalTask[];
   liveTail?: boolean;
   onOpenAgent?: (taskId: string) => void;
-}) {
+} & RowGestures) {
   const segments = segmentActivity(items);
   const tail = liveTail ? segments.length - 1 : -1;
-  const open = onOpenAgent ? { onOpenAgent } : {};
+  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
   return (
     <>
       {segments.map((segment, index) =>
@@ -847,14 +957,16 @@ export function ActivityGroup({
   live,
   tasks,
   onOpenAgent,
+  onInsert,
+  onOpenFile,
 }: {
   items: JournalItem[];
   live: boolean;
   tasks: JournalTask[];
   onOpenAgent?: (taskId: string) => void;
-}) {
+} & RowGestures) {
   const rows = useMemo(() => renderable(items, tasks), [items, tasks]);
-  const open = onOpenAgent ? { onOpenAgent } : {};
+  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
   if (rows.length === 0) return null;
   if (live) return <LiveRun rows={rows} tasks={tasks} {...open} />;
   const cuts = cutAroundLiveAgents(rows, tasks);
@@ -911,14 +1023,14 @@ function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
   );
 }
 
-function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   // Only the rows the fold is HIDING can carry a surprise; the one on screen
   // reports itself. Same rule as the settled run, applied to its own window.
   const failures = failedCount(rows.slice(0, -1), tasks);
   const hidden = Math.max(0, rows.length - 1);
   const shown = open ? rows : rows.slice(-1);
-  const pass = onOpenAgent ? { onOpenAgent } : {};
+  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
       {hidden > 0 && (
@@ -942,10 +1054,10 @@ function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: Jou
   );
 }
 
-function SettledRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   const failures = failedCount(rows, tasks);
-  const pass = onOpenAgent ? { onOpenAgent } : {};
+  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
   return (
     <>
       <button

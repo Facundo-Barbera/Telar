@@ -279,8 +279,11 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
     expect(wake).toBeGreaterThan(-1);
     expect(wake).toBeLessThan(row.indexOf("if (sender) return <AgentMessageBubble"));
     // And the person's own words fall through to the SAME component the
-    // cockpit draws an ordinary message with — no bespoke bubble here.
-    expect(row).toContain("return <ConversationMessage");
+    // cockpit draws an ordinary message with — no bespoke bubble here. (It is
+    // wrapped in the shared `MessageMenu` since #274, which is chrome around
+    // the component rather than a second one; the claim is unchanged.)
+    expect(row).toContain("<ConversationMessage text={itemText(item)}");
+    expect(row.indexOf("<ConversationMessage")).toBeGreaterThan(row.indexOf("if (sender) return <AgentMessageBubble"));
     // And nothing in the row reads the wake's own text to decide anything.
     // Comments stripped first: the prose here NAMES `[wake: …]` precisely to
     // say it is not what the branch reads, and matching that would assert the

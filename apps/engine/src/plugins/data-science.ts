@@ -173,8 +173,8 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
           ...(typeof input.to === "number" ? { to: input.to } : {}),
           ...(input.withOutputs === true ? { withOutputs: true } : {}),
         }),
-      /** `edit` is the capability's own union — create, insert, set, delete —
-       *  validated there rather than flattened here. */
+      /** `edit` is the capability's own union — create, insert, set, delete,
+       *  move, clearOutputs — validated there rather than flattened here. */
       "notebook/edit": (input, capability) =>
         (capability as DsCapability).notebookEdit(String(input.path ?? ""), input.edit as Parameters<DsCapability["notebookEdit"]>[1]),
       "notebook/run": (input, capability) =>

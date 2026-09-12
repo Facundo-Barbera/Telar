@@ -397,6 +397,31 @@ function createExternalLinkPolicy({ appUrl, now = Date.now, dedupeMs = EXTERNAL_
   };
 }
 
+/**
+ * WHAT MAY BE HANDED TO THE SYSTEM BROWSER, and it is the ONE decision behind
+ * the tab strip's "Open in system browser".
+ *
+ * `shell.openExternal` gives whatever it is given to the operating system.
+ * `file://` opens a file; `smb://` mounts a share; on macOS any registered
+ * scheme launches whatever registered it. The URL on a browser tab came from
+ * the web or from an agent — which is to say, from nowhere trustworthy — so
+ * the two web schemes are the whole allowlist, exactly as
+ * `createExternalLinkPolicy` already decides for a clicked link.
+ *
+ * PARSED, NOT PREFIX-TESTED. `"https:/evil"`, `"javascript:\nhttps://x"` and a
+ * leading-whitespace `" https://x"` all pass a `startsWith` and are not what
+ * they look like; and what comes back is the PARSED href, so the OS is handed
+ * exactly the string that was validated rather than the caller's original.
+ *
+ * `null` means refused, and every caller has to say so rather than falling
+ * back to opening it some other way.
+ */
+function externalOpenTarget(value) {
+  const parsed = parseUrl(value);
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return null;
+  return parsed.href;
+}
+
 function axValue(node, key) {
   const value = node?.[key]?.value;
   return value === undefined || value === null ? "" : String(value);
@@ -2226,6 +2251,26 @@ class DesktopBrowserManager {
       case "close":
         this.closeTab(scope, action.index, opener);
         break;
+      /**
+       * DUPLICATE — a second tab at the same address, the way every browser's
+       * strip offers it.
+       *
+       * THE SOURCE'S *LIVE* URL, not the record's. `tab.url` is what the tab
+       * was last reported at; `webContents.getURL()` is where it actually is,
+       * and the two differ for exactly as long as a navigation is in flight —
+       * which is precisely when somebody duplicates a tab to keep the page
+       * they had. `state()` resolves them the same way, so the strip and this
+       * agree about what "this tab" means.
+       *
+       * A SLEEPING TAB DUPLICATES FINE: it has no WebContents to ask, and its
+       * remembered `url` is the whole of what it is.
+       */
+      case "duplicate": {
+        const source = action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index);
+        const live = source.view && !source.view.webContents.isDestroyed() ? source.view.webContents.getURL() : "";
+        await this.createTab(scope, live || source.url || "about:blank", opener);
+        break;
+      }
       case "navigate": {
         const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope, "about:blank", opener);
         await this.navigateTab(tab, action.url);
@@ -2243,8 +2288,16 @@ class DesktopBrowserManager {
         }
         break;
       }
+      /**
+       * RELOAD MAY NAME A TAB, the way close and select already do.
+       *
+       * The toolbar button never does — it is about the page you are looking
+       * at — but the strip's per-tab menu is about the tab you right-clicked,
+       * and reloading a background tab must not drag your view to it. Without
+       * an index this is exactly what it always was.
+       */
       case "reload": {
-        const tab = await this.wakeTab(this.activeTab(scope));
+        const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
         await this.beforeNavigation(tab);
         tab.view.webContents.reload();
         break;
@@ -3192,4 +3245,4 @@ class DesktopBrowserManager {
   }
 }
 
-module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
+module.exports = { DesktopBrowserManager, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
