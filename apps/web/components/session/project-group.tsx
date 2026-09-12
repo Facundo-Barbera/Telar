@@ -160,6 +160,7 @@ export function ProjectGroupSection({
   onDragOver,
   onDragLeave,
   onDrop,
+  rowDrag,
   root,
   onNewConversation,
   onProjectSettings,
@@ -186,6 +187,13 @@ export function ProjectGroupSection({
   onDragOver: (event: React.DragEvent) => void;
   onDragLeave: () => void;
   onDrop: (event: React.DragEvent) => void;
+  /**
+   * WHAT EACH ROW NEEDS TO BE ITS OWN HANDLE, by row key. Forwarded rather than
+   * built here for the same reason the group's own handlers are: a drop lands
+   * on a DIFFERENT row than the one that started the drag, so the rail owns
+   * both ends of the gesture and this component only hands them out.
+   */
+  rowDrag: (key: string) => NonNullable<React.ComponentProps<typeof SessionRow>["drag"]>;
   /**
    * THE PROJECT'S CHECKOUT, from the registry rather than from a session: a
    * session's `workspacePath` is its own worktree, and revealing that when
@@ -414,6 +422,7 @@ export function ProjectGroupSection({
               band={bandFor(session)}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
+              drag={rowDrag(sessionKey(session))}
             />
           ))}
         </SidebarGroupContent>

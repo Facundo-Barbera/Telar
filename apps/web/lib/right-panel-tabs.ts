@@ -56,6 +56,33 @@ export function closePanelTab<Tab extends string>(state: PanelTabState<Tab>, tab
   return { tabs, ...(activeTab ? { activeTab } : {}), open: state.open };
 }
 
+/** The strip's own drag type, so a file or a reference dropped on a tab is not
+ *  mistaken for a tab. Vendor-prefixed per RFC 6839, like `PROJECT_GROUP_MIME`. */
+export const PANEL_TAB_MIME = "application/x-telar-panel-tab";
+
+/**
+ * Move a tab to a position in the strip.
+ *
+ * `toIndex` IS AN INDEX IN THE RESULT, i.e. in the strip as it will read once
+ * the tab has left its old place. Saying "the index it had before" instead
+ * would make every rightward move off by one at the call site, which is the
+ * arithmetic a drop handler is worst at and this reducer exists to own.
+ * Out-of-range is clamped rather than refused: a drop past the last tab means
+ * "last", which is what the pointer was saying.
+ *
+ * NEITHER THE ACTIVE TAB NOR THE PANEL'S OPENNESS MOVES WITH IT. Reordering is
+ * about where a tab sits, and a strip that also switched what you were reading
+ * would be answering a question nobody asked.
+ */
+export function movePanelTab<Tab extends string>(state: PanelTabState<Tab>, tab: Tab, toIndex: number): PanelTabState<Tab> {
+  const from = state.tabs.indexOf(tab);
+  if (from === -1) return state;
+  const rest = state.tabs.filter((entry) => entry !== tab);
+  const to = Math.max(0, Math.min(Math.trunc(toIndex), rest.length));
+  if (to === from) return state;
+  return { ...state, tabs: [...rest.slice(0, to), tab, ...rest.slice(to)] };
+}
+
 export function closeOtherPanelTabs<Tab extends string>(state: PanelTabState<Tab>, tab: Tab): PanelTabState<Tab> {
   if (!state.tabs.includes(tab)) return state;
   return { tabs: [tab], activeTab: tab, open: state.open };

@@ -1110,7 +1110,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         writeJson(response, 200, {
           layout: store.setSidebarLayout({
+            // Present-key rather than defined-value, so each of the three
+            // arrangements is patched only by a client that meant to patch it.
             ...("projectOrder" in input ? { projectOrder: input.projectOrder } : {}),
+            ...("sessionOrder" in input ? { sessionOrder: input.sessionOrder } : {}),
+            ...("pinnedOrder" in input ? { pinnedOrder: input.pinnedOrder } : {}),
           }),
         });
         return;

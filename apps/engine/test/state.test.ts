@@ -2539,28 +2539,64 @@ test("the sidebar layout round-trips, dedupes, and refuses a shape that is not a
   // "alphabetical, nobody has moved anything" — and on the engine so the
   // desktop shell, a browser tab and a paired phone draw one arrangement.
   const { store } = readyStore();
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
+  expect(store.getSidebarLayout()).toEqual(blank);
 
-  expect(store.setSidebarLayout({ projectOrder: ["b", "h1:a", "a"] })).toEqual({ projectOrder: ["b", "h1:a", "a"] });
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["b", "h1:a", "a"] });
+  expect(store.setSidebarLayout({ projectOrder: ["b", "h1:a", "a"] })).toEqual({ ...blank, projectOrder: ["b", "h1:a", "a"] });
+  expect(store.getSidebarLayout()).toEqual({ ...blank, projectOrder: ["b", "h1:a", "a"] });
   // An empty patch changes nothing rather than resetting anything.
-  expect(store.setSidebarLayout({})).toEqual({ projectOrder: ["b", "h1:a", "a"] });
+  expect(store.setSidebarLayout({})).toEqual({ ...blank, projectOrder: ["b", "h1:a", "a"] });
   // A key said twice is kept once, at its first position.
-  expect(store.setSidebarLayout({ projectOrder: ["a", "b", "a"] })).toEqual({ projectOrder: ["a", "b"] });
+  expect(store.setSidebarLayout({ projectOrder: ["a", "b", "a"] })).toEqual({ ...blank, projectOrder: ["a", "b"] });
 
   for (const bad of ["a", null, [1], [""], [{ key: "a" }], Array.from({ length: 1001 }, (_, i) => `k${i}`)]) {
     expect(() => store.setSidebarLayout({ projectOrder: bad })).toThrow(EngineStateError);
   }
   // …and the refusal left the stored answer alone.
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["a", "b"] });
+  expect(store.getSidebarLayout()).toEqual({ ...blank, projectOrder: ["a", "b"] });
+});
+
+test("the rows inside a group and inside pinned are arranged by their own fields", () => {
+  // Each of the three is patched on its own: the rail writes ONE of them per
+  // drop, and a write that also sent the other two would let a stale copy of
+  // this document overwrite an arrangement another window had just made.
+  const { store } = readyStore();
+  store.setSidebarLayout({ projectOrder: ["p1"] });
+
+  expect(store.setSidebarLayout({ sessionOrder: { p1: ["s2", "s1"] } })).toEqual({
+    projectOrder: ["p1"],
+    sessionOrder: { p1: ["s2", "s1"] },
+    pinnedOrder: [],
+  });
+  // The pinned write leaves the group arrangement — and the project one — alone.
+  expect(store.setSidebarLayout({ pinnedOrder: ["h1:s9", "s8", "s8"] })).toEqual({
+    projectOrder: ["p1"],
+    sessionOrder: { p1: ["s2", "s1"] },
+    pinnedOrder: ["h1:s9", "s8"],
+  });
+  // A key said twice inside a group list is kept once too.
+  expect(store.setSidebarLayout({ sessionOrder: { p1: ["s1", "s2", "s1"] } }).sessionOrder).toEqual({ p1: ["s1", "s2"] });
+
+  for (const bad of ["a", null, { p1: "s1" }, { p1: [""] }, { "": ["s1"] }, { p1: Array.from({ length: 1001 }, (_, i) => `s${i}`) }]) {
+    expect(() => store.setSidebarLayout({ sessionOrder: bad })).toThrow(EngineStateError);
+  }
+  for (const bad of ["a", [1], [""], Array.from({ length: 1001 }, (_, i) => `s${i}`)]) {
+    expect(() => store.setSidebarLayout({ pinnedOrder: bad })).toThrow(EngineStateError);
+  }
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["p1"], sessionOrder: { p1: ["s1", "s2"] }, pinnedOrder: ["h1:s9", "s8"] });
 });
 
 test("a malformed sidebar-layout document costs the arrangement, never the list", () => {
   const { store, root: stateRoot } = readyStore();
+  const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), '{"version":2,"projectOrder":"b,a"}');
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+  expect(store.getSidebarLayout()).toEqual(blank);
   fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), "not json at all");
-  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+  expect(store.getSidebarLayout()).toEqual(blank);
+  // A document written before the row arrangements existed still parses — it
+  // means "nobody has arranged any rows", not "this file is broken".
+  fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), '{"version":2,"projectOrder":["b","a"]}');
+  expect(store.getSidebarLayout()).toEqual({ ...blank, projectOrder: ["b", "a"] });
 });
 
 test("a malformed session-defaults document costs the preference, never the session", () => {

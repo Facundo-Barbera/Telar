@@ -58,6 +58,7 @@ import {
   closePanelTab,
   collapseBrowserTabs,
   emptyPanelTabs,
+  movePanelTab,
   openPanelTab,
   readPanelTabIds,
   readPanelTabs,
@@ -2752,6 +2753,9 @@ export function SessionCockpit({
           onTabChange={(tab) => updatePanel((current) => ({ ...current, activeTab: tab }))}
           onOpenTab={showPanelTab}
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
+          // Persisted through the same `updatePanel` every other tab gesture
+          // writes, so a reordered strip comes back reordered.
+          onMoveTab={(tab, toIndex) => updatePanel((current) => movePanelTab(current, tab, toIndex))}
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
           editor={editor}
           onEditorChange={updateEditor}

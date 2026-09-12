@@ -6,6 +6,9 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import {
   browserPanelTab,
@@ -397,5 +400,51 @@ describe("a browser tab's label comes from the live page when the shell has one"
 
   test("no live tabs at all falls back to the journal's answer", () => {
     expect(describePanelTab(browserPanelTab("gone"), journal, [])).toMatchObject({ label: "Closed page", missing: true });
+  });
+});
+
+/**
+ * THE TAB STRIP IS A DRAG HANDLE — issue #279, the panel half.
+ *
+ * ASSERTED AS SOURCE, not as a render: `RightPanel` is the cockpit's whole
+ * right-hand side and mounting it to read one attribute would be a test about
+ * everything else. What matters structurally is WHICH element carries the drag,
+ * and that is a question the source answers exactly.
+ */
+describe("the panel's tabs drag to reorder", () => {
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  const raw = fs.readFileSync(path.join(dir, "right-panel.tsx"), "utf8");
+  const opens = raw.indexOf('role="tablist"');
+  // Comments stripped, for the reason `context-menus.test.tsx` gives: a scan
+  // that read prose would fire on the explanation and teach the next person to
+  // delete it. (These very rules are explained in the strip's own comment.)
+  const strip = raw
+    .slice(opens, raw.indexOf('aria-label="Open a surface"', opens))
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  test("the tab itself is draggable, and it is the one element that is", () => {
+    expect(strip).toContain("draggable");
+    // Not the buttons inside it: those are the click targets, and a <button> is
+    // not draggable by default, so the two gestures never compete. Anything
+    // that later wants a right-press on a tab must wrap the CONTENT for the
+    // same reason the session row and the project header do.
+    const button = strip.slice(strip.indexOf("<button"));
+    expect(button).not.toContain("draggable");
+  });
+
+  test("the drop mark is an inset shadow, not a border", () => {
+    // A border appearing on drag-over widens the tab on the frame it appears
+    // and shoves the rest of the strip sideways under the pointer.
+    expect(strip).toContain("shadow-[inset_2px_0_0_0_var(--color-primary)]");
+    expect(strip).toContain("shadow-[inset_-2px_0_0_0_var(--color-primary)]");
+    expect(strip).not.toContain("border-l-2");
+  });
+
+  test("the drop asks for an index in the strip WITHOUT the carried tab", () => {
+    // Which is what `movePanelTab` takes. Measuring against the strip as drawn
+    // instead would make every rightward move off by one.
+    expect(strip).toContain("const rest = tabs.filter((entry) => entry !== dragged);");
+    expect(strip).toContain('onMoveTab?.(dragged, rest.indexOf(id) + (side === "after" ? 1 : 0));');
   });
 });

@@ -6,7 +6,9 @@ import {
   groupSessions,
   moveProjectGroup,
   moveProjectGroupStep,
+  moveSessionRow,
   orderProjectGroups,
+  orderSessions,
   projectGroupKey,
   withholdFollowedRows,
   type ProjectGroup,
@@ -310,5 +312,109 @@ describe("moveProjectGroupStep", () => {
   test("keys the rail is not drawing keep their slot, exactly as a drop leaves them", () => {
     const stored = ["a", "away", "b", "c"];
     expect(moveProjectGroupStep(stored, drawn, "c", "up")).toEqual(["a", "away", "c", "b"]);
+  });
+});
+
+describe("orderSessions", () => {
+  const rows = [row("a"), row("b"), row("c")];
+
+  test("no stored order is the recency order the list already produced", () => {
+    expect(orderSessions(rows).map((s) => s.id)).toEqual(["a", "b", "c"]);
+    expect(orderSessions(rows, []).map((s) => s.id)).toEqual(["a", "b", "c"]);
+  });
+
+  test("placed rows first, in the stored order; the rest keep their recency order", () => {
+    expect(orderSessions(rows, ["c"]).map((s) => s.id)).toEqual(["c", "a", "b"]);
+    expect(orderSessions(rows, ["c", "a"]).map((s) => s.id)).toEqual(["c", "a", "b"]);
+    expect(orderSessions(rows, ["c", "b", "a"]).map((s) => s.id)).toEqual(["c", "b", "a"]);
+  });
+
+  test("a stored key for a row that is not here places nothing", () => {
+    expect(orderSessions(rows, ["gone", "b"]).map((s) => s.id)).toEqual(["b", "a", "c"]);
+  });
+
+  test("rows are keyed the way the rail keys them: a paired Mac's row is host-qualified", () => {
+    const remote = row("a", { hostId: "h1" });
+    const local = row("a");
+    // Two rows with the SAME id, one local and one remote — the bare id must
+    // not place both, or a drag in one rail would move a row in the other.
+    expect(orderSessions([local, remote], ["h1:a"]).map((s) => s.hostId)).toEqual(["h1", undefined]);
+  });
+
+  test("pure: the list handed in is never reordered in place", () => {
+    const given = [...rows];
+    orderSessions(given, ["c", "b", "a"]);
+    expect(given.map((s) => s.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("moveSessionRow", () => {
+  const drawn = ["a", "b", "c"];
+
+  test("above and below, by which half of the target the pointer was in", () => {
+    expect(moveSessionRow([], drawn, "a", "c", "below")).toEqual(["b", "c", "a"]);
+    expect(moveSessionRow([], drawn, "c", "a", "above")).toEqual(["c", "a", "b"]);
+  });
+
+  test("the WHOLE drawn band is written, so an unplaced row stops drifting", () => {
+    // Nothing was stored before this drop and every drawn row comes back
+    // placed — the same promise `moveProjectGroup` makes one level up.
+    expect(moveSessionRow([], drawn, "b", "a", "above")).toEqual(["b", "a", "c"]);
+  });
+
+  test("rows the rail is not drawing keep their slot relative to the ones it is", () => {
+    const stored = ["a", "page2", "b", "c"];
+    expect(moveSessionRow(stored, drawn, "c", "b", "above")).toEqual(["a", "page2", "c", "b"]);
+  });
+
+  test("a row dropped outside its own band leaves the band alone", () => {
+    // The handler passes ONE band's drawn keys; a row from another group is not
+    // among them, so there is no anchor and nothing moves. Moving a
+    // conversation between projects is a different verb.
+    expect(moveSessionRow([], drawn, "elsewhere", "b", "above")).toEqual(drawn);
+    expect(moveSessionRow([], drawn, "a", "elsewhere", "above")).toEqual(drawn);
+    expect(moveSessionRow([], drawn, "b", "b", "above")).toEqual(drawn);
+  });
+
+  test("it is the group drag's own arithmetic, on a different list", () => {
+    expect(moveSessionRow([], drawn, "a", "c", "below")).toEqual(moveProjectGroup([], drawn, "a", "c", "below"));
+  });
+});
+
+describe("groupSessions honours the stored row orders", () => {
+  const a = row("a");
+  const b = row("b");
+  const c = row("c");
+
+  test("a group's rows sit where the reader dragged them", () => {
+    const out = groupSessions({ pinned: [], sessions: [a, b, c] }, [], { sessions: { p1: ["c", "a"] } });
+    expect(out.groups[0]?.sessions.map((s) => s.id)).toEqual(["c", "a", "b"]);
+  });
+
+  test("the pinned band arranges among itself", () => {
+    const out = groupSessions({ pinned: [a, b, c], sessions: [] }, [], { pinned: ["b", "c"] });
+    expect(out.pinned.map((s) => s.id)).toEqual(["b", "c", "a"]);
+  });
+
+  test("one group's order never reaches another's", () => {
+    const other = row("d", { projectId: "p2", projectName: "beta" });
+    const out = groupSessions({ pinned: [], sessions: [a, b, other] }, [], { sessions: { p2: ["b", "a"] } });
+    expect(out.groups.map((g) => [g.key, g.sessions.map((s) => s.id)])).toEqual([
+      ["p1", ["a", "b"]],
+      ["p2", ["d"]],
+    ]);
+  });
+
+  test("no orders at all is exactly the list the rail drew before any of this", () => {
+    const out = groupSessions({ pinned: [a], sessions: [b, c] });
+    expect(out.pinned.map((s) => s.id)).toEqual(["a"]);
+    expect(out.groups[0]?.sessions.map((s) => s.id)).toEqual(["b", "c"]);
+  });
+
+  test("the attention band is not arranged — it is a queue, not a shelf", () => {
+    const blocked = row("z", { activity: "blocked" });
+    const alsoBlocked = row("y", { activity: "blocked" });
+    const out = groupSessions({ pinned: [], sessions: [blocked, alsoBlocked] }, [], { pinned: ["y", "z"], sessions: { p1: ["y", "z"] } });
+    expect(out.attention.map((s) => s.id)).toEqual(["z", "y"]);
   });
 });

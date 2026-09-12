@@ -7,7 +7,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { closeOtherPanelTabs, closePanelTab, collapseBrowserTabs, emptyPanelTabs, openPanelTab, type PanelTabState } from "./right-panel-tabs";
+import { closeOtherPanelTabs, closePanelTab, collapseBrowserTabs, emptyPanelTabs, movePanelTab, openPanelTab, type PanelTabState } from "./right-panel-tabs";
 import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, isPanelTab, LIVE_BROWSER_TAB, type PanelTab } from "@/components/right-panel";
 
 describe("collapseBrowserTabs (desktop upgrade path)", () => {
@@ -150,5 +150,33 @@ describe("browserTabLabel", () => {
   test("falls back to the raw string when the URL will not parse", () => {
     expect(browserTabLabel({ title: "", url: "about:blank" })).toBe("about:blank");
     expect(browserTabLabel({ title: "", url: "" })).toBe("Untitled page");
+  });
+});
+
+describe("movePanelTab", () => {
+  const state: PanelTabState<PanelTab> = { tabs: ["issues", "diff", "run"], activeTab: "diff", open: true };
+
+  test("`toIndex` is where the tab lands in the strip once it has left its old place", () => {
+    expect(movePanelTab(state, "issues", 2).tabs).toEqual(["diff", "run", "issues"]);
+    expect(movePanelTab(state, "run", 0).tabs).toEqual(["run", "issues", "diff"]);
+    expect(movePanelTab(state, "issues", 1).tabs).toEqual(["diff", "issues", "run"]);
+  });
+
+  test("past either end means that end, because that is what the pointer said", () => {
+    expect(movePanelTab(state, "issues", 99).tabs).toEqual(["diff", "run", "issues"]);
+    expect(movePanelTab(state, "run", -4).tabs).toEqual(["run", "issues", "diff"]);
+  });
+
+  test("a move to where it already is, or of a tab that is not open, changes nothing", () => {
+    expect(movePanelTab(state, "issues", 0)).toBe(state);
+    expect(movePanelTab(state, "agents", 0)).toBe(state);
+  });
+
+  test("neither the active tab nor the panel's openness moves with it", () => {
+    // Reordering says where a tab SITS. A strip that also switched what you
+    // were reading would be answering a question nobody asked.
+    const out = movePanelTab(state, "run", 0);
+    expect(out.activeTab).toBe("diff");
+    expect(out.open).toBe(true);
   });
 });

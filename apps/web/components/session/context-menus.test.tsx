@@ -217,6 +217,15 @@ describe("the project header menu, rendered", () => {
         onDragOver={() => {}}
         onDragLeave={() => {}}
         onDrop={() => {}}
+        rowDrag={() => ({
+          dragging: false,
+          insert: null,
+          onDragStart: () => {},
+          onDragEnd: () => {},
+          onDragOver: () => {},
+          onDragLeave: () => {},
+          onDrop: () => {},
+        })}
         root="/Users/someone/code/telar"
         onNewConversation={() => {}}
         onProjectSettings={() => {}}
