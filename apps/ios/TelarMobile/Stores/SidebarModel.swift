@@ -11,23 +11,47 @@ struct SidebarProject: Identifiable {
 }
 
 /// The desktop's precedence: attention, pins, projects. Never duplicate a row.
+///
+/// WHERE A ROW SITS INSIDE A BAND IS A DECISION TOO, not only where its group
+/// sits — the desktop's `groupSessions` (apps/web/lib/session-groups.ts). An
+/// arrangement made on the Mac used to reach the phone as project order only,
+/// so conversations dragged within a group, or within pinned, showed here in
+/// default order (#306, part of #285).
 struct SidebarModel {
     var attention: [HostedSession]
     var pinned: [HostedSession]
     var projects: [SidebarProject]
 
-    init(sessions: [HostedSession], names: (HostedSession) -> String?, icons: (HostedSession) -> String? = { _ in nil }, orders: [HostID: [String]] = [:]) {
+    init(
+        sessions: [HostedSession],
+        names: (HostedSession) -> String?,
+        icons: (HostedSession) -> String? = { _ in nil },
+        layouts: [HostID: SidebarLayout] = [:]
+    ) {
         attention = sessions.filter { $0.session.activity == .blocked }
-        pinned = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride == "active" }
+        let pins = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride == "active" }
+        /// THE ROW KEYS ARE THE MAC'S OWN. A Mac writes its own sessions into
+        /// the document by bare id, which is what this phone holds for them;
+        /// a row belonging to a different Mac is never in this Mac's list, so
+        /// looking it up there cannot place it by somebody else's decision.
+        pinned = SidebarModel.arranged(pins) { row in layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id) }
         let ordinary = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride != "active" }
         let groups = Dictionary(grouping: ordinary) { "\($0.hostId):\($0.session.projectId ?? "")" }
         projects = groups.values.compactMap { rows in
             guard let first = rows.first else { return nil }
-            return SidebarProject(hostId: first.hostId, projectId: first.session.projectId ?? "", name: names(first) ?? "Other sessions", icon: icons(first), sessions: rows)
+            let projectId = first.session.projectId ?? ""
+            let order = layouts[first.hostId]?.sessionOrder[projectId]
+            return SidebarProject(
+                hostId: first.hostId,
+                projectId: projectId,
+                name: names(first) ?? "Other sessions",
+                icon: icons(first),
+                sessions: SidebarModel.arranged(rows) { row in order?.firstIndex(of: row.session.id) }
+            )
         }.sorted { a, b in
             if a.hostId != b.hostId { return a.hostId.uuidString < b.hostId.uuidString }
             if a.hostId == b.hostId {
-                let order = orders[a.hostId] ?? []
+                let order = layouts[a.hostId]?.projectOrder ?? []
                 let ar = order.firstIndex(of: a.projectId) ?? Int.max
                 let br = order.firstIndex(of: b.projectId) ?? Int.max
                 if ar != br { return ar < br }
@@ -35,6 +59,27 @@ struct SidebarModel {
             let comparison = a.name.localizedStandardCompare(b.name)
             return comparison == .orderedSame ? a.id < b.id : comparison == .orderedAscending
         }
+    }
+
+    /// The desktop's `orderSessions`, to the letter: the rows somebody placed
+    /// come first in that order, and the rest fall in after them in the order
+    /// they arrived — which is the recency sort this list already had.
+    ///
+    /// A PARTITION RATHER THAN A SORT, for the reason the desktop gives: a
+    /// comparator would have to answer "which of two unplaced rows comes
+    /// first", and the only right answer is "whichever the merge already put
+    /// first", which a comparator cannot see. The placed side carries its
+    /// arrival index as a tiebreak because Swift's `sort` is not stable, and
+    /// two Macs can each claim rank 0 for a row in the pinned band.
+    private static func arranged(_ rows: [HostedSession], rank: (HostedSession) -> Int?) -> [HostedSession] {
+        var placed: [(at: Int, arrived: Int, row: HostedSession)] = []
+        var rest: [HostedSession] = []
+        for (arrived, row) in rows.enumerated() {
+            if let at = rank(row) { placed.append((at, arrived, row)) } else { rest.append(row) }
+        }
+        if placed.isEmpty { return rows }
+        placed.sort { $0.at == $1.at ? $0.arrived < $1.arrived : $0.at < $1.at }
+        return placed.map(\.row) + rest
     }
 }
 

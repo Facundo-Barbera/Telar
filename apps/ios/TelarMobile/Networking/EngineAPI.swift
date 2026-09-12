@@ -39,6 +39,12 @@ protocol EngineAPI: Sendable {
     /// The auto-settle window — engine-scoped, one answer per machine, so the
     /// phone bands its inbox the same way the Mac's sidebar does.
     func inboxPolicy() async throws -> InboxPolicy
+    /// The rail's arrangement — engine-scoped like the policy above.
+    ///
+    /// THE FALLBACK, NOT THE PATH. The layout rides `liveSessions()`, so a Mac
+    /// new enough to send it is never asked for this; it is here for one that
+    /// is not, where a rail with no arrangement at all would be the regression.
+    func sidebarLayout() async throws -> SidebarLayout
     /// One file's bytes, uploaded BEFORE the message that refers to it.
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment
     /// The provider's own model list for a driver.
@@ -82,6 +88,10 @@ extension EngineAPI {
     func session(_ id: EngineID) async throws -> SessionSnapshot {
         try await session(id, window: nil)
     }
+
+    /// A double that models the transcript and not the rail answers "nobody has
+    /// arranged anything", which is a real arrangement and not an error.
+    func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
 }
 
 /// A raw read that keeps the content type: the PDF viewer and the image
@@ -288,15 +298,37 @@ struct HTTPEngineAPI: EngineAPI {
         }
     }
 
-    func sidebarLayout() async throws -> [String] {
-        struct Layout: Decodable { var projectOrder: [String] }
-        struct Reply: Decodable { var layout: Layout }
+    func sidebarLayout() async throws -> SidebarLayout {
+        struct Reply: Decodable { var layout: SidebarLayout }
         let reply: Reply = try await get("api/sidebar-layout")
-        return reply.layout.projectOrder
+        return reply.layout
     }
 
-    func setSidebarLayout(_ order: [String]) async throws {
-        let _: IgnoredBody = try await send("PATCH", "api/sidebar-layout", body: ["projectOrder": order])
+    /// ONE FIELD PER WRITE, and the engine leaves an absent one alone.
+    ///
+    /// The phone used to send the whole `projectOrder` it happened to be
+    /// holding, which meant a drop here silently republished a minute-old copy
+    /// of the OTHER two arrangements' neighbour — and, once the Mac grew row
+    /// order (#301), any reorder made there in between. Naming only the field
+    /// that moved is what makes last-write-wins mean "the field you dragged"
+    /// rather than "the document you loaded".
+    ///
+    /// Returns the layout as the engine now holds it, so the caller applies the
+    /// Mac's answer rather than its own guess at it.
+    func setSidebarLayout(
+        projectOrder: [String]? = nil,
+        sessionOrder: [String: [String]]? = nil,
+        pinnedOrder: [String]? = nil
+    ) async throws -> SidebarLayout {
+        struct Reply: Decodable { var layout: SidebarLayout }
+        var patch: [String: JSONValue] = [:]
+        if let projectOrder { patch["projectOrder"] = .array(projectOrder.map { .string($0) }) }
+        if let sessionOrder {
+            patch["sessionOrder"] = .object(sessionOrder.mapValues { .array($0.map { .string($0) }) })
+        }
+        if let pinnedOrder { patch["pinnedOrder"] = .array(pinnedOrder.map { .string($0) }) }
+        let reply: Reply = try await send("PATCH", "api/sidebar-layout", body: JSONValue.object(patch))
+        return reply.layout
     }
 
     func registerPush(_ registration: PushRegistration) async throws -> PushStatus {

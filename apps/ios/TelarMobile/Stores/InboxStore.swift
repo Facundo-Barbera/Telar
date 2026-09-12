@@ -78,6 +78,11 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// When what is shown was recorded by this phone; nil once the Mac has
     /// answered in this session of the app.
     private(set) var recordedAt: Timestamp?
+    /// WHERE THIS MAC PUTS THINGS — see `SidebarLayout`. It rides the live read
+    /// this store already makes, so a drag on the Mac (or in a browser tab on
+    /// it) reaches the phone on the next poll without a request, a timer or a
+    /// connection of its own.
+    private(set) var layout = SidebarLayout()
 
     /// Which Mac this store polls; the merged inbox keys by it.
     let hostId: HostID
@@ -96,6 +101,10 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// that is slow to answer, the second request per poll was the one that
     /// kept the list a poll behind.
     private var policyReadAt: ContinuousClock.Instant?
+    /// The same once-a-minute rule, for the same reason — but only against a
+    /// Mac too old to send the layout on its live read. One that does send it
+    /// stamps this on every poll, so the extra request is never made.
+    private var layoutReadAt: ContinuousClock.Instant?
     private var lastInboxData: Data?
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
@@ -144,6 +153,15 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         sections = folded
     }
 
+    /// A drop on THIS phone, drawn now rather than a poll later — the same
+    /// reason `applyRead` exists, and the same monotonic caution: the write's
+    /// own answer lands here too, so the optimistic guess is replaced by the
+    /// Mac's word a moment later rather than living on beside it.
+    func applyLayout(_ next: SidebarLayout) {
+        guard next != layout else { return }
+        layout = next
+    }
+
     /// Settle or unsettle straight off a row — a context-menu action, so the
     /// refresh must be immediate rather than waiting for the next poll.
     func setSettled(_ id: EngineID, _ settled: Bool) async {
@@ -189,6 +207,17 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
                 autoSettleAfterHours = policy.autoSettleAfterHours
                 policyReadAt = .now
             }
+            // THE ARRANGEMENT COSTS NOTHING WHEN IT RIDES ALONG, and the ask is
+            // only for a Mac whose engine predates that — rationed like the
+            // policy above, because against a slow Mac a second request per
+            // three-second poll is what keeps the list a poll behind.
+            if live.layout != nil {
+                layoutReadAt = .now
+            } else if layoutReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+                      let fetched = try? await api.sidebarLayout() {
+                layout = fetched
+                layoutReadAt = .now
+            }
             apply(live)
             lastError = nil
             unauthorized = false
@@ -202,6 +231,10 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     }
 
     private func apply(_ live: LiveSessions) {
+        // The Mac's own word about where things sit. Absent means an engine
+        // that cannot say, never "nobody has arranged anything" — so the copy
+        // already held survives rather than being blanked every poll.
+        if let arrangement = live.layout { layout = arrangement }
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         sections = groupInbox(

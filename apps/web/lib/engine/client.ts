@@ -401,12 +401,20 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     machinePlugins: () => request<{ plugins: PluginStatus[]; machine: ProjectPlugins }>(fetcher, "GET", "/api/plugins"),
     updateMachinePlugins: (plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>) =>
       request<{ machine: ProjectPlugins }>(fetcher, "PATCH", "/api/plugins", { plugins }),
+    /**
+     * The rail's own read. `layout` rides along because this is the one route
+     * every rail already polls: it is how a drag on another device reaches this
+     * one, without a second request or a connection of its own. Optional — an
+     * engine older than the field simply says nothing about the arrangement,
+     * and the rail keeps the copy it fetched when it mounted.
+     */
     liveSessions: () =>
-      request<{ sessions: Session[]; projects: Project[]; assignments?: Record<string, SessionAssignment[]> }>(
-        fetcher,
-        "GET",
-        "/api/sessions/live",
-      ),
+      request<{
+        sessions: Session[];
+        projects: Project[];
+        assignments?: Record<string, SessionAssignment[]>;
+        layout?: SidebarLayout;
+      }>(fetcher, "GET", "/api/sessions/live"),
     createSession: (
       projectId: string,
       input: {

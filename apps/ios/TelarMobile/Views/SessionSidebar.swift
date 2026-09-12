@@ -9,7 +9,6 @@ struct SessionSidebar: View {
     let resumeDraft: (MobileDraft) -> Void
     @State private var query = ""
     @State private var projectFilter: String?
-    @State private var orders: [HostID: [String]] = [:]
     @State private var collapsed: Set<String> = []
     @State private var snoozedOpen = false
     @State private var settledOpen = false
@@ -20,7 +19,7 @@ struct SessionSidebar: View {
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
-        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, icons: { inbox.project($0)?.icon }, orders: orders)
+        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, icons: { inbox.project($0)?.icon }, layouts: inbox.layouts)
     }
     private var all: [HostedSession] { inbox.sections.active + inbox.sections.tail }
     private func matches(_ row: HostedSession) -> Bool {
@@ -263,10 +262,13 @@ struct SessionSidebar: View {
             .padding(.horizontal, 8)
             .background(Theme.sheet)
         }
-        .refreshable { await inbox.refresh(); await loadOrders() }
+        // NO SEPARATE LAYOUT READ ANY MORE. The arrangement rides each Mac's
+        // live read (InboxStore), so refreshing the inbox refreshes where
+        // things sit — and the rail learns about a drag made on the Mac on the
+        // next poll instead of only when it is opened again.
+        .refreshable { await inbox.refresh() }
         .task {
             collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
-            await loadOrders()
         }
         .onChange(of: inbox.filter) { projectFilter = nil }
         .sheet(item: $snoozing) { row in snoozeSheet(row) }
@@ -615,11 +617,6 @@ struct SessionSidebar: View {
         do { try await settings.api(for: row.hostId)?.patchSession(row.session.id, patch: patch); await inbox.refresh() }
         catch { layoutError = error.localizedDescription }
     }
-    private func loadOrders() async {
-        for host in settings.hosts {
-            if let order = try? await settings.api(for: host.id)?.sidebarLayout() { orders[host.id] = order }
-        }
-    }
     private func move(_ group: SidebarProject, offset: Int) async {
         let peers = model.projects.filter { $0.hostId == group.hostId }
         guard let index = peers.firstIndex(where: { $0.id == group.id }), peers.indices.contains(index + offset) else { return }
@@ -633,13 +630,41 @@ struct SessionSidebar: View {
         order.insert(source.projectId, at: order.firstIndex(of: target.projectId) ?? 0)
         await saveOrder(order, host: source.hostId)
     }
+    /**
+     RE-READ, THEN WRITE ONE FIELD.
+
+     A phone that loaded before a reorder on the Mac used to overwrite that
+     reorder on its next drop (#306): it sent the whole `projectOrder` it was
+     holding — its own visible list, plus whatever it had cached for projects it
+     could not see — from a copy that could be a minute old. So the arrangement
+     is re-read immediately before the write, and only `projectOrder` is sent:
+     the engine leaves an absent field alone, so a drop here cannot touch the
+     row order (`sessionOrder`, `pinnedOrder`) a drag on the Mac just made.
+
+     Last write wins on that ONE field, which is what the issue allows — the two
+     devices are one person's, and the field they moved is the field they meant.
+
+     Optimistic, like the desktop: the group lands where it was dropped on the
+     same frame, and a Mac that refuses puts it back.
+     */
     private func saveOrder(_ order: [String], host: HostID) async {
-        let previous = orders[host]; orders[host] = order
+        guard let api = settings.api(for: host) else { return }
+        let previous = inbox.layout(host)
+        inbox.applyLayout(host, SidebarLayout(projectOrder: order, sessionOrder: previous.sessionOrder, pinnedOrder: previous.pinnedOrder))
         do {
-            // Preserve keys for projects not currently visible on the phone.
-            let rest = (previous ?? []).filter { !order.contains($0) }
-            try await settings.api(for: host)?.setSidebarLayout(order + rest)
-            orders[host] = order + rest; layoutError = nil
-        } catch { orders[host] = previous; layoutError = "Couldn't save project order. Try again when the Mac is connected." }
+            // A read that fails is not a reason to refuse the drop — the copy
+            // in hand is still this phone's best word, and it is the one the
+            // old code would have written anyway.
+            let current = (try? await api.sidebarLayout()) ?? previous
+            // Keys for projects this phone is not showing — another Mac's
+            // groups, a project with nothing live — keep their slot rather than
+            // being pruned by a drag that had nothing to do with them.
+            let rest = current.projectOrder.filter { !order.contains($0) }
+            inbox.applyLayout(host, try await api.setSidebarLayout(projectOrder: order + rest))
+            layoutError = nil
+        } catch {
+            inbox.applyLayout(host, previous)
+            layoutError = "Couldn't save project order. Try again when the Mac is connected."
+        }
     }
 }

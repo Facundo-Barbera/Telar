@@ -19,7 +19,7 @@ import Testing
     @Test func respectsProjectOrderAndKeepsSameProjectOnDifferentMacsSeparate() throws {
         let a = UUID(), b = UUID()
         let rows = try [row(host: a, id: "a", project: "alpha"), row(host: a, id: "b", project: "beta"), row(host: b, id: "a", project: "alpha")]
-        let result = SidebarModel(sessions: rows, names: { $0.session.projectId }, orders: [a: ["beta", "alpha"]])
+        let result = SidebarModel(sessions: rows, names: { $0.session.projectId }, layouts: [a: SidebarLayout(projectOrder: ["beta", "alpha"])])
         #expect(result.projects.count == 3)
         #expect(result.projects.filter { $0.hostId == a }.map(\.projectId) == ["beta", "alpha"])
     }
@@ -49,6 +49,55 @@ import Testing
                         row(host: host, id: "pinned", project: "p", pinned: true)]
         let result = SidebarModel(sessions: rows, names: { _ in "Project" })
         #expect(result.projects.isEmpty)
+    }
+
+    /// THE ROWS INSIDE A GROUP, arranged on the Mac and drawn here (#306). The
+    /// phone read `projectOrder` only, so a conversation dragged within its
+    /// group showed on the phone in default order — the desktop's own rule is
+    /// `orderSessions`: placed rows first, unplaced ones after in the order
+    /// they arrived.
+    @Test func honoursSessionOrderInsideAGroupAndLeavesUnplacedRowsWhereTheyWere() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "a", project: "p"), row(host: host, id: "b", project: "p"), row(host: host, id: "c", project: "p")]
+        let layouts = [host: SidebarLayout(sessionOrder: ["p": ["c", "a"]])]
+        let group = try #require(SidebarModel(sessions: rows, names: { _ in "Project" }, layouts: layouts).projects.first)
+        #expect(group.sessions.map(\.session.id) == ["c", "a", "b"])
+    }
+
+    /// The pinned band is one band, so it is one list — and it is arranged by
+    /// the same partition.
+    @Test func honoursPinnedOrder() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "a", project: "p", pinned: true),
+                        row(host: host, id: "b", project: "p", pinned: true),
+                        row(host: host, id: "c", project: "p", pinned: true)]
+        let layouts = [host: SidebarLayout(pinnedOrder: ["c", "b"])]
+        #expect(SidebarModel(sessions: rows, names: { _ in "Project" }, layouts: layouts).pinned.map(\.session.id) == ["c", "b", "a"])
+    }
+
+    /// AN ARRANGEMENT IS ONE MAC'S. Two Macs can mint the same session id, and
+    /// each writes its own document; a rank read from the wrong Mac's list
+    /// would place a row by a decision nobody made about it. The band still
+    /// draws every row exactly once, in a stable order — `sort` is not stable
+    /// in Swift, and both rows here claim rank 0.
+    @Test func aRankFromOneMacNeverPlacesAnotherMacsRow() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "shared", project: "p", pinned: true), row(host: b, id: "shared", project: "p", pinned: true)]
+        let pinned = SidebarModel(sessions: rows, names: { _ in "Project" }, layouts: [a: SidebarLayout(pinnedOrder: ["shared"])]).pinned
+        #expect(pinned.count == 2)
+        // The placed row (host a's) comes first; host b's was never named by
+        // host a's document and falls in after it, where it arrived.
+        #expect(pinned.map(\.hostId) == [a, b])
+    }
+
+    /// A document written before the row arrangements existed, or by a Mac that
+    /// has none, leaves the list exactly as the merge produced it.
+    @Test func noArrangementLeavesTheRecencyOrderAlone() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "a", project: "p"), row(host: host, id: "b", project: "p")]
+        let layouts = [host: SidebarLayout(projectOrder: ["p"])]
+        let group = try #require(SidebarModel(sessions: rows, names: { _ in "Project" }, layouts: layouts).projects.first)
+        #expect(group.sessions.map(\.session.id) == ["a", "b"])
     }
 
     @Test func deepLinksRoundTripAndRejectMalformedOrForeignLinks() {
