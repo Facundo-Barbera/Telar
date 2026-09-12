@@ -22,21 +22,26 @@ import { useState } from "react";
 import { EyeOffIcon, PlusIcon, XIcon } from "lucide-react";
 import { draftProblems } from "@/lib/run/presentation";
 import type { DraftProblem } from "@/lib/run/presentation";
-import type { RunConfigurationDraft, RunConfigurationView } from "@/lib/run/types";
+import { DEFAULT_RUN_ICON, RUN_ICON_KEYS, RUN_ICON_LABELS, RunGlyph, runIconKey } from "@/lib/run/icons";
+import type { RunConfigurationDraft, RunConfigurationView, RunIcon } from "@/lib/run/types";
+import { cn } from "@/lib/utils";
 
 /** A row as the form holds it: `kept` marks a secret whose stored value the
  *  cockpit has never seen and must not overwrite. */
 export type EnvRow = { key: string; value: string; secret?: boolean; kept?: boolean };
 
-export type EditorDraft = { name: string; command: string; cwd: string; readinessUrl: string; env: EnvRow[] };
+export type EditorDraft = { name: string; icon: RunIcon; command: string; cwd: string; readinessUrl: string; env: EnvRow[] };
 
 export function emptyDraft(): EditorDraft {
-  return { name: "", command: "", cwd: "", readinessUrl: "", env: [] };
+  return { name: "", icon: DEFAULT_RUN_ICON, command: "", cwd: "", readinessUrl: "", env: [] };
 }
 
 export function draftFromConfiguration(config: RunConfigurationView): EditorDraft {
   return {
     name: config.name,
+    // An absent icon opens the picker on the default rather than on nothing;
+    // saving it back stores nothing, which is what `toDraft` keeps true.
+    icon: runIconKey(config.icon),
     command: config.command,
     cwd: config.cwd ?? "",
     readinessUrl: config.readinessUrl ?? "",
@@ -51,6 +56,16 @@ export function draftFromConfiguration(config: RunConfigurationView): EditorDraf
 export function toDraft(draft: EditorDraft): RunConfigurationDraft {
   return {
     name: draft.name.trim(),
+    /**
+     * ALWAYS SENT, INCLUDING THE DEFAULT, and that is not laziness. The engine
+     * merges a patch shallowly, so omitting `icon` means "leave it alone" —
+     * which would make switching a configuration back to `play` silently
+     * impossible, the stored `server` surviving a save the human watched
+     * succeed. An absent icon still means `play` everywhere it is READ, for
+     * the documents written before icons existed and for the ones an agent
+     * saves without naming one.
+     */
+    icon: draft.icon,
     command: draft.command.trim(),
     ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
     ...(draft.readinessUrl.trim() ? { readinessUrl: draft.readinessUrl.trim() } : {}),
@@ -137,6 +152,35 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           onChange={(event) => set({ name: event.target.value })}
         />
       </label>
+      {/* A radio group, not a dropdown: ten glyphs fit, and a human picking one
+          should see the set rather than open it. `role=radiogroup` because that
+          is what it is — one of ten, always exactly one chosen. */}
+      <fieldset className="space-y-1">
+        <legend className="text-xs font-medium text-muted-foreground">Icon</legend>
+        <div role="radiogroup" aria-label="Icon" className="flex flex-wrap gap-1">
+          {RUN_ICON_KEYS.map((key) => {
+            const chosen = draft.icon === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={chosen}
+                aria-label={RUN_ICON_LABELS[key]}
+                title={RUN_ICON_LABELS[key]}
+                onClick={() => set({ icon: key })}
+                className={cn(
+                  "rounded-md border p-1.5 transition-colors focus-visible:outline focus-visible:outline-ring",
+                  chosen ? "border-ring bg-accent" : "border-border text-muted-foreground hover:bg-muted",
+                )}
+              >
+                <RunGlyph icon={key} className="size-4" />
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+
       <label className="block space-y-1">
         <span className="text-xs font-medium text-muted-foreground">Command</span>
         <input

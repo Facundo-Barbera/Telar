@@ -77,8 +77,30 @@ describe("configurationPatch", () => {
   test("blank optionals are dropped rather than saved as empty strings", () => {
     expect(toDraft({ ...emptyDraft(), name: " web ", command: " bun run dev " })).toEqual({
       name: "web",
+      icon: "play",
       command: "bun run dev",
     });
+  });
+});
+
+describe("the icon", () => {
+  test("a configuration without one opens the picker on the default", () => {
+    // Absent is not blank: every configuration saved before icons existed
+    // lands here, and the form must not present that as "no choice made".
+    expect(draftFromConfiguration(config()).icon).toBe("play");
+    expect(draftFromConfiguration(config({ icon: "database" })).icon).toBe("database");
+    expect(emptyDraft().icon).toBe("play");
+  });
+
+  test("the icon is ALWAYS in the patch, including the default", () => {
+    // The engine merges shallowly, so an omitted `icon` means "leave it
+    // alone". Dropping the default here would make switching a configuration
+    // back to `play` silently impossible — the stored `server` would survive a
+    // save the human watched succeed.
+    const original = config({ icon: "server" });
+    const reverted = { ...draftFromConfiguration(original), icon: "play" as const };
+    expect(configurationPatch(original, reverted).icon).toBe("play");
+    expect(configurationPatch(original, draftFromConfiguration(original)).icon).toBe("server");
   });
 });
 
