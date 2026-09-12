@@ -185,6 +185,32 @@ export const EnvMode = z.enum(["local", "worktree"]);
 export type EnvMode = z.infer<typeof EnvMode>;
 
 /**
+ * WHICH USAGE LIMIT, from a CLOSED set with a generic fallback.
+ *
+ * The provider's own field is an open string and the set grows, but two durable
+ * things a person reads carry this — the `provider_wait` row (`items.ts`) and a
+ * `rate_limited` turn failure (`entities.ts`) — and neither is a place to
+ * forward an arbitrary remote label. A value this contract does not know
+ * becomes `other`, which still says "some limit" without repeating anything
+ * unvetted.
+ *
+ * HERE RATHER THAN BESIDE EITHER USER, because `items.ts` and `entities.ts` both
+ * import this file and neither may import the other. It was inline in the wait
+ * row first; the failure needed the same closed set, and two copies of a list
+ * that must agree is how they stop agreeing.
+ */
+export const RateLimitType = z.enum([
+  "five_hour",
+  "seven_day",
+  "seven_day_opus",
+  "seven_day_sonnet",
+  "seven_day_overage_included",
+  "overage",
+  "other",
+]);
+export type RateLimitType = z.infer<typeof RateLimitType>;
+
+/**
  * Tokens for one unit of work.
  *
  * THE FOUR-WAY SPLIT IS NOT ARBITRARY — it is the same pair-plus-cache shape

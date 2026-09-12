@@ -24,6 +24,7 @@ import {
   ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
+  RateLimitType,
   RuntimeMode,
   Timestamp,
   TurnAttachment,
@@ -665,6 +666,24 @@ export const Session = z.object({
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
 
+  /**
+   * SIT OUT A USAGE LIMIT AND CARRY ON — the session's answer to a turn that
+   * failed `rate_limited`.
+   *
+   * ABSENT MEANS ON FOR A CLAUDE SESSION, off for anything else, and the
+   * default is deliberately not written into the record: a session created
+   * before this existed behaves like one created after it, and a provider that
+   * grows the same reporting later starts resuming without a migration. Only an
+   * explicit `false` (or an explicit `true` on another driver) is stored, which
+   * is exactly what a person changing the toggle means.
+   *
+   * WHAT IT DOES NOT DO: it never re-sends anything. The CLI resumes the same
+   * provider session, so the turn continues with its context rather than
+   * replaying a prompt — and with it off, the turn simply stays failed with its
+   * reset time on the row, which is what it did before this setting existed.
+   */
+  resumeAfterRateLimit: z.boolean().optional(),
+
   /** A human Stop rejects new agent messages/wakes until a new human message.
    * It never holds or replays an old backlog. */
   agentMessagesBlocked: z.boolean().optional(),
@@ -938,8 +957,66 @@ export const TurnFailureCode = z.enum([
    * and `interrupted` must never be read as "safe to replay".
    */
   "interrupted",
+  /**
+   * THE ACCOUNT'S USAGE LIMIT WAS REACHED, AND THE PROVIDER SAID WHEN IT LIFTS.
+   *
+   * Distinct from `driver_failed`, which is what this used to be, because the
+   * two call for opposite things: a driver failure is a fault to look at, and
+   * this is a wait to sit out. The engine can resume it unattended (see
+   * `Session.resumeAfterRateLimit`), and a person reading the row wants the
+   * reset time rather than a sentence of provider text.
+   *
+   * ONLY WHEN `resumeAt` IS KNOWN. A limit reported without a reset time is not
+   * this code — nothing could be scheduled from it — so it stays `driver_failed`
+   * and reads as the ordinary failure it is.
+   *
+   * IT CLAIMS NOTHING ABOUT WHAT THE TURN HAD ALREADY DONE. Like `interrupted`,
+   * whatever ran is in the turn's items; the limit stopped it where it stood,
+   * and resuming continues the provider session rather than replaying it.
+   */
+  "rate_limited",
 ]);
 export type TurnFailureCode = z.infer<typeof TurnFailureCode>;
+
+/**
+ * WHY A TURN FAILED — the code, the sentence, and for `rate_limited` the facts
+ * that make it resumable.
+ *
+ * A NAMED SCHEMA rather than a fourth inline `{ code, message }`: the worker's
+ * report, the store's record, the `turn.failed` event and `Turn.failure` all
+ * carry the same thing, and they were four copies that had to be edited in step.
+ */
+export const TurnFailure = z.object({
+  code: TurnFailureCode,
+  message: z.string(),
+  /**
+   * `rate_limited`: when the limit lifts, in MILLISECONDS — the engine's own
+   * `Timestamp`, like every other time in this contract.
+   *
+   * THE PROVIDER REPORTS SECONDS. The SDK's `rate_limit_info.resetsAt` is unix
+   * seconds, and the `provider_wait` row keeps it in seconds (`resetsAt` on
+   * `ProviderWaitDetail`) because that is what the provider said. The driver
+   * converts exactly once, here, where the number stops being a quotation and
+   * becomes a time the engine schedules against — a sweep comparing seconds
+   * against `Date.now()` would wait fifty years and look like a hang.
+   */
+  resumeAt: Timestamp.optional(),
+  /** `rate_limited`: which limit, so a row can say "five hour" rather than "a
+   *  limit". Narrowed to the closed set — see `RateLimitType`. */
+  limitType: RateLimitType.optional(),
+  /**
+   * THE SWEEP HAS DEALT WITH THIS ONE — and that is all this says.
+   *
+   * It exists to bound `queueConcernsAWorker`: a failed `rate_limited` turn
+   * keeps its session in the live-queue index so the sweep can find it once
+   * `resumeAt` passes, and with no stamp saying "looked at", a session whose
+   * setting is OFF would sit in that index for the life of the daemon being
+   * re-examined on every claim. Stamped whether the sweep requeued the turn or
+   * left it failed, so it means "decided", never "resumed".
+   */
+  resumeDecidedAt: Timestamp.optional(),
+});
+export type TurnFailure = z.infer<typeof TurnFailure>;
 
 /**
  * The subset a WORKER may report — not every code above.
@@ -956,6 +1033,12 @@ export type TurnFailureCode = z.infer<typeof TurnFailureCode>;
  */
 export const WorkerTurnFailureCode = TurnFailureCode.exclude(["cancelled", "internal_error"]);
 export type WorkerTurnFailureCode = z.infer<typeof WorkerTurnFailureCode>;
+
+/** What a WORKER may send to the fail route: the codes above, plus the two
+ *  `rate_limited` facts. `resumeDecidedAt` is absent on purpose — the sweep's
+ *  own stamp is the engine's to write, never a worker's to claim. */
+export const WorkerTurnFailure = TurnFailure.omit({ resumeDecidedAt: true }).extend({ code: WorkerTurnFailureCode });
+export type WorkerTurnFailure = z.infer<typeof WorkerTurnFailure>;
 
 /** A worker's exclusive lease on a queued turn. The token is what stops two
  *  workers running the same turn after a partition. */
@@ -1161,7 +1244,7 @@ export const Turn = z.object({
   /** The assistant's final text. The full timeline is in the journal; this is
    *  the summary a list view renders without replaying events. */
   resultText: z.string().optional(),
-  failure: z.object({ code: TurnFailureCode, message: z.string() }).optional(),
+  failure: TurnFailure.optional(),
   /**
    * WHY A `stopped` TURN STOPPED — and how much is known about what it had
    * already done.

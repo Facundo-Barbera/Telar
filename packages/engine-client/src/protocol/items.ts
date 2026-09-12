@@ -19,7 +19,7 @@
  * the UI needs one renderer rather than one per provider.
  */
 import { z } from "zod";
-import { Id, ProviderRefs, Timestamp, TurnAttachment } from "./common";
+import { Id, ProviderRefs, RateLimitType, Timestamp, TurnAttachment } from "./common";
 import { WakeReason } from "./entities";
 
 /**
@@ -208,17 +208,13 @@ export const ProviderWaitDetail = z.object({
    *  "still fine" event is not a wait and would be noise on the timeline. */
   limitStatus: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
   /**
-   * WHICH LIMIT, from a CLOSED set with a generic fallback.
-   *
-   * The provider's field is an open string and the set grows, but a durable row
-   * is not the place to forward an arbitrary remote string: a journal a person
-   * reads is exactly where an attacker-shaped label would want to land. A value
-   * this contract does not know becomes `other`, which still says "some limit"
-   * without repeating anything unvetted.
+   * WHICH LIMIT, from a CLOSED set with a generic fallback — see `RateLimitType`
+   * in `common.ts`, which a `rate_limited` turn failure now reads from too. A
+   * durable row is not the place to forward an arbitrary remote string: a
+   * journal a person reads is exactly where an attacker-shaped label would want
+   * to land.
    */
-  limitType: z
-    .enum(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage", "other"])
-    .optional(),
+  limitType: RateLimitType.optional(),
   /** Unix seconds at which the limit resets, when the provider says. */
   resetsAt: z.number().int().nonnegative().optional(),
   /** Fraction of the window consumed, when the provider says. Finite, because

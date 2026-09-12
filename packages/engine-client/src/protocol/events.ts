@@ -21,7 +21,7 @@ import { PluginStatus } from "./plugins";
 import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
-import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
+import { Project, Runtime, RuntimeState, Session, Turn, TurnFailure } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
@@ -75,7 +75,10 @@ const TurnCompleted = event("turn.completed", {
   usage: UsageSnapshot.optional(),
   providerSessionId: z.string().min(1).optional(),
 });
-const TurnFailed = event("turn.failed", { code: TurnFailureCode, message: z.string() });
+/** The whole failure, not just its two original fields: a client that learns of
+ *  a `rate_limited` turn from the event tail alone still knows when the limit
+ *  lifts, and so can draw the waiting row without re-reading the snapshot. */
+const TurnFailed = event("turn.failed", TurnFailure.shape);
 const TurnStopped = event("turn.stopped", { reason: z.string().optional() });
 /**
  * The crash-mid-call case, kept from v1: the engine cannot tell whether the
