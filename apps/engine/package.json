@@ -8,6 +8,7 @@
     "start": "bun run src/main.ts",
     "worker": "bun run src/worker-main.ts",
     "test": "bun test",
+    "bench:append": "bun run bench/append-cost.ts",
     "bench:journal": "bun run bench/journal-append.ts",
     "bench:idle": "bun run bench/idle-heartbeat.ts",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"

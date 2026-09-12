@@ -29,12 +29,19 @@ import { SteerMailbox } from "../src/steering";
 const createClaudeDriver: typeof createRealClaudeDriver = (loadSdk, options = {}) =>
   createRealClaudeDriver(loadSdk, { resolveExecutable: () => "/fake/bin/claude", ...options });
 
-/** Collect everything a run reports, in order, the way the worker relays it. */
+/** Collect everything a run reports, in order, the way the worker relays it.
+ *  `batches` keeps the call boundaries: one batch is one engine command, which
+ *  is what the delta coalescing is about. */
 function recorder() {
   const observations: TurnObservation[] = [];
+  const batches: TurnObservation[][] = [];
   return {
     observations,
-    onObservations: async (batch: TurnObservation[]) => void observations.push(...batch),
+    batches,
+    onObservations: async (batch: TurnObservation[]) => {
+      batches.push(batch);
+      observations.push(...batch);
+    },
   };
 }
 
@@ -125,12 +132,57 @@ test("partial text deltas stream against one item without duplicating the final 
   await expect(result).resolves.toMatchObject({ text: "hello", providerSessionId: "claude-stream" });
   expect(includePartialMessages).toBeTrue();
 
+  // Two chunks of one block, coalesced into the one row a reader would have
+  // folded them into anyway — see `flushSoon`.
   const deltas = sink.observations.filter((o) => o.kind === "content.delta");
-  expect(deltas.map((o) => (o.kind === "content.delta" ? o.text : ""))).toEqual(["hel", "lo"]);
+  expect(deltas.map((o) => (o.kind === "content.delta" ? o.text : ""))).toEqual(["hello"]);
   // THE DOUBLE-COUNT GUARD. With partial messages on, the assistant envelope
   // REPEATS its text. Emitting it again would double both the transcript and
   // the final result — so exactly one text item exists, not two.
   expect(sink.observations.filter((o) => o.kind === "item.started")).toHaveLength(1);
+});
+
+test("streamed deltas are coalesced per block, and a second block never joins the first", async () => {
+  /**
+   * ONE ENGINE COMMAND PER CHUNK WAS THE COST. Each `reportObservations` is a
+   * transaction, a queue read and the item projection's read and rewrite —
+   * 1.66 ms on a 327-item session, against a measured peak of 133 chunks a
+   * second. Coalescing is safe precisely because a reader concatenates these:
+   * forty chunks of one block and one row carrying the same text are the same
+   * transcript.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+      for (const chunk of ["a", "b", "c", "d"]) {
+        yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: chunk } } };
+      }
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      // A SECOND BLOCK, so the merge is proved to stop at the row boundary
+      // rather than at "is the last one also a delta".
+      yield { type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "thinking" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "hm" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "mm" } } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const deltas = sink.observations.filter((o) => o.kind === "content.delta");
+  expect(deltas.map((o) => (o.kind === "content.delta" ? [o.stream, o.text] : []))).toEqual([
+    ["assistant_text", "abcd"],
+    ["reasoning_text", "hmmm"],
+  ]);
+  // The text still reaches the projection whole, which is what a client
+  // opening the session later reads.
+  const closed = sink.observations.filter((o) => o.kind === "item.completed");
+  expect(closed.map((o) => (o.kind === "item.completed" ? o.detail : undefined))).toEqual([
+    { type: "assistant_message", text: "abcd" },
+    { type: "reasoning", text: "hmmm" },
+  ]);
+  // …and six chunks cost the engine far fewer commands than six.
+  expect(sink.batches.length).toBeLessThanOrEqual(4);
 });
 
 test("a closed block carries its ACCUMULATED text, so a reloaded session is not empty", async () => {

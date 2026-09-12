@@ -1676,13 +1676,32 @@ export function createClaudeDriver(
        * same reason; this generalises it to every observation.
        */
       let flushQueue: Promise<unknown> = Promise.resolve();
+      /**
+       * THE SINK `pending` WAS ACCUMULATED UNDER.
+       *
+       * This used to be read at flush time, on the grounds that `emit` and
+       * `flush` were always adjacent so the two were the same sink. Streamed
+       * deltas are no longer flushed adjacently (see `flushSoon`), and the pump
+       * swaps the sink between frames — so the binding has to be taken when the
+       * frames are produced, or a turn's buffered text could be posted to the
+       * binding a wake-up opened after it.
+       */
+      let pendingSink: ((observations: TurnObservation[]) => Promise<void>) | undefined;
+      let coalescing: ReturnType<typeof setTimeout> | undefined;
       const flush = (): Promise<void> => {
-        // The sink is read at FLUSH time, not at emit: `emit` then `flush`
-        // are always adjacent, and the pump swaps the sink between frames.
-        const target = sink;
+        if (coalescing !== undefined) {
+          clearTimeout(coalescing);
+          coalescing = undefined;
+        }
+        const target = pendingSink ?? sink;
+        // Taken SYNCHRONOUSLY. A deferred flush runs from a timer, so anything
+        // emitted between this call and the chain reaching it belongs to the
+        // next batch — draining inside the callback would hand those frames to
+        // the sink this call captured.
+        const batch = pending.splice(0, pending.length);
+        pendingSink = undefined;
         const next = flushQueue.then(async () => {
-          if (pending.length === 0) return;
-          const batch = pending.splice(0, pending.length);
+          if (batch.length === 0) return;
           await target(batch);
         });
         // The CHAIN must survive a rejection or every later flush inherits it;
@@ -1690,8 +1709,49 @@ export function createClaudeDriver(
         flushQueue = next.catch(() => undefined);
         return next;
       };
+      /**
+       * A STREAMED DELTA COSTS A WHOLE ENGINE COMMAND, so it must not cost one
+       * PER TOKEN-CHUNK. Measured: the real ingest path is 1.66 ms per delta
+       * against a 327-item session — a transaction, a queue read and the item
+       * projection's read and rewrite around a 261-byte insert — which at the
+       * measured peak of 133 deltas/s is more than two cores. The same 400
+       * deltas sixteen to a call are 0.096 ms each.
+       *
+       * 16 ms is a frame. Buffering streamed text for a frame does not defeat
+       * streaming — the cockpit re-reads the tail once a second, and the phone
+       * once a second — while a transaction per chunk does defeat the machine.
+       * Any other observation flushes immediately and takes the buffered deltas
+       * with it, in order, so nothing terminal ever waits on this timer.
+       */
+      const COALESCE_MS = 16;
+      const flushSoon = (): void => {
+        if (coalescing !== undefined) return;
+        coalescing = setTimeout(() => {
+          coalescing = undefined;
+          void flush().catch(() => undefined);
+        }, COALESCE_MS);
+        coalescing.unref?.();
+      };
       const emit = (observation: TurnObservation): void => {
+        // The pump swapped sinks with frames still buffered: they belong to the
+        // sink that produced them, so they go now rather than to the new one.
+        if (pending.length > 0 && pendingSink !== sink) void flush().catch(() => undefined);
+        const last = pending.at(-1);
+        if (
+          observation.kind === "content.delta" &&
+          last?.kind === "content.delta" &&
+          last.itemId === observation.itemId &&
+          last.stream === observation.stream
+        ) {
+          // COALESCED PER ITEM, which is exactly what a reader does with them:
+          // deltas for one open block are concatenated in order, so N of them
+          // and one carrying the same text are the same transcript — and the
+          // journal holds one row instead of N.
+          pending[pending.length - 1] = { ...last, text: last.text + observation.text };
+          return;
+        }
         pending.push(observation);
+        pendingSink ??= sink;
       };
 
       /**
@@ -2900,8 +2960,9 @@ export function createClaudeDriver(
                 stream: open.kind === "text" ? "assistant_text" : "reasoning_text",
                 text,
               });
-              // Flush per delta: buffering streamed text defeats streaming.
-              await flush();
+              // Coalesced for a frame rather than flushed per chunk — see
+              // `flushSoon`. Every terminal frame below still flushes at once.
+              flushSoon();
               continue;
             }
 
