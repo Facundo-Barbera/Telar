@@ -11,6 +11,15 @@
  * not a glance. Selecting a row is a "go there" — it opens the panel on the
  * surface that owns the detail and closes this — never a drill-down stack.
  *
+ * ONE STANDING SECTION, AND ONLY ONE: the project's NOTEBOOK. It is not present
+ * tense and it does not pretend to be — it is the one thing here a person writes
+ * rather than watches. It earns the exception because this popover is where a
+ * person looks to answer "what am I working in", and what they wrote down about
+ * the project is that answer as much as the branch is. Notes are the project's,
+ * so every session on it shows the same list; the editor is the same quick
+ * editor the `@` menu's rows point at, and a row drags into the composer as the
+ * same reference `@` inserts.
+ *
  * TWO DEPARTURES FROM THE DONOR, both forced by what the engine exposes:
  *
  *   1. NO GIT ACTIONS. The donor's rows opened panes that staged files, created
@@ -34,13 +43,19 @@ import {
   FolderGit2Icon,
   GitBranchIcon,
   GlobeIcon,
+  NotebookPenIcon,
+  PinIcon,
+  PlusIcon,
   TerminalIcon,
 } from "lucide-react";
-import { isBackgroundWork, type GitOverview, type Session, type Task } from "@telar/engine-client";
+import { isBackgroundWork, type GitOverview, type ProjectNote, type Session, type Task } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { noteReference, startReferenceDrag } from "@/lib/drag-reference";
+import { useProjectNotes } from "@/lib/project-notes";
 import { cn } from "@/lib/utils";
+import { ProjectNoteEditor } from "@/components/project-notes-editor";
 import { browserPanelTab, type BrowserState, type PanelTab } from "@/components/right-panel";
 
 const api = createEngineApi();
@@ -134,6 +149,95 @@ function CappedRows({ rows, noun }: { rows: React.ReactNode[]; noun: string }) {
   );
 }
 
+/** The first line of a body, as the row's muted half — it is what tells two
+ *  notes with similar titles apart, and it is free. Local rather than shared
+ *  with the `@` menu's own preview: that one is the completion table's, and a
+ *  row's detail is allowed to change without moving the menu with it. */
+function firstLine(note: ProjectNote): string {
+  const line = note.body.split("\n").find((text) => text.trim()) ?? "";
+  return line.replace(/^#+\s*/, "").trim();
+}
+
+/**
+ * THE NOTEBOOK SECTION.
+ *
+ * EXPORTED FOR THE SAME REASON `WhereThisLands` TAKES ITS GIT AS A PROP: the
+ * popover's content is portalled and only exists while it is open, so the
+ * section is the unit a render test can hold. It takes the notes rather than
+ * reading them, which also keeps one fetch for the whole popover.
+ *
+ * A ROW OPENS IN PLACE, AND HAS NO CHEVRON. Every other row here is a "go
+ * there" — it opens the panel and closes this. A note is the opposite: it is
+ * consulted, and often edited, WITHOUT leaving whatever the popover was opened
+ * to check, so the editor replaces the row where it stands. A chevron would
+ * promise a departure that does not happen.
+ *
+ * A ROW IS A DRAG HANDLE AS MUCH AS A BUTTON. Drag hands the note's BODY to
+ * whatever the pointer lands on — the composer (as a reference), or any other
+ * application (as plain text). Both payloads always, per `drag-reference.ts`.
+ */
+export function InspectorNotes({ projectId, notes }: { projectId: string; notes: readonly ProjectNote[] }) {
+  /** Which note the editor is open on: a note id, or `new` for the add row.
+   *  One at a time — the section is a list, not a stack of open drawers. */
+  const [editing, setEditing] = useState<string>();
+
+  const editor = (key: string, note?: ProjectNote) => (
+    <div key={key} className="rounded-xl bg-muted/40 p-1.5">
+      <ProjectNoteEditor projectId={projectId} {...(note ? { note } : {})} onClose={() => setEditing(undefined)} />
+    </div>
+  );
+
+  const rows = notes.map((note) => {
+    if (editing === note.id) return editor(note.id, note);
+    const detail = firstLine(note);
+    return (
+      <button
+        key={note.id}
+        type="button"
+        draggable
+        title={note.title}
+        onDragStart={(event) => startReferenceDrag(event.dataTransfer, noteReference(note))}
+        onClick={() => setEditing(note.id)}
+        className="flex min-h-9 w-full cursor-grab items-center gap-2.5 rounded-xl px-2.5 text-left transition-colors hover:bg-muted/70 active:cursor-grabbing"
+      >
+        {note.pinned ? (
+          <PinIcon className="size-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <NotebookPenIcon className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-sm">{note.title}</span>
+        {detail ? <span className="min-w-0 max-w-[52%] truncate text-xs text-muted-foreground">{detail}</span> : null}
+      </button>
+    );
+  });
+
+  return (
+    <>
+      <SectionDivider />
+      <SectionHeading label="Notes" />
+      <CappedRows noun="notes" rows={rows} />
+      {/* THE ADD ROW SITS OUTSIDE THE CAP, always reachable: "write this down"
+          is the gesture that must never be behind a "2 more notes". Keyed on
+          `new` and unmounted on close, so reopening starts a blank note rather
+          than the last one's abandoned text. */}
+      {editing === "new" ? (
+        editor("new")
+      ) : (
+        <button
+          type="button"
+          aria-label="New note"
+          title="Write a note about this project"
+          onClick={() => setEditing("new")}
+          className="flex min-h-9 w-full items-center gap-2.5 rounded-xl px-2.5 text-left text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+        >
+          <PlusIcon className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-sm">New note</span>
+        </button>
+      )}
+    </>
+  );
+}
+
 export function WorkspaceInspector({
   projectId,
   projectName,
@@ -152,6 +256,10 @@ export function WorkspaceInspector({
 }) {
   const [open, setOpen] = useState(false);
   const [git, setGit] = useState<GitOverview>();
+  /** Read on mount rather than on open: it is one small document, the composer
+   *  two centimetres below is already reading it, and both share the window
+   *  event — so they cannot disagree about what the notebook holds. */
+  const { notes } = useProjectNotes(projectId);
 
   const load = useCallback(async () => {
     try {
@@ -258,6 +366,11 @@ export function WorkspaceInspector({
               />
             )}
           </div>
+
+          {/* DIRECTLY UNDER THE WORKSPACE, above everything that comes and
+              goes: the notebook is the one section whose position must not
+              depend on how many sub-agents happen to be running. */}
+          <InspectorNotes projectId={projectId} notes={notes} />
 
           {processes.length > 0 && (
             <>
