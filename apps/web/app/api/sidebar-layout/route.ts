@@ -29,6 +29,8 @@ export async function PATCH(request: Request) {
     return Response.json(
       await (await engineClient()).setSidebarLayout({
         ...("projectOrder" in body ? { projectOrder: body.projectOrder as string[] } : {}),
+        ...("sessionOrder" in body ? { sessionOrder: body.sessionOrder as Record<string, string[]> } : {}),
+        ...("pinnedOrder" in body ? { pinnedOrder: body.pinnedOrder as string[] } : {}),
       }),
     );
   } catch (error) {

@@ -21,6 +21,7 @@ import {
   DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
   MAX_SIDEBAR_PROJECT_ORDER,
+  MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
   SidebarLayout as SidebarLayoutSchema,
   TextGenPolicy as TextGenPolicySchema,
@@ -906,6 +907,18 @@ type SessionQueue = { version: typeof STATE_VERSION; sessionId: string; nextSequ
 
 const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
 const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSION, sessionId, nextSequence: 1, turns: [] });
+
+/** "Nobody has arranged anything" — what an unreadable layout document costs.
+ *  Spelled once so the three arrangements cannot fall back to different things. */
+const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
+
+/** Copied out, never handed out: the caller gets the arrangement, not a
+ *  reference into the document this store will write to next. */
+const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
+  projectOrder: [...layout.projectOrder],
+  sessionOrder: Object.fromEntries(Object.entries(layout.sessionOrder).map(([key, ids]) => [key, [...ids]])),
+  pinnedOrder: [...layout.pinnedOrder],
+});
 
 function assertStateVersion(value: unknown, document: string): void {
   const version = (value as { version?: unknown } | null)?.version;
@@ -1939,9 +1952,9 @@ export class EngineStore {
   getSidebarLayout(): SidebarLayout {
     try {
       const parsed = SidebarLayoutSchema.safeParse(this.readDocument(this.paths.sidebarLayout));
-      return parsed.success ? parsed.data : { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
+      return parsed.success ? parsed.data : blankSidebarLayout();
     } catch {
-      return { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
+      return blankSidebarLayout();
     }
   }
 
@@ -1949,9 +1962,14 @@ export class EngineStore {
    * Takes `unknown` and validates here, like the policies above. A key listed
    * twice is kept once, at its first position — the rail reads the first
    * mention anyway, and a document that said two things would be one that
-   * meant neither.
+   * meant neither. The same rule applies inside every `sessionOrder` list.
+   *
+   * EACH FIELD IS ITS OWN PATCH. A drop in the pinned band writes `pinnedOrder`
+   * and nothing else; a drop inside a group writes `sessionOrder` and nothing
+   * else. Absent means "unchanged", never "empty" — otherwise one rail's write
+   * would erase an arrangement another rail had just made.
    */
-  setSidebarLayout(patch: { projectOrder?: unknown }): SidebarLayout {
+  setSidebarLayout(patch: { projectOrder?: unknown; sessionOrder?: unknown; pinnedOrder?: unknown }): SidebarLayout {
     const next: SidebarLayout = { ...this.getSidebarLayout() };
     if (patch.projectOrder !== undefined) {
       const parsed = SidebarLayoutSchema.shape.projectOrder.safeParse(patch.projectOrder);
@@ -1963,8 +1981,28 @@ export class EngineStore {
       }
       next.projectOrder = [...new Set(parsed.data)];
     }
+    if (patch.sessionOrder !== undefined) {
+      const parsed = SidebarLayoutSchema.shape.sessionOrder.safeParse(patch.sessionOrder);
+      if (!parsed.success) {
+        throw new EngineStateError(
+          "invalid_request",
+          `sessionOrder must map a project group key to a list of up to ${MAX_SIDEBAR_SESSION_ORDER} non-empty session keys`,
+        );
+      }
+      next.sessionOrder = Object.fromEntries(Object.entries(parsed.data).map(([key, ids]) => [key, [...new Set(ids)]]));
+    }
+    if (patch.pinnedOrder !== undefined) {
+      const parsed = SidebarLayoutSchema.shape.pinnedOrder.safeParse(patch.pinnedOrder);
+      if (!parsed.success) {
+        throw new EngineStateError(
+          "invalid_request",
+          `pinnedOrder must be a list of up to ${MAX_SIDEBAR_SESSION_ORDER} non-empty session keys`,
+        );
+      }
+      next.pinnedOrder = [...new Set(parsed.data)];
+    }
     this.writeDocument(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
-    return { ...next, projectOrder: [...next.projectOrder] };
+    return cloneSidebarLayout(next);
   }
 
   /** Same never-throws rule as `getInboxPolicy`, same reason: a malformed

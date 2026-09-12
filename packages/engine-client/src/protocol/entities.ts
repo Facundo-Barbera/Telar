@@ -752,6 +752,10 @@ export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
 
+/** Per group, and for the pinned band — the same "a runaway client cannot grow
+ *  this document" cap as the project order, applied one list at a time. */
+export const MAX_SIDEBAR_SESSION_ORDER = 1000;
+
 /**
  * WHERE EACH PROJECT GROUP SITS IN THE RAIL — the arrangement, kept apart from
  * the list it arranges.
@@ -775,13 +779,30 @@ export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
  *
  * Absent keys are kept, not pruned: a paired Mac that is away for the afternoon
  * keeps its slot for when it answers again.
+ *
+ * AND THE ROWS INSIDE, on the same terms. `sessionOrder` is one list per project
+ * group, keyed by the same group key `projectOrder` uses; `pinnedOrder` is the
+ * pinned band, which is one list because it is one band. The values are the
+ * rail's own session keys (`lib/session-list.ts`'s `sessionKey`: the bare id
+ * here, `hostId:id` for a paired Mac's row) — a row the stored list does not
+ * name falls in after the named ones in the recency order the rail already had,
+ * so a conversation started this minute appears where it always did rather than
+ * in the middle of an arrangement somebody made.
+ *
+ * BOTH ARE OPTIONAL ON THE WIRE and default to empty, so a document written
+ * before they existed parses as "nobody has arranged any rows" rather than
+ * failing and costing the project arrangement stored beside them.
  */
 export const SidebarLayout = z.object({
   projectOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_PROJECT_ORDER),
+  sessionOrder: z
+    .record(z.string().min(1).max(200), z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER))
+    .default({}),
+  pinnedOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_SESSION_ORDER).default([]),
 });
 export type SidebarLayout = z.infer<typeof SidebarLayout>;
 
-export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [] };
+export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };
 
 /**
  * COMPUTER USE, MEASURED — the settings page's permission readout.

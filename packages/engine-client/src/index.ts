@@ -572,7 +572,13 @@ export class EngineClient {
     return this.request("GET", "/v2/sidebar-layout");
   }
 
-  setSidebarLayout(patch: { projectOrder?: string[] }): Promise<{ layout: SidebarLayout }> {
+  /** One arrangement per call: an absent field is left alone, so a drop in the
+   *  pinned band cannot overwrite the groups the same rail just arranged. */
+  setSidebarLayout(patch: {
+    projectOrder?: string[];
+    sessionOrder?: Record<string, string[]>;
+    pinnedOrder?: string[];
+  }): Promise<{ layout: SidebarLayout }> {
     return this.request("PATCH", "/v2/sidebar-layout", patch);
   }
 
