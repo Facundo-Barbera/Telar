@@ -85,9 +85,15 @@ export function BrowserProfilesSection() {
 
   return (
     <>
+      {/* THE SECOND SENTENCE WAS THE LIST'S JOB. It said that projects sharing
+          a profile share a sign-in and that everything else browses in the
+          default — which is exactly what `describeProfileUse` prints on each
+          row, per profile, with the actual count. A header that narrates its
+          own list makes the reader parse the sentence and then parse the list
+          to check it against. */}
       <SettingsGroup
         title="Browser profiles"
-        description="Each one is a separate set of cookies and logins for Telar's own browser. Projects assigned to the same profile share one sign-in; everything else browses in the default."
+        description="Each one is a separate set of cookies and logins for Telar's own browser."
         action={
           <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
             New profile
