@@ -3,8 +3,8 @@
 /**
  * SEARCH STANDS WHERE THE NAV STANDS, and takes its place while you type.
  *
- * Six panes, and General alone stacks six sections — so the nav answers "which
- * pane" and nothing answers "which row". This field does, and it does it in the
+ * Seven panes, and General alone stacks six sections — so the nav answers
+ * "which pane" and nothing answers "which row". This field does, and in the
  * nav's own column rather than in a modal over the page: the results ARE the
  * navigation for as long as there is a query, and clearing the field puts the
  * panes back. Nothing moves, nothing overlays, and the way out is the same key

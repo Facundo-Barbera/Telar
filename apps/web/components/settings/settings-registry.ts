@@ -5,7 +5,7 @@
  * WHY A SECOND COPY OF THE TITLES EXISTS AT ALL. The rows themselves are React
  * trees scattered across a dozen section files, several behind a condition
  * ("After" appears only once settling is on) and several rendered from engine
- * data. Nothing can enumerate them without mounting all six panes, which is
+ * data. Nothing can enumerate them without mounting every pane, which is
  * exactly what a person who does not know where a setting lives cannot do. So
  * the rows are DECLARED here, and `settings-registry.test.ts` is what keeps the
  * declaration honest: every title below must still appear in a section file, or
@@ -38,6 +38,7 @@
 
 import {
   BlocksIcon,
+  CircleUserRoundIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
@@ -48,6 +49,7 @@ import {
   MonitorIcon,
   PaletteIcon,
   PlugIcon,
+  PlugZapIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
@@ -275,6 +277,35 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     ],
   },
   {
+    id: "integrations",
+    // NAVIGATE-ONLY, both rows. A profile row's title is the profile's own name
+    // and a grant's is the address it covers — values, not copy, so there is
+    // nothing static to anchor to (see the note at the top). The pane is
+    // indexed anyway because "where are my saved passwords" and "which account
+    // does the browser sign in as" are exactly the questions search exists for,
+    // and landing on the right pane answers most of both.
+    label: "Integrations",
+    icon: PlugZapIcon,
+    groups: [
+      {
+        rows: [
+          {
+            title: "Browser profiles",
+            hint: "The identities Telar's own browser signs in as, one set of cookies each.",
+            keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser"],
+            icon: CircleUserRoundIcon,
+          },
+          {
+            title: "Remembered logins",
+            hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
+            keywords: ["1password", "password", "credential", "autofill", "revoke", "vault"],
+            icon: KeyRoundIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "providers",
     // NAVIGATE-ONLY, and knowingly. This pane's body is one card per configured
     // login, built from engine data — there is no static `Row` to anchor to, so
@@ -326,18 +357,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Accessibility and Screen Recording permission for driving the Mac.",
             keywords: ["permission", "privacy", "accessibility", "screen recording", "grant"],
             icon: MonitorIcon,
-          },
-        ],
-      },
-      {
-        // Navigate-only, for the same reason as Providers: a list built from
-        // what the engine remembers, with no fixed row under it.
-        rows: [
-          {
-            title: "Remembered logins",
-            hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
-            keywords: ["1password", "password", "credential", "autofill", "revoke"],
-            icon: KeyRoundIcon,
           },
         ],
       },

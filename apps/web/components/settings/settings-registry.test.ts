@@ -57,9 +57,36 @@ test("the questions a person actually types find the row", () => {
   // Found by what it does, not by what it is called.
   expect(first("worktree")).toBe("Workspace");
   expect(first("1password")).toBe("Remembered logins");
+  expect(first("cookies")).toBe("Browser profiles");
   // Half-remembered, and in the wrong number.
   expect(first("name session")).toBe("Name sessions");
   expect(searchSettings(SETTINGS_SEARCH_INDEX, "nothing here at all")).toEqual([]);
+});
+
+test("every indexed row is declared on the pane that actually renders it", () => {
+  /**
+   * THE DRIFT THE TITLE CHECK CANNOT SEE. "Every title still exists somewhere
+   * in this directory" stays true when a whole SECTION moves between panes —
+   * which is what #294 did, taking remembered logins out of Agent tools and
+   * onto the new Integrations pane. The index went on saying `tools`, so the
+   * row kept being found and kept navigating to the pane it had left.
+   *
+   * Checked for the rows whose copy is distinctive enough to attribute to one
+   * file; a title as common as "Engine" appears on two panes on purpose and is
+   * covered by the anchor-uniqueness test instead.
+   */
+  const paneOf: Record<string, string> = {
+    "Remembered logins": "integrations",
+    "Browser profiles": "integrations",
+    "Add a server": "tools",
+    "Add a Mac": "remote",
+    "Settle quiet sessions": "general",
+    "Add a login": "providers",
+  };
+  for (const [title, pageId] of Object.entries(paneOf)) {
+    const entry = SETTINGS_SEARCH_INDEX.entries.find((candidate) => candidate.title === title);
+    expect(entry?.pageId).toBe(pageId);
+  }
 });
 
 test("a result carries the pane it lives on, which is what the list shows", () => {
