@@ -94,6 +94,23 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         stores[hostId]?.projects[id]
     }
 
+    /// Each Mac's own arrangement, keyed by host — one document per Mac, and
+    /// never merged: the keys inside are that Mac's, so folding two of them
+    /// together would place one Mac's rows by another's decisions.
+    var layouts: [HostID: SidebarLayout] {
+        stores.mapValues(\.layout)
+    }
+
+    func layout(_ hostId: HostID) -> SidebarLayout {
+        stores[hostId]?.layout ?? SidebarLayout()
+    }
+
+    /// A drop on this phone, drawn before the write comes back. ROUTED BY THE
+    /// HOST, for the same reason `applyRead` is: an arrangement is one Mac's.
+    func applyLayout(_ hostId: HostID, _ next: SidebarLayout) {
+        stores[hostId]?.applyLayout(next)
+    }
+
     /// Reconcile the store set with the host book. Unchanged hosts keep
     /// their store (no poll churn, no flash of empty).
     func sync(hosts: [Host], settings: AppSettings) {
