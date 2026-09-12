@@ -31,7 +31,7 @@ const flat = (name: string) => code(name).replace(/\s+/g, " ");
 /** Every file this round puts a menu on. Grown one surface per commit, so the
  *  cross-surface rules below hold at every point in the series rather than
  *  only at the end of it. */
-const SURFACES = ["session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
+const SURFACES = ["transcript.tsx", "session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
 
 describe("one primitive, composed per surface", () => {
   test("every surface imports the SHARED context-menu module and defines none of its own", () => {
@@ -241,5 +241,102 @@ describe("the diff surface's file row", () => {
     expect(cockpit).toContain("insertReference(current, text, current.length).draft");
     // A multi-line insert (a quoted message) is its own paragraph.
     expect(cockpit).toContain('text.includes("\\n") ? `${current.replace(/\\s+$/, "")}\\n\\n${text}`');
+  });
+});
+
+/**
+ * THE TRANSCRIPT. Two menus: one on a MESSAGE (what was said) and one on a
+ * TOOL ROW (what was done). Neither offers a verb, because a transcript is a
+ * record — a menu that could re-run a command or undo an edit would be
+ * offering to change what happened.
+ */
+describe("the transcript's message and tool rows", () => {
+  const tr = () => code("transcript.tsx");
+  const msg = () => code("ui/message.tsx");
+
+  test("the message menu is ONE definition in ui/message.tsx, composed by the transcript and the cockpit", () => {
+    expect(msg()).toContain("export function MessageMenu({");
+    expect(tr()).toContain("<MessageMenu");
+    expect(code("session-cockpit.tsx")).toContain("<MessageMenu text={turn.prompt} markdown={false}");
+    // No second spelling of it anywhere.
+    for (const name of ["transcript.tsx", "session-cockpit.tsx"]) {
+      expect(code(name), `${name} imports MessageMenu rather than defining one`).not.toContain("function MessageMenu(");
+    }
+  });
+
+  test("Copy text and Copy as Markdown are two DIFFERENT strings, and the second is hidden where it would be the same one", () => {
+    const source = msg();
+    expect(source).toContain("onClick={() => void navigator.clipboard.writeText(markdown ? messagePlainText(body) : body)}>Copy text");
+    expect(source).toContain("{markdown && <ContextMenuItem onClick={() => void navigator.clipboard.writeText(body)}>Copy as Markdown");
+    // A person's message is a plain draft, so it gets one copy item, not two.
+    expect(tr()).toContain("<MessageMenu text={itemText(item)} markdown={false}");
+    expect(code("session-cockpit.tsx")).toContain("markdown={false}");
+  });
+
+  test("the plain-text pass keeps a fenced block's contents verbatim", () => {
+    // A code block is the part of an answer people most want on the clipboard;
+    // unwrapping emphasis inside one would corrupt it.
+    expect(msg()).toContain("if (fenced) return line;");
+    expect(msg()).toContain("fenced = !fenced;");
+  });
+
+  test("Quote into composer prefixes every line, and lands through the cockpit's own insert", () => {
+    expect(msg()).toContain("export function quoteForComposer(text: string): string {");
+    expect(msg()).toContain('.map((line) => `> ${line}`)');
+    expect(msg()).toContain("<ContextMenuItem onClick={() => onQuote(quoteForComposer(body))}>Quote into composer</ContextMenuItem>");
+    expect(tr()).toContain("{...(onInsert ? { onQuote: onInsert } : {})}");
+    expect(code("session-cockpit.tsx")).toContain("onInsert={insertIntoComposer}");
+  });
+
+  test("a message still being streamed carries NO menu — half a sentence is not what the reader asked for", () => {
+    expect(tr()).toContain("if (running(item)) return <MessageResponse streaming>{text}</MessageResponse>;");
+  });
+
+  test("the tool row's menu is about what the ROW is about — a command's command, a file's path", () => {
+    const source = tr();
+    expect(source).toContain("onClick={() => void navigator.clipboard.writeText(command)}>Copy command");
+    expect(source).toContain('{change?.unifiedDiff ? "Copy patch" : "Copy output"}');
+    expect(source).toContain("{path && onOpenFile && <ContextMenuItem onClick={() => onOpenFile(path)}>Open file in the Editor</ContextMenuItem>}");
+    expect(source).toContain("onClick={() => void navigator.clipboard.writeText(path)}>Copy path");
+    expect(source).toContain("onClick={() => onInsert(fileReference(path).text)}>Insert as reference");
+    // The path comes from the row's own detail, for the two kinds that have one.
+    expect(source).toContain('if (item.detail.type === "file_change") return item.detail.change.path;');
+    expect(source).toContain('if (item.detail.type === "file_read") return item.detail.read.path;');
+  });
+
+  test("a row with nothing to offer gets no menu rather than an empty popup", () => {
+    expect(tr()).toContain("const hasMenu = Boolean(command || body || path);");
+    expect(tr()).toContain("if (!hasMenu) return row;");
+  });
+
+  test("RETRY FROM HERE is absent, and the file says why rather than leaving it to be re-proposed", () => {
+    const source = tr();
+    expect(source).not.toMatch(/<ContextMenuItem[^>]*>\s*Retry/);
+    expect(source).not.toMatch(/<ContextMenuItem[^>]*>\s*Re-?run/);
+    expect(read("transcript.tsx")).toContain('"Retry from here" is the item this list is missing on');
+  });
+
+  test("Open in the Agents panel rides the row that ALREADY offers it, firing the same onOpen", () => {
+    const source = tr();
+    expect(source).toContain("<ContextMenuItem onClick={() => onOpen(taskId)}>Open in the Agents panel</ContextMenuItem>");
+    // The same `onOpen` and the same guard the visible `Open ▸` button uses.
+    expect(source).toContain("{onOpen && taskId && (");
+    // And no other surface in this round carries it.
+    for (const name of SURFACES.filter((each) => each !== "transcript.tsx")) {
+      expect(code(name), `${name} does not also carry the agent row's own verb`).not.toContain("Open in the Agents panel");
+    }
+  });
+
+  test("Open file in the Editor goes through the cockpit's ONE door, showPanelTab with a file-shaped id", () => {
+    expect(code("session-cockpit.tsx")).toContain("onOpenFile={(path) => showPanelTab(`file:${path}`)}");
+  });
+
+  test("every row in a turn gets the SAME gestures, so a live turn and a settled one cannot disagree", () => {
+    const cockpit = code("session-cockpit.tsx");
+    expect(cockpit).toContain("const rowGestures = {");
+    // Nothing renders a transcript row with a hand-built subset any more.
+    const body = cockpit.slice(cockpit.indexOf("function SessionTurnBody("), cockpit.indexOf("const [draftDriver"));
+    expect(body).not.toContain("{...(onOpenAgent ? { onOpenAgent } : {})}");
+    expect((body.match(/\{\.\.\.rowGestures\}/g) ?? []).length).toBeGreaterThanOrEqual(7);
   });
 });

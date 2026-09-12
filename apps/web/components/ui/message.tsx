@@ -7,6 +7,7 @@ import { Streamdown } from "streamdown";
 import { math } from "@streamdown/math";
 import { cn } from "@/lib/utils";
 import { rehypeDisplayStandaloneMath } from "@/lib/markdown-math";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 
 /**
  * The reading lane, and who gets a bubble.
@@ -146,3 +147,118 @@ export const MessageResponse = memo(
 );
 
 MessageResponse.displayName = "MessageResponse";
+
+/**
+ * MARKDOWN, READ AS A PERSON READS IT.
+ *
+ * "Copy text" and "Copy as Markdown" are two different answers to "give me
+ * this message", and a menu offering both has to actually have both: the
+ * source, for pasting into something that renders it, and the prose, for
+ * pasting into something that does not — a comment box, a chat, a commit
+ * message.
+ *
+ * DELIBERATELY A SMALL PASS, NOT A PARSER. It unwraps the syntax that is pure
+ * noise once the markup is gone — fences, emphasis runs, heading hashes, list
+ * bullets, blockquote markers, link chrome — and touches nothing else. It does
+ * not reflow, renumber, or render tables, because a lossy "plain text" that
+ * rearranged the author's lines would be worse at the one job it has. What
+ * comes out is the same text with its punctuation removed.
+ *
+ * A FENCE'S CONTENTS SURVIVE, only its ``` lines go: a code block is the part
+ * of an answer people most often want on the clipboard, and stripping the
+ * asterisks inside one would corrupt it — so emphasis is unwrapped OUTSIDE
+ * fenced blocks only.
+ */
+export function messagePlainText(markdown: string): string {
+  let fenced = false;
+  return markdown
+    .split("\n")
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        fenced = !fenced;
+        return null;
+      }
+      if (fenced) return line;
+      return line
+        .replace(/^(\s*)#{1,6}\s+/, "$1")
+        .replace(/^(\s*)>\s?/, "$1")
+        .replace(/^(\s*)[-*+]\s+/, "$1")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/(\*\*|__)(.+?)\1/g, "$2")
+        .replace(/(\*|_)(.+?)\1/g, "$2");
+    })
+    .filter((line): line is string => line !== null)
+    .join("\n")
+    .trim();
+}
+
+/** A quote, the way a person types one: every line prefixed, blanks included,
+ *  so the block survives being pasted in the middle of a draft. */
+export function quoteForComposer(text: string): string {
+  return text
+    .trim()
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+/**
+ * A MESSAGE'S OWN MENU — the three things anybody wants from a message they are
+ * looking at, and nothing that writes.
+ *
+ * NOT A SECOND COPY BUTTON: the reading lane has no per-message copy control at
+ * all (only fenced code blocks do, through Streamdown's own), so this is the
+ * first way to take a whole answer, and it offers both forms rather than
+ * guessing which one you meant.
+ *
+ * QUOTE INTO COMPOSER IS THE ONE THAT CHANGES ANYTHING, and what it changes is
+ * a draft — the same `insertIntoComposer` a panel row's "Insert as reference"
+ * reaches, so a quote and a reference land the same way and neither resolves
+ * anything behind the reader's back.
+ *
+ * `items` is how a surface adds the verb only IT has — the transcript's agent
+ * row and its "Open in the Agents panel" — without this component learning
+ * about sub-agents.
+ */
+export function MessageMenu({
+  text,
+  markdown = true,
+  onQuote,
+  items,
+  children,
+}: {
+  /** The message's own source. Markdown for an assistant turn, plain for a
+   *  person's; `markdown` says which, and hides the item that would otherwise
+   *  offer the same string twice. */
+  text: string;
+  markdown?: boolean;
+  onQuote?: (text: string) => void;
+  /** Extra rows, below a separator — a surface's own verbs. */
+  items?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const body = text.trim();
+  if (!body) return <>{children}</>;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        <ContextMenuItem onClick={() => void navigator.clipboard.writeText(markdown ? messagePlainText(body) : body)}>Copy text</ContextMenuItem>
+        {markdown && <ContextMenuItem onClick={() => void navigator.clipboard.writeText(body)}>Copy as Markdown</ContextMenuItem>}
+        {onQuote && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={() => onQuote(quoteForComposer(body))}>Quote into composer</ContextMenuItem>
+          </>
+        )}
+        {items && (
+          <>
+            <ContextMenuSeparator />
+            {items}
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
