@@ -31,7 +31,7 @@ const flat = (name: string) => code(name).replace(/\s+/g, " ");
 /** Every file this round puts a menu on. Grown one surface per commit, so the
  *  cross-surface rules below hold at every point in the series rather than
  *  only at the end of it. */
-const SURFACES = ["session/notebook-surface.tsx"];
+const SURFACES = ["session/notebook-surface.tsx", "session/table-surface.tsx"];
 
 describe("one primitive, composed per surface", () => {
   test("every surface imports the SHARED context-menu module and defines none of its own", () => {
@@ -127,5 +127,59 @@ describe("the notebook cell's menu", () => {
     const destructive = code("session/notebook-surface.tsx").match(/<ContextMenuItem variant="destructive"/g) ?? [];
     expect(destructive).toHaveLength(1);
     expect(flat("session/notebook-surface.tsx")).not.toContain("variant=\"destructive\" onClick={onClearOutputs}");
+  });
+});
+
+/**
+ * THE TABLE. Two DIFFERENT menus on one surface — a header's and a cell's —
+ * which is the point the Spool's calendar case makes about a day cell and a
+ * pill: they are genuinely different objects, not one list reused twice.
+ */
+describe("the table's column header and its cells", () => {
+  const tbl = () => code("session/table-surface.tsx");
+
+  test("the header's three sort choices are a RADIO group, because the state is one-of-three", () => {
+    const source = tbl();
+    expect(source).toContain("<ContextMenuRadioGroup");
+    expect(source).toContain('<ContextMenuRadioItem value="asc" closeOnClick>');
+    expect(source).toContain('<ContextMenuRadioItem value="desc" closeOnClick>');
+    expect(source).toContain('<ContextMenuRadioItem value="none" closeOnClick>');
+    expect(flat("session/table-surface.tsx")).toContain("Sort ascending");
+    expect(flat("session/table-surface.tsx")).toContain("Sort descending");
+    expect(flat("session/table-surface.tsx")).toContain("Clear sort");
+  });
+
+  test("picking a direction calls the SAME setSort the header's own click cycles through", () => {
+    const source = tbl();
+    // One sort write path: the menu is handed `setSort` itself.
+    expect(source).toContain("onSort={setSort}");
+    expect(source).toContain('onValueChange={(next: string) => onSort(next === "none" ? undefined : { column, desc: next === "desc" })}');
+    // And the header's own onClick is untouched — still the cycle it was.
+    expect(source).toContain("onClick={() => setSort(sorted && !sort.desc ? { column, desc: true } : sorted ? undefined : { column, desc: false })}");
+  });
+
+  test("the header's current direction is what the group shows — the menu cannot tick two", () => {
+    expect(tbl()).toContain('sort={sorted ? (sort.desc ? "desc" : "asc") : "none"}');
+  });
+
+  test("the cell's menu is ONE item the header's does not carry, and the header's four are not on the cell", () => {
+    const source = tbl();
+    expect(source).toContain("<ContextMenuItem onClick={() => void navigator.clipboard.writeText(value)}>Copy value</ContextMenuItem>");
+    expect(source).toContain("<ContextMenuItem onClick={() => void navigator.clipboard.writeText(column)}>Copy column name</ContextMenuItem>");
+    // The cell menu's whole body: no sort, no column name.
+    const cellMenu = source.slice(source.indexOf("function CellMenu("), source.indexOf("export function TableSurface"));
+    expect(cellMenu).not.toContain("Sort ascending");
+    expect(cellMenu).not.toContain("Copy column name");
+  });
+
+  test("Copy value copies the WHOLE string, not the clipped text on screen", () => {
+    // The cell is `max-w-96 truncate`, so what is visible is routinely not what
+    // is there — which is most of why the verb exists.
+    expect(tbl()).toContain('<CellMenu value={cell === null ? "null" : String(cell)}>');
+  });
+
+  test("both triggers render INLINE, so the cell's own truncation still ends in an ellipsis", () => {
+    // A block child inside `truncate` clips with no ellipsis at all.
+    expect(tbl().match(/<ContextMenuTrigger render=\{<span \/>\}>/g)).toHaveLength(2);
   });
 });

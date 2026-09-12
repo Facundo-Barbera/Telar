@@ -13,6 +13,15 @@ import type { TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import type { TableWindow } from "@/lib/ds";
 import { EditorAddressRow } from "@/components/session/editor-chrome";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -20,6 +29,77 @@ import { cn } from "@/lib/utils";
 const api = createEngineApi();
 const ROW = 22;
 const PAGE = 200;
+
+/**
+ * THE COLUMN HEADER'S MENU — the same `setSort` the header's own click cycles
+ * through, said as three choices instead of a cycle.
+ *
+ * A RADIO GROUP, because sort IS one-of-three and the header already draws it
+ * that way (an up arrow, a down arrow, or neither). A list of plain items
+ * would let the menu show two directions ticked, which the state cannot be.
+ * `closeOnClick` because base-ui's radio item keeps the menu open by default,
+ * and a sort you picked is a gesture that is over.
+ *
+ * THE TRIGGER IS INSIDE THE `<th>`, not around it, so the header's own
+ * click-to-cycle keeps its whole hit area — the board card's rule in
+ * `spool/idiom.test.ts`, applied to a control rather than a drag.
+ */
+function HeaderMenu({
+  column,
+  sort,
+  onSort,
+  children,
+}: {
+  column: string;
+  sort: "asc" | "desc" | "none";
+  onSort: (next: { column: string; desc: boolean } | undefined) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<span />}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        <ContextMenuRadioGroup
+          value={sort}
+          onValueChange={(next: string) => onSort(next === "none" ? undefined : { column, desc: next === "desc" })}
+        >
+          <ContextMenuRadioItem value="asc" closeOnClick>
+            Sort ascending
+          </ContextMenuRadioItem>
+          <ContextMenuRadioItem value="desc" closeOnClick>
+            Sort descending
+          </ContextMenuRadioItem>
+          <ContextMenuRadioItem value="none" closeOnClick>
+            Clear sort
+          </ContextMenuRadioItem>
+        </ContextMenuRadioGroup>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void navigator.clipboard.writeText(column)}>Copy column name</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+/**
+ * ONE CELL, AND THE ONE THING ANYBODY WANTS FROM IT. A grid cell is clipped at
+ * `max-w-96`, so the value you can SEE is often not the value that is there —
+ * which is exactly why copy belongs here and why it copies the whole string
+ * rather than the rendered text.
+ *
+ * `render={<span />}` keeps the trigger INLINE so the cell's own
+ * `truncate` still puts an ellipsis on it; a block child would clip with no
+ * ellipsis at all.
+ */
+function CellMenu({ value, children }: { value: string; children: React.ReactNode }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<span />}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        <ContextMenuItem onClick={() => void navigator.clipboard.writeText(value)}>Copy value</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
 
 export function TableSurface({ path, sessionId, active }: { path: string; sessionId?: string; active?: TurnState }) {
   const [meta, setMeta] = useState<Pick<TableWindow, "columns" | "dtypes" | "total" | "truncated">>();
@@ -116,9 +196,11 @@ export function TableSurface({ path, sessionId, active }: { path: string; sessio
                   const sorted = sort?.column === column;
                   return (
                     <th key={column} onClick={() => setSort(sorted && !sort.desc ? { column, desc: true } : sorted ? undefined : { column, desc: false })} className="cursor-pointer select-none whitespace-nowrap border-b border-border bg-muted/60 px-2 py-1 text-left font-medium hover:bg-muted">
-                      {column}
-                      <span className="ml-1 font-normal text-muted-foreground">{meta.dtypes?.[index]}</span>
-                      {sorted && (sort.desc ? <ArrowDownIcon className="ml-1 inline size-2.5" /> : <ArrowUpIcon className="ml-1 inline size-2.5" />)}
+                      <HeaderMenu column={column} sort={sorted ? (sort.desc ? "desc" : "asc") : "none"} onSort={setSort}>
+                        {column}
+                        <span className="ml-1 font-normal text-muted-foreground">{meta.dtypes?.[index]}</span>
+                        {sorted && (sort.desc ? <ArrowDownIcon className="ml-1 inline size-2.5" /> : <ArrowUpIcon className="ml-1 inline size-2.5" />)}
+                      </HeaderMenu>
                     </th>
                   );
                 })}
@@ -132,7 +214,9 @@ export function TableSurface({ path, sessionId, active }: { path: string; sessio
                   <tr key={index} style={{ height: ROW }} className="odd:bg-muted/20">
                     <td className="border-r border-border px-2 text-right text-muted-foreground/60">{index + 1}</td>
                     {row ? row.map((cell, c) => (
-                      <td key={c} className={cn("max-w-96 truncate whitespace-nowrap px-2", (cell === null || cell === "") && "text-muted-foreground/40")}>{cell === null ? "null" : String(cell)}</td>
+                      <td key={c} className={cn("max-w-96 truncate whitespace-nowrap px-2", (cell === null || cell === "") && "text-muted-foreground/40")}>
+                        <CellMenu value={cell === null ? "null" : String(cell)}>{cell === null ? "null" : String(cell)}</CellMenu>
+                      </td>
                     )) : <td colSpan={meta.columns.length} className="px-2 text-muted-foreground/40">…</td>}
                   </tr>
                 );
