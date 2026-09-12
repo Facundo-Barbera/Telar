@@ -75,7 +75,7 @@ import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
-import { ProjectNotesStrip } from "./project-notes-strip";
+import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
 /** How long a first Escape stays armed. */
@@ -1384,15 +1384,16 @@ export function Composer({
         </div>
       </form>
 
-      {/* The composer's foot: the project's notebook, plus the create-time
-          "where this lands" choice while there is still one to make. Outside the
-          form and fused to its bottom edge — see project-notes-strip.tsx.
+      {/* The composer's foot: where this message lands. Outside the form and
+          fused to its bottom edge — see workspace-environment.tsx.
 
-          A PROJECT-LESS CHAT HAS NO FOOT. A note belongs to a project and so
-          does a worktree choice; rendering the strip empty would be a row of
-          blanks claiming the conversation belongs somewhere. */}
+          A PROJECT-LESS CHAT HAS NO FOOT. This strip names a branch, a checkout
+          and a worktree choice, and every one of those is a property of a
+          repository. Rendering it empty would be a row of blanks claiming the
+          conversation lands somewhere; rendering it at all would be the widening
+          this component was careful not to do. */}
       {projectId && (
-      <ProjectNotesStrip
+      <WorkspaceEnvironment
         projectId={projectId}
         {...(projectName ? { projectName } : {})}
         {...(session ? { session } : {})}

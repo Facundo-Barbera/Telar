@@ -1,29 +1,31 @@
-# Project notes — replacing the pinned environment
+# Project notes — a notebook beside the branch
 
-The composer's foot answered "where does this land?" with three controls restating facts
-the cockpit header and the Changes panel already carry. What a person wants at the bottom
-of the box is **the project's own notebook**: quick notes they can drop into a sentence.
-This replaces the strip, keeps every create-time choice a session cannot be created
-without, and opens the notebook to a second app over MCP.
+A place to draw quick notes about a project — the deploy incantation, what the reviewer
+keeps asking for, the three URLs you look up every time — reachable from the composer
+without leaving the sentence being written, and open to a second app over MCP.
 
-## 0. What happened to the three old controls — nothing silently dropped
+## 0. Where it lives, and where it does not
 
-- **Project identity** — fresh canvas only, as the "Where this lands" trigger's label.
-  Dropped from an existing session's foot because `session-cockpit.tsx:279` already names
-  the project in the header: de-duplicated, not lost.
-- **Worktree / local mode** — into the **"Where this lands"** popover, fresh canvas only.
-  It always was a create-time choice; `/local` and `/worktree` still drive it.
-- **Base-ref picker** (`BaseRefPicker`) — **kept whole**, the same popover's second row.
-  Same props, same default-base effect, same Enter-takes-first-match.
-- The third control's other half, the **branch readout on a live session**, is dropped
-  from the strip: it was never editable there, and `diff-surface.tsx` already names the
-  branch (with ahead/behind) in the Changes panel — which is exactly where the count
-  below opens.
-- The **dirty count** stays on the right edge in both states, and is now itself the
-  button: it is the only path from the composer to that panel.
+This shipped once in the **composer's foot**, replacing the pinned environment
+(`workspace-environment.tsx`). That was wrong twice over, per the user (#264): the
+notebook belongs on the **pinned summary** — the ⧉ button beside Open, which is where a
+person already looks to answer "what am I working in" — and the foot's **branch readout
+was wanted where it was**.
 
-So a **fresh canvas** foot is `[Where this lands] · notes… · +`; an **existing session**
-foot is `notes… · +`; the count rides on either.
+So, as of #264:
+
+- **The notebook is a section of `session/workspace-inspector.tsx`**, directly under
+  Workspace and above everything that comes and goes, so its position never depends on
+  how many sub-agents happen to be running. A row is the title plus the body's first
+  line; it opens the quick editor **in place** (§4) and drags into the composer as the
+  reference in §5. An add row sits outside the five-row cap, always reachable.
+- **The foot is the pinned environment again**: project identity, checkout mode, branch
+  with ahead/behind one click deep, and the uncommitted count on the right edge —
+  `EnvironmentStrip`, the same strings it carried before.
+- **"Where this lands" survives** as the fresh-canvas half: before the session exists,
+  the workspace mode and the base-ref picker (`BaseRefPicker`, kept whole) are a single
+  pending choice, so they are one popover rather than three controls two of which cannot
+  be pressed yet.
 
 ## 1. Model
 
@@ -45,7 +47,7 @@ per row (a hand-edit that breaks one note must not lose the notebook); writes ar
 with sentences. Same two-vocabulary contract as the shelf.
 
 **Delete is a real delete**, unlike the shelf's retire: a shelf note is the record of what
-was known, while a project note is a scratchpad, and a strip whose whole job is to stay
+was known, while a project note is a scratchpad, and a list whose whole job is to stay
 short cannot accumulate tombstones. See §6.
 
 ## 2. Engine API
@@ -90,13 +92,16 @@ notebook has no retire to fall back on (§1) — but `notes_delete` **only delet
 `author` is `"session"`** and refuses a human's in a sentence. An agent may clean up after
 agents; the user's own notes are the user's.
 
-## 4. The strip
+## 4. The section
 
-Chips: title, pinned first, then `order`. `+` opens a quick editor (title + markdown body,
-autosave on blur, ⌘S). Clicking a chip opens **a popover anchored to that chip**, not the
-right panel — a note is consulted *while writing a sentence*, and sending the reader to a
-panel means leaving the sentence; the panel is also a tab-contended surface owned by other
-work. Each chip is draggable: `text/plain` carries the body, `REFERENCE_MIME` the below.
+Rows: title and the body's first line, pinned first, then `order`. The add row opens a
+quick editor (title + markdown body, autosave on blur, ⌘S). Clicking a row opens that same
+editor **in place, inside the popover** — not the right panel. A note is consulted *while
+writing a sentence*, and sending the reader to a panel means leaving the sentence; the
+panel is also a tab-contended surface owned by other work. No row carries a chevron:
+every other row in that popover is a "go there" that opens the panel and closes the
+popover, and a note is the opposite. Each row is draggable: `text/plain` carries the body,
+`REFERENCE_MIME` the below.
 
 ## 5. References in chat — client-side insertion of the body, not server-side expansion
 

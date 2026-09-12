@@ -1,31 +1,51 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ChevronDownIcon, FolderGitIcon, GitBranchIcon, GitBranchPlusIcon } from "lucide-react";
-import type { GitOverview, GitRefEntry } from "@telar/engine-client";
+import { useCallback, useEffect, useState } from "react";
+import {
+  ChevronDownIcon,
+  FolderGit2Icon,
+  FolderGitIcon,
+  GitBranchIcon,
+  GitBranchPlusIcon,
+  GitCommitHorizontalIcon,
+} from "lucide-react";
+import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
+import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
+const api = createEngineApi();
+
 /**
- * WHERE THIS LANDS — what is left of the pinned environment.
+ * THE PINNED ENVIRONMENT — the composer's bottom lip.
  *
- * The composer's foot used to carry three controls permanently: the project's
- * name, the worktree/local mode, and the branch. Two of the three were facts the
- * cockpit header and the Changes panel already state, and the third — the base
- * ref — is only ever a CHOICE for about ten seconds, between opening a fresh
- * canvas and sending the first message. After that the worktree is cut and the
- * strip was restating a decision nobody could change. The foot is the notebook
- * now (`project-notes-strip.tsx`); this is the ten seconds.
+ * It answers one question, at the moment a person is about to press Enter:
+ * WHERE DOES THIS LAND? Which project, which checkout, which branch, and how
+ * much is already uncommitted there. That is safety information, not decoration,
+ * which is why it is attached to the composer rather than filed in a panel
+ * someone might not have open.
  *
- * SO: ONE POPOVER, ON A FRESH CANVAS ONLY. It holds the two create-time choices
- * a session cannot be created without — the workspace mode and the base ref —
- * and its trigger names the project, which is the other thing a person wants to
- * confirm before their first sentence. Nothing here is rendered once the session
- * exists.
+ * SEPARATE CONTROLS, NOT ONE DOOR, once the session exists. The foot carries
+ * three different KINDS of fact — identity (the project), a create-time choice
+ * (the workspace mode), and live git state (the branch) — and one door meant the
+ * gesture "change where this lands" and the gesture "check the branch" were the
+ * same click into the same pile. Each concern is its own small control with a
+ * hairline between them, the shape the reference cockpit uses. The
+ * machine/"run on" selector that cockpit also carries is deliberately absent:
+ * Telar has no remote environments to choose between.
  *
- * NOT A FETCHER. The strip already polls `projectGit` for the uncommitted count,
- * so the refs arrive as a prop rather than as a second request on the same
- * endpoint at the same interval.
+ * ONE DOOR ON A FRESH CANVAS, which is the one thing #258 got right and this
+ * keeps: before the session exists all three facts are a single pending CHOICE,
+ * so they belong in a single popover (`WhereThisLands`) rather than three
+ * controls two of which cannot be pressed yet.
+ *
+ * FUSED, NOT STACKED. `-mt-px` pulls the strip up so its top border lands
+ * exactly on the composer's bottom border, `border-t-0` removes the doubled
+ * hairline, and only the bottom corners are rounded — so it reads as the same
+ * object's foot rather than as a second card that happens to sit below.
+ *
+ * THE NOTEBOOK IS NOT HERE. It was, briefly (#258), and the user asked for it on
+ * the pinned summary instead — `session/workspace-inspector.tsx`.
  */
 
 /** `origin/feature-x` → `feature-x`, for the local-shadow dedupe below. */
@@ -175,6 +195,24 @@ function BaseRefPicker({
  *  narrow (a CONTAINER query — the foot must not consult the viewport). */
 const CONTROL = "flex h-6 min-w-0 items-center gap-1 rounded-md px-1.5 transition-colors hover:bg-muted/60 hover:text-foreground";
 
+/** Fifteen seconds: slow enough to be free, fast enough that the uncommitted
+ *  count is not a lie by the time it is read. */
+const REFRESH_MS = 15_000;
+
+function StripRule() {
+  return <span aria-hidden className="h-3.5 w-px shrink-0 bg-border/60" />;
+}
+
+/**
+ * THE FRESH CANVAS'S ONE DOOR: the workspace mode and the base ref, the two
+ * create-time choices a session cannot be created without, behind a trigger that
+ * names the project — which is the other thing a person wants to confirm before
+ * their first sentence. Nothing here is rendered once the session exists.
+ *
+ * NOT A FETCHER. The strip around it already polls `projectGit` for the
+ * uncommitted count, so the refs arrive as a prop rather than as a second
+ * request on the same endpoint at the same interval.
+ */
 export function WhereThisLands({
   projectId,
   projectName,
@@ -289,4 +327,199 @@ export function WhereThisLands({
       </PopoverContent>
     </Popover>
   );
+}
+
+/**
+ * THE STRIP ITSELF, with the git readout handed in rather than fetched.
+ *
+ * SPLIT OUT FOR THE SAME REASON `WhereThisLands` TAKES ITS GIT AS A PROP: this
+ * is the half that decides what a reader sees, and a render test that has to
+ * wait for a poll to answer is a render test that cannot assert the branch or
+ * the count at all. The fetching half is `WorkspaceEnvironment` below.
+ */
+export function EnvironmentStrip({
+  projectId,
+  projectName,
+  session,
+  git,
+  reachable = true,
+  envMode,
+  onEnvMode,
+  pendingBase,
+  onBase,
+  onOpenChanges,
+}: {
+  projectId: string;
+  projectName?: string;
+  /** A worktree session works on its OWN branch, not the project's current one
+   *  — so its checkout is the honest thing to name, and the repository's HEAD
+   *  would be actively misleading. */
+  session?: Session;
+  /** Absent until the engine has answered once. */
+  git?: GitOverview;
+  /** False once a read has failed, which is prose in the branch popover rather
+   *  than a silently stale number. */
+  reachable?: boolean;
+  envMode?: "local" | "worktree";
+  onEnvMode?: (mode: "local" | "worktree") => void;
+  pendingBase?: { baseRef?: string; branchName?: string };
+  onBase?: (next: { baseRef?: string; branchName?: string }) => void;
+  onOpenChanges?: () => void;
+}) {
+  const worktreeBranch = session?.workspace.mode === "worktree" ? session.workspace.branch : undefined;
+  const branch = worktreeBranch ?? git?.branch;
+  const dirty = git?.dirtyFiles ?? 0;
+  /** Only while the session does not exist. Afterwards the worktree is a fact
+   *  on disk, not a setting. */
+  const choosing = Boolean(onEnvMode) && !session;
+  const isWorktree = choosing ? envMode === "worktree" : Boolean(worktreeBranch);
+  const modeLabel = isWorktree ? "Own worktree" : "Project checkout";
+
+  return (
+    <div className="mx-3 -mt-px">
+      {/* --shadow-tint rather than raw black, and `bg-muted/25` now actually
+          lands at 25% of the theme's muted: the wash used to hand this element
+          a token already at 72% alpha, which multiplied the strip down to 18%
+          and dissolved it over a backdrop. See globals.css. */}
+      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-[0.6875rem] text-muted-foreground shadow-[0_8px_24px_-20px_var(--shadow-tint)]">
+        {choosing && onEnvMode ? (
+          <WhereThisLands
+            projectId={projectId}
+            {...(projectName ? { projectName } : {})}
+            {...(git ? { git } : {})}
+            {...(envMode ? { envMode } : {})}
+            onEnvMode={onEnvMode}
+            {...(pendingBase ? { pendingBase } : {})}
+            {...(onBase ? { onBase } : {})}
+          />
+        ) : (
+          <>
+            {/* IDENTITY, not a control: the project is a fact of this canvas, and
+                a button that could not do anything would be a lie of
+                affordance. */}
+            <span className="flex min-w-0 shrink-0 items-center gap-1.5 px-1 font-medium text-foreground">
+              <FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="max-w-40 truncate">{projectName ?? projectId}</span>
+            </span>
+
+            <StripRule />
+
+            {/* THE WORKSPACE MODE, a static label: the worktree is cut once, so
+                once the session exists there is nothing here to choose. */}
+            <span className={cn(CONTROL, "hover:bg-transparent hover:text-muted-foreground")} title={modeLabel}>
+              {/* Git-flavoured on BOTH arms: a checkout is a git fact, and a
+                  laptop said "machine" — the one concept this strip
+                  deliberately dropped. */}
+              {isWorktree ? <GitBranchIcon className="size-3.5 shrink-0" /> : <FolderGitIcon className="size-3.5 shrink-0" />}
+              <span className="hidden truncate @xl/composer:inline">{modeLabel}</span>
+            </span>
+
+            <StripRule />
+
+            {/* THE BRANCH: a readout, with the detail one click deep. */}
+            <Popover>
+              <PopoverTrigger render={<button type="button" aria-label="Branch" title="Where this session's work lands" className={CONTROL} />}>
+                <GitBranchIcon className="size-3.5 shrink-0" />
+                <span className="min-w-0 truncate font-mono">{branch ?? "no branch"}</span>
+                <ChevronDownIcon className="size-3 shrink-0" />
+              </PopoverTrigger>
+              <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
+                <p className="px-2 pb-1 pt-1 text-[0.6875rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</p>
+                <div className="rounded-xl bg-muted/35 p-1">
+                  {branch && (
+                    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+                      <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{branch}</span>
+                      {/* Absent ahead/behind means NO UPSTREAM, which is not zero —
+                          so nothing is drawn rather than a reassuring "↑0 ↓0". */}
+                      {git && (git.ahead !== undefined || git.behind !== undefined) && (
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+                          ↑{git.ahead ?? 0} ↓{git.behind ?? 0}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {git?.repository && (
+                    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+                      <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate text-sm">{modeLabel}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {/* Prose only when something is WRONG. The ordinary cases were a
+                    paragraph restating what the rows above already show. */}
+                {(!reachable || (git && !git.repository)) && (
+                  <p className="px-2 pt-2 text-[0.6875rem] text-muted-foreground">
+                    {!reachable ? "The engine did not answer — this may be out of date." : "Not a git repository."}
+                  </p>
+                )}
+                {/* The donor's footer, pointing at the same place: the surface that
+                    lists what this session actually wrote. It opens the panel rather
+                    than a git pane, because the engine's git read is read-only and
+                    the file changes are what there is to look at. */}
+                {onOpenChanges && (
+                  <button
+                    type="button"
+                    onClick={onOpenChanges}
+                    className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors hover:bg-muted"
+                  >
+                    <GitCommitHorizontalIcon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 truncate">Files this session changed</span>
+                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">Open panel</span>
+                  </button>
+                )}
+              </PopoverContent>
+            </Popover>
+          </>
+        )}
+
+        {/* --warning, the app's "a person has to move" colour: uncommitted work
+            is not a failure, it is something you may want to deal with. */}
+        {dirty > 0 && (
+          <span className="ml-auto shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning">{dirty} changed</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The foot as the composer mounts it: the same strip, over a `projectGit` poll.
+ *
+ * REFRESHED ON A TIMER, because the working tree changes underneath this process
+ * constantly — and a count that could not be read is drawn as NO count, never as
+ * a reassuring zero.
+ */
+export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable">) {
+  const { projectId } = props;
+  const [git, setGit] = useState<GitOverview>();
+  const [reachable, setReachable] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const result = await api.projectGit(projectId);
+      setGit(result.git);
+      setReachable(true);
+    } catch {
+      setReachable(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    // Deferred to a task rather than called in the effect body: a synchronous
+    // fetch-and-setState on mount is a cascading render, and the rule that
+    // catches it is the same one that caught the theme provider. The interval
+    // that follows is an ordinary subscription.
+    const first = window.setTimeout(() => void load(), 0);
+    const timer = window.setInterval(() => void load(), REFRESH_MS);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [load]);
+
+  return <EnvironmentStrip {...props} {...(git ? { git } : {})} reachable={reachable} />;
 }
