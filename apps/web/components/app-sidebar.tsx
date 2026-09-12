@@ -10,9 +10,9 @@
 //             in the rail: a conversation you started writing and did not send
 //             has no session behind it, so it is one line wearing a pencil.
 //             Same rule-underneath treatment as pinned, for the same reason
-//   pinned    above the scroll, so it stays where you left it, and unheaded:
-//             a rule UNDER it divides it from the list, and each row wears a
-//             pin rather than the band wearing a word
+//   pinned    FIRST INSIDE THE SCROLL, and unheaded: a rule UNDER it divides
+//             it from the rest of the list, and each row wears a pin rather
+//             than the band wearing a word
 //   the list  no heading either — it is the list
 //   SNOOZED   collapsed; work you deferred, soonest wake first
 //   SETTLED   collapsed; work behind you
@@ -21,6 +21,15 @@
 // `BandRule`), which is what stops a heading reading as another entry in the
 // list it introduces. Their rules sit ON TOP because what they divide is above
 // them; the pinned rule sits underneath for the same reason.
+//
+// PINNED USED TO SIT ABOVE THE SCROLL and no longer does. Holding it out of the
+// scrolling box kept it on screen, which sounds like what pinning is for — but
+// it also meant a rail with six pinned conversations spent six rows of fixed
+// height on them and scrolled everything else through what was left. Pinning
+// says "keep these together at the top", not "nail these to the window", so
+// the band is now the first thing INSIDE the scroll: still first, and it
+// travels with the list. No sticky — a row that detaches from its own band
+// while you scroll past it is a third behaviour nobody asked for.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
 // Overview, Projects, Looms, Workspace. Three are still out of scope, and a
@@ -101,7 +110,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
-import { RelatedWork } from "@/components/session/related-work";
+import { followedSessions, RelatedWork } from "@/components/session/related-work";
 import { ProjectGroupSection } from "@/components/session/project-group";
 import {
   dedupeAcrossHosts,
@@ -111,6 +120,7 @@ import {
   PROJECT_GROUP_MIME,
   railRowsForCommandKeys,
   useCollapsedGroups,
+  withholdFollowedRows,
 } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
@@ -701,6 +711,30 @@ function SidebarBody() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the pinned SET
   }, [pinnedKeys]);
 
+  /**
+   * THE PROJECT GROUPS WITH THE FOLLOWED ROWS TAKEN OUT — issue #278.
+   *
+   * A pinned coordinator's "Following" block and the project groups were built
+   * from the same pool with nothing reconciling them, so a followed session was
+   * drawn twice. `withholdFollowedRows` is the rule; this is where it is applied,
+   * and `followedSessions` is the SAME resolution the block itself renders from,
+   * so the set that is hidden here is exactly the set that is shown there.
+   *
+   * SEARCH IS UNTOUCHED. A query flattens the rail — there are no groups and no
+   * pinned band — and a result list that quietly dropped a match because
+   * something follows it would break the one promise search makes.
+   */
+  const pinnedFollowing = pinnedForFollow.map((coordinator) => ({
+    key: sessionKey(coordinator),
+    title: coordinator.title,
+    following: followedSessions(
+      followState.byCoordinator.get(sessionKey(coordinator)),
+      relatedPool,
+      coordinator.hostId,
+    ).map(({ session }) => sessionKey(session)),
+  }));
+  const drawnGroups = grouped ? withholdFollowedRows(grouped.groups, pinnedFollowing) : [];
+
   const [followFailed, setFollowFailed] = useState<ReadonlySet<string>>(() => new Set());
 
   /** Start following, through the controller: sync lock, visible failure. */
@@ -805,7 +839,7 @@ function SidebarBody() {
    * which keys are on screen; see `foldedAfter` and `moveProjectGroupStep` for
    * why neither takes the stored list instead.
    */
-  const drawnGroupKeys = grouped ? grouped.groups.map((group) => group.key) : [];
+  const drawnGroupKeys = drawnGroups.map((group) => group.key);
   /** The same write the drag makes, one place at a time. `undefined` at either
    *  end of the list, which is what disables the menu row. */
   const moveGroup = (key: string, direction: "up" | "down") => {
@@ -852,7 +886,9 @@ function SidebarBody() {
    * The desktop menu has carried these accelerators the whole time; nothing in
    * this cockpit was listening for them, so they did nothing.
    */
-  useCommandKeys(grouped ? railRowsForCommandKeys(grouped, collapsedGroups) : list.sessions.slice(0, 9));
+  // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
+  // its project group is no longer showing would count something invisible.
+  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9));
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -1184,14 +1220,14 @@ function SidebarBody() {
         )}
 
         {/*
-          PINNED SITS ABOVE THE SCROLL, NOT INSIDE IT — which is what makes it
-          stay put. `settledOverride: "active"` is the pin, and the point of
-          pinning is that the row is where you left it: inside the scrolling
-          list it would still be first, but "first" scrolls away.
+          "NEEDS YOU" IS THE ONE BAND THAT STAYS ABOVE THE SCROLL — pinned used
+          to keep it company and no longer does (see the note at the top of this
+          file). The difference is who chose: you pin a conversation, so pinning
+          can mean "first" and let it travel with the list, but nobody asks to be
+          blocked. A blocked row is the engine saying it cannot continue without
+          you, and scrolling that out of sight is how it gets missed.
 
-          NOT COLLAPSIBLE, and not paged. Both shelves below hide rows you have
-          finished with or deferred; this band holds the ones you said to keep
-          in front of you, and a control that hides them would be arguing.
+          NOT COLLAPSIBLE, and not paged, for the same reason.
         */}
         {grouped && grouped.attention.length > 0 && (
           <SidebarGroup className="shrink-0 pb-0">
@@ -1214,56 +1250,6 @@ function SidebarBody() {
                 />
               ))}
             </SidebarGroupContent>
-            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
-          </SidebarGroup>
-        )}
-
-        {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
-          <SidebarGroup className="shrink-0 pb-0">
-            <SidebarGroupContent className="space-y-0.5">
-              {/* One fragment per coordinator: its row, then what it delegated.
-                  Two maps would put every related block after every row. */}
-              {(grouped ? grouped.pinned : list.pinned).map((session) => (
-                <div key={sessionKey(session)} className="space-y-0.5">
-                  <SessionRow
-                    session={session}
-                    active={sessionKey(session) === activeSessionId}
-                    showProject={showProject}
-                    variant="card"
-                    band="pinned"
-                    renderedAt={renderedAt}
-                    onRefresh={() => void loadAll()}
-                  />
-                  <RelatedWork
-                    groups={relatedWork(relatedPool, session)}
-                    coordinatorId={session.id}
-                    {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
-                    {...(followState.byCoordinator.get(sessionKey(session))
-                      ? { following: followState.byCoordinator.get(sessionKey(session)) }
-                      : {})}
-                    followed={relatedPool}
-                    onUnfollow={(targetKey, subscriptionIds) => void unfollow(session, targetKey, subscriptionIds)}
-                    onFollow={(target) => void startFollow(session, target)}
-                    followFailed={followFailed}
-                    lockFor={(targetKey) => lockKey(session.hostId, session.id, targetKey)}
-                    unfollowing={unfollowing}
-                    unfollowFailed={unfollowFailed}
-                  />
-                </div>
-              ))}
-            </SidebarGroupContent>
-            {/*
-              THE RULE GOES UNDER THE BAND, NOT OVER IT, AND CARRIES NO WORD.
-              A line above a block that is already the top of the rail separates
-              it from nothing — the boundary that exists is the one between these
-              rows and the list below, so that is where the line belongs. The
-              two shelves at the bottom are the opposite case: their rule sits on
-              top because what it divides is above it.
-
-              The "Pinned" heading went with it. The rows say so themselves now,
-              with a glyph (see `session-row.tsx`), which also works in search
-              results where this band does not exist.
-            */}
             <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
           </SidebarGroup>
         )}
@@ -1308,6 +1294,75 @@ function SidebarBody() {
                 The engine did not answer — retrying. Showing the last read.
               </p>
             ) : null}
+
+            {/*
+              PINNED, FIRST INSIDE THE SCROLL AND TRAVELLING WITH IT.
+
+              `settledOverride: "active"` is the pin. It sits above every project
+              group and below nothing but the line that explains a stale read —
+              that line is chrome about the whole list rather than an entry in
+              it, so putting rows above it would leave it captioning the wrong
+              thing.
+
+              OUTSIDE THE CONDITIONAL CHAIN BELOW, deliberately: that chain
+              chooses between the empty states and the groups, and pinned rows
+              are none of those. The "No sessions yet" arm already counts
+              `list.pinned` before claiming the rail is empty, so a rail whose
+              every row is pinned says nothing of the kind.
+
+              NOT COLLAPSIBLE, and not paged. Both shelves at the bottom hide
+              rows you have finished with or deferred; this band holds the ones
+              you said to keep in front of you, and a control that hides them
+              would be arguing.
+            */}
+            {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
+              <div className="space-y-0.5" role="group" aria-label="Pinned">
+                {/* One fragment per coordinator: its row, then what it delegated.
+                    Two maps would put every related block after every row. */}
+                {(grouped ? grouped.pinned : list.pinned).map((session) => (
+                  <div key={sessionKey(session)} className="space-y-0.5">
+                    <SessionRow
+                      session={session}
+                      active={sessionKey(session) === activeSessionId}
+                      showProject={showProject}
+                      variant="card"
+                      band="pinned"
+                      renderedAt={renderedAt}
+                      onRefresh={() => void loadAll()}
+                    />
+                    <RelatedWork
+                      groups={relatedWork(relatedPool, session)}
+                      coordinatorId={session.id}
+                      {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
+                      {...(followState.byCoordinator.get(sessionKey(session))
+                        ? { following: followState.byCoordinator.get(sessionKey(session)) }
+                        : {})}
+                      followed={relatedPool}
+                      onUnfollow={(targetKey, subscriptionIds) => void unfollow(session, targetKey, subscriptionIds)}
+                      onFollow={(target) => void startFollow(session, target)}
+                      followFailed={followFailed}
+                      lockFor={(targetKey) => lockKey(session.hostId, session.id, targetKey)}
+                      unfollowing={unfollowing}
+                      unfollowFailed={unfollowFailed}
+                    />
+                  </div>
+                ))}
+                {/*
+                  THE RULE GOES UNDER THE BAND, NOT OVER IT, AND CARRIES NO WORD.
+                  A line above a block that is already the top of the list
+                  separates it from nothing — the boundary that exists is the one
+                  between these rows and the groups below, so that is where the
+                  line belongs. The two shelves at the bottom are the opposite
+                  case: their rule sits on top because what it divides is above it.
+
+                  The "Pinned" heading went with it. The rows say so themselves
+                  now, with a glyph (see `session-row.tsx`), which also works in
+                  search results where this band does not exist.
+                */}
+                <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+              </div>
+            )}
+
             {unavailable && !showingStale ? (
               <SidebarEmpty icon={MessageSquareIcon} title="Engine unavailable" detail="Start the local engine, then this list refills itself." />
             ) : // A rail showing a remembered list has projects; it just could not
@@ -1326,7 +1381,7 @@ function SidebarBody() {
                 detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : grouped ? (
-              grouped.groups.map((group) => {
+              drawnGroups.map((group) => {
                 /**
                  * THE REGISTRY'S PATH, AND ONLY THIS MAC'S. A paired Mac's
                  * project is read as an id and a name; its checkout is over
