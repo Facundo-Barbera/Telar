@@ -309,11 +309,12 @@ func fileGlyph(_ path: String) -> String {
 
 /// Which body a path gets, and whether it is prose the phone may edit.
 enum FileKind {
-    case prose, code, image, pdf, notebook, table, binary
+    case prose, code, image, pdf, notebook, notebookReadOnly, table, binary
 
     static func of(_ path: String, view: FileView) -> FileKind {
         switch view {
         case .notebook: return .notebook
+        case .notebookReadOnly: return .notebookReadOnly
         case .table: return .table
         case .pdf: return .pdf
         case .code: break

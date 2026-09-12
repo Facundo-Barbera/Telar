@@ -48,7 +48,9 @@ import Testing
 @Suite struct PanelModelTests {
     @Test func viewDecisionMirrorsTheDesktop() {
         #expect(panelView(for: "nb.ipynb", dataScience: true) == .notebook)
-        #expect(panelView(for: "nb.ipynb", dataScience: false) == .code)
+        // A notebook is still a notebook without the plugin — read-only, from
+        // the file's own JSON, never the raw-JSON code view.
+        #expect(panelView(for: "nb.ipynb", dataScience: false) == .notebookReadOnly)
         #expect(panelView(for: "data/rows.CSV", dataScience: true) == .table)
         #expect(panelView(for: "data/rows.parquet", dataScience: false) == .code)
         #expect(panelView(for: "out/report.pdf", dataScience: false) == .pdf)
@@ -64,9 +66,11 @@ import Testing
         editor.open("c.md", view: .code, pin: false)
         #expect(editor.files.map(\.path) == ["b.md", "c.md"])
         #expect(editor.activePath == "c.md")
-        // A notebook is always pinned.
+        // A notebook is always pinned, read-only or not.
         editor.open("n.ipynb", view: .notebook, pin: false)
         #expect(editor.files.first { $0.path == "n.ipynb" }?.pinned == true)
+        editor.open("r.ipynb", view: .notebookReadOnly, pin: false)
+        #expect(editor.files.first { $0.path == "r.ipynb" }?.pinned == true)
     }
 
     @Test func closingHandsFocusToTheRightNeighbourThenTheLast() {
@@ -190,5 +194,137 @@ import Testing
         } else {
             Issue.record("expected displayOpened")
         }
+    }
+}
+
+/// THE PLUGIN FLAG, and the rule that keeps a disabled feature disabled.
+///
+/// `packages/engine-client/src/protocol/plugins.ts` `readProjectPlugins`: once
+/// a project carries the map's `version` marker the map is the WHOLE truth,
+/// and the legacy `dataScience` / `latex` blocks — which are still written as
+/// mirrors for an older engine — are never read again. A per-key fallback is
+/// what resurrects a feature somebody turned off.
+@Suite struct ProjectPluginTests {
+    private func project(_ json: String) throws -> Project {
+        try JSONDecoder().decode(Project.self, from: Data(json.utf8))
+    }
+
+    @Test func aProjectThatWasNeverMigratedIsReadFromTheLegacyBlocks() throws {
+        let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"latex":{"enabled":false}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(!p.pluginEnabled(.latex))
+    }
+
+    @Test func aMigratedProjectIsReadFromTheMap() throws {
+        let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"latex":{"enabled":true,"settings":{"mainFile":"main.tex"}}}}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.pluginEnabled(.latex))
+    }
+
+    @Test func theMapWinsOverAStaleLegacyMirror() throws {
+        // Data Science was turned OFF: the entry is gone from the map and the
+        // mirror still says true. Falling back to it would turn the plugin
+        // back on by itself.
+        let gone = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":true}}}}"#)
+        #expect(!gone.pluginEnabled(.dataScience))
+        #expect(gone.pluginEnabled(.latex))
+        // And the explicit `false` entry beats the mirror just the same.
+        let off = try project(#"{"id":"p","name":"P","latex":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":false}}}}"#)
+        #expect(!off.pluginEnabled(.latex))
+    }
+
+    @Test func aMapThatWillNotParseIsNotAMigratedProject() throws {
+        // No `version`, so no marker, so this project has never been migrated
+        // — and it must not be dropped from the list over it.
+        let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"entries":{"data-science":{"enabled":false}}}}"#)
+        #expect(p.plugins == nil)
+        #expect(p.pluginEnabled(.dataScience))
+    }
+
+    @Test func anEntryThatWillNotParseIsSkippedRatherThanLosingTheMap() throws {
+        let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"hello":{"enabled":"yes"}}}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.plugins?.entries["hello"] == nil)
+    }
+}
+
+/// THE CLIENT-SIDE nbformat READ — what a notebook looks like with no plugin
+/// and no kernel to ask.
+@Suite struct NotebookFileTests {
+    private func parse(_ json: String) -> NotebookRead? {
+        parseNotebookFile(Data(json.utf8), path: "evidencia/report.ipynb", sha256: "")
+    }
+
+    @Test func sourceIsAStringOrTheArrayOfLinesNbformatActuallyWrites() throws {
+        let nb = try #require(parse(#"""
+        {"nbformat":4,"cells":[
+          {"cell_type":"markdown","source":"# Title\nprose"},
+          {"cell_type":"code","source":["import pandas as pd\n","df = pd.read_csv('a.csv')"],"execution_count":3,"outputs":[]}
+        ]}
+        """#))
+        #expect(nb.cells.count == 2 && nb.cellCount == 2)
+        #expect(nb.cells[0].type == .markdown && nb.cells[0].source == "# Title\nprose")
+        // The lines already carry their newlines — joining with one more would
+        // double every break in the file.
+        #expect(nb.cells[1].type == .code && nb.cells[1].source == "import pandas as pd\ndf = pd.read_csv('a.csv')")
+        #expect(nb.cells[1].executionCount == 3)
+        #expect(nb.cells[1].index == 1)
+    }
+
+    @Test func aCodeCellCarriesItsStreamAndItsFigure() throws {
+        let nb = try #require(parse(#"""
+        {"cells":[{"id":"c9","cell_type":"code","source":"plot()","execution_count":7,"outputs":[
+          {"output_type":"stream","name":"stderr","text":["one\n","two\n"]},
+          {"output_type":"display_data","data":{"text/plain":"<Figure>","image/png":"aGVsbG8=\n"}},
+          {"output_type":"execute_result","data":{"text/plain":["42"]},"execution_count":7}
+        ]}]}
+        """#))
+        let outputs = try #require(nb.cells[0].outputs)
+        #expect(nb.cells[0].id == "c9")
+        #expect(outputs.count == 3)
+        #expect(outputs[0] == .text(stream: "stderr", text: "one\ntwo\n", truncated: false))
+        // Richest first: the picture, not the `<Figure>` repr beside it — and
+        // the saved base64 comes back without the newlines it was wrapped at,
+        // or `Data(base64Encoded:)` would refuse it.
+        #expect(outputs[1] == .image(mediaType: "image/png", dataB64: "aGVsbG8=", attachmentId: nil, width: nil, height: nil))
+        #expect(outputs[2] == .text(stream: "result", text: "42", truncated: false))
+    }
+
+    @Test func anErrorOutputAndAnUnknownOneBothSurvive() throws {
+        let nb = try #require(parse(#"""
+        {"cells":[{"cell_type":"code","source":"boom()","execution_count":null,"outputs":[
+          {"output_type":"error","ename":"ValueError","evalue":"bad","traceback":["line one","line two"]},
+          {"output_type":"hologram","payload":1}
+        ]}]}
+        """#))
+        let outputs = try #require(nb.cells[0].outputs)
+        #expect(nb.cells[0].executionCount == nil)
+        #expect(nb.cells[0].id == "cell-0")
+        if case .error(let e) = outputs[0] {
+            #expect(e.ename == "ValueError" && e.traceback.count == 2)
+        } else {
+            Issue.record("expected an error output")
+        }
+        #expect(outputs[1] == .unknown(kind: "hologram"))
+    }
+
+    @Test func anHtmlBundleFallsBackPastAMissingImage() throws {
+        let nb = try #require(parse(#"{"cells":[{"cell_type":"code","source":"df","outputs":[{"output_type":"execute_result","data":{"text/html":["<table>","</table>"],"text/plain":"   a\n0  1"}}]}]}"#))
+        #expect(nb.cells[0].outputs?[0] == .html("<table></table>", truncated: false))
+    }
+
+    @Test func aCellTypeNothingKnowsStillRendersItsSource() throws {
+        let nb = try #require(parse(#"{"cells":[{"cell_type":"tesseract","source":"?"},{"cell_type":"raw","source":"raw text"},"not-a-cell"]}"#))
+        #expect(nb.cells.count == 2)
+        #expect(nb.cells[0].type == .unknown && nb.cells[0].source == "?")
+        #expect(nb.cells[1].type == .raw)
+    }
+
+    @Test func aDocumentWithNoCellsIsNotANotebook() {
+        #expect(parse(#"{"nbformat":4,"metadata":{}}"#) == nil)
+        #expect(parse("not json at all") == nil)
+        #expect(parse("[1,2,3]") == nil)
+        // An empty notebook IS one, and renders as one.
+        #expect(parse(#"{"cells":[]}"#)?.cells.isEmpty == true)
     }
 }

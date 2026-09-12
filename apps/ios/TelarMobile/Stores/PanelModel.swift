@@ -32,6 +32,13 @@ enum PanelTab: String, Codable, CaseIterable, Identifiable {
 /// desktop's `editorFileForPath` decides it.
 enum FileView: String, Codable {
     case code, notebook, table, pdf
+    /// A notebook in a project that has not turned Data Science on: the same
+    /// cells, read from the file itself, with no kernel behind them.
+    case notebookReadOnly
+
+    /// Both notebook views, wherever the difference does not matter — pinning,
+    /// mostly, which is about what a notebook IS and not about who can run it.
+    var isNotebook: Bool { self == .notebook || self == .notebookReadOnly }
 }
 
 /// A file open in the Files tab. ONE preview slot: a single tap opens a file
@@ -56,7 +63,7 @@ struct EditorState: Codable, Equatable {
     /// A notebook is always pinned: it holds a kernel's work and is never
     /// something you glance at and move past.
     mutating func open(_ path: String, view: FileView, pin: Bool) {
-        let pinned = pin || view == .notebook
+        let pinned = pin || view.isNotebook
         if let index = files.firstIndex(where: { $0.path == path }) {
             files[index].view = view
             if pinned { files[index].pinned = true }
@@ -86,13 +93,18 @@ struct EditorState: Codable, Equatable {
     }
 }
 
-/// The desktop's `panelTabForPath`: a notebook or a table needs the kernel,
-/// so without data science they open as text; a PDF is a document and
-/// always opens as one.
+/// The desktop's `panelTabForPath`: a table needs the kernel, so without data
+/// science it opens as text; a PDF is a document and always opens as one.
+///
+/// A NOTEBOOK IS ALWAYS A NOTEBOOK. Without the plugin it opens read-only,
+/// parsed from the file's own JSON — the kernel is what Data Science buys, not
+/// the ability to read what is on disk. Routing it to the code view meant a
+/// 730 KB `.ipynb` opened as raw nbformat, which is the one thing a notebook
+/// is not.
 func panelView(for path: String, dataScience: Bool) -> FileView {
     let ext = (path as NSString).pathExtension.lowercased()
     switch ext {
-    case "ipynb": return dataScience ? .notebook : .code
+    case "ipynb": return dataScience ? .notebook : .notebookReadOnly
     case "csv", "tsv", "parquet": return dataScience ? .table : .code
     case "pdf": return .pdf
     default: return .code
@@ -166,6 +178,15 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
         pluginsRead = true
         // A restored tab the project no longer offers falls back to Diff.
         if !tabs.contains(active) { active = .diff }
+        // A FILE OPENED BEFORE THE PROJECT RECORD LANDED was typed against
+        // `dataScience: false` — the read-only notebook rather than the live
+        // one, the code view rather than the grid. The desktop re-decides on
+        // every render; here the view is decided once, at open, so the arrival
+        // of the record is the moment to decide it again.
+        for index in editor.files.indices {
+            editor.files[index].view = panelView(for: editor.files[index].path, dataScience: dataScience)
+        }
+        persist()
     }
 
     /// Every setter here writes only what changes: an observable that is set
