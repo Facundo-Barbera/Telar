@@ -13,6 +13,7 @@
  */
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
+import { RUN_BRIEFING } from "./run/briefing";
 import fs from "node:fs";
 import { z } from "zod";
 import type {
@@ -1942,6 +1943,17 @@ export function createClaudeDriver(
       const streaming = claudeStreamingInputEnabled();
 
       /**
+       * WHAT THIS SESSION IS TOLD ABOUT ITS OWN SURFACES, one paragraph per
+       * capability it actually has. Each is gated on the capability being
+       * bound rather than appended always: a session with no browser told how
+       * to drive tabs, or a project-less one told to save a run
+       * configuration, spends a turn discovering the tool is not there.
+       * Baked in at query creation, so the fingerprint below carries `run`
+       * for the same reason it carries `browser`.
+       */
+      const briefings = [...(browserSocket ? [BROWSER_BRIEFING] : []), ...(run ? [RUN_BRIEFING] : [])];
+
+      /**
        * EVERYTHING THE QUERY BAKES IN AT CREATION. A turn whose fingerprint
        * differs from the live runtime's cannot reuse it — the options below
        * are fixed for the life of the process — so the store destroys the old
@@ -2016,6 +2028,10 @@ export function createClaudeDriver(
         // Same rule for the LaTeX switch.
         latex: Boolean(latex),
         display: Boolean(display),
+        /** Same rule, and here it is the system prompt rather than a toolkit:
+         *  `RUN_BRIEFING` is appended at creation, so a project-less session
+         *  that gains a project must cold-start to be told about it. */
+        run: Boolean(run),
         /**
          * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
          * re-collecting per request keeps dispatch honest server-side, but a
@@ -2212,8 +2228,8 @@ export function createClaudeDriver(
           options: {
             cwd,
             permissionMode: "default",
-            ...(browserSocket
-              ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: BROWSER_BRIEFING } }
+            ...(briefings.length
+              ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: briefings.join("\n\n") } }
               : {}),
             abortController: processController,
             includePartialMessages: true,

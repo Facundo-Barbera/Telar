@@ -46,6 +46,7 @@
  */
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
+import { RUN_BRIEFING } from "./run/briefing";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
@@ -281,6 +282,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       browserSocket,
       sessionsSocket,
       telarSocketLease,
+      run,
       onObservations,
       onRequest,
       steer,
@@ -731,11 +733,14 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                 ...(disableNativeComputerUse ? { features: { computer_use: false } } : {}),
               }
             : undefined;
+        /** One paragraph per surface this session actually has — the same
+         *  gate, and the same reason, as the Claude driver's `briefings`. */
+        const briefings = [...(browserSocket ? [BROWSER_BRIEFING] : []), ...(run ? [RUN_BRIEFING] : [])];
         const threadParams = {
           cwd,
-          ...(browserSocket
+          ...(briefings.length
             ? {
-                developerInstructions: BROWSER_BRIEFING,
+                developerInstructions: briefings.join("\n\n"),
               }
             : {}),
           approvalPolicy: threadConfig.approvalPolicy,

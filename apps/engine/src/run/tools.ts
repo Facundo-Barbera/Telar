@@ -16,7 +16,7 @@
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
 import type { RunCapability } from "./capability";
-import type { RunView } from "./types";
+import { RunIcon, type RunView } from "./types";
 
 /** Tools that only read. Handed to the host, which decides the approval posture. */
 export const RUN_READ_ONLY_TOOLS = ["run_configs", "run_status", "run_output"] as const;
@@ -39,7 +39,7 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
   return [
     tool(
       "run_configs",
-      "The project's saved run configurations — name, command, working directory and which environment variables are set. Secret values are never returned. Read this before starting anything: a project usually already has the recipe you want.",
+      "The project's saved run configurations — name, icon, command, working directory and which environment variables are set. Secret values are never returned. Read this before starting anything: a project usually already has the recipe you want, and if it has none you can give it one with run_save_config.",
       {},
       async () => {
         try {
@@ -54,10 +54,11 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
 
     tool(
       "run_save_config",
-      "Save a run configuration on the PROJECT (it outlives this conversation), or edit one by passing its configId. The working directory is relative to whichever worktree the run is launched from — never an absolute path. Give a readinessUrl only if the command really serves it; without one a run never claims to be ready.",
+      "Save a run configuration on the PROJECT (it outlives this conversation), or edit one by passing its configId. This is how a project with an empty Run menu gets one — you can set the menu up yourself, no human step in between. The working directory is relative to whichever worktree the run is launched from — never an absolute path. Give a readinessUrl only if the command really serves it; without one a run never claims to be ready.",
       {
         configId: z.string().min(1).optional().describe("Edit this configuration instead of creating one."),
         name: z.string().min(1).max(120).optional().describe("What a human picks in the Run menu, e.g. 'web dev'."),
+        icon: RunIcon.optional().describe("The glyph the Run menu draws before the name. Default: 'play'."),
         command: z.string().min(1).optional().describe("The shell command, e.g. 'bun run dev'."),
         cwd: z.string().optional().describe("Directory relative to the worktree root, e.g. 'apps/web'. Default: the root."),
         env: z
@@ -69,6 +70,10 @@ export function runTools(tool: ToolFactory, capability: RunCapability): unknown[
       async (args) => {
         const patch = {
           ...(typeof args.name === "string" ? { name: args.name } : {}),
+          // Parsed rather than cast: the tool schema is the model's contract,
+          // but a name outside the closed set must be refused here too, or a
+          // configuration would be stored with an icon nothing can draw.
+          ...(RunIcon.safeParse(args.icon).success ? { icon: args.icon as RunIcon } : {}),
           ...(typeof args.command === "string" ? { command: args.command } : {}),
           ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
           ...(Array.isArray(args.env) ? { env: args.env as { key: string; value: string; secret?: boolean }[] } : {}),
