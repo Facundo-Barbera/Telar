@@ -13,10 +13,15 @@ import { TurnFailureRow } from "./transcript";
  */
 describe("a turn waiting for a usage limit to reset", () => {
   const render = (props: Parameters<typeof TurnFailureRow>[0]) => renderToStaticMarkup(<TurnFailureRow {...props} />);
-  /** Fixed, and read back through the same formatter the row uses, so the test
-   *  asserts the row's own wording rather than the runner's timezone. */
+  /** Read back through the same rule the row uses, so the test asserts the
+   *  row's own wording rather than the runner's timezone or clock. Three hours
+   *  from now crosses midnight after 21:00, and the row then names the weekday. */
   const resumeAt = Date.now() + 3 * 60 * 60 * 1000;
-  const expected = new Date(resumeAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const resets = new Date(resumeAt);
+  const expected =
+    resets.toDateString() === new Date().toDateString()
+      ? resets.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : resets.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 
   test("says when the limit lifts, and names which limit", () => {
     const markup = render({ failure: "limited", code: "rate_limited", resumeAt, limitType: "five_hour" });
