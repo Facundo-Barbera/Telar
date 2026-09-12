@@ -12,7 +12,7 @@ import { ArrowDownIcon, ArrowUpIcon, TableIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import type { TableWindow } from "@/lib/ds";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
+import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -90,20 +90,18 @@ export function TableSurface({ path, sessionId, active }: { path: string; sessio
     return () => window.clearTimeout(task);
   }, [first, last, rows, total, fetchPage]);
 
-  const cut = path.lastIndexOf("/");
-
   if (!sessionId) return <PanelEmpty icon={<TableIcon />} title="No session">A table view needs a session&apos;s checkout.</PanelEmpty>;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(path))} className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2">
-        <TableIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
-          {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
-          <span className="text-foreground">{path.slice(cut + 1)}</span>
-        </span>
-        {meta && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{meta.total.toLocaleString()} rows × {meta.columns.length}{meta.truncated ? " · partial read" : ""}</span>}
-      </div>
+      {/* The shared address row (session/editor-chrome.tsx). The glyph names the
+          VIEW rather than the extension, because a grid is what is unusual
+          about this tab; the figure it reports is a shape, not a size. */}
+      <EditorAddressRow
+        path={path}
+        icon={<TableIcon className="size-3.5 shrink-0 text-muted-foreground" />}
+        {...(meta ? { detail: `${meta.total.toLocaleString()} rows × ${meta.columns.length}${meta.truncated ? " · partial read" : ""}` } : {})}
+      />
       {error ? (
         <PanelEmpty icon={<TableIcon />} title="Could not read this table">{error}</PanelEmpty>
       ) : !meta ? (

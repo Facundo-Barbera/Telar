@@ -73,6 +73,7 @@ import { rawFileUrl } from "@/lib/file-urls";
 import { carryTokens, highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
 import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
 import { SaveCoordinator } from "@/lib/save-coordinator";
+import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 /**
  * THE TYPE GEOMETRY OF THE TWO STACKED LAYERS, AND THE LAYER ITSELF — from the
@@ -87,7 +88,6 @@ import { FileKindIcon } from "@/components/session/file-icon";
  * blank line cannot collapse and take the caret's row with it.
  */
 import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageResponse } from "@/components/ui/message";
@@ -690,7 +690,6 @@ export function FileViewSurface({
     [draft, change],
   );
 
-  const cut = path.lastIndexOf("/");
   const dirty = pending || Boolean(problem);
   /** The bytes URL for a binary the panel can RENDER (image, audio, video —
    *  a .pdf normally opens as its own `pdf:` tab; this covers a restored
@@ -710,33 +709,57 @@ export function FileViewSurface({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* The address row, exactly as a browser page tab has one — and draggable
-          for the same reason: the thing you are looking at is usually the thing
-          you want to mention. */}
-      <div
-        draggable
-        onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(path))}
-        title={`${path} — drag into the message to reference this file`}
-        className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
+      {/* The address row, exactly as a browser page tab has one — one shared
+          component now (session/editor-chrome.tsx) so the seam does not move
+          when you switch to a notebook or a CSV. What is ours goes in its slot. */}
+      <EditorAddressRow
+        path={path}
+        detail={
+          dirty || file ? (
+            <>
+              {/* UNSAVED IS A DOT, not a word: it has to be legible at a glance
+                  from across the row and it must not move the layout when it
+                  appears. */}
+              {dirty && (
+                <span
+                  aria-label="Unsaved changes"
+                  title={problem ? "Not saved — see the message below" : "Saving…"}
+                  className={cn("size-1.5 shrink-0 rounded-full", problem ? "bg-destructive" : "bg-primary")}
+                />
+              )}
+              {file && size(file.bytes)}
+            </>
+          ) : undefined
+        }
       >
-        <FileKindIcon path={path} className="size-3.5" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
-          {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
-          <span className="text-foreground">{path.slice(cut + 1)}</span>
-        </span>
-        {/* UNSAVED IS A DOT, not a word: it has to be legible at a glance from
-            across the row and it must not move the layout when it appears. */}
-        {dirty && (
-          <span
-            aria-label="Unsaved changes"
-            title={problem ? "Not saved — see the message below" : "Saving…"}
-            className={cn("size-1.5 shrink-0 rounded-full", problem ? "bg-destructive" : "bg-primary")}
-          />
+        {/* WRAP LIVES UP HERE, not in the formatting row below, because it is a
+            property of the VIEW rather than an edit to the text — and because
+            the formatting row only exists for markdown source, while wrapping
+            applies to any prose file. The gutter hides while this is on: a line
+            number names a SOURCE line, and under wrap those no longer sit one
+            per row. `onMouseDown` prevention keeps the textarea's selection
+            alive through the click. */}
+        {prose && editable && (!markdown || source) && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={wrap}
+            aria-label="Wrap lines"
+            title={wrap ? "Wrap lines: on (line numbers hidden while wrapped)" : "Wrap long lines to the panel width"}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => writeWrapLines(!wrap)}
+            className={cn(
+              "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
+              wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            )}
+          >
+            <WrapTextIcon className="size-3" />
+            Wrap
+          </button>
         )}
-        {file && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{size(file.bytes)}</span>}
         {/* THE MARKDOWN TOGGLE — rendered or source, one press apart. In the
             header rather than floating over the text so it cannot cover what
-            it switches, and icon-only because the header row is 44px of
+            it switches, and icon-only because the header row is 36px of
             everything already. */}
         {markdown && file && !file.binary && (
           <div role="group" aria-label="Markdown view" className="flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
@@ -775,7 +798,7 @@ export function FileViewSurface({
         >
           <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
         </button>
-      </div>
+      </EditorAddressRow>
 
       {/* WHY THE SAVE DID NOT HAPPEN, above the text rather than in a toast: the
           text on screen is not what is on disk, and that has to stay visible for
@@ -872,13 +895,14 @@ export function FileViewSurface({
               source view, editable. Every button routes through the same
               draft + saver pair a keystroke uses. `onMouseDown` prevention
               keeps the textarea's selection alive through the click — a
-              focused button has no selection to format. */}
-          {/* `source` is markdown's Rendered/Edit switch; a .txt has no
-              preview, so the row shows whenever the EDITOR is the thing on
-              screen. */}
-          {prose && editable && (!markdown || source) && (
+              focused button has no selection to format.
+              `source` is markdown's Rendered/Edit switch. The row is MARKDOWN's
+              alone: a .txt has no formatting to apply, and the one control it
+              used to borrow this row for (Wrap) is a property of the view and
+              moved up to the address row. */}
+          {markdown && editable && source && (
             <div role="toolbar" aria-label="Editing" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
-              {markdown && MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
+              {MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
                 <button
                   key={action}
                   type="button"
@@ -891,26 +915,6 @@ export function FileViewSurface({
                   <Icon className="size-3" />
                 </button>
               ))}
-              {/* The gutter hides while this is on: a line number names a
-                  SOURCE line, and under wrap those no longer sit one per row. */}
-              <div className="ml-auto flex items-center gap-1">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={wrap}
-                  aria-label="Wrap lines"
-                  title={wrap ? "Wrap lines: on (line numbers hidden while wrapped)" : "Wrap long lines to the panel width"}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => writeWrapLines(!wrap)}
-                  className={cn(
-                    "flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
-                    wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                >
-                  <WrapTextIcon className="size-3" />
-                  Wrap
-                </button>
-              </div>
             </div>
           )}
         <div ref={scrollerRef} onScroll={rememberView} className="min-h-0 flex-1 overflow-auto">

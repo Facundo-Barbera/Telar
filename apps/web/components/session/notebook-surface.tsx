@@ -19,6 +19,7 @@ import { ChevronDownIcon, ChevronRightIcon, CirclePlayIcon, NotebookIcon, PlayIc
 import type { TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import type { CellOutput, KernelState, NotebookCell, NotebookRead } from "@/lib/ds";
+import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { Button } from "@/components/ui/button";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
@@ -307,12 +308,11 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
-        <NotebookIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
-          {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
-          <span className="text-foreground">{path.slice(cut + 1)}</span>
-        </span>
+      {/* The shared address row (session/editor-chrome.tsx) — the notebook's
+          kernel controls are what goes in its slot, and nothing else about the
+          row differs from a code file's. The glyph names the VIEW: cells are
+          what is unusual about this tab, not the extension. */}
+      <EditorAddressRow path={path} icon={<NotebookIcon className="size-3.5 shrink-0 text-muted-foreground" />}>
         <KernelPill state={kernel} />
         <Button size="xs" variant="ghost" title="Run all cells" disabled={!nb || running.size > 0} onClick={() => void run()}>
           <CirclePlayIcon className="size-3" />
@@ -323,7 +323,7 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
         <Button size="xs" variant="ghost" title="Restart kernel — every variable is lost" disabled={kernel === "none"} onClick={() => void api.kernelRestart(sessionId).then(refreshKernel)}>
           <RotateCwIcon className="size-3" />
         </Button>
-      </div>
+      </EditorAddressRow>
 
       {problem && (
         <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
