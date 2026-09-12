@@ -482,6 +482,78 @@ export function defaultRemoteBase(git: GitRunner, projectRoot: string, refs: Git
   return undefined;
 }
 
+/**
+ * WHICH REPOSITORY A CHECKOUT IS A CHECKOUT OF — one string, comparable across
+ * Macs.
+ *
+ * `origin` names the same repository in half a dozen spellings: an SSH scp-like
+ * address, an HTTPS URL, `ssh://` with a port, with or without `.git`, with or
+ * without a trailing slash, and (on a machine that pastes tokens into remotes)
+ * with credentials in the authority. A person looking at two Macs would call
+ * all of them "the same repo"; a string comparison would not. So this reduces
+ * every spelling to `host/owner/repo` and that reduction — not the URL — is
+ * what two projects are merged on.
+ *
+ * LOWERCASED, because the question being asked is "is this the same
+ * repository", and the hosts people actually use (GitHub, GitLab, Bitbucket)
+ * answer that case-insensitively. A `Owner/Repo` clone on one Mac and an
+ * `owner/repo` clone on another are one repository, and telling the reader they
+ * are two would be the more common error by far.
+ *
+ * CREDENTIALS ARE DROPPED, always. A remote can carry a PAT in its authority,
+ * and this value travels to another Mac's cockpit as part of the project
+ * record: a token in a rail group key would be a token on the wire and in
+ * `localStorage`.
+ *
+ * A REMOTE WITH NO HOST IS NO ANSWER — `/srv/git/thing.git`, `file://…`, a
+ * relative path. Two Macs both cloning from `/Users/me/repos/thing.git` mean
+ * two different disks and almost certainly two different repositories, and
+ * merging them in the rail on a matching path would be the one mistake this
+ * whole comparison must not make. Absent, therefore, rather than guessed.
+ */
+export function normalizeRemote(remote: string | undefined): string | undefined {
+  const raw = (remote ?? "").trim();
+  if (!raw) return undefined;
+  // scp-like (`git@host:owner/repo`) is not a URL and has no scheme; everything
+  // else does, so the authority is whatever sits between it and the first path
+  // segment. Both are reduced to "authority" + "path" before anything else.
+  const scpLike = /^([^/@]+@)?([^/:]+):(?!\/)(.+)$/.exec(raw);
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\/(.*)$/i.exec(raw);
+  let authority: string;
+  let path: string;
+  if (withScheme) {
+    const rest = withScheme[1] ?? "";
+    const cut = rest.indexOf("/");
+    authority = cut < 0 ? rest : rest.slice(0, cut);
+    path = cut < 0 ? "" : rest.slice(cut + 1);
+  } else if (scpLike) {
+    authority = scpLike[2] ?? "";
+    path = scpLike[3] ?? "";
+  } else {
+    return undefined; // A bare path names a disk, not a repository. See above.
+  }
+  // `user:token@host:22` → `host`. The port goes with the credentials: it is a
+  // property of how this Mac reaches the host, not of which host it is.
+  const host = (authority.split("@").pop() ?? "").replace(/:\d+$/, "");
+  const segments = path
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "");
+  if (!host || segments.length === 0) return undefined;
+  const last = segments.length - 1;
+  segments[last] = (segments[last] ?? "").replace(/\.git$/i, "");
+  if (!segments[last]) return undefined;
+  return [host, ...segments].join("/").toLowerCase();
+}
+
+/** `origin`'s address, reduced by `normalizeRemote`. Absent on a checkout with
+ *  no origin, on a directory that is not a repository, and on a remote this
+ *  cannot reduce — all three of which are ordinary. */
+export async function projectRemoteAsync(git: AsyncGitRunner, projectRoot: string): Promise<string | undefined> {
+  const found = await git(projectRoot, ["config", "--get", "remote.origin.url"], { timeoutMs: 5_000 });
+  return found.status === 0 ? normalizeRemote(found.stdout) : undefined;
+}
+
 export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;

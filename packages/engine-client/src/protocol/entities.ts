@@ -357,6 +357,29 @@ export const Project = z.object({
    */
   icon: z.string().min(1).max(64).optional(),
   /**
+   * WHICH REPOSITORY THIS IS A CHECKOUT OF — `origin`, reduced to
+   * `host/owner/repo` (see the engine's `normalizeRemote`).
+   *
+   * NOT A URL, despite the name the rail asked for: the scheme, the `git@`, the
+   * port, any credentials and the `.git` are all gone, because this exists to
+   * be COMPARED rather than followed. Two Macs that cloned one repository
+   * answer the same string here however differently each of them spelled its
+   * remote, and that is what lets the rail draw their two registrations as one
+   * project instead of two with the same name.
+   *
+   * DERIVED ON LIST, like `branch` and `icon` above, and for their reason: a
+   * value stored at registration would be wrong the first time somebody added
+   * an origin, moved a repository, or renamed it on the host — and the rail
+   * would go on merging (or refusing to merge) on an address that no longer
+   * exists. One `git config --get` per project per poll, on the same refresh.
+   *
+   * Absent on a checkout with no origin, on a directory that is not a
+   * repository at all (`envMode: "local"` supports both), and on a remote with
+   * no host to name — a local path, which names a disk rather than a repository
+   * and must never merge two Macs.
+   */
+  remoteUrl: z.string().min(1).optional(),
+  /**
    * WHEN THIS REGISTRATION WAS PUT AWAY, if it was.
    *
    * Removing a project from Telar is REVERSIBLE and keeps this record whole:

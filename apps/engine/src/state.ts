@@ -228,7 +228,7 @@ import { createNote, listNotes, retireNote, updateNote, type NewSpoolNote, type 
 import { renameSpoolTag as renameSpoolTagInStore, spoolTags as spoolTagsList, type SpoolTagUsage } from "./spool/tags";
 import { searchSpool } from "./spool/search";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import { commitSessionWork, gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
+import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
 import { agentNotice } from "./agent-notice";
 import {
@@ -4259,10 +4259,10 @@ export class EngineStore {
   /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
    * branch/icon labels arrive on the next poll without blocking worker heartbeats. */
   private readonly projectMetadataCache = new Map<string, {
-    root: string; at: number; value: Pick<Project, "branch" | "icon">; pending?: Promise<void>;
+    root: string; at: number; value: Pick<Project, "branch" | "icon" | "remoteUrl">; pending?: Promise<void>;
   }>();
 
-  private projectMetadata(project: Project): Pick<Project, "branch" | "icon"> {
+  private projectMetadata(project: Project): Pick<Project, "branch" | "icon" | "remoteUrl"> {
     let entry = this.projectMetadataCache.get(project.id);
     if (!entry || entry.root !== project.root) {
       entry = { root: project.root, at: -Infinity, value: {} };
@@ -4276,12 +4276,19 @@ export class EngineStore {
         // project; resolving from scratch here made the cache above dead
         // weight and re-walked every checkout on the poll path.
         this.projectIconAsync(project),
-      ]).then(([head, icon]) => {
+        // WHICH REPOSITORY THIS CHECKOUT IS OF, on the same refresh as the
+        // branch — a `git config` read of a file git has already cached, beside
+        // a `rev-parse` that costs strictly more. Derived rather than stored so
+        // adding an origin, or moving the repository, is visible on the next
+        // poll instead of at the next re-registration.
+        projectRemoteAsync(this.asyncGit, project.root),
+      ]).then(([head, icon, remoteUrl]) => {
         if (this.projectMetadataCache.get(project.id) !== current) return;
         const branch = head.status === 0 ? head.stdout.trim() : "";
         current.value = {
           ...(branch && branch !== "HEAD" ? { branch } : {}),
           ...(icon ? { icon: icon.etag } : {}),
+          ...(remoteUrl ? { remoteUrl } : {}),
         };
       }).catch(() => {
         // A stalled checkout must not hold up the registry or lose its row.

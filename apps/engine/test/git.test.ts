@@ -10,10 +10,12 @@ import {
   parseNumstat,
   parseUntracked,
   parseWorktreeList,
+  normalizeRemote,
+  projectRemoteAsync,
   samePath,
   sessionDiff,
 } from "../src/git";
-import type { GitResult, GitRunner } from "../src/worktree";
+import type { AsyncGitRunner, GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
 const fail = (): GitResult => ({ status: 1, stdout: "", stderr: "fatal" });
@@ -327,3 +329,66 @@ describe("commitSessionWork", () => {
   });
 });
 
+
+/**
+ * WHICH REPOSITORY A CHECKOUT IS OF — the comparison two Macs' rails are merged
+ * on, so what matters here is that every spelling of one repository reduces to
+ * one string, and that nothing reduces two repositories to one.
+ */
+describe("normalizeRemote", () => {
+  test("every spelling of one repository is one string", () => {
+    const spellings = [
+      "git@github.com:Facundo-Barbera/telar.git",
+      "git@github.com:Facundo-Barbera/telar",
+      "https://github.com/Facundo-Barbera/telar.git",
+      "https://github.com/Facundo-Barbera/telar",
+      "https://github.com/Facundo-Barbera/telar/",
+      "ssh://git@github.com:22/Facundo-Barbera/telar.git",
+      "ssh://git@github.com/Facundo-Barbera/telar.git",
+      "git://github.com/Facundo-Barbera/telar.git",
+      "  https://github.com/facundo-barbera/telar.git\n",
+    ];
+    for (const spelling of spellings) {
+      expect([spelling, normalizeRemote(spelling)]).toEqual([spelling, "github.com/facundo-barbera/telar"]);
+    }
+  });
+
+  test("credentials in the authority never survive — this value travels to another Mac", () => {
+    expect(normalizeRemote("https://facundo:ghp_secrettoken@github.com/owner/repo.git")).toBe("github.com/owner/repo");
+    expect(normalizeRemote("https://x-access-token:ghs_abc@github.com/owner/repo")).toBe("github.com/owner/repo");
+  });
+
+  test("a self-hosted forge keeps its whole path, so two groups under one host stay two", () => {
+    expect(normalizeRemote("git@gitlab.example.com:team/sub/thing.git")).toBe("gitlab.example.com/team/sub/thing");
+    expect(normalizeRemote("https://gitlab.example.com/team/sub/thing.git")).toBe("gitlab.example.com/team/sub/thing");
+    expect(normalizeRemote("git@gitlab.example.com:team/other.git")).not.toBe(normalizeRemote("git@gitlab.example.com:team/thing.git"));
+  });
+
+  test("two different repositories never collide", () => {
+    expect(normalizeRemote("git@github.com:owner/repo.git")).not.toBe(normalizeRemote("git@github.com:other/repo.git"));
+    expect(normalizeRemote("git@github.com:owner/repo.git")).not.toBe(normalizeRemote("git@gitlab.com:owner/repo.git"));
+  });
+
+  test("a remote that names a disk rather than a host is no answer at all", () => {
+    // Two Macs both cloning /Users/me/repos/thing.git are two disks — merging
+    // their rails on a matching path would be the one mistake this must not make.
+    for (const path of ["/srv/git/thing.git", "file:///srv/git/thing.git", "../sibling", "~/repos/thing.git", "."]) {
+      expect([path, normalizeRemote(path)]).toEqual([path, undefined]);
+    }
+  });
+
+  test("no origin, an empty answer and whitespace are all absent rather than empty", () => {
+    expect(normalizeRemote(undefined)).toBeUndefined();
+    expect(normalizeRemote("")).toBeUndefined();
+    expect(normalizeRemote("   \n")).toBeUndefined();
+    expect(normalizeRemote("https://github.com/")).toBeUndefined();
+    expect(normalizeRemote("git@github.com:.git")).toBeUndefined();
+  });
+
+  test("projectRemoteAsync reads origin, and a checkout without one says nothing", async () => {
+    const withOrigin: AsyncGitRunner = async (_cwd, args) =>
+      args.join(" ") === "config --get remote.origin.url" ? ok("git@github.com:owner/Repo.git\n") : fail();
+    expect(await projectRemoteAsync(withOrigin, "/repo")).toBe("github.com/owner/repo");
+    expect(await projectRemoteAsync(async () => fail(), "/not-a-repo")).toBeUndefined();
+  });
+});
