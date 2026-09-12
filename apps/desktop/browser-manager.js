@@ -2981,6 +2981,69 @@ class DesktopBrowserManager {
     return this.state(to);
   }
 
+  /**
+   * WHAT THE MAIN PROCESS IS HOLDING RIGHT NOW — issue #296's heap log.
+   *
+   * COUNTS ONLY. This line lands in shell.log, which is read by whoever is
+   * debugging and must never become a browsing history: no URL, no title, no
+   * console text, no scope key. Every number here is a thing that GROWS, so a
+   * minute-by-minute series names the one that ran away without a snapshot.
+   *
+   * `wcListeners` is the figure the issue asks for: every live WebContents'
+   * own listeners plus its debugger's, summed. A tab recreated or re-pointed
+   * without its old registrations coming off shows up here as a count that
+   * climbs while `liveViews` does not.
+   */
+  diagnostics() {
+    const countListeners = (emitter) => {
+      if (!emitter || typeof emitter.eventNames !== "function" || typeof emitter.listenerCount !== "function") return 0;
+      let total = 0;
+      for (const event of emitter.eventNames()) total += emitter.listenerCount(event);
+      return total;
+    };
+    let liveViews = 0;
+    let wcListeners = 0;
+    let consoleEntries = 0;
+    let networkEntries = 0;
+    let expectedReports = 0;
+    let refs = 0;
+    for (const tab of this.tabs) {
+      consoleEntries += tab.console.length;
+      networkEntries += tab.network.length;
+      expectedReports += tab.expectedReports.length;
+      refs += tab.refs.size;
+      const wc = tab.view && !tab.view.webContents.isDestroyed?.() ? tab.view.webContents : null;
+      if (!wc) continue;
+      liveViews += 1;
+      wcListeners += countListeners(wc) + countListeners(wc.debugger);
+    }
+    return {
+      scopes: new Set([...this.tabs.map((tab) => tab.scopeKey), ...this.scopeProfiles.keys()]).size,
+      tabs: this.tabs.length,
+      liveViews,
+      wcListeners,
+      extensionHosts: this.extensionHosts.size,
+      consoleEntries,
+      networkEntries,
+      expectedReports,
+      refs,
+      // Every scope-keyed map together: a scope that ends should take its
+      // entries with it, so this tracking `scopes` is the invariant.
+      scopeEntries:
+        this.scopeProfiles.size +
+        this.scopeProjects.size +
+        this.scopeProfileOverrides.size +
+        this.boundsByScope.size +
+        this.lastAgentInputAt.size +
+        this.activeToolCalls.size +
+        this.activeTabIds.size +
+        this.agentTabIds.size +
+        this.agentTabClosed.size,
+      pendingPopups: this.pendingPopupTabs.size,
+      uiHolds: this.uiHolds.size,
+    };
+  }
+
   destroy() {
     // The inventory is written BEFORE the tabs go, synchronously: this runs
     // on window close / quit, where an async write would be cut off. The

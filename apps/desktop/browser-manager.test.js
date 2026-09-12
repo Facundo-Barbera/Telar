@@ -2217,3 +2217,49 @@ describe("the login offer capture", () => {
     expect(blank.loginCaptureForScope("s2")).toBeNull();
   });
 });
+
+/**
+ * ISSUE #296. The main process climbed to 100% CPU and multi-gigabyte memory
+ * over five hours and died with a V8 SIGTRAP, and nothing in the app could
+ * say which structure had grown. These are the counts the heap log reads
+ * (main.js startHeapLog) and the bounds that keep them from being the answer.
+ */
+describe("what the main process holds — the heap log's counts (#296)", () => {
+  test("diagnostics counts the live views, their listeners and every growing collection", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.createTab("s", "https://two.example/");
+
+    const before = manager.diagnostics();
+    expect(before).toMatchObject({ scopes: 1, tabs: 2, liveViews: 2, extensionHosts: 0 });
+    // bindTab's registrations are real and counted; the exact number is the
+    // manager's business, but it must be non-zero and must not climb on its own.
+    expect(before.wcListeners).toBeGreaterThan(0);
+
+    views[0].webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "hello" }] });
+    views[0].webContents.debugger.emit("message", {}, "Network.requestWillBeSent", { request: { method: "GET", url: "https://one.example/api" } });
+    expect(manager.diagnostics()).toMatchObject({ consoleEntries: 1, networkEntries: 1 });
+
+    // A HIBERNATED TAB IS NOT A LIVE VIEW, and its listeners go with it.
+    manager.requestHibernate(manager.scopeTabs("s")[0]);
+    const after = manager.diagnostics();
+    expect(after.liveViews).toBe(1);
+    expect(after.tabs).toBe(2);
+    expect(after.wcListeners).toBeLessThan(before.wcListeners);
+  });
+
+  test("re-waking a tab does not leave a second set of listeners behind", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.scopeTabs("s")[0];
+    const fresh = manager.diagnostics().wcListeners;
+
+    // Five hibernate/wake cycles: the registrations belong to the WebContents,
+    // so a tab recreated five times must read exactly as one tab does.
+    for (let i = 0; i < 5; i += 1) {
+      manager.requestHibernate(tab);
+      await manager.wakeTab(tab);
+    }
+    expect(manager.diagnostics()).toMatchObject({ liveViews: 1, wcListeners: fresh });
+  });
+});
