@@ -132,7 +132,7 @@ import {
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
-  type WorkerTurnFailureCode,
+  type WorkerTurnFailure,
   type WorkspaceWriteResult,
   type RunConfigurationDraft,
   type RunView,
@@ -1788,6 +1788,9 @@ export class EngineClient {
       settledOverride?: "settled" | "active" | null;
       /** Hide it until this instant. `null` cancels. */
       snoozedUntil?: number | null;
+      /** Sit out a usage limit and carry on. `null` returns the session to the
+       *  driver's default — see `Session.resumeAfterRateLimit`. */
+      resumeAfterRateLimit?: boolean | null;
     },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
@@ -2248,6 +2251,19 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {});
   }
 
+  /**
+   * RESUME NOW — don't wait for the limit to lift.
+   *
+   * A HUMAN gesture like release and discard, so no claim token: the person
+   * pressing this is not a worker reporting on a run. The engine checks the
+   * turn really is a `rate_limited` failure; it does NOT check the clock,
+   * because "I know something you don't" (another account, a limit already
+   * lifted) is the entire reason the button exists.
+   */
+  resumeRateLimitedTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/resume`, {});
+  }
+
   discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
   }
@@ -2401,7 +2417,7 @@ export class EngineClient {
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: WorkerTurnFailureCode; message: string },
+    failure: WorkerTurnFailure,
     signal?: AbortSignal,
   ): Promise<{ turn: Turn }> {
     return this.request(

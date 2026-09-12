@@ -442,6 +442,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
          *  the inactivity rule — see `Session.settledOverride`. */
         settledOverride?: "settled" | "active" | null;
         snoozedUntil?: number | null;
+        /** Sit out a usage limit and carry on. `null` returns the session to the
+         *  driver's default — see `Session.resumeAfterRateLimit`. */
+        resumeAfterRateLimit?: boolean | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /**
@@ -811,6 +814,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  one instead is `stopTurn` — it is still an ordinary queued turn. */
     releaseHeldTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {}),
+    /** RESUME NOW: run a turn that is waiting out a usage limit, without
+     *  waiting for the reset. The engine does not check the clock — the person
+     *  pressing this may know the limit has already lifted. */
+    resumeRateLimitedTurn: (sessionId: string, runId: string) =>
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/resume`, {}),
     /** SEND NOW: promote a queued message into the running turn. */
     promoteTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {}),

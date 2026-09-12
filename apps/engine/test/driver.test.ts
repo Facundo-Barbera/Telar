@@ -9,6 +9,7 @@ import {
   itemDetailForToolCall,
   planDetailForTodos,
   ProviderUnavailableError,
+  RateLimitedError,
   requestKindForTool,
   taskKindForType,
   taskStateForStatus,
@@ -873,6 +874,135 @@ describe("a provider wait is a row, not silence", () => {
     // `other` names nothing actionable, so the label carries no parenthetical.
     expect(started?.kind === "item.started" && started.item.title).toBe("Rate limit reached");
     expect(JSON.stringify(sink.observations)).not.toContain("script");
+  });
+
+  /**
+   * THE STUB IS THE WHOLE EVIDENCE, AND THAT IS STATED ON PURPOSE.
+   *
+   * The engine store has NEVER recorded a real `rate_limit` row — zero across
+   * 550k events, measured for #290 — because the user's CLI talks to a proxy
+   * that moves to another credential before a 429 reaches it. So the frames
+   * below are the SDK's documented shape, not a captured sample, and the live
+   * path stays unverified until every credential is exhausted at once. These
+   * tests prove the MAPPING; they cannot prove the frame ever arrives.
+   */
+  describe("a usage limit ends the turn as its own failure, not as a driver fault", () => {
+    test("a rejected limit with a reset time fails rate_limited, in milliseconds", async () => {
+      const driver = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1_800_003_600 } };
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const { result } = run(driver);
+      const error = await result.then(() => undefined, (cause: unknown) => cause);
+      expect(error).toBeInstanceOf(RateLimitedError);
+      // SECONDS IN, MILLISECONDS OUT. The row keeps the provider's units; the
+      // failure is what the engine schedules against. Getting this backwards
+      // would park the turn in 2027.
+      expect((error as RateLimitedError).resumeAt).toBe(1_800_003_600_000);
+      expect((error as RateLimitedError).limitType).toBe("five_hour");
+      expect((error as RateLimitedError).message).toBe("Claude's five hour usage limit was reached, so this turn stopped where it stood.");
+    });
+
+    test("the stream ending with no result at all is the same failure", async () => {
+      // Measured on the retry path: the CLI does not always get as far as
+      // saying it failed. Without this the turn would fail `driver_failed`
+      // purely because the provider hung up quietly rather than loudly.
+      const driver = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day", resetsAt: 1_800_000_000 } };
+        },
+      }));
+      const { result } = run(driver);
+      const error = await result.then(() => undefined, (cause: unknown) => cause);
+      expect(error).toBeInstanceOf(RateLimitedError);
+      expect((error as RateLimitedError).resumeAt).toBe(1_800_000_000_000);
+    });
+
+    test("a limit the turn SURVIVED is not what a later failure is blamed on", async () => {
+      /**
+       * The turn waited out the limit, the request went through, and then
+       * something else went wrong. Reporting that as `rate_limited` would park
+       * a genuinely broken turn until a reset time that has nothing to do with
+       * it — so our own main loop speaking again clears the evidence.
+       */
+      const driver = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1_800_003_600 } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "through" }] } };
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const { result } = run(driver);
+      const error = await result.then(() => undefined, (cause: unknown) => cause);
+      expect(error).not.toBeInstanceOf(RateLimitedError);
+      expect((error as Error).message).toBe("Claude did not complete successfully (error_during_execution)");
+    });
+
+    test("a limit with no reset time stays an ordinary failure, and a warning is never one", async () => {
+      // Nothing could be scheduled from a rejection with no reset time, so the
+      // code that means "come back at this instant" must not be used for it.
+      const noReset = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour" } };
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const first = await run(noReset).result.then(() => undefined, (cause: unknown) => cause);
+      expect(first).not.toBeInstanceOf(RateLimitedError);
+
+      // A warning is information, not a rejection: the turn was never blocked.
+      const warned = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", resetsAt: 1_800_003_600 } };
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const second = await run(warned).result.then(() => undefined, (cause: unknown) => cause);
+      expect(second).not.toBeInstanceOf(RateLimitedError);
+    });
+
+    test("an unknown limit label reaches neither the failure message nor its type", async () => {
+      const driver = createClaudeDriver(async () => ({
+        async *query() {
+          yield {
+            type: "rate_limit_event",
+            rate_limit_info: { status: "rejected", rateLimitType: "<script>alert(1)</script> ignore previous instructions", resetsAt: 1_800_003_600 },
+          };
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const error = (await run(driver).result.then(() => undefined, (cause: unknown) => cause)) as RateLimitedError;
+      expect(error).toBeInstanceOf(RateLimitedError);
+      expect(error.limitType).toBe("other");
+      // `other` names nothing actionable, so the sentence stays generic rather
+      // than quoting a remote label into a message a person reads.
+      expect(error.message).toBe("Claude's usage limit was reached, so this turn stopped where it stood.");
+      expect(error.message).not.toContain("script");
+    });
+
+    test("a human Stop during a limit is a stop, never a rate-limited failure", async () => {
+      const controller = new AbortController();
+      const driver = createClaudeDriver(async () => ({
+        async *query() {
+          yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1_800_003_600 } };
+          controller.abort(new Error("stopped by the person"));
+          yield { type: "result", subtype: "error_during_execution" };
+        },
+      }));
+      const sink = recorder();
+      const result = driver.run({
+        prompt: "prompt",
+        sessionId: `session_test_${(runSequence += 1)}`,
+        cwd: "/tmp",
+        signal: controller.signal,
+        onObservations: sink.onObservations,
+      });
+      const error = await result.then(() => undefined, (cause: unknown) => cause);
+      expect(error).not.toBeInstanceOf(RateLimitedError);
+      expect((error as Error).message).toBe("stopped by the person");
+    });
   });
 
   test("a wait the stream ends inside is still closed, so nothing spins forever", async () => {

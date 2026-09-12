@@ -43,7 +43,7 @@ import { Composer } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -655,6 +655,7 @@ function SessionTurnBody({
   onRetry,
   onOpenAgent,
   onOpenTab,
+  onResumeNow,
   roster = [],
 }: {
   /**
@@ -697,6 +698,9 @@ function SessionTurnBody({
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
   onContinue?: () => void;
+  /** Don't wait for the usage limit to lift. Offered only on a `rate_limited`
+   *  failure; the cockpit decides, the turn only renders. */
+  onResumeNow?: () => void;
 }) {
   /**
    * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
@@ -837,7 +841,19 @@ function SessionTurnBody({
             </>
           )}
           {!streamedAnswer && turn.resultText && <MessageResponse>{turn.resultText}</MessageResponse>}
-          {turn.failure && <Marker attention>{turn.failure}</Marker>}
+          {turn.failure && (
+            <TurnFailureRow
+              failure={turn.failure}
+              {...(turn.failureCode ? { code: turn.failureCode } : {})}
+              {...(turn.resumeAt === undefined ? {} : { resumeAt: turn.resumeAt })}
+              {...(turn.limitType ? { limitType: turn.limitType } : {})}
+              {...(onResumeNow ? { onResume: onResumeNow, resuming: sending } : {})}
+            />
+          )}
+          {/* THE SESSION SAT ONE OUT AND CAME BACK. The turn is `queued` again
+              by now, so its failure no longer renders — without this line the
+              wait would read as an unexplained gap in the conversation. */}
+          {turn.resumedAfterRateLimit !== undefined && <Marker>resumed after the usage limit reset</Marker>}
           {turn.state === "stopped" && <Marker>stopped — kept what arrived</Marker>}
           {turn.state === "discarded" && <Marker>{describeTurnState(turn.state).label.toLowerCase()}</Marker>}
           {live && (
@@ -2015,6 +2031,34 @@ export function SessionCockpit({
       setSending(false);
     }
   };
+  /** Sit out a usage limit and carry on, or stay stopped. Explicit either way:
+   *  the engine stores only a deliberate choice, so the driver's default keeps
+   *  applying to every session that never touched this. */
+  const setResumeAfterRateLimit = async (next: boolean) => {
+    if (!sessionId) return;
+    try {
+      const updated = await api.updateSession(sessionId, { resumeAfterRateLimit: next });
+      setSession(updated.session);
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not change that setting."));
+    }
+  };
+  /** Don't wait for the limit to lift. The engine re-queues the same turn, so
+   *  the provider session — and its context — carries on where it stopped. */
+  const resumeNow = async (runId: string) => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.resumeRateLimitedTurn(sessionId, runId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not resume that turn."));
+    } finally {
+      setSending(false);
+    }
+  };
   const submit = async () => {
     if (!draft.trim() || browserDraftSendPending.current) return;
     // A send racing the first browser open joins its stable session identity.
@@ -2609,6 +2653,9 @@ export function SessionCockpit({
                 onOpenTab={showPanelTab}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
+                {...(turn.failureCode === "rate_limited" && turn.state === "failed"
+                  ? { onResumeNow: () => void resumeNow(turn.runId) }
+                  : {})}
               />
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
@@ -2681,6 +2728,7 @@ export function SessionCockpit({
           // Before a session exists there is nothing to patch, so both choices
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
+          {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
           onOpenChanges={() => showPanelTab("diff")}
         />

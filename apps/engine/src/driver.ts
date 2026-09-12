@@ -1095,6 +1095,34 @@ function contextMaxFrom(value: unknown): number | undefined {
 }
 
 /**
+ * THE TURN ENDED BECAUSE THE ACCOUNT IS OUT OF USAGE, AND WE KNOW WHEN IT IS NOT.
+ *
+ * A TYPED ERROR for the same reason `ProviderUnavailableError` is one: the
+ * worker maps driver errors to failure codes by class, and this is the seam
+ * where "the CLI gave up" stops being one undifferentiated `driver_failed`. It
+ * carries the two facts the engine schedules from and nothing else — no
+ * provider error text, no headers, no identifiers.
+ *
+ * `resumeAt` IS MILLISECONDS. The SDK reports `resetsAt` in unix seconds; the
+ * conversion happens where this is thrown and nowhere else — see `TurnFailure`.
+ */
+export class RateLimitedError extends Error {
+  readonly resumeAt: number;
+  readonly limitType?: ProviderWaitDetail["limitType"];
+  constructor(resumeAt: number, limitType?: ProviderWaitDetail["limitType"]) {
+    // THE MESSAGE NAMES THE LIMIT AND NOTHING ELSE. It is durable, a person
+    // reads it, and the reset time is carried structurally above — so the
+    // sentence stays a sentence rather than a second copy of the timestamp in
+    // whatever locale the engine happened to be running in.
+    const limit = limitType && limitType !== "other" ? `${limitType.replaceAll("_", " ")} ` : "";
+    super(`Claude's ${limit}usage limit was reached, so this turn stopped where it stood.`);
+    this.name = "RateLimitedError";
+    this.resumeAt = resumeAt;
+    if (limitType !== undefined) this.limitType = limitType;
+  }
+}
+
+/**
  * The user's own Claude Code, or a refusal naming what to install.
  *
  * `requireCli` throws a plain Error carrying the actionable message; it becomes
@@ -1240,6 +1268,23 @@ export function createClaudeDriver(
         emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
         waitItemId = undefined;
       };
+      /**
+       * THE LAST REJECTED LIMIT THAT IS STILL STANDING — the evidence that, if
+       * this turn now ends without succeeding, it ended because of a limit.
+       *
+       * SET only by a `rejected` rate-limit frame that named a reset time: a
+       * warning is not a rejection, and a rejection with no reset time gives
+       * the engine nothing to schedule, so both leave this alone and the turn
+       * fails the ordinary way.
+       *
+       * CLEARED WHEN OUR OWN MAIN LOOP SPEAKS AGAIN, and only then. That frame
+       * is proof the request went through — the limit was survived, and a
+       * failure arriving later is a different failure that must not be dressed
+       * up as a wait. Deliberately NOT cleared when a new wait row opens over
+       * it: an `api_retry` that follows a rejected limit is the same limit
+       * still biting.
+       */
+      let standingLimit: { resumeAt: number; limitType?: ProviderWaitDetail["limitType"] } | undefined;
       /** The open "Compacting context" row, when the provider announced one. */
       let compactionItemId: string | undefined;
       /** `compact_result: "success"` seen; the row waits for its boundary. */
@@ -2734,6 +2779,15 @@ export function createClaudeDriver(
             emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(waited.detail) } });
             if (waited.blocking) waitItemId = id;
             else emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+            // SECONDS TO MILLISECONDS, the one place it happens: the row above
+            // keeps the provider's own units, and everything downstream of here
+            // is a time the engine schedules against. See `TurnFailure.resumeAt`.
+            if (waited.blocking && waited.detail.kind === "rate_limit" && waited.detail.resetsAt !== undefined) {
+              standingLimit = {
+                resumeAt: waited.detail.resetsAt * 1_000,
+                ...(waited.detail.limitType === undefined ? {} : { limitType: waited.detail.limitType }),
+              };
+            }
             await flush();
             continue;
           }
@@ -2758,6 +2812,19 @@ export function createClaudeDriver(
             (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")
           ) {
             closeProviderWait();
+            /**
+             * MODEL OUTPUT CLEARS THE LIMIT; A `result` DOES NOT.
+             *
+             * A result ENDS the wait row either way, but it is not evidence the
+             * request went through — a non-success result is the CLI giving up,
+             * which is precisely the case this whole branch exists to catch. It
+             * is in the set above because the row must close; it is excluded
+             * here because clearing on it made every limit that ended a turn
+             * fail as `driver_failed` (both mapping tests caught it). A
+             * SUCCESSFUL result never reaches the throw, so the standing limit
+             * is moot there.
+             */
+            if (item.type !== "result") standingLimit = undefined;
           }
 
           // ── compaction, announced then bounded ────────────────────────
@@ -2895,6 +2962,13 @@ export function createClaudeDriver(
                 await flush();
                 continue;
               }
+              /**
+               * THE CLI GAVE UP WITH A LIMIT STILL STANDING — so say which
+               * thing happened. `driver_failed` sends a person looking for a
+               * fault that is not there; this one is a wait with an end, and
+               * the engine can sit it out on its own.
+               */
+              if (standingLimit) throw new RateLimitedError(standingLimit.resumeAt, standingLimit.limitType);
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             /**
@@ -3186,6 +3260,12 @@ export function createClaudeDriver(
         }
 
         if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+        // THE OTHER WAY A LIMIT ENDS A TURN: the stream stops without a result
+        // frame at all. Measured on the retry path, the CLI does not always get
+        // as far as saying it failed — so the same evidence answers here, or a
+        // rate-limited turn would fail as `driver_failed` purely because the
+        // provider hung up quietly rather than loudly.
+        if (!completed && standingLimit) throw new RateLimitedError(standingLimit.resumeAt, standingLimit.limitType);
         if (!completed) throw new Error("Claude ended without a successful result");
 
         // A tool whose result never arrived (the stream ended first) would

@@ -321,6 +321,7 @@ export function Composer({
   onStop,
   onStopBackground,
   onRuntimeMode,
+  onResumeAfterRateLimit,
   placeholder,
   onModelChange,
   onOpenChanges,
@@ -409,6 +410,9 @@ export function Composer({
    *  Separate from `onStop` (which ends the turn and spares them). */
   onStopBackground: () => void;
   onRuntimeMode: (mode: RuntimeMode) => void;
+  /** Sit out a usage limit and carry on, or stay stopped. Absent on a session
+   *  that does not exist yet — there is nothing to patch. */
+  onResumeAfterRateLimit?: (next: boolean) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
   /** What the input invites. The default offers to "explore the project",
@@ -1303,7 +1307,13 @@ export function Composer({
                     {runtimeMode && (
                       <>
                         <ControlDivider />
-                        <AccessControl runtimeMode={runtimeMode} onRuntimeMode={onRuntimeMode} />
+                        <AccessControl
+                          runtimeMode={runtimeMode}
+                          onRuntimeMode={onRuntimeMode}
+                          driver={activeDriver}
+                          {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+                          {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
+                        />
                       </>
                     )}
                   </div>
@@ -1323,6 +1333,8 @@ export function Composer({
                       {...(runtimeMode ? { onRuntimeMode } : {})}
                       {...(onDriverChange ? { onDriverChange } : {})}
                       {...(onEnvMode ? { onEnvMode } : {})}
+                      {...(session?.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: session.resumeAfterRateLimit })}
+                      {...(onResumeAfterRateLimit ? { onResumeAfterRateLimit } : {})}
                     />
                   </div>
                 </>

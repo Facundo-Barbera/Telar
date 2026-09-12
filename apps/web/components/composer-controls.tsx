@@ -1014,9 +1014,42 @@ export function ReasoningControl({
 
 /** How much rope this session has — the donor's approval pill, on the engine's
  *  four runtime modes. */
-export function AccessControl({ runtimeMode, onRuntimeMode }: { runtimeMode: RuntimeMode; onRuntimeMode: (mode: RuntimeMode) => void }) {
+export function AccessControl({
+  runtimeMode,
+  onRuntimeMode,
+  driver,
+  resumeAfterRateLimit,
+  onResumeAfterRateLimit,
+}: {
+  runtimeMode: RuntimeMode;
+  onRuntimeMode: (mode: RuntimeMode) => void;
+  driver?: ProviderDriverKind;
+  /** The session's own answer, or absent for the driver's default — ON for
+   *  Claude. See `Session.resumeAfterRateLimit`. */
+  resumeAfterRateLimit?: boolean;
+  onResumeAfterRateLimit?: (next: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   const label = RUNTIME_MODE_LABELS[runtimeMode];
+  /**
+   * THE USAGE-LIMIT SWITCH LIVES HERE rather than earning a pill of its own.
+   *
+   * Both questions this popover answers are the same question — what does this
+   * session do on its own, without me — and a boolean nobody changes twice a
+   * month does not deserve permanent space on the composer row. It follows Fast
+   * mode's precedent: inside an existing popover, and mirrored into the
+   * overflow menu so a narrow composer takes nothing away.
+   *
+   * CLAUDE ONLY, because it is the only provider that reports a limit in a form
+   * the engine can schedule from. A switch that silently does nothing is the
+   * thing this cockpit keeps refusing to ship.
+   *
+   * PER SESSION — a deliberate departure from #290, which placed this in "the
+   * Claude provider's settings". That page is global; the setting the issue
+   * itself specifies is per-session, and this is where a session's own provider
+   * behaviour is already changed.
+   */
+  const limits = driver === "claude" && onResumeAfterRateLimit;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -1039,6 +1072,31 @@ export function AccessControl({ runtimeMode, onRuntimeMode }: { runtimeMode: Run
             }}
           />
         ))}
+        {limits && (
+          <>
+            <MenuHeading>Usage limits</MenuHeading>
+            <ChoiceRow
+              label="Continue after a reset"
+              description="A turn stopped by the five-hour or weekly limit runs again once the limit lifts, carrying on where it left off."
+              // Absent means on for Claude: the default is not written down, so
+              // the tick has to resolve it the same way the engine does.
+              selected={(resumeAfterRateLimit ?? true) === true}
+              onSelect={() => {
+                onResumeAfterRateLimit(true);
+                setOpen(false);
+              }}
+            />
+            <ChoiceRow
+              label="Stay stopped"
+              description="The turn stays failed and shows when the limit resets, with a Resume now button."
+              selected={(resumeAfterRateLimit ?? true) === false}
+              onSelect={() => {
+                onResumeAfterRateLimit(false);
+                setOpen(false);
+              }}
+            />
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -1069,12 +1127,18 @@ export function ComposerOverflowMenu({
   onRuntimeMode,
   onDriverChange,
   onEnvMode,
+  onResumeAfterRateLimit,
+  resumeAfterRateLimit,
   instanceId,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
   /** Whose login's curated list to read. Absent means the built-in slot. */
   instanceId?: string;
+  /** The session's own answer, or absent for the driver's default — which is
+   *  ON for Claude. See `Session.resumeAfterRateLimit`. */
+  resumeAfterRateLimit?: boolean;
+  onResumeAfterRateLimit?: (next: boolean) => void;
   runtimeMode?: RuntimeMode;
   /** Before a session exists the provider and the workspace are still choices;
    *  after, neither is. */
@@ -1166,6 +1230,38 @@ export function ComposerOverflowMenu({
                 <DropdownMenuItem key={option.label} onClick={() => onChange({ ...choice, fastMode: option.on ? true : undefined })}>
                   <span className="flex-1">{option.label}</span>
                   {(choice.fastMode === true) === option.on && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+
+        {/**
+         * SIT OUT A USAGE LIMIT — Claude only, because it is the only provider
+         * that reports one in a form the engine can schedule from. A switch that
+         * silently does nothing is the thing this cockpit keeps refusing to
+         * ship, so the group is absent rather than disabled elsewhere.
+         *
+         * PER SESSION, which is a deliberate departure from #290's wording. The
+         * issue placed this in "the Claude provider's settings"; that page is
+         * global, and the setting the issue itself specifies is per-session.
+         * Here it sits beside the session's other provider knobs, where it can
+         * be changed for one conversation without changing every other.
+         */}
+        {onResumeAfterRateLimit && driver === "claude" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Usage limits</DropdownMenuLabel>
+              {[
+                { on: true, label: "Continue after a reset" },
+                { on: false, label: "Stay stopped" },
+              ].map((option) => (
+                <DropdownMenuItem key={option.label} onClick={() => onResumeAfterRateLimit(option.on)}>
+                  <span className="flex-1">{option.label}</span>
+                  {/* Absent means on for Claude — the default is not written
+                      down, so the tick has to resolve it the same way. */}
+                  {(resumeAfterRateLimit ?? true) === option.on && <CheckIcon className="size-3.5 text-primary" />}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuGroup>

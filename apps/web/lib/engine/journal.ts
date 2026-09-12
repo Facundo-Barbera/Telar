@@ -1,4 +1,4 @@
-import { displayToolName, type EngineEvent, type Item, type Session, type Task, type Turn, type TurnAttachment, type TurnState, type UsageSnapshot } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type Item, type RateLimitType, type Session, type Task, type Turn, type TurnAttachment, type TurnFailureCode, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
  * The client-side fold over protocol v2's journal.
@@ -96,6 +96,24 @@ export type JournalTurn = {
   /** The assistant's final text, as the engine recorded it on completion. */
   resultText: string;
   failure?: string;
+  /**
+   * WHICH KIND of failure, because one of them is not a fault.
+   *
+   * The transcript drew every failure as one attention marker holding the
+   * message. That is right for a crash and wrong for a usage limit, which is a
+   * wait with a known end — so the code comes through and `rate_limited` gets a
+   * row that says when it lifts instead of a sentence about the provider.
+   */
+  failureCode?: TurnFailureCode;
+  /** `rate_limited`: when the limit lifts, in MILLISECONDS. The engine converted
+   *  it from the provider's seconds — see `TurnFailure.resumeAt`. */
+  resumeAt?: number;
+  /** `rate_limited`: which limit, so the row can name it. */
+  limitType?: RateLimitType;
+  /** The engine brought this turn back after a limit lifted. Kept even though
+   *  the turn is `queued` again, so scrolling back shows the session sat one
+   *  out rather than an unexplained gap. */
+  resumedAfterRateLimit?: number;
   usage?: UsageSnapshot;
 };
 
@@ -165,7 +183,10 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         tasks: [],
         ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
         resultText: turn.resultText ?? "",
-        ...(turn.failure ? { failure: turn.failure.message } : {}),
+        ...(turn.failure ? { failure: turn.failure.message, failureCode: turn.failure.code } : {}),
+        ...(turn.failure?.resumeAt === undefined ? {} : { resumeAt: turn.failure.resumeAt }),
+        ...(turn.failure?.limitType ? { limitType: turn.failure.limitType } : {}),
+        ...(turn.resumedAfterRateLimit === undefined ? {} : { resumedAfterRateLimit: turn.resumedAfterRateLimit }),
         ...(turn.usage ? { usage: turn.usage } : {}),
       },
     ]),
@@ -290,7 +311,13 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         if (turn) { turn.state = "running"; turn.startedAt = turn.startedAt ?? event.at; }
         break;
       case "turn.requeued":
-        if (turn) turn.state = "queued";
+        if (turn) {
+          turn.state = "queued";
+          // The engine brought it back after a limit lifted. Remembered so the
+          // transcript can say so — the turn is no longer failed, and without
+          // this the wait would read as an unexplained gap.
+          if (event.reason === "rate_limit_reset") turn.resumedAfterRateLimit = event.at;
+        }
         break;
       // The hold came off. NOT a state change — the turn was `queued` before
       // and after — so only the flag the transcript reads is cleared.
@@ -320,6 +347,11 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         if (turn) {
           turn.state = "failed";
           turn.failure = event.message;
+          turn.failureCode = event.code;
+          // Carried on the event as well as the snapshot, so a client watching
+          // the tail can draw the waiting row without re-reading the session.
+          if (event.resumeAt !== undefined) turn.resumeAt = event.resumeAt;
+          if (event.limitType) turn.limitType = event.limitType;
         }
         break;
       case "turn.stopped":

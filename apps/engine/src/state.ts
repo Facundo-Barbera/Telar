@@ -108,6 +108,7 @@ import {
   type SessionOrigin,
   type Subscription,
   type Turn,
+  type TurnFailure as TurnFailureShape,
   type TurnFailureCode,
   type TurnObservation,
   type WakeKind,
@@ -386,7 +387,7 @@ function requestTitle(detail: RequestDetail): string {
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type JournalEntry = DistributiveOmit<EngineEvent, "id" | "at" | "sessionId" | "runId">;
 
-type TurnFailure = { code: TurnFailureCode; message: string };
+type TurnFailure = TurnFailureShape;
 
 /**
  * WHICH FAILURES A WORKER MAY REPORT — a strict subset of `TurnFailureCode`.
@@ -1103,12 +1104,24 @@ function parseQueue(value: unknown, sessionId: string): SessionQueue {
  * Whether a worker could have any business with this queue — see
  * `liveQueueIndex`, whose membership this decides.
  *
- * THE UNION OF FOUR QUERIES, deliberately, so that one index serves all of
+ * THE UNION OF FIVE QUERIES, deliberately, so that one index serves all of
  * them and no query can be narrowed without someone noticing here. The first
  * four states are the unsettled ones a claim or a heartbeat acts on. The fifth
  * is the one that is easy to miss: a STOPPED turn keeps its claim (only a
  * discard or a recovery sweep clears it), and reading exactly those is how a
  * worker learns that a human pressed Stop.
+ *
+ * THE SIXTH IS A FAILED TURN, WHICH IS THE SURPRISING ONE. A turn that failed
+ * `rate_limited` is terminal in every other sense, but the sweep has to find it
+ * again once its `resumeAt` passes — and this predicate is what decides which
+ * sessions the sweep ever looks at. Without it the requeue silently never fires:
+ * the session drops out of the index the moment the turn fails, and nothing
+ * walks it again until a human types.
+ *
+ * BOUNDED BY `resumeDecidedAt`. The sweep stamps every rate-limited failure it
+ * considers, whether it requeued the turn or left it alone, so a session whose
+ * setting is off falls out of the index on the next claim instead of being
+ * re-examined for the life of the daemon.
  */
 function queueConcernsAWorker(queue: SessionQueue): boolean {
   return queue.turns.some(
@@ -1117,7 +1130,19 @@ function queueConcernsAWorker(queue: SessionQueue): boolean {
       turn.state === "claimed" ||
       turn.state === "running" ||
       turn.state === "steering" ||
-      (turn.state === "stopped" && turn.claim !== undefined),
+      (turn.state === "stopped" && turn.claim !== undefined) ||
+      awaitsRateLimitSweep(turn),
+  );
+}
+
+/** A failed turn the sweep has not yet decided about — see above, and
+ *  `sweepRateLimited`, which is the only thing that clears the condition. */
+function awaitsRateLimitSweep(turn: Turn): boolean {
+  return (
+    turn.state === "failed" &&
+    turn.failure?.code === "rate_limited" &&
+    turn.failure.resumeAt !== undefined &&
+    turn.failure.resumeDecidedAt === undefined
   );
 }
 
@@ -5789,6 +5814,10 @@ export class EngineStore {
       /** `null` cancels a snooze. A time in the past is accepted and simply
        *  reads as awake — a client's clock is not this engine's to police. */
       snoozedUntil?: number | null;
+      /** `null` returns the session to the driver's default rather than storing
+       *  one — see `Session.resumeAfterRateLimit`. Three answers, so not a
+       *  boolean: "on", "off", and "whatever this provider does". */
+      resumeAfterRateLimit?: boolean | null;
     },
   ): Session {
     const session = this.getSession(sessionId);
@@ -5857,6 +5886,11 @@ export class EngineStore {
         throw new EngineStateError("invalid_request", "settledOverride must be 'settled', 'active' or null");
       }
     }
+    if (patch.resumeAfterRateLimit !== undefined) {
+      if (patch.resumeAfterRateLimit === null) delete next.resumeAfterRateLimit;
+      else if (typeof patch.resumeAfterRateLimit === "boolean") next.resumeAfterRateLimit = patch.resumeAfterRateLimit;
+      else throw new EngineStateError("invalid_request", "resumeAfterRateLimit must be a boolean or null");
+    }
     if (patch.snoozedUntil !== undefined) {
       if (patch.snoozedUntil === null) {
         delete next.snoozedUntil;
@@ -5878,6 +5912,7 @@ export class EngineStore {
       next.detached === session.detached &&
       next.settledOverride === session.settledOverride &&
       next.snoozedUntil === session.snoozedUntil &&
+      next.resumeAfterRateLimit === session.resumeAfterRateLimit &&
       // COMPARED WHOLE, not field by field. The hand-written version listed
       // `model` and `effort`, so when the selection grew a context window and a
       // fast-mode switch, a patch that changed only those looked like a no-op
@@ -6880,6 +6915,82 @@ export class EngineStore {
     if (timedOut && this.defaultClaudeModelId() === undefined) unusable(`the provider did not answer within ${timeoutMs}ms`);
   }
 
+  /**
+   * DOES THIS SESSION WANT ITS RATE-LIMITED TURNS RESUMED?
+   *
+   * Absent means yes for Claude and no for anything else — the default is not
+   * written into the record, so a session created before the setting existed
+   * behaves like one created after it, and a provider that starts reporting
+   * limits the same way later begins resuming without a migration. Only an
+   * explicit choice is stored.
+   */
+  private resumesAfterRateLimit(session: Session): boolean {
+    return session.resumeAfterRateLimit ?? session.driver === "claude";
+  }
+
+  /**
+   * REQUEUE A TURN WHOSE USAGE LIMIT HAS LIFTED, or record that we decided not
+   * to. Called for every live session on every claim poll — see `claimNextTurn`.
+   *
+   * CHEAP ON THE COMMON PATH: the shared scan copy answers "is anything due
+   * here", and only a session that actually has one takes a queue of its own to
+   * write. The overwhelming majority of sessions have no rate-limited failure at
+   * all and cost one `some()` over their turns.
+   */
+  private sweepRateLimited(sessionId: string): void {
+    const at = this.now();
+    const due = (turn: Turn): boolean => awaitsRateLimitSweep(turn) && turn.failure!.resumeAt! <= at;
+    if (!this.scanQueue(sessionId).turns.some(due)) return;
+
+    const session = this.getSession(sessionId);
+    /**
+     * A PAUSED OR ARCHIVED SESSION IS NOT SWEPT, AND IS NOT STAMPED EITHER.
+     *
+     * Leaving the decision unmade is the point: the person comes back, lifts the
+     * pause, and the turn resumes on the next poll. Stamping it here would mean
+     * a session paused across its own reset time silently lost the resume it was
+     * promised, with nothing on the row to say so.
+     */
+    if (session.paused || session.state === "archived") return;
+
+    const queue = this.readQueue(sessionId);
+    const resuming = this.resumesAfterRateLimit(session);
+    const requeued: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (!due(turn)) continue;
+      turn.failure = { ...turn.failure!, resumeDecidedAt: at };
+      turn.updatedAt = at;
+      if (!resuming) continue;
+      /**
+       * BACK TO `queued`, KEEPING ITS PLACE. `acceptedAt` and `sequence` are
+       * untouched, so a backlog that built up behind the limit still runs in the
+       * order it was typed rather than the resumed turn jumping to the front.
+       *
+       * THE FAILURE IS KEPT, not deleted, and `resumedAfterRateLimit` is what
+       * makes that safe: the transcript needs it to draw the row saying the turn
+       * came back, and `awaitsRateLimitSweep` no longer matches it because the
+       * state is no longer `failed`. Deleting it would erase the only record
+       * that the session ever hit a limit.
+       */
+      turn.state = "queued";
+      turn.resumedAfterRateLimit = at;
+      delete turn.completedAt;
+      delete turn.claim;
+      requeued.push(turn);
+    }
+    this.writeQueue(sessionId, queue);
+    for (const turn of requeued) {
+      this.appendEvent(sessionId, { type: "turn.requeued", reason: "rate_limit_reset" }, turn.runId);
+    }
+    // THE SESSION COMES BACK TO THE LIST when its own work restarts, the same
+    // way a wake does: a limit that lifted at 3am should not leave the session
+    // shelved with a turn quietly running inside it.
+    if (requeued.length > 0) {
+      this.wakeSessionForNewWork(sessionId);
+      this.touchSession(sessionId, at);
+    }
+  }
+
   claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");
     /**
@@ -6898,7 +7009,19 @@ export class EngineStore {
      * older one.
      */
     const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
-    for (const sessionId of this.liveQueueSessionIds()) {
+    for (const sessionId of [...this.liveQueueSessionIds()]) {
+      /**
+       * THE RATE-LIMIT SWEEP RUNS FIRST, so a turn whose limit has just lifted
+       * is `queued` by the time this scan looks for claimable work — otherwise
+       * it would wait a whole extra poll for no reason.
+       *
+       * HERE RATHER THAN ON A TIMER OF ITS OWN because this is already the
+       * engine's only periodic pass over live queues, and a second scheduler
+       * would be a second thing to start, stop and get wrong at shutdown.
+       * `liveQueueSessionIds()` is copied above because this may write, and
+       * writing maintains the very index being iterated.
+       */
+      this.sweepRateLimited(sessionId);
       // A SCAN, so the shared copy: the one session that wins is claimed
       // through `claimTurn`, which reads a queue of its own to write.
       const queue = this.scanQueue(sessionId);
@@ -7294,14 +7417,76 @@ export class EngineStore {
     return structuredClone(turn);
   }
 
+  /**
+   * RESUME NOW — a person deciding not to wait for the limit.
+   *
+   * THE CLOCK IS DELIBERATELY NOT CHECKED. "I know something you don't" is the
+   * whole reason the button exists: another credential came free, the proxy
+   * moved account, the provider lifted it early. Refusing until `resumeAt`
+   * would make the control a decoration on the only occasions it is wanted.
+   *
+   * `resumedAfterRateLimit` IS NOT SET. That field means the engine brought the
+   * turn back on its own; a person pressing a button is already visible as the
+   * press, and claiming otherwise would put a small lie in the record.
+   *
+   * A HUMAN GESTURE like release and discard, so no claim token — and like
+   * `releaseHeldTurn` it answers to the project gate, because resuming is
+   * starting work and a project the person removed from Telar must not be
+   * resumed into.
+   */
+  resumeRateLimitedTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const session = this.getSession(sessionId);
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (turn.state !== "failed" || turn.failure?.code !== "rate_limited") {
+      throw new EngineStateError("conflict", "turn is not waiting for a usage limit");
+    }
+    // One turn at a time is the engine's own invariant; a resume that produced
+    // a second live turn would be the one place it could be broken by a click.
+    if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) {
+      throw new EngineStateError("conflict", "the session is already running a turn");
+    }
+    const at = this.now();
+    turn.state = "queued";
+    turn.updatedAt = at;
+    // Stamped decided, so the sweep does not consider it again and the session
+    // leaves the live index by the ordinary route once this turn settles.
+    turn.failure = { ...turn.failure, resumeDecidedAt: at };
+    delete turn.completedAt;
+    delete turn.claim;
+    this.writeQueue(sessionId, queue);
+    this.appendEvent(sessionId, { type: "turn.requeued", reason: "rate_limit_resumed" }, turn.runId);
+    this.wakeSessionForNewWork(sessionId);
+    this.touchSession(sessionId, at);
+    return structuredClone(turn);
+  }
+
   failTurn(
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: TurnFailure["code"]; message: string },
+    failure: { code: TurnFailure["code"]; message: string; resumeAt?: number; limitType?: TurnFailure["limitType"] },
   ): Turn {
     if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
       throw new EngineStateError("invalid_request", "turn failure is invalid");
+    }
+    /**
+     * `rate_limited` WITHOUT A RESUME TIME IS REFUSED, rather than stored as a
+     * wait nobody can schedule. The whole of the code's meaning is "come back
+     * at this instant"; a row saying "waiting for the limit to reset" with no
+     * instant would sit failed for ever while claiming to be temporary, and the
+     * sweep's own predicate would skip it silently. The driver only throws with
+     * a reset time, so reaching this is a contract violation, not a user error.
+     */
+    const resumeAt =
+      typeof failure.resumeAt === "number" && Number.isFinite(failure.resumeAt) && failure.resumeAt >= 0
+        ? Math.trunc(failure.resumeAt)
+        : undefined;
+    if (failure.code === "rate_limited" && resumeAt === undefined) {
+      throw new EngineStateError("invalid_request", "a rate-limited failure must say when the limit resets");
     }
     const queue = this.readQueue(sessionId);
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
@@ -7309,7 +7494,14 @@ export class EngineStore {
     turn.state = "failed";
     turn.completedAt = at;
     turn.updatedAt = at;
-    turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
+    turn.failure = {
+      code: failure.code,
+      message: failure.message.slice(0, 4_000),
+      // Only on the code that means them: a `driver_failed` carrying a reset
+      // time would be a row inviting a resume that nothing will ever perform.
+      ...(failure.code === "rate_limited" && resumeAt !== undefined ? { resumeAt } : {}),
+      ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
+    };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     /**
      * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
