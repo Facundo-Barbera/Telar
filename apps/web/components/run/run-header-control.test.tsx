@@ -10,10 +10,12 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RunHeaderControl } from "./run-header-control";
+import { headerMode, RunHeaderControl } from "./run-header-control";
+import { RunConfigEditor } from "./run-config-editor";
 import { runAction, statusLabel, statusTone } from "@/lib/run/presentation";
+import { RunGlyph } from "@/lib/run/icons";
 import type { RunApi } from "@/lib/run/api";
-import type { RunStatusAnswer, RunView } from "@/lib/run/types";
+import type { RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
 
 const view = (over: Partial<RunView> = {}): RunView => ({
   runId: "run_1",
@@ -59,6 +61,57 @@ describe("the pill", () => {
     expect(statusLabel(active)).toBeTruthy();
     expect(statusTone("ready")).toBe("good");
     expect(statusTone("failed")).toBe("bad");
+  });
+});
+
+describe("the empty state", () => {
+  const config = (over: Partial<RunConfigurationView> = {}): RunConfigurationView =>
+    ({ id: "config_dev", name: "dev server", ...over }) as RunConfigurationView;
+
+  test("no saved configuration and nothing deployed is the one Setup case", () => {
+    expect(headerMode([], undefined)).toBe("setup");
+  });
+
+  test("a list not read yet is unknown, not empty", () => {
+    // Offering Setup over a project that turns out to have three recipes is
+    // worse than a moment of "Run".
+    expect(headerMode(undefined, undefined)).toBe("run");
+  });
+
+  test("a live run wins over an empty list", () => {
+    // Its recipe was deleted mid-flight; the deployment is still the thing a
+    // human needs to see and stop, so the button must not become "Setup".
+    expect(headerMode([], view())).toBe("run");
+  });
+
+  test("any saved configuration is enough to leave Setup", () => {
+    expect(headerMode([config()], undefined)).toBe("run");
+  });
+
+  test("Setup opens the editor, which paints the form rather than a menu", () => {
+    // What the button opens INTO. `renderToStaticMarkup` runs no effects, so
+    // the popover's own contents cannot be rendered here (see
+    // run-header-host.test.tsx); the form it opens can.
+    const html = renderToStaticMarkup(<RunConfigEditor onSave={() => {}} onCancel={() => {}} />);
+    expect(html).toContain("Command");
+    expect(html).toContain('aria-label="Icon"');
+    // The picker offers the closed set, each one named.
+    expect(html).toContain('aria-label="Server"');
+    expect(html).toContain('aria-label="Database"');
+    // `play` opens chosen, so a new configuration always has an icon.
+    expect(html).toContain('role="radio" aria-checked="true" aria-label="Play"');
+  });
+});
+
+describe("an iconed row", () => {
+  test("a configuration's own glyph is what its row draws, and it differs per icon", () => {
+    const server = renderToStaticMarkup(<RunGlyph icon="server" className="size-3.5 shrink-0" />);
+    const unset = renderToStaticMarkup(<RunGlyph className="size-3.5 shrink-0" />);
+    expect(server).toContain("<svg");
+    // A configuration that never chose one still draws the default, so a row
+    // is never a name with a hole in front of it.
+    expect(unset).toContain("<svg");
+    expect(server).not.toBe(unset);
   });
 });
 

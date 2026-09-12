@@ -33,9 +33,24 @@ export const RunEnvView = z.object({
 });
 export type RunEnvView = z.infer<typeof RunEnvView>;
 
+/**
+ * THE GLYPH A CONFIGURATION WEARS — a key from a closed set, never an image.
+ *
+ * The cockpit maps each name to an icon it already ships, so a configuration
+ * cannot put a remote asset in the masthead and a stored value can never fail
+ * to render. Absent means `play`: the default is resolved where it is drawn,
+ * not written into the document, so changing it later rewrites nothing.
+ */
+export const RunIcon = z.enum(["play", "server", "globe", "terminal", "flask", "database", "package", "bug", "rocket", "hammer"]);
+export type RunIcon = z.infer<typeof RunIcon>;
+
+export const DEFAULT_RUN_ICON: RunIcon = "play";
+
 /** What a client may store. Ids and timestamps are the engine's to mint. */
 export const RunConfigurationDraft = z.object({
   name: z.string().min(1).max(120),
+  /** Which glyph the Run menu draws before the name. Default: `play`. */
+  icon: RunIcon.optional(),
   command: z.string().min(1).max(4000),
   /** Relative to the worktree the run is launched from. Default: its root. */
   cwd: z.string().max(1024).optional(),
@@ -49,6 +64,9 @@ export const RunConfigurationView = z.object({
   id: z.string(),
   projectId: z.string(),
   name: z.string(),
+  /** Absent on every configuration saved before icons existed, and on any
+   *  saved since that kept the default. The cockpit draws `play` for both. */
+  icon: RunIcon.optional(),
   command: z.string(),
   cwd: z.string().optional(),
   /** Always present, possibly empty — the engine emits the scrubbed list on

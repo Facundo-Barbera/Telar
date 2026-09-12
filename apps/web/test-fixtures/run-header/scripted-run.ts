@@ -8,7 +8,9 @@ import type { RunApi } from "../../lib/run/api";
 import type { RunStatusAnswer, RunView } from "../../lib/run/types";
 import type { WorkspaceOpenBridge } from "../../lib/workspace-open";
 
-export type Scenario = "idle" | "ready" | "starting" | "foreign" | "lost" | "failed";
+/** `empty` is the Setup case: a project with no saved recipe at all, which is
+ *  the only scenario where the masthead offers a button that is not "Run". */
+export type Scenario = "idle" | "empty" | "ready" | "starting" | "foreign" | "lost" | "failed";
 
 export const calls: string[] = [];
 const watchers = new Set<() => void>();
@@ -81,7 +83,17 @@ export function setHost(hostId: string | undefined): void {
 export const bridge = {
   configurations: async () => {
     record("configurations");
-    return { configurations: [{ id: "config_dev", name: "dev server" }, { id: "config_test", name: "test watcher" }] };
+    // Three iconed recipes, one of them deliberately WITHOUT an icon: the
+    // default glyph beside two chosen ones is a state a reader has to be able
+    // to recognise, same as the openers list below.
+    if (state.scenario === "empty") return { configurations: [] };
+    return {
+      configurations: [
+        { id: "config_dev", name: "dev server", icon: "globe" },
+        { id: "config_api", name: "api", icon: "server" },
+        { id: "config_test", name: "test watcher" },
+      ],
+    };
   },
   status: async () => answer(),
   start: async (_sessionId: string, configId: string, replace?: boolean) => {

@@ -16,6 +16,7 @@ export type {
   RunConfigurationDraft,
   RunConfigurationView,
   RunEnvView,
+  RunIcon,
   RunOutputAnswer,
   RunOutputLine,
   RunReadiness,

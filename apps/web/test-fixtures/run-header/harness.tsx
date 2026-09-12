@@ -25,6 +25,7 @@ import { RailToggle } from "../../components/right-panel";
 
 const SCENARIOS: { name: string; scenario: Scenario }[] = [
   { name: "nothing deployed", scenario: "idle" },
+  { name: "NO configuration (Setup)", scenario: "empty" },
   { name: "ours, ready", scenario: "ready" },
   { name: "ours, starting", scenario: "starting" },
   { name: "ANOTHER tree", scenario: "foreign" },
