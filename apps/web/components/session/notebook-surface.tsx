@@ -368,10 +368,10 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
                 onEdit={(source) => edit(cell.id, source)}
                 onRun={() => void run(cell.id)}
                 onRunAll={() => void run()}
-                onInsert={(where, type) =>
+                onInsert={(where) =>
                   // ABOVE IS `after: index - 1`, which is -1 at the top — the
                   // same number the strip above the first cell already sends.
-                  void structural({ kind: "insert", after: where === "above" ? cell.index - 1 : cell.id, source: "", cellType: type })
+                  void structural({ kind: "insert", after: where === "above" ? cell.index - 1 : cell.id, source: "", cellType: "code" })
                 }
                 onMove={(to) => void structural({ kind: "move", cellId: cell.id, to })}
                 onClearOutputs={() => void structural({ kind: "clearOutputs", cellId: cell.id })}
@@ -450,7 +450,7 @@ function CellMenu({
   running: boolean;
   onRun: () => void;
   onRunAll: () => void;
-  onInsert: (where: "above" | "below", type: "code" | "markdown") => void;
+  onInsert: (where: "above" | "below") => void;
   onMove: (to: number) => void;
   onClearOutputs: () => void;
   onDelete: () => void;
@@ -478,9 +478,14 @@ function CellMenu({
           Run all
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={() => onInsert("above", "code")}>Insert code above</ContextMenuItem>
-        <ContextMenuItem onClick={() => onInsert("below", "code")}>Insert code below</ContextMenuItem>
-        <ContextMenuItem onClick={() => onInsert("below", "markdown")}>Insert markdown below</ContextMenuItem>
+        {/* TWO ITEMS, AND BOTH MAKE A CODE CELL. The type is deliberately not
+            offered here: the hover strip between every pair of cells already
+            gives both types in place, with one click and no menu — and a
+            markdown-above/markdown-below pair would double this list to say
+            what the strip says better. A cell inserted as the wrong type is
+            one "Change to Markdown" away, three rows down. */}
+        <ContextMenuItem onClick={() => onInsert("above")}>Insert cell above</ContextMenuItem>
+        <ContextMenuItem onClick={() => onInsert("below")}>Insert cell below</ContextMenuItem>
         <ContextMenuItem disabled={cell.index === 0} onClick={() => onMove(cell.index - 1)}>
           Move up
         </ContextMenuItem>
@@ -518,7 +523,7 @@ function Cell({
   onEdit: (source: string) => void;
   onRun: () => void;
   onRunAll: () => void;
-  onInsert: (where: "above" | "below", type: "code" | "markdown") => void;
+  onInsert: (where: "above" | "below") => void;
   onMove: (to: number) => void;
   onClearOutputs: () => void;
   onDelete: () => void;

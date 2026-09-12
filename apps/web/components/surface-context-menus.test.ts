@@ -76,9 +76,8 @@ describe("the notebook cell's menu", () => {
     const source = nb();
     expect(source).toContain("<ContextMenuItem disabled={running} onClick={onRun}>");
     expect(source).toContain("<ContextMenuItem disabled={running} onClick={onRunAll}>");
-    expect(source).toContain('onClick={() => onInsert("above", "code")}');
-    expect(source).toContain('onClick={() => onInsert("below", "code")}');
-    expect(source).toContain('onClick={() => onInsert("below", "markdown")}');
+    expect(source).toContain('onClick={() => onInsert("above")}');
+    expect(source).toContain('onClick={() => onInsert("below")}');
     expect(source).toContain('onClick={() => onType(code ? "markdown" : "code")}');
     expect(source).toContain("<ContextMenuItem variant=\"destructive\" onClick={onDelete}>");
     expect(source).toContain("onClick={() => void navigator.clipboard.writeText(source)}");
@@ -103,6 +102,18 @@ describe("the notebook cell's menu", () => {
 
   test("Insert above is `after: index - 1`, which is the same -1 the top strip already sends", () => {
     expect(nb()).toContain('after: where === "above" ? cell.index - 1 : cell.id');
+  });
+
+  test("insert offers a PLACE, not a type — the hover strip between cells already offers both, in place", () => {
+    const source = nb();
+    expect(source).toContain("Insert cell above");
+    expect(source).toContain("Insert cell below");
+    // No markdown/code split in the menu, so the list cannot grow a lopsided
+    // "markdown below" with no "markdown above" beside it.
+    expect(source).not.toContain("Insert markdown");
+    expect(source).not.toContain("Insert code");
+    // The strip is still the thing that does both types.
+    expect(source).toContain('onClick={() => onInsert("markdown")}');
   });
 
   test("Copy source copies the DRAFT when there is one — what is on screen, not what is on disk", () => {
