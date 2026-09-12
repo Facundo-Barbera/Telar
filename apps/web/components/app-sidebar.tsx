@@ -127,6 +127,7 @@ import {
 } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { NewConversationDialog, type NewConversationTarget } from "@/components/new-conversation-dialog";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -427,6 +428,9 @@ function SidebarBody() {
    * the sessions; a Mac that is this Mac contributes nothing here.
    */
   const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
+  /** The New-conversation palette. Opened by the button and by ⌘N, which is
+   *  the whole point of it being state here rather than inside the button. */
+  const [pickerOpen, setPickerOpen] = useState(false);
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
@@ -974,7 +978,13 @@ function SidebarBody() {
    */
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
-  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9));
+  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9), {
+    // ⌘N ASKS RATHER THAN GUESSES. The table's destination for this binding is
+    // "/", which resolves a project and opens its canvas — the same guess the
+    // button used to make. Now both open the palette, so the key and the button
+    // cannot disagree about what New conversation means.
+    "new-session": () => setPickerOpen(true),
+  });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -1021,12 +1031,33 @@ function SidebarBody() {
     const remote = remoteProjects[0];
     return remote ? { projectId: remote.id, hostId: remote.hostId } : undefined;
   })();
-  const composerProjectId = composerTarget?.projectId;
-
   const startSession = (target = composerTarget) => {
     onNavigate();
     router.push(target ? canvasHref(target.projectId, target.hostId) : "/");
   };
+
+  /**
+   * EVERY PROJECT THIS COCKPIT CAN REACH, in one list, this Mac's first.
+   *
+   * The rail already holds both halves — it reads each paired Mac's registry on
+   * the same pass it reads its sessions — so the palette costs no request of
+   * its own and can never offer a project the rail does not show.
+   */
+  const pickerTargets: NewConversationTarget[] = [
+    ...projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.root ? { root: project.root } : {}),
+    })),
+    ...remoteProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      ...(project.icon ? { icon: project.icon } : {}),
+      hostId: project.hostId,
+      hostName: project.hostName,
+    })),
+  ];
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1055,6 +1086,16 @@ function SidebarBody() {
 
   return (
     <>
+      {/* MOUNTED WITH THE RAIL, not inside the button: ⌘N opens it from
+          anywhere in the cockpit, and the rail is the one component alive on
+          every route. It renders into a portal, so its place here is about
+          lifetime rather than layout. */}
+      <NewConversationDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        targets={pickerTargets}
+        onChoose={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+      />
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}
@@ -1119,70 +1160,23 @@ function SidebarBody() {
                 }
               />
             </div>
-            {/* A PRESS OPENS THE GUESS; A LONG PRESS (or right-click) PICKS THE
-                MAC. One paired Mac and the whole choice is "here or there",
-                which is exactly what was missing: there was no way to say
-                "start this on the mini" without first finding one of its
-                conversations. No paired Mac and the menu never appears — the
-                button is the button it always was. */}
-            {remoteProjects.length > 0 ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="shrink-0"
-                      aria-label="New conversation"
-                      title="New conversation — choose where"
-                    />
-                  }
-                >
-                  <MessageSquarePlusIcon />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-64">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>On this Mac</DropdownMenuLabel>
-                    {projects.map((project) => (
-                      <DropdownMenuItem key={project.id} onClick={() => startSession({ projectId: project.id })}>
-                        <ProjectAvatar name={project.name} projectId={project.id} {...(project.icon ? { icon: project.icon } : {})} size={14} />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))}
-                    {projects.length === 0 && <DropdownMenuItem disabled>No projects here yet</DropdownMenuItem>}
-                  </DropdownMenuGroup>
-                  {hosts
-                    .filter((host) => remoteProjects.some((project) => project.hostId === host.id))
-                    .map((host) => (
-                      <DropdownMenuGroup key={host.id}>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel className="flex items-center gap-1.5">
-                          <MonitorIcon className="size-3" /> On {host.name}
-                        </DropdownMenuLabel>
-                        {remoteProjects
-                          .filter((project) => project.hostId === host.id)
-                          .map((project) => (
-                            <DropdownMenuItem key={`${host.id}:${project.id}`} onClick={() => startSession({ projectId: project.id, hostId: host.id })}>
-                              <ProjectAvatar name={project.name} size={14} />
-                              <span className="truncate">{project.name}</span>
-                            </DropdownMenuItem>
-                          ))}
-                      </DropdownMenuGroup>
-                    ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="shrink-0"
-                aria-label="New conversation"
-                title={composerProjectId ? "New conversation" : "Register a project first"}
-                onClick={() => startSession()}
-              >
-                <MessageSquarePlusIcon />
-              </Button>
-            )}
+            {/* ONE CONTROL, WHETHER OR NOT A MAC IS PAIRED. This used to be two:
+                a plain button that opened the guess, and — only on a cockpit
+                with a remote — a menu of every project on every Mac. So the one
+                affordance for "start this on the mini" was invisible on the
+                machine most people run, and naming a project at all meant
+                navigating to it first. The palette answers both, and ⌘N opens
+                the same thing the button does. */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0"
+              aria-label="New conversation"
+              title="New conversation — choose the project"
+              onClick={() => setPickerOpen(true)}
+            >
+              <MessageSquarePlusIcon />
+            </Button>
           </div>
 
           <div className="flex items-center gap-1">
