@@ -344,7 +344,10 @@ export function FilesSurface({
   }
 
   return (
-    <div className="flex min-h-full flex-col">
+    /* FULL HEIGHT, THREE BANDS: a fixed header, ONE scrolling row list, a fixed
+       foot. The scroller used to be the box around this surface, which took the
+       header with it — see the note in session/editor-surface.tsx. */
+    <div className="flex h-full min-h-0 flex-col">
       {/* THE SUBHEADER, from t3 code: refresh and search on one thin line.
           It wears `EDITOR_HEADER_ROW` — the SAME string as the Editor's
           open-file strip on the other side of the `border-r`, which is the
@@ -394,48 +397,54 @@ export function FilesSurface({
         </div>
       </div>
 
-      {!listing ? (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
-          <Spinner className="size-3" /> reading the checkout…
-        </p>
-      ) : rows.length === 0 ? (
-        <PanelEmpty icon={<FolderTreeIcon />} title={searching ? "Nothing matches" : "This checkout is empty"}>
-          {searching
-            ? `No path in this checkout contains “${query.trim()}”.`
-            : listing.repository
-              ? "git lists no files here — every path is ignored."
-              : "There are no files in this directory."}
-        </PanelEmpty>
-      ) : (
-        <div role="tree" aria-label="Workspace files" onKeyDown={onKeyDown} className="flex flex-col py-0.5">
-          {rows.map((row) => (
-            <FileTreeRow
-              key={row.node.path}
-              row={row}
-              expanded={expanded.has(row.node.path)}
-              // One tab stop, and it lands on the row you last touched — or the
-              // first row, so a fresh tree is reachable at all.
-              focused={focusedPath === undefined ? row === rows[0] : focusedPath === row.node.path}
-              open={openTabs.has(row.node.path)}
-              {...(statuses.get(row.node.path) ? { status: statuses.get(row.node.path)! } : {})}
-              {...(row.node.kind === "directory" && dirty.has(row.node.path) ? { dirtyInside: true } : {})}
-              onToggle={() => toggle(row.node.path)}
-              onOpen={() => onOpenFile(row.node.path, "preview")}
-              onKeep={() => onOpenFile(row.node.path, "pin")}
-              onFocus={() => setFocusedPath(row.node.path)}
-              register={(element) => {
-                if (element) rowsRef.current.set(row.node.path, element);
-                else rowsRef.current.delete(row.node.path);
-              }}
-            />
-          ))}
-        </div>
-      )}
+      {/* THE ONE SCROLLING BAND. The rows and every state that stands in for
+          them live in here, so the header above stays put. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {!listing ? (
+          <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+            <Spinner className="size-3" /> reading the checkout…
+          </p>
+        ) : rows.length === 0 ? (
+          <PanelEmpty icon={<FolderTreeIcon />} title={searching ? "Nothing matches" : "This checkout is empty"}>
+            {searching
+              ? `No path in this checkout contains “${query.trim()}”.`
+              : listing.repository
+                ? "git lists no files here — every path is ignored."
+                : "There are no files in this directory."}
+          </PanelEmpty>
+        ) : (
+          <div role="tree" aria-label="Workspace files" onKeyDown={onKeyDown} className="flex flex-col py-0.5">
+            {rows.map((row) => (
+              <FileTreeRow
+                key={row.node.path}
+                row={row}
+                expanded={expanded.has(row.node.path)}
+                // One tab stop, and it lands on the row you last touched — or the
+                // first row, so a fresh tree is reachable at all.
+                focused={focusedPath === undefined ? row === rows[0] : focusedPath === row.node.path}
+                open={openTabs.has(row.node.path)}
+                {...(statuses.get(row.node.path) ? { status: statuses.get(row.node.path)! } : {})}
+                {...(row.node.kind === "directory" && dirty.has(row.node.path) ? { dirtyInside: true } : {})}
+                onToggle={() => toggle(row.node.path)}
+                onOpen={() => onOpenFile(row.node.path, "preview")}
+                onKeep={() => onOpenFile(row.node.path, "pin")}
+                onFocus={() => setFocusedPath(row.node.path)}
+                register={(element) => {
+                  if (element) rowsRef.current.set(row.node.path, element);
+                  else rowsRef.current.delete(row.node.path);
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* THE FOOT SAYS WHAT THE LIST IS, and every way it might not be all of
-          it. A tree that quietly stops at 400 rows reads as a small repository. */}
+          it. A tree that quietly stops at 400 rows reads as a small repository.
+          It sits below the scroller rather than at the end of it, so a long tree
+          cannot scroll the count away. */}
       {listing && (
-        <p className="mt-auto border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+        <p className="shrink-0 border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
           {searching
             ? `${searched.matches.toLocaleString("en-US")} of ${listing.files.length.toLocaleString("en-US")} paths match${
                 searched.truncated ? `, showing the first ${searched.files.length}` : ""

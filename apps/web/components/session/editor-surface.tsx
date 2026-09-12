@@ -254,9 +254,14 @@ export function EditorSurface({
   return (
     <div className="flex h-full min-h-0">
       {/**
-       * THE TREE, IN ITS OWN SCROLLER. `FilesSurface` draws a `min-h-full`
-       * column with a sticky foot, so it needs a box that scrolls — the same
-       * one it had as a panel tab, just narrower.
+       * THE TREE, FULL HEIGHT AND NOT ITSELF A SCROLLER.
+       *
+       * The overflow used to be HERE, which scrolled the tree's header away
+       * with its rows while the strip and the address row opposite never moved
+       * — so the seam came apart the moment anybody scrolled the tree (#275).
+       * `FilesSurface` owns the scrolling now: its header and its foot are
+       * fixed siblings of one scrolling row list. This box only gives it a
+       * definite height to divide up.
        */}
       {state.explorerOpen && (
         <div
@@ -264,7 +269,7 @@ export function EditorSurface({
              (`role="tree"`, "Workspace files"), and a name on a generic box
              around it is a name screen readers cannot use anyway. */
           style={{ width: EXPLORER_WIDTH }}
-          className="flex shrink-0 flex-col overflow-y-auto border-r border-border"
+          className="flex min-h-0 shrink-0 flex-col border-r border-border"
         >
           <FilesSurface
             {...(sessionId ? { sessionId } : {})}
