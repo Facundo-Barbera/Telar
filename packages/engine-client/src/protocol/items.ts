@@ -189,6 +189,21 @@ export const ProviderWaitDetail = z.object({
   /** HTTP status of the failed request. Absent for a connection error that
    *  never got a response, which the SDK reports as a null status. */
   status: z.number().int().optional(),
+  /**
+   * HOW LONG THE FAILED ATTEMPT ALREADY STOOD STILL, for the one retry cause
+   * where that is the whole story.
+   *
+   * `delayMs` is the backoff AHEAD — typically a second or two — and on its own
+   * it describes a retry as cheap. When the CLI gives up on a request that never
+   * sent response headers, the expensive part is already behind it: the attempt
+   * sat on an open socket for this long with nothing on the wire. A row reading
+   * "retrying in 1s after a connection error" is true and useless about a turn
+   * that has just lost two minutes; this is the number that explains it.
+   *
+   * Present only for that cause (the SDK's `no_response` block), so absent means
+   * the request failed with an answer rather than with silence.
+   */
+  waitedMs: z.number().int().nonnegative().optional(),
   /** `rate_limit`: the account's state. `allowed` is not surfaced — a routine
    *  "still fine" event is not a wait and would be noise on the timeline. */
   limitStatus: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
