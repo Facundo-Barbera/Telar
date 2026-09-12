@@ -108,6 +108,7 @@ import {
   type SessionOrigin,
   type Subscription,
   type Turn,
+  type TurnFailure as TurnFailureShape,
   type TurnFailureCode,
   type TurnObservation,
   type WakeKind,
@@ -386,7 +387,7 @@ function requestTitle(detail: RequestDetail): string {
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type JournalEntry = DistributiveOmit<EngineEvent, "id" | "at" | "sessionId" | "runId">;
 
-type TurnFailure = { code: TurnFailureCode; message: string };
+type TurnFailure = TurnFailureShape;
 
 /**
  * WHICH FAILURES A WORKER MAY REPORT — a strict subset of `TurnFailureCode`.
@@ -7275,10 +7276,25 @@ export class EngineStore {
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: TurnFailure["code"]; message: string },
+    failure: { code: TurnFailure["code"]; message: string; resumeAt?: number; limitType?: TurnFailure["limitType"] },
   ): Turn {
     if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
       throw new EngineStateError("invalid_request", "turn failure is invalid");
+    }
+    /**
+     * `rate_limited` WITHOUT A RESUME TIME IS REFUSED, rather than stored as a
+     * wait nobody can schedule. The whole of the code's meaning is "come back
+     * at this instant"; a row saying "waiting for the limit to reset" with no
+     * instant would sit failed for ever while claiming to be temporary, and the
+     * sweep's own predicate would skip it silently. The driver only throws with
+     * a reset time, so reaching this is a contract violation, not a user error.
+     */
+    const resumeAt =
+      typeof failure.resumeAt === "number" && Number.isFinite(failure.resumeAt) && failure.resumeAt >= 0
+        ? Math.trunc(failure.resumeAt)
+        : undefined;
+    if (failure.code === "rate_limited" && resumeAt === undefined) {
+      throw new EngineStateError("invalid_request", "a rate-limited failure must say when the limit resets");
     }
     const queue = this.readQueue(sessionId);
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
@@ -7286,7 +7302,14 @@ export class EngineStore {
     turn.state = "failed";
     turn.completedAt = at;
     turn.updatedAt = at;
-    turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
+    turn.failure = {
+      code: failure.code,
+      message: failure.message.slice(0, 4_000),
+      // Only on the code that means them: a `driver_failed` carrying a reset
+      // time would be a row inviting a resume that nothing will ever perform.
+      ...(failure.code === "rate_limited" && resumeAt !== undefined ? { resumeAt } : {}),
+      ...(failure.code === "rate_limited" && failure.limitType ? { limitType: failure.limitType } : {}),
+    };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     /**
      * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash

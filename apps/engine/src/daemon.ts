@@ -22,6 +22,7 @@ import {
   resolveMcpServers,
   TurnModelSelection,
   WakeKind as WakeKindSchema,
+  WorkerTurnFailure,
   WorkerTurnFailureCode,
   type WakeKind,
   type EngineDiscovery,
@@ -3264,7 +3265,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
           const code = parsedCode.data;
-          writeJson(response, 200, await execution.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }));
+          // `rate_limited` carries the two facts the sweep schedules from. Read
+          // through the contract's own schema rather than cast: `resumeAt`
+          // arrives over HTTP as whatever the body held, and a NaN reaching the
+          // store would be a turn that never resumes and never says why.
+          const parsedFailure = WorkerTurnFailure.safeParse({
+            code,
+            message: stringValue(input.message, "failure message")!,
+            ...(input.resumeAt === undefined ? {} : { resumeAt: input.resumeAt }),
+            ...(input.limitType === undefined ? {} : { limitType: input.limitType }),
+          });
+          if (!parsedFailure.success) throw new HttpError(400, "invalid_request", "turn failure is invalid");
+          writeJson(response, 200, await execution.failTurn(turn.sessionId, turn.runId, claimToken, parsedFailure.data));
         }
         return;
       }

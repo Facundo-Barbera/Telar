@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
-import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
+import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim, WorkerTurnFailure } from "@telar/engine-client";
 import { clientDsCapability } from "./ds/client-capability";
 import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
@@ -19,7 +19,7 @@ import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from ".
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
 import { ratifiedReadTools } from "./plugins/policy";
-import { setPluginReadTools } from "./driver";
+import { RateLimitedError, setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import type { LoginGrantStore } from "./secrets/login-grants";
@@ -1719,10 +1719,23 @@ export class EngineWorker {
         });
         return;
       }
-      const failure =
-        error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
-          ? { code: "provider_unavailable" as const, message: error.message }
-          : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "Telar driver failed" };
+      /**
+       * A USAGE LIMIT IS NOT A DRIVER FAULT, and this is the one place that
+       * distinction survives into the record. `resumeAt` and `limitType` ride
+       * along because the engine schedules the resume from them — without them
+       * the code would say "wait" and give nothing to wait for.
+       */
+      const failure: WorkerTurnFailure =
+        error instanceof RateLimitedError
+          ? {
+              code: "rate_limited" as const,
+              message: error.message,
+              resumeAt: error.resumeAt,
+              ...(error.limitType === undefined ? {} : { limitType: error.limitType }),
+            }
+          : error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
+            ? { code: "provider_unavailable" as const, message: error.message }
+            : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "Telar driver failed" };
       await ensureRunning();
       await this.settle({
         sessionId,
