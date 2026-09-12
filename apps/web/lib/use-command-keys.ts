@@ -50,15 +50,36 @@ function desktop(): DesktopCommandKeyBridge | undefined {
  * never reserved, and the desktop shell (where this app actually runs) routes
  * every one of them through the menu.
  */
-export function useCommandKeys(rows: readonly SidebarSession[]) {
+export function useCommandKeys(
+  rows: readonly SidebarSession[],
+  /**
+   * A BINDING THE CALLER SERVES ITSELF, and the reason the destination table
+   * is not simply edited: ⌘N now opens the rail's project palette, and a
+   * palette is a piece of the rail's own state — not an href this module could
+   * name. Anything not overridden keeps the table's destination, so the
+   * override is one binding rather than a second dispatcher.
+   *
+   * Read through a ref, like `rows`: the sidebar re-renders on every poll and
+   * re-binding the window listener and the menu bridge per tick was churn for
+   * no change in behaviour.
+   */
+  overrides?: Partial<Record<CommandKeyId, () => void>>,
+) {
   const router = useRouter();
   const recentHrefs = useRef<string[]>([]);
+  const latestOverrides = useRef(overrides);
   useEffect(() => {
     recentHrefs.current = rows.map((session) => sessionHref(session));
+    latestOverrides.current = overrides;
   });
 
   useEffect(() => {
     const run = (id: CommandKeyId) => {
+      const override = latestOverrides.current?.[id];
+      if (override) {
+        override();
+        return;
+      }
       const destination = commandKeyDestination(id, recentHrefs.current);
       if (destination.kind === "noop") return;
       if (destination.kind === "open-tab" && !desktop()?.isDesktop) {
