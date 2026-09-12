@@ -111,10 +111,15 @@ export function workspaceFilePath(root: string | undefined, relative: string): s
  * conclusion nobody stated (see `remembersOpener`, which draws the same line
  * one step over for a reveal).
  */
+/** Which of the shell's two guards the target has to pass. A directory row in
+ *  the tree is still a directory to the shell, and sending it as a file would
+ *  be refused by the stat that exists to catch exactly that mix-up. */
+export type WorkspaceEntryKind = "file" | "directory";
+
 export type WorkspaceFileMenu = {
   /** Absent when this machine cannot act on the file — see the note above. */
-  reveal?: (relativePath: string) => void;
-  open?: (relativePath: string) => void;
+  reveal?: (relativePath: string, kind: WorkspaceEntryKind) => void;
+  open?: (relativePath: string, kind: WorkspaceEntryKind) => void;
   /** "Open in Zed". The item's own words, so it never says "Open in undefined". */
   openLabel: string;
   /** The brand mark id for `OpenerIcon`; absent draws the neutral glyph. */
@@ -170,13 +175,13 @@ export function useWorkspaceFileMenu(input: { workspacePath?: string | undefined
   return {
     ...(able
       ? {
-          reveal: (relativePath: string) => {
+          reveal: (relativePath: string, kind: WorkspaceEntryKind) => {
             const target = workspaceFilePath(workspacePath, relativePath);
-            if (target) void files!.revealFile!(target);
+            if (target) void (kind === "file" ? files!.revealFile!(target) : files!.reveal(target));
           },
-          open: (relativePath: string) => {
+          open: (relativePath: string, kind: WorkspaceEntryKind) => {
             const target = workspaceFilePath(workspacePath, relativePath);
-            if (target) void files!.openFile!(target, primary?.openerId);
+            if (target) void (kind === "file" ? files!.openFile!(target, primary?.openerId) : files!.open(target, primary?.openerId));
           },
         }
       : {}),
