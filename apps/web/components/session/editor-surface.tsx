@@ -42,6 +42,7 @@ import {
   type OpenIntent,
 } from "@/lib/editor-workspace";
 import { discardDraft, draftScope } from "@/lib/editor-drafts";
+import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
@@ -253,9 +254,14 @@ export function EditorSurface({
   return (
     <div className="flex h-full min-h-0">
       {/**
-       * THE TREE, IN ITS OWN SCROLLER. `FilesSurface` draws a `min-h-full`
-       * column with a sticky foot, so it needs a box that scrolls — the same
-       * one it had as a panel tab, just narrower.
+       * THE TREE, FULL HEIGHT AND NOT ITSELF A SCROLLER.
+       *
+       * The overflow used to be HERE, which scrolled the tree's header away
+       * with its rows while the strip and the address row opposite never moved
+       * — so the seam came apart the moment anybody scrolled the tree (#275).
+       * `FilesSurface` owns the scrolling now: its header and its foot are
+       * fixed siblings of one scrolling row list. This box only gives it a
+       * definite height to divide up.
        */}
       {state.explorerOpen && (
         <div
@@ -263,7 +269,7 @@ export function EditorSurface({
              (`role="tree"`, "Workspace files"), and a name on a generic box
              around it is a name screen readers cannot use anyway. */
           style={{ width: EXPLORER_WIDTH }}
-          className="flex shrink-0 flex-col overflow-y-auto border-r border-border"
+          className="flex min-h-0 shrink-0 flex-col border-r border-border"
         >
           <FilesSurface
             {...(sessionId ? { sessionId } : {})}
@@ -281,8 +287,12 @@ export function EditorSurface({
          * rounded chips, close on hover, middle-click closes — because it is the
          * same gesture one level down, and a second dialect of "tab" inside the
          * first would be the thing that made this feel like an app inside an app.
+         *
+         * Its height and inset come from `EDITOR_HEADER_ROW`, which the tree's
+         * own header wears too — that shared string is what keeps the two sides
+         * of the `border-r` from stepping past each other.
          */}
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-1.5">
+        <div className={cn(EDITOR_HEADER_ROW, "gap-1")}>
           <button
             type="button"
             aria-label={state.explorerOpen ? "Hide the file tree" : "Show the file tree"}

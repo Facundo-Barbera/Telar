@@ -30,9 +30,8 @@ import { useCallback, useEffect, useState } from "react";
 import { FileIcon, RotateCwIcon } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { rawFileUrl } from "@/lib/file-urls";
-import { FileKindIcon } from "@/components/session/file-icon";
+import { EditorAddressRow } from "@/components/session/editor-chrome";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -94,7 +93,6 @@ export function PdfSurface({
   }, [load]);
 
   const src = rawFileUrl(path, { ...(sessionId ? { sessionId } : {}), ...(projectId ? { projectId } : {}), version: generation });
-  const cut = path.lastIndexOf("/");
 
   if (!sessionId && !projectId) {
     return (
@@ -106,20 +104,10 @@ export function PdfSurface({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* The same address row every file tab wears — and draggable for the
-          same reason: the thing you are looking at is the thing you mention. */}
-      <div
-        draggable
-        onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(path))}
-        title={`${path} — drag into the message to reference this file`}
-        className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
-      >
-        <FileKindIcon path={path} className="size-3.5" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
-          {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
-          <span className="text-foreground">{path.slice(cut + 1)}</span>
-        </span>
-        {file && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{size(file.bytes)}</span>}
+      {/* The same address row every file tab wears — literally the same
+          component (session/editor-chrome.tsx), so a PDF and a code file put
+          their seam in the same place. */}
+      <EditorAddressRow path={path} {...(file ? { detail: size(file.bytes) } : {})}>
         <button
           type="button"
           aria-label="Re-read this file"
@@ -133,7 +121,7 @@ export function PdfSurface({
         >
           <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
         </button>
-      </div>
+      </EditorAddressRow>
 
       {error ? (
         <PanelEmpty icon={<FileIcon />} title="Could not read this file">
