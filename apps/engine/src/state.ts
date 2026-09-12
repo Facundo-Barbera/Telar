@@ -1345,7 +1345,7 @@ export class EngineStore {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
       // Rolled back under this store's feet: anything read or written inside
       // the transaction describes a queue sqlite no longer has.
-      this.queueCache.clear(); this.queueChangeAnnounced = false;
+      this.queueCache.clear(); this.itemsCache.clear(); this.queueChangeAnnounced = false;
       this.pendingStopTasks.clear(); this.afterCommit = [];
       throw error;
     } finally { this.commandDepth -= 1; }
@@ -6164,11 +6164,22 @@ export class EngineStore {
    *
    * Pages are read by turn position in queue order (append order), so the
    * cursor is just a runId — no timestamp ties, no index.
+   *
+   * REQUESTS FOLLOW THEIR TURNS TOO, plus every OPEN one wherever it sits.
+   * They were the one key that ignored the window: on the dogfood store the
+   * largest session's snapshot carried 549 requests / 315 KB, of which 44
+   * belonged to the window and zero were unresolved — 292 KB, re-read every
+   * second per open cockpit, that nothing could render. An open request rides
+   * along regardless of the page because an unanswered question on a paged-out
+   * turn must still reach the composer, and it rides along on EVERY page
+   * because a client replaces the key rather than merging it
+   * (`SessionSyncEngine.swift`).
    */
   snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
     turns: Turn[];
     items: Item[];
     tasks: Task[];
+    requests: EngineRequest[];
     page: { before: string | null; more: boolean };
   } {
     this.getSession(sessionId);
@@ -6190,6 +6201,7 @@ export class EngineStore {
       turns,
       items: [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId)),
       tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
+      requests: [...this.readRequests(sessionId).values()].filter((request) => chosen.has(request.runId) || request.state === "open"),
       page: { before: start > 0 ? (paged[0]?.runId ?? null) : null, more: start > 0 },
     });
   }
@@ -6740,7 +6752,7 @@ export class EngineStore {
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
     const tasks = this.readTasks(sessionId);
-    const projection = { items: this.readItems(sessionId), tasks, tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks, itemsTouched: false, tasksTouched: false, turnTouched: false };
     let accepted = 0;
     for (const observation of parsed.data) {
       if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
@@ -7216,11 +7228,22 @@ export class EngineStore {
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), tasksTouched: false, turnTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), itemsTouched: false, tasksTouched: false, turnTouched: false };
     for (const observation of parsed.data) {
       this.journalObservation(sessionId, turn, observation, projection);
     }
-    this.writeItems(sessionId, projection.items);
+    /**
+     * THE SAME RULE ITEMS WERE THE EXCEPTION TO.
+     *
+     * A `content.delta` deliberately does not touch this projection — that is
+     * why the deltas are journalled and the text folded in at `item.completed`
+     * — and yet every batch rewrote the whole document anyway. On a session
+     * holding 327 items that is 750 KB re-serialised and re-stored per streamed
+     * token-chunk, which measured as the largest single cost of a streaming
+     * turn: 2.09 ms per delta, against 0.11 ms for the journal insert it was
+     * wrapped around.
+     */
+    if (projection.itemsTouched) this.writeItems(sessionId, projection.items);
     // Most batches carry no task at all — a rewrite per batch would be a file
     // write per streamed provider message for nothing. Same rule for the
     // queue: only a `provider.session` observation ever mutates the turn.
@@ -7732,6 +7755,7 @@ export class EngineStore {
     // a session that no longer exists.
     this.liveQueueIndex?.delete(sessionId);
     this.queueCache.delete(sessionId);
+    this.itemsCache.delete(sessionId);
     // The journal is gone with the directory; a session recreated under this
     // id starts a new one from 1, not from where the old one stopped.
     this.journalHead.delete(sessionId);
@@ -8864,16 +8888,47 @@ export class EngineStore {
    * require that replay, which is the same reason `queue.json` exists beside
    * `turn.*`.
    */
+  /**
+   * THE PARSED PROJECTION, KEPT UNTIL SOMETHING WRITES IT — `queueCache`'s
+   * bargain, for the document that is bigger than the queue.
+   *
+   * Reading items is a sqlite row, a `JSON.parse` and a zod validation of every
+   * row in it, and the streaming path asks for it once per `reportObservations`
+   * to answer one question: does this delta's item exist. On a session holding
+   * 327 items that read was most of the 1.57 ms a streamed chunk cost.
+   *
+   * Sound for the same reason the queue's is: one writer, in this process,
+   * dropped by `writeItems` rather than replaced. The entries are SHARED — a
+   * caller gets a Map of its own over the same `Item` objects — which every
+   * caller already respects by replacing an item (`items.set(id, {...old})`)
+   * rather than editing one in place. Nothing here may edit an `Item` in place.
+   *
+   * BOUNDED, unlike the queue's, which prunes itself against the live index:
+   * there is no equivalent index for items, and one entry per session ever read
+   * would be ~98 MB on the dogfood store. The cap is the number of sessions
+   * that can plausibly be streaming at once; past it the oldest goes.
+   */
+  private readonly itemsCache = new Map<string, Item[]>();
+  private static readonly ITEMS_CACHE_LIMIT = 8;
+
   private readItems(sessionId: string): Map<string, Item> {
+    const cached = this.itemsCache.get(sessionId);
+    if (cached) return new Map(cached.map((item) => [item.id, item]));
     const stored = this.readDocument(itemsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    if (this.itemsCache.size >= EngineStore.ITEMS_CACHE_LIMIT) {
+      const oldest = this.itemsCache.keys().next();
+      if (!oldest.done) this.itemsCache.delete(oldest.value);
+    }
+    this.itemsCache.set(sessionId, parsed.data);
     return new Map(parsed.data.map((item) => [item.id, item]));
   }
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
     this.writeDocument(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+    this.itemsCache.delete(sessionId);
   }
 
   /**
@@ -9149,7 +9204,7 @@ export class EngineStore {
     sessionId: string,
     turn: Turn,
     observation: TurnObservation,
-    projection: { items: Map<string, Item>; tasks: Map<string, Task>; tasksTouched: boolean; turnTouched: boolean },
+    projection: { items: Map<string, Item>; tasks: Map<string, Task>; itemsTouched: boolean; tasksTouched: boolean; turnTouched: boolean },
   ): void {
     const at = this.now();
     const items = projection.items;
@@ -9191,6 +9246,7 @@ export class EngineStore {
         ...(observation.detail ? { detail: observation.detail } : {}),
       };
       items.set(item.id, item);
+      projection.itemsTouched = true;
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       // The text lives in `detail` from here on, so the accumulator's copy is
       // dead weight. This is what bounds the map: one entry per OPEN item.
@@ -9368,6 +9424,7 @@ export class EngineStore {
       ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
     };
     items.set(item.id, item);
+    projection.itemsTouched = true;
     const written = this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
     // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
     // the accumulator can know it holds the whole prefix. Every later extend

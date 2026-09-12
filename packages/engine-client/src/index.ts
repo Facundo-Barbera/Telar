@@ -255,12 +255,19 @@ export type SessionSnapshot = {
    * Present when the read was windowed (`session(id, { turns })`): the page
    * above this one is `session(id, { turns, before })`, and `null` once the
    * window reaches the session's first turn. Every unsettled turn is on the
-   * first page whatever the limit; `requests` are never windowed.
+   * first page whatever the limit.
    */
   page?: SnapshotPage;
   session: Session;
   turns: Turn[];
   items: Item[];
+  /**
+   * The requests filed under the turns in this window, plus EVERY open one
+   * wherever its turn sits — an unanswered question on a paged-out turn is
+   * still the session's own state and still has to reach a composer. Settled
+   * requests outside the window are not here: they render nothing, and on a
+   * long session they were the largest thing in the snapshot after `items`.
+   */
   requests: EngineRequest[];
   /**
    * Who this session is working on behalf of, and what it has finished for
