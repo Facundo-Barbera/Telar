@@ -52,7 +52,7 @@ apps/engine/dist/
 # Xcode local state and build output (apps/ios)
 apps/ios/**/xcuserdata/
 apps/ios/**/project.xcworkspace/
-apps/ios/DerivedData/
+apps/ios/DerivedData*/
 
 # Python bytecode from the kernel bridge under apps/engine/src/ds.
 __pycache__/
