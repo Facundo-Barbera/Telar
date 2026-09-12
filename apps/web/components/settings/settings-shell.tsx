@@ -4,10 +4,12 @@
 // components/settings/settings-shell.tsx. A fixed side-nav (never scrolls) and
 // an internally-scrolling content pane with a sticky sub-header. Colors come
 // from theme tokens only; nothing hard-codes a palette.
-import { useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
+import { SettingsSearchNav } from "./settings-search-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -22,6 +24,64 @@ export type SettingsSection = {
   group?: string; // optional side-nav grouping header
 };
 
+/**
+ * WHERE A ROW IS, WITHOUT EVERY ROW BEING TOLD.
+ *
+ * A row's anchor has to name its pane and its group, or two panes with a
+ * "Model" row cannot both be linked to. Neither fact is a row's business: the
+ * pane is whatever the shell has selected and the group is the heading directly
+ * above, and threading both through every `<Row>` in a dozen section files
+ * would be a prop nobody reads and one more thing to get wrong on a move.
+ *
+ * So the frame states them once — the shell for the pane, the group for its own
+ * title — and `Row` derives the id it renders from `lib/settings-search.ts`,
+ * which is the SAME function the search index uses to point at rows that have
+ * never been rendered. Outside a shell (a Row mounted alone in a test) both are
+ * undefined and the id is the label's slug, which is still unique there.
+ */
+const SettingsPaneContext = createContext<string | undefined>(undefined);
+const SettingsGroupContext = createContext<string | undefined>(undefined);
+
+/**
+ * ARRIVING AT A ROW: scroll it to the middle, focus it, say so once.
+ *
+ * All three, because each covers a different reader. Centring is what makes a
+ * row findable on a pane of twenty; focus is what a screen reader follows and
+ * where the next Tab continues from; the pulse is what tells a sighted reader
+ * WHICH of the rows now on screen was the one they asked for — a scroll alone
+ * leaves that to guesswork.
+ *
+ * THE PULSE IS RE-ARMED BY HAND. Re-adding a class the element already carries
+ * does not restart a CSS animation, so choosing the same result twice would
+ * flash once and then go quiet; removing it and reading `offsetWidth` forces
+ * the reflow that makes the second press look like the first.
+ *
+ * Both motions are dropped for `prefers-reduced-motion`: the jump becomes an
+ * instant one and the pulse does not run. The row is still centred and still
+ * focused, which is the part that carries the meaning.
+ */
+function revealSettingsRow(id: string): boolean {
+  const row = document.getElementById(id);
+  if (!row) return false;
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  row.scrollIntoView({ block: "center", behavior: still ? "auto" : "smooth" });
+  // `preventScroll`, or focusing would jump the pane a second time and undo the
+  // centring we just asked for.
+  row.focus({ preventScroll: true });
+  if (!still) {
+    row.classList.remove("settings-search-target-pulse");
+    void row.offsetWidth;
+    row.classList.add("settings-search-target-pulse");
+    row.addEventListener("animationend", () => row.classList.remove("settings-search-target-pulse"), { once: true });
+  }
+  return true;
+}
+
+/** How long to keep looking for a row after switching to its pane. Sections
+ *  fetch before they render — Updates has no rows until the shell answers — so
+ *  the anchor may be a few frames or a round-trip away. */
+const REVEAL_TIMEOUT_MS = 2_000;
+
 export function SettingsShell({
   title,
   subtitle,
@@ -33,6 +93,7 @@ export function SettingsShell({
   saving,
   onSave,
   headerActions,
+  search,
   wide,
   children,
 }: {
@@ -46,6 +107,13 @@ export function SettingsShell({
   saving?: boolean;
   onSave?: () => void;
   headerActions?: ReactNode;
+  /**
+   * Rows this shell's panes hold, for the search field at the top of the nav.
+   * Omitted where there is no index to offer — project settings is a handful of
+   * panes with a project id in every route, and is not indexed (see
+   * settings-registry.ts). Without it the nav is exactly what it was.
+   */
+  search?: SettingsSearchIndex;
   /**
    * OPT OUT OF THE READING COLUMN. Every pane here is a list of rows, and a
    * list of rows wants a measure — hence the `max-w-2xl` that has held since
@@ -101,6 +169,37 @@ export function SettingsShell({
     };
   }, [dragWidth]);
 
+  /**
+   * The row a search result asked for, held until it exists.
+   *
+   * Choosing a result switches panes, and the pane it switches to renders on
+   * the next commit — and often fetches before it has any rows at all. So the
+   * id is parked here and an animation-frame loop looks for it until it turns
+   * up or the deadline passes; a row that never appears (its section is behind
+   * a toggle that is off) costs a couple of seconds of looking and nothing
+   * else, having already navigated to the right pane.
+   */
+  const [pendingRow, setPendingRow] = useState<string>();
+  useEffect(() => {
+    if (!pendingRow) return;
+    const deadline = Date.now() + REVEAL_TIMEOUT_MS;
+    let frame = 0;
+    const look = () => {
+      if (revealSettingsRow(pendingRow) || Date.now() > deadline) {
+        setPendingRow(undefined);
+        return;
+      }
+      frame = window.requestAnimationFrame(look);
+    };
+    frame = window.requestAnimationFrame(look);
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingRow]);
+
+  const jumpTo = (entry: SettingsSearchEntry) => {
+    onSelect(entry.pageId);
+    setPendingRow(entry.id);
+  };
+
   // Group the nav if any section declares a group; otherwise flat.
   const groups = sections.some((s) => s.group)
     ? Array.from(new Set(sections.map((s) => s.group ?? ""))).map((g) => ({
@@ -108,6 +207,40 @@ export function SettingsShell({
         items: sections.filter((s) => (s.group ?? "") === g),
       }))
     : [{ group: "", items: sections }];
+
+  // The panes themselves — a value rather than inline JSX because search
+  // REPLACES this list while a query is live, and the two states read better
+  // side by side than as a condition wrapped around forty lines.
+  const paneList = (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {groups.map(({ group, items }) => (
+        <div key={group} className="flex flex-col gap-0.5">
+          {group && (
+            <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">{group}</div>
+          )}
+          {items.map((s) => {
+            const Icon = s.icon;
+            const on = s.id === active;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => onSelect(s.id)}
+                className={cn(
+                  "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                  on ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
+              >
+                <Icon className={cn("size-4 shrink-0", on ? "text-foreground" : "text-muted-foreground/70")} />
+                <span className="flex-1 truncate">{s.label}</span>
+                {s.count != null && <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">{s.count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     // TWO ISLANDS ON THE SHELL'S GROUND, like the cockpit. `data-surfaces` is
@@ -177,47 +310,17 @@ export function SettingsShell({
             )}
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-4">
-          {groups.map(({ group, items }) => (
-            <div key={group} className="flex flex-col gap-0.5">
-              {group && (
-                <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">
-                  {group}
-                </div>
-              )}
-              {items.map((s) => {
-                const Icon = s.icon;
-                const on = s.id === active;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => onSelect(s.id)}
-                    className={cn(
-                      "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                      on
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                    )}
-                  >
-                    <Icon
-                      className={cn(
-                        "size-4 shrink-0",
-                        on ? "text-foreground" : "text-muted-foreground/70",
-                      )}
-                    />
-                    <span className="flex-1 truncate">{s.label}</span>
-                    {s.count != null && (
-                      <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">
-                        {s.count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+        {/* THE FIELD STANDS WHERE THE PANE LIST STARTS, and the results take
+            the list's place while there is a query — see settings-search-nav.tsx
+            for why this is not an overlay. A shell with no index (project
+            settings) renders exactly the nav it always had. */}
+        {search ? (
+          <SettingsSearchNav index={search} onChoose={jumpTo}>
+            {paneList}
+          </SettingsSearchNav>
+        ) : (
+          paneList
+        )}
         {/* THE ROAD OUT, AT THE FLOOR. The app rail keeps Settings in its
             footer; this nav keeps the way back in the same slot — the inverse
             door, where the hand already knows to look. Top of the nav is
@@ -295,7 +398,9 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
+          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>
+            <SettingsPaneContext.Provider value={activeSection.id}>{children}</SettingsPaneContext.Provider>
+          </div>
         </div>
       </div>
     </div>
@@ -344,7 +449,13 @@ export function SettingsGroup({
           space above the first field, and the next group supplies it below the
           last. A Row cannot know that — it also lives inside Panels, where
           eating its own padding pressed the text against the border. */}
-      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">{children}</div>
+      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+        {/* Only a plain-string title names a group for the rows beneath it. A
+            title spliced from a value ("Telar's servers") would put the project
+            name into every anchor under it, so those rows fall back to the
+            pane-and-label id rather than to an anchor that moves with data. */}
+        <SettingsGroupContext.Provider value={typeof title === "string" ? title : undefined}>{children}</SettingsGroupContext.Provider>
+      </div>
     </section>
   );
 }
@@ -362,29 +473,84 @@ export function SettingsGroup({
  * that costs nothing when there is nothing to undo, and saves a reader who
  * changed something an hour ago from having to remember what it was.
  *
+ * THE REVERT SLOT IS RESERVED WHETHER OR NOT IT HOLDS ANYTHING. The arrow comes
+ * and goes with the value, and rendered conditionally into the middle of the
+ * label line it re-laid out the row under the pointer — you changed a setting
+ * and the label you had just read moved sideways. The slot now sits at the END
+ * of the label line and is always present: empty it is invisible trailing
+ * space, and filled it pushes nothing.
+ *
+ * `status` IS THE ROW'S STATE, NOT ITS VALUE. "Not connected", "Beta", "Failed
+ * to start" — a word about the row itself, which is why it reads beside the
+ * label rather than inside `control`, where it would be mistaken for the thing
+ * you are meant to press. The value stays in `control`; the explanation stays
+ * in `hint`.
+ *
+ * `unavailable` IS THE THIRD STATE A SETTING CAN BE IN: not on, not off, not
+ * applicable — the plugin failed to start, this build has no desktop shell. The
+ * control stays VISIBLE and goes inert, because a row that silently vanished
+ * teaches the reader nothing and a row whose control is live teaches them the
+ * app is broken; the reason takes the hint slot, which is where they are
+ * already looking when a control does not answer.
+ *
  * THE CONTROL COLUMN NEVER SQUEEZES THE LABEL. Both sides declare their own
  * width and the row wraps on a narrow pane rather than compressing the label
  * into a ribbon of one word per line — which is exactly what happened when a
  * caller handed `control` three buttons.
+ *
+ * EVERY ROW IS A DESTINATION. It carries an id and takes focus programmatically
+ * (`tabIndex={-1}`, which keeps it out of the tab order for everyone who did
+ * not ask to go there) so settings search can scroll to it, focus it and pulse
+ * it once. The id is derived from the pane and group around it — see
+ * `settingsRowId` — so it exists without anybody maintaining a table of them.
+ * `id` is for the rows the derivation cannot serve: a label that is a component
+ * or carries a value, where the slug would be unstable or absent.
  */
 export function Row({
+  id,
   label,
   hint,
   icon: Icon,
+  status,
   control,
   onRevert,
+  unavailable,
   children,
 }: {
+  /** Overrides the derived anchor. Needed only when `label` is not a string. */
+  id?: string;
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
+  /** A word for the row's own state, beside the label — not its value. */
+  status?: ReactNode;
   control?: ReactNode;
-  /** Shown as a revert arrow beside the label; omit when the value is default. */
+  /** Shown as a revert arrow at the end of the label line; omit when the value is default. */
   onRevert?: () => void;
+  /** Renders `control` inert and puts `reason` where the hint would be. */
+  unavailable?: { reason: ReactNode };
   children?: ReactNode;
 }) {
+  const page = useContext(SettingsPaneContext);
+  const group = useContext(SettingsGroupContext);
+  const anchor =
+    id ??
+    (typeof label === "string"
+      ? settingsRowId({ ...(page ? { page } : {}), ...(group ? { group } : {}), label })
+      : undefined);
+  // The reason REPLACES the hint rather than joining it: a sentence about how
+  // the setting behaves, printed under the sentence saying it does not apply
+  // here, is one sentence the reader has to work out is moot.
+  const explanation = unavailable ? unavailable.reason : hint;
+
   return (
-    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3">
+    <div
+      {...(anchor ? { id: anchor } : {})}
+      // Focusable only on purpose: -1 answers `.focus()` and stays out of the
+      // tab order, so arriving from a search result lands the caret on the row
+      // while tabbing through the pane still goes control to control.
+      tabIndex={-1}
+      className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 outline-none">
       <div className="flex min-w-48 flex-1 items-start gap-2.5">
         {Icon && (
           <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
@@ -394,23 +560,40 @@ export function Row({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-foreground">{label}</span>
-            {onRevert && (
-              <button
-                type="button"
-                title="Back to the default"
-                aria-label="Revert to the default"
-                onClick={onRevert}
-                className="text-muted-foreground/60 transition-colors hover:text-foreground"
-              >
-                <Undo2Icon className="size-3" />
-              </button>
-            )}
+            {status && <span className="shrink-0">{status}</span>}
+            {/* The reserved slot — `size-3` is the arrow's own box, so the row
+                measures the same with it and without it. */}
+            <span className="flex size-3 shrink-0 items-center justify-center">
+              {onRevert && (
+                <button
+                  type="button"
+                  title="Back to the default"
+                  aria-label="Revert to the default"
+                  onClick={onRevert}
+                  className="text-muted-foreground/60 transition-colors hover:text-foreground"
+                >
+                  <Undo2Icon className="size-3" />
+                </button>
+              )}
+            </span>
           </div>
-          {hint && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>}
+          {explanation && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{explanation}</p>}
           {children}
         </div>
       </div>
-      {control && <div className="flex shrink-0 items-center justify-end">{control}</div>}
+      {control && (
+        // `inert` is what makes an ARBITRARY control inert. This slot holds
+        // switches, buttons, selects and whole forms, and Row cannot reach into
+        // any of them to pass a `disabled` — one attribute takes the lot out of
+        // the tab order and out of the accessibility tree. The reason stays
+        // OUTSIDE it, where a screen reader still reaches it.
+        <div
+          inert={unavailable ? true : undefined}
+          className={cn("flex shrink-0 items-center justify-end", unavailable && "opacity-50")}
+        >
+          {control}
+        </div>
+      )}
     </div>
   );
 }
@@ -497,25 +680,37 @@ export function Tabs<T extends string>({
   );
 }
 
-// Labelled toggle row.
+// Labelled toggle row. `status` and `unavailable` pass straight through: a
+// toggle is a Row, and a switch that does not apply here is the commonest case
+// `unavailable` exists for.
 export function ToggleRow({
+  id,
   label,
   hint,
   icon,
+  status,
   checked,
   onCheckedChange,
+  unavailable,
 }: {
+  /** Passed straight through — a toggle row is a Row, and is a search destination like any other. */
+  id?: string;
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
+  status?: ReactNode;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
+  unavailable?: { reason: ReactNode };
 }) {
   return (
     <Row
+      {...(id ? { id } : {})}
       label={label}
       hint={hint}
       icon={icon}
+      {...(status ? { status } : {})}
+      {...(unavailable ? { unavailable } : {})}
       control={<Switch checked={checked} onCheckedChange={onCheckedChange} />}
     />
   );

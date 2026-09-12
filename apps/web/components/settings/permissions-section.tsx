@@ -47,8 +47,14 @@ export function engineHint(input: { status?: ComputerUseStatus; checking: boolea
   if (input.failed) return "Could not reach the engine. Retry to check again.";
   if (!input.status) return "Checking which engine is installed.";
   if (!input.status.installed) return "Install cua-driver (github.com/trycua/cua), or Codex, and Telar picks it up.";
+  // THE CODEX CARVE-OUT BELONGS TO THE cua ANSWER, not to the page. "When Telar
+  // supplies the engine, Codex's own computer use is off for Telar sessions
+  // only" sat in the group header, where it was conditional prose a reader had
+  // to evaluate against a fact three rows down. It IS the cua branch, so it is
+  // stated once the probe has measured one — and the reassurance that the carve
+  // -out is scoped to Telar is the half people actually need.
   return input.isCua
-    ? "Open source. Telar holds the grants through CuaDriver.app."
+    ? "Open source — Telar holds the grants through CuaDriver.app. Codex's own computer use is off for Telar sessions only."
     : "Codex's bundled client. Install cua-driver to switch to the open-source engine.";
 }
 
@@ -114,7 +120,7 @@ export function PermissionsSection() {
   return (
     <SettingsGroup
       title="Computer use"
-      description="Sessions can drive Mac apps — screenshots, clicks, typing. When Telar supplies the engine, Codex's own computer use is off for Telar sessions only."
+      description="Sessions can drive Mac apps — screenshots, clicks, typing."
     >
       {/* Three states, not two: checking, failed, answered. Neither of the
           first two may name an engine — see `engineHint`. */}

@@ -109,7 +109,7 @@ function AddInstanceDialog({
         <DialogHeader>
           <DialogTitle>Add a login</DialogTitle>
           <DialogDescription>
-            Point Telar at a config folder you have already signed in with. It never signs in for you.
+            Point Telar at a config folder you have already signed in with. It never signs in for you, and tokens stay where the CLI put them.
           </DialogDescription>
         </DialogHeader>
 
@@ -252,8 +252,14 @@ export function ProvidersSection() {
     // Removing a login forgets how it was configured. It does not touch the
     // folder, and it does not sign anything out — which is why the question is
     // short and the sessions naming it keep working (they fall back to the
-    // driver's built-in slot).
-    if (!window.confirm(`Remove "${instance.displayName || instance.id}"? Its login on disk is left untouched.`)) return;
+    // driver's built-in slot). The question now SAYS the second half: a
+    // destructive prompt that names only what it destroys makes the reader
+    // guess at the rest.
+    // TODO(confirmations): a `window.confirm` — one of two left under
+    // components/settings. The Confirmations pass owns turning these into an
+    // "ask before removing a login" toggle in one central group; until then
+    // this stays a browser dialog with nowhere to say "stop asking me".
+    if (!window.confirm(`Remove "${instance.displayName || instance.id}"? Its login on disk is left untouched, and sessions fall back to the built-in slot.`)) return;
     try {
       await api.removeProviderInstance(instance.id);
     } catch (cause) {
@@ -311,10 +317,13 @@ export function ProvidersSection() {
 
   return (
     <>
-      <SettingsGroup
-        title="Logins"
-        description="Each row is one configured login. Telar runs the CLIs already on this machine and never signs you in — the base login is detected, and additional ones are config folders you point it at. Tokens stay where the CLI put them."
-      >
+      {/* THE ADOPTION RULE IS READ WHEN YOU ADOPT, not before you have read the
+          list. This header spent three sentences explaining that Telar never
+          signs you in, that extra logins are config folders, and where tokens
+          live — all of it true, none of it actionable by somebody scanning what
+          is already configured. It is now on the Add a login dialog, which is
+          the one moment the rule changes what a person does. */}
+      <SettingsGroup title="Logins" description="Each row is one configured login.">
         {unreachable ? (
           <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
         ) : instances === undefined ? (

@@ -769,6 +769,57 @@ code, pre, kbd, samp {
   }
 }
 
+/* THE ROW A SETTINGS SEARCH SENT YOU TO, SAID ONCE.
+
+   Scrolling a row to the middle of a pane of twenty leaves "which one?"
+   unanswered — nineteen other rows are now equally on screen. One pass of the
+   selection wash names it and then gets out of the way, which is why this is an
+   animation rather than a lasting highlight: a mark that stays has to be
+   dismissed, and nobody would.
+
+   The wash is `--muted`, the same fill the nav's selected item and a hovered
+   row already wear, so this reads as "this one" in the vocabulary the pane
+   already uses rather than as a colour with a new meaning. The inset shadow
+   draws it INSIDE the row's box: rows are separated by hairlines with no
+   padding of their own, and a background would touch its neighbours' rules.
+
+   Held at full strength through the middle of the run so it registers as a
+   deliberate mark rather than a flicker, then faded out.
+
+   `settings-search-target-pulse` is added by hand in settings-shell.tsx, so
+   Tailwind's scanner is not involved and the class cannot be purged. It must
+   not contain "animate-in"/"animate-out" — those are killed wholesale above for
+   a WebKit renderer crash. */
+@keyframes settings-search-target-pulse {
+  0% {
+    box-shadow: inset 0 0 0 9999px transparent;
+  }
+  12% {
+    box-shadow: inset 0 0 0 9999px var(--muted);
+  }
+  55% {
+    box-shadow: inset 0 0 0 9999px var(--muted);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px transparent;
+  }
+}
+
+.settings-search-target-pulse {
+  animation: settings-search-target-pulse 1.2s ease-out 1;
+  border-radius: var(--radius);
+}
+
+/* Asked for less motion: the row is still centred and still focused, which is
+   what carries the meaning; only the flash is dropped. settings-shell.tsx makes
+   the same check before it adds the class, so this is the belt to that
+   braces — a stylesheet rule cannot be bypassed by a stale media query read. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-search-target-pulse {
+    animation: none;
+  }
+}
+
 /* Chromium's default scrollbars paint a stark near-white thumb over the dark
    shell. The standard properties (which supersede ::-webkit-scrollbar when set)
    tint the thumb from theme tokens so it re-themes with light/dark. */

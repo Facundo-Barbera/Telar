@@ -82,16 +82,19 @@ export function OtherMacsSection() {
   };
 
   return (
-    <SettingsGroup
-      title="Other Macs"
-      description="Another Telar's conversations, in this rail. On the other Mac, open Settings → Remote access, turn on pairing, and paste its pairing link here. That Mac then lists this one under its devices, where it can revoke the access."
-    >
+    // THE GROUP HEADER SAYS THE SCOPE; THE PROCEDURE LIVES IN THE ROW THAT
+    // PERFORMS IT. This header used to carry three sentences — what pairing
+    // gives you, the steps to take on the other Mac, and where that Mac lists
+    // this one — which made a reader hold the instructions in their head while
+    // they looked for the field to paste into. The steps are now the hint on
+    // "Add a Mac", read at the moment the field is in front of them.
+    <SettingsGroup title="Other Macs" description="Another Telar's conversations, in this rail.">
       {hosts?.map((host) => (
         <HostRow key={host.id} host={host} onRename={(name) => void rename(host.id, name)} onRemove={() => void remove(host.id)} />
       ))}
       <Row
         label="Add a Mac"
-        hint={error ?? "Its pairing link looks like http://mini.tail:3000/pair#token=48129037"}
+        hint={error ?? "On the other Mac, open Settings → Remote access, turn on pairing, and copy its link. It looks like http://mini.tail:3000/pair#token=48129037."}
         control={
           <form
             className="flex items-center gap-2"
@@ -160,7 +163,11 @@ function HostRow({ host, onRename, onRemove }: { host: PublicHost; onRename: (na
           </button>
         )
       }
-      hint={host.baseUrl}
+      // WHAT FORGETTING DOES NOT DESTROY, said on the row that offers it. The
+      // third sentence of the old group header — that the other Mac still lists
+      // this one until it revokes the access — is the one fact a person needs
+      // before pressing ✕, so it belongs beside the ✕ rather than three rows up.
+      hint={`${host.baseUrl} — forgetting it drops its conversations from this rail. That Mac keeps the access until it revokes this one.`}
       control={
         <Button variant="ghost" size="icon-sm" aria-label={`Forget ${host.name}`} title="Forget this Mac (its own Devices list keeps the access until revoked there)" onClick={onRemove}>
           <XIcon className="size-3.5" />

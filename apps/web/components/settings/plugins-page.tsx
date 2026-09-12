@@ -84,10 +84,13 @@ export function PluginsPage() {
 
   return (
     <>
-      <SettingsGroup
-        title="Plugins"
-        description="Turn a plugin off for this Mac and it is unavailable everywhere. Each project keeps its own settings, and running work finishes before anything is released."
-      >
+      {/* ONE SENTENCE, AND IT IS THE CONSEQUENCE OF THE SWITCH. The header used
+          to carry the whole ceiling model — off everywhere, project settings
+          preserved, running work drained — which is three facts for a reader
+          who has come to flip one toggle. Only the first changes what they see
+          after pressing it; the other two are why the switch is SAFE, and they
+          are written out in this file's doc comment for whoever maintains it. */}
+      <SettingsGroup title="Plugins" description="Turning one off here makes it unavailable in every project on this Mac.">
         {plugins.length === 0 && <Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
         {plugins.map((status) => {
           const allowed = machineAllows(machine, status.meta.id);
@@ -99,10 +102,17 @@ export function PluginsPage() {
               label={status.meta.name}
               hint={failed ? (status.error ?? "This plugin did not start.") : status.meta.blurb}
               control={
+                // WHAT TURNING IT OFF DOES NOT DESTROY, on the switch itself.
+                // Each project's own setting survives — so this is a ceiling,
+                // and putting it back restores exactly what every project had.
+                // The tooltip, rather than a second hint sentence, because the
+                // hint slot belongs to the plugin's blurb and this sentence is
+                // identical on every row.
                 <Switch
                   checked={allowed && !failed}
                   disabled={busy === status.meta.id || failed}
                   onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
+                  title="Each project keeps its own setting, and running work finishes before anything is released."
                   aria-label={`${status.meta.name} enabled on this Mac`}
                 />
               }

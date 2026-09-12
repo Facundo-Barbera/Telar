@@ -41,6 +41,7 @@ import { PluginsPage } from "./plugins-page";
 import { UpdatesSection } from "./updates-section";
 import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
+import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createEngineApi();
@@ -200,6 +201,10 @@ export function SettingsPage() {
       active={active}
       onSelect={setActive}
       backHref="/"
+      // `/` from anywhere in here finds a row by name without knowing which of
+      // six panes holds it — which is the gap this nav has always had, since
+      // General alone stacks six sections. See settings-registry.ts.
+      search={SETTINGS_SEARCH_INDEX}
       // Appearance is a theme editor, not a list of rows — see `wide` in
       // settings-shell.tsx. Every other pane keeps the reading column.
       wide={active === "appearance"}

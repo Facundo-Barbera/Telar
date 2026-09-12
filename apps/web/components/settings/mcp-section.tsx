@@ -222,8 +222,15 @@ function ServerRow({
                 variant="ghost"
                 className="text-muted-foreground hover:text-destructive"
                 disabled={busy}
+                // The prompt names what it does NOT destroy as well: the server
+                // itself is a command on disk or a URL somebody else runs, and
+                // nothing here touches either. Only how to reach it is forgotten.
+                // TODO(confirmations): a `window.confirm` — one of two left under
+                // components/settings. The Confirmations pass owns collecting
+                // these into one "ask before removing" group; until then there is
+                // nowhere for a reader to say "stop asking me this".
                 onClick={() => {
-                  if (!window.confirm(`Remove "${server.label}"? Sessions stop being offered its tools.`)) return;
+                  if (!window.confirm(`Remove "${server.label}"? Sessions stop being offered its tools. The server itself is not touched.`)) return;
                   void act(() => api.removeMcpServer(server.id, scope?.projectId));
                 }}
               >
@@ -290,7 +297,15 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
         <Row
           icon={PlusIcon}
           label="Add a server"
-          hint={scope ? `Only sessions on ${scope.projectName}.` : "Every project, unless one defines the same id."}
+          // WHERE SAME-ID REPLACEMENT NOW LIVES. A project server shadowing a
+          // machine-wide one is how you point a familiar tool name at this
+          // workspace — and it is also how you silently lose the machine-wide
+          // one, so it is said where the id gets chosen rather than in a header.
+          hint={
+            scope
+              ? `Only sessions on ${scope.projectName}. An id that matches a machine-wide server replaces it here.`
+              : "Every project, unless one defines the same id."
+          }
           control={
             <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
               Add
@@ -498,10 +513,15 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
 
       <SettingsGroup
         title={scope ? `${scope.projectName}'s servers` : "Machine-wide servers"}
+        // THE OVERRIDE RULE MOVED TO WHERE THE ID IS TYPED. Both branches used
+        // to explain same-id replacement in the header, which is the one place
+        // it can do nothing: by the time you are reading a list of configured
+        // servers the id is already chosen. It is now the hint on "Add a
+        // server", where it is a warning rather than trivia.
         description={
           scope
-            ? "Tool servers only this project's sessions see. A server here with the same id as a machine-wide one replaces it — which is how a project points a familiar tool name at its own workspace."
-            : "Tool servers every project sees. A project can define one with the same id to replace it for itself."
+            ? "Tool servers only this project's sessions see."
+            : "Tool servers every project sees."
         }
       >
         {unreachable ? (

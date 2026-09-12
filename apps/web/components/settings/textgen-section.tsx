@@ -115,6 +115,13 @@ export function TextGenSection() {
       />
       <Row
         label="Model"
+        // THE SENTINEL, DOCUMENTED IN THE ROW. "Provider default" is the only
+        // option here that is not a model name, and the select cannot say what
+        // it resolves to — a reader was left to guess whether it meant the
+        // harness's choice or nothing at all. The second sentence is the edge
+        // case that actually bites: switching harness above drops the pin
+        // server-side, so a model chosen here does not survive that change.
+        hint="Provider default lets the harness pick. Changing the harness above clears a pinned model."
         control={
           <Select
             value={pinned ?? DRIVER_DEFAULT}

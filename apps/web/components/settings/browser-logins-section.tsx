@@ -80,9 +80,15 @@ export function BrowserLoginsSection() {
   };
 
   return (
+    // THE ENUMERATION WAS THE LIST'S JOB ALL ALONG. This header used to spell
+    // out what a grant covers — item, profile, address, fields — which is
+    // exactly the four facts every card below already prints. A header that
+    // narrates its own list makes the reader parse the sentence and then parse
+    // the list to check it. What survives is the scope, plus the one thing no
+    // card can show because it happens at fill time: the vault still locks.
     <SettingsGroup
       title="Remembered logins"
-      description="Logins you allowed agents to fill without asking again. Each one covers a single 1Password item, in one browser profile, on one exact address, for the fields you approved — 1Password still asks to unlock."
+      description="Logins you allowed agents to fill without asking again — 1Password still asks to unlock."
     >
       {error && <p className="text-xs text-destructive">{error}</p>}
       {logins === undefined && !error && <Spinner className="size-4" />}
@@ -103,10 +109,17 @@ export function BrowserLoginsSection() {
                 {grant.vault && <> · {grant.vault}</>} · {describeLastUsed(grant)}
               </p>
             </div>
+            {/* WHAT REVOKING DOES NOT DESTROY, on the control that does it.
+                Nothing leaves 1Password and no password changes — the grant is
+                the only thing that goes, and the next fill asks again. Said in
+                the tooltip rather than a fourth line on every card, because it
+                is the same sentence for all of them and it is only needed at
+                the moment the pointer is on the button. */}
             <Button
               size="sm"
               variant="ghost"
               disabled={busy === grant.id}
+              title="Stop filling this login without asking. Nothing in 1Password changes; agents ask again next time."
               className="text-destructive hover:text-destructive"
               onClick={() => void revoke(grant.id)}
             >
