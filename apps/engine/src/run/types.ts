@@ -84,8 +84,28 @@ const RelativeCwd = z
   .max(1024)
   .refine((value) => !value.startsWith("/") && !value.split(/[\\/]/).includes(".."), "the working directory must stay inside the worktree");
 
+/**
+ * THE GLYPH A CONFIGURATION WEARS, AND IT IS A CLOSED SET ON PURPOSE.
+ *
+ * A key, never an image and never a URL: the cockpit maps each name to an icon
+ * it already ships, so a configuration cannot smuggle a remote asset into the
+ * masthead and a stored value can never fail to render. Ten names cover the
+ * things people actually launch; an eleventh is a code change, which is the
+ * honest cost of keeping the set closed.
+ *
+ * `play` is the default and is NOT stored for it — an absent icon means "the
+ * default", so changing what the default looks like later does not have to
+ * rewrite every saved document.
+ */
+export const RunIcon = z.enum(["play", "server", "globe", "terminal", "flask", "database", "package", "bug", "rocket", "hammer"]);
+export type RunIcon = z.infer<typeof RunIcon>;
+
+export const DEFAULT_RUN_ICON: RunIcon = "play";
+
 export const RunConfigurationInput = z.object({
   name: z.string().min(1).max(120),
+  /** Which glyph the Run menu draws before the name. Default: `play`. */
+  icon: RunIcon.optional(),
   /** Run by a shell, so `bun run dev` and `a && b` both mean what they look like. */
   command: z.string().min(1).max(4000),
   /** Relative to the worktree the run is launched from. Default: its root. */

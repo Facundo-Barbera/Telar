@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RunStore } from "../src/run/store";
-import { redactConfiguration, RunError, secretValues, redactText } from "../src/run/types";
+import { DEFAULT_RUN_ICON, redactConfiguration, RunError, secretValues, redactText } from "../src/run/types";
 
 const tempDirs: string[] = [];
 const tempDir = () => {
@@ -94,6 +94,35 @@ test("secret values are stored for the launch and dropped from every read", () =
     { key: "STRIPE_KEY", secret: true },
   ]);
   expect(JSON.stringify(view)).not.toContain("sk_live_supersecret");
+});
+
+test("an icon survives the round trip, and a configuration without one stays without one", () => {
+  const dir = tempDir();
+  const store = new RunStore(dir);
+  const withIcon = store.create("proj_1", { name: "api", command: "uvicorn app:app", icon: "server" });
+  const without = store.create("proj_1", { name: "web dev", command: "bun run dev" });
+
+  expect(withIcon.icon).toBe("server");
+  // ABSENT, not defaulted at save time: the cockpit draws `play` for an icon
+  // that is not there, so changing the default later must not have to rewrite
+  // every stored document.
+  expect(without.icon).toBeUndefined();
+  expect("icon" in without).toBe(false);
+
+  const reread = new RunStore(dir).list("proj_1");
+  expect(reread.map((config) => config.icon)).toEqual(["server", undefined]);
+  // A closed set is not a secret, so it crosses the wire untouched.
+  expect(redactConfiguration(reread[0]!).icon).toBe("server");
+});
+
+test("an icon outside the closed set is refused rather than stored unrenderable", () => {
+  const store = new RunStore(tempDir());
+  expect(() => store.create("proj_1", { name: "odd", command: "ls", icon: "unicorn" } as never)).toThrow(RunError);
+
+  const created = store.create("proj_1", { name: "web dev", command: "bun run dev", icon: DEFAULT_RUN_ICON });
+  expect(() => store.update("proj_1", created.id, { icon: "sparkles" } as never)).toThrow(RunError);
+  // The refusal left the stored value alone rather than half-applying the patch.
+  expect(store.get("proj_1", created.id).icon).toBe(DEFAULT_RUN_ICON);
 });
 
 test("redaction replaces longer secrets first, so no tail of one survives", () => {
