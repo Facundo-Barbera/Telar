@@ -568,6 +568,143 @@ struct NotebookSurface: View {
     }
 }
 
+/// A NOTEBOOK WITHOUT A KERNEL — the .ipynb parsed from its own bytes and
+/// drawn the way the live surface draws it, minus every verb.
+///
+/// This is what an `.ipynb` gets in a project that has not turned Data Science
+/// on. Before it, the file opened in the code view as raw nbformat JSON, which
+/// is the one thing a notebook is not: the plugin buys a KERNEL, not the right
+/// to read what is already on disk.
+///
+/// THE RAW ROUTE, NOT THE TEXT ONE. `sessionFile` cuts at 512 KB, and a real
+/// notebook is past that more often than not — a cut read is not JSON at all,
+/// so the parse would fail on exactly the files worth opening.
+struct ReadOnlyNotebookView: View {
+    let api: any PanelAPI
+    let sessionId: EngineID
+    let hostId: HostID?
+    let path: String
+    let active: Bool
+
+    @State private var notebook: NotebookRead?
+    @State private var bytes: Int?
+    @State private var error: String?
+    @State private var lightbox: EngineID?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            FileAddressRow(path: path, detail: detail)
+            if notebook != nil { kernelNote }
+            if let notebook {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(notebook.cells) { cell in cellView(cell) }
+                    }
+                    .padding(.vertical, 8)
+                }
+            } else if let error {
+                ContentUnavailableView("Could not read this notebook", systemImage: "xmark.circle", description: Text(error))
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: "\(path):\(active)") { await read() }
+        .environment(\.workspaceImages) { [api, sessionId] path in
+            guard let raw = try? await api.sessionFileRaw(sessionId, path: path) else { return nil }
+            return UIImage(data: raw.data)
+        }
+        .sheet(item: Binding(get: { lightbox.map { ReadOnlyLightboxItem(id: $0) } }, set: { lightbox = $0?.id })) { item in
+            ImageLightbox(api: api, sessionId: sessionId, hostId: hostId, attachmentId: item.id)
+        }
+    }
+
+    private struct ReadOnlyLightboxItem: Identifiable { let id: EngineID }
+
+    private var detail: String? {
+        guard let notebook else { return bytes.map(humanBytes) }
+        let count = notebook.cells.count
+        return "\(count) cell\(count == 1 ? "" : "s")\(bytes.map { " · \(humanBytes($0))" } ?? "")"
+    }
+
+    /// ONE LINE, SAID ONCE. What is missing is the kernel, and where it is
+    /// turned on is the Mac — anything shorter leaves the reader wondering
+    /// why there is no Run button.
+    private var kernelNote: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "eye").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("Read-only — running cells needs Data Science turned on for this project, on the Mac.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textMuted)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Theme.subtle.opacity(0.5))
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
+    }
+
+    private func cellView(_ cell: NotebookCell) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            VStack(spacing: 2) {
+                switch cell.type {
+                case .code:
+                    Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textTertiary)
+                case .markdown:
+                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                case .raw, .unknown:
+                    Image(systemName: "doc.plaintext").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .frame(width: 44, alignment: .top)
+            .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 6) {
+                if cell.type == .markdown {
+                    MarkdownText(text: cell.source, source: .notebookCell(path: path))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    // HORIZONTALLY SCROLLED, not wrapped — a source line is a
+                    // line, and the fenced-code block in the transcript has
+                    // read this way all along.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HighlightedCode(text: cell.source, language: cell.type == .code ? "python" : nil)
+                            .padding(6)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                }
+                if let outputs = cell.outputs, !outputs.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(outputs.enumerated()), id: \.offset) { _, output in
+                            CellOutputView(output: output, api: api, sessionId: sessionId, onOpenImage: { lightbox = $0 })
+                        }
+                    }
+                    .padding(.leading, 4)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+
+    private func read() async {
+        do {
+            let raw = try await api.sessionFileRaw(sessionId, path: path)
+            bytes = raw.data.count
+            // The hash the engine would have sent is not needed here — nothing
+            // writes this file — so the path stands in as the notebook's name.
+            guard let parsed = parseNotebookFile(raw.data, path: path, sha256: "") else {
+                error = "This file is not nbformat JSON — there are no cells in it to show."
+                return
+            }
+            notebook = parsed
+            error = nil
+        } catch {
+            self.error = describe(error)
+        }
+    }
+}
+
 enum NotebookReadFailure: Equatable {
     case missing
     case unreadable(String)

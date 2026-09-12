@@ -16,6 +16,8 @@ struct FileBody: View {
         switch FileKind.of(file.path, view: file.view) {
         case .notebook:
             NotebookSurface(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active)
+        case .notebookReadOnly:
+            ReadOnlyNotebookView(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active)
         case .table:
             TableSurface(api: api, sessionId: sessionId, path: file.path, active: active)
         case .pdf:
