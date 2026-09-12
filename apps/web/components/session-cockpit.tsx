@@ -24,6 +24,8 @@ import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@
 import { isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
+import { sessionLink } from "@/lib/session-link";
+import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
@@ -2428,6 +2430,9 @@ export function SessionCockpit({
    * for the same information.
    */
   const router = useRouter();
+  /** The desktop shell, or nothing in a browser tab — what decides whether the
+   *  title menu carries "Open in a new window". */
+  const shell = desktopApp();
   const menuApi = createEngineApi(hostFetcher(hostId));
   const patchFromMenu = async (
     patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null },
@@ -2469,8 +2474,20 @@ export function SessionCockpit({
             waitingOnYou: session.activity === "blocked",
           },
           now,
-          capabilities: { remote: hostId !== LOCAL_HOST_ID, readOnly: observe },
+          // `current` is unconditional here: this menu is only ever about the
+          // session this screen is showing, so `Open` is the one verb it can
+          // state and cannot perform.
+          capabilities: { remote: hostId !== LOCAL_HOST_ID, readOnly: observe, current: true },
           actions: {
+            // Inert on this surface (see `current`), and still handed over: the
+            // handler is the definition's contract, not this screen's guess at
+            // when it will be called.
+            open: (href) => router.push(href),
+            copyLink: (href) =>
+              void navigator.clipboard.writeText(sessionLink(href)).catch(() => window.alert("The browser refused to copy that.")),
+            // The desktop shell only. A browser tab supplies no handler, and the
+            // item is absent rather than greyed — same call the rail makes.
+            ...(shell?.openWindow ? { openWindow: (href: string) => void shell.openWindow!(href) } : {}),
             newSession: ({ projectId: target, hostId: host, baseRef }) =>
               router.push(canvasHref(target, host, baseRef ? { baseRef } : undefined)),
             pin: (pinned) =>
