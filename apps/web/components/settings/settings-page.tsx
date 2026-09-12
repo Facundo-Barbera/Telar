@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, InfoIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, InfoIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,7 @@ import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
 import { IntegrationsPage } from "./integrations-page";
+import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
@@ -47,7 +48,9 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const api = createEngineApi();
 
 /**
- * SIX PANES, DOWN FROM NINE. The nav split stays what it was — "Cockpit" is
+ * EIGHT PANES, FROM SIX AFTER A CULL OF NINE — Integrations and Projects were
+ * added back deliberately, each for a destination the merged panes had no room
+ * for. The nav split stays what it was — "Cockpit" is
  * decisions about this window, "Runtime" is decisions about the machine that
  * runs turns — but panes that held two rows each merged with their nearest
  * neighbour, because a side-nav where most destinations are one group deep
@@ -73,6 +76,13 @@ const api = createEngineApi();
  */
 const SECTIONS: SettingsSection[] = [
   { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT" rather than "Runtime": a project registration is this
+   * install's list of places to work, not a property of the machine that runs
+   * turns — the same engine serves whatever set of folders this cockpit has
+   * registered, and a paired Mac keeps its own list.
+   */
+  { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
   /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
@@ -225,6 +235,8 @@ export function SettingsPage() {
           <UpdatesSection />
         </>
       )}
+
+      {active === "projects" && <ProjectsPage />}
 
       {active === "plugins" && <PluginsPage />}
 
