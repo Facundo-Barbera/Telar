@@ -3,7 +3,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { DesktopBrowserManager, normalizeUrl } = require("./browser-manager");
+const { DesktopBrowserManager, normalizeUrl, looksLikeAddress } = require("./browser-manager");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -239,6 +239,40 @@ describe("normalizeUrl", () => {
     // Every other scheme stays out: openExternal-adjacent handlers included.
     expect(() => normalizeUrl("smb://server/share")).toThrow("only opens http, https and file URLs");
     expect(() => normalizeUrl("javascript://alert(1)")).toThrow("only opens http, https and file URLs");
+  });
+});
+
+describe("the address bar tells an address from words to search for", () => {
+  test("an address is a path, a scheme, or a host with no whitespace", () => {
+    // Hosts: a dot, `localhost`, or an IP — each with an optional port.
+    expect(looksLikeAddress("github.com")).toBe(true);
+    expect(looksLikeAddress("localhost:3000")).toBe(true);
+    expect(looksLikeAddress("localhost")).toBe(true);
+    expect(looksLikeAddress("127.0.0.1")).toBe(true);
+    expect(looksLikeAddress("[::1]:8080")).toBe(true);
+    // An explicit scheme is taken at its word, dotless host and all.
+    expect(looksLikeAddress("https://x")).toBe(true);
+    expect(looksLikeAddress("file:///tmp/a")).toBe(true);
+    // An absolute path is the file, and keeps being one even with a space.
+    expect(looksLikeAddress("/tmp/my guide.html")).toBe(true);
+  });
+  test("words are words — the cases that used to surface 'Invalid URL'", () => {
+    expect(looksLikeAddress("hello world")).toBe(false);
+    expect(looksLikeAddress("telar")).toBe(false);
+    expect(looksLikeAddress("what is 2+2")).toBe(false);
+    expect(looksLikeAddress("")).toBe(false);
+  });
+  test("normalizeUrl searches for what is not an address, and encodes it", () => {
+    expect(normalizeUrl("hello world")).toBe("https://www.google.com/search?q=hello%20world");
+    expect(normalizeUrl("telar")).toBe("https://www.google.com/search?q=telar");
+    // The + of "2+2" survives as a plus rather than becoming a space.
+    expect(normalizeUrl("what is 2+2")).toBe("https://www.google.com/search?q=what%20is%202%2B2");
+    // And the addresses above still resolve as addresses.
+    expect(normalizeUrl("github.com")).toBe("http://github.com/");
+    expect(normalizeUrl("127.0.0.1")).toBe("http://127.0.0.1/");
+    expect(normalizeUrl("https://x")).toBe("https://x/");
+    // A blank tab is neither.
+    expect(normalizeUrl("about:blank")).toBe("about:blank");
   });
 });
 
