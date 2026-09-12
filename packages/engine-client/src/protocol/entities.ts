@@ -1246,6 +1246,21 @@ export const Turn = z.object({
   resultText: z.string().optional(),
   failure: TurnFailure.optional(),
   /**
+   * THIS TURN CAME BACK BY ITSELF after a usage limit lifted — when the sweep
+   * requeued it.
+   *
+   * SEPARATE FROM `failure`, WHICH IS DELIBERATELY KEPT. A requeued turn is
+   * `queued` again, so it is no longer failed; but a person scrolling back
+   * should still see that the session sat out a limit rather than finding an
+   * unexplained gap. The failure records what happened, this records that the
+   * engine acted on it, and the transcript draws one line from the pair.
+   *
+   * Absent on every turn that never hit a limit, and on one a human resumed
+   * with the button — that is a person's own action, already visible as the
+   * press, and claiming the engine did it would be a small lie in the record.
+   */
+  resumedAfterRateLimit: Timestamp.optional(),
+  /**
    * WHY A `stopped` TURN STOPPED — and how much is known about what it had
    * already done.
    *

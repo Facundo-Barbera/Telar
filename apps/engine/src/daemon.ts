@@ -398,10 +398,10 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "promote" | "steer-ack";
+type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|release|promote|steer-ack)$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|release|resume|promote|steer-ack)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
 }
@@ -3207,6 +3207,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { turn: store.releaseHeldTurn(turn.sessionId, turn.runId) });
           return;
         }
+        if (turn.action === "resume") {
+          // A HUMAN gesture like release: no claim token, and no clock check —
+          // the person pressing this knows something the reset time does not.
+          writeJson(response, 200, { turn: store.resumeRateLimitedTurn(turn.sessionId, turn.runId) });
+          return;
+        }
         if (turn.action === "discard") {
           await body(request);
           writeJson(response, 200, { turn: store.discardAmbiguousTurn(turn.sessionId, turn.runId) });
@@ -3754,6 +3760,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               // ran on this hop would not protect an in-process caller.
               ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
               ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
+              ...(input.resumeAfterRateLimit === undefined ? {} : { resumeAfterRateLimit: input.resumeAfterRateLimit as boolean | null }),
             }),
           });
           return;

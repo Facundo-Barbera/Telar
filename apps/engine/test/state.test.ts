@@ -3765,3 +3765,185 @@ test("#214 an item evicted from the prefix cache keeps streaming correctly", () 
   expect(store.openItemPrefix("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
   expect(store.openPrefixCountForTest()).toBeLessThanOrEqual(64);
 });
+
+/**
+ * #290 — A TURN THAT HIT A USAGE LIMIT COMES BACK BY ITSELF.
+ *
+ * The engine has no timer of its own for this: the sweep rides the claim poll,
+ * which is the only periodic pass over live queues. That makes ONE thing easy
+ * to get wrong and invisible when you do — a `failed` turn normally drops its
+ * session out of `liveQueueIndex` immediately, so without the sixth predicate
+ * in `queueConcernsAWorker` the sweep would never look at the session again and
+ * the requeue would silently never fire. The cold-boot test below is the one
+ * that actually pins that down.
+ */
+describe("a rate-limited turn resumes itself once the limit resets", () => {
+  /** A store whose clock a test can move — the shared helper pins it at 100. */
+  function limitedStore(): { store: EngineStore; root: string; at: () => number; setNow: (next: number) => void } {
+    const stateRoot = root();
+    let now = 1_000;
+    const store = new EngineStore(stateRoot, () => now);
+    store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    store.createSession({ id: "session_one", projectId: "project_one" });
+    return { store, root: stateRoot, at: () => now, setNow: (next) => { now = next; } };
+  }
+
+  /** Run a turn far enough to fail it as `rate_limited`, resetting at `resumeAt`. */
+  function hitTheLimit(store: EngineStore, runId: string, resumeAt: number): void {
+    store.submitTurn("session_one", { runId, input: "Do the thing" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", runId, token);
+    store.failTurn("session_one", runId, token, {
+      code: "rate_limited",
+      message: "Claude's five hour usage limit was reached, so this turn stopped where it stood.",
+      resumeAt,
+      limitType: "five_hour",
+    });
+  }
+
+  const turnOf = (store: EngineStore, runId: string) => store.turns("session_one").find((candidate) => candidate.runId === runId)!;
+
+  test("the failure records when the limit lifts, and refuses to exist without it", () => {
+    const { store } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+    expect(turnOf(store, "run_one")).toMatchObject({
+      state: "failed",
+      failure: { code: "rate_limited", resumeAt: 5_000, limitType: "five_hour" },
+    });
+
+    // A wait with no instant to wait for would sit failed for ever while
+    // claiming to be temporary, and the sweep would skip it in silence.
+    store.submitTurn("session_one", { runId: "run_two", input: "again" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_two", token);
+    expect(() =>
+      store.failTurn("session_one", "run_two", token, { code: "rate_limited", message: "limited" }),
+    ).toThrow(/must say when the limit resets/);
+  });
+
+  test("a past reset requeues the turn; a future one leaves it alone", () => {
+    const { store, setNow } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+
+    // Before the reset: the poll looks, decides nothing, and hands out no work.
+    setNow(4_999);
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+    expect(turnOf(store, "run_one").state).toBe("failed");
+    expect(turnOf(store, "run_one").failure?.resumeDecidedAt).toBeUndefined();
+
+    // The instant it passes, the same poll brings the turn back and claims it.
+    setNow(5_000);
+    const claimed = store.claimNextTurn("worker_one");
+    expect(claimed?.turn.runId).toBe("run_one");
+    expect(turnOf(store, "run_one")).toMatchObject({ resumedAfterRateLimit: 5_000 });
+    expect(store.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeTrue();
+  });
+
+  test("with the setting off the turn stays failed, and is not reconsidered on every poll", () => {
+    const { store, setNow } = limitedStore();
+    store.updateSession("session_one", { resumeAfterRateLimit: false });
+    hitTheLimit(store, "run_one", 5_000);
+
+    setNow(6_000);
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+    const settled = turnOf(store, "run_one");
+    expect(settled.state).toBe("failed");
+    // Stamped, so `queueConcernsAWorker` stops matching it: without this the
+    // session would sit in the live index being re-examined for the life of the
+    // daemon. The reset time SURVIVES, because the row still shows it.
+    expect(settled.failure).toMatchObject({ code: "rate_limited", resumeAt: 5_000, resumeDecidedAt: 6_000 });
+    expect(store.readEvents("session_one").some((event) => event.type === "turn.requeued" && event.reason === "rate_limit_reset")).toBeFalse();
+  });
+
+  test("the default is on for Claude and off for another provider, without writing either down", () => {
+    const { store, setNow } = limitedStore();
+    // Nothing stored: a session made before the setting existed behaves like
+    // one made after it.
+    expect(store.getSession("session_one").resumeAfterRateLimit).toBeUndefined();
+    hitTheLimit(store, "run_one", 5_000);
+    setNow(5_001);
+    expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+
+    const { store: codex, setNow: setCodexNow } = limitedStore();
+    codex.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+    codex.submitTurn("session_codex", { runId: "run_codex", input: "Do the thing" });
+    const token = codex.claimTurn("session_codex", "worker_one")!.claim!.token;
+    codex.markRunning("session_codex", "run_codex", token);
+    codex.failTurn("session_codex", "run_codex", token, { code: "rate_limited", message: "limited", resumeAt: 5_000 });
+    setCodexNow(5_001);
+    expect(codex.claimNextTurn("worker_one")).toBeUndefined();
+  });
+
+  /**
+   * THE PREDICATE, PINNED. A fresh store builds `liveQueueIndex` by walking
+   * every session on disk and asking `queueConcernsAWorker` — so if a failed
+   * `rate_limited` turn does not keep its session in that index, a limit that
+   * lifts while Telar is closed is never resumed at all. This is the exact
+   * failure the sixth predicate exists to prevent, and nothing else catches it.
+   */
+  test("a limit that lifts while the engine is down is resumed on the next boot", () => {
+    const { store, root: stateRoot } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+
+    let now = 9_000;
+    const rebooted = new EngineStore(stateRoot, () => now);
+    expect(rebooted.claimNextTurn("worker_two")?.turn.runId).toBe("run_one");
+    now += 1;
+    expect(rebooted.turns("session_one").find((candidate) => candidate.runId === "run_one")).toMatchObject({ resumedAfterRateLimit: 9_000 });
+  });
+
+  test("a resumed turn keeps its place, so a backlog still runs in the order it was typed", () => {
+    const { store, setNow } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+    // Typed while the session was sitting out the limit.
+    store.submitTurn("session_one", { runId: "run_later", input: "and then this" });
+
+    setNow(5_000);
+    expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+  });
+
+  test("Resume now runs the turn before its reset, and says a person did it", () => {
+    const { store } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+
+    // DELIBERATELY NOT CLOCK-CHECKED: another credential came free, the proxy
+    // moved account. Refusing until the reset would make the button a
+    // decoration on the only occasions it is wanted.
+    const resumed = store.resumeRateLimitedTurn("session_one", "run_one");
+    expect(resumed.state).toBe("queued");
+    // The engine did not bring this one back, so it must not claim it did.
+    expect(resumed.resumedAfterRateLimit).toBeUndefined();
+    expect(resumed.failure).toMatchObject({ code: "rate_limited", resumeDecidedAt: 1_000 });
+    expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+  });
+
+  test("Resume now refuses a turn that is not waiting on a limit, and one already running", () => {
+    const { store } = limitedStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_one", token);
+    store.failTurn("session_one", "run_one", token, { code: "driver_failed", message: "the CLI died" });
+    expect(() => store.resumeRateLimitedTurn("session_one", "run_one")).toThrow(/not waiting for a usage limit/);
+
+    hitTheLimit(store, "run_two", 5_000);
+    store.submitTurn("session_one", { runId: "run_three", input: "live" });
+    const live = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_three", live);
+    // One turn at a time is the engine's own invariant; a click must not be the
+    // one thing that can break it.
+    expect(() => store.resumeRateLimitedTurn("session_one", "run_two")).toThrow(/already running a turn/);
+  });
+
+  test("a paused session is neither resumed nor quietly stamped as decided", () => {
+    const { store, setNow } = limitedStore();
+    hitTheLimit(store, "run_one", 5_000);
+    store.stopSession("session_one");
+
+    setNow(6_000);
+    store.claimNextTurn("worker_one");
+    // Left undecided on purpose: stamping here would mean a session stopped
+    // across its own reset time silently lost the resume it was promised.
+    const held = turnOf(store, "run_one");
+    if (held.state === "failed") expect(held.failure?.resumeDecidedAt).toBeUndefined();
+  });
+});
