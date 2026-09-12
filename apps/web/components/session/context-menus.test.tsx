@@ -170,10 +170,17 @@ describe("the rail's empty space composes a third list", () => {
 
   test("it wraps the scroll area and relies on the inner triggers to claim their own rows", () => {
     // Base UI's trigger stops the `contextmenu` it handles, so a row's menu
-    // wins over this one. Wrapping in a `contents` box keeps the rail's flex
-    // layout exactly as it was.
+    // wins over this one.
     expect(menu).toContain('<SidebarGroupContent id="sidebar-session-results"');
-    expect(source).toContain('<ContextMenuTrigger render={<div className="contents" />}>');
+  });
+
+  test("the trigger FILLS the group — a `contents` box would miss the empty space entirely", () => {
+    // The rows reach only as far as the last group; the space below them is
+    // this group's own box. A `display: contents` trigger paints nothing, is
+    // never an event target, and so covered exactly the strip that already had
+    // menus of its own and none of the strip that had none.
+    expect(source).toContain('<ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>');
+    expect(source).not.toContain('<ContextMenuTrigger render={<div className="contents" />}>');
   });
 });
 
@@ -229,6 +236,24 @@ describe("the project header menu, rendered", () => {
     // And it closes before the button does, i.e. it wraps the label rather
     // than the row.
     expect(html.indexOf("</button>")).toBeGreaterThan(trigger);
+  });
+
+  test("the trigger PAINTS the row — a `contents` box would have no hit area of its own", () => {
+    // The bug a screenshot caught: `display: contents` generates no box and is
+    // never an event target, so a right-press in the header's padding or in a
+    // gap between the chevron and the name had the <button> as its target and
+    // opened the RAIL's menu instead. The trigger carries the row's layout and
+    // its padding, so the header has exactly one hit area.
+    const html = render();
+    const tag = html.slice(html.lastIndexOf("<span", html.indexOf('data-slot="context-menu-trigger"')));
+    const open = tag.slice(0, tag.indexOf(">"));
+    expect(open).not.toContain("contents");
+    for (const rule of ["flex", "items-center", "px-1", "py-1.5"]) {
+      expect(open, `the trigger carries ${rule}`).toContain(rule);
+    }
+    // The padding moved OFF the button rather than being duplicated onto both.
+    const button = html.slice(html.indexOf("<button"), html.indexOf(">", html.indexOf("<button")));
+    expect(button).not.toContain("px-1");
   });
 
   test("the label is inside the trigger; the New-conversation link stays outside it", () => {

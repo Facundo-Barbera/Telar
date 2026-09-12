@@ -230,14 +230,31 @@ export function ProjectGroupSection({
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
           title="Drag to move this project"
-          className="flex min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+          className="flex min-w-0 flex-1 cursor-grab rounded text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
         >
-          {/* `onOpenChange` is where the installed-app list is asked for — see
-              `useProjectFolder`. A `contents` SPAN, not a div: this is inside a
-              <button>, whose content model is phrasing, and the box it does not
-              draw is what keeps the header's flex row exactly as it was. */}
+          {/*
+            THE TRIGGER IS THE HEADER'S FLEX ROW, PADDING AND ALL — it took the
+            button's own layout classes rather than adding a box beside them.
+
+            IT CANNOT BE `display: contents`, AND THAT COST A SCREENSHOT TO
+            LEARN. A `contents` box is not painted and is therefore never an
+            event target: only its CHILDREN are, so a right-press landing in the
+            row's padding or in a gap between the chevron and the name had the
+            <button> as its target, bubbled straight past this menu and opened
+            the rail's instead. The row now has one hit area and it is this
+            element.
+
+            STILL A SPAN, AND STILL INSIDE THE BUTTON. The button is the drag
+            handle — base-ui renders the trigger as an element of its own, and
+            one carrying `draggable` would put a right-press and a grab on the
+            same node — and a <button>'s content model is phrasing, which a div
+            is not.
+
+            `onOpenChange` is where the installed-app list is asked for; see
+            `useProjectFolder` for why it waits until the menu opens.
+          */}
           <ContextMenu onOpenChange={(next: boolean) => next && folder.load()}>
-            <ContextMenuTrigger render={<span className="contents" />}>
+            <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1.5" />}>
               <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
               <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />
               <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>

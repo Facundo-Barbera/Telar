@@ -1290,9 +1290,18 @@ function SidebarBody() {
             is claimed by that row's own trigger and never reaches this one —
             the innermost menu wins, which is the platform's own rule and the
             reason this needs no hit-testing of its own.
+
+            THE TRIGGER IS THE FLEX-FILLING BOX, NOT A `contents` WRAPPER, AND
+            THE DIFFERENCE IS THE ENTIRE FEATURE. The rows only reach as far as
+            the last group; the space BELOW them — the part this menu exists for
+            — belongs to this group's own box. A `contents` trigger paints
+            nothing, is never an event target, and so covered exactly the strip
+            that already had menus of its own and none of the strip that had
+            none. Taking the group's `min-h-0 flex-1` gives the trigger the
+            empty space itself.
           */}
           <ContextMenu>
-            <ContextMenuTrigger render={<div className="contents" />}>
+            <ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {showingStale ? (
               <p className="px-2 pb-1 pt-0.5 text-[0.6875rem] leading-4 text-sidebar-foreground/55">
