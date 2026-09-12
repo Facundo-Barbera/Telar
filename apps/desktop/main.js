@@ -25,6 +25,7 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
+const { windowTargetUrl } = require("./window-target");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -2119,6 +2120,31 @@ app.on("will-quit", () => {
 ipcMain.handle("telar:app:relaunch", () => {
   app.relaunch();
   app.quit();
+});
+
+/**
+ * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the
+ * session menu (#287). The only thing the web build cannot do for itself, which
+ * is why the menu item is absent without this bridge rather than disabled.
+ *
+ * ONLY A WINDOW'S OWN TOP FRAME MAY ASK. The guard is the open-external
+ * handler's, for the same reason and matched the same way: a native browser
+ * tab's preload, a subframe, or anything an agent can reach is not a person
+ * choosing a menu item, and a window it opened would carry Telar's preload.
+ *
+ * AND IT RESOLVES THE PATH ITSELF — see window-target.js. The asking window's
+ * own address is the base, so a second window can only ever be the same app on
+ * the same origin.
+ */
+ipcMain.handle("telar:app:open-window", (event, input) => {
+  const asking = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents === event.sender);
+  if (!asking || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error("Only a Telar window may open another one.");
+  }
+  const target = windowTargetUrl(asking.webContents.getURL() || lastWindowUrl, input?.path);
+  if (!target) return { ok: false, error: "A new window only opens on a page inside Telar." };
+  createWindow(target);
+  return { ok: true };
 });
 process.on("exit", killServer);
 for (const sig of ["SIGINT", "SIGTERM"]) {
