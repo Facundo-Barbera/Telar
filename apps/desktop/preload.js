@@ -105,6 +105,12 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     openers: () => ipcRenderer.invoke("telar:workspace:openers"),
     open: (path, openerId) => ipcRenderer.invoke("telar:workspace:open", { path, ...(openerId ? { openerId } : {}) }),
     reveal: (path) => ipcRenderer.invoke("telar:workspace:open", { path, reveal: true }),
+    // ONE FILE, not the checkout — the file tree's own Reveal and Open in
+    // <app>. The SAME handler and the same two guards; `kind: "file"` is only
+    // what lets its stat be a file. Named separately here rather than given an
+    // options bag, so a caller cannot pass a folder the kind it is not.
+    revealFile: (path) => ipcRenderer.invoke("telar:workspace:open", { path, kind: "file", reveal: true }),
+    openFile: (path, openerId) => ipcRenderer.invoke("telar:workspace:open", { path, kind: "file", ...(openerId ? { openerId } : {}) }),
   },
   // Window translucency — the one piece of appearance the renderer cannot do
   // alone, because the vibrancy layer lives under the page (main.js).
