@@ -72,6 +72,7 @@ import { RunPanel } from "@/components/run/run-panel";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
+import { PANEL_TAB_MIME } from "@/lib/right-panel-tabs";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
@@ -1548,6 +1549,7 @@ export function RightPanel({
   onTabChange,
   onOpenTab,
   onCloseTab,
+  onMoveTab,
   onClose,
   open = true,
   dataScience = false,
@@ -1590,6 +1592,10 @@ export function RightPanel({
   onTabChange: (tab: PanelTab) => void;
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
   onCloseTab: (tab: PanelTab) => void;
+  /** Reorder the strip — `toIndex` is the place in the strip WITHOUT the moved
+   *  tab, which is what `movePanelTab` takes. Absent leaves the tabs draggable
+   *  but inert, which is what a caller that does not persist a strip wants. */
+  onMoveTab?: (tab: PanelTab, toIndex: number) => void;
   onClose: () => void;
   /** The Editor's open files — see `PanelSurface`. */
   editor?: EditorState;
@@ -1623,6 +1629,11 @@ export function RightPanel({
   // the web build.
   useNativeViewOverlay(surfaceChooserOpen);
   useNativeViewOverlay(menuTab !== undefined);
+  /** The tab being carried, and the edge of the tab it is over. Held by the
+   *  strip rather than by a tab, because a drop lands on a DIFFERENT tab than
+   *  the one that started the drag. */
+  const [draggingTab, setDraggingTab] = useState<PanelTab | null>(null);
+  const [tabInsert, setTabInsert] = useState<{ id: PanelTab; side: "before" | "after" } | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
@@ -1768,13 +1779,65 @@ export function RightPanel({
             return (
               <span
                 key={id}
+                /*
+                  THE CHIP IS THE HANDLE, AND NOTHING INSIDE IT IS. The buttons
+                  are the click targets and a <button> does not drag by default;
+                  the context menu's trigger is a CHILD of this element, never
+                  this element — a grab and a right-press on one node is the
+                  race the session row and the project header both avoid the
+                  same way.
+
+                  THE INSERT MARK IS AN INSET SHADOW, not a border: a border
+                  appearing on drag-over would widen the tab on the frame it
+                  appears and shove the rest of the strip sideways under the
+                  pointer.
+                */
+                draggable
+                onDragStart={(event: React.DragEvent) => {
+                  event.dataTransfer.setData(PANEL_TAB_MIME, id);
+                  event.dataTransfer.effectAllowed = "move";
+                  setDraggingTab(id);
+                }}
+                onDragEnd={() => {
+                  setDraggingTab(null);
+                  setTabInsert(null);
+                }}
+                onDragOver={(event: React.DragEvent) => {
+                  if (!event.dataTransfer.types.includes(PANEL_TAB_MIME) || draggingTab === id) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  // A strip runs across, so the halves are left and right.
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const side: "before" | "after" = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+                  setTabInsert((current) => (current?.id === id && current.side === side ? current : { id, side }));
+                }}
+                onDragLeave={() => setTabInsert((current) => (current?.id === id ? null : current))}
+                onDrop={(event: React.DragEvent) => {
+                  if (!event.dataTransfer.types.includes(PANEL_TAB_MIME)) return;
+                  event.preventDefault();
+                  const dragged = (event.dataTransfer.getData(PANEL_TAB_MIME) || draggingTab) as PanelTab | null;
+                  const side = tabInsert?.id === id ? tabInsert.side : "after";
+                  setDraggingTab(null);
+                  setTabInsert(null);
+                  if (!dragged || dragged === id || !tabs.includes(dragged)) return;
+                  // Measured in the strip WITHOUT the carried tab, which is the
+                  // index `movePanelTab` takes — see its own note on why.
+                  const rest = tabs.filter((entry) => entry !== dragged);
+                  onMoveTab?.(dragged, rest.indexOf(id) + (side === "after" ? 1 : 0));
+                }}
                 className={cn(
-                  "group/tab relative flex h-7 min-w-0 max-w-44 shrink-0 rounded-md text-xs transition-colors",
+                  // The layout classes live on the trigger below, not here —
+                  // see its own note. This wrapper keeps the chip's box, and
+                  // adds only what says "this is a handle".
+                  "group/tab relative flex h-7 min-w-0 max-w-44 shrink-0 cursor-grab rounded-md text-xs transition-colors active:cursor-grabbing",
                   on ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                   // A page the engine has since closed still has a tab, because
                   // you opened it and only you should close it — but it should
                   // not look live.
                   missing && "opacity-60",
+                  draggingTab === id && "opacity-40",
+                  tabInsert?.id === id && tabInsert.side === "before" && "shadow-[inset_2px_0_0_0_var(--color-primary)]",
+                  tabInsert?.id === id && tabInsert.side === "after" && "shadow-[inset_-2px_0_0_0_var(--color-primary)]",
                 )}
               >
                 {/**
@@ -1791,8 +1854,10 @@ export function RightPanel({
                  * `closePanelTab` already moves focus to the neighbour on each
                  * step, so the tab you kept is the one left active.
                  *
-                 * REORDER IS OUT OF SCOPE, and named rather than faked: nothing
-                 * in this strip moves a tab today, by drag or otherwise.
+                 * REORDER IS NOT A MENU ROW, because it is a drag: the chip
+                 * around this trigger is the handle (see its comment), so
+                 * "move left"/"move right" would be a second way to say what
+                 * the pointer already says directly.
                  *
                  * CONTROLLED, like the chooser beside it, because the desktop
                  * shell composites a native browser view above this DOM and
