@@ -152,16 +152,64 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     var icon: String?
 }
 
+/// Mirror of `SidebarLayout` in packages/engine-client: where each project
+/// group sits in the rail, and where each ROW sits inside one — `sessionOrder`
+/// keyed by project group, `pinnedOrder` for the band.
+///
+/// ONE DOCUMENT PER MAC. That Mac's own cockpit, a browser tab on it and this
+/// phone all draw from the same arrangement, which is exactly why a drop here
+/// must send one field and re-read first: a phone writing the whole document
+/// from a copy it loaded a minute ago would resurrect the order a drag on the
+/// Mac had replaced in between.
+///
+/// THE KEYS ARE THE WRITING COCKPIT'S. For a Mac's own projects and sessions
+/// they are the bare ids, which is what this phone holds for that Mac's rows
+/// too. A group that Mac pairs from ANOTHER Mac is keyed `hostId:projectId`
+/// with a host id this phone cannot mint — so those entries never match here,
+/// rather than matching the wrong row.
+///
+/// EVERY FIELD DEFAULTS: a document written before the row arrangements
+/// existed means "nobody has arranged any rows", not "this is broken".
+struct SidebarLayout: Decodable, Equatable, Sendable {
+    var projectOrder: [String] = []
+    var sessionOrder: [String: [String]] = [:]
+    var pinnedOrder: [String] = []
+
+    init(projectOrder: [String] = [], sessionOrder: [String: [String]] = [:], pinnedOrder: [String] = []) {
+        self.projectOrder = projectOrder
+        self.sessionOrder = sessionOrder
+        self.pinnedOrder = pinnedOrder
+    }
+
+    private enum CodingKeys: String, CodingKey { case projectOrder, sessionOrder, pinnedOrder }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        projectOrder = try c.decodeIfPresent([String].self, forKey: .projectOrder) ?? []
+        sessionOrder = try c.decodeIfPresent([String: [String]].self, forKey: .sessionOrder) ?? [:]
+        pinnedOrder = try c.decodeIfPresent([String].self, forKey: .pinnedOrder) ?? []
+    }
+}
+
 /// `GET /api/sessions/live` — the whole inbox in one call.
 struct LiveSessions: Decodable {
     var sessions: [Session]
     var projects: [ProjectRef]
+    /// The rail's arrangement, riding the read the phone already makes every
+    /// few seconds — which is how a drag on the Mac reaches this phone without
+    /// a request, a timer or a connection of its own. Nil from a Mac whose
+    /// engine predates the field; the sidebar then falls back to asking for it
+    /// directly, once a minute.
+    var layout: SidebarLayout?
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sessions = try c.decode([Skippable<Session>].self, forKey: .sessions).compactMap(\.value)
         projects = try c.decode([Skippable<ProjectRef>].self, forKey: .projects).compactMap(\.value)
+        // A layout this build cannot read costs the arrangement, never the
+        // list — the same tolerance `Skippable` gives the rows above.
+        layout = try? c.decodeIfPresent(SidebarLayout.self, forKey: .layout)
     }
 }

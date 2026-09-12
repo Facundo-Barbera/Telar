@@ -37,6 +37,28 @@ func fixture(_ name: String) throws -> Data {
         }
     }
 
+    /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
+    /// optional, at both levels. The fixture predates the field, so this pins
+    /// the tolerance the wire needs rather than the fixture's content: a Mac
+    /// too old to send `layout` decodes to nil (which the phone reads as "keep
+    /// what you have"), and a layout with no row arrangements decodes to empty
+    /// lists rather than failing and costing the project order stored beside
+    /// them.
+    @Test func theLiveReadCarriesAnOptionalArrangementAtEveryLevel() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        #expect(try decode(#"{"sessions":[],"projects":[]}"#).layout == nil)
+
+        let old = try decode(#"{"sessions":[],"projects":[],"layout":{"projectOrder":["p2","p1"]}}"#)
+        #expect(old.layout == SidebarLayout(projectOrder: ["p2", "p1"]))
+
+        let whole = try decode(#"{"sessions":[],"projects":[],"layout":{"projectOrder":["p1"],"sessionOrder":{"p1":["s2","s1"]},"pinnedOrder":["s9"]}}"#)
+        #expect(whole.layout == SidebarLayout(projectOrder: ["p1"], sessionOrder: ["p1": ["s2", "s1"]], pinnedOrder: ["s9"]))
+
+        // A layout this build cannot read costs the arrangement, never the
+        // list — the same tolerance `Skippable` gives the rows beside it.
+        #expect(try decode(#"{"sessions":[],"projects":[],"layout":"b,a"}"#).layout == nil)
+    }
+
     @Test func snapshotDecodes() throws {
         let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture("snapshot"))
         #expect(!snapshot.turns.isEmpty)
