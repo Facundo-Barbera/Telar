@@ -64,11 +64,29 @@ function Field({
 export function RegisterProjectDialog({
   onRegistered,
   compact = false,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   onRegistered: () => void;
   compact?: boolean;
+  /**
+   * OPENED FROM SOMEWHERE OTHER THAN ITS OWN BUTTON — the rail's empty-space
+   * menu offers "New project", and this is the same dialog that button opens
+   * rather than a second registration path.
+   *
+   * The trigger stays either way: a controlled caller is adding a way IN, not
+   * taking the button away, and the internal state still runs the uncontrolled
+   * case so every existing call site is untouched.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const [root, setRoot] = useState("");
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
