@@ -373,10 +373,15 @@ export function ProviderInstanceCard({
               nothing. */}
           <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
             {onRemove && (
+              // The confirm dialog already says what survives; this says it
+              // BEFORE the press, where the hand is, so the reader is not
+              // finding out from the dialog whether it is safe to open the
+              // dialog. Same sentence, same two facts.
               <Button
                 variant="ghost"
                 size="icon-sm"
                 className="size-7 text-muted-foreground hover:text-destructive"
+                title="Forget how this login was configured. Its login on disk is left untouched, and sessions fall back to the built-in slot."
                 onClick={onRemove}
                 aria-label={`Remove ${title}`}
               >

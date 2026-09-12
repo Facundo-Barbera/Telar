@@ -152,7 +152,17 @@ function ThemeCard({
           </Button>
         )}
         {onRemove && (
-          <Button size="icon-sm" variant="ghost" title="Delete" aria-label={`Delete ${theme.label}`} onClick={(event) => (event.stopPropagation(), onRemove())}>
+          // WHAT DELETING DOES NOT DESTROY, on the control that does it. A bare
+          // "Delete" left the reader to guess whether the window they are
+          // looking at goes with it; `dropTheme` puts each half back to Telar's
+          // own, and nothing else is touched.
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            title="Delete this theme. If it is worn, the window falls back to Telar's own; nothing else changes."
+            aria-label={`Delete ${theme.label}`}
+            onClick={(event) => (event.stopPropagation(), onRemove())}
+          >
             <Trash2Icon />
           </Button>
         )}

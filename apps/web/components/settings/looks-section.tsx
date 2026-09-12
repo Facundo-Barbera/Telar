@@ -191,11 +191,15 @@ function LookCard({
             </Button>
           )}
           {onRemove && (
+            // WHAT DELETING DOES NOT DESTROY. A look is a bundle of references —
+            // removing the card takes the bundle off the shelf and leaves the
+            // theme it names in the library, and the window keeps whatever it
+            // has on. Said here, where the hand is, rather than nowhere.
             <Button
               size="icon-sm"
               variant="secondary"
               className="size-6 shadow-sm"
-              title="Delete"
+              title="Take this look off the shelf. Its theme stays in the library, and the window keeps what it has on."
               aria-label={`Delete ${look.label}`}
               onClick={(event) => (event.stopPropagation(), onRemove())}
             >
