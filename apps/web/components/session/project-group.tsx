@@ -20,9 +20,21 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+import type { ProjectPlace } from "@/lib/hosts/project-places";
 import type { ProjectGroup as Group } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpener } from "@/lib/workspace-open";
@@ -54,18 +66,18 @@ import { cn } from "@/lib/utils";
  * in a label nobody is looking at. Until it lands the row reads "Open", which is
  * the split button's own first-run wording.
  */
-function useProjectFolder(group: Pick<Group, "hostId" | "hostName">, root: string | undefined) {
+function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root: string | undefined) {
   const [openers, setOpeners] = useState<WorkspaceOpener[]>();
   const preferred = useSyncExternalStore(
     subscribePreferredOpener,
-    useCallback(() => preferredOpenerSnapshot(group.hostId), [group.hostId]),
+    useCallback(() => preferredOpenerSnapshot(place.hostId), [place.hostId]),
     serverPreferredOpenerSnapshot,
   );
   const bridge = workspaceOpener();
   const blocker = workspaceOpenBlocker({
     path: root,
-    hostId: group.hostId,
-    hostLabel: group.hostName,
+    hostId: place.hostId,
+    hostLabel: place.hostName,
     hasBridge: Boolean(bridge),
   });
 
@@ -93,7 +105,7 @@ function useProjectFolder(group: Pick<Group, "hostId" | "hostName">, root: strin
    *  same alert one file over. */
   const act = (entry: WorkspaceOpenerEntry | "reveal") => {
     if (blocker || !bridge || !root) return;
-    if (entry !== "reveal" && remembersOpener(entry)) writePreferredOpener(group.hostId, entry.id);
+    if (entry !== "reveal" && remembersOpener(entry)) writePreferredOpener(place.hostId, entry.id);
     void (entry === "reveal" ? bridge.reveal(root) : bridge.open(root, entry.openerId))
       .then((result) => {
         if (!result.ok) window.alert(result.error ?? "That folder could not be opened.");
@@ -162,6 +174,7 @@ export function ProjectGroupSection({
   onDrop,
   rowDrag,
   root,
+  places,
   onNewConversation,
   onProjectSettings,
   onCollapseOthers,
@@ -202,7 +215,22 @@ export function ProjectGroupSection({
    * never its path — which is the same case `workspaceOpenBlocker` refuses.
    */
   root?: string;
-  onNewConversation: () => void;
+  /**
+   * EVERY MAC THIS GROUP LIVES ON, this Mac first. One entry is the ordinary
+   * case; two means the reader has this repository checked out on two machines
+   * and the rail folded them into one group, which is the whole reason this is
+   * a list rather than the group's own `hostId`. Each carries THAT Mac's own
+   * project id — ids are minted per engine — so every destination below is
+   * built from a place rather than from the group.
+   *
+   * OMITTED IS "WHEREVER THE GROUP SAYS IT IS": the group's own `projectId` and
+   * `hostId` are one place's worth of identity already, and falling back to
+   * them is what makes a caller that has no row list — or a group drawn with no
+   * rows at all — render exactly as it did before any of this.
+   */
+  places?: readonly ProjectPlace[];
+  /** Which Mac, answered by the reader when there is more than one. */
+  onNewConversation: (place: ProjectPlace) => void;
   /** Absent where there is no page to send anyone to: per-project settings are
    *  a local-only route, exactly as the session menu's own item states. */
   onProjectSettings?: () => void;
@@ -213,7 +241,24 @@ export function ProjectGroupSection({
 }) {
   const headingId = `project-group-${group.key}`;
   const shown = group.sessions.length;
-  const folder = useProjectFolder(group, root);
+  /**
+   * WHERE THE HEADER'S OWN CONTROLS POINT. `projectPlaces` puts this Mac first,
+   * so an ordinary group and the local half of a merged one both resolve to the
+   * checkout that opens without a hop — and a group that lives only on a paired
+   * Mac resolves to that Mac, which is what `workspaceOpenBlocker` then refuses
+   * a folder for.
+   */
+  const at: readonly ProjectPlace[] =
+    places && places.length > 0
+      ? places
+      : [{ projectId: group.projectId, ...(group.hostId ? { hostId: group.hostId } : {}), ...(group.hostName ? { hostName: group.hostName } : {}) }];
+  const primary = at[0]!;
+  /** ONE HEADER, EVERY MAC IT LIVES ON. A single local place wears no badge —
+   *  "this Mac" is the rail's default and saying so on every group would be
+   *  noise — but the moment a group spans two machines, both are named, because
+   *  then which Mac a row is on is the thing the reader cannot infer. */
+  const badges = at.length > 1 ? at : at.filter((place) => place.hostId);
+  const folder = useProjectFolder(primary, root);
   /**
    * WHICH "+N FOLLOWING" CHIPS ARE OPEN. Local, transient and per group: this is
    * a reveal, not a fold — nothing about it is worth remembering across a reload
@@ -222,6 +267,8 @@ export function ProjectGroupSection({
    * replace every time the rail re-mounted.
    */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  /** Whether the `+`'s which-Mac menu is open — see the trigger below. */
+  const [pickingHost, setPickingHost] = useState(false);
   const withheld = group.withheld ?? [];
   const withheldCount = withheld.reduce((total, entry) => total + entry.sessions.length, 0);
   // A COLLAPSED GROUP STILL TELLS THE TRUTH. The chips live in the body, so the
@@ -278,12 +325,19 @@ export function ProjectGroupSection({
               <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
               <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />
               <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>
-              {group.hostName && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] text-sidebar-foreground/60" title={`On ${group.hostName}`}>
-                  <MonitorIcon className="size-2.5" />
-                  <span className="max-w-16 truncate">{group.hostName}</span>
-                </span>
-              )}
+              {badges.map((place) => {
+                const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");
+                return (
+                  <span
+                    key={`${place.hostId ?? "local"}:${place.projectId}`}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] text-sidebar-foreground/60"
+                    title={`On ${label}`}
+                  >
+                    <MonitorIcon className="size-2.5" />
+                    <span className="max-w-16 truncate">{label}</span>
+                  </span>
+                );
+              })}
               <span className="ml-auto shrink-0 tabular-nums text-[0.6875rem] text-sidebar-foreground/45" title={countLabel} aria-label={countLabel}>
                 {shown}
               </span>
@@ -292,10 +346,30 @@ export function ProjectGroupSection({
                 popup to the header it was opened from. A rail is not a menu
                 width — the same fix `SessionActionContextMenu` makes. */}
             <ContextMenuContent className="w-56">
-              <ContextMenuItem onClick={onNewConversation}>
-                <MessageSquarePlusIcon />
-                New conversation here
-              </ContextMenuItem>
+              {/* "HERE" IS A QUESTION ONCE A GROUP SPANS TWO MACS, so it stops
+                  being the answer and becomes a submenu. With one place the row
+                  is exactly what it was. */}
+              {at.length > 1 ? (
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>
+                    <MessageSquarePlusIcon />
+                    New conversation
+                  </ContextMenuSubTrigger>
+                  <ContextMenuSubContent className="w-52">
+                    {at.map((place) => (
+                      <ContextMenuItem key={`${place.hostId ?? "local"}:${place.projectId}`} onClick={() => onNewConversation(place)}>
+                        <MonitorIcon />
+                        {place.hostName ?? "This Mac"}
+                      </ContextMenuItem>
+                    ))}
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              ) : (
+                <ContextMenuItem onClick={() => onNewConversation(primary)}>
+                  <MessageSquarePlusIcon />
+                  New conversation here
+                </ContextMenuItem>
+              )}
 
               <ContextMenuSeparator />
               <ContextMenuItem
@@ -342,15 +416,54 @@ export function ProjectGroupSection({
             </ContextMenuContent>
           </ContextMenu>
         </button>
-        <Link
-          href={canvasHref(group.projectId, group.hostId)}
-          onClick={onNavigate}
-          aria-label={`New conversation in ${group.name}`}
-          title={`New conversation in ${group.name}`}
-          className="flex size-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover/project:opacity-100"
-        >
-          <MessageSquarePlusIcon className="size-3.5" />
-        </Link>
+        {/*
+          THE `+` IS A LINK WHILE THERE IS ONE ANSWER, AND A MENU WHEN THERE IS
+          NOT. A group spanning two Macs has two canvases and no default worth
+          guessing — picking one silently would start work on a machine the
+          reader did not choose, which is the wrong-host mistake this whole
+          change exists to stop. A link is kept for the ordinary case because a
+          link can be middle-clicked, copied and opened in a new window, and a
+          button cannot.
+        */}
+        {at.length > 1 ? (
+          <DropdownMenu onOpenChange={setPickingHost}>
+            {/* HELD VISIBLE WHILE ITS OWN MENU IS OPEN. The `+` appears on
+                hover of the header, and the menu opens in a portal beside it —
+                so the pointer moving into the menu leaves the header, and the
+                control the menu belongs to would fade out from under it. */}
+            <DropdownMenuTrigger
+              aria-label={`New conversation in ${group.name}`}
+              title={`New conversation in ${group.name} — asks which Mac`}
+              className={cn(
+                "flex size-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover/project:opacity-100",
+                pickingHost && "opacity-100",
+              )}
+            >
+              <MessageSquarePlusIcon className="size-3.5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-52">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>New conversation on</DropdownMenuLabel>
+                {at.map((place) => (
+                  <DropdownMenuItem key={`${place.hostId ?? "local"}:${place.projectId}`} onClick={() => onNewConversation(place)}>
+                    <MonitorIcon />
+                    {place.hostName ?? "This Mac"}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Link
+            href={canvasHref(primary.projectId, primary.hostId)}
+            onClick={onNavigate}
+            aria-label={`New conversation in ${group.name}`}
+            title={`New conversation in ${group.name}`}
+            className="flex size-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover/project:opacity-100"
+          >
+            <MessageSquarePlusIcon className="size-3.5" />
+          </Link>
+        )}
       </div>
       {open && (
         <SidebarGroupContent id={`${headingId}-rows`} role="group" aria-labelledby={headingId} className="space-y-0.5 pb-1 pl-2">

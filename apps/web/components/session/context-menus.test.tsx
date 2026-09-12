@@ -126,7 +126,9 @@ describe("the project header composes its own list", () => {
     expect(source).toContain("{folder.available && (");
     // The remembered opener, not a second preference store.
     expect(source).toContain('from "@/lib/workspace-opener-preference"');
-    expect(source).toContain("writePreferredOpener(group.hostId, entry.id)");
+    // Keyed by the MAC whose folder is being opened — `place`, not the group,
+    // since a group can now span two of them (#283).
+    expect(source).toContain("writePreferredOpener(place.hostId, entry.id)");
   });
 
   test("only this surface carries the header's own verbs — the session menu never grows them", () => {

@@ -87,6 +87,16 @@ export type SidebarSession = {
   /** `Project.icon` — the content-derived key behind the engine's icon route.
    *  Absent when the checkout carries no icon file. */
   projectIcon?: string;
+  /**
+   * `Project.remoteUrl` — which REPOSITORY this row's project is a checkout of,
+   * as `host/owner/repo`. The one fact a row carries that is true on more than
+   * one Mac, and therefore the one thing two Macs' registrations of the same
+   * work can be recognised by; see `projectGroupKey`.
+   *
+   * Absent on a project with no origin, on an unversioned directory, and while
+   * the project list is still loading.
+   */
+  projectRemote?: string;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
@@ -151,6 +161,7 @@ export function toSidebarSession(
   projectIcon?: string,
   host?: { id: string; name: string },
   assignments?: readonly SessionAssignment[],
+  projectRemote?: string,
 ): SidebarSession {
   return {
     id: session.id,
@@ -163,6 +174,7 @@ export function toSidebarSession(
     ...(projectName ? { projectName } : {}),
     ...(projectBranch ? { projectBranch } : {}),
     ...(projectIcon ? { projectIcon } : {}),
+    ...(projectRemote ? { projectRemote } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",

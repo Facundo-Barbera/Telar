@@ -148,7 +148,34 @@ export type GroupedSessions = {
   groups: ProjectGroup[];
 };
 
-export function projectGroupKey(session: Pick<SidebarSession, "projectId" | "hostId">): string {
+/**
+ * WHICH GROUP A ROW BELONGS TO — the repository it is work on, when the row can
+ * name one, and otherwise this Mac's registration of it.
+ *
+ * TWO MACS' CHECKOUTS OF ONE REPOSITORY ARE ONE PROJECT, because that is what
+ * they are to the person looking at them: the same code, the same branches, the
+ * same work, on two machines. Keyed by host and project id they were two groups
+ * with one name, distinguishable only by a badge, and the reader had to
+ * remember which Mac they had last started something on to find the
+ * conversation they wanted. `Project.remoteUrl` is the only fact a row carries
+ * that is true on both — the project IDS are minted per engine and the NAMES
+ * are whatever each person typed — so it is what the fold is made of.
+ *
+ * A ROW THAT CANNOT NAME A REPOSITORY KEEPS THE OLD KEY, and that is the
+ * important half. A project with no origin, an unversioned directory, a Mac
+ * still loading its project list: `hostId:projectId` groups those exactly as
+ * before, one group per registration. Folding two originless projects on their
+ * NAME would merge two unrelated folders that happen to be called `scratch`,
+ * which is a worse failure than the one this fixes — so the absence of an
+ * answer is never treated as an answer.
+ *
+ * The `repo:` prefix is not decoration: a normalised remote is `host/owner/repo`
+ * and a host-qualified key is `hostId:projectId`, and without it a host called
+ * `github.com` with a project id `owner/repo` would collide with the repository
+ * of that name.
+ */
+export function projectGroupKey(session: Pick<SidebarSession, "projectId" | "hostId" | "projectRemote">): string {
+  if (session.projectRemote) return `repo:${session.projectRemote}`;
   return session.hostId ? `${session.hostId}:${session.projectId ?? ""}` : (session.projectId ?? "");
 }
 
