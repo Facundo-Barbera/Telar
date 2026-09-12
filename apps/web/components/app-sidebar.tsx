@@ -46,10 +46,12 @@ import {
   ChevronRightIcon,
   FolderGit2Icon,
   FolderPlusIcon,
+  FoldVerticalIcon,
   SlidersHorizontalIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
+  UnfoldVerticalIcon,
   XIcon,
 } from "lucide-react";
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
@@ -101,11 +103,26 @@ import {
 import { SessionRow } from "@/components/session/session-row";
 import { RelatedWork } from "@/components/session/related-work";
 import { ProjectGroupSection } from "@/components/session/project-group";
-import { dedupeAcrossHosts, groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, railRowsForCommandKeys, useCollapsedGroups } from "@/lib/session-groups";
+import {
+  dedupeAcrossHosts,
+  groupSessions,
+  moveProjectGroup,
+  moveProjectGroupStep,
+  PROJECT_GROUP_MIME,
+  railRowsForCommandKeys,
+  useCollapsedGroups,
+} from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -343,7 +360,10 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
-  const { collapsed: collapsedGroups, toggle: toggleGroup } = useCollapsedGroups();
+  /** The register dialog, when something OTHER than its own button asked for it
+   *  — the rail's empty-space menu. Its trigger still works on its own. */
+  const [registeringProject, setRegisteringProject] = useState(false);
+  const { collapsed: collapsedGroups, toggle: toggleGroup, collapseOthers, collapseAll, expandAll } = useCollapsedGroups();
   /**
    * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
    * browser tab and a paired phone draw the same arrangement. The fold state
@@ -775,15 +795,22 @@ function SidebarBody() {
     // THE WHOLE DRAWN ORDER IS WRITTEN, not just the moved group: every group on
     // screen keeps the place it had, and a group nobody had placed yet is
     // placed by this drop rather than left to drift.
-    void setProjectOrder(
-      moveProjectGroup(
-        projectOrder,
-        grouped.groups.map((group) => group.key),
-        dragged,
-        key,
-        position,
-      ),
-    );
+    void setProjectOrder(moveProjectGroup(projectOrder, drawnGroupKeys, dragged, key, position));
+  };
+
+  /**
+   * THE GROUPS AS DRAWN, which is what every group gesture is measured against
+   * — the fold-all verbs, "collapse others" and the menu's one-step reorder
+   * alike. Spelled once here so a menu row and a drop cannot disagree about
+   * which keys are on screen; see `foldedAfter` and `moveProjectGroupStep` for
+   * why neither takes the stored list instead.
+   */
+  const drawnGroupKeys = grouped ? grouped.groups.map((group) => group.key) : [];
+  /** The same write the drag makes, one place at a time. `undefined` at either
+   *  end of the list, which is what disables the menu row. */
+  const moveGroup = (key: string, direction: "up" | "down") => {
+    const next = moveProjectGroupStep(projectOrder, drawnGroupKeys, key, direction);
+    return next && (() => void setProjectOrder(next));
   };
 
   /**
@@ -1108,7 +1135,12 @@ function SidebarBody() {
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            <RegisterProjectDialog onRegistered={() => void loadAll()} compact />
+            <RegisterProjectDialog
+              onRegistered={() => void loadAll()}
+              compact
+              open={registeringProject}
+              onOpenChange={setRegisteringProject}
+            />
           </div>
         </div>
 
@@ -1244,6 +1276,23 @@ function SidebarBody() {
           the structure; the list needs no title to be the list.
         */}
         <SidebarGroup className="min-h-0 flex-1">
+          {/*
+            THE RAIL'S OWN MENU, ON THE SPACE BELOW THE LAST GROUP.
+
+            The two verbs at the top of the rail — start a conversation, register
+            a project — are a scroll away once the list is long, and the fold-all
+            pair had no control anywhere. Right-clicking the list is where a
+            person looks for exactly these.
+
+            IT WRAPS THE WHOLE SCROLL AREA AND STILL ONLY FIRES ON THE EMPTY
+            PART. Base UI's trigger stops the `contextmenu` event it handles
+            (`stopEvent`), so a right-press on a session row or a project header
+            is claimed by that row's own trigger and never reaches this one —
+            the innermost menu wins, which is the platform's own rule and the
+            reason this needs no hit-testing of its own.
+          */}
+          <ContextMenu>
+            <ContextMenuTrigger render={<div className="contents" />}>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {showingStale ? (
               <p className="px-2 pb-1 pt-0.5 text-[0.6875rem] leading-4 text-sidebar-foreground/55">
@@ -1268,26 +1317,53 @@ function SidebarBody() {
                 detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : grouped ? (
-              grouped.groups.map((group) => (
-                <ProjectGroupSection
-                  key={group.key}
-                  group={group}
-                  open={!collapsedGroups.has(group.key)}
-                  onToggle={() => toggleGroup(group.key)}
-                  onNavigate={onNavigate}
-                  {...(activeSessionId ? { activeSessionId } : {})}
-                  renderedAt={renderedAt}
-                  bandFor={bandFor}
-                  onRefresh={() => void loadAll()}
-                  dragging={draggingGroup === group.key}
-                  insert={groupInsert?.key === group.key ? groupInsert.position : null}
-                  onDragStart={onGroupDragStart(group.key)}
-                  onDragEnd={onGroupDragEnd}
-                  onDragOver={onGroupDragOver(group.key)}
-                  onDragLeave={onGroupDragLeave(group.key)}
-                  onDrop={onGroupDrop(group.key)}
-                />
-              ))
+              grouped.groups.map((group) => {
+                /**
+                 * THE REGISTRY'S PATH, AND ONLY THIS MAC'S. A paired Mac's
+                 * project is read as an id and a name; its checkout is over
+                 * there, and handing this Mac's same-named folder to Finder
+                 * would reveal the wrong one. `workspaceOpenBlocker` refuses it
+                 * a second time inside the group, on the host id.
+                 */
+                const root = group.hostId ? undefined : projects.find((project) => project.id === group.projectId)?.root;
+                const moveUp = moveGroup(group.key, "up");
+                const moveDown = moveGroup(group.key, "down");
+                return (
+                  <ProjectGroupSection
+                    key={group.key}
+                    group={group}
+                    open={!collapsedGroups.has(group.key)}
+                    onToggle={() => toggleGroup(group.key)}
+                    onNavigate={onNavigate}
+                    {...(activeSessionId ? { activeSessionId } : {})}
+                    renderedAt={renderedAt}
+                    bandFor={bandFor}
+                    onRefresh={() => void loadAll()}
+                    dragging={draggingGroup === group.key}
+                    insert={groupInsert?.key === group.key ? groupInsert.position : null}
+                    onDragStart={onGroupDragStart(group.key)}
+                    onDragEnd={onGroupDragEnd}
+                    onDragOver={onGroupDragOver(group.key)}
+                    onDragLeave={onGroupDragLeave(group.key)}
+                    onDrop={onGroupDrop(group.key)}
+                    {...(root ? { root } : {})}
+                    // The `+` beside the header, as a menu row: one canvas
+                    // route, reached two ways.
+                    onNewConversation={() => startSession({ projectId: group.projectId, ...(group.hostId ? { hostId: group.hostId } : {}) })}
+                    {...(group.hostId
+                      ? {}
+                      : {
+                          onProjectSettings: () => {
+                            onNavigate();
+                            router.push(`/projects/${encodeURIComponent(group.projectId)}/settings`);
+                          },
+                        })}
+                    onCollapseOthers={() => collapseOthers(group.key, drawnGroupKeys)}
+                    {...(moveUp ? { onMoveUp: moveUp } : {})}
+                    {...(moveDown ? { onMoveDown: moveDown } : {})}
+                  />
+                );
+              })
             ) : (
               list.sessions.map((session, index) => (
                 <SessionRow
@@ -1352,6 +1428,36 @@ function SidebarBody() {
                 </div>
               ))}
           </SidebarGroupContent>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="w-56">
+              {/* The same canvas the New button above opens, with the same
+                  project guess behind it — `startSession` and `composerTarget`,
+                  unchanged. */}
+              <ContextMenuItem disabled={!composerTarget} onClick={() => startSession()}>
+                <MessageSquarePlusIcon />
+                New conversation
+              </ContextMenuItem>
+              {/* The `+` beside the project picker, as a row: the SAME dialog,
+                  so there is still exactly one registration path and one
+                  `chooseDirectory` call in the app. */}
+              <ContextMenuItem onClick={() => setRegisteringProject(true)}>
+                <FolderPlusIcon />
+                New project
+              </ContextMenuItem>
+              {/* Folds only the groups ON SCREEN — see `foldedAfter`. A rail
+                  showing search results has none, so both rows stand down
+                  rather than writing a fold nobody can see undone. */}
+              <ContextMenuSeparator />
+              <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => collapseAll(drawnGroupKeys)}>
+                <FoldVerticalIcon />
+                Collapse all projects
+              </ContextMenuItem>
+              <ContextMenuItem disabled={drawnGroupKeys.length === 0} onClick={() => expandAll(drawnGroupKeys)}>
+                <UnfoldVerticalIcon />
+                Expand all
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         </SidebarGroup>
 
         {/* The shelves exist only in the banded view. A search has already
