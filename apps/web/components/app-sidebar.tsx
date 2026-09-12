@@ -110,7 +110,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
-import { RelatedWork } from "@/components/session/related-work";
+import { followedSessions, RelatedWork } from "@/components/session/related-work";
 import { ProjectGroupSection } from "@/components/session/project-group";
 import {
   dedupeAcrossHosts,
@@ -120,6 +120,7 @@ import {
   PROJECT_GROUP_MIME,
   railRowsForCommandKeys,
   useCollapsedGroups,
+  withholdFollowedRows,
 } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
@@ -710,6 +711,30 @@ function SidebarBody() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the pinned SET
   }, [pinnedKeys]);
 
+  /**
+   * THE PROJECT GROUPS WITH THE FOLLOWED ROWS TAKEN OUT — issue #278.
+   *
+   * A pinned coordinator's "Following" block and the project groups were built
+   * from the same pool with nothing reconciling them, so a followed session was
+   * drawn twice. `withholdFollowedRows` is the rule; this is where it is applied,
+   * and `followedSessions` is the SAME resolution the block itself renders from,
+   * so the set that is hidden here is exactly the set that is shown there.
+   *
+   * SEARCH IS UNTOUCHED. A query flattens the rail — there are no groups and no
+   * pinned band — and a result list that quietly dropped a match because
+   * something follows it would break the one promise search makes.
+   */
+  const pinnedFollowing = pinnedForFollow.map((coordinator) => ({
+    key: sessionKey(coordinator),
+    title: coordinator.title,
+    following: followedSessions(
+      followState.byCoordinator.get(sessionKey(coordinator)),
+      relatedPool,
+      coordinator.hostId,
+    ).map(({ session }) => sessionKey(session)),
+  }));
+  const drawnGroups = grouped ? withholdFollowedRows(grouped.groups, pinnedFollowing) : [];
+
   const [followFailed, setFollowFailed] = useState<ReadonlySet<string>>(() => new Set());
 
   /** Start following, through the controller: sync lock, visible failure. */
@@ -814,7 +839,7 @@ function SidebarBody() {
    * which keys are on screen; see `foldedAfter` and `moveProjectGroupStep` for
    * why neither takes the stored list instead.
    */
-  const drawnGroupKeys = grouped ? grouped.groups.map((group) => group.key) : [];
+  const drawnGroupKeys = drawnGroups.map((group) => group.key);
   /** The same write the drag makes, one place at a time. `undefined` at either
    *  end of the list, which is what disables the menu row. */
   const moveGroup = (key: string, direction: "up" | "down") => {
@@ -861,7 +886,9 @@ function SidebarBody() {
    * The desktop menu has carried these accelerators the whole time; nothing in
    * this cockpit was listening for them, so they did nothing.
    */
-  useCommandKeys(grouped ? railRowsForCommandKeys(grouped, collapsedGroups) : list.sessions.slice(0, 9));
+  // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
+  // its project group is no longer showing would count something invisible.
+  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9));
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -1354,7 +1381,7 @@ function SidebarBody() {
                 detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : grouped ? (
-              grouped.groups.map((group) => {
+              drawnGroups.map((group) => {
                 /**
                  * THE REGISTRY'S PATH, AND ONLY THIS MAC'S. A paired Mac's
                  * project is read as an id and a name; its checkout is over

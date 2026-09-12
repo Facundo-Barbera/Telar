@@ -205,8 +205,20 @@ export function ProjectGroupSection({
 }) {
   const headingId = `project-group-${group.key}`;
   const shown = group.sessions.length;
-  const countLabel = `${shown} shown`;
   const folder = useProjectFolder(group, root);
+  /**
+   * WHICH "+N FOLLOWING" CHIPS ARE OPEN. Local, transient and per group: this is
+   * a reveal, not a fold — nothing about it is worth remembering across a reload
+   * the way `useCollapsedGroups` remembers a collapsed project, and a chip that
+   * stayed expanded would quietly re-create the duplicate row it exists to
+   * replace every time the rail re-mounted.
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const withheld = group.withheld ?? [];
+  const withheldCount = withheld.reduce((total, entry) => total + entry.sessions.length, 0);
+  // A COLLAPSED GROUP STILL TELLS THE TRUTH. The chips live in the body, so the
+  // header's own count is the only thing a folded group says about itself.
+  const countLabel = withheldCount ? `${shown} shown, ${withheldCount} under Following` : `${shown} shown`;
   return (
     <SidebarGroup
       className={cn(
@@ -334,6 +346,62 @@ export function ProjectGroupSection({
       </div>
       {open && (
         <SidebarGroupContent id={`${headingId}-rows`} role="group" aria-labelledby={headingId} className="space-y-0.5 pb-1 pl-2">
+          {/*
+            "+N FOLLOWING <COORDINATOR>" — the rows this group is not drawing
+            because a pinned coordinator's Following already lists them (see
+            `withholdFollowedRows`). The count is not decoration: without it the
+            group would silently be short, which is a worse lie than the
+            duplicate it replaces.
+
+            ABOVE THE ROWS AND NOT IN THE HEADER ITSELF. The header is one
+            <button> that doubles as the drag handle, and a <button> cannot
+            contain another — so the chip sits at the top of the group's body,
+            which is also where its rows appear when it is opened.
+
+            EXPANDS IN PLACE, under its own chip: two coordinators claiming rows
+            from one project is two chips, and a shared drawer would lose which
+            rows were whose.
+          */}
+          {withheld.map((entry) => {
+            const open = expanded.has(entry.coordinatorKey);
+            const count = entry.sessions.length;
+            const label = `${count} following ${entry.coordinatorTitle}`;
+            return (
+              <div key={entry.coordinatorKey} className="space-y-0.5">
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setExpanded((current) => {
+                      const next = new Set(current);
+                      if (!next.delete(entry.coordinatorKey)) next.add(entry.coordinatorKey);
+                      return next;
+                    })
+                  }
+                  title={`${open ? "Hide" : "Show"} the ${label} — drawn under that conversation to keep them out of this list twice`}
+                  aria-label={`${open ? "Hide" : "Show"} the ${label}`}
+                  className="flex w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-[0.6875rem] text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70"
+                >
+                  <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+                  <span className="shrink-0 tabular-nums">+{count}</span>
+                  <span className="min-w-0 truncate">following {entry.coordinatorTitle}</span>
+                </button>
+                {open &&
+                  entry.sessions.map((session) => (
+                    <SessionRow
+                      key={sessionKey(session)}
+                      session={session}
+                      active={sessionKey(session) === activeSessionId}
+                      showProject={false}
+                      variant="slim"
+                      band={bandFor(session)}
+                      renderedAt={renderedAt}
+                      onRefresh={onRefresh}
+                    />
+                  ))}
+              </div>
+            );
+          })}
           {group.sessions.map((session) => (
             <SessionRow
               key={sessionKey(session)}

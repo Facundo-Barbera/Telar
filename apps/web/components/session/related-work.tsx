@@ -108,6 +108,40 @@ function followButton(
   );
 }
 
+/**
+ * WHICH ROWS THE "FOLLOWING" GROUP ACTUALLY DRAWS, as `{ session, subscriptionIds }`.
+ *
+ * HOST-QUALIFIED, AND DEDUPLICATED. A subscription's `targetSessionId` is a
+ * bare id, so matching on id alone can select a same-id session from another
+ * Mac; the coordinator's own host is the frame. Two subscriptions to one target
+ * (different events, or a `once` beside a standing one) are one row.
+ *
+ * EXPORTED BECAUSE THE RAIL HAS TO ASK THE SAME QUESTION. `withholdFollowedRows`
+ * keeps a followed session out of its project group, and "followed" has to mean
+ * exactly the rows this block draws — a rail that computed the set a second way
+ * would hide a row here and show it there, or the reverse, the moment the two
+ * spellings drifted. One function, one answer, two callers.
+ */
+export function followedSessions(
+  following: readonly Subscription[] | undefined,
+  followed: readonly SidebarSession[] | undefined,
+  coordinatorHostId?: string,
+): { session: SidebarSession; subscriptionIds: string[] }[] {
+  const seen = new Map<string, { session: SidebarSession; subscriptionIds: string[] }>();
+  for (const subscription of following ?? []) {
+    const match = followed?.find(
+      (candidate) =>
+        candidate.id === subscription.targetSessionId && (candidate.hostId ?? undefined) === (coordinatorHostId ?? undefined),
+    );
+    if (!match) continue;
+    const key = sessionKey(match);
+    const entry = seen.get(key);
+    if (entry) entry.subscriptionIds.push(subscription.id);
+    else seen.set(key, { session: match, subscriptionIds: [subscription.id] });
+  }
+  return [...seen.values()];
+}
+
 export function RelatedWork({
   groups,
   coordinatorId,
@@ -147,25 +181,9 @@ export function RelatedWork({
   /** Locks whose follow failed. The control stays and offers a retry. */
   followFailed?: ReadonlySet<string>;
 }) {
-  /**
-   * HOST-QUALIFIED, AND DEDUPLICATED. A subscription's `targetSessionId` is a
-   * bare id, so matching on id alone can select a same-id session from another
-   * Mac; the coordinator's own host is the frame. Two subscriptions to one
-   * target (different events, or a `once` beside a standing one) are one row.
-   */
-  const seen = new Map<string, { session: SidebarSession; subscriptionIds: string[] }>();
-  for (const subscription of following ?? []) {
-    const match = followed?.find(
-      (candidate) =>
-        candidate.id === subscription.targetSessionId && (candidate.hostId ?? undefined) === (coordinatorHostId ?? undefined),
-    );
-    if (!match) continue;
-    const key = sessionKey(match);
-    const entry = seen.get(key);
-    if (entry) entry.subscriptionIds.push(subscription.id);
-    else seen.set(key, { session: match, subscriptionIds: [subscription.id] });
-  }
-  const watched = [...seen.values()];
+  /** The same resolution the rail runs to keep these rows out of their project
+   *  groups — see `followedSessions`. */
+  const watched = followedSessions(following, followed, coordinatorHostId);
   /** Already followed, so a row offers Follow only when it is not. */
   const followedKeys = new Set(watched.map(({ session }) => sessionKey(session)));
 
