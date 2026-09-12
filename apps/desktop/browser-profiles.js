@@ -23,9 +23,19 @@
  *   2. an EXISTING partition on disk for this key   — migration: the identity
  *      that project already signed into keeps working, and a global default
  *      set later never silently moves it;
- *   3. the GLOBAL DEFAULT                           — what a new project joins;
- *   4. a fresh per-project profile                  — the pre-profile behaviour,
- *      unchanged, for a machine that never set a default.
+ *   3. the GLOBAL DEFAULT                           — where every project with
+ *      no assignment and no history of its own browses.
+ *
+ * THERE IS ALWAYS A DEFAULT, AND NOTHING IS MINTED PER PROJECT. A registry with
+ * no default makes one called "Default" the moment it is opened (`ensureDefault`),
+ * so the ladder has a last rung that is a real, nameable, listable identity. It
+ * used to end by minting a fresh jar per project instead, which meant a person
+ * with four projects had four unnamed identities they never asked for and had to
+ * sign in to one at a time.
+ *
+ * RUNG 3 WRITES NOTHING. A project that lands on the default stays UNASSIGNED, so
+ * changing the default moves it — that is what "one default" means. A project
+ * pinned by rung 1 or rung 2 keeps its identity regardless.
  *
  * A DANGLING REFERENCE IS AN ERROR, NEVER A GUESS. If the file names a profile
  * id that no longer exists — a hand-edited file, a record removed out of band —
@@ -49,6 +59,14 @@ const FILE_NAME = "browser-profiles.json";
 const REGISTRY_VERSION = 2;
 const MAX_LABEL = 64;
 const MAX_ACCOUNT = 160;
+/**
+ * THE ONLY NAME THIS FILE INVENTS. Every other profile is named by the person who
+ * created it — the create form requires a name, and there is no generator behind
+ * it. An adopted pre-profile jar is the one exception the data forces
+ * (`adoptedLabelFor`): a record has to be called something, and losing the jar
+ * would lose a login.
+ */
+const DEFAULT_PROFILE_LABEL = "Default";
 
 /** Validate a project key the engine may send: a project id, or `none`. */
 function requireProjectKey(value) {
@@ -112,6 +130,23 @@ class ProfileRegistry {
      *  migrated project keeps its history. */
     this.migrations = [];
     this.document = this.read();
+    this.ensureDefault();
+  }
+
+  /**
+   * FIRST RUN MAKES ONE PROFILE CALLED "Default" AND MARKS IT DEFAULT.
+   *
+   * Called on every open, not only on a blank file, because an install that
+   * upgraded from the per-project era has profile records but no default at all —
+   * its adopted jars stay assigned to the projects that own them (see the ladder),
+   * and this is where the identity everything ELSE joins comes from.
+   *
+   * Nothing existing is touched: a registry that already names a default returns
+   * without a write.
+   */
+  ensureDefault() {
+    if (this.document.defaultProfileId) return this.get(this.document.defaultProfileId);
+    return this.create({ label: DEFAULT_PROFILE_LABEL });
   }
 
   // ── the file ────────────────────────────────────────────────────────────
@@ -200,10 +235,11 @@ class ProfileRegistry {
     record.partition = partition || `persist:telar-profile-${record.id}`;
     this.document.profiles[record.id] = record;
     /**
-     * A PROFILE THE LADDER MADE IS NEVER THE DEFAULT. Only a profile a PERSON
-     * created may become the first default: an adopted or auto-created
-     * per-project jar becoming the global default would hand every later
-     * project that project's cookies — the exact leak profiles prevent.
+     * A JAR THE LADDER ADOPTED IS NEVER THE DEFAULT. Only a profile a PERSON
+     * created — or the "Default" one `ensureDefault` makes — may become the
+     * global default: one project's migrated cookie jar becoming the default
+     * would hand every later project that project's logins, the exact leak
+     * profiles exist to prevent.
      */
     if (!internal && !this.document.defaultProfileId) this.document.defaultProfileId = record.id;
     this.save();
@@ -233,6 +269,33 @@ class ProfileRegistry {
     return this.get(this.document.defaultProfileId);
   }
 
+  /**
+   * FORGET A PROFILE. Allowed only when nothing points at it: a profile some
+   * project is assigned to is that project's identity, and a profile that is the
+   * global default is where every unassigned project browses.
+   *
+   * THE COOKIE JAR IS NOT DELETED. Like every other operation here this moves
+   * metadata only — the partition directory stays exactly where it is, so a
+   * record removed by mistake costs a re-creation, never a login. (That is also
+   * why deleting is not offered for a profile in use: the jar would survive with
+   * nothing left naming it.)
+   */
+  remove(profileId) {
+    const record = this.require(profileId);
+    if (record.id === this.document.defaultProfileId) {
+      throw new Error(`“${record.label}” is the default profile. Make another profile the default first.`);
+    }
+    const used = this.projectsOf(record.id);
+    if (used.length) {
+      throw new Error(
+        `“${record.label}” is used by ${used.length} project${used.length === 1 ? "" : "s"}. Point ${used.length === 1 ? "it" : "them"} at another profile first.`,
+      );
+    }
+    delete this.document.profiles[record.id];
+    this.save();
+    return { id: record.id, label: record.label };
+  }
+
   /** Point a project at a profile, or (null) drop the assignment and let the
    *  ladder decide again. */
   assign(projectKey, profileId) {
@@ -249,9 +312,9 @@ class ProfileRegistry {
   }
 
   /**
-   * THE LADDER. Returns the profile a project key belongs in, creating or
-   * adopting one when it has none. Assignments and migrations are persisted, so
-   * the answer is stable across restarts.
+   * THE LADDER. Returns the profile a project key belongs in, adopting a
+   * pre-profile jar when it finds one. Assignments and migrations are persisted,
+   * so the answer is stable across restarts.
    */
   resolve(projectKey) {
     const key = requireProjectKey(projectKey);
@@ -267,26 +330,31 @@ class ProfileRegistry {
       return this.get(existing.id);
     }
     if (this.partitionExists(legacy)) {
-      const adopted = this.create({ label: defaultLabelFor(key, legacy), partition: legacy, internal: true });
+      const adopted = this.create({ label: this.adoptedLabelFor(legacy), partition: legacy, internal: true });
       this.document.projects[key] = adopted.id;
       this.migrations.push({ from: key, to: adopted.id });
       this.save();
       return this.get(adopted.id);
     }
 
-    // 3. The global default, for a project with no history of its own.
-    if (this.document.defaultProfileId) {
-      const fallback = this.require(this.document.defaultProfileId);
-      this.document.projects[key] = fallback.id;
-      this.save();
-      return fallback;
-    }
+    // 3. The default, for every project with no assignment and no history.
+    // Deliberately NOT written down as an assignment: see the header.
+    return this.require(this.ensureDefault().id);
+  }
 
-    // 4. The pre-profile behaviour: this project's own clean jar.
-    const created = this.create({ label: defaultLabelFor(key, legacy), partition: legacy, internal: true });
-    this.document.projects[key] = created.id;
-    this.save();
-    return this.get(created.id);
+  /**
+   * What to call a jar that existed before profiles did.
+   *
+   * THE LAST AUTO-NAME, AND IT NAMES WHAT IT IS rather than which project it came
+   * from — a label like "Project 6f6f07" told the reader nothing they could act
+   * on, which is why it is gone. The counter only breaks a tie between two
+   * adopted jars; renaming one in Settings is the expected next step.
+   */
+  adoptedLabelFor(partition) {
+    const base = partition === LEGACY_PARTITION ? "Original browser" : "Earlier sign-ins";
+    const taken = new Set(Object.values(this.document.profiles).map((profile) => profile.label));
+    if (!taken.has(base)) return base;
+    for (let suffix = 2; ; suffix += 1) if (!taken.has(`${base} ${suffix}`)) return `${base} ${suffix}`;
   }
 
   mintId() {
@@ -297,12 +365,6 @@ class ProfileRegistry {
     }
     throw new Error("Could not mint a unique browser profile id.");
   }
-}
-
-function defaultLabelFor(projectKey, partition) {
-  if (projectKey === PROJECTLESS_PROFILE_KEY) return "No project";
-  if (partition === LEGACY_PARTITION) return "Original browser";
-  return `Project ${projectKey.slice("project_".length, "project_".length + 6)}`;
 }
 
 function blankDocument() {
@@ -386,4 +448,5 @@ module.exports = {
   PROFILE_ID,
   REGISTRY_VERSION,
   FILE_NAME,
+  DEFAULT_PROFILE_LABEL,
 };

@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, InfoIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, InfoIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -31,7 +31,7 @@ import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
-import { BrowserLoginsSection } from "./browser-logins-section";
+import { IntegrationsPage } from "./integrations-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
@@ -79,6 +79,13 @@ const SECTIONS: SettingsSection[] = [
    * engine stays loopback either way).
    */
   { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
+  /**
+   * ALSO "COCKPIT": the accounts THIS WINDOW browses and signs in as. A browser
+   * profile is a set of cookies this install keeps, not a property of the machine
+   * that runs turns — and it is where a remembered login is scoped, which is why
+   * the two share a pane.
+   */
+  { id: "integrations", label: "Integrations", icon: PlugZapIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
@@ -225,11 +232,12 @@ export function SettingsPage() {
 
       {active === "providers" && <ProvidersSection />}
 
+      {active === "integrations" && <IntegrationsPage />}
+
       {active === "tools" && (
         <>
           <McpSection />
           <PermissionsSection />
-          <BrowserLoginsSection />
         </>
       )}
 

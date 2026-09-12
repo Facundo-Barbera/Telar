@@ -10,12 +10,23 @@ const { ProfileRegistry } = require("./browser-profiles");
 const PROJECT = "project_0123456789abcdef0123456789abcdef";
 const OTHER = "project_fedcba9876543210fedcba9876543210";
 
-/** An ephemeral registry with predictable ids — the resolution the manager
- *  would do at restore, without a shell or a file. */
-function registry() {
-  let next = 0;
-  const made = new ProfileRegistry(null, { randomId: () => `bp_${String(++next).padStart(16, "0")}`, now: () => next });
-  return made;
+/**
+ * An ephemeral registry with predictable ids — the resolution the manager would
+ * do at restore, without a shell or a file.
+ *
+ * THE COUNTER STARTS BELOW ZERO because opening a registry mints its "Default"
+ * profile (browser-profiles.js `ensureDefault`), and that one takes the first id.
+ * Starting at -1 leaves `bp_…0001` for the first profile a test creates, so P1/P2
+ * below keep meaning "the first and second profiles this test made".
+ */
+function registry(existingPartitions = []) {
+  let next = -1;
+  const onDisk = new Set(existingPartitions);
+  return new ProfileRegistry(null, {
+    randomId: () => `bp_${String(++next).padStart(16, "0")}`,
+    now: () => next,
+    partitionExists: (partition) => onDisk.has(partition),
+  });
 }
 
 const P1 = "bp_0000000000000001";
@@ -125,7 +136,9 @@ describe("what a restore accepts", () => {
   });
 
   test("a v1 inventory restores through the profile ladder, onto the cookie jar its project already had", () => {
-    const store = registry();
+    // The jar is ON DISK, which is the whole migration signal: the ladder adopts
+    // that exact partition rather than landing the scope in the default.
+    const store = registry([`persist:telar-project-${PROJECT.slice("project_".length)}`]);
     const scopes = parseInventory(
       {
         version: 1,
@@ -141,7 +154,7 @@ describe("what a restore accepts", () => {
     // The partition is EXACTLY the pre-profile one: nothing was copied.
     expect(scopes[0].profile.partition).toBe(`persist:telar-project-${PROJECT.slice("project_".length)}`);
     // And the ladder recorded the metadata move for the caches that follow it.
-    expect(store.migrations).toEqual([]);
+    expect(store.migrations).toEqual([{ from: PROJECT, to: scopes[0].profile.id }]);
   });
 
   test("a scope whose profile the registry no longer has is dropped, never rehomed", () => {
