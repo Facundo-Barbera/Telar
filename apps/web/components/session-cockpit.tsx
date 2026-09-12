@@ -33,6 +33,7 @@ import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
@@ -1482,6 +1483,37 @@ export function SessionCockpit({
   );
 
   /**
+   * PUT TEXT INTO THE MESSAGE BEING WRITTEN — the keyboard-and-menu twin of the
+   * drag every panel row already offers (`lib/drag-reference.ts`).
+   *
+   * WHAT IT INSERTS IS TEXT, AND THAT IS THE WHOLE DESIGN, for the reason that
+   * module's header gives at length: nothing is resolved behind the scenes, so
+   * `turn.input` says exactly what the model was sent. A quote is the words you
+   * are looking at; a reference is a path in backticks. Both are what you would
+   * have typed.
+   *
+   * APPENDED, NOT SPLICED AT THE CARET. The caret lives inside `ComposerEditor`
+   * and this component cannot see it — a drop knows where it landed and this
+   * gesture does not, so it goes where a person's next sentence goes. The
+   * spacing is `insertReference`'s own, which is what stops "fix " becoming
+   * "fix  `a.ts`"; a MULTI-LINE insert (a quoted message) is a paragraph of its
+   * own instead, because a block quote welded onto the end of a sentence is not
+   * a quote of anything.
+   *
+   * The debounced `writeDraft` below persists it like any keystroke.
+   */
+  const insertIntoComposer = useCallback((text: string) => {
+    if (!text) return;
+    setDraft((current) => {
+      if (!current.trim()) return text;
+      return text.includes("\n") ? `${current.replace(/\s+$/, "")}\n\n${text}` : insertReference(current, text, current.length).draft;
+    });
+    // A draft that came back from a turn stops being that turn's recall the
+    // moment anything is added to it — the same rule `onDraftChange` follows.
+    setDraftRunId(undefined);
+  }, [setDraft, setDraftRunId]);
+
+  /**
    * LINK CLICKS IN THE CONVERSATION, when the Links setting says "keep them
    * here" (`lib/link-policy.ts`): an issue or pull request OF THIS PROJECT
    * opens as its right-panel tab, anything else as a tab in the session's
@@ -2752,6 +2784,7 @@ export function SessionCockpit({
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}
           onTabChange={(tab) => updatePanel((current) => ({ ...current, activeTab: tab }))}
           onOpenTab={showPanelTab}
+          onInsertReference={insertIntoComposer}
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
           // Persisted through the same `updatePanel` every other tab gesture
           // writes, so a reordered strip comes back reordered.

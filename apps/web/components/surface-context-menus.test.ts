@@ -31,7 +31,7 @@ const flat = (name: string) => code(name).replace(/\s+/g, " ");
 /** Every file this round puts a menu on. Grown one surface per commit, so the
  *  cross-surface rules below hold at every point in the series rather than
  *  only at the end of it. */
-const SURFACES = ["session/notebook-surface.tsx", "session/table-surface.tsx"];
+const SURFACES = ["session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
 
 describe("one primitive, composed per surface", () => {
   test("every surface imports the SHARED context-menu module and defines none of its own", () => {
@@ -181,5 +181,65 @@ describe("the table's column header and its cells", () => {
   test("both triggers render INLINE, so the cell's own truncation still ends in an ellipsis", () => {
     // A block child inside `truncate` clips with no ellipsis at all.
     expect(tbl().match(/<ContextMenuTrigger render=\{<span \/>\}>/g)).toHaveLength(2);
+  });
+});
+
+/**
+ * THE DIFF ROW. Its menu is mostly the row's own gestures said out loud — the
+ * disclosure it already toggles, the reference its own drag already carries —
+ * plus one route it did not have, into the Editor.
+ *
+ * AND ITS OMISSIONS ARE THE POINT. Stage, unstage and revert are a REFUSED
+ * design (`apps/engine/src/git.ts`, and this surface's own header at length),
+ * and a context menu is exactly where they creep back in as "just three more
+ * rows". These cases pin the absence.
+ */
+describe("the diff surface's file row", () => {
+  const dif = () => code("session/diff-surface.tsx");
+
+  test("Open in Editor goes through the panel's ONE route, derived from onOpenTab like LatexSurface's", () => {
+    expect(dif()).toContain("<ContextMenuItem onClick={() => onOpenFile(file.path)}>Open in Editor</ContextMenuItem>");
+    const panel = code("right-panel.tsx");
+    // The same expression LatexSurface is handed, on the same line shape.
+    expect(panel).toContain("onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}");
+    expect((panel.match(/onOpenFile=\{\(path\) => onOpenTab\(panelTabForPath\(path, dataScience === true\)\)\}/g) ?? []).length).toBe(2);
+  });
+
+  test("Insert as reference inserts the SAME string the row's own drag carries", () => {
+    const source = dif();
+    expect(source).toContain("onClick={() => onInsertReference(fileReference(file.path).text)}");
+    // `fileReference` is the one the drag uses, in this same file.
+    expect(source).toContain("startReferenceDrag(event.dataTransfer, fileReference(file.path))");
+  });
+
+  test("Expand / Collapse patch toggles the SAME `open` the row's disclosure button toggles", () => {
+    const source = dif();
+    expect(source).toContain('<ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>');
+    expect(source).toContain("onClick={() => setOpen((current) => !current)}\n          title=");
+  });
+
+  test("stage, unstage and revert are absent — a refused design, and a menu is where it would creep back", () => {
+    const source = dif();
+    for (const verb of ["Stage", "Unstage", "Revert", "Discard", "Checkout"]) {
+      expect(source, `the diff row's menu does not offer ${verb}`).not.toMatch(new RegExp(`<ContextMenuItem[^>]*>\\s*${verb}`));
+    }
+    // Named rather than silently dropped, in the prose beside the trigger.
+    expect(read("session/diff-surface.tsx")).toContain("STAGE, UNSTAGE AND REVERT ARE NOT HERE");
+  });
+
+  test("both row lists get the SAME menu, so the two halves of the review cannot drift", () => {
+    const source = dif();
+    expect((source.match(/\{\.\.\.rowMenu\}/g) ?? []).length).toBe(2);
+    expect(source).toContain("const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onInsertReference ? { onInsertReference } : {}) };");
+  });
+
+  test("the composer thread is the cockpit's, and it inserts TEXT rather than resolving anything", () => {
+    const cockpit = code("session-cockpit.tsx");
+    expect(cockpit).toContain("const insertIntoComposer = useCallback((text: string) => {");
+    expect(cockpit).toContain("onInsertReference={insertIntoComposer}");
+    // Spacing is drag-reference's own, so a menu insert and a drop read alike.
+    expect(cockpit).toContain("insertReference(current, text, current.length).draft");
+    // A multi-line insert (a quoted message) is its own paragraph.
+    expect(cockpit).toContain('text.includes("\\n") ? `${current.replace(/\\s+$/, "")}\\n\\n${text}`');
   });
 });

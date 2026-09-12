@@ -1088,6 +1088,7 @@ export function PanelSurface({
   openIssueNumbers,
   openPullNumbers,
   onOpenTab,
+  onInsertReference,
   active,
   dataScience,
   onOpenImage,
@@ -1125,6 +1126,13 @@ export function PanelSurface({
    * deliberate the gesture was, and is ignored for anything but a file.
    */
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
+  /**
+   * Put a reference into the message being written — the same text a row's own
+   * DRAG already carries (`lib/drag-reference.ts`), reached with a gesture that
+   * does not require aiming at the composer. The cockpit owns the draft, so it
+   * owns this; absent (a canvas with no composer) simply hides the item.
+   */
+  onInsertReference?: (text: string) => void;
   active?: TurnState;
   /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
   dataScience?: boolean;
@@ -1220,6 +1228,11 @@ export function PanelSurface({
         reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
         {...(active ? { active } : {})}
+        // Derived from `onOpenTab`, exactly as LatexSurface's is above — a
+        // changed file opens through the ONE route into the Editor rather than
+        // a second one cut for this menu.
+        onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}
+        {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
   if (tab === "issues" || tab === "pulls")
@@ -1548,6 +1561,7 @@ export function RightPanel({
   tab,
   onTabChange,
   onOpenTab,
+  onInsertReference,
   onCloseTab,
   onMoveTab,
   onClose,
@@ -1591,6 +1605,8 @@ export function RightPanel({
   tab?: PanelTab;
   onTabChange: (tab: PanelTab) => void;
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
+  /** Put a reference into the message being written — see `PanelSurface`. */
+  onInsertReference?: (text: string) => void;
   onCloseTab: (tab: PanelTab) => void;
   /** Reorder the strip — `toIndex` is the place in the strip WITHOUT the moved
    *  tab, which is what `movePanelTab` takes. Absent leaves the tabs draggable
@@ -2023,6 +2039,7 @@ export function RightPanel({
               openIssueNumbers={openIssueNumbers}
               openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
+              {...(onInsertReference ? { onInsertReference } : {})}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}

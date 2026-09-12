@@ -66,6 +66,7 @@ import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, type SessionRevi
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -127,6 +128,8 @@ function ReviewFileRow({
   file,
   reported,
   edits,
+  onOpenFile,
+  onInsertReference,
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
@@ -136,6 +139,13 @@ function ReviewFileRow({
   /** How many times the journal saw this path written, when that is more than
    *  once — the one thing the old Changes tab knew that git does not. */
   edits?: number;
+  /** Open this path in the Editor. Threaded exactly the way LatexSurface's is
+   *  — the panel derives it from its own `onOpenTab`, so there is no second
+   *  route into the Editor. */
+  onOpenFile?: (path: string) => void;
+  /** Put the row's reference into the message being written — the same string
+   *  and the same `fileReference` the row's own DRAG already carries. */
+  onInsertReference?: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [patch, setPatch] = useState<string>();
@@ -162,6 +172,16 @@ function ReviewFileRow({
        the button inside keeps its press — see the same note on the journal's
        file rows in right-panel.tsx. */
     <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
+      {/* THE TRIGGER IS INSIDE THE DRAGGABLE, wrapping only the row's own
+          content — the board card's rule in `spool/idiom.test.ts`, and for its
+          reason: a right-click on the drag handle would race the drag.
+
+          STAGE, UNSTAGE AND REVERT ARE NOT HERE, and their absence is the same
+          decision this file's header already argues at length (`apps/engine/
+          src/git.ts` refuses them by construction). A menu is exactly where
+          they would sneak back in as "just three more rows". */}
+      <ContextMenu>
+        <ContextMenuTrigger>
       <PanelRow tone={STATUS_TONE[file.status]} className="p-0 pl-0">
         <button
           type="button"
@@ -204,6 +224,18 @@ function ReviewFileRow({
           </span>
         </button>
       </PanelRow>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-auto">
+          {onOpenFile && <ContextMenuItem onClick={() => onOpenFile(file.path)}>Open in Editor</ContextMenuItem>}
+          {onOpenFile && <ContextMenuSeparator />}
+          <ContextMenuItem onClick={() => void navigator.clipboard.writeText(file.path)}>Copy path</ContextMenuItem>
+          {onInsertReference && (
+            <ContextMenuItem onClick={() => onInsertReference(fileReference(file.path).text)}>Insert as reference</ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => setOpen((current) => !current)}>{open ? "Collapse patch" : "Expand patch"}</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {open &&
         (failed ? (
           <p className="px-4 pb-2 text-[0.6875rem] text-muted-foreground">git could not produce a patch for this path.</p>
@@ -406,12 +438,20 @@ export function DiffSurface({
   suggestion,
   /** A turn is running. Only used to hold the commit button. */
   active,
+  onOpenFile,
+  onInsertReference,
 }: {
   sessionId?: string;
   projectId?: string;
   reported: ReadonlyMap<string, number>;
   suggestion: string;
   active?: TurnState;
+  /** A changed file's row can open the file the Editor already draws — the
+   *  panel derives this from its own `onOpenTab`, exactly as it does for
+   *  LatexSurface, so no second route into the Editor is created here. */
+  onOpenFile?: (path: string) => void;
+  /** Put a row's file reference into the message being written. */
+  onInsertReference?: (text: string) => void;
 }) {
   const [diff, setDiff] = useState<SessionDiff>();
   const [error, setError] = useState<string>();
@@ -459,6 +499,10 @@ export function DiffSurface({
   }, [load, active]);
 
   const review = useMemo(() => (diff ? reconcileReview(diff, reported) : undefined), [diff, reported]);
+
+  /** Built once and spread onto both row lists, so the two can never drift
+   *  into offering different menus for the same kind of row. */
+  const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
 
   if (!sessionId && !projectId) {
     return (
@@ -557,7 +601,7 @@ export function DiffSurface({
           {review.rows
             .filter((row) => !row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported={!sessionId} />
+              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported={!sessionId} {...rowMenu} />
             ))}
           {sessionId && review.rows.some((row) => row.reported) && review.rows.some((row) => !row.reported) && (
             <PanelDivider label="the session wrote these" />
@@ -565,7 +609,7 @@ export function DiffSurface({
           {review.rows
             .filter((row) => row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} />
+              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} {...rowMenu} />
             ))}
         </div>
       )}
