@@ -2505,3 +2505,59 @@ describe("the main process holds a bounded amount (#296)", () => {
     expect(walks).toBe(1);
   });
 });
+
+/**
+ * DUPLICATE — the tab strip's own verb (#274), and the one action in the human
+ * list that reads a tab rather than writing one.
+ */
+describe("duplicating a tab", () => {
+  test("it opens a second tab at the same address, and the source is left exactly where it was", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.createTab("s", "https://two.example/", "human");
+
+    await manager.action("s", { action: "duplicate", index: 0 });
+
+    const tabs = manager.state("s").tabs;
+    expect(tabs.map((tab) => tab.url)).toEqual(["https://one.example/", "https://two.example/", "https://one.example/"]);
+    // A duplicate is a NEW tab, not a second handle on the old one.
+    expect(new Set(tabs.map((tab) => tab.id)).size).toBe(3);
+    // Opened by the person, so it takes the screen the way their own New tab
+    // does — which is the whole difference between this and an agent's tab.
+    expect(tabs[2].active).toBe(true);
+    expect(tabs[2].openedBy).toBe("human");
+  });
+
+  test("with no index it duplicates the tab you are looking at", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.createTab("s", "https://two.example/", "human");
+    await manager.selectTab("s", 0);
+
+    await manager.action("s", { action: "duplicate" });
+
+    expect(manager.state("s").tabs.map((tab) => tab.url)).toEqual([
+      "https://one.example/",
+      "https://two.example/",
+      "https://one.example/",
+    ]);
+  });
+
+  test("it duplicates where the tab IS, not where its record last said it was", async () => {
+    // The two differ for exactly as long as a navigation is in flight, which
+    // is precisely when somebody duplicates a tab to keep the page they had.
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/", "human");
+    views[0].webContents.url = "https://one.example/deep/page";
+
+    await manager.action("s", { action: "duplicate", index: 0 });
+    expect(manager.state("s").tabs[1].url).toBe("https://one.example/deep/page");
+  });
+
+  test("an index that names no tab is refused, rather than duplicating something else", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await expect(manager.action("s", { action: "duplicate", index: 9 })).rejects.toThrow(/does not exist/);
+    expect(manager.state("s").tabs).toHaveLength(1);
+  });
+});

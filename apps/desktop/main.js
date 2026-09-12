@@ -19,7 +19,7 @@ const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
+const { DesktopBrowserManager, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
@@ -1276,6 +1276,30 @@ ipcMain.handle("telar:browser:private-resume", () => requireBrowserManager().res
 ipcMain.handle("telar:browser:action", (_event, input) =>
   requireBrowserManager().action(input?.scopeKey, input?.action),
 );
+/**
+ * "OPEN IN SYSTEM BROWSER", from the integrated browser's tab menu.
+ *
+ * A USER GESTURE, AND ONLY THE COCKPIT'S. The guard is the login-offer
+ * handler's, for the same reason: a browser tab's preload, a subframe, or
+ * anything an agent can reach must not be able to make the shell launch the
+ * default browser. An agent that wants a page open has `browser_navigate` and
+ * a tab to put it in.
+ *
+ * http AND https ONLY — `externalOpenTarget` is the same allowlist the clicked
+ * link policy applies, and it answers with the PARSED href so the OS receives
+ * exactly what was validated.
+ */
+ipcMain.handle("telar:browser:open-external", (event, input) => {
+  const manager = requireBrowserManager();
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may open a page in the system browser.");
+  }
+  const target = externalOpenTarget(input?.url);
+  if (!target) return { ok: false, error: "Only http and https pages open in the system browser." };
+  openInSystemBrowser(target);
+  return { ok: true };
+});
 ipcMain.handle("telar:browser:tool", (_event, input) =>
   requireBrowserManager().callTool(input?.scopeKey, input?.name, input?.args || {}),
 );

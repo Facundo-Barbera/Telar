@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     removeSuggestion: (scopeKey, url) => ipcRenderer.invoke("telar:browser:remove-suggestion", { scopeKey, url }),
     getState: (scopeKey) => ipcRenderer.invoke("telar:browser:state", scopeKey),
     action: (scopeKey, action) => ipcRenderer.invoke("telar:browser:action", { scopeKey, action }),
+    // The tab strip's "Open in system browser". http/https only, decided in
+    // the main process — see the handler there.
+    openExternal: (url) => ipcRenderer.invoke("telar:browser:open-external", { url }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
     setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
