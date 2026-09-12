@@ -12,11 +12,12 @@
  * the identity that asked for it is still the one mounted.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlayIcon, PlusIcon, RotateCwIcon, SlidersHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, CircleStopIcon, Loader2Icon, PlusIcon, RotateCwIcon, SlidersHorizontalIcon } from "lucide-react";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { createRunApi, type RunApi } from "@/lib/run/api";
+import { RunGlyph } from "@/lib/run/icons";
 import { runAction, statusLabel, statusTone, worktreeLabel, type RunTone } from "@/lib/run/presentation";
-import type { RunConfigurationDraft, RunConfigurationView, RunStatusAnswer } from "@/lib/run/types";
+import type { RunConfigurationDraft, RunConfigurationView, RunStatusAnswer, RunView } from "@/lib/run/types";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RunConfigEditor } from "./run-config-editor";
@@ -83,6 +84,27 @@ export function createReadGuard() {
 }
 
 export type ReadGuard = ReturnType<typeof createReadGuard>;
+
+/**
+ * Which button the masthead offers — and the empty case is the interesting one.
+ *
+ * `setup` is the state where "Run" would be a control that cannot run
+ * anything: the project has no saved recipe and nothing is deployed. The
+ * button becomes "Setup" and opens the editor, rather than a menu whose only
+ * content is a sentence explaining why it is empty.
+ *
+ * TWO STATES ARE DELIBERATELY NOT `setup`. A list that has not been READ yet
+ * (`undefined`) is unknown, not empty — offering Setup over a project that
+ * turns out to have three configurations is worse than a moment of "Run". And
+ * a live run wins over an empty list, because a deployment whose recipe was
+ * deleted mid-flight is still the thing a human needs to see and stop.
+ *
+ * Exported because this is the rule worth testing directly; the component
+ * below is its only caller.
+ */
+export function headerMode(configs: RunConfigurationView[] | undefined, active: RunView | undefined): "setup" | "run" {
+  return configs?.length === 0 && !active ? "setup" : "run";
+}
 
 export function RunHeaderControl({
   sessionId,
@@ -151,6 +173,17 @@ export function RunHeaderControl({
       });
   }, [api, sessionId, guard]);
 
+  /**
+   * ON MOUNT AS WELL AS ON OPEN, and that is what makes the Setup state
+   * possible. The button has to know whether this project has ANY recipe
+   * before a human touches it — a list read only when the popover opens would
+   * leave the masthead saying "Run" over a menu with nothing in it, which is
+   * the exact dead end this empty state exists to remove.
+   */
+  useEffect(() => {
+    loadConfigs();
+  }, [loadConfigs]);
+
   useEffect(() => {
     if (open) loadConfigs();
   }, [open, loadConfigs]);
@@ -184,11 +217,20 @@ export function RunHeaderControl({
   const tone = active ? statusTone(active.status) : "idle";
   const label = active ? statusLabel(active) : "Run";
 
+  const setup = headerMode(configs, active) === "setup";
+  /** The configuration this deployment came from, when the list has been read
+   *  and still holds it — a recipe deleted mid-run simply has no glyph. */
+  const activeConfig = active ? configs?.find((config) => config.id === active.configId) : undefined;
+
   return (
     <Popover
       open={open}
       onOpenChange={(next: boolean) => {
         setOpen(next);
+        // Straight into the editor when there is nothing to pick from. Set on
+        // the way OPEN rather than kept in state, so a human who cancels sees
+        // the (empty) menu and is not trapped in a form they just dismissed.
+        if (next && setup) setEditing({});
         if (!next) setEditing(undefined);
       }}
     >
@@ -203,12 +245,25 @@ export function RunHeaderControl({
             // being popover triggers — actually have.
             variant="outline"
             size="sm"
-            aria-label={active ? `Run: ${label}` : "Run this project"}
+            aria-label={setup ? "Set up a run configuration" : active ? `Run: ${label}` : "Run this project"}
             className="h-7 gap-1.5 px-2 text-xs font-medium"
           >
-            <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
-            <span className="max-w-32 truncate">{label}</span>
-            <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+            {setup ? (
+              // No dot: there is no run to have a status, and an idle-grey dot
+              // beside "Setup" would read as a state rather than as an
+              // invitation. No chevron either — this opens a form, not a menu.
+              <>
+                <PlusIcon className="size-3.5 shrink-0" />
+                <span className="max-w-32 truncate">Setup</span>
+              </>
+            ) : (
+              <>
+                <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])} />
+                {activeConfig && <RunGlyph icon={activeConfig.icon} className="size-3.5 shrink-0 opacity-80" />}
+                <span className="max-w-32 truncate">{label}</span>
+                <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+              </>
+            )}
           </Button>
         }
       />
@@ -293,7 +348,11 @@ export function RunHeaderControl({
                           busy && "opacity-60",
                         )}
                       >
-                        {live ? <RotateCwIcon className="size-3.5 shrink-0" /> : <PlayIcon className="size-3.5 shrink-0" />}
+                        {/* The configuration's own glyph, except on the one
+                            that is live: there the slot carries what pressing
+                            it DOES, and "restart" is worth more than a second
+                            copy of the icon already up in the masthead. */}
+                        {live ? <RotateCwIcon className="size-3.5 shrink-0" /> : <RunGlyph icon={config.icon} className="size-3.5 shrink-0" />}
                         <span className="min-w-0 flex-1 truncate">{config.name}</span>
                         {live && <span className="shrink-0 text-[0.625rem] text-muted-foreground">running</span>}
                       </button>
