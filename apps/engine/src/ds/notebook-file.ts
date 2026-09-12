@@ -203,6 +203,29 @@ export function moveCell(nb: Notebook, from: number, to: number): void {
   if (cell) nb.cells.splice(to, 0, cell);
 }
 
+/**
+ * Drop one cell's outputs and the count beside them.
+ *
+ * THE COUNT GOES WITH THEM. `execution_count` is not a separate fact from the
+ * outputs — it is the label on them ("[7]" beside what [7] printed) — so a
+ * cell left holding a count with nothing under it claims to have run and to
+ * have said nothing, which is a different and untrue thing. `null` is
+ * nbformat's own "never ran", and it is what `emptyNotebook` and the type
+ * change in `set` already write.
+ *
+ * A CELL THAT CANNOT HAVE OUTPUTS IS REFUSED, in `notebookRun`'s voice and for
+ * its reason: markdown and raw cells carry no `outputs` key at all (`set`
+ * deletes it on the way out of `code`), so clearing one is a caller asking for
+ * something that does not exist, and answering "done" would hide the bug in
+ * whatever offered the verb.
+ */
+export function clearCellOutputs(nb: Notebook, at: number): void {
+  const cell = nb.cells[at]!;
+  if (cell.cell_type !== "code") throw new Error(`cell ${cell.id} is ${cell.cell_type}, not code`);
+  cell.outputs = [];
+  cell.execution_count = null;
+}
+
 export function findCell(nb: Notebook, ref: { cellId?: string; index?: number }): number {
   if (ref.cellId !== undefined) {
     const at = nb.cells.findIndex((cell) => cell.id === ref.cellId);

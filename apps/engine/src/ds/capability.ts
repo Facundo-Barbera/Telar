@@ -108,6 +108,18 @@ export type NotebookEdit =
    * two steps, while two that say "put it at 3" agree. Move-up is `to - 1`.
    */
   | { kind: "move"; cellId?: string; index?: number; to: number }
+  /**
+   * Throw away what one cell PRINTED, keeping what it says. The pair of
+   * `move`: that one carries the outputs somewhere else, this one drops them
+   * where they are — and neither is expressible as delete-then-insert, which
+   * loses the id as well.
+   *
+   * ONE CELL, addressed like every other member. A whole-notebook clear is not
+   * offered because nothing asks for one: the surface's item sits on a cell,
+   * and "clear all outputs" spelled as a loop of these is a caller's decision
+   * to make out loud rather than a scope this union quietly grows.
+   */
+  | { kind: "clearOutputs"; cellId?: string; index?: number }
   | { kind: "create" };
 
 export type SnapshotDiff = {

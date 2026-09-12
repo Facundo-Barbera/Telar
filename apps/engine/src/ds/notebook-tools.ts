@@ -71,15 +71,16 @@ export function notebookTools(tool: ToolFactory, capability: DsCapability): unkn
 
     tool(
       "notebook_edit_cell",
-      "One structural edit: set a cell's source or type, insert a new cell after another, move one to a different position, or delete one. Address cells by id (stable) or index (shifts after inserts, deletes and moves). Editing does not run anything — call notebook_run_cell for that.",
+      "One structural edit: set a cell's source or type, insert a new cell after another, move one to a different position, clear one's outputs, or delete one. Address cells by id (stable) or index (shifts after inserts, deletes and moves). Editing does not run anything — call notebook_run_cell for that.",
       {
         path: PATH,
-        cellId: z.string().optional().describe("The cell to change, move or delete, by id from notebook_open."),
-        index: z.number().int().min(0).optional().describe("The cell to change, move or delete, by index. Prefer cellId."),
+        cellId: z.string().optional().describe("The cell to change, move, clear or delete, by id from notebook_open."),
+        index: z.number().int().min(0).optional().describe("The cell to change, move, clear or delete, by index. Prefer cellId."),
         source: z.string().optional().describe("New source for the cell (set), or the source of the new cell (insert)."),
         cellType: z.enum(["code", "markdown", "raw"]).optional().describe("Change the cell's type, or the type of an inserted cell. Default code."),
         insertAfter: z.union([z.string(), z.number().int()]).optional().describe("Insert a NEW cell after this id or index (-1 for the top). Requires `source`."),
         moveTo: z.number().int().min(0).optional().describe("Move the addressed cell to this index — where it ends up, not how far it travels. Its outputs and execution count come with it; its own current index is a no-op."),
+        clearOutputs: z.boolean().optional().describe("Throw away the addressed code cell's outputs and its execution count, keeping its source. Code cells only."),
         delete: z.boolean().optional().describe("Delete the addressed cell."),
       },
       async (args) => {
@@ -94,8 +95,10 @@ export function notebookTools(tool: ToolFactory, capability: DsCapability): unkn
             nb = await capability.notebookEdit(path, { kind: "insert", after: args.insertAfter as string | number, source: args.source, ...(cellType ? { cellType } : {}) });
           } else if (typeof args.moveTo === "number") {
             nb = await capability.notebookEdit(path, { kind: "move", to: args.moveTo, ...(typeof args.cellId === "string" ? { cellId: args.cellId } : {}), ...(typeof args.index === "number" ? { index: args.index } : {}) });
+          } else if (args.clearOutputs === true) {
+            nb = await capability.notebookEdit(path, { kind: "clearOutputs", ...(typeof args.cellId === "string" ? { cellId: args.cellId } : {}), ...(typeof args.index === "number" ? { index: args.index } : {}) });
           } else {
-            if (typeof args.source !== "string" && !cellType) return err("Nothing to change: give `source`, `cellType`, `insertAfter`, `moveTo` or `delete`.");
+            if (typeof args.source !== "string" && !cellType) return err("Nothing to change: give `source`, `cellType`, `insertAfter`, `moveTo`, `clearOutputs` or `delete`.");
             nb = await capability.notebookEdit(path, { kind: "set", ...(typeof args.cellId === "string" ? { cellId: args.cellId } : {}), ...(typeof args.index === "number" ? { index: args.index } : {}), ...(typeof args.source === "string" ? { source: args.source } : {}), ...(cellType ? { cellType } : {}) });
           }
           return ok(`${nb.path} — ${nb.cellCount} cells\n${nb.cells.map(cellLine).join("\n")}`);

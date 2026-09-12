@@ -13,7 +13,7 @@ import path from "node:path";
 import type { WorkspaceFile, WorkspaceWriteResult, TurnAttachment, EngineEvent } from "@telar/engine-client";
 import type { DsCapability, EnvironmentRow, KernelStatus, NotebookEdit, NotebookRead, PackageRow, SnapshotDiff, VarRow } from "./capability";
 import type { KernelHost } from "./kernel-host";
-import { emptyNotebook, findCell, fromNbOutputs, mintCellId, moveCell, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
+import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, mintCellId, moveCell, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
 import { type CellOutput, type ExecResult, plainTraceback } from "./outputs";
 import { preflightPython } from "./python-env";
 import { ensureTelarVenv, removeTelarVenv, telarVenvPython } from "./telar-venv";
@@ -258,6 +258,8 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
         // edit, so a reorder racing an agent's `set` is refused rather than
         // clobbering it.
         moveCell(nb, findCell(nb, edit), edit.to);
+      } else if (edit.kind === "clearOutputs") {
+        clearCellOutputs(nb, findCell(nb, edit));
       }
       const written = writeNotebook(target, nb, file.sha256);
       return summarise(target, nb, written.sha256);

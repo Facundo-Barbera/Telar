@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
+import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
 import { diffSnapshots } from "../src/ds/store-capability";
 import { namesIn } from "../src/ds/state-files";
 import { parseDelimited, windowCsv } from "../src/ds/table";
@@ -105,6 +105,41 @@ test("a move target outside the notebook is refused rather than clamped", () => 
   expect(() => moveCell(nb, 0, 0.5)).toThrow(/out of range/);
   // Refused means UNCHANGED: a rejected move must not leave a hole behind.
   expect(nb.cells).toHaveLength(2);
+});
+
+/**
+ * CLEAR IS MOVE'S PAIR, and the cases say so: one carries the outputs to a new
+ * index, the other drops them where they stand. Neither is delete-then-insert,
+ * which would take the id too.
+ */
+test("clearing a cell's outputs takes the execution count with them and leaves the source alone", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  clearCellOutputs(nb, 1);
+  expect(nb.cells[1]!.outputs).toEqual([]);
+  // The count is the LABEL on the outputs ("[2]" beside what [2] printed), so
+  // a cleared cell that kept it would claim to have run and said nothing.
+  expect(nb.cells[1]!.execution_count).toBeNull();
+  expect(nb.cells[1]!.source).toBe("print('hi')");
+  expect(nb.cells[1]!.metadata).toEqual({ tags: ["keep"] });
+  // Nothing else in the notebook moved.
+  expect(nb.cells).toHaveLength(2);
+  expect(nb.cells[0]!.cell_type).toBe("markdown");
+});
+
+test("a cell with no outputs to clear is refused rather than answered", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  // Markdown carries no `outputs` key at all, so clearing one is a caller
+  // asking for something that does not exist — the same refusal a run gets.
+  expect(() => clearCellOutputs(nb, 0)).toThrow(/is markdown, not code/);
+  expect(nb.cells[0]!.outputs).toBeUndefined();
+});
+
+test("clearing an already-empty code cell is idempotent, not an error", () => {
+  const nb = parseNotebook(JSON.stringify(FIXTURE));
+  clearCellOutputs(nb, 1);
+  const once = serializeNotebook(nb);
+  clearCellOutputs(nb, 1);
+  expect(serializeNotebook(nb)).toBe(once);
 });
 
 test("nbformat other than 4 and non-JSON are refused", () => {
