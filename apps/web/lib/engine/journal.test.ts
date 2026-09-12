@@ -491,3 +491,65 @@ describe("browser control rows", () => {
     expect(projected!.items.map(itemLabel)).toEqual(["Opened a tab — Hacker News"]);
   });
 });
+
+/**
+ * #290 — A USAGE LIMIT IS NOT A FAULT, and the fold is where that survives.
+ *
+ * `failure` was projected as its message alone, so every failure reached the
+ * transcript as one undifferentiated string. A limit needs the CODE and the
+ * reset time to draw a row that says when it lifts, and both have to arrive by
+ * two routes: the snapshot, and the event tail a client watches live.
+ */
+describe("a turn waiting out a usage limit", () => {
+  const limited: Turn = {
+    ...turn,
+    state: "failed",
+    failure: { code: "rate_limited", message: "Claude's five hour usage limit was reached, so this turn stopped where it stood.", resumeAt: 1_800_003_600_000, limitType: "five_hour" },
+  };
+
+  test("the snapshot carries the code, the reset time and which limit", () => {
+    const [projected] = projectJournal([limited], [], []);
+    expect(projected).toMatchObject({
+      failureCode: "rate_limited",
+      resumeAt: 1_800_003_600_000,
+      limitType: "five_hour",
+      failure: "Claude's five hour usage limit was reached, so this turn stopped where it stood.",
+    });
+  });
+
+  test("the event tail carries them too, so a live client need not re-read the session", () => {
+    const [tailed] = projectJournal([{ ...turn, state: "running" }], [], [
+      {
+        ...envelope,
+        id: 2,
+        type: "turn.failed",
+        code: "rate_limited",
+        message: "limited",
+        resumeAt: 1_800_003_600_000,
+        limitType: "five_hour",
+      },
+    ] as EngineEvent[]);
+    expect(tailed).toMatchObject({ state: "failed", failureCode: "rate_limited", resumeAt: 1_800_003_600_000, limitType: "five_hour" });
+  });
+
+  test("a requeue after the reset says the engine did it, so the wait is not an unexplained gap", () => {
+    const [resumed] = projectJournal([limited], [], [
+      { ...envelope, id: 3, at: 1_800_003_600_100, type: "turn.requeued", reason: "rate_limit_reset" },
+    ] as EngineEvent[]);
+    expect(resumed).toMatchObject({ state: "queued", resumedAfterRateLimit: 1_800_003_600_100 });
+  });
+
+  test("an ordinary requeue claims nothing about limits", () => {
+    const [requeued] = projectJournal([{ ...turn, state: "steering" }], [], [
+      { ...envelope, id: 4, type: "turn.requeued", reason: "steer_undelivered" },
+    ] as EngineEvent[]);
+    expect(requeued?.state).toBe("queued");
+    expect(requeued?.resumedAfterRateLimit).toBeUndefined();
+  });
+
+  test("an ordinary failure carries a code but no reset time to promise", () => {
+    const [projected] = projectJournal([{ ...turn, state: "failed", failure: { code: "driver_failed", message: "the CLI died" } }], [], []);
+    expect(projected?.failureCode).toBe("driver_failed");
+    expect(projected?.resumeAt).toBeUndefined();
+  });
+});

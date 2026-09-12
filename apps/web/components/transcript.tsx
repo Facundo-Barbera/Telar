@@ -46,7 +46,7 @@ import {
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { Item } from "@telar/engine-client";
+import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
 import { attachmentUrl } from "@/lib/ds";
@@ -998,6 +998,67 @@ export function Marker({ children, attention }: { children: React.ReactNode; att
         {children}
       </span>
       <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+/**
+ * HOW A TURN'S FAILURE READS — and the one failure that is not a fault.
+ *
+ * Every failure used to be the same attention marker holding the provider's
+ * sentence, which is right for a crash and wrong for a usage limit. A limit is
+ * a WAIT WITH A KNOWN END: the useful fact is the time it lifts, the session is
+ * not broken, and there is something to do about it. So `rate_limited` gets the
+ * reset time, an hourglass rather than a warning triangle, and the muted colour
+ * a `provider_wait` row already uses — colouring it destructive would make a
+ * session that is merely waiting read as one that is damaged.
+ *
+ * RESUME NOW IS OFFERED EVEN WHEN THE ENGINE WILL DO IT ANYWAY. The person may
+ * know something the reset time does not — another login came free, the proxy
+ * moved account — and the engine deliberately does not check the clock.
+ */
+export function TurnFailureRow({
+  failure,
+  code,
+  resumeAt,
+  limitType,
+  onResume,
+  resuming,
+}: {
+  failure: string;
+  code?: TurnFailureCode;
+  resumeAt?: number;
+  limitType?: RateLimitType;
+  onResume?: () => void;
+  resuming?: boolean;
+}) {
+  // A limit with no reset time cannot promise one, so it falls back to the
+  // ordinary marker rather than rendering "resets at Invalid Date".
+  if (code !== "rate_limited" || resumeAt === undefined) return <Marker attention>{failure}</Marker>;
+  const resets = new Date(resumeAt);
+  const sameDay = resets.toDateString() === new Date().toDateString();
+  const at = sameDay
+    ? resets.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : resets.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  // `other` names nothing a person can act on, so it earns no parenthetical —
+  // the same rule `titleForProviderWait` follows in the engine.
+  const limit = limitType && limitType !== "other" ? `${limitType.replaceAll("_", " ")} ` : "";
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 py-0.5 text-xs text-muted-foreground">
+      <HourglassIcon className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">
+        Waiting for the {limit}limit to reset at {at}
+      </span>
+      {onResume && (
+        <button
+          type="button"
+          disabled={resuming}
+          onClick={onResume}
+          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[0.6875rem] text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+        >
+          {resuming ? "Resuming…" : "Resume now"}
+        </button>
+      )}
     </div>
   );
 }
