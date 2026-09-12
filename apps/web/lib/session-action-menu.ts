@@ -23,7 +23,14 @@
  * fetches, never navigates and never touches `window`, which is what keeps it
  * pure.
  *
- * ══ FIVE DECISIONS WORTH NAMING ══
+ * ══ SIX DECISIONS WORTH NAMING ══
+ *
+ *   - AN ITEM ONLY ONE BUILD CAN HONOUR IS ABSENT THERE, NOT DISABLED. "Open in
+ *     a new window" needs the desktop shell, so the web supplies no handler and
+ *     the row is not in the list — the opposite call from the one below, and
+ *     for the opposite reason: a refusal you could act on is worth stating, and
+ *     "your browser is not an app" is not one. Same rule the file tree's Reveal
+ *     and Open-in follow (`lib/workspace-open.ts`).
  *
  *   - CAPABILITY-GATED, AND DISABLED-WITH-A-REASON BEATS FAILING LATER. Delete
  *     is refused by the engine on a session with a turn in flight
@@ -53,11 +60,14 @@
  * the driver, the env mode or the host, because no verb it offered differed by
  * any of them. The new items do: a branch is a worktree session's own
  * (`SessionWorkspace`), and per-project settings have no `/hosts/:id/…` route,
- * so a remote session cannot open them from this Mac. Those are the two
- * capabilities that earned a field; `driver` did not, and inventing a flag no
- * item reads would be a gate that documents nothing.
+ * so a remote session cannot open them from this Mac. A third joined them with
+ * `Open`: whether the reader is already IN this session, which the cockpit
+ * header always is and one rail row is. Those are the three capabilities that
+ * earned a field; `driver` did not, and inventing a flag no item reads would be
+ * a gate that documents nothing.
  */
 
+import { sessionHref } from "@/lib/session-list";
 import { canSettle, canSnooze, isSnoozed, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
 
 /**
@@ -65,6 +75,8 @@ import { canSettle, canSnooze, isSnoozed, snoozePresets, wakeLabel, type Settlin
  * and of lucide. Each surface maps the token to whatever it already draws.
  */
 export type SessionActionIcon =
+  | "open"
+  | "new-window"
   | "new-session"
   | "pin"
   | "unpin"
@@ -159,6 +171,14 @@ export type SessionActionCapabilities = {
   remote?: boolean;
   /** Observe mode: the title is a fact, not a field, and nothing here writes. */
   readOnly?: boolean;
+  /**
+   * THIS IS THE SESSION YOU ARE ALREADY READING — the cockpit's own header,
+   * always, and the rail's active row. Only `Open` reads it, and it stays in
+   * the list saying why it is inert rather than disappearing: the row moving
+   * out from under the pointer as you navigate is a menu that reshuffles, and
+   * a second window on the session you are in is a real thing to want.
+   */
+  current?: boolean;
 };
 
 /**
@@ -167,6 +187,24 @@ export type SessionActionCapabilities = {
  * module whose whole value is that it can be tested without a browser.
  */
 export type SessionActionHandlers = {
+  /** Go to this session. The `href` is the one `sessionHref` builds, handed
+   *  over rather than re-derived, so a menu can never send someone somewhere
+   *  the row's own click would not. */
+  open: (href: string) => void;
+  /**
+   * THE LINK, WHICH IS A PATH UNTIL A SURFACE RESOLVES IT. This module has no
+   * `window` and runs on the server too, so it cannot know which origin the
+   * app is being served from — and a relative path pasted into somebody's
+   * message is not a link. The surface joins its own origin on.
+   */
+  copyLink: (href: string) => void;
+  /**
+   * A SECOND WINDOW ON THIS SESSION, and its ABSENCE IS THE GATE. Only the
+   * desktop shell can open a window, so the web build supplies no handler and
+   * the item is not in the list at all — a greyed row is a promise a browser
+   * tab can never keep, restated on every right-click.
+   */
+  openWindow?: (href: string) => void;
   /** `baseRef` is this session's branch, so the new worktree is cut from where
    *  this one works. Absent for a local session, which has none. */
   newSession: (input: { projectId: string; hostId?: string; baseRef?: string }) => void;
@@ -204,21 +242,59 @@ const WAITING = "Something here is waiting on you.";
 const RUNNING_DELETE = "A turn is running. Stop it before deleting.";
 const WAITING_DELETE = "A request here is waiting on you. Answer or stop it first.";
 const REMOTE_SETTINGS = "Project settings open on the Mac that owns the project.";
+const ALREADY_OPEN = "You are already reading this one.";
 
 /**
- * THE MENU, IN FIVE SEPARATOR-DELIMITED GROUPS.
+ * THE MENU, IN SIX SEPARATOR-DELIMITED GROUPS.
  *
  * Pure: same state in, same list out, no clocks and no globals. The order is
  * the decision this function exists to hold, so read it top to bottom —
- * everything below is the same five groups in the same order the survey names
+ * everything below is the same six groups in the same order the survey names
  * them.
  */
 export function buildSessionActionMenuItems(state: SessionActionMenuState): SessionActionItem[] {
   const { session, activity, now, actions } = state;
-  const { remote = false, readOnly = false } = state.capabilities ?? {};
+  const { remote = false, readOnly = false, current = false } = state.capabilities ?? {};
   const items: SessionActionItem[] = [];
 
-  /* ── 1. Another one of these ──────────────────────────────────────────── */
+  /* ── 1. Getting to it ─────────────────────────────────────────────────── */
+
+  /**
+   * OPEN IS THE ROW'S OWN CLICK, SPELLED AS A VERB — which is what the header
+   * menu was missing. Two surfaces render one list, and the rail's default
+   * gesture has no equivalent in a breadcrumb you are already standing in; a
+   * list whose first verb only exists on one of them is the drift this file
+   * exists to prevent. It leads, because a menu on a thing opens with the thing
+   * itself.
+   *
+   * ONE HREF FOR ALL THREE ITEMS — this one, the window, and the link in the
+   * Copy submenu. `sessionHref` is the route the row already links to, so the
+   * menu cannot offer to open, to copy, or to re-window anything other than
+   * exactly where a click would land.
+   */
+  const href = sessionHref(session);
+  items.push({
+    id: "open",
+    label: "Open",
+    icon: "open",
+    disabled: current && ALREADY_OPEN,
+    run: () => !current && actions.open(href),
+  });
+
+  /** Absent rather than disabled on the web — see `SessionActionHandlers`. */
+  if (actions.openWindow) {
+    const openWindow = actions.openWindow;
+    items.push({
+      id: "open-window",
+      label: "Open in a new window",
+      icon: "new-window",
+      // NOT gated on `current`: a second window on the session you are reading
+      // is the ordinary reason to want one — two conversations side by side.
+      run: () => openWindow(href),
+    });
+  }
+
+  /* ── 2. Another one of these ──────────────────────────────────────────── */
 
   /**
    * THE LABEL NAMES WHERE IT WILL RUN. t3's crumb is "another one of these"
@@ -234,6 +310,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     id: "new-session",
     label: newSessionLabel,
     icon: "new-session",
+    separatorBefore: true,
     disabled: !projectId && NO_PROJECT,
     run: () =>
       projectId &&
@@ -244,7 +321,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
       }),
   });
 
-  /* ── 2. The inbox verbs ───────────────────────────────────────────────── */
+  /* ── 3. The inbox verbs ───────────────────────────────────────────────── */
 
   /**
    * THE WHOLE GROUP IS ABSENT ON AN ARCHIVED SESSION, which is what the row
@@ -325,7 +402,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     }
   }
 
-  /* ── 3. The name ──────────────────────────────────────────────────────── */
+  /* ── 4. The name ──────────────────────────────────────────────────────── */
 
   items.push({
     id: "rename",
@@ -336,14 +413,19 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     run: actions.rename,
   });
 
-  /* ── 4. Facts about it, and where it is configured ────────────────────── */
+  /* ── 5. Facts about it, and where it is configured ────────────────────── */
 
   /**
-   * COPY IS A SUBMENU BECAUSE THREE ROWS OF "Copy X" IS THE MENU. The path and
-   * the id are always there; the branch only when the session has one of its
-   * own, for the reason `SessionActionTarget.branch` states.
+   * COPY IS A SUBMENU BECAUSE FOUR ROWS OF "Copy X" IS THE MENU. The link, the
+   * path and the id are always there; the branch only when the session has one
+   * of its own, for the reason `SessionActionTarget.branch` states.
+   *
+   * THE LINK LEADS, because it is the one people copy to give to someone else
+   * — the other three are facts you copy to use yourself, and this one is the
+   * session itself.
    */
   const copies: SessionActionItem[] = [
+    { id: "copy-link", label: "Link", icon: "copy", run: () => actions.copyLink(href) },
     { id: "copy-path", label: "Path", icon: "copy", run: () => actions.copy(session.workspacePath) },
     ...(session.branch ? [{ id: "copy-branch", label: "Branch", icon: "copy" as const, run: () => actions.copy(session.branch!) }] : []),
     { id: "copy-id", label: "Session ID", icon: "copy", run: () => actions.copy(session.id) },
@@ -365,7 +447,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     run: () => projectId && actions.projectSettings({ projectId }),
   });
 
-  /* ── 5. The end of the lifecycle ──────────────────────────────────────── */
+  /* ── 6. The end of the lifecycle ──────────────────────────────────────── */
 
   /**
    * DELETE IS DISABLED WHILE A TURN IS IN FLIGHT, because the engine refuses

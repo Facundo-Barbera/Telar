@@ -20,9 +20,11 @@
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *
- *   - PROJECT SETTINGS (`project-settings-page.tsx`). A different scope with a
- *     different nav and a project id in every route; indexing it from the
- *     machine's Settings would offer to jump somewhere this shell cannot go.
+ *   - THE PER-PROJECT ROUTE (`project-settings-page.tsx`). A different shell
+ *     with a different nav and a project id in every route; indexing it from
+ *     the machine's Settings would offer to jump somewhere this shell cannot
+ *     go. The PROJECTS PANE is indexed — it lives on this shell, and its rows
+ *     are copy rather than one entry per registered folder.
  *   - PLUGIN-CONTRIBUTED SECTIONS. They arrive from the engine at runtime, and
  *     a plugin does not declare searchable rows in its manifest today. The
  *     Plugins pane itself is indexed; what a plugin puts inside it is not.
@@ -42,7 +44,9 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
+  FolderKanbanIcon,
   GlobeIcon,
+  ImageIcon,
   InfoIcon,
   KeyRoundIcon,
   LockIcon,
@@ -177,6 +181,95 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "A downloaded update installs itself the next time you quit Telar.",
             keywords: ["restart", "automatic"],
             icon: DownloadIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * THE PANE'S ROWS ARE INDEXED; THE PROJECTS ARE NOT. A project's name is a
+     * value, not copy — the note at the top of this file — and the pane holds
+     * one project at a time anyway, chosen on the pane itself. What search can
+     * usefully find here is the SETTING: "where do I change a project's icon",
+     * "which project has LaTeX on".
+     *
+     * The Danger group is `remove-project-section.tsx`'s and appears only once
+     * a project is named, so its row is indexed with that caveat: choosing it
+     * lands on Projects, and the scope row is the step between.
+     */
+    id: "projects",
+    label: "Projects",
+    icon: FolderKanbanIcon,
+    groups: [
+      {
+        title: "Scope",
+        rows: [
+          {
+            title: "Mac",
+            hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
+            keywords: ["host", "paired", "remote", "other mac"],
+            icon: MonitorIcon,
+          },
+          {
+            title: "Project",
+            hint: "All projects leaves the rows below inert; naming one binds them to it.",
+            keywords: ["scope", "pick", "select", "all projects", "registry"],
+            icon: FolderKanbanIcon,
+          },
+        ],
+      },
+      {
+        title: "Identity",
+        rows: [
+          {
+            title: "Name",
+            hint: "Set when the folder was registered.",
+            keywords: ["rename", "title", "project name"],
+            icon: FolderKanbanIcon,
+          },
+          {
+            title: "Icon",
+            hint: "Found in the checkout — a favicon, an app icon, or a .telar icon file.",
+            keywords: ["avatar", "favicon", "logo", "mark"],
+            icon: ImageIcon,
+          },
+          {
+            title: "Checkout",
+            hint: "Sessions run here, or in a worktree cut from it.",
+            keywords: ["root", "path", "folder", "directory"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        title: "New conversations",
+        rows: [
+          {
+            title: "Default model",
+            hint: "Which model a conversation in this project opens on.",
+            keywords: ["model", "per project", "default"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Where new conversations start",
+            hint: "The project's own checkout, or a worktree cut from it.",
+            keywords: ["worktree", "checkout", "workspace", "branch"],
+            icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
+        // of this file rather than an omission: each row's title is a
+        // plugin's own name, arriving from the engine at runtime.
+        title: "Danger",
+        rows: [
+          {
+            title: "Remove project from Telar",
+            hint: "Put the registration away. Nothing on disk is touched, and it can be restored.",
+            keywords: ["unregister", "delete", "forget", "put away"],
+            icon: FolderKanbanIcon,
           },
         ],
       },

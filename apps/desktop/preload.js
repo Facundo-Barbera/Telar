@@ -128,6 +128,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // Settings → Remote access offers this after a change the shell only
     // reads at launch.
     relaunch: () => ipcRenderer.invoke("telar:app:relaunch"),
+    // The session menu's "Open in a new window". A PATH inside the app, never
+    // a URL: the shell resolves it against the asking window's own address and
+    // refuses anything that leaves that origin — see window-target.js.
+    openWindow: (path) => ipcRenderer.invoke("telar:app:open-window", { path }),
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),

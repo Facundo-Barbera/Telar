@@ -22,6 +22,8 @@
 import { Fragment, type ComponentType, type ReactNode } from "react";
 import {
   AlarmClockIcon,
+  AppWindowIcon,
+  ArrowRightIcon,
   CircleCheckIcon,
   CopyIcon,
   PencilIcon,
@@ -57,6 +59,9 @@ import {
  * with different pictures would be two vocabularies for one verb.
  */
 const ICONS: Record<SessionActionIcon, ComponentType<{ className?: string }>> = {
+  // Going there, and going there in a window of its own.
+  open: ArrowRightIcon,
+  "new-window": AppWindowIcon,
   "new-session": SquarePenIcon,
   pin: PinIcon,
   unpin: PinOffIcon,
