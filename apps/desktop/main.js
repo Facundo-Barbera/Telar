@@ -1726,6 +1726,110 @@ function logShell(level, message) {
   console.log(`[telar-shell] ${level} ${message}`);
 }
 
+/**
+ * THE MAIN PROCESS'S OWN HEAP, ONE LINE A MINUTE — issue #296.
+ *
+ * The shell's main process climbed to 100% CPU and multi-gigabyte memory over
+ * an evening and died with a V8 SIGTRAP, and there was nothing to read
+ * afterwards: a `sample` names the shape of the stack but not which JS
+ * structure grew. So the process writes its own series.
+ *
+ * TWO LEVELS, DELIBERATELY.
+ *
+ *   · THE GUARD IS ALWAYS ON. One `v8.getHeapStatistics()` a minute costs
+ *     nothing, and the single line it writes when the heap first passes 1 GB
+ *     is the difference between "it died" and "it had been over a gigabyte
+ *     since 21:40". It warns ONCE — a warning that repeats every minute for
+ *     three hours is a log nobody reads.
+ *
+ *   · THE SERIES IS OPT-IN, behind `--telar-heap-log` or
+ *     `TELAR_SHELL_HEAP_LOG=1`. It writes the whole picture every minute —
+ *     RSS, heap, the OS's own footprint, the window and view counts, and the
+ *     manager's growing collections — and, the first time the heap passes
+ *     1 GB, a `v8.writeHeapSnapshot` into <userData>/diagnostics so the
+ *     retaining path can be named rather than guessed. The snapshot is
+ *     gigabytes and is written at most once per launch, which is why it is
+ *     not part of the always-on guard.
+ *
+ * NOTHING IDENTIFYING IS WRITTEN. The manager hands back counts only (see
+ * DesktopBrowserManager.diagnostics) — no URL, no title, no scope key.
+ */
+const HEAP_LOG_INTERVAL_MS = 60_000;
+const HEAP_WARN_BYTES = 1_024 * 1_024 * 1_024;
+
+function heapLogRequested() {
+  return process.argv.includes("--telar-heap-log") || process.env.TELAR_SHELL_HEAP_LOG === "1";
+}
+
+function diagnosticsDir() {
+  return path.join(app.getPath("userData"), "diagnostics");
+}
+
+const mb = (bytes) => Math.round(Number(bytes || 0) / (1024 * 1024));
+
+let heapWarned = false;
+let heapSnapshotWritten = false;
+
+/** The heap snapshot, once per launch. Returns the path, or null. */
+function writeHeapSnapshotOnce() {
+  if (heapSnapshotWritten) return null;
+  heapSnapshotWritten = true;
+  try {
+    fs.mkdirSync(diagnosticsDir(), { recursive: true });
+    const file = path.join(diagnosticsDir(), `main-${new Date().toISOString().replace(/[:.]/g, "-")}.heapsnapshot`);
+    require("node:v8").writeHeapSnapshot(file);
+    return file;
+  } catch (error) {
+    logShell("warn", `could not write a heap snapshot: ${error && error.message ? error.message : error}`);
+    return null;
+  }
+}
+
+async function heapLogTick(detailed) {
+  const heap = require("node:v8").getHeapStatistics();
+  if (detailed) {
+    const memory = process.memoryUsage();
+    // Electron's own figure: on macOS this is the private footprint the OS
+    // reports, which the #296 sample showed at 16.7 GB while RSS read 2.5 GB.
+    let footprint = null;
+    try {
+      footprint = typeof process.getProcessMemoryInfo === "function" ? await process.getProcessMemoryInfo() : null;
+    } catch {
+      // A figure the platform will not give is not a reason to lose the line.
+    }
+    const views = browserManager ? browserManager.diagnostics() : null;
+    logShell(
+      "info",
+      [
+        `heap rss=${mb(memory.rss)}MB heapUsed=${mb(memory.heapUsed)}MB heapTotal=${mb(memory.heapTotal)}MB`,
+        `external=${mb(memory.external)}MB arrayBuffers=${mb(memory.arrayBuffers)}MB`,
+        `usedHeapSize=${mb(heap.used_heap_size)}MB heapLimit=${mb(heap.heap_size_limit)}MB`,
+        footprint ? `private=${Math.round(Number(footprint.private || 0) / 1024)}MB residentSet=${Math.round(Number(footprint.residentSet || 0) / 1024)}MB` : "private=?",
+        `windows=${BrowserWindow.getAllWindows().length}`,
+        views
+          ? `scopes=${views.scopes} tabs=${views.tabs} liveViews=${views.liveViews} wcListeners=${views.wcListeners} extensionHosts=${views.extensionHosts} console=${views.consoleEntries} network=${views.networkEntries} expectedReports=${views.expectedReports} refs=${views.refs} scopeEntries=${views.scopeEntries} pendingPopups=${views.pendingPopups} uiHolds=${views.uiHolds}`
+          : "manager=none",
+      ].join(" "),
+    );
+  }
+  if (heap.used_heap_size < HEAP_WARN_BYTES || heapWarned) return;
+  heapWarned = true;
+  const snapshot = detailed ? writeHeapSnapshotOnce() : null;
+  logShell(
+    "warn",
+    `the main process V8 heap passed ${mb(HEAP_WARN_BYTES)}MB (used=${mb(heap.used_heap_size)}MB of a ${mb(heap.heap_size_limit)}MB limit) — see issue #296. This warns once per launch.` +
+      (snapshot ? ` Heap snapshot: ${snapshot}` : heapLogRequested() ? "" : " Relaunch with TELAR_SHELL_HEAP_LOG=1 for a per-minute series and a heap snapshot."),
+  );
+}
+
+function startHeapLog() {
+  const detailed = heapLogRequested();
+  if (detailed) void heapLogTick(true);
+  const timer = setInterval(() => void heapLogTick(detailed), HEAP_LOG_INTERVAL_MS);
+  // A diagnostic must never be the reason the app stays alive.
+  timer.unref?.();
+}
+
 function updateLogger() {
   const write = (level, message) => {
     const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
@@ -2072,6 +2176,9 @@ if (SMOKE) {
       try {
         // First, so a child that dies during startup is still named.
         wireShellDiagnostics();
+        // And the heap guard with it: #296 died five hours in, so the series
+        // has to start at launch, not at the first window.
+        startHeapLog();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
         // Before anything reads the update preferences, and before the updater
