@@ -89,6 +89,38 @@ const CAPTURE_TIMEOUT_MS = 8_000;
 const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame to capture.";
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
+/**
+ * AND A CAP ON EACH ENTRY, NOT ONLY ON HOW MANY THERE ARE (issue #296).
+ *
+ * A console entry holds `arg.value ?? arg.description` — a whole large string,
+ * or a whole large object's CDP preview — and a network entry holds
+ * `request.url`, which for a `data:` or `blob:` request is the payload itself.
+ * Two hundred uncapped entries is gigabytes per tab, and every tab in every
+ * session has the debugger attached with Network/Runtime/Log enabled for the
+ * life of the page, whether or not an agent ever asks for the logs.
+ *
+ * These are read back as plain text lines by an agent, where two thousand
+ * characters is already more than anyone reads; a truncated line says so
+ * rather than pretending it is whole.
+ */
+const MAX_LOG_TEXT = 2_000;
+
+/** A captured log line, bounded. */
+function logText(value) {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  return text.length > MAX_LOG_TEXT ? `${text.slice(0, MAX_LOG_TEXT)}… (truncated, ${text.length} characters)` : text;
+}
+
+/**
+ * Append and drop the oldest IN PLACE. The old `list = list.slice(-200)`
+ * allocated a fresh two-hundred-element array on EVERY debugger message, on
+ * the main thread, for every request and console line of every open page —
+ * which is exactly the continuous main-thread JS #296's sample caught.
+ */
+function pushCapped(list, entry) {
+  list.push(entry);
+  if (list.length > MAX_LOG_ITEMS) list.shift();
+}
 const MAX_LIVE_VIEWS = 6;
 // A human's browser rarely wants more; an agent's never should. Past the cap
 // browser_tabs{new} answers an error naming the limit. t3code caps profiles
@@ -433,6 +465,8 @@ class DesktopBrowserManager {
     this.privacyStuck = false;
     this._autoReleaseRunning = false;
     this._disposed = false;
+    /** One inventory walk per turn of the event loop — see `persist`. */
+    this._persistScheduled = false;
     /**
      * BROWSER PROFILES (browser-profiles.js). Each scope DECLARES the project
      * it belongs to — a project id, or the explicit `none` — before its first
@@ -537,10 +571,28 @@ class DesktopBrowserManager {
     });
   }
 
-  /** Schedule a write of the current inventory (coalesced by the store). */
+  /**
+   * Schedule a write of the current inventory.
+   *
+   * COALESCED HERE, not only in the store (issue #296). `emitState` calls this
+   * on every page event — a navigation, an in-page navigation, a title, a
+   * favicon, a human's hands in the page — and `inventory()` walks EVERY tab
+   * of EVERY scope, asking each live one for its URL across the Chromium
+   * boundary. The store then throws all but the last document away within
+   * 150 ms, so every walk but the last was work done for nothing, at a cost
+   * proportional to the number of tabs the process has ever held. One walk
+   * per turn of the event loop is enough, and the document it builds is the
+   * newer one — which is what the store wanted anyway.
+   */
   persist() {
-    if (!this.tabStore || this._disposed) return;
-    this.tabStore.save(this.inventory());
+    if (!this.tabStore || this._disposed || this._persistScheduled) return;
+    this._persistScheduled = true;
+    queueMicrotask(() => {
+      this._persistScheduled = false;
+      // Disposed, or the store taken away, while this was queued.
+      if (!this.tabStore || this._disposed) return;
+      this.tabStore.save(this.inventory());
+    });
   }
 
   /**
@@ -1066,6 +1118,15 @@ class DesktopBrowserManager {
    *  a mouse move: 0). */
   stampAgentInput(tab, reports = 0) {
     const now = this.now();
+    // EXPIRED HERE TOO, not only where one is CONSUMED. The TTL filter used to
+    // live solely on `noteHumanInput`'s path, so an expectation whose echo
+    // never arrived — a hidden view that dropped it, a page that reports
+    // nothing, a subframe — sat in this array for the life of the tab and
+    // grew with every agent click (#296). Pruning before the push keeps the
+    // array to one TTL's worth of input, which is what it always meant.
+    if (tab.expectedReports.length) {
+      tab.expectedReports = tab.expectedReports.filter((at) => now - at < SYNTHETIC_REPORT_TTL_MS);
+    }
     for (let i = 0; i < reports; i += 1) tab.expectedReports.push(now);
     this.lastAgentInputAt.set(tab.scopeKey, now);
   }
@@ -2171,17 +2232,16 @@ class DesktopBrowserManager {
         // a request URL made while a person signs in is theirs, not the log's.
         if (this.privacy.isActive()) return;
         if (method === "Runtime.consoleAPICalled") {
-          const text = (params.args || []).map((arg) => arg.value ?? arg.description ?? "").join(" ");
-          tab.console.push({ level: params.type || "log", text });
-          tab.console = tab.console.slice(-MAX_LOG_ITEMS);
+          // Each ARGUMENT is bounded before the join, so a single huge one
+          // cannot build a huge intermediate on its way to being truncated.
+          const text = logText((params.args || []).map((arg) => logText(arg.value ?? arg.description ?? "")).join(" "));
+          pushCapped(tab.console, { level: params.type || "log", text });
         }
         if (method === "Log.entryAdded") {
-          tab.console.push({ level: params.entry?.level || "info", text: params.entry?.text || "" });
-          tab.console = tab.console.slice(-MAX_LOG_ITEMS);
+          pushCapped(tab.console, { level: params.entry?.level || "info", text: logText(params.entry?.text || "") });
         }
         if (method === "Network.requestWillBeSent") {
-          tab.network.push({ method: params.request?.method || "GET", url: params.request?.url || "" });
-          tab.network = tab.network.slice(-MAX_LOG_ITEMS);
+          pushCapped(tab.network, { method: params.request?.method || "GET", url: logText(params.request?.url || "") });
         }
       });
       debug.on("detach", () => {
@@ -2913,6 +2973,32 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * EVERYTHING KEYED BY A SCOPE, FORGOTTEN TOGETHER (issue #296).
+   *
+   * Nine maps are keyed by scope, and a scope that ended used to leave entries
+   * in six of them: its profile, its project, its profile override, its last
+   * published bounds and its last agent-input moment stayed for the life of the
+   * process. Each leftover costs more than its own bytes — `emitAllStates`
+   * iterates `scopeProfiles`, so every dead scope is one more full state
+   * serialisation and IPC push on a profile rename.
+   *
+   * Called only where the scope is genuinely over (a destroying release, an
+   * adoption's source): a scope that still has tabs keeps everything.
+   */
+  forgetScope(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    this.scopeProfiles.delete(scope);
+    this.scopeProjects.delete(scope);
+    this.scopeProfileOverrides.delete(scope);
+    this.boundsByScope.delete(scope);
+    this.lastAgentInputAt.delete(scope);
+    this.activeToolCalls.delete(scope);
+    this.activeTabIds.delete(scope);
+    this.agentTabIds.delete(scope);
+    this.agentTabClosed.delete(scope);
+  }
+
   releaseScope(scopeKey, destroy = false) {
     const scope = this.requireScope(scopeKey);
     const scoped = this.scopeTabs(scope);
@@ -2924,14 +3010,11 @@ class DesktopBrowserManager {
     for (const tab of scoped) this.requestHibernate(tab, destroy);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
-    if (destroy && !this.scopeTabs(scope).length) {
-      this.activeTabIds.delete(scope);
-      // The agent's pointers go with the scope. A tombstone left here would be
-      // reported to whatever session next used the id — an error about a tab
-      // belonging to a conversation that is over.
-      this.agentTabIds.delete(scope);
-      this.agentTabClosed.delete(scope);
-    }
+    // The agent's pointers go with the scope. A tombstone left here would be
+    // reported to whatever session next used the id — an error about a tab
+    // belonging to a conversation that is over. And so does everything else
+    // keyed by it: see `forgetScope`.
+    if (destroy && !this.scopeTabs(scope).length) this.forgetScope(scope);
     this.emitState(scope);
   }
 
@@ -2971,9 +3054,10 @@ class DesktopBrowserManager {
       this.activeTabIds.set(to, sourceActiveId);
       if (sourceAgentId) this.agentTabIds.set(to, sourceAgentId);
     }
-    this.activeTabIds.delete(from);
-    this.agentTabIds.delete(from);
-    this.agentTabClosed.delete(from);
+    // The source scope is over: its tabs are the target's now, and everything
+    // keyed by it goes — its profile binding included, which used to stay
+    // behind and keep the dead scope in `emitAllStates`' loop for good.
+    this.forgetScope(from);
     if (this.visibleScopeKey === from) this.visibleScopeKey = to;
     this.applyVisibility();
     this.emitState(from);
@@ -3058,6 +3142,20 @@ class DesktopBrowserManager {
     this.activeTabIds.clear();
     this.agentTabIds.clear();
     this.agentTabClosed.clear();
+    this.boundsByScope.clear();
+    this.lastAgentInputAt.clear();
+    this.activeToolCalls.clear();
+    // The hosts hold a partition session's listener and a module-level
+    // registration, both of which outlive this manager — a translucency
+    // rebuild makes a new manager against the very same sessions (#296).
+    for (const host of this.extensionHosts.values()) {
+      try {
+        host.dispose?.();
+      } catch {
+        // A host that cannot let go must not stop the window from closing.
+      }
+    }
+    this.extensionHosts.clear();
     this.visibleScopeKey = null;
   }
 }

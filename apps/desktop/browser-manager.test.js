@@ -1427,6 +1427,13 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       latest: () => writes.at(-1),
     };
   }
+  /**
+   * The manager coalesces its inventory WALK to one per turn of the event loop
+   * (#296: `emitState` fires on every page event and the walk is over every tab
+   * of every scope). So a synchronous mutation is on disk one microtask later;
+   * anything the test already awaits has flushed it.
+   */
+  const settled = () => Promise.resolve();
   function harnessWith(tabStore, options = {}) {
     const views = [];
     let nextId = 1;
@@ -1461,6 +1468,7 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       ["tab-2", "https://two.example/", "agent", { width: 390, height: 844 }],
     ]);
     manager.closeTab("s1", 1, "human");
+    await settled();
     doc = store.latest();
     expect(doc.scopes.s1.tabs.map((tab) => tab.id)).toEqual(["tab-1"]);
   });
@@ -2261,5 +2269,160 @@ describe("what the main process holds — the heap log's counts (#296)", () => {
       await manager.wakeTab(tab);
     }
     expect(manager.diagnostics()).toMatchObject({ liveViews: 1, wcListeners: fresh });
+  });
+});
+
+/**
+ * ISSUE #296, THE BOUNDS. Every structure the audit found growing without a
+ * matching removal, and the walk whose cost grew with it.
+ */
+describe("the main process holds a bounded amount (#296)", () => {
+  test("a captured console line is bounded in BYTES, not only in count", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const debug = views[0].webContents.debugger;
+    const tab = manager.activeTab("s");
+
+    // A console.log of something enormous — the CDP preview arrives whole.
+    debug.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "x".repeat(5_000_000) }] });
+    expect(tab.console).toHaveLength(1);
+    expect(tab.console[0].text.length).toBeLessThan(2_100);
+    // Truncation is stated, never silent: the reader is told it lost something
+    // rather than being handed a plausible-looking half line.
+    expect(tab.console[0].text).toContain("truncated");
+
+    // Log.entryAdded takes the same path.
+    debug.emit("message", {}, "Log.entryAdded", { entry: { level: "error", text: "y".repeat(4_000) } });
+    expect(tab.console[1].text.length).toBeLessThan(2_100);
+
+    // And a request URL, which for a data: request IS the payload.
+    debug.emit("message", {}, "Network.requestWillBeSent", { request: { method: "GET", url: `data:image/png;base64,${"A".repeat(3_000_000)}` } });
+    expect(tab.network[0].url.length).toBeLessThan(2_100);
+  });
+
+  test("the capture keeps the newest 200 and drops the oldest, in place", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const debug = views[0].webContents.debugger;
+    const tab = manager.activeTab("s");
+    const before = tab.console;
+
+    for (let i = 0; i < 250; i += 1) {
+      debug.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: `line ${i}` }] });
+      debug.emit("message", {}, "Network.requestWillBeSent", { request: { method: "GET", url: `https://one.example/${i}` } });
+    }
+    expect(tab.console).toHaveLength(200);
+    expect(tab.network).toHaveLength(200);
+    expect(tab.console[0].text).toBe("line 50");
+    expect(tab.console.at(-1).text).toBe("line 249");
+    // The same array throughout: the old slice(-200) allocated a fresh one on
+    // every message, on the main thread, for every request of every page.
+    expect(tab.console).toBe(before);
+  });
+
+  test("an agent expectation whose echo never arrives expires instead of accumulating", async () => {
+    const clock = { t: 1_000 };
+    const { manager } = makeHarness({ now: () => clock.t });
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+
+    // Fifty clicks on a tab whose preload never reports back (a hidden view, a
+    // page that reports nothing): each one used to leave its expectation for
+    // the life of the tab, because only the consuming path ran the TTL filter.
+    for (let i = 0; i < 50; i += 1) {
+      clock.t += 100;
+      manager.stampAgentInput(tab, 1);
+    }
+    // SYNTHETIC_REPORT_TTL_MS is 2 s, so only the last 2 s of clicks survive.
+    expect(tab.expectedReports.length).toBeLessThanOrEqual(21);
+
+    clock.t += 10_000;
+    manager.stampAgentInput(tab, 1);
+    expect(tab.expectedReports).toEqual([clock.t]);
+  });
+
+  test("an expectation still swallows the agent's own echo within its TTL", async () => {
+    const clock = { t: 1_000 };
+    const { manager } = makeHarness({ now: () => clock.t });
+    await manager.createTab("s", "https://one.example/");
+    const tab = manager.activeTab("s");
+
+    manager.stampAgentInput(tab, 1);
+    clock.t += 200;
+    // The agent's own pointerdown: consumed, NOT attributed to a human.
+    expect(manager.noteHumanInput("s", { tab })).toBe(false);
+    // Past the coarse attribution grace, with nothing left expected: a real
+    // hand, and it wins. (Inside the grace the agent's own echo is assumed.)
+    clock.t += 500; // > HUMAN_ATTRIBUTION_GRACE_MS (400)
+    expect(manager.noteHumanInput("s", { tab })).toBe(true);
+  });
+
+  test("a destroyed scope leaves nothing keyed by it behind", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    await manager.createTab("s", "https://one.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 800, height: 600 });
+    manager.stampAgentInput(manager.activeTab("s"), 1);
+    expect(manager.diagnostics().scopeEntries).toBeGreaterThan(0);
+
+    manager.releaseScope("s", true);
+
+    expect(manager.diagnostics()).toMatchObject({ scopes: 0, tabs: 0, scopeEntries: 0 });
+    expect(manager.scopeProfiles.has("s")).toBe(false);
+    expect(manager.scopeProjects.has("s")).toBe(false);
+    expect(manager.boundsByScope.has("s")).toBe(false);
+    expect(manager.lastAgentInputAt.has("s")).toBe(false);
+  });
+
+  test("a release that is not a destroy keeps the scope's binding — its tabs are only asleep", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "none");
+    await manager.createTab("s", "https://one.example/");
+
+    manager.releaseScope("s");
+
+    expect(manager.profileOf("s")).toBe("none");
+    expect(manager.scopeTabs("s")).toHaveLength(1);
+    expect(manager.diagnostics()).toMatchObject({ tabs: 1, liveViews: 0 });
+  });
+
+  test("adopting a scope's tabs forgets the scope they came from", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("from", "none");
+    await manager.createTab("from", "https://one.example/");
+    manager.setBounds("from", { x: 0, y: 0, width: 800, height: 600 });
+
+    manager.adoptScope("from", "to");
+
+    expect(manager.scopeTabs("to")).toHaveLength(1);
+    expect(manager.profileOf("to")).toBe("none");
+    // The source is over: its binding used to stay for the life of the process
+    // and keep the dead scope inside emitAllStates' loop.
+    expect(manager.scopeProfiles.has("from")).toBe(false);
+    expect(manager.scopeProjects.has("from")).toBe(false);
+    expect(manager.boundsByScope.has("from")).toBe(false);
+    expect(manager.diagnostics().scopes).toBe(1);
+  });
+
+  test("the inventory is walked once per turn, not once per page event", async () => {
+    let walks = 0;
+    const { manager } = makeHarness();
+    manager.tabStore = { load: () => null, save: () => {}, flushSync: () => {} };
+    await manager.createTab("s", "https://one.example/");
+    const inventory = manager.inventory.bind(manager);
+    manager.inventory = () => { walks += 1; return inventory(); };
+
+    // One page's burst — a load, a title, a favicon, an in-page navigation —
+    // used to be one full walk of every tab of every scope each.
+    const wc = manager.activeTab("s").view.webContents;
+    wc.emit("did-start-loading");
+    wc.emit("page-title-updated", {}, "One");
+    wc.emit("page-favicon-updated", {}, ["https://one.example/f.ico"]);
+    wc.emit("did-navigate-in-page");
+    wc.emit("did-stop-loading");
+    expect(walks).toBe(0); // nothing walked synchronously
+
+    await Promise.resolve();
+    expect(walks).toBe(1);
   });
 });

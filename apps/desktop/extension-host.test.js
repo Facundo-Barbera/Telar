@@ -104,3 +104,68 @@ describe("extension release channel policy", () => {
     expect(extensionsEnabled({ ...release, version: "0.1.0", packaged: false })).toBe(true);
   });
 });
+
+/**
+ * ISSUE #296. `session.fromPartition(p)` is a process-lifetime singleton, so a
+ * host's registrations outlive the host. A translucency change rebuilds the
+ * window, and with it the manager and every host it owns — against the very
+ * same sessions.
+ */
+describe("a host lets go of what outlives it", () => {
+  const { EventEmitter } = require("node:events");
+  function fakeSession() {
+    const serviceWorkers = new EventEmitter();
+    return { serviceWorkers };
+  }
+  function hostOn(session) {
+    const host = Object.assign(Object.create(ExtensionHost.prototype), {
+      session,
+      privacy: { state: () => ({ private: false, epoch: 0 }) },
+      health: { workerErrors: {} },
+      loaded: null,
+      verification: null,
+      error: null,
+      phase: "ready",
+      onWorkerConsole: null,
+    });
+    host.observeHealth();
+    return host;
+  }
+
+  test("rebuilding the window against the same session does not stack listeners", () => {
+    const session = fakeSession();
+    const first = hostOn(session);
+    expect(session.serviceWorkers.listenerCount("console-message")).toBe(1);
+
+    // The old manager goes; the new one builds a host on the SAME session.
+    first.dispose();
+    const second = hostOn(session);
+    expect(session.serviceWorkers.listenerCount("console-message")).toBe(1);
+
+    // Five more rebuilds read the same, which is the whole point.
+    let host = second;
+    for (let i = 0; i < 5; i += 1) {
+      host.dispose();
+      host = hostOn(session);
+    }
+    expect(session.serviceWorkers.listenerCount("console-message")).toBe(1);
+
+    host.dispose();
+    expect(session.serviceWorkers.listenerCount("console-message")).toBe(0);
+    // Idempotent: a second dispose is not an error.
+    expect(() => host.dispose()).not.toThrow();
+  });
+
+  test("a disposed host no longer counts a worker error", () => {
+    const session = fakeSession();
+    const host = hostOn(session);
+    const message = { level: 3, sourceId: "chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/sw.js", message: "WASM is not initialized" };
+
+    session.serviceWorkers.emit("console-message", {}, message);
+    expect(host.health.workerErrors).toEqual({ "core-not-initialized": 1 });
+
+    host.dispose();
+    session.serviceWorkers.emit("console-message", {}, message);
+    expect(host.health.workerErrors).toEqual({ "core-not-initialized": 1 });
+  });
+});

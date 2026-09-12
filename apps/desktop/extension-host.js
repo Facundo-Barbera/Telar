@@ -22,8 +22,19 @@
 const fs = require("node:fs");
 const https = require("node:https");
 const path = require("node:path");
-const { app } = require("electron");
 const { attachExtensionSupport, registerShimPreload, unpackVerified } = require("./extension-compat");
+
+/**
+ * `electron` IS REQUIRED WHERE IT IS USED, not at the top — the idiom this
+ * file already follows for `screen`, `BrowserWindow` and `shell` below. The one
+ * top-level `require` left the whole module unloadable outside an Electron
+ * runtime, so the pure halves (the health classifier, the popup geometry, the
+ * listener lifecycle) could only be unit-tested by constructing an instance
+ * through `Object.create` and never touching the constructor.
+ */
+function userDataDir() {
+  return require("electron").app.getPath("userData");
+}
 
 const ONE_PASSWORD = {
   id: "aeblfdkhhhdcdjpifhhbdiojplfjncoa",
@@ -228,7 +239,7 @@ class ExtensionHost {
     this.window = deps.window || null;
     /** Human-only windows showing the extension's own pages. */
     this.extensionWindows = new Set();
-    this.rootDir = deps.rootDir || path.join(app.getPath("userData"), "extensions");
+    this.rootDir = deps.rootDir || path.join(userDataDir(), "extensions");
     this.download = deps.download || download;
     this.extensions = null;
     this.loaded = null; // Electron.Extension
@@ -257,6 +268,9 @@ class ExtensionHost {
      */
     this.onHoldOpen = null;
     this.onHoldClose = null;
+    /** The session listener `observeHealth` installs, held so `dispose` can
+     *  take it off again — the session outlives this host. */
+    this.onWorkerConsole = null;
     this.holdPrefix = require("node:crypto").randomBytes(4).toString("hex");
     this._holdSeq = 0;
   }
@@ -306,17 +320,48 @@ class ExtensionHost {
    *  into fixed codes and counted; no message string leaves this method. */
   observeHealth() {
     // Per-partition worker errors: this session's own worker only.
-    this.session.serviceWorkers.on("console-message", (_event, details) => {
+    //
+    // HELD SO IT CAN COME OFF AGAIN (issue #296). `session.fromPartition` is a
+    // process-lifetime singleton, so this emitter outlives the host: a host
+    // created for a rebuilt window (a translucency change rebuilds the window
+    // and with it the manager and its hosts) used to add a SECOND listener to
+    // the same emitter, permanently, along with a permanent entry in the
+    // module-level `healthListeners`. Both come off in `dispose`.
+    this.onWorkerConsole = (_event, details) => {
       if (details.level < 2) return;
       if (!String(details.sourceId || "").startsWith(`chrome-extension://${ONE_PASSWORD.id}/`)) return;
       if (KNOWN_NOISE.test(String(details.message))) return;
       this.noteWorkerError(details.message);
-    });
+    };
+    this.session.serviceWorkers.on("console-message", this.onWorkerConsole);
     // Register for shared native-host notifications, and install the ONE
     // global spawn observer (idempotent). Whichever host installs it, ALL
     // registered hosts hear the result — the native state is global.
     healthListeners.add(this);
     installNativeObserver();
+  }
+
+  /**
+   * LET GO OF WHAT OUTLIVES THIS HOST — the partition session's emitter and the
+   * module-level listener set. Called when the manager that owns the host goes
+   * (window close, translucency rebuild). Idempotent; the host is finished
+   * afterwards.
+   *
+   * The library's own attachment is deliberately NOT torn down: it is keyed to
+   * the session and `attachExtensionSupport` reuses it
+   * (`ElectronChromeExtensions.fromSession`), so a rebuilt window's host gets
+   * the same instance rather than a second one.
+   */
+  dispose() {
+    if (this.onWorkerConsole) {
+      try {
+        this.session.serviceWorkers.off("console-message", this.onWorkerConsole);
+      } catch {
+        // A session already torn down has nothing to remove.
+      }
+      this.onWorkerConsole = null;
+    }
+    healthListeners.delete(this);
   }
 
   /**
