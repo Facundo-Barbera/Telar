@@ -1716,11 +1716,21 @@ export class EngineClient {
     return this.request("PATCH", "/v2/plugins", { plugins });
   }
 
-  /** Assignments ride this list so a sidebar never fetches a history per row. */
+  /**
+   * Assignments ride this list so a sidebar never fetches a history per row.
+   *
+   * AND SO DOES THE ARRANGEMENT. `layout` is the engine's whole
+   * `sidebar-layout.json`, carried here because this is the one route every
+   * rail already polls — which is what lets a drag on one device reach the
+   * others without a second request or a connection of its own. Optional: an
+   * engine older than the field says nothing, and a rail reads that as "keep
+   * the copy I have" rather than "nobody has arranged anything".
+   */
   liveSessions(): Promise<{
     sessions: Session[];
     projects: Array<{ id: string; name: string }>;
     assignments?: Record<string, SessionAssignment[]>;
+    layout?: SidebarLayout;
   }> {
     return this.request("GET", "/v2/sessions/live");
   }
