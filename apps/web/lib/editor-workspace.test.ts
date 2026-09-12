@@ -15,7 +15,9 @@ import {
   closeEditorFile,
   editorFileForPath,
   editorFromLegacyTabs,
+  editorPathsAfter,
   emptyEditor,
+  otherEditorPaths,
   openInEditor,
   pinEditorFile,
   readEditor,
@@ -124,6 +126,49 @@ describe("closing", () => {
   test("closing a file that is not open changes nothing", () => {
     const before = openInEditor(emptyEditor(), code("a.ts"));
     expect(closeEditorFile(before, "elsewhere.ts")).toBe(before);
+  });
+});
+
+/**
+ * The strip's own "Close others" / "Close to the right" — which say which
+ * files a sweep is about and close nothing themselves, so the refused-save
+ * confirm keeps working on every file in the sweep. See the note above them.
+ */
+describe("which files a close verb sweeps", () => {
+  const strip = () => {
+    let state: EditorState = { files: [], explorerOpen: true };
+    for (const path of ["a.ts", "b.ts", "c.ts", "d.ts"]) state = openInEditor(state, code(path), "pin");
+    return state;
+  };
+
+  test("others is everything but this one, in strip order", () => {
+    expect(otherEditorPaths(strip(), "b.ts")).toEqual(["a.ts", "c.ts", "d.ts"]);
+  });
+
+  test("to the right is only what follows it — never what sits before it", () => {
+    expect(editorPathsAfter(strip(), "b.ts")).toEqual(["c.ts", "d.ts"]);
+    expect(editorPathsAfter(strip(), "d.ts")).toEqual([]);
+    expect(editorPathsAfter(strip(), "a.ts")).toEqual(["b.ts", "c.ts", "d.ts"]);
+  });
+
+  test("a menu left open on a file that has since closed sweeps nothing at all", () => {
+    // Otherwise a stale "Close others" would empty the strip around a tab
+    // that is no longer in it — every file lost to name one that is gone.
+    expect(otherEditorPaths(strip(), "gone.ts")).toEqual([]);
+    expect(editorPathsAfter(strip(), "gone.ts")).toEqual([]);
+  });
+
+  test("one open file has no others and nothing to its right", () => {
+    const one = openInEditor(emptyEditor(), code("a.ts"), "pin");
+    expect(otherEditorPaths(one, "a.ts")).toEqual([]);
+    expect(editorPathsAfter(one, "a.ts")).toEqual([]);
+  });
+
+  test("neither one closes anything — the state they were asked about is untouched", () => {
+    const before = strip();
+    otherEditorPaths(before, "b.ts");
+    editorPathsAfter(before, "b.ts");
+    expect(paths(before)).toEqual(["a.ts!", "b.ts!", "c.ts!", "d.ts!"]);
   });
 });
 

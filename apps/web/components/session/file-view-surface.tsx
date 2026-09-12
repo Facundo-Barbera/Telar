@@ -88,11 +88,24 @@ import { FileKindIcon } from "@/components/session/file-icon";
  * blank line cannot collapse and take the caret's row with it.
  */
 import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
+import { fileReference, type TelarReference } from "@/lib/drag-reference";
+import { useWorkspaceFileMenu, workspaceFilePath, type WorkspaceFileMenu } from "@/lib/workspace-open";
+import { OpenerIcon } from "@/components/session/opener-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageResponse } from "@/components/ui/message";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
 /**
@@ -159,6 +172,87 @@ const MARKDOWN_ACTIONS: { action: MarkdownEditAction; label: string; icon: typeo
   { action: "quote", label: "Quote", icon: QuoteIcon },
 ];
 
+/**
+ * THIS FILE'S OWN MENU — written once and hung on both of the surface's two
+ * right-clickable places, because the address row and the body are ONE
+ * surface: they are about the same file, and offering different verbs
+ * depending on whether you clicked above or below the hairline would be two
+ * answers to one question.
+ *
+ * NOT ON THE TEXTAREA. Right-clicking inside the box you are typing in must
+ * still bring up the browser's own edit menu — cut, paste, look up, spelling —
+ * and replacing that with "Re-read from disk" would take away something a
+ * person uses constantly to add something they use rarely. The textarea stops
+ * the event; see its `onContextMenu`.
+ *
+ * THE VIEW CONTROLS ARE THE HEADER'S OWN, in the shapes a menu has for them: a
+ * checkbox for wrap (it is on or off) and a radio pair for markdown (it is one
+ * or the other). Both write through the same call the visible control does.
+ */
+function FileMenuItems({
+  path,
+  absolute,
+  files,
+  onReread,
+  wrap,
+  onWrap,
+  markdown,
+  source,
+  onSource,
+  onInsertReference,
+}: {
+  path: string;
+  absolute?: string | undefined;
+  files: WorkspaceFileMenu;
+  onReread: () => void;
+  /** Absent where wrapping would change nothing on screen — a binary, or
+   *  markdown being rendered rather than edited. */
+  wrap?: { on: boolean } | undefined;
+  onWrap: (on: boolean) => void;
+  /** Absent unless this file has both views to choose between. */
+  markdown: boolean;
+  source: boolean;
+  onSource: (source: boolean) => void;
+  onInsertReference?: ((reference: TelarReference) => void) | undefined;
+}) {
+  return (
+    <>
+      {absolute && <ContextMenuItem onClick={() => void navigator.clipboard?.writeText(absolute)}>Copy path</ContextMenuItem>}
+      <ContextMenuItem onClick={() => void navigator.clipboard?.writeText(path)}>Copy relative path</ContextMenuItem>
+      {files.reveal && files.open && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => files.reveal!(path, "file")}>Reveal in Finder</ContextMenuItem>
+          <ContextMenuItem onClick={() => files.open!(path, "file")}>
+            <OpenerIcon icon={files.openIcon} />
+            {files.openLabel}
+          </ContextMenuItem>
+        </>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem onClick={onReread}>Re-read from disk</ContextMenuItem>
+      {wrap && (
+        <ContextMenuCheckboxItem checked={wrap.on} onCheckedChange={onWrap}>
+          Wrap lines
+        </ContextMenuCheckboxItem>
+      )}
+      {markdown && (
+        <ContextMenuRadioGroup value={source ? "source" : "rendered"} onValueChange={(value) => onSource(value === "source")}>
+          <ContextMenuRadioItem value="rendered">Rendered</ContextMenuRadioItem>
+          <ContextMenuRadioItem value="source">Source</ContextMenuRadioItem>
+        </ContextMenuRadioGroup>
+      )}
+      {onInsertReference && (
+        <>
+          <ContextMenuSeparator />
+          {/* The SAME payload the address row's drag carries. */}
+          <ContextMenuItem onClick={() => onInsertReference(fileReference(path))}>Insert into composer as a reference</ContextMenuItem>
+        </>
+      )}
+    </>
+  );
+}
+
 export function FileViewSurface({
   path,
   sessionId,
@@ -170,6 +264,8 @@ export function FileViewSurface({
   onEdit,
   readView,
   onView,
+  workspacePath,
+  onInsertReference,
 }: {
   path: string;
   sessionId?: string;
@@ -206,6 +302,17 @@ export function FileViewSurface({
    */
   readView?: () => EditorViewState | undefined;
   onView?: (view: EditorViewState) => void;
+  /**
+   * THE CHECKOUT `path` IS RELATIVE TO, when the caller knows it — the Editor
+   * does, from the tree's own listing. Without it the menu cannot name this
+   * file on disk, so "Copy path", "Reveal in Finder" and "Open in <app>" are
+   * absent rather than offered and broken. A `file:` panel tab restored by an
+   * older layout (right-panel.tsx) is the case that has none.
+   */
+  workspacePath?: string;
+  /** Put a reference to this file in the message being written. Absent until a
+   *  composer is listening, and the item is absent with it. */
+  onInsertReference?: (reference: TelarReference) => void;
 }) {
   const [file, setFile] = useState<WorkspaceFile>();
   const [error, setError] = useState<string>();
@@ -691,6 +798,32 @@ export function FileViewSurface({
   );
 
   const dirty = pending || Boolean(problem);
+  /** What the header's refresh glyph does. Named so the menu fires the same
+   *  callback rather than growing a second way to discard and re-read. */
+  const reread = useCallback(() => {
+    setRefreshing(true);
+    // DISCARDS: see the button.
+    void load(true).finally(() => setRefreshing(false));
+  }, [load]);
+  const files = useWorkspaceFileMenu({ workspacePath, hostId });
+  const absolute = workspaceFilePath(workspacePath, path);
+  /** The menu, written once for both places it hangs — see `FileMenuItems`. */
+  const menu = (
+    <FileMenuItems
+      path={path}
+      {...(absolute ? { absolute } : {})}
+      files={files}
+      onReread={reread}
+      // Only where it would change what is on screen — the same condition the
+      // address row's own Wrap switch is drawn under.
+      {...(prose && editable && (!markdown || source) ? { wrap: { on: wrap } } : {})}
+      onWrap={(on) => writeWrapLines(on)}
+      markdown={Boolean(markdown && file && !file.binary)}
+      source={source}
+      onSource={setSource}
+      {...(onInsertReference ? { onInsertReference } : {})}
+    />
+  );
   /** The bytes URL for a binary the panel can RENDER (image, audio, video —
    *  a .pdf normally opens as its own `pdf:` tab; this covers a restored
    *  `file:` tab). Versioned by the read's hash so new bytes mean a new URL. */
@@ -712,317 +845,355 @@ export function FileViewSurface({
       {/* The address row, exactly as a browser page tab has one — one shared
           component now (session/editor-chrome.tsx) so the seam does not move
           when you switch to a notebook or a CSV. What is ours goes in its slot. */}
-      <EditorAddressRow
-        path={path}
-        detail={
-          dirty || file ? (
-            <>
-              {/* UNSAVED IS A DOT, not a word: it has to be legible at a glance
-                  from across the row and it must not move the layout when it
-                  appears. */}
-              {dirty && (
-                <span
-                  aria-label="Unsaved changes"
-                  title={problem ? "Not saved — see the message below" : "Saving…"}
-                  className={cn("size-1.5 shrink-0 rounded-full", problem ? "bg-destructive" : "bg-primary")}
-                />
-              )}
-              {file && size(file.bytes)}
-            </>
-          ) : undefined
-        }
-      >
-        {/* WRAP LIVES UP HERE, not in the formatting row below, because it is a
-            property of the VIEW rather than an edit to the text — and because
-            the formatting row only exists for markdown source, while wrapping
-            applies to any prose file. The gutter hides while this is on: a line
-            number names a SOURCE line, and under wrap those no longer sit one
-            per row. `onMouseDown` prevention keeps the textarea's selection
-            alive through the click. */}
-        {prose && editable && (!markdown || source) && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={wrap}
-            aria-label="Wrap lines"
-            title={wrap ? "Wrap lines: on (line numbers hidden while wrapped)" : "Wrap long lines to the panel width"}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => writeWrapLines(!wrap)}
-            className={cn(
-              "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
-              wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-            )}
-          >
-            <WrapTextIcon className="size-3" />
-            Wrap
-          </button>
-        )}
-        {/* THE MARKDOWN TOGGLE — rendered or source, one press apart. In the
-            header rather than floating over the text so it cannot cover what
-            it switches, and icon-only because the header row is 36px of
-            everything already. */}
-        {markdown && file && !file.binary && (
-          <div role="group" aria-label="Markdown view" className="flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
-            <button
-              type="button"
-              aria-pressed={!source}
-              title="Rendered"
-              onClick={() => setSource(false)}
-              className={cn("rounded p-0.5 transition-colors", source ? "text-muted-foreground hover:text-foreground" : "bg-secondary text-foreground")}
-            >
-              <EyeIcon className="size-3" />
-            </button>
-            <button
-              type="button"
-              aria-pressed={source}
-              title="Edit source"
-              onClick={() => setSource(true)}
-              className={cn("rounded p-0.5 transition-colors", source ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground")}
-            >
-              <PencilIcon className="size-3" />
-            </button>
-          </div>
-        )}
-        <button
-          type="button"
-          aria-label="Re-read this file"
-          title="Re-read from disk"
-          onClick={() => {
-            setRefreshing(true);
-            // DISCARDS: pressing refresh is asking for what is on disk, and
-            // keeping the unsaved text over it would make the button do
-            // nothing visible on the one file where it matters most.
-            void load(true).finally(() => setRefreshing(false));
-          }}
-          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
-        </button>
-      </EditorAddressRow>
-
-      {/* WHY THE SAVE DID NOT HAPPEN, above the text rather than in a toast: the
-          text on screen is not what is on disk, and that has to stay visible for
-          as long as it is true. Only a conflict offers the re-read, because it is
-          the only one re-reading fixes. */}
-      {problem && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
-          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
-          <span className="min-w-0 flex-1">
-            {REFUSAL[problem.reason] ?? problem.reason}
-            {problem.reason === "conflict" && (
+      <ContextMenu>
+        {/**
+         * THE ADDRESS ROW'S MENU WRAPS THE SHARED ROW rather than reaching into
+         * it: `EditorAddressRow` belongs to session/editor-chrome.tsx and four
+         * surfaces wear it, and only this one has a menu to hang.
+         *
+         * A REAL BOX, NOT `display: contents`. A `contents` element paints
+         * nothing and is therefore never an event target — only its children
+         * are — so a right-press in the row's own `px-2`, or in a gap between
+         * the glyph and the path, would sail past this menu. `project-group.tsx`
+         * paid a screenshot to learn that; a `shrink-0` div around the row is an
+         * ancestor of every point inside it.
+         *
+         * AND IT DOES NOT TOUCH THE DRAG. `draggable` is on the row INSIDE this
+         * box, so the trigger is never itself the drag handle — board.tsx's rule
+         * seen from the other side.
+         */}
+        <ContextMenuTrigger render={<div className="shrink-0" />}>
+        <EditorAddressRow
+          path={path}
+          detail={
+            dirty || file ? (
               <>
-                {" "}
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="outline"
-                  className="ml-1 align-baseline"
-                  onClick={() => {
-                    // Discards the draft on purpose — the stash with it, or the
-                    // next open would bring the refused text back. Merging two
-                    // versions of a file is a diff tool's job, and pretending to
-                    // do it here would be the one thing worse than losing the
-                    // edit: silently producing a third version nobody wrote.
-                    void load(true);
-                  }}
-                >
-                  Re-read from disk
-                </Button>
+                {/* UNSAVED IS A DOT, not a word: it has to be legible at a glance
+                    from across the row and it must not move the layout when it
+                    appears. */}
+                {dirty && (
+                  <span
+                    aria-label="Unsaved changes"
+                    title={problem ? "Not saved — see the message below" : "Saving…"}
+                    className={cn("size-1.5 shrink-0 rounded-full", problem ? "bg-destructive" : "bg-primary")}
+                  />
+                )}
+                {file && size(file.bytes)}
               </>
-            )}
-          </span>
-        </div>
-      )}
-
-      {error ? (
-        <PanelEmpty icon={<FileIcon />} title="Could not read this file">
-          {error}
-        </PanelEmpty>
-      ) : !file || draft === undefined ? (
-        file?.binary ? (
-          kind.media && mediaUrl ? (
-            /**
-             * BYTES THE PANEL CAN RENDER. The text route sent nothing (binary),
-             * so the media element reads the raw route itself — the browser
-             * streams it, and the viewer is the browser's own. Which element is
-             * the kind table's `media` verdict; the pdf arm here only serves a
-             * restored `file:` tab, since a .pdf normally opens as `pdf:`.
-             */
-            kind.media === "image" ? (
-              <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-3">
-                {/* eslint-disable-next-line @next/next/no-img-element -- raw workspace bytes; next/image cannot optimise a token-gated local route */}
-                <img src={mediaUrl} alt={path} className="max-w-full rounded-md border border-border" />
-              </div>
-            ) : kind.media === "audio" ? (
-              <div className="px-3 py-4">
-                <audio controls src={mediaUrl} className="w-full" />
-              </div>
-            ) : kind.media === "video" ? (
-              <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
-                <video controls src={mediaUrl} className="max-h-full max-w-full rounded-md" />
-              </div>
-            ) : (
-              <iframe src={mediaUrl} title={path} className="min-h-0 w-full flex-1 border-0" />
-            )
-          ) : (
-            /* NAMED, NOT JUST "BINARY". The table knows this is a font or a
-               lockfile, and "font · 190 KB" is a different sentence from
-               "bytes" — it tells you the read worked and the file is what you
-               expected. Only kinds with no media viewer land here now. */
-            <PanelEmpty icon={<FileKindIcon path={path} className="size-5" />} title={`${kind.label} · ${size(file.bytes)}`}>
-              Bytes rather than text, so nothing was sent — rendering it as UTF-8 would show line noise instead of the file.
-            </PanelEmpty>
-          )
-        ) : (
-          <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
-            <Spinner className="size-3" /> reading the file…
-          </p>
-        )
-      ) : markdown && !source ? (
-        /**
-         * THE RENDERED DOCUMENT — Streamdown via MessageResponse, so a README
-         * in the panel is coloured by the same engine as markdown in the
-         * transcript (the seam this cockpit keeps closing). It renders the
-         * DRAFT, not the file: mid-edit, the preview is one toggle away and
-         * must show what would be saved, not what was loaded.
-         */
-        <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-          <MessageResponse className="text-[0.8125rem]">{draft}</MessageResponse>
-        </div>
-      ) : (
-        <>
-          {/* THE FORMATTING ROW, only where its edits can land: markdown, in
-              source view, editable. Every button routes through the same
-              draft + saver pair a keystroke uses. `onMouseDown` prevention
-              keeps the textarea's selection alive through the click — a
-              focused button has no selection to format.
-              `source` is markdown's Rendered/Edit switch. The row is MARKDOWN's
-              alone: a .txt has no formatting to apply, and the one control it
-              used to borrow this row for (Wrap) is a property of the view and
-              moved up to the address row. */}
-          {markdown && editable && source && (
-            <div role="toolbar" aria-label="Editing" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
-              {MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
-                <button
-                  key={action}
-                  type="button"
-                  title={label}
-                  aria-label={label}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => applyEdit(action)}
-                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                >
-                  <Icon className="size-3" />
-                </button>
-              ))}
+            ) : undefined
+          }
+        >
+          {/* WRAP LIVES UP HERE, not in the formatting row below, because it is a
+              property of the VIEW rather than an edit to the text — and because
+              the formatting row only exists for markdown source, while wrapping
+              applies to any prose file. The gutter hides while this is on: a line
+              number names a SOURCE line, and under wrap those no longer sit one
+              per row. `onMouseDown` prevention keeps the textarea's selection
+              alive through the click. */}
+          {prose && editable && (!markdown || source) && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={wrap}
+              aria-label="Wrap lines"
+              title={wrap ? "Wrap lines: on (line numbers hidden while wrapped)" : "Wrap long lines to the panel width"}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => writeWrapLines(!wrap)}
+              className={cn(
+                "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
+                wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+              )}
+            >
+              <WrapTextIcon className="size-3" />
+              Wrap
+            </button>
+          )}
+          {/* THE MARKDOWN TOGGLE — rendered or source, one press apart. In the
+              header rather than floating over the text so it cannot cover what
+              it switches, and icon-only because the header row is 36px of
+              everything already. */}
+          {markdown && file && !file.binary && (
+            <div role="group" aria-label="Markdown view" className="flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
+              <button
+                type="button"
+                aria-pressed={!source}
+                title="Rendered"
+                onClick={() => setSource(false)}
+                className={cn("rounded p-0.5 transition-colors", source ? "text-muted-foreground hover:text-foreground" : "bg-secondary text-foreground")}
+              >
+                <EyeIcon className="size-3" />
+              </button>
+              <button
+                type="button"
+                aria-pressed={source}
+                title="Edit source"
+                onClick={() => setSource(true)}
+                className={cn("rounded p-0.5 transition-colors", source ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground")}
+              >
+                <PencilIcon className="size-3" />
+              </button>
             </div>
           )}
-        <div ref={scrollerRef} onScroll={rememberView} className="min-h-0 flex-1 overflow-auto">
-          <div className={cn("flex", wrapping ? "min-w-0" : "min-w-max")}>
-            {/**
-             * THE GUTTER IS STICKY, not fixed and not outside the scroller.
-             * Outside, it could not scroll vertically with the code; fixed, it
-             * would slide away horizontally. Sticky-left in the same scroll box
-             * gives both, and keeps `select-none` doing its job — the numbers are
-             * chrome and must never end up in a copied selection.
-             *
-             * `app-ground` because the gutter IS this surface's canvas — the
-             * viewer itself paints no background, so over a backdrop an opaque
-             * strip of --background was the one thing in the pane that did not
-             * go glassy. The blur comes with it and is not decoration: the
-             * gutter's whole job while the code is scrolled sideways is to stop
-             * the line it is covering from being read through it.
-             */}
-            {!wrapping && (
-              <div
-                aria-hidden
-                style={CODE_FONT_SIZE}
-                className={cn(
-                  "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
-                  CODE_GEOMETRY,
-                )}
-              >
-                {lines.map((_line, index) => (
-                  <div key={index}>{index + 1}</div>
+          <button
+            type="button"
+            aria-label="Re-read this file"
+            title="Re-read from disk"
+            onClick={reread}
+            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
+          </button>
+        </EditorAddressRow>
+        </ContextMenuTrigger>
+        <ContextMenuContent>{menu}</ContextMenuContent>
+      </ContextMenu>
+
+      {/**
+       * THE BODY CARRIES THE SAME MENU as the address row — one file, one
+       * answer, one list (`FileMenuItems`).
+       *
+       * ITS TRIGGER FILLS THE REST OF THE COLUMN, and for the reason the row's
+       * does not use `contents` either: the empty space under a short file, and
+       * the padding around every state that stands in for the text, belong to
+       * this box. A `contents` trigger paints none of it and would have answered
+       * only where the text already is.
+       *
+       * NOT ON THE TEXTAREA, THOUGH — it stops the event itself; see it.
+       */}
+      <ContextMenu>
+        <ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>
+        {/* WHY THE SAVE DID NOT HAPPEN, above the text rather than in a toast: the
+            text on screen is not what is on disk, and that has to stay visible for
+            as long as it is true. Only a conflict offers the re-read, because it is
+            the only one re-reading fixes. */}
+        {problem && (
+          <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+            <span className="min-w-0 flex-1">
+              {REFUSAL[problem.reason] ?? problem.reason}
+              {problem.reason === "conflict" && (
+                <>
+                  {" "}
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="outline"
+                    className="ml-1 align-baseline"
+                    onClick={() => {
+                      // Discards the draft on purpose — the stash with it, or the
+                      // next open would bring the refused text back. Merging two
+                      // versions of a file is a diff tool's job, and pretending to
+                      // do it here would be the one thing worse than losing the
+                      // edit: silently producing a third version nobody wrote.
+                      void load(true);
+                    }}
+                  >
+                    Re-read from disk
+                  </Button>
+                </>
+              )}
+            </span>
+          </div>
+        )}
+
+        {error ? (
+          <PanelEmpty icon={<FileIcon />} title="Could not read this file">
+            {error}
+          </PanelEmpty>
+        ) : !file || draft === undefined ? (
+          file?.binary ? (
+            kind.media && mediaUrl ? (
+              /**
+               * BYTES THE PANEL CAN RENDER. The text route sent nothing (binary),
+               * so the media element reads the raw route itself — the browser
+               * streams it, and the viewer is the browser's own. Which element is
+               * the kind table's `media` verdict; the pdf arm here only serves a
+               * restored `file:` tab, since a .pdf normally opens as `pdf:`.
+               */
+              kind.media === "image" ? (
+                <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- raw workspace bytes; next/image cannot optimise a token-gated local route */}
+                  <img src={mediaUrl} alt={path} className="max-w-full rounded-md border border-border" />
+                </div>
+              ) : kind.media === "audio" ? (
+                <div className="px-3 py-4">
+                  <audio controls src={mediaUrl} className="w-full" />
+                </div>
+              ) : kind.media === "video" ? (
+                <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+                  <video controls src={mediaUrl} className="max-h-full max-w-full rounded-md" />
+                </div>
+              ) : (
+                <iframe src={mediaUrl} title={path} className="min-h-0 w-full flex-1 border-0" />
+              )
+            ) : (
+              /* NAMED, NOT JUST "BINARY". The table knows this is a font or a
+                 lockfile, and "font · 190 KB" is a different sentence from
+                 "bytes" — it tells you the read worked and the file is what you
+                 expected. Only kinds with no media viewer land here now. */
+              <PanelEmpty icon={<FileKindIcon path={path} className="size-5" />} title={`${kind.label} · ${size(file.bytes)}`}>
+                Bytes rather than text, so nothing was sent — rendering it as UTF-8 would show line noise instead of the file.
+              </PanelEmpty>
+            )
+          ) : (
+            <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+              <Spinner className="size-3" /> reading the file…
+            </p>
+          )
+        ) : markdown && !source ? (
+          /**
+           * THE RENDERED DOCUMENT — Streamdown via MessageResponse, so a README
+           * in the panel is coloured by the same engine as markdown in the
+           * transcript (the seam this cockpit keeps closing). It renders the
+           * DRAFT, not the file: mid-edit, the preview is one toggle away and
+           * must show what would be saved, not what was loaded.
+           */
+          <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+            <MessageResponse className="text-[0.8125rem]">{draft}</MessageResponse>
+          </div>
+        ) : (
+          <>
+            {/* THE FORMATTING ROW, only where its edits can land: markdown, in
+                source view, editable. Every button routes through the same
+                draft + saver pair a keystroke uses. `onMouseDown` prevention
+                keeps the textarea's selection alive through the click — a
+                focused button has no selection to format.
+                `source` is markdown's Rendered/Edit switch. The row is MARKDOWN's
+                alone: a .txt has no formatting to apply, and the one control it
+                used to borrow this row for (Wrap) is a property of the view and
+                moved up to the address row. */}
+            {markdown && editable && source && (
+              <div role="toolbar" aria-label="Editing" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
+                {MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
+                  <button
+                    key={action}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => applyEdit(action)}
+                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                  >
+                    <Icon className="size-3" />
+                  </button>
                 ))}
               </div>
             )}
+          <div ref={scrollerRef} onScroll={rememberView} className="min-h-0 flex-1 overflow-auto">
+            <div className={cn("flex", wrapping ? "min-w-0" : "min-w-max")}>
+              {/**
+               * THE GUTTER IS STICKY, not fixed and not outside the scroller.
+               * Outside, it could not scroll vertically with the code; fixed, it
+               * would slide away horizontally. Sticky-left in the same scroll box
+               * gives both, and keeps `select-none` doing its job — the numbers are
+               * chrome and must never end up in a copied selection.
+               *
+               * `app-ground` because the gutter IS this surface's canvas — the
+               * viewer itself paints no background, so over a backdrop an opaque
+               * strip of --background was the one thing in the pane that did not
+               * go glassy. The blur comes with it and is not decoration: the
+               * gutter's whole job while the code is scrolled sideways is to stop
+               * the line it is covering from being read through it.
+               */}
+              {!wrapping && (
+                <div
+                  aria-hidden
+                  style={CODE_FONT_SIZE}
+                  className={cn(
+                    "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
+                    CODE_GEOMETRY,
+                  )}
+                >
+                  {lines.map((_line, index) => (
+                    <div key={index}>{index + 1}</div>
+                  ))}
+                </div>
+              )}
 
-            {/**
-             * THE TWO STACKED LAYERS. The `<pre>` paints the colours and is
-             * `aria-hidden` — a screen reader should meet the textarea, which is
-             * the real control and carries the same text. The textarea is on top
-             * with transparent text and a visible caret, so selection and the
-             * caret are the browser's own rather than something drawn.
-             */}
-            <div className="relative min-w-0 flex-1">
-              <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 px-3 py-2", wrapClass, CODE_GEOMETRY)}>
-                {/* ONE DIV PER LINE OF `lines`, which is the same array the
-                    gutter beside it numbers — so the two columns cannot
-                    disagree about how many lines there are. */}
-                <CodeLines lines={lines} coloured={coloured} />
-              </pre>
-              <textarea
-                ref={textareaRef}
-                style={CODE_FONT_SIZE}
-                value={draft}
-                readOnly={!editable}
-                spellCheck={false}
-                aria-label={`${path} — ${editable ? "editable" : "read only"}`}
-                onChange={(event) => {
-                  change(event.target.value);
-                  // THE FIRST KEYSTROKE IS A DECISION. A file you have typed
-                  // into is no longer something you were glancing at, so the
-                  // Editor pins it here rather than waiting for a save to land.
-                  onEdit?.();
-                  rememberView();
-                }}
-                onSelect={rememberView}
-                onKeyDown={(event) => {
-                  // ⌘S / Ctrl+S saves now. Prevented in both cases so the browser
-                  // never offers to save the page instead, even read-only.
-                  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                    event.preventDefault();
-                    void saverRef.current?.flush();
-                  }
-                }}
-                className={cn(
-                  // `text-transparent` with a `caret-` colour is the whole
-                  // illusion: the glyphs come from the layer below and the caret
-                  // and selection come from here.
-                  "absolute inset-0 h-full w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-transparent caret-foreground outline-none",
-                  wrapClass,
-                  CODE_GEOMETRY,
-                  // Selection needs to be visible against the coloured text
-                  // underneath rather than the transparent text on top.
-                  "selection:bg-primary/30 selection:text-transparent",
-                  !editable && "cursor-default",
-                )}
-              />
+              {/**
+               * THE TWO STACKED LAYERS. The `<pre>` paints the colours and is
+               * `aria-hidden` — a screen reader should meet the textarea, which is
+               * the real control and carries the same text. The textarea is on top
+               * with transparent text and a visible caret, so selection and the
+               * caret are the browser's own rather than something drawn.
+               */}
+              <div className="relative min-w-0 flex-1">
+                <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 px-3 py-2", wrapClass, CODE_GEOMETRY)}>
+                  {/* ONE DIV PER LINE OF `lines`, which is the same array the
+                      gutter beside it numbers — so the two columns cannot
+                      disagree about how many lines there are. */}
+                  <CodeLines lines={lines} coloured={coloured} />
+                </pre>
+                <textarea
+                  ref={textareaRef}
+                  style={CODE_FONT_SIZE}
+                  value={draft}
+                  readOnly={!editable}
+                  spellCheck={false}
+                  aria-label={`${path} — ${editable ? "editable" : "read only"}`}
+                  onChange={(event) => {
+                    change(event.target.value);
+                    // THE FIRST KEYSTROKE IS A DECISION. A file you have typed
+                    // into is no longer something you were glancing at, so the
+                    // Editor pins it here rather than waiting for a save to land.
+                    onEdit?.();
+                    rememberView();
+                  }}
+                  onSelect={rememberView}
+                  // THE BROWSER'S OWN EDIT MENU KEEPS THE BOX. Cut, paste, look
+                  // up, spelling: a person uses those constantly inside a text
+                  // field, and this surface's menu — re-read, reveal, copy the
+                  // path — is not worth taking them away for. The body around
+                  // the box still carries it.
+                  onContextMenu={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    // ⌘S / Ctrl+S saves now. Prevented in both cases so the browser
+                    // never offers to save the page instead, even read-only.
+                    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                      event.preventDefault();
+                      void saverRef.current?.flush();
+                    }
+                  }}
+                  className={cn(
+                    // `text-transparent` with a `caret-` colour is the whole
+                    // illusion: the glyphs come from the layer below and the caret
+                    // and selection come from here.
+                    "absolute inset-0 h-full w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-transparent caret-foreground outline-none",
+                    wrapClass,
+                    CODE_GEOMETRY,
+                    // Selection needs to be visible against the coloured text
+                    // underneath rather than the transparent text on top.
+                    "selection:bg-primary/30 selection:text-transparent",
+                    !editable && "cursor-default",
+                  )}
+                />
+              </div>
             </div>
-          </div>
 
-          {/* Said once, at the bottom, and only when it is true. Silence here
-              would read as a highlighter that does not work, or an editor that
-              refuses for no reason. */}
-          {!editable && file.truncated && (
-            <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
-              <Badge variant="outline" className="mr-1.5 px-1 py-0 text-[0.5625rem] font-normal">
-                read only
-              </Badge>
-              This is the first part of a {size(file.bytes)} file, so it cannot be saved back — writing a prefix over the whole file would
-              drop the rest.
-            </p>
-          )}
-          {kind.lang && draft.length > MAX_HIGHLIGHT_BYTES && (
-            <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
-              Too large to highlight — {kind.label} colouring is skipped above {size(MAX_HIGHLIGHT_BYTES)} because tokenising it would block
-              the window for longer than reading it takes.
-            </p>
-          )}
-        </div>
-        </>
-      )}
+            {/* Said once, at the bottom, and only when it is true. Silence here
+                would read as a highlighter that does not work, or an editor that
+                refuses for no reason. */}
+            {!editable && file.truncated && (
+              <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+                <Badge variant="outline" className="mr-1.5 px-1 py-0 text-[0.5625rem] font-normal">
+                  read only
+                </Badge>
+                This is the first part of a {size(file.bytes)} file, so it cannot be saved back — writing a prefix over the whole file would
+                drop the rest.
+              </p>
+            )}
+            {kind.lang && draft.length > MAX_HIGHLIGHT_BYTES && (
+              <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+                Too large to highlight — {kind.label} colouring is skipped above {size(MAX_HIGHLIGHT_BYTES)} because tokenising it would block
+                the window for longer than reading it takes.
+              </p>
+            )}
+          </div>
+          </>
+        )}
+        </ContextMenuTrigger>
+        <ContextMenuContent>{menu}</ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 }

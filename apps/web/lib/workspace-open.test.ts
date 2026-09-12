@@ -8,7 +8,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { workspaceOpenBlocker } from "./workspace-open";
+import { workspaceFilePath, workspaceOpenBlocker } from "./workspace-open";
 
 const local = { path: "/Users/x/code/telar", hostId: "local", hasBridge: true };
 
@@ -41,5 +41,33 @@ describe("workspaceOpenBlocker", () => {
     // Whether a remote machine has that folder is not knowable from here, so
     // "it is over there" is the honest answer, not "it does not exist".
     expect(workspaceOpenBlocker({ path: undefined, hostId: "host_2", hasBridge: true })).toContain("another machine");
+  });
+});
+
+/**
+ * THE SHELL REFUSES A RELATIVE PATH, so the join happens here or the verb
+ * fails at the moment it is pressed. Nothing is returned when either half is
+ * missing, which is what makes the two items that need an absolute path
+ * disappear from a menu rather than promise something they cannot do.
+ */
+describe("workspaceFilePath", () => {
+  test("joins a checkout-relative path onto the checkout", () => {
+    expect(workspaceFilePath("/Users/x/code/telar", "apps/web/lib/utils.ts")).toBe("/Users/x/code/telar/apps/web/lib/utils.ts");
+  });
+
+  test("one separator, whichever side brought one", () => {
+    expect(workspaceFilePath("/Users/x/code/telar/", "README.md")).toBe("/Users/x/code/telar/README.md");
+    expect(workspaceFilePath("/Users/x/code/telar", "/README.md")).toBe("/Users/x/code/telar/README.md");
+    expect(workspaceFilePath("/", "README.md")).toBe("/README.md");
+  });
+
+  test("nothing when there is no root to join against — a listing that has not landed", () => {
+    expect(workspaceFilePath(undefined, "README.md")).toBeUndefined();
+    expect(workspaceFilePath("", "README.md")).toBeUndefined();
+  });
+
+  test("nothing for an empty relative path, rather than the checkout itself", () => {
+    // A menu asking to reveal "" must not quietly reveal the whole checkout.
+    expect(workspaceFilePath("/Users/x/code/telar", "")).toBeUndefined();
   });
 });

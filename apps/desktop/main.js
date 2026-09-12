@@ -1388,24 +1388,32 @@ function reportBrowserControl(change) {
  * Open a session's workspace folder — in a named app, in the system default,
  * or revealed in Finder.
  *
- * Absolute paths and real directories only: a relative path would resolve
- * against this process's cwd, and a file is not a workspace. The app must be
- * one `discoverOpeners` actually found, so a renderer cannot name an
- * arbitrary binary. Nothing is ever interpolated into a command line — see
- * workspace-openers.js.
+ * Absolute paths and real things on disk only: a relative path would resolve
+ * against this process's cwd. The app must be one `discoverOpeners` actually
+ * found, so a renderer cannot name an arbitrary binary. Nothing is ever
+ * interpolated into a command line — see workspace-openers.js.
+ *
+ * AND ONE FILE, WHEN THE CALLER SAYS SO. `input.kind` is `"directory"` unless
+ * it is exactly `"file"`, so the header's Open button — which sends no kind —
+ * is refused a non-directory exactly as before. A file is allowed because the
+ * file tree's own menu reveals and opens one, and both shell calls already
+ * take either: `showItemInFolder` selects a file in its folder, and `openWith`
+ * hands any target to the app. The absolute-path and stat guards are the same
+ * two guards; only what `stat` is allowed to BE widens.
  */
 ipcMain.handle("telar:workspace:openers", () => ({ openers: discoverOpeners() }));
 
 ipcMain.handle("telar:workspace:open", async (_event, input) => {
   const target = typeof input?.path === "string" ? input.path : "";
   if (!target || !path.isAbsolute(target)) return { ok: false, error: "A workspace can only be opened from an absolute path." };
+  const file = input?.kind === "file";
   let stat;
   try {
     stat = fs.statSync(target);
   } catch {
-    return { ok: false, error: "That folder is no longer on this machine." };
+    return { ok: false, error: file ? "That file is no longer on this machine." : "That folder is no longer on this machine." };
   }
-  if (!stat.isDirectory()) return { ok: false, error: "That path is not a folder." };
+  if (file ? !stat.isFile() : !stat.isDirectory()) return { ok: false, error: file ? "That path is not a file." : "That path is not a folder." };
   if (input?.reveal === true) {
     shell.showItemInFolder(target);
     return { ok: true };

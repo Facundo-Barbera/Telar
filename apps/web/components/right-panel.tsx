@@ -45,6 +45,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { clampSidebarWidth, setSidebarWidth, useSidebarPrefs } from "@/lib/sidebar-width";
 import {
@@ -1603,9 +1610,19 @@ export function RightPanel({
 }) {
   const [fullscreen, setFullscreen] = useState(false);
   const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
+  /**
+   * WHICH TAB'S CONTEXT MENU IS OPEN, or nothing — the strip's menus are
+   * CONTROLLED for the same reason the chooser is: the native browser view
+   * sits above this DOM, and `useNativeViewOverlay` needs a boolean to take it
+   * down by. One piece of state for the whole strip rather than one per chip,
+   * because at most one context menu is ever open.
+   */
+  const [menuTab, setMenuTab] = useState<PanelTab>();
   // The native browser view is composited above this DOM; drop it while the
-  // chooser is open so the menu is the thing on top. No-op on the web build.
+  // chooser or a tab's menu is open so the menu is the thing on top. No-op on
+  // the web build.
   useNativeViewOverlay(surfaceChooserOpen);
+  useNativeViewOverlay(menuTab !== undefined);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
@@ -1752,7 +1769,7 @@ export function RightPanel({
               <span
                 key={id}
                 className={cn(
-                  "group/tab relative flex h-7 min-w-0 max-w-44 shrink-0 items-center rounded-md px-1.5 text-xs transition-colors",
+                  "group/tab relative flex h-7 min-w-0 max-w-44 shrink-0 rounded-md text-xs transition-colors",
                   on ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                   // A page the engine has since closed still has a tab, because
                   // you opened it and only you should close it — but it should
@@ -1760,57 +1777,102 @@ export function RightPanel({
                   missing && "opacity-60",
                 )}
               >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={on}
-                  aria-controls={`right-panel-${id}`}
-                  onClick={() => onTabChange(id)}
-                  // Middle-click closes, the way a browser tab does.
-                  onAuxClick={(event) => {
-                    if (event.button === 1) {
-                      event.preventDefault();
-                      onCloseTab(id);
-                    }
-                  }}
-                  title={label}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 outline-none"
-                >
-                  <Icon className="size-3.5 shrink-0" />
-                  <span className="truncate">{label}</span>
-                  {count ? (
-                    <span
-                      className={cn(
-                        "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[0.5625rem] leading-4",
-                        (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
-                          ? "bg-destructive/15 text-destructive"
-                          : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
-                            ? "bg-primary/15 text-primary"
-                            : "bg-muted-foreground/15 text-muted-foreground",
-                      )}
-                      title={
-                        id === "agents" && running > 0
-                          ? `${running} running`
-                          : id === "processes" && processesRunning > 0
-                            ? `${processesRunning} running`
-                            : undefined
-                      }
+                {/**
+                 * THE TAB'S OWN MENU. Four verbs, and every one of them fires
+                 * a callback this strip already has: `onCloseTab` is the ×
+                 * button's, `setFullscreen` is the corner glyph's.
+                 *
+                 * CLOSE OTHERS AND CLOSE ALL ARE LOOPS over that same
+                 * `onCloseTab`, not a reducer of their own. `closeOtherPanelTabs`
+                 * (lib/right-panel-tabs.ts) would be the neater call, and it
+                 * would need a new prop from the cockpit that owns this state —
+                 * which this pass deliberately does not touch. Looping the
+                 * existing callback keeps ONE close path either way, and
+                 * `closePanelTab` already moves focus to the neighbour on each
+                 * step, so the tab you kept is the one left active.
+                 *
+                 * REORDER IS OUT OF SCOPE, and named rather than faked: nothing
+                 * in this strip moves a tab today, by drag or otherwise.
+                 *
+                 * CONTROLLED, like the chooser beside it, because the desktop
+                 * shell composites a native browser view above this DOM and
+                 * `useNativeViewOverlay` needs a boolean to take it down by —
+                 * an uncontrolled menu would open behind the page.
+                 *
+                 * THE TRIGGER IS THE CHIP'S FLEX ROW, PADDING AND ALL, rather
+                 * than a `contents` box: `contents` paints nothing and is never
+                 * an event target, so a right-press in the chip's own `px-1.5`
+                 * would have gone to the strip behind it (the bug a screenshot
+                 * caught in `project-group.tsx`). The layout classes moved off
+                 * the wrapper onto the trigger, so the chip looks the same and
+                 * has exactly one hit area.
+                 */}
+                <ContextMenu open={menuTab === id} onOpenChange={(next: boolean) => setMenuTab(next ? id : undefined)}>
+                  <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center px-1.5" />}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={on}
+                      aria-controls={`right-panel-${id}`}
+                      onClick={() => onTabChange(id)}
+                      // Middle-click closes, the way a browser tab does.
+                      onAuxClick={(event) => {
+                        if (event.button === 1) {
+                          event.preventDefault();
+                          onCloseTab(id);
+                        }
+                      }}
+                      title={label}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 outline-none"
                     >
-                      {count}
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Close ${label}`}
-                  onClick={() => onCloseTab(id)}
-                  className={cn(
-                    "ml-1 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100",
-                    on ? "opacity-70" : "opacity-0 group-hover/tab:opacity-70",
-                  )}
-                >
-                  <XIcon className="size-3" />
-                </button>
+                      <Icon className="size-3.5 shrink-0" />
+                      <span className="truncate">{label}</span>
+                      {count ? (
+                        <span
+                          className={cn(
+                            "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[0.5625rem] leading-4",
+                            (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
+                              ? "bg-destructive/15 text-destructive"
+                              : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
+                                ? "bg-primary/15 text-primary"
+                                : "bg-muted-foreground/15 text-muted-foreground",
+                          )}
+                          title={
+                            id === "agents" && running > 0
+                              ? `${running} running`
+                              : id === "processes" && processesRunning > 0
+                                ? `${processesRunning} running`
+                                : undefined
+                          }
+                        >
+                          {count}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Close ${label}`}
+                      onClick={() => onCloseTab(id)}
+                      className={cn(
+                        "ml-1 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100",
+                        on ? "opacity-70" : "opacity-0 group-hover/tab:opacity-70",
+                      )}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => onCloseTab(id)}>Close</ContextMenuItem>
+                    <ContextMenuItem onClick={() => tabs.filter((other) => other !== id).forEach((other) => onCloseTab(other))}>
+                      Close others
+                    </ContextMenuItem>
+                    <ContextMenuItem onClick={() => tabs.forEach((other) => onCloseTab(other))}>Close all</ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem onClick={() => setFullscreen((current) => !current)}>
+                      {fullscreen ? "Exit fullscreen" : "Fill the window"}
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               </span>
             );
           })}
