@@ -28,6 +28,36 @@ const RESPONSE_HEADERS_DROPPED = new Set(["set-cookie", "connection", "content-l
 
 const UPSTREAM_TIMEOUT_MS = 60_000;
 
+/**
+ * A HUNG MAC MUST NOT COST THE RAIL A MINUTE.
+ *
+ * A Mac that REFUSES answers instantly and renders as "away"; one that hangs —
+ * asleep behind a NAT that swallows packets, a Tailscale route that has gone —
+ * accepts the connection and says nothing, and every one of its reads then sat
+ * here for the full minute. The rail makes four of those per pass, per host, so
+ * a single such Mac held four Next server connections for a minute at a time,
+ * forever, and its rows stayed un-dimmed for that whole minute because the pass
+ * that would have noticed was inside them.
+ *
+ * SO THE BOUND IS THE READ'S OWN, not one number for the hop. These four are
+ * the rail's polling pass: small JSON, asked every three to ten seconds, and
+ * nothing a reader is watching is worth ten seconds of silence — an answer that
+ * late is already being asked for again. Everything else keeps the minute,
+ * because the same hop also carries an attachment upload, a project icon and a
+ * diff of a large tree, and those are slow for honest reasons.
+ *
+ * A LIST, NOT A RULE, and deliberately: "bound every GET" would be the shorter
+ * code and would time out the reads that legitimately take longer. Adding a
+ * route here is a decision that the rail waits on it.
+ */
+const LIST_READ_TIMEOUT_MS = 10_000;
+const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
+
+export function upstreamTimeout(request: Pick<Request, "method">, path: readonly string[]): number {
+  if (request.method.toUpperCase() !== "GET") return UPSTREAM_TIMEOUT_MS;
+  return LIST_READS.has(path.join("/")) ? LIST_READ_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+}
+
 export function upstreamUrl(host: Pick<Host, "baseUrl">, path: string[], search: string): string {
   return `${host.baseUrl}/api/${path.map(encodeURIComponent).join("/")}${search}`;
 }
@@ -54,7 +84,7 @@ export async function forward(
       headers,
       ...(hasBody ? { body: request.body, duplex: "half" } : {}),
       redirect: "manual",
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(upstreamTimeout(request, path)),
     } as RequestInit);
   } catch {
     // The one answer this hop mints itself: the same code the local adapter

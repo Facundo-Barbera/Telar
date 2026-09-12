@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { forward, upstreamUrl } from "./proxy";
+import { forward, upstreamTimeout, upstreamUrl } from "./proxy";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 
 const host = { baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
@@ -12,6 +12,28 @@ function fake(answer: (input: string, init: RequestInit) => Response | Promise<R
 describe("upstreamUrl", () => {
   test("the path segments, encoded, under the remote's /api, query kept", () => {
     expect(upstreamUrl(host, ["sessions", "s 1", "turns"], "?after=3")).toBe("http://mini:3000/api/sessions/s%201/turns?after=3");
+  });
+});
+
+describe("upstreamTimeout", () => {
+  test("the rail's polling pass waits ten seconds, not sixty", () => {
+    for (const path of [["sessions", "live"], ["health"], ["inbox"], ["projects"]]) {
+      expect([path, upstreamTimeout({ method: "GET" }, path)]).toEqual([path, 10_000]);
+    }
+  });
+
+  test("everything else keeps the minute — a diff and an icon are slow for honest reasons", () => {
+    expect(upstreamTimeout({ method: "GET" }, ["sessions", "s1", "diff"])).toBe(60_000);
+    expect(upstreamTimeout({ method: "GET" }, ["projects", "p1", "icon"])).toBe(60_000);
+    expect(upstreamTimeout({ method: "GET" }, ["attachments", "a1"])).toBe(60_000);
+  });
+
+  test("a write is never a list read, whatever it is addressed to", () => {
+    // `PATCH /inbox` shares its path with the rail's read of the same document;
+    // bounding a write on the reader's patience would be the wrong trade.
+    expect(upstreamTimeout({ method: "PATCH" }, ["inbox"])).toBe(60_000);
+    expect(upstreamTimeout({ method: "POST" }, ["projects"])).toBe(60_000);
+    expect(upstreamTimeout({ method: "get" }, ["health"])).toBe(10_000);
   });
 });
 
