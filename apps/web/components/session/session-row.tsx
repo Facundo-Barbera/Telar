@@ -50,6 +50,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { cn } from "@/lib/utils";
 
 /**
  * A duration that TICKS, because a frozen one is worse than none.
@@ -163,6 +164,7 @@ export function SessionRow({
   searchSelected = false,
   renderedAt,
   onRefresh,
+  drag,
 }: {
   session: SidebarSession;
   active: boolean;
@@ -187,6 +189,27 @@ export function SessionRow({
   searchSelected?: boolean;
   renderedAt: number;
   onRefresh: () => void;
+  /**
+   * DRAG TO REORDER, WHEN THE BAND AROUND THIS ROW ARRANGES ITSELF. Absent in
+   * search results, in the shelves and in "Needs you" — a list that is an
+   * answer, a shelf you are not keeping, and a queue the engine fills are none
+   * of them places a position means anything.
+   *
+   * THE STATE IS THE RAIL'S, NOT THE ROW'S, for the same reason the group
+   * drag's is: a drop lands on a DIFFERENT row than the one that started it, so
+   * no single row can hold both ends of the gesture.
+   */
+  drag?: {
+    /** This row is the one being carried. */
+    dragging: boolean;
+    /** Where the carried row would land relative to this one, while over it. */
+    insert: "above" | "below" | null;
+    onDragStart: (event: React.DragEvent) => void;
+    onDragEnd: () => void;
+    onDragOver: (event: React.DragEvent) => void;
+    onDragLeave: () => void;
+    onDrop: (event: React.DragEvent) => void;
+  };
 }) {
   // Distinguishes the docked desktop sidebar from the mobile <Sheet>, which is
   // a modal and therefore cannot host a body-portaled hover card.
@@ -551,6 +574,11 @@ export function SessionRow({
           id={`sidebar-session-${session.id}`}
           href={href}
           prefetch={false}
+          // AN ANCHOR IS DRAGGABLE BY DEFAULT, and that default would win: a
+          // grab starting on the title would hand the platform a URL to drag
+          // instead of letting the row's own wrapper carry the row. Off here so
+          // the gesture belongs to exactly one element.
+          draggable={false}
           role={searchable ? "option" : undefined}
           aria-selected={searchable ? searchSelected : undefined}
           aria-current={active ? "page" : undefined}
@@ -573,6 +601,9 @@ export function SessionRow({
                 // Session routes are force-dynamic and carry the transcript.
                 // They are deliberately fetched only when selected.
                 prefetch={false}
+                // See the mobile branch: an anchor drags its own URL unless
+                // told not to, which would beat the row wrapper's drag.
+                draggable={false}
                 role={searchable ? "option" : undefined}
                 aria-selected={searchable ? searchSelected : undefined}
                 aria-current={active ? "page" : undefined}
@@ -745,5 +776,41 @@ export function SessionRow({
    * Telar keeps its two one-click verbs and adds the gesture, so the long tail
    * is reachable without first finding a 20px glyph that only appears on hover.
    */
-  return <SessionRowContextMenu {...menuProps}>{row}</SessionRowContextMenu>;
+  const menu = <SessionRowContextMenu {...menuProps}>{row}</SessionRowContextMenu>;
+  if (!drag) return menu;
+
+  /**
+   * THE HANDLE IS A BOX AROUND THE MENU, NOT THE ELEMENT INSIDE IT — the same
+   * separation the Spool's board card makes (`spool/board.tsx`) and the project
+   * header makes one level up.
+   *
+   * The row's right-click trigger renders `display: contents`, which paints
+   * nothing and is therefore never an event target: the row's own <div> is what
+   * receives the press. Putting `draggable` on that same <div> would make a
+   * right-press and a grab compete for one node. A wrapper is a second node, so
+   * they do not.
+   *
+   * THE INSERT MARK IS A SHADOW, NOT A BORDER, for the reason the group header
+   * gives: a border appearing on drag-over changes the row's height on the
+   * frame it appears and shoves every row under the pointer.
+   */
+  return (
+    <div
+      draggable
+      onDragStart={drag.onDragStart}
+      onDragEnd={drag.onDragEnd}
+      onDragOver={drag.onDragOver}
+      onDragLeave={drag.onDragLeave}
+      onDrop={drag.onDrop}
+      title="Drag to move this conversation"
+      className={cn(
+        "cursor-grab rounded-md transition-opacity active:cursor-grabbing",
+        drag.dragging && "opacity-40",
+        drag.insert === "above" && "shadow-[inset_0_2px_0_0_var(--color-sidebar-primary)]",
+        drag.insert === "below" && "shadow-[inset_0_-2px_0_0_var(--color-sidebar-primary)]",
+      )}
+    >
+      {menu}
+    </div>
+  );
 }

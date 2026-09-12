@@ -117,7 +117,10 @@ import {
   groupSessions,
   moveProjectGroup,
   moveProjectGroupStep,
+  moveSessionRow,
+  PINNED_ROW_SCOPE,
   PROJECT_GROUP_MIME,
+  SESSION_ROW_MIME,
   railRowsForCommandKeys,
   useCollapsedGroups,
   withholdFollowedRows,
@@ -379,12 +382,27 @@ function SidebarBody() {
    * browser tab and a paired phone draw the same arrangement. The fold state
    * above stays per window; the order is about the work. See lib/sidebar-layout.ts.
    */
-  const { order: projectOrder, setOrder: setProjectOrder } = useSidebarLayout();
+  const {
+    order: projectOrder,
+    setOrder: setProjectOrder,
+    sessionOrder,
+    setSessionOrder,
+    pinnedOrder,
+    setPinnedOrder,
+  } = useSidebarLayout();
   /** The group being carried, and where it would land. Owned here rather than
    *  by the group, because a drop lands on a DIFFERENT group than the one that
    *  started the drag. */
   const [draggingGroup, setDraggingGroup] = useState<string | null>(null);
   const [groupInsert, setGroupInsert] = useState<{ key: string; position: "above" | "below" } | null>(null);
+  /**
+   * The ROW being carried, and the band it came out of. Same ownership argument
+   * as the group above, plus one of its own: the scope is what refuses a drop
+   * on another group, and `dataTransfer` cannot be READ during a drag-over —
+   * only its type list can — so the band has to be held here.
+   */
+  const [draggingRow, setDraggingRow] = useState<{ scope: string; key: string } | null>(null);
+  const [rowInsert, setRowInsert] = useState<{ key: string; position: "above" | "below" } | null>(null);
   // Collapsed by default, like t3's: out of the way, never gone. The whole
   // point of snoozing is not to see these until they come back on their own.
   const [snoozedOpen, setSnoozedOpen] = useState(false);
@@ -653,7 +671,7 @@ function SidebarBody() {
   // `list`, so paging, search and scope are untouched. Only in the banded view;
   // a search stays flat. The groups sit in the reader's own order — nothing a
   // conversation does moves its project.
-  const grouped = list.flat ? undefined : groupSessions(list, projectOrder);
+  const grouped = list.flat ? undefined : groupSessions(list, projectOrder, { sessions: sessionOrder, pinned: pinnedOrder });
   /**
    * Every row the rail currently holds — the candidate pool `relatedWork`
    * searches. Built from the bands the list already produced, so finding a
@@ -833,6 +851,71 @@ function SidebarBody() {
   };
 
   /**
+   * DRAGGING A ROW INSIDE ITS OWN BAND. The same platform drag as the group
+   * above, with one rule added: A ROW LEAVES ITS BAND ONLY BY A DIFFERENT VERB.
+   * Carrying a conversation into another project would move a worktree, which
+   * is not something a two-pixel drop indicator should be able to promise — so
+   * a drop whose scope does not match is not merely ignored, it never lights
+   * up in the first place.
+   *
+   * `scope` is the project group's key, or `PINNED_ROW_SCOPE` for the band.
+   * Handlers are curried per row, like the group's, so each row gets bare refs.
+   */
+  const onRowDragStart = (scope: string, key: string) => (event: React.DragEvent) => {
+    event.dataTransfer.setData(SESSION_ROW_MIME, key);
+    event.dataTransfer.effectAllowed = "move";
+    // The row's own drag image, not the group's: the press started here, and
+    // `stopPropagation` keeps an ancestor header from claiming the gesture.
+    event.stopPropagation();
+    setDraggingRow({ scope, key });
+  };
+  const onRowDragEnd = () => {
+    setDraggingRow(null);
+    setRowInsert(null);
+  };
+  const onRowDragOver = (scope: string, key: string) => (event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes(SESSION_ROW_MIME)) return;
+    if (!draggingRow || draggingRow.scope !== scope || draggingRow.key === key) return;
+    event.preventDefault();
+    // Stops the project header under this row from drawing its own insert mark
+    // while a row is being carried over it.
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    const rect = event.currentTarget.getBoundingClientRect();
+    const position: "above" | "below" = event.clientY < rect.top + rect.height / 2 ? "above" : "below";
+    setRowInsert((current) => (current?.key === key && current.position === position ? current : { key, position }));
+  };
+  const onRowDragLeave = (key: string) => () => setRowInsert((current) => (current?.key === key ? null : current));
+  const onRowDrop = (scope: string, drawn: readonly string[]) => (key: string) => (event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes(SESSION_ROW_MIME)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const dragged = event.dataTransfer.getData(SESSION_ROW_MIME) || draggingRow?.key;
+    const sameBand = draggingRow?.scope === scope;
+    const position = rowInsert?.key === key ? rowInsert.position : "below";
+    setDraggingRow(null);
+    setRowInsert(null);
+    if (!dragged || dragged === key || !sameBand) return;
+    // The whole drawn band is written, for the reason `moveSessionRow` gives:
+    // a row nobody had placed is placed by this drop rather than left to drift.
+    const next = moveSessionRow(scope === PINNED_ROW_SCOPE ? pinnedOrder : (sessionOrder[scope] ?? []), drawn, dragged, key, position);
+    void (scope === PINNED_ROW_SCOPE ? setPinnedOrder(next) : setSessionOrder(scope, next));
+  };
+  /** What a row needs to be a drag handle, spelled once for both bands. */
+  const rowDrag = (scope: string, drawn: readonly string[]) => {
+    const drop = onRowDrop(scope, drawn);
+    return (key: string) => ({
+      dragging: draggingRow?.key === key,
+      insert: rowInsert?.key === key ? rowInsert.position : null,
+      onDragStart: onRowDragStart(scope, key),
+      onDragEnd: onRowDragEnd,
+      onDragOver: onRowDragOver(scope, key),
+      onDragLeave: onRowDragLeave(key),
+      onDrop: drop(key),
+    });
+  };
+
+  /**
    * THE GROUPS AS DRAWN, which is what every group gesture is measured against
    * — the fold-all verbs, "collapse others" and the menu's one-step reorder
    * alike. Spelled once here so a menu row and a drop cannot disagree about
@@ -840,6 +923,11 @@ function SidebarBody() {
    * why neither takes the stored list instead.
    */
   const drawnGroupKeys = drawnGroups.map((group) => group.key);
+  /** The pinned band as drawn — what a drop in it is measured against, exactly
+   *  as `drawnGroupKeys` is for the groups. Nothing is withheld from this band:
+   *  `withholdFollowedRows` takes a followed row out of its GROUP, where it
+   *  would be a second copy of a row the coordinator above already lists. */
+  const pinnedRowDrag = rowDrag(PINNED_ROW_SCOPE, grouped ? grouped.pinned.map((session) => sessionKey(session)) : []);
   /** The same write the drag makes, one place at a time. `undefined` at either
    *  end of the list, which is what disables the menu row. */
   const moveGroup = (key: string, direction: "up" | "down") => {
@@ -1329,6 +1417,11 @@ function SidebarBody() {
                       band="pinned"
                       renderedAt={renderedAt}
                       onRefresh={() => void loadAll()}
+                      // THE BAND IS ITS OWN SCOPE: pinned rows arrange among
+                      // themselves, and unpinning is what takes a row out of
+                      // here. Only in the banded view — a search flattens the
+                      // rail, and a position inside an answer means nothing.
+                      {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
                     />
                     <RelatedWork
                       groups={relatedWork(relatedPool, session)}
@@ -1410,6 +1503,10 @@ function SidebarBody() {
                     onDragOver={onGroupDragOver(group.key)}
                     onDragLeave={onGroupDragLeave(group.key)}
                     onDrop={onGroupDrop(group.key)}
+                    // The rows inside arrange among themselves, measured
+                    // against this group's own drawn keys — which is what makes
+                    // a row from another group a drop this one refuses.
+                    rowDrag={rowDrag(group.key, group.sessions.map((session) => sessionKey(session)))}
                     {...(root ? { root } : {})}
                     // The `+` beside the header, as a menu row: one canvas
                     // route, reached two ways.
