@@ -27,11 +27,14 @@ const read = (name: string) => fs.readFileSync(path.join(dir, name), "utf8");
 const code = (name: string) => read(name).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 /** Source with its line breaks collapsed, for sentences JSX wraps arbitrarily. */
 const flat = (name: string) => code(name).replace(/\s+/g, " ");
+/** A file outside `components/` — the desktop shell, for the halves of a
+ *  verb that live on both sides of the bridge. */
+const codeOf = (relative: string) => fs.readFileSync(path.join(dir, relative), "utf8");
 
 /** Every file this round puts a menu on. Grown one surface per commit, so the
  *  cross-surface rules below hold at every point in the series rather than
  *  only at the end of it. */
-const SURFACES = ["transcript.tsx", "composer.tsx", "session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
+const SURFACES = ["transcript.tsx", "composer.tsx", "browser-live.tsx", "session/notebook-surface.tsx", "session/table-surface.tsx", "session/diff-surface.tsx"];
 
 describe("one primitive, composed per surface", () => {
   test("every surface imports the SHARED context-menu module and defines none of its own", () => {
@@ -390,5 +393,52 @@ describe("the composer's chrome, and the textarea it leaves alone", () => {
   test("Remove attachment appears only on a chip, which is the only place it means anything", () => {
     expect(cmp()).toContain("{onRemoveAttachment && (");
     expect(cmp()).toContain("<ContextMenuItem onClick={onRemoveAttachment}>Remove attachment</ContextMenuItem>");
+  });
+});
+
+/**
+ * THE BROWSER TAB. It reads like every browser's strip because it IS that
+ * object — and two of its six items need the shell, because a renderer can
+ * neither mint a native tab nor reach the operating system.
+ */
+describe("the integrated browser's tab strip", () => {
+  const br = () => code("browser-live.tsx");
+
+  test("every item names THIS tab by index, so a right-click never drags your view to it", () => {
+    const source = br();
+    expect(source).toContain('onClick={() => void onAct({ action: "reload", index: tab.index })}>Reload');
+    expect(source).toContain('onClick={() => void onAct({ action: "duplicate", index: tab.index })}>Duplicate');
+    expect(source).toContain('onClick={() => void onAct({ action: "close", index: tab.index })}>Close');
+    // The shell's reload learned an index for exactly this.
+    expect(codeOf("../../desktop/browser-manager.js")).toContain(
+      "const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));",
+    );
+  });
+
+  test("Close others walks DOWN, because closing a tab renumbers the ones above it", () => {
+    expect(br()).toContain("for (const other of [...tabs].sort((a, b) => b.index - a.index)) {");
+    expect(br()).toContain('if (other.id !== tab.id) await onAct({ action: "close", index: other.index });');
+    expect(br()).toContain("disabled={tabs.length < 2}");
+  });
+
+  test("Open in system browser hides on a shell that has no such door, and greys on a page it could not take", () => {
+    const source = br();
+    expect(source).toContain("{onOpenExternal && (");
+    expect(source).toContain("<ContextMenuItem disabled={!web} onClick={() => void onOpenExternal(tab.url)}>");
+    expect(source).toContain("const web = /^https?:\\/\\//i.test(tab.url);");
+    // The renderer never decides what may leave: the main process re-checks.
+    expect(source).not.toContain("shell.openExternal");
+  });
+
+  test("the DRAG stays outside the trigger, so a right-click cannot be confused with one", () => {
+    const source = br();
+    // The board card's rule: draggable on the wrapper, the trigger is the tab.
+    const strip = source.slice(source.indexOf('aria-label="Browser tabs"'), source.indexOf("address row"));
+    expect(strip.indexOf("draggable")).toBeLessThan(strip.indexOf("<TabMenu"));
+    expect(source).toContain("<ContextMenuTrigger {...(className ? { className } : {})}>{children}</ContextMenuTrigger>");
+  });
+
+  test("Copy URL copies the tab's url and nothing reaches for the page", () => {
+    expect(br()).toContain("onClick={() => void navigator.clipboard.writeText(tab.url)}>Copy URL");
   });
 });

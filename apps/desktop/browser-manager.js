@@ -2288,8 +2288,16 @@ class DesktopBrowserManager {
         }
         break;
       }
+      /**
+       * RELOAD MAY NAME A TAB, the way close and select already do.
+       *
+       * The toolbar button never does — it is about the page you are looking
+       * at — but the strip's per-tab menu is about the tab you right-clicked,
+       * and reloading a background tab must not drag your view to it. Without
+       * an index this is exactly what it always was.
+       */
       case "reload": {
-        const tab = await this.wakeTab(this.activeTab(scope));
+        const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
         await this.beforeNavigation(tab);
         tab.view.webContents.reload();
         break;

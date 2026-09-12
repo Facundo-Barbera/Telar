@@ -23,6 +23,7 @@ import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, KeyRoundIcon, Loader2Icon, Mo
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
@@ -178,6 +179,13 @@ export type DesktopBrowserBridge = {
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   resumeFromPrivate?(): Promise<DesktopPrivacyState>;
+  /**
+   * Hand a page to the user's DEFAULT browser. Optional because an older shell
+   * does not have it, and the tab menu hides the row rather than offering one
+   * that throws. http/https only, decided in the main process — the renderer
+   * never reaches `shell.openExternal` and never gets to say what may.
+   */
+  openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
   /** The EXPLICIT login-offer fallback (AUTH-001): open the shell's trusted
    *  offer window about this session's current page — for a sign-in Telar
    *  never saw, or an automatic offer that was dismissed. Opening only asks;
@@ -185,6 +193,89 @@ export type DesktopBrowserBridge = {
   offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;
   onExtension?(listener: (status: DesktopExtensionStatus) => void): () => void;
 };
+
+/**
+ * A TAB'S OWN MENU, and it reads like every browser's because it is the same
+ * object — Reload, Duplicate, Copy URL, Open in system browser, Close, Close
+ * others. Every item names THIS tab by index, so a right-click on a background
+ * tab never drags your view to it (the shell's `reload` learned an index for
+ * exactly that; close and select already had one).
+ *
+ * DUPLICATE AND OPEN-IN-SYSTEM-BROWSER ARE THE SHELL'S. The renderer can
+ * neither mint a native tab nor reach the OS, and the second one is gated in
+ * the main process to http and https — the renderer never gets to say what may
+ * leave. `openExternal` is optional on the bridge, so an older shell hides the
+ * row rather than offering one that throws.
+ *
+ * CLOSE OTHERS WALKS DOWN, and that is not a style choice: closing a tab
+ * renumbers everything above it, so ascending would close the wrong tabs from
+ * the second one on. Descending leaves every index it has not reached yet
+ * exactly where it was.
+ *
+ * CONTROLLED, AND IT TAKES THE NATIVE VIEW DOWN WHILE IT IS OPEN — the rule
+ * `lib/native-view-overlay.ts` states for every menu in this panel. The shell
+ * composites a `WebContentsView` ABOVE this renderer's DOM, so a portal menu
+ * over the browser is drawn over by the page; hiding the view while the menu
+ * is open is what makes it visible at all. Per-tab state rather than the
+ * strip's one `openOverlay`, because each tab owns its own menu and two cannot
+ * be open at once anyway — the hook counts claims, so one closing as another
+ * opens never reveals the page under the second.
+ */
+function TabMenu({
+  tab,
+  tabs,
+  onAct,
+  onOpenExternal,
+  className,
+  children,
+}: {
+  tab: DesktopBrowserTab;
+  tabs: readonly DesktopBrowserTab[];
+  onAct: (action: Record<string, unknown>) => Promise<void>;
+  onOpenExternal?: (url: string) => Promise<{ ok: boolean; error?: string }>;
+  /** The trigger IS the tab, not a box around it — the drag stays on the
+   *  wrapper outside, so a right-click can never be confused with one. Same
+   *  shape the Spool's board card uses. */
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const web = /^https?:\/\//i.test(tab.url);
+  const [menuOpen, setMenuOpen] = useState(false);
+  useNativeViewOverlay(menuOpen);
+  return (
+    <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <ContextMenuTrigger {...(className ? { className } : {})}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        <ContextMenuItem onClick={() => void onAct({ action: "reload", index: tab.index })}>Reload</ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void onAct({ action: "duplicate", index: tab.index })}>Duplicate</ContextMenuItem>
+        <ContextMenuItem onClick={() => void navigator.clipboard.writeText(tab.url)}>Copy URL</ContextMenuItem>
+        {onOpenExternal && (
+          // Offered only for a page the system browser can actually take. The
+          // shell refuses anything else anyway; a row that always fails would
+          // be this surface lying about what it can do.
+          <ContextMenuItem disabled={!web} onClick={() => void onOpenExternal(tab.url)}>
+            Open in system browser
+          </ContextMenuItem>
+        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => void onAct({ action: "close", index: tab.index })}>Close</ContextMenuItem>
+        <ContextMenuItem
+          disabled={tabs.length < 2}
+          onClick={() => {
+            void (async () => {
+              for (const other of [...tabs].sort((a, b) => b.index - a.index)) {
+                if (other.id !== tab.id) await onAct({ action: "close", index: other.index });
+              }
+            })();
+          }}
+        >
+          Close others
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
 
 /** The shell's bridge, or undefined outside the desktop app. */
 export function desktopBrowserBridge(): DesktopBrowserBridge | undefined {
@@ -746,6 +837,27 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         {(state?.tabs ?? []).map((tab) => (
           <div
             key={tab.id}
+            className="min-w-0"
+            // THE PULL GESTURE: a tab drags into the composer as a reference
+            // that names it as open in the session's browser — the words that
+            // tell the agent to reach for its browser tools rather than fetch
+            // the URL cold. Same drag `drag-reference.ts` gives every panel row.
+            //
+            // IT STAYS ON THIS WRAPPER, outside the menu's trigger, so a
+            // right-click cannot start or be confused with a drag — the board
+            // card's rule in `spool/idiom.test.ts`.
+            draggable
+            onDragStart={(event) => startReferenceDrag(event.dataTransfer, browserPageReference({ title: tab.title, url: tab.url }))}
+            // Middle-click closes, the way every browser's strip does.
+            onAuxClick={(event) => {
+              if (event.button === 1) void act({ action: "close", index: tab.index });
+            }}
+          >
+          <TabMenu
+            tab={tab}
+            tabs={state?.tabs ?? []}
+            onAct={act}
+            {...(bridge.openExternal ? { onOpenExternal: bridge.openExternal } : {})}
             className={cn(
               "flex min-w-0 max-w-44 cursor-grab items-center gap-1 rounded-md px-2 py-1 active:cursor-grabbing",
               tab.active ? "bg-muted" : "hover:bg-muted/50",
@@ -756,16 +868,6 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
               // something else rather than only flickering as it clicks.
               tab.agentFocus && tab.controller !== "agent" && "ring-1 ring-primary/20",
             )}
-            // THE PULL GESTURE: a tab drags into the composer as a reference
-            // that names it as open in the session's browser — the words that
-            // tell the agent to reach for its browser tools rather than fetch
-            // the URL cold. Same drag `drag-reference.ts` gives every panel row.
-            draggable
-            onDragStart={(event) => startReferenceDrag(event.dataTransfer, browserPageReference({ title: tab.title, url: tab.url }))}
-            // Middle-click closes, the way every browser's strip does.
-            onAuxClick={(event) => {
-              if (event.button === 1) void act({ action: "close", index: tab.index });
-            }}
           >
             {/* Loading takes the favicon's slot, the way every browser strip
                 does it — one glyph, no second indicator to reconcile. */}
@@ -818,6 +920,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             >
               <XIcon className="size-3" />
             </button>
+          </TabMenu>
           </div>
         ))}
         <button
