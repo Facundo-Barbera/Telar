@@ -51,6 +51,15 @@ const renderGroup = (group: ProjectGroup, open = true) =>
       onDragOver={() => {}}
       onDragLeave={() => {}}
       onDrop={() => {}}
+      rowDrag={() => ({
+        dragging: false,
+        insert: null,
+        onDragStart: () => {},
+        onDragEnd: () => {},
+        onDragOver: () => {},
+        onDragLeave: () => {},
+        onDrop: () => {},
+      })}
       onNewConversation={() => {}}
       onCollapseOthers={() => {}}
     />
