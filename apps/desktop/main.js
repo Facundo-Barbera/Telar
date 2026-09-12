@@ -108,7 +108,23 @@ if (E2E_USER_DATA) {
 
 let serverChild = null;
 let engineChild = null;
+/**
+ * THE BROWSER HOST BELONGS TO A WINDOW, NOT TO THE APP.
+ *
+ * One global was true while the app had one window. "Open in a new window"
+ * (telar:app:open-window) makes it false: a second `createWindow` builds a
+ * second manager with its own native views, and every panel request — bounds,
+ * visibility, a new tab — would have landed on whichever window was created
+ * LAST, moving one window's pages around inside another.
+ *
+ * The set is the lookup: a request arriving from a window's own renderer is
+ * answered by that window's manager (`requireBrowserManager(event)`). The
+ * variable stays as the fallback for callers with no sender to resolve from —
+ * the agent-facing control server and the quit hook — and follows focus, so
+ * "the app's browser" means the window the human is actually in.
+ */
 let browserManager = null;
+const browserManagers = new Set();
 let browserSuggestions;
 function requireBrowserSuggestions() {
   return browserSuggestions ||= createBrowserSuggestions(app.getPath("userData"));
@@ -947,7 +963,12 @@ function createWindow(url) {
     // tab. chrome.tabs of one project's 1Password sees that project only.
     createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
   });
+  browserManagers.add(manager);
   browserManager = manager;
+  // "The app's browser" is the window the human is in — see `browserManagers`.
+  win.on("focus", () => {
+    browserManager = manager;
+  });
   // The window's own URL is what "the app's own UI" means — it is the same
   // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
   // has to guess a port or a hostname. An unusable one throws, and createWindow
@@ -966,7 +987,10 @@ function createWindow(url) {
   });
   win.on("closed", () => {
     manager.destroy();
-    if (browserManager === manager) browserManager = null;
+    browserManagers.delete(manager);
+    // Another window's host, not null, while one is still open: closing the
+    // second window must not leave the first without a fallback manager.
+    if (browserManager === manager) browserManager = browserManagers.values().next().value ?? null;
   });
   // Keep the build stamp in the title bar — don't let the loaded page's <title>
   // overwrite it (that's how you answer "which build am I running?").
@@ -1074,9 +1098,26 @@ function startExtensionHost(win, manager, partition) {
   return host;
 }
 
-function requireBrowserManager() {
-  if (!browserManager) throw new Error("The Telar desktop browser host is not ready.");
-  return browserManager;
+/** The manager of the window this request came from, or null when the sender is
+ *  not a window's own top-level renderer (a native tab view, a popup). */
+function managerForEvent(event) {
+  const sender = event?.sender;
+  if (!sender) return null;
+  for (const manager of browserManagers) {
+    if (!manager.window.isDestroyed() && manager.window.webContents === sender) return manager;
+  }
+  return null;
+}
+
+/**
+ * THE SENDER'S OWN WINDOW FIRST. Every handler that has an `event` passes it,
+ * so a panel in window A can never act on window B's views. The fallback is for
+ * the callers that genuinely have no window — see `browserManagers`.
+ */
+function requireBrowserManager(event) {
+  const manager = managerForEvent(event) || browserManager;
+  if (!manager) throw new Error("The Telar desktop browser host is not ready.");
+  return manager;
 }
 
 /**
@@ -1155,8 +1196,8 @@ function buildApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-ipcMain.handle("telar:browser:suggestions", async (_event, scopeKey) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:suggestions", async (event, scopeKey) => {
+  const manager = requireBrowserManager(event);
   manager.partitionOf(scopeKey); // Validate the binding before reading a project's history.
   const ownPort = Number(new URL(manager.window.webContents.getURL()).port);
   return requireBrowserSuggestions().list(manager.activeProfile(scopeKey)?.id, [
@@ -1165,19 +1206,19 @@ ipcMain.handle("telar:browser:suggestions", async (_event, scopeKey) => {
     Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT),
   ]);
 });
-ipcMain.handle("telar:browser:remove-suggestion", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:remove-suggestion", (event, input) => {
+  const manager = requireBrowserManager(event);
   manager.partitionOf(input?.scopeKey);
   requireBrowserSuggestions().remove(manager.activeProfile(input.scopeKey)?.id, input.url);
 });
-ipcMain.handle("telar:browser:state", (_event, scopeKey) => requireBrowserManager().state(scopeKey));
+ipcMain.handle("telar:browser:state", (event, scopeKey) => requireBrowserManager(event).state(scopeKey));
 // The password manager's toolbar button. Opening its popup BEGINS a private
 // interaction; only a human's Resume ends it.
 // Status is PER SCOPE now: each project's session has its own partition and
 // its own 1Password host. Creating the host on the first status poll lets the
 // extension preload while the human looks, before any tab navigates.
-ipcMain.handle("telar:browser:extension-status", (_event, scopeKey) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:extension-status", (event, scopeKey) => {
+  const manager = requireBrowserManager(event);
   const host = manager.hostForScope(scopeKey);
   if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet.", privacy: manager.privacy.state() };
   // Carry the partition so the renderer can keep only this scope's status and
@@ -1186,7 +1227,7 @@ ipcMain.handle("telar:browser:extension-status", (_event, scopeKey) => {
   return { ...(partition ? { partition } : {}), ...host.status() };
 });
 ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
-  const manager = requireBrowserManager();
+  const manager = requireBrowserManager(event);
   const host = manager.hostForScope(input?.scopeKey);
   if (!host) throw new Error("Extensions are not enabled, or this session has no project profile yet.");
   const tab = manager.activeTab(input?.scopeKey);
@@ -1194,8 +1235,8 @@ ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   return host.openPopup(win, tab.view.webContents, input?.anchorRect || { x: 0, y: 0, width: 24, height: 24 }, input?.scopeKey);
 });
-ipcMain.handle("telar:browser:bind-profile", (_event, input) =>
-  requireBrowserManager().declareProfile(input?.scopeKey, input?.profileKey),
+ipcMain.handle("telar:browser:bind-profile", (event, input) =>
+  requireBrowserManager(event).declareProfile(input?.scopeKey, input?.profileKey),
 );
 /**
  * NAMED PROFILES, MANAGED FROM SETTINGS → INTEGRATIONS AND FROM THE BROWSER
@@ -1209,16 +1250,16 @@ ipcMain.handle("telar:browser:bind-profile", (_event, input) =>
  * directory is left on disk either way — so the worst a mistaken delete costs is
  * making the profile again, and no live identity is ever stranded mid-session.
  */
-ipcMain.handle("telar:browser:profiles", (_event, scopeKey) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:profiles", (event, scopeKey) => {
+  const manager = requireBrowserManager(event);
   return {
     profiles: manager.listProfiles(),
     active: scopeKey ? manager.activeProfile(scopeKey) : null,
     projectKey: scopeKey ? manager.profileOf(scopeKey) : null,
   };
 });
-ipcMain.handle("telar:browser:create-profile", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:create-profile", (event, input) => {
+  const manager = requireBrowserManager(event);
   const profile = manager.profiles.create({ label: input?.label, account: input?.account });
   // Creating from a session's panel is nearly always "and use it here".
   if (input?.scopeKey) manager.setScopeProfile(input.scopeKey, profile.id);
@@ -1231,8 +1272,8 @@ ipcMain.handle("telar:browser:create-profile", (_event, input) => {
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
 });
-ipcMain.handle("telar:browser:update-profile", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:update-profile", (event, input) => {
+  const manager = requireBrowserManager(event);
   const profile = manager.profiles.update(input?.profileId, {
     ...(input?.label !== undefined ? { label: input.label } : {}),
     ...(input?.account !== undefined ? { account: input.account } : {}),
@@ -1240,8 +1281,8 @@ ipcMain.handle("telar:browser:update-profile", (_event, input) => {
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
 });
-ipcMain.handle("telar:browser:delete-profile", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:delete-profile", (event, input) => {
+  const manager = requireBrowserManager(event);
   /**
    * A SESSION CURRENTLY POINTED AT IT IS A REFUSAL, not a silent re-bind. The
    * registry only knows about project assignments; a scope switched to this
@@ -1255,26 +1296,26 @@ ipcMain.handle("telar:browser:delete-profile", (_event, input) => {
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), removed };
 });
-ipcMain.handle("telar:browser:set-default-profile", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:set-default-profile", (event, input) => {
+  const manager = requireBrowserManager(event);
   manager.profiles.setDefault(input?.profileId);
   manager.emitAllStates();
   return { profiles: manager.listProfiles() };
 });
-ipcMain.handle("telar:browser:assign-project-profile", (_event, input) => {
-  const manager = requireBrowserManager();
+ipcMain.handle("telar:browser:assign-project-profile", (event, input) => {
+  const manager = requireBrowserManager(event);
   const projectKey = input?.projectKey || manager.profileOf(input?.scopeKey);
   if (!projectKey) throw new Error("This session has no project to assign a browser profile to.");
   manager.profiles.assign(projectKey, input?.profileId ?? null);
   manager.emitAllStates();
   return { profiles: manager.listProfiles() };
 });
-ipcMain.handle("telar:browser:set-scope-profile", (_event, input) =>
-  requireBrowserManager().setScopeProfile(input?.scopeKey, input?.profileId),
+ipcMain.handle("telar:browser:set-scope-profile", (event, input) =>
+  requireBrowserManager(event).setScopeProfile(input?.scopeKey, input?.profileId),
 );
-ipcMain.handle("telar:browser:private-resume", () => requireBrowserManager().resumeFromPrivate());
-ipcMain.handle("telar:browser:action", (_event, input) =>
-  requireBrowserManager().action(input?.scopeKey, input?.action),
+ipcMain.handle("telar:browser:private-resume", (event) => requireBrowserManager(event).resumeFromPrivate());
+ipcMain.handle("telar:browser:action", (event, input) =>
+  requireBrowserManager(event).action(input?.scopeKey, input?.action),
 );
 /**
  * "OPEN IN SYSTEM BROWSER", from the integrated browser's tab menu.
@@ -1290,7 +1331,7 @@ ipcMain.handle("telar:browser:action", (_event, input) =>
  * exactly what was validated.
  */
 ipcMain.handle("telar:browser:open-external", (event, input) => {
-  const manager = requireBrowserManager();
+  const manager = requireBrowserManager(event);
   const cockpit = manager.window;
   if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
     throw new Error("Only the Telar window may open a page in the system browser.");
@@ -1300,20 +1341,20 @@ ipcMain.handle("telar:browser:open-external", (event, input) => {
   openInSystemBrowser(target);
   return { ok: true };
 });
-ipcMain.handle("telar:browser:tool", (_event, input) =>
-  requireBrowserManager().callTool(input?.scopeKey, input?.name, input?.args || {}),
+ipcMain.handle("telar:browser:tool", (event, input) =>
+  requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );
-ipcMain.handle("telar:browser:set-bounds", (_event, input) => {
-  requireBrowserManager().setBounds(input?.scopeKey, input?.bounds);
+ipcMain.handle("telar:browser:set-bounds", (event, input) => {
+  requireBrowserManager(event).setBounds(input?.scopeKey, input?.bounds);
 });
-ipcMain.handle("telar:browser:set-visible", (_event, input) =>
-  requireBrowserManager().setVisible(input?.scopeKey, input?.visible),
+ipcMain.handle("telar:browser:set-visible", (event, input) =>
+  requireBrowserManager(event).setVisible(input?.scopeKey, input?.visible),
 );
-ipcMain.handle("telar:browser:release-scope", (_event, input) =>
-  requireBrowserManager().releaseScope(input?.scopeKey, Boolean(input?.destroy)),
+ipcMain.handle("telar:browser:release-scope", (event, input) =>
+  requireBrowserManager(event).releaseScope(input?.scopeKey, Boolean(input?.destroy)),
 );
-ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
-  requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
+ipcMain.handle("telar:browser:adopt-scope", (event, input) =>
+  requireBrowserManager(event).adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
 /**
  * THE EXPLICIT FALLBACK (AUTH-001): "remember the login on this page", asked
@@ -1324,7 +1365,7 @@ ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
  * window — nothing here (and no API anywhere) can answer it.
  */
 ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
-  const manager = requireBrowserManager();
+  const manager = requireBrowserManager(event);
   const cockpit = manager.window;
   if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
     throw new Error("Only the Telar window may open the login offer.");
@@ -1337,14 +1378,18 @@ ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
 // A tab preload heard a human's hands in the page; all we hold is the sender.
 ipcMain.on("telar:browser:credential-field", (event, detail) => {
   try {
-    browserManager?.noteCredentialFieldFromWebContents(event.sender, detail || {});
+    // EVERY WINDOW'S HOST IS ASKED, because the sender is a native TAB — it is
+    // not any window's own renderer, so there is nothing to resolve it by. Both
+    // methods look the webContents up in their own tabs and no-op on a stranger,
+    // so asking the wrong one costs a lookup and never a false report.
+    for (const manager of browserManagers) manager.noteCredentialFieldFromWebContents(event.sender, detail || {});
   } catch {
     // A report from a view mid-teardown must not crash the shell.
   }
 });
 ipcMain.on("telar:browser:human-input", (event) => {
   try {
-    browserManager?.noteHumanInputFromWebContents(event.sender);
+    for (const manager of browserManagers) manager.noteHumanInputFromWebContents(event.sender);
   } catch {
     // A report from a view mid-teardown must not crash the shell.
   }
@@ -2054,7 +2099,9 @@ function closeBrowserControl() {
 app.on("will-quit", () => {
   // The tab inventory's last word, before the windows go: what each session
   // had open is what it will have open on the next launch.
-  try { browserManager?.persistSync(); } catch {}
+  // EVERY window's inventory, not the focused one's: a second window's tabs are
+  // as much "what that session had open" as the first window's are.
+  for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }
   killServer();
   closeBrowserControl();
   // The serve mapping outlives the process otherwise, pointing at a port
