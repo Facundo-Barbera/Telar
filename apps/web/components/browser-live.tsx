@@ -24,6 +24,7 @@ import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
+import { onNativeViewOverlay } from "@/lib/native-view-overlay";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { cn } from "@/lib/utils";
@@ -202,7 +203,7 @@ export function desktopBrowserBridge(): DesktopBrowserBridge | undefined {
  * the sidebar. Bounds are always published with the LATEST rect, and the
  * host serializes them per tab (browser-manager applyGeometry).
  */
-function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: string, hostRef: RefObject<HTMLDivElement | null>, layoutKey: string, mode: ViewportMode) {
+function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: string, hostRef: RefObject<HTMLDivElement | null>, layoutKey: string, mode: ViewportMode, overlayRef: RefObject<boolean>) {
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -217,6 +218,14 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       if (disposed) return;
       // The zero-area latch — see the header comment.
       if (rect.width === 0 || rect.height === 0) {
+        visibilityRequested = false;
+        return;
+      }
+      // A MENU IS OPEN OVER THE PANEL. The native view is down so it can be
+      // seen at all (`lib/native-view-overlay.ts`), and a bounds sync must not
+      // put it back. Latched like the zero-area case, so the next sync after
+      // the menu closes re-asserts visibility on its own.
+      if (overlayRef.current) {
         visibilityRequested = false;
         return;
       }
@@ -247,7 +256,7 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       window.removeEventListener("scroll", sync, true);
       void bridge.setVisible(scopeKey, false);
     };
-  }, [bridge, hostRef, scopeKey, mode]);
+  }, [bridge, hostRef, scopeKey, mode, overlayRef]);
   // The republish: same rect, re-sent — the host re-places the view.
   useEffect(() => {
     const host = hostRef.current;
@@ -497,6 +506,26 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   const hostSize = useHostSize(hostRef);
   const viewportMode: ViewportMode = activeTab?.viewport?.mode ?? "fit";
 
+  /**
+   * WHILE A MENU IS OPEN ANYWHERE IN THE RIGHT PANEL, THIS VIEW IS DOWN.
+   * The native `WebContentsView` is composited above the renderer's DOM, so
+   * this is what lets the panel's menus be real portals rather than inline
+   * rows — see `lib/native-view-overlay.ts`. The ref is also read by the
+   * viewport hook, which must not re-show the view under an open menu.
+   */
+  const overlayRef = useRef(false);
+  useEffect(
+    () =>
+      onNativeViewOverlay((hidden) => {
+        if (overlayRef.current === hidden) return;
+        overlayRef.current = hidden;
+        // Showing restores the scope's own remembered rect (see setVisible),
+        // so nothing has to be republished here.
+        void bridge.setVisible(sessionId, !hidden).catch(() => undefined);
+      }),
+    [bridge, sessionId],
+  );
+
   const refresh = useCallback(async () => {
     const gen = scope.capture();
     try {
@@ -549,6 +578,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     hostRef,
     [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, viewportOpen, profileOpen, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
     viewportMode,
+    overlayRef,
   );
 
   // BIND, THEN read the extension status — the status is per partition, so it

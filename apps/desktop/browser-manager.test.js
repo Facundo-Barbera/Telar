@@ -402,6 +402,33 @@ describe("DesktopBrowserManager", () => {
     expect(views[0].webContents.destroyed).toBe(false);
   });
 
+  // The panel's menus (the "+" chooser, the profile and viewport popovers) are
+  // real portals again, and this is the whole mechanism behind that: the native
+  // view is composited ABOVE the renderer's DOM, so a menu can only be seen
+  // while the view is down. Hiding it for a menu must therefore be as cheap and
+  // as reversible as hiding it for the start page — same page, same rect.
+  test("hiding for an open menu and showing on close keeps the page and its rect", async () => {
+    const { children, manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://a.example");
+    manager.setBounds("session-a", { x: 40, y: 80, width: 900, height: 600 });
+    await manager.setVisible("session-a", true);
+    const placed = views[0].bounds;
+    expect(placed).toBeTruthy();
+
+    // A menu opens over the panel.
+    await manager.setVisible("session-a", false);
+    expect(views[0].visible).toBe(false);
+    expect(views[0].webContents.destroyed).toBe(false);
+    expect(children.size).toBe(1);
+
+    // …and closes. The renderer republishes nothing: the scope's own remembered
+    // rect comes back with it, so the page does not jump.
+    await manager.setVisible("session-a", true);
+    expect(views[0].visible).toBe(true);
+    expect(views[0].bounds).toEqual(placed);
+    expect(views[0].webContents.getURL()).toBe("https://a.example/");
+  });
+
   test("returning to a budget-hibernated conversation recreates its rendered view", async () => {
     const { children, manager, views } = makeHarness({ maxLiveViews: 1 });
     await manager.createTab("session-a", "https://a.example");
