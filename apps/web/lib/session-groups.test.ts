@@ -71,6 +71,49 @@ describe("groupSessions", () => {
     expect(projectGroupKey({ projectId: "p", hostId: "h" })).toBe("h:p");
   });
 
+  test("two Macs' checkouts of ONE repository share a key, whatever their ids and names", () => {
+    const here = { projectId: "project_here", projectRemote: "github.com/owner/repo" };
+    const there = { projectId: "project_over_there", hostId: "host_b", projectRemote: "github.com/owner/repo" };
+    expect(projectGroupKey(there)).toBe(projectGroupKey(here));
+    expect(projectGroupKey(here)).toBe("repo:github.com/owner/repo");
+  });
+
+  test("two different repositories keep two keys", () => {
+    expect(projectGroupKey({ projectId: "p", projectRemote: "github.com/owner/repo" })).not.toBe(
+      projectGroupKey({ projectId: "p", projectRemote: "github.com/owner/other" }),
+    );
+  });
+
+  test("a row with no repository to name keeps the host-qualified key", () => {
+    // The important half: a project with no origin, an unversioned directory, a
+    // Mac still loading its list. Folding those on their NAME would merge two
+    // unrelated folders both called `scratch` — a worse failure than the one
+    // the remote fixes — so an absent answer is never treated as an answer.
+    expect(projectGroupKey({ projectId: "p", hostId: "h", projectRemote: undefined })).toBe("h:p");
+    expect(projectGroupKey({ projectId: "p", projectRemote: "" })).toBe("p");
+  });
+
+  test("the prefix keeps a repository from colliding with a host-qualified key", () => {
+    // A host id of `github.com` with a project id of `owner/repo` would spell
+    // the same string as the repository without it.
+    expect(projectGroupKey({ hostId: "github.com", projectId: "owner/repo" })).not.toBe(
+      projectGroupKey({ projectId: "p", projectRemote: "github.com/owner/repo" }),
+    );
+  });
+
+  test("two Macs' rows merge into ONE group, with both Macs' rows under it", () => {
+    const remote = "github.com/owner/repo";
+    const out = groupSessions({
+      pinned: [],
+      sessions: [
+        row("here", { projectId: "project_here", projectName: "telar", projectRemote: remote }),
+        row("there", { projectId: "project_b", projectName: "Telar", hostId: "host_b", hostName: "mini", projectRemote: remote }),
+      ],
+    });
+    expect(out.groups).toHaveLength(1);
+    expect(out.groups[0]?.sessions.map((session) => session.id)).toEqual(["here", "there"]);
+  });
+
   test("a new conversation does not move its project — the groups sit where they sit", () => {
     // THE BUG THIS FILE NOW EXISTS TO PREVENT. Starting a conversation in beta
     // used to hoist beta to the top because the groups came out in the order
