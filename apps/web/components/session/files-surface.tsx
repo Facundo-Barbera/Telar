@@ -42,6 +42,7 @@ import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, ty
 import { directoryReference, fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import type { OpenIntent } from "@/lib/editor-workspace";
 import { REVIEW_STATUS_LETTER } from "@/lib/session-review";
+import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
@@ -344,9 +345,13 @@ export function FilesSurface({
 
   return (
     <div className="flex min-h-full flex-col">
-      {/* THE SUBHEADER, from t3 code: refresh and search on one thin line. Its
-          height matches the panel's tab strip so the two read as one chrome. */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+      {/* THE SUBHEADER, from t3 code: refresh and search on one thin line.
+          It wears `EDITOR_HEADER_ROW` — the SAME string as the Editor's
+          open-file strip on the other side of the `border-r`, which is the
+          whole point: this header used to size itself around the 28px search
+          box and came out 4px taller than the strip, and the step showed at the
+          seam. Sized now, with the box centred inside it. */}
+      <div className={cn(EDITOR_HEADER_ROW, "gap-1")}>
         <button
           type="button"
           aria-label="Refresh the file list"
