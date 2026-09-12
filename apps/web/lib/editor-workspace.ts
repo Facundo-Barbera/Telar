@@ -150,6 +150,35 @@ export function closeEditorFile(state: EditorState, path: string): EditorState {
   return { ...state, files, ...(activePath ? { activePath } : {}) };
 }
 
+/**
+ * WHICH FILES A "CLOSE OTHERS" OR A "CLOSE TO THE RIGHT" MEANS.
+ *
+ * NAMES, NOT A SECOND CLOSE. The tempting shape is a reducer per verb —
+ * `closeOtherEditorFiles(state, path)` — and it is the wrong one: closing a
+ * file whose save was REFUSED discards text that reached nothing but the box,
+ * which is why the Editor's own `close` makes it take a second, deliberate
+ * click. A reducer that filtered `state.files` would walk straight past that
+ * and throw the text away, silently, for every file in the sweep. So these
+ * only SAY which paths a verb is about, and the surface runs each one through
+ * the same `close` its × button calls — one close path, and the confirm keeps
+ * working on the one file in the sweep that needs it.
+ *
+ * IN STRIP ORDER, left to right, so a sweep reads the way the strip does.
+ * A path that is not open yields nothing: a stale menu must not sweep the
+ * strip because the file it was opened on has since gone.
+ */
+export function otherEditorPaths(state: EditorState, path: string): string[] {
+  if (!state.files.some((entry) => entry.path === path)) return [];
+  return state.files.filter((entry) => entry.path !== path).map((entry) => entry.path);
+}
+
+/** Every file to the RIGHT of this one — see `otherEditorPaths`. */
+export function editorPathsAfter(state: EditorState, path: string): string[] {
+  const index = state.files.findIndex((entry) => entry.path === path);
+  if (index === -1) return [];
+  return state.files.slice(index + 1).map((entry) => entry.path);
+}
+
 export function activateEditorFile(state: EditorState, path: string): EditorState {
   return state.files.some((entry) => entry.path === path) ? { ...state, activePath: path } : state;
 }
