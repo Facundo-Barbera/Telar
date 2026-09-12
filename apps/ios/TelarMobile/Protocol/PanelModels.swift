@@ -20,14 +20,82 @@ struct LatexConfig: Decodable, Equatable {
     var mainFile: String?
 }
 
+/// A plugin id, as the map keys it — a route segment and a config key, NOT a
+/// tool prefix. Data Science is one plugin (`data-science`) that owns two tool
+/// prefixes (`ds_`, `notebook_`), which is why the two namespaces are kept
+/// apart in `packages/engine-client/src/protocol/plugins.ts`.
+enum PluginID: String {
+    case dataScience = "data-science"
+    case latex
+}
+
+/// One plugin's per-project state — that file's `PluginConfig`. `settings` is
+/// the owning plugin's business and is validated at the host; nothing here
+/// needs to know what a LaTeX toolchain choice looks like.
+struct PluginConfig: Decodable, Equatable {
+    var enabled: Bool
+}
+
+/// THE MAP, AND ITS DURABLE MARKER. `version`'s PRESENCE is the fact that this
+/// project has been migrated, and that fact is what makes the map the whole
+/// truth: a plugin absent from `entries` is OFF, and the legacy blocks are
+/// never read again.
+///
+/// A per-key fallback to legacy is the resurrection bug, not a kindness:
+/// disabling Data Science deletes the map entry, the next read falls back to
+/// the stale mirror, and the feature turns itself back on.
+struct ProjectPlugins: Decodable, Equatable {
+    var version: Int
+    var entries: [String: PluginConfig]
+
+    private enum CodingKeys: String, CodingKey { case version, entries }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        entries = (try? c.decode([String: Skippable<PluginConfig>].self, forKey: .entries))?.compactMapValues(\.value) ?? [:]
+    }
+}
+
 /// `GET /api/projects` — the record the cockpit reads to decide which panel
-/// tabs a session gets. Only the two opt-ins are decoded.
+/// tabs a session gets. The plugin map and the two legacy opt-ins it shadows.
 struct Project: Decodable, Identifiable, Equatable {
     var id: EngineID
     var name: String
     var root: String?
     var dataScience: DataScienceConfig?
     var latex: LatexConfig?
+    /// Present once the project has been migrated; absent on one that never
+    /// was, and on one an older engine stripped on its way past.
+    var plugins: ProjectPlugins?
+
+    private enum CodingKeys: String, CodingKey { case id, name, root, dataScience, latex, plugins }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(EngineID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        root = try? c.decodeIfPresent(String.self, forKey: .root)
+        dataScience = try? c.decodeIfPresent(DataScienceConfig.self, forKey: .dataScience)
+        latex = try? c.decodeIfPresent(LatexConfig.self, forKey: .latex)
+        // A map that will not parse is NOT a migrated project: fall through to
+        // the legacy blocks rather than dropping the project from the list.
+        plugins = try? c.decodeIfPresent(ProjectPlugins.self, forKey: .plugins)
+    }
+
+    init(id: EngineID, name: String, root: String? = nil, dataScience: DataScienceConfig? = nil, latex: LatexConfig? = nil, plugins: ProjectPlugins? = nil) {
+        self.id = id; self.name = name; self.root = root
+        self.dataScience = dataScience; self.latex = latex; self.plugins = plugins
+    }
+
+    /// Whether a plugin is on for this project — the engine's one read path
+    /// (`readProjectPlugins`), stated here because the phone reads the same
+    /// record and must not disagree about it.
+    func pluginEnabled(_ id: PluginID) -> Bool {
+        if let plugins { return plugins.entries[id.rawValue]?.enabled == true }
+        switch id {
+        case .dataScience: return dataScience?.enabled == true
+        case .latex: return latex?.enabled == true
+        }
+    }
 }
 
 struct ProjectList: Decodable {
@@ -277,6 +345,13 @@ struct NotebookRead: Decodable, Equatable {
         sha256 = try c.decode(String.self, forKey: .sha256)
         cellCount = try c.decode(Int.self, forKey: .cellCount)
         cells = try c.decode([Skippable<NotebookCell>].self, forKey: .cells).compactMap(\.value)
+    }
+
+    /// For the client-side read — an .ipynb parsed from its own bytes lands in
+    /// the same shape the engine's `notebook/read` answers with, so one set of
+    /// views draws both. See `parseNotebookFile`.
+    init(path: String, sha256: String, cellCount: Int, cells: [NotebookCell]) {
+        self.path = path; self.sha256 = sha256; self.cellCount = cellCount; self.cells = cells
     }
 }
 

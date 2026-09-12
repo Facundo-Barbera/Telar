@@ -192,3 +192,54 @@ import Testing
         }
     }
 }
+
+/// THE PLUGIN FLAG, and the rule that keeps a disabled feature disabled.
+///
+/// `packages/engine-client/src/protocol/plugins.ts` `readProjectPlugins`: once
+/// a project carries the map's `version` marker the map is the WHOLE truth,
+/// and the legacy `dataScience` / `latex` blocks — which are still written as
+/// mirrors for an older engine — are never read again. A per-key fallback is
+/// what resurrects a feature somebody turned off.
+@Suite struct ProjectPluginTests {
+    private func project(_ json: String) throws -> Project {
+        try JSONDecoder().decode(Project.self, from: Data(json.utf8))
+    }
+
+    @Test func aProjectThatWasNeverMigratedIsReadFromTheLegacyBlocks() throws {
+        let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"latex":{"enabled":false}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(!p.pluginEnabled(.latex))
+    }
+
+    @Test func aMigratedProjectIsReadFromTheMap() throws {
+        let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"latex":{"enabled":true,"settings":{"mainFile":"main.tex"}}}}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.pluginEnabled(.latex))
+    }
+
+    @Test func theMapWinsOverAStaleLegacyMirror() throws {
+        // Data Science was turned OFF: the entry is gone from the map and the
+        // mirror still says true. Falling back to it would turn the plugin
+        // back on by itself.
+        let gone = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":true}}}}"#)
+        #expect(!gone.pluginEnabled(.dataScience))
+        #expect(gone.pluginEnabled(.latex))
+        // And the explicit `false` entry beats the mirror just the same.
+        let off = try project(#"{"id":"p","name":"P","latex":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":false}}}}"#)
+        #expect(!off.pluginEnabled(.latex))
+    }
+
+    @Test func aMapThatWillNotParseIsNotAMigratedProject() throws {
+        // No `version`, so no marker, so this project has never been migrated
+        // — and it must not be dropped from the list over it.
+        let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"entries":{"data-science":{"enabled":false}}}}"#)
+        #expect(p.plugins == nil)
+        #expect(p.pluginEnabled(.dataScience))
+    }
+
+    @Test func anEntryThatWillNotParseIsSkippedRatherThanLosingTheMap() throws {
+        let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"hello":{"enabled":"yes"}}}}"#)
+        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.plugins?.entries["hello"] == nil)
+    }
+}
