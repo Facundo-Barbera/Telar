@@ -34,7 +34,9 @@ import {
   closeEditorFile,
   editorFileForPath,
   editorPaths,
+  editorPathsAfter,
   openInEditor,
+  otherEditorPaths,
   pinEditorFile,
   setExplorerOpen,
   type EditorState,
@@ -42,6 +44,8 @@ import {
   type OpenIntent,
 } from "@/lib/editor-workspace";
 import { discardDraft, draftScope } from "@/lib/editor-drafts";
+import type { TelarReference } from "@/lib/drag-reference";
+import { useWorkspaceFileMenu, workspaceFilePath } from "@/lib/workspace-open";
 import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { FilesSurface } from "@/components/session/files-surface";
@@ -50,6 +54,13 @@ import { NotebookSurface } from "@/components/session/notebook-surface";
 import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";
 import { PanelEmpty } from "@/components/ui/panel";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 
 /** How wide the tree is. Narrow on purpose — the panel's own floor is 384px,
@@ -68,6 +79,7 @@ export function EditorSurface({
   active,
   dataScience = false,
   onOpenImage,
+  onInsertReference,
 }: {
   state: EditorState;
   /** Updates go through the cockpit, which owns the state and persists it —
@@ -80,6 +92,11 @@ export function EditorSurface({
   active?: TurnState;
   dataScience?: boolean;
   onOpenImage?: (attachmentId: string) => void;
+  /** Handed straight down to the tree and the file header, whose menus offer
+   *  "Insert into composer as a reference" only where something is listening.
+   *  Nothing in this Editor's own strip offers it: a tab is a thing you have
+   *  open, and the file it holds already has the item one pane over. */
+  onInsertReference?: (reference: TelarReference) => void;
 }) {
   /**
    * WHERE EACH FILE WAS LEFT, for as long as this Editor is on screen.
@@ -117,6 +134,22 @@ export function EditorSurface({
    * (lib/editor-drafts.ts); this is about not lying in the strip.
    */
   const closingWhenClean = useRef(new Set<string>());
+  /**
+   * THE CHECKOUT THESE PATHS ARE RELATIVE TO, as the tree reported it.
+   *
+   * Kept HERE rather than read again, because the listing is the only read
+   * that answers it and the tree is the only thing that makes that read. Held
+   * across the tree being hidden, so the strip's Reveal and the file header's
+   * do not disappear when somebody collapses the explorer. An Editor that has
+   * never shown its tree has no root yet, and both menus hide the items that
+   * need one — the same rule as a browser tab with no desktop bridge.
+   */
+  const [workspacePath, setWorkspacePath] = useState<string>();
+  /**
+   * "Reveal in file tree", asked of the tree below. A NONCE, because asking
+   * twice for the same file is a real request — see `FilesSurface`'s own note.
+   */
+  const [reveal, setReveal] = useState<{ path: string; nonce: number }>();
 
   const file = activeEditorFile(state);
   const open = editorPaths(state);
@@ -176,6 +209,31 @@ export function EditorSurface({
     },
     [saving, confirming, forget, scope],
   );
+
+  /**
+   * "Close others", "Close to the right", "Close all" — a LOOP over the same
+   * `close` the × button calls, never a reducer that filters the strip.
+   *
+   * That is the whole reason `lib/editor-workspace.ts` only NAMES the files a
+   * sweep is about. A file whose save was refused holds text that reached
+   * nothing but the box, and closing it takes a second deliberate click; a
+   * reducer would walk past that and throw the text away for every file in the
+   * sweep at once. Here the refused one keeps its tab and its warning while
+   * the rest go — which is what a person asking to tidy the strip meant.
+   */
+  const closeMany = useCallback((paths: readonly string[]) => paths.forEach((path) => close(path)), [close]);
+
+  /** Open the tree if it is hidden, then ask it to scroll to this path. Both
+   *  through the state each already owns — no imperative handle. */
+  const revealInTree = useCallback(
+    (path: string) => {
+      onState((current) => setExplorerOpen(current, true));
+      setReveal((current) => ({ path, nonce: (current?.nonce ?? 0) + 1 }));
+    },
+    [onState],
+  );
+
+  const files = useWorkspaceFileMenu({ workspacePath, hostId });
 
   const reportSave = useCallback(
     (path: string, next: "clean" | SaveState) => {
@@ -247,6 +305,8 @@ export function EditorSurface({
         onView={(where) => views.current.set(file.path, where)}
         onSaveState={(next) => reportSave(file.path, next)}
         onEdit={() => onState((current) => pinEditorFile(current, file.path))}
+        {...(workspacePath ? { workspacePath } : {})}
+        {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
   };
@@ -274,8 +334,12 @@ export function EditorSurface({
           <FilesSurface
             {...(sessionId ? { sessionId } : {})}
             {...(projectId ? { projectId } : {})}
+            {...(hostId ? { hostId } : {})}
             openPaths={open}
             onOpenFile={openFile}
+            onWorkspacePath={setWorkspacePath}
+            {...(onInsertReference ? { onInsertReference } : {})}
+            {...(reveal ? { reveal } : {})}
             {...(active ? { active } : {})}
           />
         </div>
@@ -312,57 +376,105 @@ export function EditorSurface({
                 <span
                   key={entry.path}
                   className={cn(
-                    "group/file relative flex h-7 min-w-0 max-w-44 shrink-0 items-center rounded-md px-1.5 text-xs transition-colors",
+                    "group/file relative flex h-7 min-w-0 max-w-44 shrink-0 rounded-md text-xs transition-colors",
                     on ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                   )}
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={on}
-                    onClick={() => onState((current) => activateEditorFile(current, entry.path))}
-                    // Double-clicking the preview tab is the other way to say
-                    // "keep this", and the one every editor has taught.
-                    onDoubleClick={() => onState((current) => pinEditorFile(current, entry.path))}
-                    onAuxClick={(event) => {
-                      if (event.button !== 1) return;
-                      event.preventDefault();
-                      close(entry.path);
-                    }}
-                    title={`${entry.path}${entry.pinned ? "" : " — preview; double-click to keep it open"}`}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 outline-none"
-                  >
-                    <FileKindIcon path={entry.path} className="size-3.5 shrink-0" />
-                    {/* ITALIC IS THE PREVIEW, the same signal every editor with
-                        a preview slot uses — it says "this tab is on loan". */}
-                    <span className={cn("truncate", !entry.pinned && "italic")}>{name}</span>
-                  </button>
-                  {/* UNSAVED IS A DOT, and it sits where the close button goes
-                      so the two never both take width. Red when a save was
-                      REFUSED, because then the text exists only in the box. */}
-                  {status && (
-                    <span
-                      aria-label={status === "problem" ? `${name} has unsaved changes that were refused` : `${name} is saving`}
-                      className={cn("ml-1 size-1.5 shrink-0 rounded-full group-hover/file:hidden", status === "problem" ? "bg-destructive" : "bg-primary")}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    aria-label={confirming === entry.path ? `Close ${name} and discard the unsaved text` : `Close ${name}`}
-                    title={confirming === entry.path ? "Not saved — click again to close and discard" : "Close"}
-                    onClick={() => close(entry.path)}
-                    onBlur={() => setConfirming((current) => (current === entry.path ? undefined : current))}
-                    className={cn(
-                      "ml-1 rounded p-0.5 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100",
-                      confirming === entry.path
-                        ? "bg-destructive/15 text-destructive opacity-100"
-                        : status
-                          ? "hidden text-muted-foreground group-hover/file:block"
-                          : cn("text-muted-foreground", on ? "opacity-70" : "opacity-0 group-hover/file:opacity-70"),
-                    )}
-                  >
-                    <XIcon className="size-3" />
-                  </button>
+                  {/**
+                   * THE CHIP'S OWN MENU — the strip's four close verbs, the
+                   * promotion a double click makes, and the two questions a tab
+                   * raises about the file behind it ("where is this?").
+                   *
+                   * THE TRIGGER IS THE CHIP'S FLEX ROW, PADDING AND ALL. It
+                   * cannot be `display: contents`: that box is never painted and
+                   * so is never an event target — only its children are — and a
+                   * right-press in the chip's own `px-1.5`, or in the gap beside
+                   * the close button, would have sailed past this menu into the
+                   * strip behind it. `project-group.tsx` paid a screenshot to
+                   * learn that; this takes the layout classes off the wrapper
+                   * instead of adding a box beside them, so the chip is one hit
+                   * area and looks exactly as it did.
+                   *
+                   * STILL A SPAN: the wrapper is a <span>, whose content model
+                   * is phrasing.
+                   *
+                   * Every item is a callback the chip already has: `close` is
+                   * the × button's, `pinEditorFile` is the double click's.
+                   */}
+                  <ContextMenu>
+                    <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center px-1.5" />}>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={on}
+                        onClick={() => onState((current) => activateEditorFile(current, entry.path))}
+                        // Double-clicking the preview tab is the other way to say
+                        // "keep this", and the one every editor has taught.
+                        onDoubleClick={() => onState((current) => pinEditorFile(current, entry.path))}
+                        onAuxClick={(event) => {
+                          if (event.button !== 1) return;
+                          event.preventDefault();
+                          close(entry.path);
+                        }}
+                        title={`${entry.path}${entry.pinned ? "" : " — preview; double-click to keep it open"}`}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 outline-none"
+                      >
+                        <FileKindIcon path={entry.path} className="size-3.5 shrink-0" />
+                        {/* ITALIC IS THE PREVIEW, the same signal every editor with
+                            a preview slot uses — it says "this tab is on loan". */}
+                        <span className={cn("truncate", !entry.pinned && "italic")}>{name}</span>
+                      </button>
+                      {/* UNSAVED IS A DOT, and it sits where the close button goes
+                          so the two never both take width. Red when a save was
+                          REFUSED, because then the text exists only in the box. */}
+                      {status && (
+                        <span
+                          aria-label={status === "problem" ? `${name} has unsaved changes that were refused` : `${name} is saving`}
+                          className={cn("ml-1 size-1.5 shrink-0 rounded-full group-hover/file:hidden", status === "problem" ? "bg-destructive" : "bg-primary")}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        aria-label={confirming === entry.path ? `Close ${name} and discard the unsaved text` : `Close ${name}`}
+                        title={confirming === entry.path ? "Not saved — click again to close and discard" : "Close"}
+                        onClick={() => close(entry.path)}
+                        onBlur={() => setConfirming((current) => (current === entry.path ? undefined : current))}
+                        className={cn(
+                          "ml-1 rounded p-0.5 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100",
+                          confirming === entry.path
+                            ? "bg-destructive/15 text-destructive opacity-100"
+                            : status
+                              ? "hidden text-muted-foreground group-hover/file:block"
+                              : cn("text-muted-foreground", on ? "opacity-70" : "opacity-0 group-hover/file:opacity-70"),
+                        )}
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuItem onClick={() => close(entry.path)}>Close</ContextMenuItem>
+                      <ContextMenuItem onClick={() => closeMany(otherEditorPaths(state, entry.path))}>Close others</ContextMenuItem>
+                      <ContextMenuItem onClick={() => closeMany(editorPathsAfter(state, entry.path))}>Close to the right</ContextMenuItem>
+                      <ContextMenuItem onClick={() => closeMany(editorPaths(state))}>Close all</ContextMenuItem>
+                      <ContextMenuSeparator />
+                      {/* ONLY WHERE IT WOULD DO SOMETHING. `pinEditorFile` is a
+                          no-op on a file that is already kept, and a row that
+                          does nothing is worse than a row that is not there —
+                          the same reason the preview tab is the only one drawn
+                          in italics. */}
+                      {!entry.pinned && (
+                        <ContextMenuItem onClick={() => onState((current) => pinEditorFile(current, entry.path))}>Pin</ContextMenuItem>
+                      )}
+                      <ContextMenuItem onClick={() => revealInTree(entry.path)}>Reveal in file tree</ContextMenuItem>
+                      <ContextMenuSeparator />
+                      {workspaceFilePath(workspacePath, entry.path) && (
+                        <ContextMenuItem onClick={() => void navigator.clipboard?.writeText(workspaceFilePath(workspacePath, entry.path)!)}>
+                          Copy path
+                        </ContextMenuItem>
+                      )}
+                      {files.reveal && <ContextMenuItem onClick={() => files.reveal!(entry.path, "file")}>Reveal in Finder</ContextMenuItem>}
+                    </ContextMenuContent>
+                  </ContextMenu>
                 </span>
               );
             })}
