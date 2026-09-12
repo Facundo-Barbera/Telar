@@ -83,6 +83,46 @@ function clampPopupWithin(popupWindow, parentWindow) {
   }
 }
 
+/** Matches the cockpit's popovers (`rounded-lg`), which is what the popup
+ *  sits beside. */
+const POPUP_CORNER_RADIUS = 10;
+const POPUP_CORNER_CSS = `html,body{border-radius:${POPUP_CORNER_RADIUS}px;overflow:hidden;}`;
+
+/**
+ * ROUND WHAT THE 1PASSWORD POPUP PAINTS (issue #276).
+ *
+ * `electron-chrome-extensions` builds that window itself, with
+ * `roundedCorners: false` and an opaque white background, so it lands over the
+ * page as the one hard-edged rectangle in an app whose every other surface is
+ * rounded. Telar is only handed the window afterwards.
+ *
+ * WHAT IS REACHABLE FROM HERE is the DOCUMENT: a radius and `overflow: hidden`
+ * on html/body, re-applied on every load because `insertCSS` does not survive a
+ * navigation and the popup navigates itself (unlock → item list). The window's
+ * own background is cleared first so the corners it keeps are not white.
+ *
+ * WHAT IS NOT: `roundedCorners` is a constructor option with no setter, and
+ * alpha in `setBackgroundColor` is only honoured by a window created
+ * `transparent`. If macOS still draws the window's square corners under the
+ * rounded document, the remaining fix is a patch of those two lines in the
+ * library — see the issue's approach (b).
+ */
+function roundPopupCorners(popupWindow) {
+  try {
+    popupWindow.setBackgroundColor("#00000000");
+  } catch {
+    // An older Electron, or a window destroyed between activation and here:
+    // the CSS below is the half that matters, so keep going.
+  }
+  const contents = popupWindow.webContents;
+  const apply = () => {
+    if (popupWindow.isDestroyed()) return;
+    contents.insertCSS(POPUP_CORNER_CSS).catch(() => undefined);
+  };
+  contents.on("did-finish-load", apply);
+  apply();
+}
+
 /**
  * The official 1Password toolbar icon, as a data URL, read from the VERIFIED
  * unpacked extension (its manifest's own `icons` map) — a safe narrow bridge:
@@ -457,6 +497,9 @@ class ExtensionHost {
       popup.on("moved", clamp);
       popup.on("resized", clamp);
       clamp();
+      // The library's window is square-cornered and opaque white; round what
+      // it paints so it reads as one of the cockpit's own popovers.
+      try { roundPopupCorners(popupWindow); } catch { /* never block the popup on cosmetics */ }
       popupWindow.once("closed", () => this.closeHold(popupHold));
     } else {
       // No popup window (1Password opened its page in a window instead): the
@@ -535,4 +578,4 @@ function extensionsEnabled({ dev, packaged, version, override }) {
   return override === "1" || dev || !packaged || /^\d+\.\d+\.\d+-nightly\./.test(version);
 }
 
-module.exports = { extensionsEnabled, ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT_MS, classifyWorkerError, WORKER_ERROR_CLASSES, clampRect, popupRegion, readIconDataUrl };
+module.exports = { extensionsEnabled, ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT_MS, classifyWorkerError, WORKER_ERROR_CLASSES, clampRect, popupRegion, readIconDataUrl, roundPopupCorners, POPUP_CORNER_RADIUS };
