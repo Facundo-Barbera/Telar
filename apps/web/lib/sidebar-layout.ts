@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * Where each project group sits in the rail — the arrangement the reader
- * dragged the groups into, read from and written to the engine.
+ * Where each project group sits in the rail, and where each ROW sits inside one
+ * — the arrangement the reader dragged things into, read from and written to
+ * the engine.
  *
  * ENGINE STATE, NOT LOCAL STORAGE, for the reason `inbox-policy.ts` gives: the
  * same rail is drawn by the desktop shell, a browser tab and a paired phone,
@@ -40,9 +41,18 @@ export type SidebarLayoutHandle = {
   /** Group keys, top to bottom. Empty until the engine answers — and the rail
    *  reads empty as "alphabetical", so the first paint is a stable one. */
   order: readonly string[];
+  /** Session keys per group key, and the pinned band's own. Empty until the
+   *  engine answers, which the rail reads as the recency order it always had. */
+  sessionOrder: Readonly<Record<string, readonly string[]>>;
+  pinnedOrder: readonly string[];
   loading: boolean;
   /** The whole order, as drawn after the drop — see `moveProjectGroup`. */
   setOrder: (next: string[]) => Promise<void>;
+  /** ONE GROUP'S ROWS. The field on the wire is the whole map, so this writes
+   *  it from the arrangement this window last heard the engine describe —
+   *  last write wins, exactly as `setOrder` has always worked. */
+  setSessionOrder: (groupKey: string, next: string[]) => Promise<void>;
+  setPinnedOrder: (next: string[]) => Promise<void>;
 };
 
 export function useSidebarLayout(): SidebarLayoutHandle {
@@ -75,11 +85,22 @@ export function useSidebarLayout(): SidebarLayoutHandle {
     };
   }, []);
 
-  const setOrder = useCallback(async (next: string[]) => {
+  /**
+   * One arrangement, optimistically: the row or group lands where it was
+   * dropped on the same frame, the write follows, and an engine that refuses
+   * puts it back. THE OPTIMISTIC STATE IS A MERGE, not a replacement — a drop
+   * in one group must leave the other two arrangements exactly as they are
+   * until the engine answers with all three.
+   */
+  const patch = useCallback(async (change: Partial<SidebarLayout>) => {
     const previous = latest.current;
-    setLayout({ projectOrder: next });
+    setLayout({ ...previous, ...change });
     try {
-      const result = await api.setSidebarLayout({ projectOrder: next });
+      // ONE FIELD PER CALL. The engine leaves an absent field alone, so a drop
+      // in the pinned band cannot overwrite the groups this same rail arranged
+      // a second earlier — which is the whole reason the three are separate
+      // fields rather than one document sent whole.
+      const result = await api.setSidebarLayout(change as Parameters<typeof api.setSidebarLayout>[0]);
       setLayout(result.layout);
       announce(result.layout);
     } catch {
@@ -89,5 +110,20 @@ export function useSidebarLayout(): SidebarLayoutHandle {
     }
   }, []);
 
-  return { order: layout.projectOrder, loading, setOrder };
+  const setOrder = useCallback((next: string[]) => patch({ projectOrder: next }), [patch]);
+  const setPinnedOrder = useCallback((next: string[]) => patch({ pinnedOrder: next }), [patch]);
+  const setSessionOrder = useCallback(
+    (groupKey: string, next: string[]) => patch({ sessionOrder: { ...(latest.current.sessionOrder ?? {}), [groupKey]: next } }),
+    [patch],
+  );
+
+  return {
+    order: layout.projectOrder ?? [],
+    sessionOrder: layout.sessionOrder ?? {},
+    pinnedOrder: layout.pinnedOrder ?? [],
+    loading,
+    setOrder,
+    setSessionOrder,
+    setPinnedOrder,
+  };
 }
