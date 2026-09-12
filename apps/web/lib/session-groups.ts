@@ -20,8 +20,55 @@ import { sessionKey, type SidebarSession, type SessionListResult } from "./sessi
 
 const COLLAPSED_KEY = "telar:sidebar-collapsed-groups";
 
+/**
+ * THE FOUR FOLD MOVES, AS SET MATH RATHER THAN AS A HOOK.
+ *
+ * `toggle` was the only one until the project header and the rail's empty space
+ * grew menus; the three that landed with them — collapse others, collapse all,
+ * expand all — are the same shape, so they are spelled here as pure transitions
+ * on the fold set and the hook below merely persists whatever they return.
+ *
+ * THEY TAKE THE DRAWN KEYS, NEVER A STORED LIST. "Collapse all" means the groups
+ * on screen: a fold set carrying a key for a paired Mac that is away, or for a
+ * project with nothing live, would claim to have folded rows nobody can see —
+ * and would un-fold them the day that Mac answered again. Keys already in the
+ * set that are not drawn are kept for exactly that reason: they are somebody
+ * else's fold, not this gesture's to clear.
+ */
+export function foldedAfter(
+  current: ReadonlySet<string>,
+  drawn: readonly string[],
+  move: { kind: "toggle" | "others"; key: string } | { kind: "all" | "none" },
+): Set<string> {
+  const next = new Set(current);
+  if (move.kind === "toggle") {
+    if (next.has(move.key)) next.delete(move.key);
+    else next.add(move.key);
+    return next;
+  }
+  if (move.kind === "others") {
+    for (const key of drawn) if (key !== move.key) next.add(key);
+    next.delete(move.key);
+    return next;
+  }
+  for (const key of drawn) {
+    if (move.kind === "all") next.add(key);
+    else next.delete(key);
+  }
+  return next;
+}
+
+export type CollapsedGroups = {
+  collapsed: Set<string>;
+  toggle: (key: string) => void;
+  /** Fold every drawn group but this one — the lobby's own verb, same name. */
+  collapseOthers: (key: string, drawn: readonly string[]) => void;
+  collapseAll: (drawn: readonly string[]) => void;
+  expandAll: (drawn: readonly string[]) => void;
+};
+
 /** Which project groups are folded, by host-qualified key, persisted per client. */
-export function useCollapsedGroups(): { collapsed: Set<string>; toggle: (key: string) => void } {
+export function useCollapsedGroups(): CollapsedGroups {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     const task = window.setTimeout(() => {
@@ -35,11 +82,9 @@ export function useCollapsedGroups(): { collapsed: Set<string>; toggle: (key: st
     }, 0);
     return () => window.clearTimeout(task);
   }, []);
-  const toggle = useCallback((key: string) => {
+  const apply = useCallback((move: Parameters<typeof foldedAfter>[2], drawn: readonly string[] = []) => {
     setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      const next = foldedAfter(current, drawn, move);
       try {
         window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
       } catch {
@@ -48,7 +93,13 @@ export function useCollapsedGroups(): { collapsed: Set<string>; toggle: (key: st
       return next;
     });
   }, []);
-  return { collapsed, toggle };
+  return {
+    collapsed,
+    toggle: useCallback((key: string) => apply({ kind: "toggle", key }), [apply]),
+    collapseOthers: useCallback((key: string, drawn: readonly string[]) => apply({ kind: "others", key }, drawn), [apply]),
+    collapseAll: useCallback((drawn: readonly string[]) => apply({ kind: "all" }, drawn), [apply]),
+    expandAll: useCallback((drawn: readonly string[]) => apply({ kind: "none" }, drawn), [apply]),
+  };
 }
 
 export type ProjectGroup = {
@@ -172,6 +223,30 @@ export function moveProjectGroup(
     after += 1;
   }
   return next;
+}
+
+/**
+ * ONE PLACE UP, OR ONE PLACE DOWN — the project header menu's own verb, and
+ * THE SAME WRITE THE DRAG MAKES. It resolves the neighbour in the DRAWN order
+ * and hands both to `moveProjectGroup`, so a keyboard-only reorder and a drop
+ * cannot disagree about what "above" means or about which keys get written.
+ *
+ * `undefined` AT EITHER END, rather than the list unchanged. A menu row has to
+ * decide whether to offer itself before anybody presses it, and "there is
+ * nowhere to go" is the answer to that question as well as to this one — so the
+ * caller disables the row on the same value it would have written.
+ */
+export function moveProjectGroupStep(
+  stored: readonly string[],
+  drawn: readonly string[],
+  key: string,
+  direction: "up" | "down",
+): string[] | undefined {
+  const at = drawn.indexOf(key);
+  if (at < 0) return undefined;
+  const neighbour = drawn[direction === "up" ? at - 1 : at + 1];
+  if (neighbour === undefined) return undefined;
+  return moveProjectGroup(stored, drawn, key, neighbour, direction === "up" ? "above" : "below");
 }
 
 export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions">, order: readonly string[] = []): GroupedSessions {
