@@ -91,6 +91,7 @@ import {
   type SidebarSession,
 } from "@/lib/session-list";
 import { hostFetcher } from "@/lib/hosts/client";
+import { projectPlaces } from "@/lib/hosts/project-places";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { createFollowingController, emptyFollowing, lockKey, type FollowingController, type FollowingState } from "@/lib/following";
 import type { PublicHost } from "@/lib/hosts/store";
@@ -480,6 +481,10 @@ function SidebarBody() {
     // they have no branch of their own. Derived per project by the engine.
     const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
     const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
+    // WHICH REPOSITORY EACH PROJECT IS A CHECKOUT OF — the one fact about a row
+    // that is true on more than one Mac, and so the only thing two Macs'
+    // registrations of the same work can be recognised by. See `projectGroupKey`.
+    const remotes = new Map(result.projects.map((project) => [project.id, project.remoteUrl]));
     const sessions = result.sessions.map((session) =>
       // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
       // project-scoped list and the Spool's master chat is a destination, not a
@@ -495,6 +500,7 @@ function SidebarBody() {
         // same list — so Related work costs no extra request, and no per-row
         // history read, on any polling pass.
         result.assignments?.[session.id],
+        session.projectId ? remotes.get(session.projectId) : undefined,
       ),
     );
     return { projects: result.projects, sessions, ...(daemonId ? { daemonId } : {}), ...(policy ? { policy } : {}) };
@@ -1474,13 +1480,23 @@ function SidebarBody() {
             ) : grouped ? (
               drawnGroups.map((group) => {
                 /**
+                 * EVERY MAC THIS GROUP LIVES ON, and that Mac's own id for the
+                 * project. A group can now span two Macs' checkouts of one
+                 * repository, and the ids are minted per engine — so a
+                 * destination built from `group.projectId` alone would open
+                 * nothing on the other. This Mac comes first; see
+                 * `projectPlaces`.
+                 */
+                const places = projectPlaces(group.sessions);
+                /**
                  * THE REGISTRY'S PATH, AND ONLY THIS MAC'S. A paired Mac's
                  * project is read as an id and a name; its checkout is over
                  * there, and handing this Mac's same-named folder to Finder
                  * would reveal the wrong one. `workspaceOpenBlocker` refuses it
                  * a second time inside the group, on the host id.
                  */
-                const root = group.hostId ? undefined : projects.find((project) => project.id === group.projectId)?.root;
+                const here = places.find((place) => !place.hostId);
+                const root = here ? projects.find((project) => project.id === here.projectId)?.root : undefined;
                 const moveUp = moveGroup(group.key, "up");
                 const moveDown = moveGroup(group.key, "down");
                 return (
@@ -1506,17 +1522,19 @@ function SidebarBody() {
                     // a row from another group a drop this one refuses.
                     rowDrag={rowDrag(group.key, group.sessions.map((session) => sessionKey(session)))}
                     {...(root ? { root } : {})}
+                    places={places}
                     // The `+` beside the header, as a menu row: one canvas
-                    // route, reached two ways.
-                    onNewConversation={() => startSession({ projectId: group.projectId, ...(group.hostId ? { hostId: group.hostId } : {}) })}
-                    {...(group.hostId
-                      ? {}
-                      : {
+                    // route, reached two ways. A group that spans two Macs asks
+                    // which one — the header cannot answer it for the reader.
+                    onNewConversation={(place) => startSession({ projectId: place.projectId, ...(place.hostId ? { hostId: place.hostId } : {}) })}
+                    {...(here
+                      ? {
                           onProjectSettings: () => {
                             onNavigate();
-                            router.push(`/projects/${encodeURIComponent(group.projectId)}/settings`);
+                            router.push(`/projects/${encodeURIComponent(here.projectId)}/settings`);
                           },
-                        })}
+                        }
+                      : {})}
                     onCollapseOthers={() => collapseOthers(group.key, drawnGroupKeys)}
                     {...(moveUp ? { onMoveUp: moveUp } : {})}
                     {...(moveDown ? { onMoveDown: moveDown } : {})}

@@ -22,6 +22,7 @@ import { followedSessions, RelatedWork } from "./related-work";
 import { ProjectGroupSection } from "./project-group";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { groupSessions, withholdFollowedRows, type ProjectGroup } from "@/lib/session-groups";
+import { projectPlaces } from "@/lib/hosts/project-places";
 import { relatedWork, sessionKey, type SidebarSession } from "@/lib/session-list";
 
 const dir = fileURLToPath(new URL(".", import.meta.url));
@@ -60,6 +61,7 @@ const renderGroup = (group: ProjectGroup, open = true) =>
         onDragLeave: () => {},
         onDrop: () => {},
       })}
+      places={projectPlaces(group.sessions)}
       onNewConversation={() => {}}
       onCollapseOthers={() => {}}
     />
