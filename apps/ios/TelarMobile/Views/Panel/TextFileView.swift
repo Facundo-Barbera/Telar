@@ -36,6 +36,9 @@ struct TextFileView: View {
     /// The read-only view's colours, one entry per line. Nil until the pass
     /// lands, and nil forever for a language nothing knows.
     @State private var highlighted: [AttributedString]?
+    /// The read-only view's own size, so content narrower than it can be
+    /// pinned to the top left rather than floating — see `codeView`.
+    @State private var viewport: CGSize = .zero
     @Environment(\.colorScheme) private var scheme
     @FocusState private var focused: Bool
 
@@ -84,15 +87,26 @@ struct TextFileView: View {
                         if let coloured = highlighted?[safe: index] {
                             Text(coloured)
                                 .font(.system(size: 12, design: .monospaced))
+                                .lineLimit(1)
                                 .textSelection(.enabled)
                         } else {
                             Text(String(line))
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(Theme.text)
+                                .lineLimit(1)
                                 .textSelection(.enabled)
                         }
                     }
                     .frame(minHeight: 18)
+                    // A ROW IS AS WIDE AS ITS LINE. Inside a two-axis scroll
+                    // view the lazy stack hands every row the VIEWPORT's width,
+                    // and a long line answered that by wrapping — far enough
+                    // that a notebook's `"cells"` came down the screen one
+                    // character per row. Fixed horizontally, each row takes its
+                    // natural width and the content scrolls sideways instead,
+                    // which is the whole reason the horizontal axis is there.
+                    // The stack stays lazy, so a 10K-line file stays cheap.
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 if file.truncated {
                     Text("Truncated: the first \(humanBytes(file.text.utf8.count)) of \(humanBytes(file.bytes)).")
@@ -102,7 +116,13 @@ struct TextFileView: View {
                 }
             }
             .padding(10)
+            // Now that the rows are only as wide as they need to be, a short
+            // file would float in the middle of a two-axis scroll view. A
+            // MINIMUM of the viewport pins it to the top left — the same pin
+            // TableSurface needed for the same reason.
+            .frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading)
         }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
         .background(Theme.codeBackground)
         .task(id: "\(path):\(file.sha256):\(scheme == .dark)") {
             highlighted = await CodeHighlighter.shared.highlightedLines(
