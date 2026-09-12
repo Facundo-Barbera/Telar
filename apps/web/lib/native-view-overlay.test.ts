@@ -23,7 +23,7 @@ import { claimNativeView, nativeViewOverlayHidden, onNativeViewOverlay } from ".
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The files the panel's menus live in — the ones the native view sits under. */
-const SCANNED = ["components/right-panel.tsx"];
+const SCANNED = ["components/right-panel.tsx", "components/browser-live.tsx"];
 
 describe("the native view is claimed while a menu is open", () => {
   test("the last release is what shows the page again", () => {
