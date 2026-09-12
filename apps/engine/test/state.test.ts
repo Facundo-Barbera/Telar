@@ -2586,6 +2586,26 @@ test("the rows inside a group and inside pinned are arranged by their own fields
   expect(store.getSidebarLayout()).toEqual({ projectOrder: ["p1"], sessionOrder: { p1: ["s1", "s2"] }, pinnedOrder: ["h1:s9", "s8"] });
 });
 
+test("the live-session read carries the arrangement, so a drag on one device reaches the others", () => {
+  // THE PROPAGATION PATH. Every rail — the desktop shell, a browser tab, the
+  // phone — polls this one route on its own cadence already; carrying the
+  // layout on it is what lets a second device learn about a drop without a new
+  // request, a new timer or a new connection. A blank document rides along too:
+  // "nobody has arranged anything" is an answer, and a client that got no key
+  // could not tell it from an engine too old to have one.
+  const { store } = readyStore();
+  expect(store.liveSessions().layout).toEqual({ projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
+
+  store.setSidebarLayout({ projectOrder: ["p2", "p1"] });
+  store.setSidebarLayout({ sessionOrder: { p1: ["s2", "s1"] } });
+  store.setSidebarLayout({ pinnedOrder: ["s9"] });
+  expect(store.liveSessions().layout).toEqual({
+    projectOrder: ["p2", "p1"],
+    sessionOrder: { p1: ["s2", "s1"] },
+    pinnedOrder: ["s9"],
+  });
+});
+
 test("a malformed sidebar-layout document costs the arrangement, never the list", () => {
   const { store, root: stateRoot } = readyStore();
   const blank = { projectOrder: [], sessionOrder: {}, pinnedOrder: [] };

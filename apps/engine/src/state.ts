@@ -6188,11 +6188,21 @@ export class EngineStore {
    *
    * NO BRANCH DERIVATION, unlike `listProjects`: that costs a `git rev-parse`
    * per project and nothing in this answer renders a branch.
+   *
+   * THE ARRANGEMENT RIDES ALONG, and that is what makes a drag on one device
+   * reach the others. `sidebar-layout.json` is one document per Mac, but until
+   * now nothing told a second device it had changed — a phone kept its copy
+   * until its rail reloaded, and then wrote that stale copy back on its next
+   * drop. This route is the one read EVERY rail already makes on its own
+   * cadence (3s live, 10s idle on both clients), so carrying the layout here
+   * costs no request, no timer and no connection anywhere, and every device
+   * converges within one polling pass. See `SidebarLayout`.
    */
   liveSessions(): {
     sessions: Session[];
     projects: Array<{ id: string; name: string }>;
     assignments: Record<string, SessionAssignment[]>;
+    layout: SidebarLayout;
   } {
     const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects;
@@ -6214,6 +6224,7 @@ export class EngineStore {
       sessions,
       projects: projects.map((project) => ({ id: project.id, name: project.name })),
       assignments,
+      layout: this.getSidebarLayout(),
     };
   }
 
