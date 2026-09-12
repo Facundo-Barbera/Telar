@@ -211,6 +211,73 @@ test("a windowed snapshot carries the window's requests and every open one, not 
   expect(store.requests("session_one")).toHaveLength(6);
 });
 
+test("streamed deltas journal without rewriting the item projection, and the close still lands", () => {
+  /**
+   * A `content.delta` deliberately does not touch the projection — the text is
+   * folded in when the item closes — and yet every batch rewrote the whole
+   * document anyway, which on a long session is hundreds of kilobytes
+   * re-serialised per streamed token-chunk. This pins BOTH halves: the deltas
+   * write nothing, and the close still writes the text a reader opening the
+   * session later depends on.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "i_1", detail: { type: "assistant_message", text: "" } } },
+  ]);
+
+  const spy = spyOn(fs, "renameSync");
+  const projectionWrites = () => spy.mock.calls.filter(([, to]) => String(to).endsWith("items.json")).length;
+  try {
+    for (const text of ["hel", "lo ", "there"]) {
+      store.ingestObservations("session_one", "run_one", token, [
+        { kind: "content.delta", itemId: "i_1", stream: "assistant_text", text },
+      ]);
+    }
+    expect(projectionWrites()).toBe(0);
+
+    store.ingestObservations("session_one", "run_one", token, [
+      { kind: "item.completed", itemId: "i_1", status: "completed", detail: { type: "assistant_message", text: "hello there" } },
+    ]);
+    expect(projectionWrites()).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+
+  // The deltas are still durable, and the projection carries the folded text —
+  // read back through a path that does not share the writer's copy.
+  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")).toHaveLength(3);
+  expect(store.items("session_one").map((item) => item.detail)).toEqual([{ type: "assistant_message", text: "hello there" }]);
+});
+
+test("the cached item projection is per session and never outlives a write", () => {
+  // The cache is what makes the read above cheap; a stale one would serve a
+  // closed item as still open, or one session's rows to another.
+  const { store } = readyStore();
+  store.createSession({ id: "session_two", projectId: "project_one" });
+  const open = (sessionId: string, runId: string, itemId: string): string => {
+    store.submitTurn(sessionId, { runId, input: "Hello" });
+    const token = store.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
+    store.markRunning(sessionId, runId, token);
+    store.ingestObservations(sessionId, runId, token, [
+      { kind: "item.started", item: { id: itemId, detail: { type: "assistant_message", text: "" } } },
+    ]);
+    return token;
+  };
+  const oneToken = open("session_one", "run_one", "i_one");
+  const twoToken = open("session_two", "run_two", "i_two");
+
+  // Interleaved, so a cache keyed by anything but the session would cross them.
+  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
+  store.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
+  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
+
+  expect(store.items("session_one").map((item) => [item.id, item.status])).toEqual([["i_one", "completed"]]);
+  expect(store.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);
+});
+
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
