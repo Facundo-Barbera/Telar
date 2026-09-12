@@ -1304,13 +1304,23 @@ describe("per-project browser profiles", () => {
     manager.createTab = DesktopBrowserManager.prototype.createTab.bind(manager);
     await expect(manager.createTab("unbound", "https://example.com")).rejects.toThrow(/not bound to a project profile/);
   });
-  test("two sessions of one project share a partition; a different project never does", () => {
+  test("two sessions of one project share a partition; a project assigned elsewhere does not", () => {
     const { manager } = makeHarness();
     manager.declareProfile("a1", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     manager.declareProfile("a2", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     manager.declareProfile("b1", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     expect(manager.partitionOf("a1")).toBe(manager.partitionOf("a2"));
-    expect(manager.partitionOf("b1")).not.toBe(manager.partitionOf("a1"));
+    /**
+     * TWO PROJECTS WITH NO ASSIGNMENT NOW SHARE THE DEFAULT, and that is the
+     * point of the default: one identity, signed into once. Separation is
+     * something a person asks for by assigning a profile — not something four
+     * unnamed auto-minted jars impose on them.
+     */
+    expect(manager.partitionOf("b1")).toBe(manager.partitionOf("a1"));
+    const own = manager.profiles.create({ label: "B's own" });
+    manager.profiles.assign("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", own.id);
+    manager.declareProfile("b2", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    expect(manager.partitionOf("b2")).not.toBe(manager.partitionOf("a1"));
     expect(manager.state("a1").profileKey).toBe("project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
   test("the legacy partition is used only by its declared owner", () => {
@@ -1331,6 +1341,9 @@ describe("per-project browser profiles", () => {
       hostsByPartition.set(partition, host);
       return host;
     };
+    // Two DIFFERENT identities, which since the single default means saying so:
+    // an unassigned project joins the default rather than minting its own jar.
+    manager.profiles.assign("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", manager.profiles.create({ label: "B" }).id);
     manager.declareProfile("a", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     manager.declareProfile("b", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     await manager.createTab("a", "https://one.example");
@@ -1408,6 +1421,9 @@ describe("per-project browser profiles", () => {
 
   test("adopt refuses tabs from a different profile", async () => {
     const { manager } = makeHarness();
+    // The two projects must be in different identities for there to be anything
+    // to refuse; unassigned ones now share the default.
+    manager.profiles.assign("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", manager.profiles.create({ label: "To" }).id);
     manager.declareProfile("from", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     manager.declareProfile("to", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     await manager.createTab("from", "https://one.example");
@@ -1492,9 +1508,11 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       ["b", "https://two.example/", "Two", true, true, "agent"],
     ]);
     expect(state.tabs[1].viewport).toEqual({ width: 768, height: 1024, preset: "tablet", mode: "fixed" });
-    // The partition comes from the profile, never from the file.
-    expect(manager.scopeTabs("s1").every((tab) => tab.partition === `persist:telar-project-${PROJECT.slice("project_".length)}`)).toBe(true);
-    expect(manager.scopeTabs("s2")[0].partition).toBe("persist:telar-profile-none");
+    // The partition comes from the profile, never from the file: neither scope
+    // picked one and neither has a jar of its own, so both are the default's.
+    const fallback = manager.profiles.get(manager.profiles.defaultProfileId).partition;
+    expect(manager.scopeTabs("s1").every((tab) => tab.partition === fallback)).toBe(true);
+    expect(manager.scopeTabs("s2")[0].partition).toBe(fallback);
     // First use wakes exactly the tab asked for.
     const listed = textOf(await manager.callTool("s1", "browser_snapshot", {}));
     expect(listed).toContain("https://two.example/");
@@ -1512,7 +1530,7 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
       scopes: { s1: { profileKey: PROJECT, activeTabId: "a", tabs: [{ id: "a", url: "https://one.example/", title: "One", openedBy: "agent" }] } },
     }));
     expect(() => manager.declareProfile("s1", "none")).toThrow(/already has tabs in profile/);
-    expect(manager.declareProfile("s1", PROJECT).partition).toBe(`persist:telar-project-${PROJECT.slice("project_".length)}`);
+    expect(manager.declareProfile("s1", PROJECT).partition).toBe(manager.profiles.get(manager.profiles.defaultProfileId).partition);
   });
 
   test("a legacy-owner mapping change at restart drops the scope rather than landing it in another project's jar", () => {
