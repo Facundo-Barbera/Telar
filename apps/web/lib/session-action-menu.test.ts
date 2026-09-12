@@ -32,8 +32,10 @@ const target = (over: Partial<SessionActionTarget> = {}): SessionActionTarget =>
   ...over,
 });
 
-/** Every handler, each recording what it was called with. */
-function spies() {
+/** Every handler, each recording what it was called with. `shell: true` adds
+ *  the one only the desktop supplies — which is what the web build gates the
+ *  new-window item on by simply not having it. */
+function spies(over: { shell?: boolean } = {}) {
   const calls: Array<[string, unknown]> = [];
   const record =
     (name: string) =>
@@ -41,6 +43,9 @@ function spies() {
       calls.push([name, input]);
     };
   const handlers: SessionActionHandlers = {
+    open: record("open"),
+    copyLink: record("copyLink"),
+    ...(over.shell ? { openWindow: record("openWindow") } : {}),
     newSession: record("newSession"),
     pin: record("pin"),
     settle: record("settle"),
@@ -67,8 +72,24 @@ const ids = (items: readonly SessionActionItem[]) => items.map((item) => item.id
 const byId = (items: readonly SessionActionItem[], id: string) => items.find((item) => item.id === id)!;
 
 describe("ordering", () => {
-  test("five groups, in the order the survey names them", () => {
+  test("six groups, in the order the survey names them", () => {
     expect(ids(build())).toEqual([
+      "open",
+      "new-session",
+      "pin",
+      "settle",
+      "snooze",
+      "rename",
+      "copy",
+      "project-settings",
+      "delete",
+    ]);
+  });
+
+  test("the shell's window row sits beside Open, in the same group", () => {
+    expect(ids(build({}, spies({ shell: true }).handlers))).toEqual([
+      "open",
+      "open-window",
       "new-session",
       "pin",
       "settle",
@@ -84,11 +105,12 @@ describe("ordering", () => {
     const separated = build()
       .filter((item) => item.separatorBefore)
       .map((item) => item.id);
-    expect(separated).toEqual(["pin", "rename", "copy", "delete"]);
+    expect(separated).toEqual(["new-session", "pin", "rename", "copy", "delete"]);
   });
 
   test("the archived session drops the whole inbox group rather than showing three inert rows", () => {
     expect(ids(build({ session: target({ archived: true }) }))).toEqual([
+      "open",
       "new-session",
       "rename",
       "copy",
@@ -104,7 +126,85 @@ describe("ordering", () => {
   });
 });
 
-describe("the first group names where the new session will run", () => {
+describe("getting to it: one href, three items", () => {
+  test("Open sends the route the row's own click would — sessionHref's answer, not a second spelling", () => {
+    const { calls, handlers } = spies();
+    byId(build({}, handlers), "open").run!();
+    expect(calls).toEqual([["open", "/projects/project_1/sessions/session_1"]]);
+  });
+
+  test("a session on another Mac carries its host into every one of the three", () => {
+    const { calls, handlers } = spies({ shell: true });
+    const items = build({ session: target({ hostId: "host_mini" }) }, handlers);
+    byId(items, "open").run!();
+    byId(items, "open-window").run!();
+    byId(byId(items, "copy").children!, "copy-link").run!();
+    const href = "/hosts/host_mini/projects/project_1/sessions/session_1";
+    expect(calls).toEqual([
+      ["open", href],
+      ["openWindow", href],
+      ["copyLink", href],
+    ]);
+  });
+
+  test("the Spool's master chat addresses the Spool, rather than a /projects/undefined link", () => {
+    const { calls, handlers } = spies();
+    const items = build({ session: target({ projectId: undefined }) }, handlers);
+    byId(items, "open").run!();
+    byId(byId(items, "copy").children!, "copy-link").run!();
+    expect(calls).toEqual([
+      ["open", "/spool"],
+      ["copyLink", "/spool"],
+    ]);
+  });
+
+  test("Open says why it is inert on the session you are already reading, and stays put", () => {
+    const items = build({ capabilities: { current: true } });
+    expect(byId(items, "open").disabled).toBe("You are already reading this one.");
+    // In the list, and first: the row must not move out from under the pointer
+    // between the rail's menu and the header's.
+    expect(items[0]!.id).toBe("open");
+  });
+
+  test("and does not navigate to where you already are", () => {
+    const { calls, handlers } = spies();
+    byId(build({ capabilities: { current: true } }, handlers), "open").run!();
+    expect(calls).toEqual([]);
+  });
+
+  test("a second window on the session you are reading is the ordinary reason to want one", () => {
+    const { calls, handlers } = spies({ shell: true });
+    const items = build({ capabilities: { current: true } }, handlers);
+    expect(byId(items, "open-window").disabled).toBeFalsy();
+    byId(items, "open-window").run!();
+    expect(calls).toEqual([["openWindow", "/projects/project_1/sessions/session_1"]]);
+  });
+
+  test("without the shell's handler the row is ABSENT, not greyed — a browser tab cannot open a window", () => {
+    expect(ids(build())).not.toContain("open-window");
+    // On every arrangement, so it cannot creep back in through one of them.
+    for (const arrangement of [
+      build({ session: target({ archived: true }) }),
+      build({ capabilities: { readOnly: true, remote: true, current: true } }),
+    ]) {
+      expect(ids(arrangement)).not.toContain("open-window");
+    }
+  });
+
+  test("neither verb is refused by observe mode: reading where a session lives is not writing to it", () => {
+    const items = build({ capabilities: { readOnly: true } }, spies({ shell: true }).handlers);
+    expect(byId(items, "open").disabled).toBeFalsy();
+    expect(byId(items, "open-window").disabled).toBeFalsy();
+  });
+
+  test("and neither is refused on an archived session — its transcript is still worth reading", () => {
+    const items = build({ session: target({ archived: true }) }, spies({ shell: true }).handlers);
+    expect(byId(items, "open").disabled).toBeFalsy();
+    expect(byId(items, "open-window").disabled).toBeFalsy();
+  });
+});
+
+describe("the second group names where the new session will run", () => {
   test("a worktree session's branch, because that is what it will be cut from", () => {
     const items = build({ session: target({ branch: "telar/some-work" }) });
     expect(byId(items, "new-session").label).toBe("New session on telar/some-work");
@@ -266,15 +366,18 @@ describe("gating: disabled with a reason beats failing later", () => {
     const refused = items.filter((item) => item.disabled).map((item) => item.id);
     expect(refused).toEqual(["pin", "settle", "snooze", "rename", "delete"]);
     expect(byId(items, "delete").disabled).toBe("This session is being observed, not driven.");
-    // Reading facts about it is still fine.
+    // Reading facts about it — and going to it — is still fine.
     expect(byId(items, "copy").disabled).toBeFalsy();
     expect(byId(items, "new-session").disabled).toBeFalsy();
+    expect(byId(items, "open").disabled).toBeFalsy();
   });
 
   test("a session with no project cannot start a sibling or open settings", () => {
     const items = build({ session: target({ projectId: undefined }) });
     expect(byId(items, "new-session").disabled).toBe("This session belongs to no project.");
     expect(byId(items, "project-settings").disabled).toBe("This session belongs to no project.");
+    // It can still be opened: the Spool is a real address.
+    expect(byId(items, "open").disabled).toBeFalsy();
   });
 
   test("a disabled item's run is inert rather than building a broken URL", () => {
@@ -295,9 +398,10 @@ describe("gating: disabled with a reason beats failing later", () => {
 });
 
 describe("copy", () => {
-  test("path and id always; branch only when the session has one of its own", () => {
-    expect(byId(build(), "copy").children!.map((child) => child.id)).toEqual(["copy-path", "copy-id"]);
+  test("link, path and id always; branch only when the session has one of its own", () => {
+    expect(byId(build(), "copy").children!.map((child) => child.id)).toEqual(["copy-link", "copy-path", "copy-id"]);
     expect(byId(build({ session: target({ branch: "telar/x" }) }), "copy").children!.map((child) => child.id)).toEqual([
+      "copy-link",
       "copy-path",
       "copy-branch",
       "copy-id",
@@ -309,6 +413,9 @@ describe("copy", () => {
     const children = byId(build({ session: target({ branch: "telar/x" }) }, handlers), "copy").children!;
     for (const child of children) child.run!();
     expect(calls).toEqual([
+      // The link is its own handler: a path is not a link until a surface with
+      // an origin resolves it, and this module has none.
+      ["copyLink", "/projects/project_1/sessions/session_1"],
       ["copy", "/Users/someone/code/telar"],
       ["copy", "telar/x"],
       ["copy", "session_1"],

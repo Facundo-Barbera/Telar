@@ -39,6 +39,8 @@ import { MoreHorizontalIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { canvasHref, type SidebarSession } from "@/lib/session-list";
+import { sessionLink } from "@/lib/session-link";
+import { desktopApp } from "@/lib/desktop-app";
 import { type SettlingActivity } from "@/lib/session-settling";
 import {
   buildSessionActionMenuItems,
@@ -194,7 +196,19 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
     }
   };
 
+  /** The shell, or nothing in a browser tab — which is what decides whether the
+   *  menu carries "Open in a new window" at all. */
+  const shell = desktopApp();
+
   const actions: SessionActionHandlers = {
+    // The row's own click, as a verb. Same `href` the row's <Link> carries,
+    // because the definition hands over `sessionHref`'s answer rather than
+    // letting each surface re-derive one.
+    open: (href) => router.push(href),
+    copyLink: (href) => void copyToClipboard(sessionLink(href)),
+    // Absent in a browser tab, and absent on a shell too old to carry it: the
+    // handler is what the definition gates the item on.
+    ...(shell?.openWindow ? { openWindow: (href: string) => void shell.openWindow!(href) } : {}),
     newSession: ({ projectId, hostId, baseRef }) => router.push(canvasHref(projectId, hostId, baseRef ? { baseRef } : undefined)),
     pin: (pinned) => void run(() => patchSession(session, { settledOverride: pinned ? "active" : null })),
     settle: (next) =>
@@ -236,7 +250,12 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
     // A row on a paired Mac cannot open that project's settings from here —
     // there is no `/hosts/:id/projects/:id/settings` route, and this Mac's page
     // for the same id would be a different project or none.
-    capabilities: { remote: Boolean(session.hostId && session.hostId !== LOCAL_HOST_ID) },
+    capabilities: {
+      remote: Boolean(session.hostId && session.hostId !== LOCAL_HOST_ID),
+      // The row the main view is already showing — `Open` says so rather than
+      // navigating to where you are.
+      current: Boolean(active),
+    },
     actions,
   });
   return { items, busy };
