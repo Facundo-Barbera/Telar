@@ -25,10 +25,17 @@
  * else. A caller that could name the lines could append anything to a file inside
  * a repository, and this is the only write in the engine that touches a file the
  * user did not ask for by name.
+ *
+ * AND IT UNDOES ITSELF. Registering a project now ignores these files WITHOUT
+ * asking — the switch in the old dialog became a default — so the decision has to
+ * be reversible from the toast that reports it. `removeTelarGitignore` is that
+ * reverse, and it is deliberately narrower than a delete: it takes out the header
+ * and the run of OUR rules directly under it, and leaves every other line in the
+ * file exactly where it was.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { GitignoreResult } from "@telar/engine-client";
+import type { GitignoreRemoval, GitignoreResult } from "@telar/engine-client";
 
 /**
  * One rule, and every spelling that already covers it.
@@ -116,4 +123,52 @@ export function ensureTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_I
   const block = [HEADER, ...added.map((rule) => rule)].join("\n");
   writeFileSync(file, `${prefix}${gap}${block}\n`, "utf8");
   return { added, present, path: file, created };
+}
+
+/**
+ * Take the block back out of `<root>/.gitignore`.
+ *
+ * IT REMOVES OUR HEADER AND THE RUN OF OUR RULES UNDER IT, and nothing else. A
+ * `.telar/` somebody wrote themselves, in their own section, is theirs — matching
+ * rules anywhere in the file would make an undo of Telar's write delete a line
+ * Telar never wrote. So the search is anchored on the header this module emits,
+ * and it stops at the first line that is not one of `rules`.
+ *
+ * THE BLANK LINE ABOVE THE BLOCK GOES WITH IT, because `ensureTelarGitignore`
+ * added it — leaving it behind would let a register/undo/register cycle grow a
+ * gap per round trip.
+ *
+ * A FILE WITH NO HEADER IS NOT AN ERROR. The undo runs from a toast that may
+ * arrive after somebody has already edited the file by hand, and "there was
+ * nothing of ours to remove" is a true answer rather than a failure.
+ */
+export function removeTelarGitignore(root: string, rules: IgnoreRule[] = TELAR_IGNORE_RULES): GitignoreRemoval {
+  const file = path.join(root, ".gitignore");
+  let contents: string;
+  try {
+    contents = readFileSync(file, "utf8");
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    return { removed: [], path: file };
+  }
+
+  const lines = contents.split("\n");
+  const at = lines.findIndex((line) => line.trim() === HEADER);
+  if (at === -1) return { removed: [], path: file };
+
+  const ours = new Set(rules.map((entry) => entry.rule));
+  let end = at + 1;
+  const removed: string[] = [];
+  while (end < lines.length && ours.has(lines[end].trim())) {
+    removed.push(lines[end].trim());
+    end++;
+  }
+  // The gap `ensureTelarGitignore` opened above the header, and only that one.
+  const from = at > 0 && lines[at - 1].trim() === "" ? at - 1 : at;
+  const kept = [...lines.slice(0, from), ...lines.slice(end)];
+  // A file that now ends in blank lines ends in ONE newline instead: the block
+  // was the tail, and its removal should not leave the shape of a tail behind.
+  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  writeFileSync(file, kept.length === 0 ? "" : `${kept.join("\n")}\n`, "utf8");
+  return { removed, path: file };
 }

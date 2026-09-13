@@ -2569,6 +2569,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * And the way back out. DELETE rather than a flag on the POST, because it
+       * is the inverse of that write rather than a variant of it — the Sources
+       * palette ignores Telar's files without asking and reports it with an
+       * Undo, so the undo is a route rather than a second switch.
+       */
+      if (request.method === "DELETE" && projectGitignore) {
+        writeJson(response, 200, { gitignore: store.undoProjectGitignore(decodeURIComponent(projectGitignore[1])) });
+        return;
+      }
+      /**
        * ONE issue or ONE pull request, and merging one.
        *
        * `(\d+)` IN THE PATTERN rather than a parse afterwards: the number goes
@@ -2873,6 +2883,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "DELETE" && latexJob) {
         store.latexCancelJob(decodeURIComponent(latexJob[1]));
         writeJson(response, 200, {});
+        return;
+      }
+      /**
+       * CLONE, THEN REGISTER — and it is one route because the cockpit cannot
+       * name the path in between. It sends a URL and the parent folder somebody
+       * picked; only the engine knows what directory `git clone` created.
+       *
+       * ABOVE `POST /v2/projects` in this chain purely so the literal comparison
+       * below never has to think about a sub-path. No streaming progress: the
+       * answer is the registered project or a sentence saying why not.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/projects/clone") {
+        const input = await body(request);
+        writeJson(response, 201, {
+          project: store.cloneProject({
+            url: stringValue(input.url, "repository url")!,
+            parent: stringValue(input.parent, "parent folder")!,
+            ...(input.name === undefined ? {} : { name: stringValue(input.name, "project name")! }),
+          }),
+        });
         return;
       }
       if (request.method === "POST" && url.pathname === "/v2/projects") {

@@ -1804,3 +1804,23 @@ export const GitignoreResult = z.object({
   created: z.boolean(),
 });
 export type GitignoreResult = z.infer<typeof GitignoreResult>;
+
+/**
+ * What UNDOING that write did.
+ *
+ * A SEPARATE SHAPE RATHER THAN A REUSED ONE. The add reports two lists because
+ * "added nothing" and "was already covered" mean opposite things; the undo has no
+ * such pair — a rule is either taken out or was never ours to take out — and
+ * `present: []` on the way back would be a field with no meaning.
+ *
+ * AN EMPTY `removed` IS A SUCCESS. The undo runs from a toast, which can arrive
+ * after somebody edited the file by hand, and "there was nothing of ours left" is
+ * an answer rather than a failure.
+ */
+export const GitignoreRemoval = z.object({
+  /** Rules taken back out, in the order they appeared in the file. */
+  removed: z.array(z.string()),
+  /** Absolute path of the file that was rewritten, whether or not it changed. */
+  path: z.string().min(1),
+});
+export type GitignoreRemoval = z.infer<typeof GitignoreRemoval>;

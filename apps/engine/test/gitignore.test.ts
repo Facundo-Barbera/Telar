@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { ensureTelarGitignore, TELAR_IGNORE_RULES } from "../src/gitignore";
+import { ensureTelarGitignore, removeTelarGitignore, TELAR_IGNORE_RULES } from "../src/gitignore";
 
 const roots: string[] = [];
 function scratch(contents?: string): string {
@@ -101,5 +101,68 @@ describe("ensureTelarGitignore", () => {
     const result = ensureTelarGitignore(root);
     expect(result.path).toBe(path.join(root, ".gitignore"));
     expect(existsSync(result.path)).toBe(true);
+  });
+});
+
+/**
+ * The Undo behind the toast. Registering a project now writes these rules
+ * WITHOUT asking, so the way back has to be as cheap as the way in — and as
+ * careful, because by the time somebody presses Undo the file may have been
+ * edited by hand.
+ */
+describe("removeTelarGitignore", () => {
+  test("a write and its undo leave the file exactly as it was found", () => {
+    // The whole promise, in one assertion: nothing of the user's is lost, and no
+    // blank line is left behind to accumulate over a register/undo/register cycle.
+    const before = "node_modules/\ndist/\n";
+    const root = scratch(before);
+    ensureTelarGitignore(root);
+    expect(read(root)).not.toBe(before);
+    const result = removeTelarGitignore(root);
+    expect(result.removed).toEqual(ALL_RULES);
+    expect(read(root)).toBe(before);
+  });
+
+  test("a rule somebody wrote themselves, in their own section, survives", () => {
+    // Matching rules anywhere in the file would make an undo of TELAR's write
+    // delete a line Telar never wrote.
+    const root = scratch("# mine\n.telar/\n\n");
+    ensureTelarGitignore(root);
+    const result = removeTelarGitignore(root);
+    // `.telar/` was already covered, so the block never contained it…
+    expect(result.removed).toEqual(["telar.yaml", ".telar-worktrees/"]);
+    // …and the copy in their section is still there.
+    expect(read(root)).toBe("# mine\n.telar/\n");
+  });
+
+  test("it stops at the first line that is not one of ours", () => {
+    // Somebody appended their own rule under our block. It is not ours to remove,
+    // and neither is anything after it.
+    const root = scratch();
+    ensureTelarGitignore(root);
+    writeFileSync(path.join(root, ".gitignore"), `${read(root)}secrets.env\n`);
+    expect(removeTelarGitignore(root).removed).toEqual(ALL_RULES);
+    expect(read(root)).toBe("secrets.env\n");
+  });
+
+  test("no header, or no file at all, is an answer rather than a failure", () => {
+    const untouched = scratch("dist/\n");
+    expect(removeTelarGitignore(untouched).removed).toEqual([]);
+    expect(read(untouched)).toBe("dist/\n");
+
+    const empty = scratch();
+    const result = removeTelarGitignore(empty);
+    expect(result.removed).toEqual([]);
+    expect(result.path).toBe(path.join(empty, ".gitignore"));
+    // It did not create the file it had nothing to remove from.
+    expect(existsSync(result.path)).toBe(false);
+  });
+
+  test("undoing twice is not an error and removes nothing the second time", () => {
+    const root = scratch("dist/\n");
+    ensureTelarGitignore(root);
+    removeTelarGitignore(root);
+    expect(removeTelarGitignore(root).removed).toEqual([]);
+    expect(read(root)).toBe("dist/\n");
   });
 });

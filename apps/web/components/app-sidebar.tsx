@@ -4,7 +4,7 @@
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
 // wordmark; a search field wearing its ⌘K hint and a new-session button beside
-// it; a project scope dropdown with a register button; then the five bands —
+// it; a project scope dropdown with an add-project button; then the five bands —
 //
 //   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
 //             in the rail: a conversation you started writing and did not send
@@ -129,8 +129,7 @@ import {
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
-import { NewConversationDialog, type NewConversationTarget } from "@/components/new-conversation-dialog";
-import { RegisterProjectDialog } from "@/components/projects/register-dialog";
+import { ProjectPalette, type NewConversationTarget, type PalettePage } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -375,9 +374,6 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
-  /** The register dialog, when something OTHER than its own button asked for it
-   *  — the rail's empty-space menu. Its trigger still works on its own. */
-  const [registeringProject, setRegisteringProject] = useState(false);
   const { collapsed: collapsedGroups, toggle: toggleGroup, collapseOthers, collapseAll, expandAll } = useCollapsedGroups();
   /**
    * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
@@ -429,9 +425,17 @@ function SidebarBody() {
    * the sessions; a Mac that is this Mac contributes nothing here.
    */
   const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
-  /** The New-conversation palette. Opened by the button and by ⌘N, which is
-   *  the whole point of it being state here rather than inside the button. */
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /**
+   * THE PROJECT PALETTE, and which of its two pages is up.
+   *
+   * ONE PIECE OF STATE FOR BOTH, because they are one surface: New conversation
+   * (the button, ⌘N) opens the Projects page, Add project (the header's pill, the
+   * empty-space menu) opens Sources, and the palette itself walks between them.
+   * They were two dialogs with two flags, which is how the rail ended up able to
+   * have a register form open behind a project picker.
+   */
+  const [palette, setPalette] = useState<{ open: boolean; page: PalettePage }>({ open: false, page: "projects" });
+  const openPalette = (page: PalettePage) => setPalette({ open: true, page });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
@@ -1117,7 +1121,7 @@ function SidebarBody() {
   const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;
   const newConversation = () => {
     if (soleTarget) startSession({ projectId: soleTarget.id, ...(soleTarget.hostId ? { hostId: soleTarget.hostId } : {}) });
-    else setPickerOpen(true);
+    else openPalette("projects");
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1151,11 +1155,13 @@ function SidebarBody() {
           anywhere in the cockpit, and the rail is the one component alive on
           every route. It renders into a portal, so its place here is about
           lifetime rather than layout. */}
-      <NewConversationDialog
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
+      <ProjectPalette
+        open={palette.open}
+        page={palette.page}
+        onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
         targets={pickerTargets}
         onChoose={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        onRegistered={() => void loadAll()}
       />
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
@@ -1246,8 +1252,8 @@ function SidebarBody() {
                 project" select the same rows, so the control spent a line of
                 the rail offering a choice that changes nothing. It comes back
                 the moment a second project — or a paired Mac's — exists. The
-                register button beside it stays either way, because that is how
-                the second one gets registered. */}
+                add-project button beside it stays either way, because that
+                is how the second one gets there. */}
             {pickerTargets.length > 1 && (
             <DropdownMenu>
               <DropdownMenuTrigger
@@ -1326,15 +1332,19 @@ function SidebarBody() {
               </DropdownMenuContent>
             </DropdownMenu>
             )}
-            {/* Holds the register button at the trailing edge when the filter
-                above is absent. */}
+            {/* Holds the add-project button at the trailing edge when the
+                filter above is absent. */}
             {pickerTargets.length <= 1 && <div className="min-w-0 flex-1" />}
-            <RegisterProjectDialog
-              onRegistered={() => void loadAll()}
-              compact
-              open={registeringProject}
-              onOpenChange={setRegisteringProject}
-            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0"
+              aria-label="Add project"
+              title="Add project"
+              onClick={() => openPalette("sources")}
+            >
+              <FolderPlusIcon />
+            </Button>
           </div>
         </div>
 
@@ -1682,12 +1692,12 @@ function SidebarBody() {
                 <MessageSquarePlusIcon />
                 New conversation
               </ContextMenuItem>
-              {/* The `+` beside the project picker, as a row: the SAME dialog,
-                  so there is still exactly one registration path and one
-                  `chooseDirectory` call in the app. */}
-              <ContextMenuItem onClick={() => setRegisteringProject(true)}>
+              {/* The `+` in the header, as a row: the SAME palette page, so
+                  there is still exactly one way a project joins the registry and
+                  one `chooseDirectory` call in the app. */}
+              <ContextMenuItem onClick={() => openPalette("sources")}>
                 <FolderPlusIcon />
-                New project
+                Add project
               </ContextMenuItem>
               {/* Folds only the groups ON SCREEN — see `foldedAfter`. A rail
                   showing search results has none, so both rows stand down
