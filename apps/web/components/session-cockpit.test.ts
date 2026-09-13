@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
-import { cockpitPlugins, describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
+import { cockpitPlugins, describeTurnState, pinToggleOverride, retryInputForJournalTurn } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
   test("names every durable turn state without relying on colour", () => {
@@ -514,5 +514,42 @@ describe("which plugin surfaces the cockpit offers", () => {
 
   test("a project that has not loaded yet offers nothing", () => {
     expect(cockpitPlugins(undefined)).toEqual({ dataScience: false, latex: false });
+  });
+});
+
+describe("⌘P pins the conversation you are reading, and unpins it again (#408)", () => {
+  /**
+   * THE CHORD HAS NO ROW TO READ. The rail's menu is handed the direction it
+   * is going, because it just drew "Pin" or "Unpin" from the same record;
+   * `pin-session` has to work that out from `settledOverride` alone, and the
+   * two halves are not symmetrical — which is the whole reason this is a
+   * function with a test rather than a ternary nobody looks at twice.
+   */
+  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
+
+  test("an unpinned session is pinned by writing the override", () => {
+    expect(pinToggleOverride(undefined)).toBe("active");
+    expect(pinToggleOverride(null)).toBe("active");
+  });
+
+  test("a pinned session is unpinned by CLEARING it, not by writing a second state", () => {
+    // `null` is the patch that removes the override. Writing "settled" here
+    // would shelve the conversation rather than unpin it, which is a different
+    // verb with its own row.
+    expect(pinToggleOverride("active")).toBeNull();
+  });
+
+  test("pressing it over a SETTLED session pins it, rather than treating settled as pinned", () => {
+    // Settled is somebody's decision to shelve this; Pin over it means pin.
+    expect(pinToggleOverride("settled")).toBe("active");
+  });
+
+  test("and the chord goes through the same patch the menu's Pin row does", () => {
+    // ASSERTED AS SOURCE TEXT, like the draft-ordering tests above: the claim
+    // is that the chord reuses `patchFromMenu` rather than writing its own
+    // update, and there is no harness here that could observe the difference.
+    const handler = source.slice(source.indexOf('"pin-session": () => {'), source.indexOf('"pin-session": () => {') + 400);
+    expect(handler).toContain("patchFromMenu(");
+    expect(handler).toContain("pinToggleOverride(session?.settledOverride)");
   });
 });
