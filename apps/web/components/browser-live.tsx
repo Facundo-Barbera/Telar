@@ -19,7 +19,7 @@
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, UserRoundIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, TriangleAlertIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -488,6 +488,28 @@ function useHostSize(hostRef: RefObject<HTMLDivElement | null>): { width: number
 }
 
 /**
+ * Whether the address row is too narrow to spell its controls out.
+ *
+ * MEASURED, not a media query: the panel's width is its own — the window can be
+ * wide while this column is narrow because the conversation took the
+ * difference — so the only width that answers the question is this row's. Only
+ * the boolean is state, so a drag across the whole range re-renders twice.
+ */
+function useCompactAddressRow(rowRef: RefObject<HTMLElement | null>): boolean {
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setCompact(addressRowCompact(entry.contentRect.width));
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [rowRef]);
+  return compact;
+}
+
+/**
  * The frame, rails and readout around the fitted page. The SAME fit
  * arithmetic the shell applies to the native view (`fitViewport` over the
  * stage), so what is drawn here and the pixels the view shows are one rect.
@@ -537,6 +559,41 @@ export function addressValue(url: string | undefined): string {
   return !url || url === "about:blank" ? "" : url;
 }
 
+/**
+ * WHAT THE ADDRESS ROW SPENDS ON EVERYTHING THAT IS NOT THE ADDRESS.
+ *
+ * The row is one no-wrap flex line, so every control on it is width the input
+ * does not get. At the right panel's default (~510px) the labelled controls
+ * cost more than the row has and the input — the only thing on the row you can
+ * TYPE into — collapsed to about 30px, which is the bug (#319).
+ *
+ * Measured in px off the row's own classes rather than guessed: back, forward
+ * and reload are 22 each (`p-1` around a 14px glyph); the viewport and profile
+ * controls are 26 icon-only (`px-1.5` around the same glyph); the password
+ * control is 44 at its widest, which is the glyph with the warning mark beside
+ * it; the row spends six 4px gaps between its seven children. Padding is NOT
+ * counted — the observer below reads the content box.
+ */
+const ADDRESS_CONTROLS_COMPACT = 3 * 22 + 2 * 26 + 44 + 6 * 4;
+/** The same row spelling its two labelled controls out: "Fit panel" or a size
+ *  (+49) and the profile label at its `max-w-28` cap (+116). */
+const ADDRESS_CONTROLS_LABELLED = ADDRESS_CONTROLS_COMPACT + 49 + 116;
+/** The row's own `px-2`, which the content box the observer reports excludes. */
+export const ADDRESS_ROW_PADDING = 16;
+/** Under this the address bar is a decoration rather than a place to type a
+ *  URL: "Type an address" does not fit, and neither does most of a hostname. */
+export const ADDRESS_INPUT_FLOOR = 200;
+
+/** What is left for the address input on a row of `rowWidth` content px. */
+export function addressInputRoom(rowWidth: number, labelled: boolean): number {
+  return rowWidth - (labelled ? ADDRESS_CONTROLS_LABELLED : ADDRESS_CONTROLS_COMPACT);
+}
+
+/** Whether the row must drop its labels for the input to clear the floor. */
+export function addressRowCompact(rowWidth: number): boolean {
+  return addressInputRoom(rowWidth, true) < ADDRESS_INPUT_FLOOR;
+}
+
 /** Thrown by `bindNow` when the session scope changed while it awaited, so the
  *  caller aborts the (now stale) action instead of running it. */
 class StaleScopeError extends Error {}
@@ -548,6 +605,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   const [extensionError, setExtensionError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const hostRef = useRef<HTMLDivElement>(null);
+  const addressRowRef = useRef<HTMLFormElement>(null);
   const keyButtonRef = useRef<HTMLButtonElement>(null);
 
   /**
@@ -618,6 +676,8 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   /** A rail drag in progress — shown live, committed on release. */
   const [dragPreview, setDragPreview] = useState<{ width: number; height: number }>();
   const hostSize = useHostSize(hostRef);
+  /** The toolbar's labels come off before the address bar does — see #319. */
+  const compactRow = useCompactAddressRow(addressRowRef);
   const viewportMode: ViewportMode = activeTab?.viewport?.mode ?? "fit";
 
   /**
@@ -933,8 +993,13 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         </button>
       </div>
 
-      {/* ── address row ───────────────────────────────────────────────── */}
+      {/* ── address row ───────────────────────────────────────────────────
+          THE ADDRESS IS WHAT THIS ROW IS FOR. Everything else on it gives up
+          its label before the input gives up its width (`compactRow`), because
+          a 30px address bar is a control you cannot use at all where an
+          unlabelled glyph is one you can still read by its tooltip. */}
       <form
+        ref={addressRowRef}
         className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
         onSubmit={(event) => {
           event.preventDefault();
@@ -984,9 +1049,11 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                   title={`Viewport ${describeViewport(activeTab.viewport, viewportMode)}${state?.presentation && state.presentation.scale < 1 ? ` · shown at ${Math.round(state.presentation.scale * 100)}%` : ""}`}
                   className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
                 >
-                  <ScalingIcon className="size-3.5" />
-                  <span>{viewportMode === "fit" ? "Fit panel" : `${activeTab.viewport.width}×${activeTab.viewport.height}`}</span>
-                  {viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
+                  <ScalingIcon className="size-3.5 shrink-0" />
+                  {/* The size is in the label and in the title; on a narrow row
+                      only the title has room for it. */}
+                  {!compactRow && <span>{viewportMode === "fit" ? "Fit panel" : `${activeTab.viewport.width}×${activeTab.viewport.height}`}</span>}
+                  {!compactRow && viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
                 </button>
               }
             />
@@ -1064,7 +1131,9 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                   className="flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
                 >
                   <UserRoundIcon className="size-3.5 shrink-0" />
-                  <span className="max-w-28 truncate">{state.profile.label}</span>
+                  {/* Which identity you browse as stays in the accessible name
+                      and the tooltip when the row has no room to write it. */}
+                  {!compactRow && <span className="max-w-28 truncate">{state.profile.label}</span>}
                 </button>
               }
             />
@@ -1251,8 +1320,13 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
           <button
             ref={keyButtonRef}
             type="button"
-            aria-label={extension.phase === "ready" ? `Open ${extension.name ?? "password manager"} — ${describeExtensionHealth(extension).text}` : `${extension.name ?? "Password manager"}: ${extension.phase}`}
-            title={extension.phase === "ready" ? `${extension.name}: ${describeExtensionHealth(extension).text}` : extension.error ?? extension.phase}
+            // THE HEALTH SENTENCE IS THE TOOLTIP AND THE ACCESSIBLE NAME, in
+            // every phase — it used to be written inline beside the glyph, and
+            // at the panel's default width those ~190px were most of what the
+            // address input had left (#319). The mark below says something is
+            // wrong; the words say what, on hover and to a screen reader.
+            aria-label={extension.phase === "ready" ? `Open ${extension.name ?? "password manager"} — ${describeExtensionHealth(extension).text}` : `${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}
+            title={`${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}
             // Privacy pauses AGENTS, never the human's own credential tools:
             // the button stays live while private so a login can be chosen
             // and the popup closed and reopened. Disabled only while the
@@ -1275,8 +1349,10 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             ) : (
               <KeyRoundIcon className="size-3.5" />
             )}
-            {/* A genuine failure is written out, not hidden behind a glyph. */}
-            {describeExtensionHealth(extension).tone === "error" ? <span className="max-w-48 truncate">{describeExtensionHealth(extension).text}</span> : null}
+            {/* A genuine failure is MARKED, and the mark carries the sentence
+                in its tooltip. Written out inline it was a paragraph in a
+                toolbar, and it took the address bar's width to say it. */}
+            {describeExtensionHealth(extension).tone === "error" ? <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-destructive" /> : null}
           </button>
         ) : null}
       </form>
