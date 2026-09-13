@@ -165,20 +165,11 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
           hint={data?.mainCandidates.length ? "Used only when you press Compile without choosing a file. Agents can still compile any report by path." : "No .tex with \\documentclass found in the top folders — type a path, or ask the agent to inspect deeper."}
           control={
             data && data.mainCandidates.length > 0 ? (
-              <Select
-                value={config?.mainFile ?? "__none"}
-                onValueChange={(next) => void save({ enabled, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(typeof next === "string" && next !== "__none" ? { mainFile: next } : {}) })}
-              >
-                <SelectTrigger size="sm" className="w-56" aria-label="Main .tex file">
-                  <SelectValue placeholder="No default" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none">No default</SelectItem>
-                  {data.mainCandidates.map((candidate) => (
-                    <SelectItem key={candidate} value={candidate}>{candidate}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <MainFileSelect
+                {...(config?.mainFile ? { value: config.mainFile } : {})}
+                candidates={data.mainCandidates}
+                onPick={(next) => void save({ enabled, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(next ? { mainFile: next } : {}) })}
+              />
             ) : (
               <MainFileInput
                 value={config?.mainFile ?? ""}
@@ -273,6 +264,41 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Which .tex a bare Compile picks, when discovery found some.
+ *
+ * THE TRIGGER READS THE LABEL, NOT THE VALUE (#352 — #318's bug, here).
+ * "No default" is carried as the sentinel `__none`, and base-ui's
+ * `Select.Value` renders the raw value when nothing maps it to a label, so the
+ * trigger read `__none` while the list under it said "No default" all along.
+ * `placeholder` was never going to help: `__none` IS a selected value, so the
+ * placeholder branch is unreachable. The label is stated as a child instead.
+ *
+ * Exported so the trigger's text can be rendered on its own — the section
+ * around it only draws this row after an async `latexDistributions`.
+ */
+export function MainFileSelect({ value, candidates, onPick }: { value?: string; candidates: string[]; onPick: (next?: string) => void }) {
+  return (
+    <Select
+      value={value ?? NO_MAIN_FILE}
+      onValueChange={(next) => onPick(typeof next === "string" && next !== NO_MAIN_FILE ? next : undefined)}
+    >
+      <SelectTrigger size="sm" className="w-56" aria-label="Main .tex file">
+        <SelectValue>{value ?? "No default"}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={NO_MAIN_FILE}>No default</SelectItem>
+        {candidates.map((candidate) => (
+          <SelectItem key={candidate} value={candidate}>{candidate}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** base-ui needs a non-empty value per item, so "none" travels as a sentinel. */
+const NO_MAIN_FILE = "__none";
 
 function MainFileInput({ value, disabled, onSave }: { value: string; disabled: boolean; onSave: (next: string) => void }) {
   const [draft, setDraft] = useState(value);
