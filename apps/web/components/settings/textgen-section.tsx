@@ -116,7 +116,14 @@ export function TextGenSection() {
     >
       <Row
         label="Written by"
-        hint={error}
+        hint="Which harness writes the title and the branch name."
+        // THE ERROR, NOT THE HINT. It used to BE the hint, so a row whose write
+        // was refused had no sentence saying what the field is for — and the
+        // whole group's error surfaced on this one row whichever field caused it.
+        {...(error ? { error } : {})}
+        {...(policy.driver === DEFAULT_TEXT_GEN_POLICY.driver
+          ? {}
+          : { onRevert: () => void save({ driver: DEFAULT_TEXT_GEN_POLICY.driver }) })}
         control={
           <Segmented<ProviderDriverKind>
             value={policy.driver}
@@ -137,6 +144,9 @@ export function TextGenSection() {
         // case that actually bites: switching harness above drops the pin
         // server-side, so a model chosen here does not survive that change.
         hint="Provider default lets the harness pick. Changing the harness above clears a pinned model."
+        {...(pinned === DEFAULT_TEXT_GEN_POLICY.model
+          ? {}
+          : { onRevert: () => void save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null }) })}
         control={
           <Select
             value={pinned ?? DRIVER_DEFAULT}
@@ -165,6 +175,9 @@ export function TextGenSection() {
         hint="Replaces the truncated first message. A title you set yourself is never touched."
         checked={policy.titles}
         onCheckedChange={(next) => void save({ titles: next })}
+        {...(policy.titles === DEFAULT_TEXT_GEN_POLICY.titles
+          ? {}
+          : { onRevert: () => void save({ titles: DEFAULT_TEXT_GEN_POLICY.titles }) })}
       />
       {policy.titles && (
         <ToggleRow
@@ -172,6 +185,9 @@ export function TextGenSection() {
           hint="Only branches the engine cut. Yours keep their names."
           checked={policy.renameBranches}
           onCheckedChange={(next) => void save({ renameBranches: next })}
+          {...(policy.renameBranches === DEFAULT_TEXT_GEN_POLICY.renameBranches
+            ? {}
+            : { onRevert: () => void save({ renameBranches: DEFAULT_TEXT_GEN_POLICY.renameBranches }) })}
         />
       )}
     </SettingsGroup>

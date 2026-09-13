@@ -336,7 +336,7 @@ export function RemoteSection() {
   if (!status) {
     return (
       <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
-        <Row label="Loading" hint={error ?? "Reading the pairing store."} control={null} />
+        <Row label="Loading" hint="Reading the pairing store." {...(error ? { error } : {})} control={null} />
       </SettingsGroup>
     );
   }

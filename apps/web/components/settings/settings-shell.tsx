@@ -6,7 +6,7 @@
 // from theme tokens only; nothing hard-codes a palette.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
+import { ArrowLeftIcon, CircleAlertIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
 import { SettingsSearchNav } from "./settings-search-nav";
@@ -560,6 +560,20 @@ export function SettingsGroup({
  * you are meant to press. The value stays in `control`; the explanation stays
  * in `hint`.
  *
+ * `error` IS WHAT HAPPENED TO THE LAST WRITE, and it is a slot of its own
+ * rather than a sentence swapped into `hint`.
+ *
+ * Every row here saves on change, through an engine that can be unreachable —
+ * so "it refused" is a state a row has to be able to be in, and the shape of
+ * the failure is specific: THE VALUE DID NOT MOVE. The hooks behind these rows
+ * only ever advance their state on the engine's own answer, so a refused write
+ * leaves the control showing what is actually stored. What was missing was the
+ * saying so. Swapping the error INTO `hint` was the old workaround and it costs
+ * the explanation: a reader who has just been refused loses the sentence that
+ * would tell them what the setting does, at the moment they are most likely to
+ * want it. The error reads under the hint, in the destructive colour, and the
+ * hint stays put.
+ *
  * `unavailable` IS THE THIRD STATE A SETTING CAN BE IN: not on, not off, not
  * applicable — the plugin failed to start, this build has no desktop shell. The
  * control stays VISIBLE and goes inert, because a row that silently vanished
@@ -588,6 +602,7 @@ export function Row({
   status,
   control,
   onRevert,
+  error,
   unavailable,
   children,
 }: {
@@ -601,6 +616,8 @@ export function Row({
   control?: ReactNode;
   /** Shown as a revert arrow at the end of the label line; omit when the value is default. */
   onRevert?: () => void;
+  /** Why the last write did not land. Reads UNDER the hint, never instead of it. */
+  error?: ReactNode;
   /** Renders `control` inert and puts `reason` where the hint would be. */
   unavailable?: { reason: ReactNode };
   children?: ReactNode;
@@ -652,6 +669,15 @@ export function Row({
             </span>
           </div>
           {explanation && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{explanation}</p>}
+          {/* `alert`, not `status`: the control still shows the stored value,
+              so nothing on screen changed when the write was refused — a
+              screen reader would otherwise be told nothing at all. */}
+          {error && (
+            <p role="alert" className="mt-1 flex items-start gap-1.5 text-xs leading-snug text-destructive">
+              <CircleAlertIcon className="mt-px size-3 shrink-0" />
+              <span>{error}</span>
+            </p>
+          )}
           {children}
         </div>
       </div>
@@ -754,8 +780,9 @@ export function Tabs<T extends string>({
   );
 }
 
-// Labelled toggle row. `status` and `unavailable` pass straight through: a
-// toggle is a Row, and a switch that does not apply here is the commonest case
+// Labelled toggle row. `status`, `error`, `onRevert` and `unavailable` pass
+// straight through: a toggle is a Row, it is off its default as often as any
+// other field, and a switch that does not apply here is the commonest case
 // `unavailable` exists for.
 export function ToggleRow({
   id,
@@ -765,6 +792,8 @@ export function ToggleRow({
   status,
   checked,
   onCheckedChange,
+  onRevert,
+  error,
   unavailable,
 }: {
   /** Passed straight through — a toggle row is a Row, and is a search destination like any other. */
@@ -775,6 +804,8 @@ export function ToggleRow({
   status?: ReactNode;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
+  onRevert?: () => void;
+  error?: ReactNode;
   unavailable?: { reason: ReactNode };
 }) {
   return (
@@ -784,6 +815,8 @@ export function ToggleRow({
       hint={hint}
       icon={icon}
       {...(status ? { status } : {})}
+      {...(onRevert ? { onRevert } : {})}
+      {...(error ? { error } : {})}
       {...(unavailable ? { unavailable } : {})}
       control={<Switch checked={checked} onCheckedChange={onCheckedChange} />}
     />

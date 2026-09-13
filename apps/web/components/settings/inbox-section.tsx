@@ -116,7 +116,13 @@ export function InboxSection() {
     <SettingsGroup title="Settling" description="A settled session is off your list, not finished.">
       <Row
         label="Settle quiet sessions"
-        hint={error ?? "Off means nothing leaves the list on its own."}
+        hint="Off means nothing leaves the list on its own."
+        {...(error ? { error } : {})}
+        // The engine's answer is the state, so a refused write leaves the
+        // switch showing what is stored — the error says so beneath it.
+        {...((hours === null) === (DEFAULT_INBOX_POLICY.autoSettleAfterHours === null)
+          ? {}
+          : { onRevert: () => void save({ autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours }) })}
         control={
           <Switch
             checked={hours !== null}
@@ -130,6 +136,9 @@ export function InboxSection() {
         <Row
           label="After"
           hint="Time without activity. Pinned sessions and open questions stay put."
+          {...(hours === DEFAULT_AUTO_SETTLE_HOURS
+            ? {}
+            : { onRevert: () => void save({ autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS }) })}
           control={<WindowInput hours={hours} onCommit={(next) => void save({ autoSettleAfterHours: next })} />}
         />
       )}

@@ -32,11 +32,13 @@ export function WorkspaceSection() {
         label="Workspace"
         icon={FolderGitIcon}
         hint={
-          error ??
-          (defaults.envMode === "worktree"
+          defaults.envMode === "worktree"
             ? "Each session gets its own checkout and branch, so two can edit the repo at once. A project without git falls back to the project checkout."
-            : "Sessions share the project's checkout. Two at once will collide.")
+            : "Sessions share the project's checkout. Two at once will collide."
         }
+        // UNDER the hint, not instead of it: the control still shows what the
+        // engine has, so the sentence explaining it is still the true one.
+        {...(error ? { error } : {})}
         // Only when it is NOT the default — the revert costs nothing when there
         // is nothing to undo, and saves a reader from remembering what "was".
         // Compared against the shared constant rather than a literal, so the

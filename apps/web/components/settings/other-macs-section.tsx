@@ -94,7 +94,10 @@ export function OtherMacsSection() {
       ))}
       <Row
         label="Add a Mac"
-        hint={error ?? "On the other Mac, open Settings → Remote access, turn on pairing, and copy its link. It looks like http://mini.tail:3000/pair#token=48129037."}
+        hint="On the other Mac, open Settings → Remote access, turn on pairing, and copy its link. It looks like http://mini.tail:3000/pair#token=48129037."
+        // Under the instructions rather than instead of them: a paste that was
+        // refused is exactly when the reader wants to re-read what to paste.
+        {...(error ? { error } : {})}
         control={
           <form
             className="flex items-center gap-2"
