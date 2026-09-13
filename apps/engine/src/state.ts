@@ -4917,7 +4917,16 @@ export class EngineStore {
     const toolchain = await this.dataScienceToolchain(true);
     let plan;
     try {
-      plan = planEnvironment(request, toolchain, { projectRoot: project.root, telarVenv: telarVenvDir(this.paths.root, projectId) });
+      // THE MAC'S DEFAULT PACKAGES, applied where they were promised: to an
+      // environment TELAR CREATES. Never to one that already exists — a
+      // settings field that reached back into somebody's configured venv would
+      // be a text box that spends four minutes and several hundred megabytes.
+      const defaults = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
+      plan = planEnvironment(request, toolchain, {
+        projectRoot: project.root,
+        telarVenv: telarVenvDir(this.paths.root, projectId),
+        ...(defaults.success && defaults.data.packages ? { defaultPackages: defaults.data.packages } : {}),
+      });
     } catch (error) {
       throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
     }

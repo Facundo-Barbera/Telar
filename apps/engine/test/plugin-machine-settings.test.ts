@@ -258,6 +258,52 @@ test("the MACHINE schema validates the machine arm — a project-only field is r
   expect(ds.status).toBe(400);
 });
 
+test("A DEFAULT PACKAGE THAT COULD BE READ AS A FLAG IS REFUSED AT THE WRITE", async () => {
+  // The list ends up in argv for uv or conda. Refusing it here is so the person
+  // is told while they are looking at the field; `planEnvironment` checks again
+  // at creation, because a blob on disk may predate this.
+  const { daemon } = await ready();
+  expect((await machine(daemon, { "data-science": { enabled: true, settings: { packages: ["--index-url=https://evil.example"] } } })).status).toBe(400);
+  expect((await machine(daemon, { "data-science": { enabled: true, settings: { packages: ["polars", "-r reqs.txt"] } } })).status).toBe(400);
+  // A pinned requirement is ordinary and must not be caught by the same net.
+  expect((await machine(daemon, { "data-science": { enabled: true, settings: { packages: ["polars>=1.0", "httpx[http2]"] } } })).status).toBe(200);
+});
+
+test("THE STORE PASSES THIS MAC'S DEFAULTS INTO ENVIRONMENT CREATION", async () => {
+  /**
+   * The end of the wire, proved through the refusal rather than through the
+   * happy path — and deliberately so.
+   *
+   * A successful plan needs uv on the machine running the test, which is not
+   * something a test may assume. The package check runs BEFORE the uv check,
+   * so a bad default produces its own message and a good one falls through to
+   * "uv is not installed". Getting the first message can only happen if the
+   * store actually read this Mac's settings and handed them to
+   * `planEnvironment` — which is the wiring under test. `ds-packages.test.ts`
+   * owns what the plan then contains.
+   *
+   * The blob is written to disk rather than over HTTP because the write arm now
+   * refuses this, and a value that PREDATES that check is exactly the case the
+   * second check exists for.
+   */
+  const { daemon, client } = await ready();
+  await client.updateProject("project_one", { dataScience: { enabled: true } });
+  fs.writeFileSync(
+    daemon.store.paths.machinePlugins,
+    JSON.stringify({ version: 1, entries: { "data-science": { enabled: true, settings: { packages: ["--index-url=https://evil.example"] } } } }),
+  );
+  // The lenient reader keeps it — which is the point: it must reach the check
+  // rather than being silently dropped on the way.
+  expect(dataScienceMachineSettings(daemon.store.machinePlugins()).packages).toEqual(["--index-url=https://evil.example"]);
+
+  const refused = await daemon.store
+    .dataScienceCreateEnvironment("project_one", { manager: "venv", location: "telar", python: "3.13" })
+    .then(() => undefined)
+    .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+  expect(refused).toContain("not a package requirement");
+  expect(refused).toContain("Settings › Plugins");
+});
+
 test("ONLY `managed` may omit a path — the other kinds name a place", async () => {
   // A `texlive` default with nowhere to be resolves to nothing, which in the
   // pane reads as a setting that saved and then did not work. `managed` is the

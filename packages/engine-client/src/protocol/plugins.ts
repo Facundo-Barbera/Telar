@@ -463,9 +463,31 @@ const dataScienceMachineFields = {
    * What a NEW environment is built with. A list of requirement strings, not a
    * lockfile and not a promise about environments that already exist — nothing
    * here reaches into an interpreter somebody has already configured.
+   *
+   * The WRITE schema additionally requires each entry to LOOK like a
+   * requirement — see `PLUGIN_PACKAGE_REQUIREMENT`. Not here, because a reader
+   * that rejected one bad entry would discard the whole blob and take the
+   * default interpreter down with it.
    */
-  packages: z.array(z.string().min(1)).max(200).optional(),
+  packages: z.array(z.string().min(1).max(200)).max(200).optional(),
 };
+
+/**
+ * What a package requirement may look like: a distribution name, optional
+ * extras, optional version clauses — `pandas`, `pandas>=2.0`, `pandas[excel]`.
+ *
+ * THE LEADING CHARACTER IS ALPHANUMERIC, and that is the point of having a
+ * pattern at all: these strings end up in argv for uv, pip or conda, so
+ * `--index-url=…` must not be storable as a "package". The same shape the
+ * engine's own package installs already enforce.
+ *
+ * THIS IS NOT THE LAST LINE OF DEFENCE. The engine re-checks at environment
+ * creation, because a blob on disk may predate this field. Refusing the write
+ * is so a person is told at the moment they typed it, rather than a week later
+ * when a venv build fails for reasons that are not on screen.
+ */
+export const PLUGIN_PACKAGE_REQUIREMENT =
+  /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,\s-]+\])?\s*((?:[<>=!~]=?|===)\s*[A-Za-z0-9.*+!_-]+(?:\s*,\s*(?:[<>=!~]=?|===)\s*[A-Za-z0-9.*+!_-]+)*)?$/;
 
 /**
  * ── READING IS LENIENT, WRITING IS STRICT, AND THE ASYMMETRY IS THE POINT ────
@@ -492,7 +514,10 @@ export const LatexMachineSettingsWrite = z.strictObject({
   ...latexMachineFields,
   toolchain: PluginLatexDistributionWrite.optional(),
 });
-export const DataScienceMachineSettingsWrite = z.strictObject(dataScienceMachineFields);
+export const DataScienceMachineSettingsWrite = z.strictObject({
+  ...dataScienceMachineFields,
+  packages: z.array(z.string().min(1).max(200).regex(PLUGIN_PACKAGE_REQUIREMENT, "not a package requirement")).max(200).optional(),
+});
 
 /** The LaTeX defaults this Mac carries, read out of the opaque blob. */
 export function latexMachineSettings(machine: ProjectPlugins | undefined): LatexMachineSettings {

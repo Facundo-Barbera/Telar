@@ -124,6 +124,100 @@ test("planEnvironment shapes uv venv and conda create, and refuses what cannot s
   expect(() => planEnvironment({ manager: "conda", name: "x", python: "3.12" }, UV, { projectRoot: project, telarVenv: telar })).toThrow(/conda is not installed/);
 });
 
+/**
+ * THE MAC'S DEFAULT PACKAGES, where they were promised: in an environment
+ * Telar CREATES. Never in one that already exists — that is why they live in
+ * the plan rather than in an install path something else could reach.
+ */
+test("a machine default is added to a new environment, and added ONCE", () => {
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  const where = { projectRoot: project, telarVenv: telar, defaultPackages: ["polars"] };
+
+  const plan = planEnvironment({ manager: "venv", location: "project", python: "3.13", stack: true }, UV, where);
+  expect(plan.steps[1]!.args).toEqual(["pip", "install", "--python", plan.python, "pandas", "matplotlib", "duckdb", "pyarrow", "polars"]);
+
+  // WITHOUT the stack it still goes in: "every environment Telar creates" is
+  // what makes the setting worth having, and the stack checkbox is a separate
+  // question about this one environment.
+  const bare = planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, where);
+  expect(bare.steps[1]!.args).toEqual(["pip", "install", "--python", bare.python, "polars"]);
+
+  // …and conda gets them on the create line, the same as the stack.
+  const conda = planEnvironment({ manager: "conda", name: "ds", python: "3.12", stack: true }, CONDA, where);
+  expect(conda.steps[0]!.args).toEqual(["create", "-n", "ds", "-y", "python=3.12", "pandas", "matplotlib", "duckdb", "pyarrow", "polars"]);
+});
+
+test("a default that the stack already carries is NOT installed twice", () => {
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  // Spelled differently on purpose: PEP 503 says `Pandas` and `pandas` are one
+  // distribution, so a literal compare would install it twice and let the
+  // second spelling silently win whatever the first pinned. A pin is dropped
+  // with it — `Pandas>=3` loses to the stack's bare `pandas`, which is the
+  // right way round: the stack is the more specific request.
+  const where = { projectRoot: project, telarVenv: telar, defaultPackages: ["Pandas>=3", "PyArrow", "polars"] };
+  const plan = planEnvironment({ manager: "venv", location: "project", python: "3.13", stack: true }, UV, where);
+  expect(plan.steps[1]!.args).toEqual(["pip", "install", "--python", plan.python, "pandas", "matplotlib", "duckdb", "pyarrow", "polars"]);
+
+  // Separator spellings are one distribution too — but only where PEP 503 says
+  // so. `py-arrow` is a DIFFERENT distribution from `pyarrow`, and collapsing
+  // the two would quietly drop a package somebody asked for.
+  const distinct = planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, {
+    projectRoot: project,
+    telarVenv: telar,
+    defaultPackages: ["ruamel.yaml", "ruamel-yaml", "py-arrow"],
+  });
+  expect(distinct.steps[1]!.args).toEqual(["pip", "install", "--python", distinct.python, "ruamel.yaml", "py-arrow"]);
+});
+
+test("a version clause is kept, because a house standard is usually pinned", () => {
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  const plan = planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, {
+    projectRoot: project,
+    telarVenv: telar,
+    defaultPackages: ["polars>=1.0", "httpx[http2]"],
+  });
+  expect(plan.steps[1]!.args).toEqual(["pip", "install", "--python", plan.python, "polars>=1.0", "httpx[http2]"]);
+});
+
+test("A BAD DEFAULT IS REFUSED BEFORE ANY STEP RUNS, never passed to pip or uv", () => {
+  // These strings go straight into argv. A stored blob may predate the write-
+  // time check, so this is the one that is load-bearing.
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  const bad = (packages: string[]) =>
+    planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, { projectRoot: project, telarVenv: telar, defaultPackages: packages });
+
+  expect(() => bad(["--index-url=https://evil.example"])).toThrow(/not a package requirement/);
+  expect(() => bad(["polars", "-r requirements.txt"])).toThrow(/not a package requirement/);
+  expect(() => bad(["polars; rm -rf /"])).toThrow(/not a package requirement/);
+  // The message says where to fix it — the list was typed in a settings pane,
+  // not in the form that just failed.
+  expect(() => bad(["--index-url=x"])).toThrow(/Settings › Plugins/);
+
+  // Blank entries are not an error, they are nothing: a trailing comma in the
+  // settings field must not make every new environment refuse to build.
+  const fine = planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, {
+    projectRoot: project,
+    telarVenv: telar,
+    defaultPackages: ["polars", "  ", ""],
+  });
+  expect(fine.steps[1]!.args).toEqual(["pip", "install", "--python", fine.python, "polars"]);
+});
+
+test("no machine defaults leaves the plan exactly as it was", () => {
+  const project = root();
+  const telar = path.join(root(), "python", "p");
+  const plan = planEnvironment({ manager: "venv", location: "telar", python: "3.13" }, UV, { projectRoot: project, telarVenv: telar });
+  // Just the venv and the bridge — no empty install step.
+  expect(plan.steps.map((s) => s.args)).toEqual([
+    ["venv", "--python", "3.13", telar],
+    ["pip", "install", "--python", plan.python, "ipykernel", "jupyter_client"],
+  ]);
+});
+
 test("planBootstrap prefers Homebrew, falls back to the vendor installer, and refuses what is already there", () => {
   expect(planBootstrap({ what: "uv" }, BREW).steps[0]!.args).toEqual(["install", "uv"]);
   const script = planBootstrap({ what: "uv" }, { pythons: [] });
