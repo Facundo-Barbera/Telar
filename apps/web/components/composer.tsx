@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleCheckIcon,
   CornerDownLeftIcon,
+  EraserIcon,
   FoldVerticalIcon,
   ImageIcon,
   LayersIcon,
@@ -198,16 +199,30 @@ function fileSize(bytes: number): string {
 /**
  * THE COMPOSER'S CHROME ANSWERS A RIGHT-CLICK; THE BOX YOU TYPE IN DOES NOT.
  *
- * A `<textarea>` already has a menu, and it is the browser's: cut, copy, paste,
+ * A text box already has a menu, and it is the browser's: cut, copy, paste,
  * undo, spell-check, the dictionary, "Look Up", "Share". Replacing it with four
  * rows of ours would be taking away six useful things to add two, and taking
  * away the one menu on this screen a person did not have to learn.
  *
- * So the menu lives on the parts that are OURS — the strip of controls under
- * the box, and the attachment chips above it — and carries only what the
- * composer can already do to itself: drop an attachment, empty the box, put
- * what is in it on the stash. Every item is the callback its visible control
- * (or its keyboard chord) already fires.
+ * THE TRIGGER IS THE WHOLE CARD, AND IT IS A REAL BOX. It wrapped only the left
+ * control cluster, so a right-press on the box, on the empty chrome beside the
+ * `+`, or over on the send side reached nothing at all (#320) — the menu
+ * answered on about a fifth of the object it belongs to. A `contents` wrapper
+ * would have been the same bug in a different shape: it paints nothing and is
+ * never an event target, which is the lesson the sidebar's own menu already
+ * wrote down (#286).
+ *
+ * WHAT THE BOX KEEPS is the one gesture that is genuinely the editor's: a
+ * right-press on TEXT YOU HAVE SELECTED, which is where cut/copy/look-up live.
+ * With nothing selected there is no editing verb to preserve and the card's own
+ * menu answers, so the box is no longer a dead zone — see the boundary around
+ * `ComposerEditor`.
+ *
+ * The rows carry only what the composer can already do to itself: drop an
+ * attachment, empty the box, put what is in it on the stash. Every item is the
+ * callback its visible control (or its keyboard chord) already fires, and wears
+ * that control's own glyph — the sidebar's menus read as one system, and a menu
+ * with no icons beside them read as somebody else's.
  *
  * BOTH ARE DISABLED RATHER THAN HIDDEN when they would do nothing. An empty
  * box has nothing to clear and nothing to stash, and a menu whose rows appear
@@ -230,9 +245,10 @@ function ComposerChromeMenu({
   onStash: () => void;
   /** Present only on a chip: the one item that is about THIS attachment. */
   onRemoveAttachment?: () => void;
-  /** The trigger IS the element it wraps, rather than a box around it — the
-   *  foot strip is a flex child of the addon and an extra wrapper would take
-   *  its `min-w-0` away from the cluster that needs it. */
+  /** The trigger's own box. Omitted on the card, where the plain `<div>` Base
+   *  UI renders already has exactly the card's area; a chip passes nothing
+   *  either. Never `contents` — a trigger with no box is a trigger with no hit
+   *  area. */
   className?: string;
   children: React.ReactNode;
 }) {
@@ -245,14 +261,23 @@ function ComposerChromeMenu({
       <ContextMenuContent className="w-auto">
         {onRemoveAttachment && (
           <>
-            <ContextMenuItem onClick={onRemoveAttachment}>Remove attachment</ContextMenuItem>
+            {/* The chip's own × as a row — it takes the file off the message,
+                it does not delete anything, and a bin would say it did. */}
+            <ContextMenuItem onClick={onRemoveAttachment}>
+              <XIcon />
+              Remove attachment
+            </ContextMenuItem>
             <ContextMenuSeparator />
           </>
         )}
         <ContextMenuItem disabled={!draft} onClick={onClear}>
+          <EraserIcon />
           Clear draft
         </ContextMenuItem>
+        {/* The stash badge's own glyph, so the row and the control it fires are
+            visibly the same verb. */}
         <ContextMenuItem disabled={stashing || !stashable} onClick={onStash}>
+          <LayersIcon />
           Stash draft
         </ContextMenuItem>
       </ContextMenuContent>
@@ -1201,6 +1226,17 @@ export function Composer({
             onPick={apply}
           />
         ) : null}
+        {/* THE WHOLE CARD IS THE RIGHT-CLICK SURFACE (#320). The chips inside
+            keep their own menus: Base UI's trigger stops the `contextmenu` it
+            handles, so the innermost one wins and a press on a chip never
+            reaches this one. */}
+        <ComposerChromeMenu
+          draft={draft}
+          attachments={attachments}
+          stashing={stashing}
+          onClear={() => onDraftChange("")}
+          onStash={() => void doStash()}
+        >
         <InputGroup
           onDragEnter={(event) => {
             if (!dragging(event)) return;
@@ -1250,6 +1286,29 @@ export function Composer({
               returns the moment the question resolves. Losing a half-typed
               message to an incoming question would be the sin the recall path
               already refuses. */}
+          {/* THE ONE PLACE THE CARD'S MENU STANDS DOWN: a right-press on text
+              the person has SELECTED in the box, where cut, copy, "Look Up" and
+              the dictionary live. With nothing selected there is no editing
+              verb to protect, so the press falls through to the card and the
+              box stops being the dead zone #320 reported.
+
+              `display: contents` — a click boundary, never a layout box, the
+              same shape the cockpit uses for its conversation clicks. Both
+              stops are needed and neither is redundant: the React one keeps
+              the trigger above from opening, and the native IMMEDIATE one is
+              what stops Base UI's document-level listener, which otherwise
+              `preventDefault`s every `contextmenu` inside a trigger and would
+              take the browser's own menu with it. */}
+          <div
+            className="contents"
+            onContextMenu={(event) => {
+              const selection = window.getSelection();
+              const anchor = selection?.anchorNode;
+              if (!selection || selection.isCollapsed || !anchor || !event.currentTarget.contains(anchor)) return;
+              event.stopPropagation();
+              event.nativeEvent.stopImmediatePropagation();
+            }}
+          >
           <ComposerEditor
             ref={editor}
             id="turn-prompt"
@@ -1284,6 +1343,7 @@ export function Composer({
             onKeyDown={onKeyDown}
             onPasteFiles={addFiles}
           />
+          </div>
           {attachments.length > 0 && (
             <InputGroupAddon align="block-start" className="flex-wrap gap-1.5 px-2.5 pt-2.5">
               {attachments.map((file, index) => (
@@ -1302,14 +1362,10 @@ export function Composer({
             </InputGroupAddon>
           )}
           <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
-            <ComposerChromeMenu
-              draft={draft}
-              attachments={attachments}
-              stashing={stashing}
-              onClear={() => onDraftChange("")}
-              onStash={() => void doStash()}
-              className="flex min-w-0 flex-wrap items-center gap-1"
-            >
+            {/* Not a trigger any more — the card above is. It keeps its own
+                `min-w-0`, which is the reason it was a box rather than the
+                addon's own flex line. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               {/* Present but inert: attachments are a contract the engine does
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
@@ -1418,7 +1474,7 @@ export function Composer({
                   </div>
                 </>
               )}
-            </ComposerChromeMenu>
+            </div>
             <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
             <ContextPill
               {...(usage ? { usage } : {})}
@@ -1472,6 +1528,7 @@ export function Composer({
             </div>
           </InputGroupAddon>
         </InputGroup>
+        </ComposerChromeMenu>
         </div>
       </form>
 
