@@ -32,6 +32,9 @@ export type WorkerDiagnostic = {
   status?: number;
   transport?: string;
   outageMs?: number;
+  /** How long the event being reported took, in ms. Added for #409's stop
+   *  timeline, where the question is never "did it happen" but "how late". */
+  elapsedMs?: number;
 };
 
 /** Per-field cap. Every value here is an identifier, an enum or a small number;
@@ -66,6 +69,7 @@ export function sanitizeDiagnostic(workerId: string, at: string, fields: WorkerD
     ...(count(fields.status) === undefined ? {} : { status: count(fields.status) }),
     ...(text(fields.transport) ? { transport: text(fields.transport) } : {}),
     ...(count(fields.outageMs) === undefined ? {} : { outageMs: count(fields.outageMs) }),
+    ...(count(fields.elapsedMs) === undefined ? {} : { elapsedMs: count(fields.elapsedMs) }),
   };
 }
 

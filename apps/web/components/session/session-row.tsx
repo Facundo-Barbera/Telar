@@ -46,8 +46,10 @@ import { canvasHref, sessionHref, settledHint, settlingActivity, type SessionBan
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, SessionRowContextMenu, patchSession, runSessionPatch, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
+import type { RailJumpSlot } from "@/lib/session-groups";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { KeyHintOverlay } from "@/components/ui/key-hint";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
@@ -198,10 +200,21 @@ export function SessionRow({
   renderedAt,
   onRefresh,
   drag,
+  jumpSlot,
 }: {
   session: SidebarSession;
   active: boolean;
   showProject: boolean;
+  /**
+   * WHICH NUMBER KEY LANDS HERE, 1-9, for the rows that have one — issue #401.
+   *
+   * Absent is the normal case: the tenth row down, every shelf row, every row
+   * in a folded group. It comes from `railJumpSlots` over the SAME array
+   * `useCommandKeys` is handed, so a row cannot wear a number that fires
+   * somewhere else; a row that is merely tenth wears nothing, which is correct
+   * and not a gap.
+   */
+  jumpSlot?: RailJumpSlot;
   /**
    * HOW MUCH ROOM THIS ROW HAS EARNED. `card` for the live list, `slim` for the
    * shelves and for search results — a result list is answering a question you
@@ -407,6 +420,17 @@ export function SessionRow({
   );
 
   /**
+   * …AND ⌘N SITS ON TOP OF IT WHILE ⌘ IS HELD — issue #401.
+   *
+   * The number goes exactly where the timestamp is rather than beside it, for
+   * the reason above turned around: a row cannot show two things at this end,
+   * and inserting a tenth element would reflow the list under the pointer at the
+   * moment a reader is trying to count rows. `KeyHintOverlay` dims the status
+   * and lays the caps over it; see its own note.
+   */
+  const trailingSlot = jumpSlot ? <KeyHintOverlay command={`jump-${jumpSlot}`}>{statusSlot}</KeyHintOverlay> : statusSlot;
+
+  /**
    * THE MARK REPLACED THE HEADING.
    *
    * The pinned band used to announce itself with the word "Pinned" over a rule.
@@ -469,7 +493,7 @@ export function SessionRow({
           <span className="flex-1" />
         )}
         {hostMark}
-        {statusSlot}
+        {trailingSlot}
       </span>
       <span className="flex min-w-0 items-center gap-1.5">
         {/* THE TITLE CARRIES THE CARD, so it is a size up from everything
@@ -543,7 +567,7 @@ export function SessionRow({
       <span className="min-w-0 flex-1 truncate text-left text-[0.8125rem] text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground">
         {session.title || "Untitled session"}
       </span>
-      {statusSlot}
+      {trailingSlot}
     </>
   );
 

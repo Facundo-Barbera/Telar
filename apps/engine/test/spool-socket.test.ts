@@ -18,6 +18,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { collectWallTools } from "../src/spool/socket";
 import type { SpoolCapability } from "../src/spool/tools";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -25,7 +26,7 @@ const daemons: EngineDaemon[] = [];
 async function spool(engineRoot?: string): Promise<EngineDaemon> {
   const directory = engineRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "telar-spool-socket-"));
   if (!engineRoot) roots.push(directory);
-  const daemon = await startEngine({ engineRoot: directory });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory });
   daemons.push(daemon);
   return daemon;
 }

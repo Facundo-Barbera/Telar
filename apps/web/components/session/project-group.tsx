@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectPlace } from "@/lib/hosts/project-places";
-import type { ProjectGroup as Group } from "@/lib/session-groups";
+import type { ProjectGroup as Group, RailJumpSlot } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
 import {
@@ -183,6 +183,7 @@ export function ProjectGroupSection({
   onDragLeave,
   onDrop,
   rowDrag,
+  jumpSlot,
   root,
   places,
   onNewConversation,
@@ -217,6 +218,18 @@ export function ProjectGroupSection({
    * both ends of the gesture and this component only hands them out.
    */
   rowDrag: (key: string) => NonNullable<React.ComponentProps<typeof SessionRow>["drag"]>;
+  /**
+   * WHICH NUMBER KEY LANDS ON A ROW, by row key — undefined for most of them.
+   * Forwarded for the same reason `rowDrag` is: the answer is a fact about the
+   * WHOLE rail (the "Needs you" band and pinned rows are counted before this
+   * group's first row), and a group that worked it out from its own sessions
+   * would number them 1-9 all over again.
+   *
+   * Optional, and a group drawn without it simply wears no numbers: the hints
+   * are a peek at the keyboard, and a surface that has no keyboard behind it
+   * (a test harness, a future embed) should draw the rows and nothing else.
+   */
+  jumpSlot?: (key: string) => RailJumpSlot | undefined;
   /**
    * THE PROJECT'S CHECKOUT, from the registry rather than from a session: a
    * session's `workspacePath` is its own worktree, and revealing that when
@@ -489,21 +502,26 @@ export function ProjectGroupSection({
             described — the panel's Agents surface — rather than in an indent
             every reader has to interpret.
           */}
-          {group.sessions.map((session) => (
-            <SessionRow
-              key={sessionKey(session)}
-              session={session}
-              active={sessionKey(session) === activeSessionId}
-              showProject={false}
-              // Slim: the header already names the project, and a card's
-              // status/branch lines are mostly empty on an idle row.
-              variant="slim"
-              band={bandFor(session)}
-              renderedAt={renderedAt}
-              onRefresh={onRefresh}
-              drag={rowDrag(sessionKey(session))}
-            />
-          ))}
+          {group.sessions.map((session) => {
+            const key = sessionKey(session);
+            const slot = jumpSlot?.(key);
+            return (
+              <SessionRow
+                key={key}
+                session={session}
+                active={key === activeSessionId}
+                showProject={false}
+                // Slim: the header already names the project, and a card's
+                // status/branch lines are mostly empty on an idle row.
+                variant="slim"
+                band={bandFor(session)}
+                renderedAt={renderedAt}
+                onRefresh={onRefresh}
+                drag={rowDrag(key)}
+                {...(slot === undefined ? {} : { jumpSlot: slot })}
+              />
+            );
+          })}
         </SidebarGroupContent>
       )}
     </SidebarGroup>

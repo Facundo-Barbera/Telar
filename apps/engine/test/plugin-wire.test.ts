@@ -29,6 +29,7 @@ import { HELLO_GATE, bundledPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule, type HelloCapability } from "../src/plugins/hello";
 import { pluginCall } from "../src/plugins/tool-module";
 import type { ToolFactory } from "../src/tool-kit";
+import { stubModels } from "./stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -73,7 +74,7 @@ afterEach(async () => {
 
 /** A daemon, a project, a session — the least state a plugin call needs. */
 async function ready(options: { enable?: boolean } = {}): Promise<{ client: EngineClient; sessionId: string; daemon: EngineDaemon }> {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });

@@ -58,6 +58,7 @@ export type CommandId =
   | "send"
   | "stop-turn"
   | "reveal-in-finder"
+  | "pin-session"
   | "search-sessions"
   | "toggle-rail"
   | `jump-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`

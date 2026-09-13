@@ -45,6 +45,7 @@ import { useCommandHandlers } from "@/lib/use-command-keys";
 import { OpenerIcon } from "@/components/session/opener-icon";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group";
+import { KeyHint } from "@/components/ui/key-hint";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export function OpenWorkspaceButton({
@@ -224,10 +225,18 @@ export function OpenWorkspaceButton({
                     <OpenerIcon icon={entry.icon} iconDataUrl={entry.iconDataUrl} />
                     <span className="min-w-0 flex-1 truncate">{entry.label}</span>
                     {/* Only the PREFERRED row can carry one, and the chord this
-                        control has (⌘O, on the reveal row) is not that row —
-                        so nothing is handed down and this renders nothing.
-                        Settings › Keybindings is where ⌘O is taught. */}
+                        control has (⌘O, on the reveal row) is not that row — so
+                        nothing is handed down and this renders nothing. */}
                     {entry.shortcut && <span className="shrink-0 text-[0.6875rem] tracking-widest text-muted-foreground">{entry.shortcut}</span>}
+                    {/* ⌘O WHERE ⌘O ACTUALLY GOES — issue #401. The chord is
+                        bound above, on this control, and it reveals: so the cap
+                        rides the REVEAL row while ⌘ is held rather than the Open
+                        half, which launches whichever editor you last picked.
+                        Settings › Keybindings taught this and nothing else did.
+                        Absent when the command is unbound, and absent when this
+                        control cannot act — `canReveal` is the same condition
+                        that decides whether the key does anything at all. */}
+                    {entry.kind === "reveal" && canReveal && <KeyHint command="reveal-in-finder" />}
                   </button>
                 )}
               </Fragment>

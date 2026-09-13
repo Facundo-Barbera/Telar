@@ -35,6 +35,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { latexMeta } from "../src/plugins/latex";
 import { bundledPluginToolModules } from "../src/plugins/bundled";
 import { ratifiedReadTools } from "../src/plugins/policy";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -49,7 +50,7 @@ afterEach(async () => {
 });
 
 async function ready(options: { enable?: boolean } = {}) {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });

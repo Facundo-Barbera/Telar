@@ -28,6 +28,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "../src/driver";
 import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
 import { EngineWorker } from "../src/worker";
+import { stubModels } from "./stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -185,7 +186,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
 async function turnWith(
   body: (sessions: SessionsCapability) => Promise<void>,
 ): Promise<{ client: EngineClient; hostId: string; projectId: string; sawCapability: boolean }> {
-  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-wiring-"), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: tmp("telar-sessions-wiring-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
@@ -320,7 +321,7 @@ test("a Codex turn is handed the wall over the socket with its own self bound; a
   // the worker-hosted socket, and the token must serve the SAME wall with the
   // SAME `self` — proven by subscribing over plain HTTP and reading the
   // subscription back through the ordinary API as the codex session's own.
-  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-run-seam-"), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: tmp("telar-sessions-run-seam-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
@@ -473,7 +474,7 @@ test("a LONG task is handed to the provider as the assignment notice, with the b
 });
 
 test("a cockpit cannot forge a sender through /turns, and a bad proof on /turns/agent is refused", async () => {
-  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-forge-"), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: tmp("telar-sessions-forge-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
