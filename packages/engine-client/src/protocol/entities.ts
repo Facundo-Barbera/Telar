@@ -189,8 +189,29 @@ export type DataScienceCreatedEnvironment = z.infer<typeof DataScienceCreatedEnv
  * packages on first use; `texlive` is a distribution root (MacTeX, TinyTeX, a
  * vanilla TeX Live) whose packages tlmgr manages.
  */
-export const LatexToolchainKind = z.enum(["tectonic", "texlive"]);
+/**
+ * `managed` is Telar's OWN Tectonic — the copy the engine downloads into its
+ * state root so a Mac with no TeX on it still compiles. It is a THIRD kind
+ * rather than a `tectonic` choice pointing at that path, and the reason is
+ * upgrades: the managed install is versioned on disk, so a stored absolute path
+ * would go stale the day the pinned version moves and would resolve to a
+ * directory that is no longer there. `managed` names the INTENT — "whatever
+ * Telar manages" — and the engine resolves it to today's binary.
+ */
+export const LatexToolchainKind = z.enum(["tectonic", "texlive", "managed"]);
 export type LatexToolchainKind = z.infer<typeof LatexToolchainKind>;
+
+/** Telar's own Tectonic, as the settings pane sees it. See `latex/managed.ts`. */
+export const ManagedTectonic = z.object({
+  version: z.string(),
+  /** False on a platform Telar has no release table entry for. */
+  supported: z.boolean(),
+  installed: z.boolean(),
+  path: z.string().optional(),
+  installing: z.boolean(),
+  error: z.string().optional(),
+});
+export type ManagedTectonic = z.infer<typeof ManagedTectonic>;
 
 /** What latexmk drives. Tectonic ignores it — it is XeTeX inside. */
 export const LatexEngine = z.enum(["pdflatex", "lualatex", "xelatex"]);
@@ -244,6 +265,9 @@ export const LatexToolchain = z.object({
   tectonic: LatexTool.optional(),
   texlive: z.array(LatexTexliveDistribution),
   brew: LatexTool.optional(),
+  /** Telar's own Tectonic — present even when not yet fetched, so a pane has
+   *  something to offer rather than an absence to explain. */
+  managed: ManagedTectonic.optional(),
 });
 export type LatexToolchain = z.infer<typeof LatexToolchain>;
 

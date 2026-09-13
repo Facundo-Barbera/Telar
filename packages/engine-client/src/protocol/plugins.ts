@@ -374,3 +374,134 @@ export function pluginEffectivelyEnabled(
 export function machineSettings(machine: ProjectPlugins | undefined, id: string): Record<string, unknown> {
   return machine?.entries[id]?.settings ?? {};
 }
+
+// ── the bundled plugins' machine settings, for clients ──────────────────────
+
+/**
+ * WHAT A MAC-WIDE DEFAULT IS, and why these shapes are written down HERE when
+ * the blob above is deliberately opaque.
+ *
+ * The opacity rule is about AUTHORITY: the host validates a settings write with
+ * the plugin's own schema, and nothing in this file may override that. These
+ * schemas are not that. They are READER schemas — the same precedent as
+ * `BUNDLED_PLUGIN_TOOL_PREFIXES`, and for the same reason. A cockpit rendering
+ * "Mac-wide defaults" has no plugin host to ask, and the alternative is each
+ * client hand-rolling its own cast of `Record<string, unknown>` and drifting
+ * from the engine one field at a time.
+ *
+ * SO THE RULE IS: the engine's copy decides what may be STORED; this copy
+ * decides only what a client dares to READ. A blob carrying a field this does
+ * not know survives untouched — `safeParse` on a passthrough-free object drops
+ * unknown keys from the parsed VALUE, never from the stored one.
+ *
+ * AND THESE ARE DEFAULTS, NOT OVERRIDES. Every field here answers "what does a
+ * project that has not chosen get", so a project that HAS chosen keeps its
+ * choice. That is the whole semantic, and it is why the engine resolves them as
+ * a fallback chain rather than by merging.
+ */
+
+/** What latexmk drives when nothing more specific said. Tectonic ignores it. */
+export const PluginLatexEngine = z.enum(["pdflatex", "lualatex", "xelatex"]);
+export type PluginLatexEngine = z.infer<typeof PluginLatexEngine>;
+
+/**
+ * A distribution choice, as a machine default. `managed` is Telar's own
+ * Tectonic and carries no path — see `LatexToolchainKind` for why naming the
+ * intent beats storing a versioned path that goes stale on the next bump.
+ */
+export const PluginLatexDistribution = z.object({
+  kind: z.enum(["tectonic", "texlive", "managed"]),
+  path: z.string().min(1).optional(),
+  engine: PluginLatexEngine.optional(),
+});
+export type PluginLatexDistribution = z.infer<typeof PluginLatexDistribution>;
+
+/**
+ * THE PATH IS OPTIONAL IN THE TYPE AND REQUIRED IN PRACTICE — for every kind
+ * but one.
+ *
+ * `tectonic` and `texlive` name a PLACE: a binary, a bin directory. One stored
+ * without a path resolves to nothing, which in the pane reads as a default that
+ * was accepted and then quietly did not work. `managed` names an INTENT and the
+ * engine supplies the place, so requiring a path there would mean writing down
+ * a versioned directory that the next Tectonic bump invalidates.
+ *
+ * So the rule is per-kind, and it lives on the WRITE schema rather than in the
+ * shape itself: a blob already on disk is read for whatever it can give, and
+ * `resolveLatex` skips a choice whose binary is not there regardless.
+ */
+export const PluginLatexDistributionWrite = PluginLatexDistribution.refine(
+  (choice) => choice.kind === "managed" || (choice.path !== undefined && choice.path.length > 0),
+  { message: "a tectonic or texlive distribution needs the path it lives at", path: ["path"] },
+);
+
+const latexMachineFields = {
+  /** Which TeX install compiles here when the project has not chosen one. */
+  toolchain: PluginLatexDistribution.optional(),
+  /** The engine a TeX Live compile runs. Tectonic is XeTeX inside and ignores it. */
+  engine: PluginLatexEngine.optional(),
+  /**
+   * Whether a compile may fetch the packages a document asks for.
+   *
+   * TECTONIC DOES THIS BY DESIGN and cannot be told not to — its whole model is
+   * fetch-on-first-use. So this field is honest about being a TeX Live
+   * behaviour: off, a missing package is an error with the package named; on,
+   * tlmgr installs it and the compile carries on.
+   */
+  autoInstallPackages: z.boolean().optional(),
+};
+
+const dataScienceMachineFields = {
+  /**
+   * The interpreter a project inherits when it has not picked one. ABSOLUTE:
+   * unlike the per-project `python.path`, which is relative inside a checkout so
+   * a worktree resolves its own `.venv`, a Mac-wide default cannot be relative
+   * to a checkout it does not know about.
+   */
+  python: z.string().min(1).optional(),
+  /**
+   * What a NEW environment is built with. A list of requirement strings, not a
+   * lockfile and not a promise about environments that already exist — nothing
+   * here reaches into an interpreter somebody has already configured.
+   */
+  packages: z.array(z.string().min(1)).max(200).optional(),
+};
+
+/**
+ * ── READING IS LENIENT, WRITING IS STRICT, AND THE ASYMMETRY IS THE POINT ────
+ *
+ * These two are the READERS. They ignore a key they do not recognise, because
+ * the alternative is a cockpit one release behind a newer engine throwing away
+ * a blob's every valid field on account of one it has never heard of — which is
+ * the whole reason `Project` is tolerant too.
+ *
+ * `*Write` below are what the engine VALIDATES A WRITE WITH, and they are
+ * strict. zod drops an unknown key rather than refusing it, so without this a
+ * field that does not belong here — `mainFile`, a fact about a checkout — is
+ * accepted with a 200 and then silently discarded: the person is told their
+ * default was saved, and it was not.
+ */
+export const LatexMachineSettings = z.object(latexMachineFields);
+export type LatexMachineSettings = z.infer<typeof LatexMachineSettings>;
+
+export const DataScienceMachineSettings = z.object(dataScienceMachineFields);
+export type DataScienceMachineSettings = z.infer<typeof DataScienceMachineSettings>;
+
+/** What a write is checked against. Strict, and per-kind about the path. */
+export const LatexMachineSettingsWrite = z.strictObject({
+  ...latexMachineFields,
+  toolchain: PluginLatexDistributionWrite.optional(),
+});
+export const DataScienceMachineSettingsWrite = z.strictObject(dataScienceMachineFields);
+
+/** The LaTeX defaults this Mac carries, read out of the opaque blob. */
+export function latexMachineSettings(machine: ProjectPlugins | undefined): LatexMachineSettings {
+  const parsed = LatexMachineSettings.safeParse(machineSettings(machine, "latex"));
+  return parsed.success ? parsed.data : {};
+}
+
+/** The data-science defaults this Mac carries, read out of the opaque blob. */
+export function dataScienceMachineSettings(machine: ProjectPlugins | undefined): DataScienceMachineSettings {
+  const parsed = DataScienceMachineSettings.safeParse(machineSettings(machine, "data-science"));
+  return parsed.success ? parsed.data : {};
+}

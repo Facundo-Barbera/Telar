@@ -2803,6 +2803,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { toolchain: await store.latexToolchain(url.searchParams.get("fresh") === "1") });
         return;
       }
+      /**
+       * TELAR'S OWN TECTONIC — the one distribution the engine can promise on a
+       * machine it has never seen. GET is cheap enough to poll while an install
+       * runs; POST starts one and is IDEMPOTENT, so a second press while the
+       * first is still downloading joins it rather than starting a second.
+       *
+       * NOT A JOB. The other bootstraps shell out to curl and an installer
+       * script, so they are steps a JobRunner can stream; this one is an
+       * in-process fetch whose whole contract is "verify the digest before
+       * anything is published". There is no subprocess to stream, and the state
+       * a pane needs is the four fields GET already answers.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/latex/managed") {
+        writeJson(response, 200, { managed: store.managedTectonic() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/latex/managed") {
+        writeJson(response, 202, { managed: await store.installManagedTectonic() });
+        return;
+      }
       /** Read a latex job by cursor; DELETE cancels it. */
       const latexJob = /^\/v2\/latex\/jobs\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && latexJob) {
@@ -3133,9 +3153,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           // THE PLUGIN'S OWN SCHEMA VALIDATES ITS OWN SETTINGS, here as on the
           // project arm. The protocol does not know what a TeX distribution is.
+          //
+          // THE MACHINE SCHEMA WHEN THERE IS ONE. This arm writes Mac-wide
+          // defaults, which are a different shape from a project's — a default
+          // engine belongs here and `mainFile` does not. A plugin that declares
+          // no machine schema keeps the old behaviour and is checked against its
+          // project one.
           const module = pluginHost.ready(id);
-          if (module?.settingsSchema && config.settings !== undefined) {
-            const parsed = module.settingsSchema.safeParse(config.settings);
+          const schema = module?.machineSettingsSchema ?? module?.settingsSchema;
+          if (schema && config.settings !== undefined) {
+            const parsed = schema.safeParse(config.settings);
             if (!parsed.success) {
               throw new HttpError(400, "invalid_request", `plugins.${id}.settings is not valid for ${id}`);
             }

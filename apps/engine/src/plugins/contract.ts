@@ -120,6 +120,21 @@ export type PluginEngineModule<Settings = unknown> = {
    */
   settingsSchema?: z.ZodType<Settings>;
   /**
+   * Validates the MACHINE-scoped blob, which is a different shape from the
+   * project one and has to be allowed to be.
+   *
+   * WHY NOT ONE SCHEMA FOR BOTH. The machine arm used to reuse `settingsSchema`,
+   * which quietly said "a project may store anything the Mac may". It cannot:
+   * `mainFile` is a fact about a checkout and is meaningless machine-wide, while
+   * a default engine is a fact about this Mac and, if a project could store it,
+   * would mirror into `Project.latex` and be read back by an older engine that
+   * has no idea what it means. Two scopes, two shapes, two schemas.
+   *
+   * A plugin that omits this keeps the old behaviour — the host falls back to
+   * `settingsSchema` — so nothing has to be migrated to add one.
+   */
+  machineSettingsSchema?: z.ZodType<unknown>;
+  /**
    * Acquire whatever the plugin needs, bounded by `PLUGIN_INIT_TIMEOUT_MS`, and
    * register a cleanup for each acquisition. Omit it entirely when there is
    * nothing to acquire — most plugins have nothing.

@@ -10,9 +10,12 @@
  * every approval granted to it, for a tidier string.
  */
 import { z } from "zod";
-import { PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
+import { DataScienceMachineSettings, DataScienceMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
 import type { DsCapability } from "../ds/capability";
 import type { PluginEngineModule, PluginInitContext } from "./contract";
+
+/** The lenient reader, for the store's own resolve. See `protocol/plugins.ts`. */
+export { DataScienceMachineSettings };
 
 /**
  * WHAT THE PROJECT STORES. The same shape the legacy `Project.dataScience`
@@ -60,6 +63,18 @@ export const dataScienceMeta: PluginMeta = {
       blurb: "The Python environment this project's kernel runs in.",
       icon: "FlaskConical",
     },
+    /**
+     * THE MAC-WIDE DEFAULTS. Declared as a machine section so the Plugins pane
+     * renders them beside LaTeX's; what they mean is "what a project that has
+     * not chosen gets", never "what every project uses".
+     */
+    {
+      id: "defaults",
+      scope: "machine",
+      label: "Data science",
+      blurb: "The Python and packages a project inherits on this Mac.",
+      icon: "FlaskConical",
+    },
   ],
 };
 
@@ -95,6 +110,16 @@ export function dataSciencePlugin(deps: DataSciencePluginDeps): PluginEngineModu
   return {
     meta: dataScienceMeta,
     settingsSchema: DataScienceSettings,
+    /**
+     * THE MAC-WIDE DEFAULTS — a different shape from the project's, and
+     * deliberately so. A project stores `pythonPath`, which may be RELATIVE so
+     * a worktree resolves its own `.venv`; a machine default cannot be relative
+     * to a checkout it knows nothing about, so `python` is absolute. Sharing one
+     * schema would have made each half accept the other's lie.
+     *
+     * THE STRICT VARIANT, because this is the WRITE path — see LaTeX's.
+     */
+    machineSettingsSchema: DataScienceMachineSettingsWrite,
 
     /**
      * The kernel host is the STORE'S and outlives any one registration, so
