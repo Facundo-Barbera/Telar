@@ -2,7 +2,7 @@
 // test. `exists` and `run` are injected so the suite neither depends on which
 // editors this machine has nor actually launches one.
 const { describe, expect, test } = require("bun:test");
-const { discoverOpeners, openWith, searchRoots, KNOWN_EDITORS } = require("./workspace-openers");
+const { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS } = require("./workspace-openers");
 
 const roots = ["/Applications", "/Users/x/Applications", "/System/Applications"];
 
@@ -52,6 +52,98 @@ describe("discovering installed openers", () => {
 
   test("the default roots are the standard install locations", () => {
     expect(searchRoots("/Users/x")).toEqual(["/Applications", "/Users/x/Applications", "/System/Applications"]);
+  });
+});
+
+// The REAL icons (#398). `getFileIcon` is injected — the suite neither needs an
+// Electron app object nor cares which editors this machine has.
+describe("reading each app's own icon", () => {
+  /** A NativeImage stand-in: the only shape the module uses is `toPNG()`. */
+  const image = (bytes) => ({ toPNG: () => Buffer.from(bytes) });
+  const stub = (answer = (bundlePath) => image([bundlePath.length])) => {
+    const asked = [];
+    return {
+      asked,
+      getFileIcon: (bundlePath, options) => {
+        asked.push({ bundlePath, options });
+        return Promise.resolve(answer(bundlePath));
+      },
+    };
+  };
+  const openers = [
+    { id: "zed", label: "Zed", icon: "zed", path: "/Applications/Zed.app" },
+    { id: "textmate", label: "TextMate", path: "/Applications/TextMate.app" },
+  ];
+
+  test("each opener gains a PNG data URL, and the 32px size is what is asked for", async () => {
+    const { asked, getFileIcon } = stub(() => image([137, 80, 78, 71]));
+    const answer = await openersWithIcons({ openers, getFileIcon, cache: new Map(), exists: () => false });
+    expect(answer.openers.map((entry) => entry.iconDataUrl)).toEqual(["data:image/png;base64,iVBORw==", "data:image/png;base64,iVBORw=="]);
+    expect(asked.map((call) => call.options)).toEqual([{ size: "normal" }, { size: "normal" }]);
+  });
+
+  test("the bitmap is ADDED to the row rather than replacing what discovery found", async () => {
+    const { getFileIcon } = stub();
+    const answer = await openersWithIcons({ openers, getFileIcon, cache: new Map(), exists: () => false });
+    expect(answer.openers[0]).toMatchObject({ id: "zed", label: "Zed", icon: "zed", path: "/Applications/Zed.app" });
+    // An app we carry no vector mark for still reports no `icon` key — the
+    // bitmap is a second answer to the same question, not a replacement for it.
+    expect("icon" in answer.openers[1]).toBe(false);
+    expect(answer.openers[1].iconDataUrl).toStartWith("data:image/png;base64,");
+  });
+
+  test("Finder's own icon rides along for the reveal row the renderer draws", async () => {
+    const { asked, getFileIcon } = stub();
+    const answer = await openersWithIcons({ openers: [], getFileIcon, cache: new Map(), exists: (path) => path === FINDER_BUNDLE });
+    expect(asked.map((call) => call.bundlePath)).toEqual([FINDER_BUNDLE]);
+    expect(answer.revealIconDataUrl).toStartWith("data:image/png;base64,");
+  });
+
+  test("a Mac without that bundle simply reports no reveal icon", async () => {
+    const { getFileIcon } = stub();
+    const answer = await openersWithIcons({ openers: [], getFileIcon, cache: new Map(), exists: () => false });
+    expect("revealIconDataUrl" in answer).toBe(false);
+  });
+
+  test("one ask per bundle, however many times the menu is opened", async () => {
+    const cache = new Map();
+    const { asked, getFileIcon } = stub();
+    await openersWithIcons({ openers, getFileIcon, cache, exists: () => false });
+    await openersWithIcons({ openers, getFileIcon, cache, exists: () => false });
+    await openersWithIcons({ openers, getFileIcon, cache, exists: () => false });
+    expect(asked).toHaveLength(openers.length);
+  });
+
+  test("an unreadable icon costs that ONE row its bitmap, never the whole menu", async () => {
+    const { getFileIcon } = stub((bundlePath) => (bundlePath.includes("Zed") ? Promise.reject(new Error("gone")) : image([1])));
+    const answer = await openersWithIcons({ openers, getFileIcon, cache: new Map(), exists: () => false });
+    expect(answer.openers[0].iconDataUrl).toBeUndefined();
+    expect(answer.openers[0].icon).toBe("zed");
+    expect(answer.openers[1].iconDataUrl).toStartWith("data:image/png;base64,");
+  });
+
+  test("an empty buffer is a MISS, not a zero-byte data URL", async () => {
+    const { getFileIcon } = stub(() => image([]));
+    const answer = await openersWithIcons({ openers: [openers[0]], getFileIcon, cache: new Map(), exists: () => false });
+    expect(answer.openers[0].iconDataUrl).toBeUndefined();
+  });
+
+  test("a miss is NOT remembered — the next open asks again", async () => {
+    const cache = new Map();
+    let fail = true;
+    const asked = [];
+    const getFileIcon = (bundlePath) => {
+      asked.push(bundlePath);
+      return fail ? Promise.reject(new Error("gone")) : Promise.resolve(image([1]));
+    };
+    expect(await openerIconDataUrl({ bundlePath: "/Applications/Zed.app", getFileIcon, cache })).toBeUndefined();
+    fail = false;
+    expect(await openerIconDataUrl({ bundlePath: "/Applications/Zed.app", getFileIcon, cache })).toStartWith("data:image/png;base64,");
+    expect(asked).toHaveLength(2);
+  });
+
+  test("a shell that cannot produce bitmaps answers the plain list, not an error", async () => {
+    expect(await openersWithIcons({ openers, exists: () => false })).toEqual({ openers });
   });
 });
 
