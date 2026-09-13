@@ -46,7 +46,7 @@ export const REVEAL_OPENER_ID = "reveal";
 
 /** What the shell reported: an installed app that can open a folder. Structural
  *  rather than imported so this module stays free of the desktop bridge. */
-export type OpenerLike = { id: string; label: string; path?: string; icon?: string };
+export type OpenerLike = { id: string; label: string; path?: string; icon?: string; iconDataUrl?: string };
 
 export type WorkspaceOpenerEntryKind =
   /** An installed app, launched by id through the shell. */
@@ -79,8 +79,12 @@ export type WorkspaceOpenerEntry = {
   primaryLabel?: string;
   kind: WorkspaceOpenerEntryKind;
   /** Brand mark id from the shell's opener table; absent means the neutral
-   *  glyph. */
+   *  glyph. Only consulted when there is no `iconDataUrl`. */
   icon?: string;
+  /** The app's REAL icon, as the shell read it off the `.app` bundle (#398).
+   *  What the row actually wears whenever it is present; a browser tab and a
+   *  remote session have none, which is the whole reason `icon` still exists. */
+  iconDataUrl?: string;
   /** What to name when asking the shell to launch it. Absent on every entry
    *  that is not an installed app. */
   openerId?: string;
@@ -187,6 +191,10 @@ export function workspaceOpenerEntries(input: {
   preferred?: string | undefined;
   /** The chord bound to opening the workspace, if anything binds one. */
   shortcut?: string | undefined;
+  /** Finder's own icon, when the shell could read it. The reveal row is built
+   *  here rather than by the opener table, so its bitmap has to be handed in
+   *  the same way its label is. */
+  revealIconDataUrl?: string | undefined;
 }): WorkspaceOpenerEntry[] {
   const apps: WorkspaceOpenerEntry[] = input.openers.map((opener) => ({
     id: opener.id,
@@ -195,6 +203,7 @@ export function workspaceOpenerEntries(input: {
     kind: "opener",
     openerId: opener.id,
     ...(opener.icon ? { icon: opener.icon } : {}),
+    ...(opener.iconDataUrl ? { iconDataUrl: opener.iconDataUrl } : {}),
     ...(opener.path ? { path: opener.path } : {}),
   }));
 
@@ -207,7 +216,22 @@ export function workspaceOpenerEntries(input: {
    */
   const natural: WorkspaceOpenerEntry[] = [
     ...(apps.length > 0 ? apps : [{ id: "none", label: "No installed editors found", kind: "empty" as const }]),
-    { id: REVEAL_OPENER_ID, label: "Reveal in Finder", primaryLabel: "Reveal in Finder", kind: "reveal", icon: REVEAL_OPENER_ID },
+    /**
+     * NO `icon` KEY ANY MORE (issue #398). This row used to name a vector mark
+     * called `reveal`, which was a Finder face drawn by hand in
+     * `opener-icon.tsx` — a drawing OF a logo rather than the logo, and the one
+     * entry in that file with no published source behind it. It is gone. Finder
+     * has a real icon on every Mac and it arrives here as a bitmap like any
+     * other app's; where none can (a browser tab), the row draws the neutral
+     * folder glyph and says what it does in words.
+     */
+    {
+      id: REVEAL_OPENER_ID,
+      label: "Reveal in Finder",
+      primaryLabel: "Reveal in Finder",
+      kind: "reveal",
+      ...(input.revealIconDataUrl ? { iconDataUrl: input.revealIconDataUrl } : {}),
+    },
   ];
 
   // Applied on READ as well as on write, so a "reveal" stored by an earlier

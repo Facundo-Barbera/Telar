@@ -28,6 +28,7 @@ import {
   type GitignoreResult,
   type ComputerUseBackend,
   type ComputerUseStatus,
+  type AgentOrientation,
   type InboxPolicy,
   type RememberedLogin,
   type SessionDefaults,
@@ -622,6 +623,27 @@ export class EngineClient {
     settleDelegatedAfterHours?: number | null;
   }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /**
+   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
+   * Environment-wide, like the inbox rule above: it decides what EVERY session
+   * on this machine is told.
+   *
+   * `text` IS THE ENGINE'S OWN COPY OF THE PARAGRAPH, and it rides the answer
+   * so that "show me exactly what you inject" is a read rather than a second
+   * copy of the words in the cockpit. A paired Mac may be running a different
+   * release; the disclosure then shows what THAT engine says, which is the only
+   * honest thing it could show.
+   */
+  orientation(): Promise<{ orientation: AgentOrientation; text: string }> {
+    return this.request("GET", "/v2/orientation");
+  }
+
+  /** Either switch, by presence — an absent field is left alone, so turning the
+   *  skill off cannot silently re-enable the preamble. */
+  setOrientation(patch: { preamble?: boolean; skill?: boolean }): Promise<{ orientation: AgentOrientation; text: string }> {
+    return this.request("PATCH", "/v2/orientation", patch);
   }
 
   /** What a session is created with when the caller didn't say — see

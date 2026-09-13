@@ -25,6 +25,7 @@ import path from "node:path";
 import { EngineClient, latexMachineSettings, dataScienceMachineSettings } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { MANAGED_TECTONIC_VERSION, managedTectonicBinary } from "../src/latex/managed";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -40,7 +41,7 @@ afterEach(async () => {
 
 /** A project with LaTeX and data science on, and no toolchain of its own. */
 async function ready() {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
@@ -235,7 +236,7 @@ test("the new settings ROUND-TRIP: written, read back, and survive a restart", a
   const home = daemon.store.paths.root;
   await daemon.close();
   daemons.length = 0;
-  const restarted = await startEngine({ engineRoot: home });
+  const restarted = await startEngine({ models: stubModels, engineRoot: home });
   daemons.push(restarted);
   expect(latexMachineSettings(restarted.store.machinePlugins()).engine).toBe("xelatex");
   expect(dataScienceMachineSettings(restarted.store.machinePlugins()).packages).toEqual(["pandas", "matplotlib"]);

@@ -151,7 +151,7 @@ export function FileRowMenuItems({
               same preference, read once in the hook, never a second idea of
               "your editor". */}
           <ContextMenuItem onClick={() => files.open!(path, kind)}>
-            <OpenerIcon icon={files.openIcon} />
+            <OpenerIcon icon={files.openIcon} iconDataUrl={files.openIconDataUrl} />
             {files.openLabel}
           </ContextMenuItem>
         </>

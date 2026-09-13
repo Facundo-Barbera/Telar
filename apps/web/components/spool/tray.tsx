@@ -689,7 +689,7 @@ function PacketFace({
       {(detail.tally.files > 0 || detail.tally.mockups > 0) && (
         <section>
           <SectionLabel>Gathered along the way</SectionLabel>
-          <div className="flex items-center gap-4 rounded-xl bg-card p-3 text-xs text-muted-foreground shadow-sm ring-1 ring-foreground/10">
+          <div className="flex items-center gap-4 rounded-xl bg-card p-3 text-xs text-muted-foreground shadow-1 ring-1 ring-foreground/10">
             <span className="flex items-center gap-1.5">
               <FileTextIcon className="size-3.5 shrink-0" />
               <span className="font-mono tabular-nums">{detail.tally.files}</span> file

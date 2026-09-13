@@ -9,6 +9,15 @@
  * path is fill=currentColor upstream, which is what lets one mark read in
  * both themes. An unknown connection gets a neutral monogram, never a wrong
  * logo.
+ *
+ * DRAWN AT A WHOLE NUMBER OF PIXELS, AND AT THE ONE ASKED FOR (issue #398).
+ * `size` used to land only as `width`/`height` ATTRIBUTES, which any ancestor's
+ * `[&_svg:not([class*='size-'])]:size-4` — the rule every button and menu row
+ * in this app carries — silently overrode, because a stylesheet beats a
+ * presentation attribute. A 13px mark in a settings row was therefore drawn at
+ * 16 and a 40-unit path landed on half-pixel edges. The size now goes through
+ * an inline style, which nothing overrides, and `shapeRendering` asks the
+ * rasteriser to keep the curve rather than snap it to the device grid.
  */
 import { cn } from "@/lib/utils";
 import { routeOf } from "@/lib/model-connections";
@@ -58,7 +67,16 @@ export function ConnectionIcon({ connection, size = 14, className }: { connectio
     );
   }
   return (
-    <svg width={size} height={size} viewBox={mark.viewBox} fill="currentColor" className={className} aria-hidden>
+    <svg
+      width={size}
+      height={size}
+      viewBox={mark.viewBox}
+      fill="currentColor"
+      shapeRendering="geometricPrecision"
+      className={className}
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
       <path d={mark.d} />
     </svg>
   );

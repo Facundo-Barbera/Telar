@@ -240,6 +240,44 @@ describe("hairlines", () => {
   });
 });
 
+// The REAL app icons (#398): what the shell read off each `.app` bundle has to
+// survive the trip through the menu builder, and the reveal row — which this
+// module invents rather than receives — has to get Finder's.
+describe("the icons the rows wear", () => {
+  const PNG = "data:image/png;base64,iVBORw==";
+
+  test("an opener's bitmap rides through onto its entry, alongside the vector fallback", () => {
+    const entries = workspaceOpenerEntries({ openers: [{ ...INSTALLED[0]!, iconDataUrl: PNG }] });
+    expect(entries[0]).toMatchObject({ id: "vscode", icon: "vscode", iconDataUrl: PNG });
+  });
+
+  test("no bitmap means NO KEY, not an empty string — the renderer's fallback is keyed on absence", () => {
+    const entries = workspaceOpenerEntries({ openers: INSTALLED });
+    expect(entries.every((entry) => !("iconDataUrl" in entry))).toBe(true);
+  });
+
+  test("Finder's own icon lands on the reveal row, which no opener table carries", () => {
+    const entries = workspaceOpenerEntries({ openers: INSTALLED, revealIconDataUrl: PNG });
+    expect(entries.find((entry) => entry.id === REVEAL_OPENER_ID)).toMatchObject({ kind: "reveal", iconDataUrl: PNG });
+  });
+
+  test("the reveal row names NO vector mark — the hand-drawn Finder face is gone (#398)", () => {
+    // It was the one mark in opener-icon.tsx with no published source behind
+    // it: a drawing of Apple's logo rather than Apple's logo. With no bitmap
+    // the row falls back to the neutral folder glyph and says what it does in
+    // words, which is the rule every other opener already followed.
+    for (const revealIconDataUrl of [PNG, undefined]) {
+      const row = workspaceOpenerEntries({ openers: INSTALLED, revealIconDataUrl }).find((entry) => entry.id === REVEAL_OPENER_ID);
+      expect(row?.icon).toBeUndefined();
+    }
+  });
+
+  test("a bitmap follows the row when it is hoisted to the top", () => {
+    const entries = workspaceOpenerEntries({ openers: [INSTALLED[0]!, { ...INSTALLED[1]!, iconDataUrl: PNG }], preferred: "zed" });
+    expect(entries[0]).toMatchObject({ id: "zed", preferred: true, iconDataUrl: PNG });
+  });
+});
+
 describe("what the left half says", () => {
   test("nothing remembered: Finder, because a guess here launches on one click", () => {
     // It used to guess VS Code, then the first editor installed. Both are a
@@ -247,7 +285,7 @@ describe("what the left half says", () => {
     // folder opening in an application they did not ask for.
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
     expect(workspaceOpenerPrimaryLabel(entries)).toBe("Reveal in Finder");
-    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID, icon: REVEAL_OPENER_ID });
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID });
   });
 
   test("no VS Code, and still no guess: the half reveals rather than reaching for Zed", () => {

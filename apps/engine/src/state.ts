@@ -15,6 +15,8 @@ import {
   defaultInstanceIdForDriver,
   isBackgroundWork,
   livenessOf,
+  AgentOrientation as AgentOrientationSchema,
+  DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
   DEFAULT_SESSION_DEFAULTS,
   DEFAULT_SIDEBAR_LAYOUT,
@@ -81,6 +83,7 @@ import {
   type GitHubSnapshot,
   type GitignoreRemoval,
   type GitignoreResult,
+  type AgentOrientation,
   type InboxPolicy,
   type SessionDefaults,
   type SidebarLayout,
@@ -157,6 +160,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { TELAR_ORIENTATION } from "./orientation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -588,6 +592,15 @@ export type EngineStatePaths = {
    */
   inbox: string;
   /**
+   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
+   *
+   * ENVIRONMENT-SCOPED, beside inbox.json and for the sharper version of its
+   * reason: this decides what every session on the machine is told, so a
+   * per-browser copy would mean one engine injecting a paragraph some of its
+   * own clients had switched off.
+   */
+  orientation: string;
+  /**
    * The CLIProxyAPI hubs quota is read from — see `listUsageLimitSources`.
    *
    * ENVIRONMENT-SCOPED, beside mcp-servers.json and for the same reason: a hub
@@ -711,6 +724,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    orientation: path.join(resolved, "orientation.json"),
     usageLimitSources: path.join(resolved, "usage-limit-sources.json"),
     usageLimitSecrets: path.join(resolved, "usage-limit-secrets.json"),
     subscriptions: path.join(resolved, "subscriptions.json"),
@@ -1430,6 +1444,13 @@ export type AttachedBrowser = {
   call?(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>;
 };
 
+/**
+ * One claim a Stop just killed — the same triple `cancellationsForWorker`
+ * returns, plus the worker it belongs to, because this is PUSHED rather than
+ * asked for and the receiver has to check the claim is its own.
+ */
+export type StoppedClaim = { sessionId: string; runId: string; claimToken: string; workerId: string };
+
 export type EngineNotifier = (input: {
   sessionId: string;
   runId: string;
@@ -1475,6 +1496,9 @@ export class EngineStore {
   /** See the constructor: the daemon's in-process nudge to its embedded worker,
    *  absent unless the daemon injected it. */
   private readonly onQueueChanged?: () => void;
+  /** See the constructor option: the claims a Stop just killed, handed to the
+   *  in-process worker so the abort does not ride a poll. */
+  private readonly onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
   /** One announcement per command, not one per `writeQueue` inside it. */
   private queueChangeAnnounced = false;
   /** See the constructor: daemon-injected, absent means no computer use. */
@@ -2082,6 +2106,42 @@ export class EngineStore {
       next.settleDelegatedAfterHours = window(patch.settleDelegatedAfterHours, "delegation grace");
     }
     this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /**
+   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here it decides what every
+   * turn on the machine is told: a file somebody hand-edited into nonsense must
+   * cost the preference and fall back to the shipped default, never the turn.
+   * The default is BOTH ON, because the orientation exists to fix a bug rather
+   * than to add a feature somebody opts into.
+   */
+  getAgentOrientation(): AgentOrientation {
+    try {
+      const parsed = AgentOrientationSchema.safeParse(this.readDocument(this.paths.orientation));
+      return parsed.success ? parsed.data : { ...DEFAULT_AGENT_ORIENTATION };
+    } catch {
+      return { ...DEFAULT_AGENT_ORIENTATION };
+    }
+  }
+
+  /** By presence, like every other patch here: turning the skill off must not
+   *  re-decide the preamble. Takes `unknown` and validates against the schema
+   *  for the reason `setInboxPolicy` states — the rule lives next to the shape,
+   *  not spelled a second time in whichever route is the way in today. */
+  setAgentOrientation(patch: { preamble?: unknown; skill?: unknown }): AgentOrientation {
+    const next: AgentOrientation = { ...this.getAgentOrientation() };
+    for (const key of ["preamble", "skill"] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      if (typeof value !== "boolean") {
+        throw new EngineStateError("invalid_request", `${key} must be true or false`);
+      }
+      next[key] = value;
+    }
+    this.writeDocument(this.paths.orientation, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -4392,6 +4452,27 @@ export class EngineStore {
        * default, so a store on its own announces nothing to anybody.
        */
       onQueueChanged?: () => void;
+      /**
+       * A STOP'S CANCELLATIONS, HANDED STRAIGHT TO THE WORKER HOLDING THEM.
+       *
+       * `onQueueChanged` is not enough for this, and #409 is why. It only ever
+       * puts a BACKED-OFF worker back on its fast interval — a worker already
+       * beating fast (which is every worker with a turn running, i.e. every
+       * worker a Stop concerns) does nothing with the nudge and goes on
+       * DISCOVERING the stop by polling. The abort therefore waits for the next
+       * heartbeat, and for the one in flight to answer first: an unbounded wait
+       * on a busy daemon, measured at up to five seconds.
+       *
+       * So a stop tells the worker WHICH CLAIMS DIED rather than that something
+       * moved, and the worker aborts them in-process, in the same tick as the
+       * HTTP request. The heartbeat's `cancellationsForWorker` is unchanged and
+       * still the backstop: it is the only path an OUT-OF-PROCESS worker has,
+       * and re-aborting an already-aborted controller is a no-op.
+       *
+       * INJECTED BY THE DAEMON for the worker it hosts, like `onQueueChanged`;
+       * absent by default, so a store on its own tells nobody anything.
+       */
+      onTurnsStopped?: (cancellations: StoppedClaim[]) => void;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
@@ -4412,6 +4493,7 @@ export class EngineStore {
   ) {
     this.notifier = options.notifier;
     this.onQueueChanged = options.onQueueChanged;
+    this.onTurnsStopped = options.onTurnsStopped;
     this.readModels = options.models ?? readModelCatalogue;
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
@@ -7735,6 +7817,15 @@ export class EngineStore {
           const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
           return live.length > 0 ? { tasks: live } : {};
         })(),
+        /**
+         * THE ORIENTATION PARAGRAPH, RESOLVED HERE. The decision ("is this
+         * machine's preamble on") and the words are both the engine's, and the
+         * claim carries the OUTCOME — the same rule `mcpServers` follows, for
+         * the same reason: a worker trusted to apply a flag would be a second
+         * place the rule lives. Absent means off, and the drivers inject
+         * nothing.
+         */
+        ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
         turn,
       };
     }
@@ -8150,6 +8241,17 @@ export class EngineStore {
     const backgroundStopped = this.stopBackgroundTasks(sessionId);
     if (stopped.length > 0 || backgroundStopped > 0) this.touchSession(sessionId, at);
     for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+    /**
+     * AND THE WORKER IS TOLD, rather than left to find out on a poll. See the
+     * `onTurnsStopped` option: the claim stays ON the turn here (that is how a
+     * heartbeat still delivers it to an out-of-process worker), so this is a
+     * shortcut and never the only path.
+     */
+    this.announceStoppedClaims(
+      stopped.flatMap((turn) =>
+        turn.claim ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token, workerId: turn.claim.workerId }] : [],
+      ),
+    );
     // One wake for the live turn, not one per cancelled backlog message.
     if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
     this.evaluateDelegationSettling(sessionId);
@@ -9681,6 +9783,21 @@ export class EngineStore {
       this.queueChangeAnnounced = false;
       this.onQueueChanged?.();
     });
+  }
+
+  /**
+   * AFTER THE COMMIT, FOR THE SAME REASON `announceQueueChange` DEFERS: telling
+   * a worker to abort a claim a rollback then resurrects would kill a turn the
+   * store still believes is running. Outside a transaction there is nothing to
+   * wait for and the call is direct.
+   */
+  private announceStoppedClaims(cancellations: StoppedClaim[]): void {
+    if (!this.onTurnsStopped || cancellations.length === 0) return;
+    if (!this.executionStore || this.commandDepth === 0) {
+      this.onTurnsStopped(cancellations);
+      return;
+    }
+    this.afterCommit.push(() => this.onTurnsStopped?.(cancellations));
   }
 
   private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {

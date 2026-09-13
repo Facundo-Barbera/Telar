@@ -15,6 +15,7 @@ import {
   readProviderSkillsCached,
   readSkillDirectory,
 } from "../src/provider-skills";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -258,7 +259,7 @@ describe("GET /v2/sessions/:id/skills", () => {
     const home = fixtureHome();
     const engineRoot = temp("telar-skills-engine-");
     fs.writeFileSync(path.join(engineRoot, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
-    const daemon = await startEngine({
+    const daemon = await startEngine({ models: stubModels,
       engineRoot,
       providerSkills: {
         env: { CLAUDE_CONFIG_DIR: home },
@@ -282,7 +283,7 @@ describe("GET /v2/sessions/:id/skills", () => {
 
   test("an unknown session is a 404 rather than an empty inventory", async () => {
     const engineRoot = temp("telar-skills-engine-404-");
-    const daemon = await startEngine({ engineRoot, providerSkills: { env: { CLAUDE_CONFIG_DIR: fixtureHome() }, loadProviderCommands: async () => [] } });
+    const daemon = await startEngine({ models: stubModels, engineRoot, providerSkills: { env: { CLAUDE_CONFIG_DIR: fixtureHome() }, loadProviderCommands: async () => [] } });
     daemons.push(daemon);
     const response = await fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/sessions/session_missing/skills`, {
       headers: { authorization: `Bearer ${daemon.discovery.token}` },

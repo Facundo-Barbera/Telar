@@ -18,15 +18,18 @@
  * THE CHROME IS THE ROW, NOT THE INPUT, and that is what lets something sit
  * INSIDE the field. It used to be an absolutely-positioned icon over a
  * full-width `Input` with a hand-counted `pl-7`/`pr-10` to keep the text off
- * it — which works for two things of fixed width and for nothing else. Telar's
- * rail needed a scope chip in there, whose width is a project's name, so the
- * row became a flex box wearing the border and the input became bare inside it.
- * Every caller that passes neither slot draws exactly what it drew before.
+ * it — which works for two things of fixed width and for nothing else. The row
+ * is a flex box wearing the border and the input is bare inside it, so a slot's
+ * content may be any width. Every caller that passes no slot draws exactly what
+ * it drew before.
  *
- * `start` and `end` are the two places the callers diverge: Telar puts its
- * project-scope chip in one and its ⌘K hint / clear button in the other, the
- * Spool passes neither. `start` REPLACES the search glyph rather than sitting
- * beside it — two marks at the head of one field is one too many.
+ * ONE SLOT, NOT TWO. There was a `start` as well, added for Telar's
+ * project-scope chip, which REPLACED the search glyph rather than sitting
+ * beside it. #400 removed that chip and no caller passes a leading anything, so
+ * the slot went with it: an unused prop on a shared primitive is a shape three
+ * rails have to keep agreeing about for nobody's sake. `end` stays — Telar's ⌘K
+ * hint and clear button live there, and the Spool and the settings nav pass
+ * neither.
  */
 import { forwardRef } from "react";
 import { SearchIcon } from "lucide-react";
@@ -35,8 +38,8 @@ import { cn } from "@/lib/utils";
 
 export const SidebarSearchField = forwardRef<
   HTMLInputElement,
-  React.ComponentProps<typeof Input> & { start?: React.ReactNode; end?: React.ReactNode }
->(function SidebarSearchField({ start, end, className, ...props }, ref) {
+  React.ComponentProps<typeof Input> & { end?: React.ReactNode }
+>(function SidebarSearchField({ end, className, ...props }, ref) {
   return (
     <div
       className={cn(
@@ -48,7 +51,7 @@ export const SidebarSearchField = forwardRef<
         className,
       )}
     >
-      {start ?? <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />}
+      <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />
       <Input
         ref={ref}
         {...props}

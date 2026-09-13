@@ -28,6 +28,7 @@ import {
   sourceLabel,
   UsageLimitSourceError,
 } from "../src/usage-limits";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -369,7 +370,7 @@ async function engineWithClient() {
   const directory = root();
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
-  const daemon = await startEngine({ engineRoot: directory });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory });
   daemons.push(daemon);
   return { daemon, client: await connectEngine(daemon.store.paths.root) };
 }

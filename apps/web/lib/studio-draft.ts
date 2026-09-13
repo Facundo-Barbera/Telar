@@ -31,6 +31,7 @@ import {
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   type Accent,
+  type Depth,
   type MonoFont,
   type SansFont,
 } from "./appearance";
@@ -263,6 +264,14 @@ export function patchDraftType(
 
 export function patchDraftStrength(draft: StudioDraft, level: number): StudioDraft {
   return { ...draft, translucencyLevel: clampInt(level, MIN_TRANSLUCENCY, MAX_TRANSLUCENCY, draft.translucencyLevel) };
+}
+
+/** How far the elevation ladder travels. A DRAFT field, not a live one, for
+ *  the same reason `translucencyLevel` is: it travels in a Look, so the pane's
+ *  one rule applies — everything that is taste edits the draft and waits on
+ *  Apply. */
+export function patchDraftDepth(draft: StudioDraft, depth: Depth): StudioDraft {
+  return { ...draft, depth };
 }
 
 export function replaceDraftBackdrop(draft: StudioDraft, backdrop: LookBackdrop): StudioDraft {

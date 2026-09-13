@@ -7,6 +7,7 @@ import { BrowserToolSocket } from "../src/browser/socket";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
 import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -35,8 +36,8 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000): Promise<void> {
-  // A wall-clock bound (below bun's 5s test timeout), not a retry count: the
+async function eventually(check: () => void | Promise<void>, deadlineMs = 15_000): Promise<void> {
+  // A wall-clock bound (below the 20s ceiling in bunfig.toml), not a retry count: the
   // former 60×5ms window was ~300ms only when each check was instant, and
   // one full-gate run under load failed it. Settles on the first pass.
   const deadline = Date.now() + deadlineMs;
@@ -94,7 +95,7 @@ async function setup(
   extras: { browserSocket?: BrowserToolSocket; workerLeaseMs?: number } = {},
 ): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
   // Manual ticks need a lease covering the test; expiry is tested separately.
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -218,7 +219,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
       return { text: label };
     },
   });
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -245,7 +246,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
 });
 
 test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -351,7 +352,7 @@ test("turns from DIFFERENT sessions run concurrently up to the cap; one session 
       return { text: `done ${prompt}` };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -812,7 +813,7 @@ test("a project folder that no longer exists fails the turn with the folder name
   // Through the worker: the driver is never invoked; the turn fails with the sentence.
   let invoked = 0;
   const driver: TurnDriver = { run: async () => { invoked += 1; return { text: "" }; } };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const stale = fs.mkdtempSync(path.join(os.tmpdir(), "telar-stale-"));
@@ -906,7 +907,7 @@ test("a turn the PROVIDER opened does not hold an execution slot shut", async ()
     },
   };
 
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -955,7 +956,7 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
       return { text: "should never run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -1096,7 +1097,7 @@ test("a claim already granted when Stop lands never reaches the driver; a new me
       return { text: "must not run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -1136,4 +1137,130 @@ test("a claim already granted when Stop lands never reaches the driver; a new me
   await worker.tick();
   await eventually(async () => expect((await client.session("session_one")).turns[2]?.state).toBe("completed"));
   expect(spawned).toEqual(["Continue"]);
+});
+
+/**
+ * #409 — A STOP MUST NOT RIDE A POLL.
+ *
+ * THE MEASURED FAILURE: pressing Stop on a running Claude turn took up to five
+ * seconds to take effect. Every party did its part promptly and the sum was
+ * still seconds, because ONE HOP WAS A POLL. The engine writes `stopped`
+ * synchronously in the request that carries the Stop, so the transcript was
+ * never the slow part — but the worker holding the claim learned about it only
+ * on its next heartbeat, and had to wait for the one in flight to answer first.
+ * `onQueueChanged`'s doorbell could not help: it only lifts a BACKED-OFF worker
+ * back onto its fast interval, and a worker with a turn running is never backed
+ * off, so for the stop case it was exactly a no-op.
+ *
+ * These two tests pin both halves of the answer with a provider that IGNORES
+ * the abort for three seconds — the shape of a long tool call.
+ */
+test("a Stop reaches an embedded worker's provider in-process, without waiting for a heartbeat", async () => {
+  let abortedAt: number | undefined;
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  const driver: TurnDriver = {
+    async run({ signal, onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      signal.addEventListener("abort", () => { abortedAt = Date.now(); }, { once: true });
+      // Ignores the stop, the way a CLI inside a long tool call does.
+      await Bun.sleep(3_000);
+      return { text: "too late" };
+    },
+  };
+  /**
+   * A HEARTBEAT DELIBERATELY TOO SLOW TO BE THE ANSWER. Two seconds is not the
+   * production interval — it is the bound this test needs the fix to beat, and
+   * it stands in for every real reason a beat is late (a busy daemon, a tick
+   * already in flight, a worker that just backed off).
+   */
+  const daemon = await startEngine({
+    engineRoot: root(),
+    embeddedWorker: { createDriver: () => driver, pollMs: 2_000, idlePollMs: 2_000 },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Long task" });
+  await running;
+
+  const pressedAt = Date.now();
+  await client.stopSession("session_one");
+  await eventually(() => expect(abortedAt).toBeDefined());
+  // The point of the whole change: well inside one heartbeat, not after it.
+  expect(abortedAt! - pressedAt).toBeLessThan(1_000);
+});
+
+test("a provider that ignores a Stop never delays the turn's stopped state", async () => {
+  // The provider is reaped in the background — its three seconds are its own,
+  // and the person is not made to watch them.
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  let returnedAfterStop = false;
+  const driver: TurnDriver = {
+    async run({ onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      await Bun.sleep(3_000);
+      returnedAfterStop = true;
+      return { text: "too late" };
+    },
+  };
+  const daemon = await startEngine({
+    engineRoot: root(),
+    embeddedWorker: { createDriver: () => driver, pollMs: 2_000, idlePollMs: 2_000 },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Long task" });
+  await running;
+
+  const pressedAt = Date.now();
+  const stopped = await client.stopSession("session_one");
+  expect(stopped.live?.runId).toBe("run_one");
+  // Read back through the API the cockpit reads, not from the return value.
+  expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
+  expect((await client.events("session_one")).events.at(-1)).toMatchObject({ type: "turn.stopped", runId: "run_one" });
+  expect(Date.now() - pressedAt).toBeLessThan(300);
+  // …and the provider really was still running when that was already true.
+  expect(returnedAfterStop).toBe(false);
+});
+
+test("a Stop for another worker's claim is ignored, and the claim it does hold is aborted once", async () => {
+  // `cancelClaims` is PUSHED rather than asked for, so the receiver has to
+  // check the claim is its own — and the heartbeat carries the same
+  // cancellation, so aborting twice must be the no-op it looks like.
+  let aborts = 0;
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  const driver: TurnDriver = {
+    async run({ signal, onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => { aborts += 1; resolve(); }, { once: true });
+      });
+      return { text: "stopped" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, { runId: "run_one", input: "Stop me" });
+  await worker.tick();
+  await running;
+
+  // Nobody else's claim moves this worker.
+  worker.cancelClaims([{ claimToken: "tok_not_mine", workerId: "worker_two" }]);
+  expect(aborts).toBe(0);
+
+  await client.stopSession(sessionId);
+  // This worker is out-of-process as far as the daemon is concerned, so the
+  // heartbeat is its only delivery — and it must still work.
+  await worker.tick();
+  await eventually(() => expect(aborts).toBe(1));
+  for (let i = 0; i < 3; i += 1) await worker.tick();
+  expect(aborts).toBe(1);
 });

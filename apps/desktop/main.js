@@ -35,7 +35,7 @@ const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
 const { createInstallGate } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
-const { discoverOpeners, openWith } = require("./workspace-openers");
+const { discoverOpeners, openWith, openersWithIcons } = require("./workspace-openers");
 
 const SMOKE = process.argv.includes("--smoke");
 
@@ -1537,7 +1537,16 @@ function reportBrowserControl(change) {
  * hands any target to the app. The absolute-path and stat guards are the same
  * two guards; only what `stat` is allowed to BE widens.
  */
-ipcMain.handle("telar:workspace:openers", () => ({ openers: discoverOpeners() }));
+/**
+ * The installed openers, each wearing its REAL icon (#398) — `{ openers,
+ * revealIconDataUrl? }`.
+ *
+ * `getFileIcon` is handed down as a closure rather than as `app.getFileIcon`,
+ * both because the method needs `app` as its receiver and because that is the
+ * whole of Electron `workspace-openers.js` is allowed to know about — which is
+ * what lets the cache and the answer's shape be unit tested without a shell.
+ */
+ipcMain.handle("telar:workspace:openers", () => openersWithIcons({ getFileIcon: (target, options) => app.getFileIcon(target, options) }));
 
 ipcMain.handle("telar:workspace:open", async (_event, input) => {
   const target = typeof input?.path === "string" ? input.path : "";

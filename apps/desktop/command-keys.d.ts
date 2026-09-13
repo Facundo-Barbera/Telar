@@ -21,6 +21,10 @@ export type CommandMenu = "file" | "panel" | "view";
 export type Command = {
   id: string;
   label: string;
+  /** What a TOGGLE is called when pressing it would undo itself. See the
+   *  registry's typedef: `label` stays the command's name everywhere the
+   *  state is not known. */
+  altLabel?: string;
   group: string;
   defaultChord: string;
   menu?: CommandMenu;

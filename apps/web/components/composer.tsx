@@ -1373,10 +1373,17 @@ export function Composer({
           }}
           onDrop={onDrop}
           className={cn(
-            // The shadow is cast in --shadow-tint, not raw black: pure black is
-            // the one ink no theme has, and under a light or warm palette it
-            // smudges grey instead of deepening the surface. See globals.css.
-            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
+            // `shadow-2` — the ladder's "floats over the page but belongs to
+            // it" rung (globals.css). This used to be a hand-written
+            // `shadow-[0_18px_60px_-30px_var(--shadow-tint)]`: right about the
+            // INK (pure black is the one colour no theme has, and under a warm
+            // palette it smudges grey instead of deepening the surface) and
+            // wrong about being one surface's private number. The rung keeps
+            // the ink and adds what the arbitrary value could not have: it
+            // moves with the Depth setting, and the panel and the menus above
+            // this bar are now demonstrably a step apart rather than
+            // coincidentally similar.
+            "rounded-2xl border-border/80 bg-card/95 shadow-2 backdrop-blur-xl",
             dropping && "relative border-ring ring-2 ring-ring/40",
           )}
         >
@@ -1387,7 +1394,7 @@ export function Composer({
               swallow the drop it is describing. */}
           {dropping && (
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-3.5 z-10 flex justify-center">
-              <span className="rounded-full border border-ring/50 bg-card px-2.5 py-0.5 text-[0.6875rem] font-medium text-foreground shadow-sm">
+              <span className="rounded-full border border-ring/50 bg-card px-2.5 py-0.5 text-[0.6875rem] font-medium text-foreground shadow-1">
                 {dropping === "reference" ? "Drop to reference it in your message" : "Drop to add it to your message"}
               </span>
             </div>

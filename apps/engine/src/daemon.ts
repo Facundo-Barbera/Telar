@@ -48,8 +48,9 @@ import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, prob
 import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
+import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./secrets/login-grants";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
@@ -155,6 +156,18 @@ export type EngineDaemonOptions = {
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
+  /**
+   * Where the `telar` skill is written, and removed from — normally each
+   * provider's own skills directory (`providerSkillRoots()`).
+   *
+   * ABSENT MEANS NOWHERE, AND THAT IS WHAT EVERY TEST GETS. Installing a file
+   * into `~/.claude/skills` is a thing a PROCESS does on start, not a thing a
+   * library call should do — the same rule `main.ts` already states for the
+   * PATH repair and the usage-cache warm, and here it is sharper: a suite that
+   * constructs forty daemons must not write forty times into the developer's
+   * home directory. `main.ts` passes the real roots.
+   */
+  skillRoots?: readonly string[];
   asyncGit?: AsyncGitRunner;
   /** The MUTATING git, for the same reason `gh` is injected: a route test that
    *  drives `POST /v2/projects/clone` must never reach somebody's network — or
@@ -548,10 +561,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * store is built long before the worker is, and the store is what rings it.
    */
   let wakeEmbeddedWorker: (() => void) | undefined;
+  /**
+   * THE OTHER HALF OF THE DOORBELL, and the one a Stop needs (#409). The nudge
+   * above only un-backs-off an idle worker; this hands over the exact claims a
+   * Stop just killed, so the abort happens in the same tick as the request
+   * rather than on whatever heartbeat comes next. Set and retired by the same
+   * generation fence as `wakeEmbeddedWorker`.
+   */
+  let cancelEmbeddedClaims: ((cancellations: StoppedClaim[]) => void) | undefined;
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
     onQueueChanged: () => wakeEmbeddedWorker?.(),
+    onTurnsStopped: (cancellations) => cancelEmbeddedClaims?.(cancellations),
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -570,6 +592,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   } catch (error) { lock.release(); throw error; }
+  /**
+   * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
+   * away. Run once on start and again on every PATCH of the toggle.
+   *
+   * NOT AWAITED BY THE CALLER ON START, and never fatal: a provider that is not
+   * installed has no directory to write into, and an engine that refused to
+   * start over a missing `~/.codex` would be trading the whole app for a
+   * reference file. `syncTelarSkill` reports per-root outcomes rather than
+   * throwing, and rewrites only when the content hash moved — see
+   * ./orientation.ts for why an unconditional rewrite would be harmful.
+   */
+  const skillRoots = options.skillRoots ?? [];
+  const syncOrientationSkill = (policy = store.getAgentOrientation()): Promise<unknown> =>
+    skillRoots.length ? syncTelarSkill({ install: policy.skill, roots: skillRoots }).catch(() => []) : Promise.resolve([]);
+  void syncOrientationSkill();
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
@@ -1164,6 +1201,35 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("settleDelegatedAfterHours" in input ? { settleDelegatedAfterHours: input.settleDelegatedAfterHours } : {}),
           }),
         });
+        return;
+      }
+      /**
+       * WHETHER TELAR MAY TELL AN AGENT WHERE IT IS — see `AgentOrientation`.
+       * A document of the environment, like the inbox rule above and for the
+       * sharper version of its reason: this decides what every session on the
+       * machine is told, so it cannot live in one client's storage.
+       *
+       * THE PATCH RE-SYNCS THE SKILL BEFORE IT ANSWERS. "Off" has to mean the
+       * file is GONE, not that it stops being refreshed — someone switching
+       * this off is saying they want nothing of Telar's in their agent's
+       * context, and a stale `SKILL.md` would still be read.
+       */
+      if (url.pathname === "/v2/orientation" && (request.method === "GET" || request.method === "PATCH")) {
+        // THE WORDS RIDE THE ANSWER. "Show the text" in Settings has to show
+        // what THIS engine injects, not a second copy of the paragraph kept in
+        // the cockpit — a paired Mac may be running a different release, and a
+        // disclosure that could disagree with the injection is worse than none.
+        if (request.method === "GET") {
+          writeJson(response, 200, { orientation: store.getAgentOrientation(), text: TELAR_ORIENTATION });
+          return;
+        }
+        const input = await body(request);
+        const orientation = store.setAgentOrientation({
+          ...("preamble" in input ? { preamble: input.preamble } : {}),
+          ...("skill" in input ? { skill: input.skill } : {}),
+        });
+        await syncOrientationSkill(orientation);
+        writeJson(response, 200, { orientation, text: TELAR_ORIENTATION });
         return;
       }
       /**
@@ -4294,6 +4360,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // wrapper below hands it back when this one is retired.
           const wakeThisGeneration = () => worker.wake();
           wakeEmbeddedWorker = wakeThisGeneration;
+          const cancelThisGeneration = (cancellations: StoppedClaim[]) => worker.cancelClaims(cancellations);
+          cancelEmbeddedClaims = cancelThisGeneration;
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
           worker.stop = async (reason) => {
@@ -4303,6 +4371,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // Same fence for the doorbell: a retired generation must not keep
             // receiving nudges, and must not silence its replacement's.
             if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
+            if (cancelEmbeddedClaims === cancelThisGeneration) cancelEmbeddedClaims = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
              * exempt from. That is the FENCE: a late request carrying the dead

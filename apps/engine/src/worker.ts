@@ -576,6 +576,54 @@ export class EngineWorker {
     if (wasSlow) void this.tick();
   }
 
+  /**
+   * A STOP, DELIVERED RATHER THAN DISCOVERED — the #409 fix.
+   *
+   * `wake()` cannot carry this. It only lifts a BACKED-OFF worker back onto its
+   * fast interval, and a worker with a turn running is never backed off (see
+   * `tick`'s `busy`) — so the nudge a Stop rang was, precisely for the stop
+   * case, a no-op, and the abort waited for the next heartbeat AND for the one
+   * in flight to answer first. Neither is bounded by anything the person can
+   * see: on a daemon busy serving a streaming turn the wait was measured in
+   * seconds. The engine already knows which claims died at the moment it writes
+   * `stopped`, so it says so and this aborts them in the same tick.
+   *
+   * IDEMPOTENT AND BACKSTOPPED. A claim this worker does not hold is ignored
+   * (the heartbeat will reach whoever does), and a controller already aborted
+   * by a previous delivery — or by the heartbeat that also carries it — takes
+   * the second abort as the no-op it is.
+   */
+  cancelClaims(cancellations: Array<{ claimToken: string; workerId: string }>): void {
+    if (this.stopped) return;
+    for (const cancellation of cancellations) {
+      if (cancellation.workerId !== this.options.workerId) continue;
+      const controller = this.active.get(cancellation.claimToken);
+      if (!controller || controller.signal.aborted) continue;
+      this.noteStopDelivery(cancellation.claimToken, "push");
+      controller.abort(new Error("turn stopped"));
+    }
+  }
+
+  /**
+   * ONE LINE PER STOP, SO THE HOP THAT WAS SLOW IS VISIBLE IN THE FIELD.
+   *
+   * #409 could not be diagnosed from the daemon log at all: every party did its
+   * part promptly and the sum was five seconds. `route` is the half that
+   * mattered — `push` is the in-process delivery above, `heartbeat` is the poll
+   * it replaced — and `reapMs` (recorded later, when the provider finally lets
+   * go) is how long the process took to unwind AFTER the turn already read as
+   * stopped. Both go through `diagnose`, which is persisted, bounded and
+   * carries no message, path or token.
+   */
+  private noteStopDelivery(claimToken: string, route: "push" | "heartbeat"): void {
+    this.stopDeliveredAt.set(claimToken, this.now());
+    this.diagnose({ event: "turn_stop_delivered", operation: route });
+  }
+
+  /** When each live claim was told to stop, so the reap can be measured against
+   *  it. Cleared with the turn — see `execute`'s `finally`. */
+  private readonly stopDeliveredAt = new Map<string, number>();
+
   /** The clock, injectable so a test can drive the lease without sleeping. */
   private now(): number {
     return (this.options.now ?? Date.now)();
@@ -939,7 +987,14 @@ export class EngineWorker {
       // The engine is answering: push any turn whose outcome it never
       // acknowledged — started, NOT awaited. See `startDrain`.
       this.startDrain();
-      for (const cancellation of status.cancel) this.active.get(cancellation.claimToken)?.abort(new Error("turn stopped"));
+      // THE BACKSTOP, not the fast path: an out-of-process worker has only this,
+      // and an in-process one has usually been told already (`cancelClaims`).
+      for (const cancellation of status.cancel) {
+        const controller = this.active.get(cancellation.claimToken);
+        if (!controller || controller.signal.aborted) continue;
+        this.noteStopDelivery(cancellation.claimToken, "heartbeat");
+        controller.abort(new Error("turn stopped"));
+      }
       // Settle anything a human answered since the last beat. This must happen
       // even while a turn is active — the turn is what is waiting. KEYED BY
       // RUN AND REQUEST, not request alone: with concurrent turns, two
@@ -1041,7 +1096,7 @@ export class EngineWorker {
    * `transport` exist for; without it they would be dropped exactly as the raw
    * cause was. Never carries a message, URL, header or token.
    */
-  private diagnose(fields: { event: string; operation?: string; code?: string; status?: number; transport?: string; outageMs?: number }): void {
+  private diagnose(fields: { event: string; operation?: string; code?: string; status?: number; transport?: string; outageMs?: number; elapsedMs?: number }): void {
     const sink = this.options.onDiagnostic;
     if (sink) {
       sink(fields);
@@ -1468,6 +1523,10 @@ export class EngineWorker {
         ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
         ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
         ...(claim.tasks?.length ? { tasks: claim.tasks } : {}),
+        // The orientation paragraph, forwarded verbatim. Resolved on the claim
+        // for the same reason the two above are — the worker holds no store
+        // handle, and absence is the honest "the person turned it off".
+        ...(claim.orientation ? { orientation: claim.orientation } : {}),
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH
@@ -1788,6 +1847,19 @@ export class EngineWorker {
       this.steering.delete(claimToken);
       this.active.delete(claimToken);
       this.activeClaims.delete(claimToken);
+      /**
+       * HOW LONG THE PROVIDER TOOK TO LET GO, measured from the stop rather
+       * than from the turn's start. The turn has read as `stopped` since the
+       * engine wrote it; this is the tail the person does not see but the next
+       * message on this session waits behind (the Claude driver parks a new
+       * turn on `runtimes.idle`), so it is the number to look at when a Stop
+       * feels fast and the sentence after it does not.
+       */
+      const deliveredAt = this.stopDeliveredAt.get(claimToken);
+      if (deliveredAt !== undefined) {
+        this.stopDeliveredAt.delete(claimToken);
+        this.diagnose({ event: "turn_stop_reaped", elapsedMs: this.now() - deliveredAt });
+      }
     }
   }
 
