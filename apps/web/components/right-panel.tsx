@@ -55,7 +55,7 @@ import {
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { clampSidebarWidth, setSidebarWidth, useSidebarPrefs } from "@/lib/sidebar-width";
 import {
-  RIGHT_PANEL_DEFAULT_WIDTH,
+  defaultRightPanelWidth,
   RIGHT_PANEL_MAIN_MIN_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
@@ -1917,7 +1917,9 @@ export function RightPanel({
   const [tabInsert, setTabInsert] = useState<{ id: string; side: "before" | "after" } | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
-  const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
+  // A stored width is the person's own answer and always wins; this is only
+  // what to open at when there is none — see `defaultRightPanelWidth`.
+  const width = prefs.width ?? defaultRightPanelWidth(tabs);
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   /** One native scope per open Browser tab, so the strip can name each of them
