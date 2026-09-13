@@ -36,6 +36,31 @@ struct SidebarRow: Identifiable {
     var all: [HostedSession] { [row] + children.map(\.row) }
 }
 
+/// A BAND'S ROWS FLATTENED FOR THE LIST — a coordinator, then whatever hangs off
+/// it, as one sequence.
+///
+/// A TREE CANNOT BE A NESTED `ForEach` AND STILL REORDER. `.onMove` addresses
+/// the ELEMENTS of one `ForEach`; a coordinator whose children were a `ForEach`
+/// of its own would be an element rendering several rows, which the List cannot
+/// lift. Flat, with the children marked, is what lets it lift a coordinator and
+/// leave a child where it belongs.
+struct SidebarDrawnRow: Identifiable {
+    let row: HostedSession
+    /// What the row carries when it is somebody's child; nil at the band's own
+    /// level.
+    var child: SidebarChild? = nil
+    var isChild: Bool { child != nil }
+    var id: ScopedSessionID { row.id }
+}
+
+extension Sequence where Element == SidebarRow {
+    var drawn: [SidebarDrawnRow] {
+        flatMap { entry in
+            [SidebarDrawnRow(row: entry.row)] + entry.children.map { SidebarDrawnRow(row: $0.row, child: $0) }
+        }
+    }
+}
+
 struct SidebarProject: Identifiable {
     /// THE GROUP'S IDENTITY ON THIS PHONE — what `collapsed`, `projectFilter`
     /// and a drag all key by. `repo:<host>/<owner>/<repo>` for a group folded on
@@ -337,46 +362,45 @@ struct SidebarModel {
         }?.scope
     }
 
-    /// THE PINNED BAND'S OWN SCOPE NAME — the desktop's `PINNED_ROW_SCOPE`.
-    static let pinnedScope = "pinned"
-
-    /// A ROW'S DRAG PAYLOAD, AND THAT IT CANNOT BE READ AS A GROUP'S IS THE
-    /// POINT: a row carried over a project header must not look like a group
-    /// being dropped there — moving a conversation into another project is a
-    /// different verb, with a worktree behind it. The desktop spells the
-    /// difference as a second MIME type (`SESSION_ROW_MIME`); a SwiftUI `String`
-    /// transfer has one type, so the discriminator rides in the value, and a
-    /// group's drop handler simply finds no group by this id.
+    /// THE ORDER AFTER THE LIST'S OWN REORDER — `.onMove`'s `(offsets,
+    /// destination)` translated into the ids one Mac's document is written with.
     ///
-    /// THE BAND RIDES ALONG for the same reason it does on the web: a drop
-    /// target can refuse a row from somewhere else without having to look the
-    /// row up. Separated by a control character, which no id or key contains.
-    static func rowDragPayload(scope: String, row: ScopedSessionID) -> String {
-        ["session", scope, row.hostId.uuidString, row.sessionId].joined(separator: "\u{1}")
-    }
-
-    static func rowDrag(_ payload: String) -> (scope: String, row: ScopedSessionID)? {
-        let parts = payload.components(separatedBy: "\u{1}")
-        guard parts.count == 4, parts[0] == "session", let hostId = UUID(uuidString: parts[2]), !parts[3].isEmpty else { return nil }
-        return (parts[1], ScopedSessionID(hostId: hostId, sessionId: parts[3]))
-    }
-
-    /// THE ORDER AFTER A DROP: `dragged` lands above `target` in the list AS
-    /// DRAWN, and the whole drawn list is what comes back — so every row on
-    /// screen keeps the place it had, not only the one that moved. A row nobody
-    /// had placed is thereby placed too, which is what stops it drifting back up
-    /// the next time something happens to it. The desktop's `movedOrder`
-    /// (apps/web/lib/session-groups.ts), less the "below" half a `.dropDestination`
-    /// cannot report.
+    /// THE BAND IS THE SCOPE, STRUCTURALLY. There is no payload to check because
+    /// there is nothing to check: `.onMove` belongs to one `ForEach`, and a
+    /// `ForEach` is one band, so a row cannot be carried out of its group or into
+    /// another the way a `.draggable` could. Moving a conversation between
+    /// projects stays a different verb, with a worktree behind it.
     ///
-    /// ONE BAND AT A TIME, ENFORCED BY WHAT THIS TAKES. It is handed one band's
-    /// drawn keys; a row dropped somewhere else is not among them, the anchor is
-    /// not found, and the drawn order comes back unchanged.
-    static func moved(_ drawn: [String], dragged: String, target: String) -> [String] {
-        var without = drawn.filter { $0 != dragged }
-        guard dragged != target, drawn.contains(dragged), let anchor = without.firstIndex(of: target) else { return drawn }
-        without.insert(dragged, at: anchor)
-        return without
+    /// ONE MAC'S ROWS COME BACK, AND ONLY THAT MAC'S. A merged group draws two
+    /// Macs' conversations and no document could hold both, so the other Mac's
+    /// rows act as spacers: the moved row lands where it was dropped among its
+    /// own, and the other Mac's arrangement is not touched. That is the same
+    /// promise the cross-Mac refusal made, kept without a refusal — a gesture the
+    /// List has already animated cannot honestly be turned down.
+    ///
+    /// A CHILD IS NEITHER MOVED NOR A POSITION. It is drawn where its coordinator
+    /// is, so lifting one would offer to take a row out of its own tree; the List
+    /// will not lift it (`.moveDisabled`) and it is dropped from the written
+    /// order here for the same reason. Landing BETWEEN a coordinator and its
+    /// children is therefore no move at all, which is what it looks like.
+    ///
+    /// `nil` when nothing changed, so a gesture that resolved to where the row
+    /// already was costs no write.
+    static func reordered(_ drawn: [SidebarDrawnRow], offsets: IndexSet, to destination: Int) -> (host: HostID, ids: [String])? {
+        guard offsets.count == 1, let from = offsets.first, drawn.indices.contains(from), !drawn[from].isChild else { return nil }
+        let host = drawn[from].row.hostId
+        // `move(fromOffsets:toOffset:)`, spelled out: `destination` counts in the
+        // list BEFORE the lift, so it shifts down by however many moved rows sat
+        // above it.
+        var next = drawn.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
+        let at = min(max(destination - offsets.filter { $0 < destination }.count, 0), next.count)
+        next.insert(contentsOf: offsets.map { drawn[$0] }, at: at)
+
+        let ids = { (rows: [SidebarDrawnRow]) in
+            rows.filter { !$0.isChild && $0.row.hostId == host }.map(\.row.session.id)
+        }
+        let after = ids(next)
+        return after == ids(drawn) ? nil : (host, after)
     }
 
     /// KEYS THE RAIL IS NOT DRAWING KEEP THEIR SLOT — a row on a shelf, a

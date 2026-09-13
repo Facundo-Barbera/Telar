@@ -180,26 +180,55 @@ import Testing
         #expect(result.projects.map(\.name) == ["Zulu", "Alpha", "Mike"])
     }
 
-    /// A DROP PUTS THE ROW ABOVE THE ONE IT LANDED ON, and gives back the WHOLE
-    /// drawn list — so a row nobody had placed is placed by this drop rather
-    /// than drifting back up the next time something happens to it.
-    @Test func aDropPlacesEveryDrawnRowNotOnlyTheOneThatMoved() {
-        #expect(SidebarModel.moved(["a", "b", "c"], dragged: "c", target: "a") == ["c", "a", "b"])
-        #expect(SidebarModel.moved(["a", "b", "c"], dragged: "a", target: "c") == ["b", "a", "c"])
+    /// A MOVE GIVES BACK THE WHOLE BAND, not only the row that moved — so a row
+    /// nobody had placed is placed by this gesture rather than drifting back up
+    /// the next time something happens to it. `.onMove`'s `destination` counts
+    /// in the list BEFORE the lift, which is what the downward case pins.
+    @Test func aMoveWritesEveryRowInTheBandNotOnlyTheOneThatMoved() throws {
+        let host = UUID()
+        let band = try [row(host: host, id: "a", project: "p"), row(host: host, id: "b", project: "p"),
+                        row(host: host, id: "c", project: "p")].map { SidebarRow(row: $0) }.drawn
+        let up = try #require(SidebarModel.reordered(band, offsets: [2], to: 0))
+        #expect(up.host == host)
+        #expect(up.ids == ["c", "a", "b"])
+        let down = try #require(SidebarModel.reordered(band, offsets: [0], to: 3))
+        #expect(down.ids == ["b", "c", "a"])
     }
 
-    /// A DROP THAT NAMES NOTHING IN THIS BAND CHANGES NOTHING. The move is
-    /// handed one band's drawn keys, so a row dropped on another group's row
-    /// finds no anchor and the order comes back untouched — which is what keeps
-    /// "move a conversation between projects" a different verb.
-    @Test func aRowFromAnotherBandLeavesTheOrderAlone() {
-        #expect(SidebarModel.moved(["a", "b"], dragged: "elsewhere", target: "a") == ["a", "b"])
-        #expect(SidebarModel.moved(["a", "b"], dragged: "a", target: "elsewhere") == ["a", "b"])
-        #expect(SidebarModel.moved(["a", "b"], dragged: "a", target: "a") == ["a", "b"])
+    /// A GESTURE THAT RESOLVED TO WHERE THE ROW ALREADY WAS COSTS NO WRITE, and
+    /// neither does one the List should never have started: a child is drawn
+    /// where its coordinator is, so lifting one would offer to take a row out of
+    /// its own tree.
+    @Test func aMoveThatChangesNothingAndAMoveOfAChildAreBothRefused() throws {
+        let host = UUID()
+        let coordinator = try row(host: host, id: "coord", project: "p")
+        let child = try row(host: host, id: "kid", project: "p", startedFrom: "coord")
+        let band = ([SidebarRow(row: coordinator, children: [SidebarChild(row: child)]),
+                     SidebarRow(row: try row(host: host, id: "other", project: "p"))]).drawn
+        #expect(band.map(\.isChild) == [false, true, false])
+        // Index 1 is the child. The List will not lift it; nor will this.
+        #expect(SidebarModel.reordered(band, offsets: [1], to: 0) == nil)
+        // Dropped BETWEEN a coordinator and its child is no move at all, which
+        // is exactly what it looks like on screen.
+        #expect(SidebarModel.reordered(band, offsets: [2], to: 1) == nil)
+        #expect(SidebarModel.reordered(band, offsets: [0], to: 0) == nil)
+    }
+
+    /// ONE MAC'S ROWS COME BACK, AND ONLY THAT MAC'S. A merged group draws two
+    /// Macs' conversations and no document could hold both, so the other Mac's
+    /// rows are spacers: the moved row lands where it was dropped among its own,
+    /// and the other Mac's arrangement is not touched.
+    @Test func aMoveInsideAMergedGroupWritesOnlyTheMovedRowsMac() throws {
+        let a = UUID(), b = UUID()
+        let band = try [row(host: a, id: "a1", project: "p"), row(host: b, id: "b1", project: "p"),
+                        row(host: a, id: "a2", project: "p")].map { SidebarRow(row: $0) }.drawn
+        let move = try #require(SidebarModel.reordered(band, offsets: [2], to: 0))
+        #expect(move.host == a)
+        #expect(move.ids == ["a2", "a1"])
     }
 
     /// ROWS THE RAIL IS NOT DRAWING KEEP THEIR SLOT — a conversation on a shelf,
-    /// one filtered out, one on a Mac that is away. A drag that had nothing to
+    /// one filtered out, one on a Mac that is away. A move that had nothing to
     /// do with them must not prune them from the Mac's document.
     ///
     /// A SLOT IS RELATIVE TO THE STORED KEY IT FOLLOWED, which is the desktop's
@@ -208,32 +237,14 @@ import Testing
     /// `moveProjectGroup`'s in `session-groups.test.ts`, run through this half
     /// of the same arithmetic.
     @Test func aWriteKeepsTheRowsThisPhoneCannotSee() {
-        #expect(SidebarModel.keepingUnseen(SidebarModel.moved(["a", "b", "c"], dragged: "c", target: "a"),
-                                           stored: ["a", "away", "b", "quiet"])
+        #expect(SidebarModel.keepingUnseen(["c", "a", "b"], stored: ["a", "away", "b", "quiet"])
                 == ["c", "a", "away", "b", "quiet"])
         // A stored key whose every neighbour moved still lands somewhere sane —
         // after the last stored key that IS drawn before it.
-        #expect(SidebarModel.keepingUnseen(SidebarModel.moved(["a", "b"], dragged: "b", target: "a"),
-                                           stored: ["x", "a", "b"])
-                == ["x", "b", "a"])
+        #expect(SidebarModel.keepingUnseen(["b", "a"], stored: ["x", "a", "b"]) == ["x", "b", "a"])
         #expect(SidebarModel.keepingUnseen(["a"], stored: []) == ["a"])
         // Nothing drawn is still not licence to drop what is stored.
         #expect(SidebarModel.keepingUnseen([], stored: ["x", "y"]) == ["x", "y"])
-    }
-
-    /// A ROW'S DRAG CARRIES ITS BAND AND ITS MAC, and cannot be read as a
-    /// group's: a row carried over a project header must not look like a group
-    /// being dropped there.
-    @Test func aRowDragNamesItsBandAndSurvivesARoundTrip() throws {
-        let host = UUID()
-        let ref = ScopedSessionID(hostId: host, sessionId: "session_1")
-        let payload = SidebarModel.rowDragPayload(scope: "repo:github.com/owner/repo", row: ref)
-        let read = try #require(SidebarModel.rowDrag(payload))
-        #expect(read.scope == "repo:github.com/owner/repo")
-        #expect(read.row == ref)
-        // A group's own drag payload is its key, which is not one of these.
-        #expect(SidebarModel.rowDrag("repo:github.com/owner/repo") == nil)
-        #expect(SidebarModel.rowDrag("\(host.uuidString):project_1") == nil)
     }
 
     /// A COORDINATOR THAT DELEGATED TO TWO SESSIONS DRAWS BOTH UNDER IT (#333),
