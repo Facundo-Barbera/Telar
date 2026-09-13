@@ -246,7 +246,8 @@ import {
 import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
-import { LatexSettings as LatexSettingsSchema } from "./plugins/latex";
+import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
+import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
@@ -260,6 +261,7 @@ import { DsFiles } from "./ds/state-files";
 import { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./ds/store-capability";
 import { windowCsv, type TableWindow } from "./ds/table";
 import { findLatexBinary, latexToolchainStatus, type LatexToolchain } from "./latex/toolchain";
+import { ManagedTectonic, type ManagedTectonicStatus } from "./latex/managed";
 import { planLatexBootstrap, type LatexBootstrapRequest } from "./latex/bootstrap";
 import { listTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveSteps, type LatexPackagesAnswer } from "./latex/packages";
 import type { LatexCapability, CompileStatus as LatexCompileMemory } from "./latex/capability";
@@ -1542,11 +1544,26 @@ export class EngineStore {
     let project: Project;
     try { project = this.getProject(session.projectId); } catch { return undefined; }
     const config = project.dataScience;
-    if (!config?.enabled || !config.python) return undefined;
+    if (!config?.enabled) return undefined;
     // The machine ceiling, same rule as LaTeX's: off here means unavailable
     // everywhere, and every project keeps what it chose.
     if (!machineAllows(this.machinePlugins(), "data-science")) return undefined;
-    const pythonPath = resolvePythonPath(session.workspace.path, config.python.path);
+    /**
+     * THE MAC'S DEFAULT INTERPRETER IS A REAL FALLBACK, exactly as its TeX
+     * install is — a project that has not chosen one runs on it rather than
+     * having no kernel at all.
+     *
+     * THE MACHINE DEFAULT IS NEVER RESOLVED AGAINST THE WORKTREE. A project's
+     * own `python.path` may be relative so a worktree session runs ITS `.venv`;
+     * a Mac-wide default is absolute by schema, because "the same interpreter
+     * wherever you are" is the only thing it could honestly mean. Passing it
+     * through `resolvePythonPath` anyway is harmless for an absolute path and
+     * keeps one code path.
+     */
+    const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
+    const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
+    if (!chosen) return undefined;
+    const pythonPath = resolvePythonPath(session.workspace.path, chosen);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
   }
@@ -1609,21 +1626,75 @@ export class EngineStore {
     // everywhere without touching what any project chose.
     if (!machineAllows(this.machinePlugins(), "latex")) return undefined;
     /**
-     * THE MACHINE'S TeX INSTALL IS A REAL FALLBACK, not an inert stored field.
-     * Which distribution compiles is a fact about this Mac, so a project that
-     * has not chosen one uses the machine's — and a project that HAS chosen
-     * still wins, because a per-checkout choice is more specific.
+     * ── THE FALLBACK CHAIN, MOST SPECIFIC FIRST ──────────────────────────────
+     *
+     *   1. the project's own distribution — a per-checkout choice is the most
+     *      specific thing anyone said, and it always wins;
+     *   2. this Mac's default, from the Plugins pane;
+     *   3. TELAR'S OWN TECTONIC, when it has been fetched.
+     *
+     * STEP 3 IS THE POINT OF THE MANAGED INSTALL. Before it, a project moved to
+     * a Mac with no TeX on it did not compile and had no way to, short of the
+     * person installing MacTeX; now the same checkout compiles anywhere Telar
+     * has downloaded its Tectonic. It is LAST because it is the weakest signal:
+     * nobody chose it, it is what is left when nobody has.
+     *
+     * Each step still has to EXIST on disk. A machine default naming a TeX Live
+     * that was deleted falls through to the managed copy rather than resolving
+     * onto a path that is not there — which is the difference between "your
+     * document compiled" and "latexmk: command not found".
      */
-    const machineToolchain = LatexSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
-    const toolchain = config.toolchain ?? (machineToolchain.success ? machineToolchain.data.toolchain : undefined);
-    if (!toolchain?.path) return undefined;
-    if (!fs.existsSync(toolchain.path)) return undefined;
+    const machine = LatexMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "latex"));
+    const machineDefaults = machine.success ? machine.data : {};
+    for (const choice of [config.toolchain, machineDefaults.toolchain]) {
+      if (!choice) continue;
+      // `managed` names an INTENT, not a place — resolve it to today's binary.
+      const binPath = choice.kind === "managed" ? this.managed().found()?.path : choice.path;
+      if (!binPath || !fs.existsSync(binPath)) continue;
+      const engine = choice.engine ?? machineDefaults.engine;
+      return {
+        kind: choice.kind === "managed" ? "tectonic" : (choice.kind as ResolvedLatex["kind"]),
+        binPath,
+        ...(engine ? { engine: engine as ResolvedLatex["engine"] } : {}),
+        ...(config.mainFile ? { mainFile: config.mainFile } : {}),
+        ...(machineDefaults.autoInstallPackages ? { autoInstallPackages: true } : {}),
+      };
+    }
+    const managed = this.managed().found();
+    if (!managed) return undefined;
     return {
-      kind: toolchain.kind as ResolvedLatex["kind"],
-      binPath: toolchain.path,
-      ...(toolchain.engine ? { engine: toolchain.engine as ResolvedLatex["engine"] } : {}),
+      kind: "tectonic",
+      binPath: managed.path,
       ...(config.mainFile ? { mainFile: config.mainFile } : {}),
     };
+  }
+
+  /**
+   * TELAR'S OWN TECTONIC, for this engine root. One instance, because the
+   * single-flight install and the last error are state two HTTP requests have
+   * to share — see `latex/managed.ts`.
+   */
+  private managedTectonicInstall?: ManagedTectonic;
+
+  private managed(): ManagedTectonic {
+    this.managedTectonicInstall ??= new ManagedTectonic({ root: this.paths.root });
+    return this.managedTectonicInstall;
+  }
+
+  /** What `GET /v2/latex/managed` answers, and what the toolchain carries. */
+  managedTectonic(): ManagedTectonicStatus {
+    return this.managed().status();
+  }
+
+  /**
+   * Fetch it, or answer immediately when it is already here. Idempotent and
+   * serialised in the installer; the toolchain cache is dropped afterwards so
+   * the next probe reports the binary rather than a five-second-old absence.
+   */
+  async installManagedTectonic(): Promise<ManagedTectonicStatus> {
+    const status = await this.managed().install();
+    this.latexToolchainCache = undefined;
+    return status;
   }
 
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
@@ -4975,12 +5046,31 @@ export class EngineStore {
    */
   private latexToolchainCache?: { until: number; value: Promise<LatexToolchain> };
 
+  /**
+   * THE MANAGED COPY IS ADDED HERE, NOT DISCOVERED IN THE PROBE.
+   * `latexToolchainStatus` looks at PATH and the places installers use; Telar's
+   * own Tectonic lives under the engine's state root, which that function has no
+   * business knowing about.
+   *
+   * IT IS OUTSIDE THE CACHE, deliberately, and the cached branch goes through
+   * this too. The probe is cached for five seconds because each answer is a
+   * fistful of `--version` spawns; the managed status is one `stat`. Letting it
+   * ride the cache would leave a pane showing "not installed" for five seconds
+   * beside a binary that had just finished downloading — which is exactly the
+   * window a person is looking at the pane.
+   */
+  private withManagedTectonic(probe: Promise<LatexToolchain>): Promise<LatexToolchain> {
+    return probe.then((toolchain) => ({ ...toolchain, managed: this.managedTectonic() }));
+  }
+
   latexToolchain(fresh = false): Promise<LatexToolchain> {
-    if (!fresh && this.latexToolchainCache && this.now() < this.latexToolchainCache.until) return this.latexToolchainCache.value;
+    if (!fresh && this.latexToolchainCache && this.now() < this.latexToolchainCache.until) {
+      return this.withManagedTectonic(this.latexToolchainCache.value);
+    }
     const value = latexToolchainStatus();
     this.latexToolchainCache = { until: this.now() + 5_000, value };
     void value.catch(() => { this.latexToolchainCache = undefined; });
-    return value;
+    return this.withManagedTectonic(value);
   }
 
   /**
