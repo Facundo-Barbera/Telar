@@ -82,21 +82,20 @@ export function OtherMacsSection() {
   };
 
   return (
-    // THE GROUP HEADER SAYS THE SCOPE; THE PROCEDURE LIVES IN THE ROW THAT
-    // PERFORMS IT. This header used to carry three sentences — what pairing
-    // gives you, the steps to take on the other Mac, and where that Mac lists
-    // this one — which made a reader hold the instructions in their head while
-    // they looked for the field to paste into. The steps are now the hint on
-    // "Add a Mac", read at the moment the field is in front of them.
+    // THE GROUP HEADER SAYS THE SCOPE; THE FIELD SHOWS WHAT TO PASTE INTO IT.
+    // The header used to carry three sentences and the row then carried a
+    // fourth — a paragraph of procedure to hold in your head while looking for
+    // the input. A placeholder shaped exactly like the link is the whole
+    // instruction (#357): anybody who has seen the other Mac's pairing panel
+    // recognises it, and anybody who has not learns what they are looking for.
     <SettingsGroup title="Other Macs" description="Another Telar's conversations, in this rail.">
       {hosts?.map((host) => (
         <HostRow key={host.id} host={host} onRename={(name) => void rename(host.id, name)} onRemove={() => void remove(host.id)} />
       ))}
       <Row
         label="Add a Mac"
-        hint="On the other Mac, open Settings → Remote access, turn on pairing, and copy its link. It looks like http://mini.tail:3000/pair#token=48129037."
-        // Under the instructions rather than instead of them: a paste that was
-        // refused is exactly when the reader wants to re-read what to paste.
+        // The error still reads under the row, because a paste that was refused
+        // is exactly when the reader wants to look at the field again.
         {...(error ? { error } : {})}
         control={
           <form
@@ -109,9 +108,9 @@ export function OtherMacsSection() {
             <Input
               value={link}
               onChange={(event) => setLink(event.target.value)}
-              placeholder="Paste the pairing link"
+              placeholder="http://mini.tail:3000/pair#token=…"
               aria-label="Pairing link from the other Mac"
-              className="h-8 w-72 text-sm"
+              className="h-8 w-72 font-mono text-xs"
               disabled={busy}
             />
             <Button type="submit" size="sm" disabled={busy || !link.trim()}>

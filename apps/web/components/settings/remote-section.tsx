@@ -505,6 +505,13 @@ export function RemoteSection() {
           is a button that says "Rename", the roles are a segmented control whose
           two options can carry their own tooltips, and the ✕ says what it does
           and what it leaves alone. */}
+      {/* THE HOST IS A BADGE ON THE HEADER, NOT A ROW (#357). It used to sit in
+          the list wearing the shape of a paired device — "This app · Runs the
+          server — always connected, nothing to revoke" — which is a row whose
+          whole content is that none of the list's controls apply to it. The
+          name is still worth showing, because a list of devices that omits the
+          one certain answer is the bug the row was added to fix; a badge says
+          it without pretending to be revocable. */}
       <SettingsGroup
         title="Paired devices"
         description={
@@ -512,11 +519,17 @@ export function RemoteSection() {
             ? "Devices that may reach this cockpit."
             : "Pairing is off — these credentials only matter again when you turn it back on."
         }
+        {...(status.host
+          ? {
+              action: (
+                <Badge variant="outline" title="Runs the server — always connected, nothing to revoke">
+                  {status.host.isCaller ? "This app" : "Host"} · {status.host.name}
+                </Badge>
+              ),
+            }
+          : {})}
       >
-        {status.host && <HostRow host={status.host} />}
-        {status.devices.length === 0 && !status.host && (
-          <Row label="None yet" hint="Devices appear here as they pair." control={null} />
-        )}
+        {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
         {status.devices.map((device) => (
           <DeviceRow
             key={device.id}
@@ -544,29 +557,6 @@ export function RemoteSection() {
         </SettingsGroup>
       )}
     </>
-  );
-}
-
-/**
- * The app hosting the server. It is not pairable and not revocable, so it gets
- * no role switch and no X — the controls a paired device needs would all be
- * lies here. It is listed anyway because a panel that answers "what is
- * connected" and omits the one certain answer is the bug this fixes.
- */
-function HostRow({ host }: { host: RemoteHost }) {
-  const Icon = KIND_ICONS[host.identity?.kind ?? "desktop"] ?? MonitorIcon;
-  return (
-    <Row
-      icon={Icon}
-      label={
-        <span className="inline-flex items-center gap-2">
-          {host.name}
-          <Badge variant="outline">{host.isCaller ? "This app" : "Host"}</Badge>
-        </span>
-      }
-      hint="Runs the server — always connected, nothing to revoke."
-      control={null}
-    />
   );
 }
 

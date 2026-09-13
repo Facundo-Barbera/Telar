@@ -228,6 +228,22 @@ test("a plugin write goes through the generic arm, for the named project only", 
   expect(source).toContain("if (!project) return;");
 });
 
+test("a registry of one selects it, rather than opening on an inert pane", () => {
+  /**
+   * #357: a cockpit with a single registered folder landed on "All projects",
+   * so every row was "Select a project to …" behind a picker with one answer.
+   *
+   * A render-phase adjustment keyed on the engine's OWN answer — `byHost[hostId]`
+   * rather than the `?? []` the render uses, whose identity changes every render
+   * while the read is still in flight — and only from ALL_PROJECTS, so it can
+   * never overwrite a project `?project=` named.
+   */
+  expect(source).toContain("const answered = byHost[hostId];");
+  expect(source).toContain("if (answered?.length === 1 && selected === ALL_PROJECTS) setSelected(answered[0]!.id);");
+  // And the filter that leads back there is not offered when it filters nothing.
+  expect(source).toContain("{projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}");
+});
+
 test("?project= opens the pane on one project, read after the first paint", () => {
   // Seeding from window.location in initial state would make the server and the
   // client disagree about the same markup — the reason use-section-from-url.ts

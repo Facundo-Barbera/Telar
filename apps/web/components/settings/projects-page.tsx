@@ -445,6 +445,29 @@ export function ProjectsPage() {
   const projects = byHost[hostId] ?? [];
   const project = projects.find((entry) => entry.id === selected);
 
+  /**
+   * ONE PROJECT IS NOT A CHOICE (#357). A cockpit with a single registered
+   * folder opened this pane on "All projects", which left every row below inert
+   * behind "Select a project to rename it" — a picker with one answer standing
+   * between the reader and the only rows the pane has.
+   *
+   * A RENDER-PHASE ADJUSTMENT, not an effect: this is React's own shape for
+   * "derive state when an input changes", and this app's lint enforces it. The
+   * input is the registry AS THE ENGINE ANSWERED IT — `byHost[hostId]`, not the
+   * `?? []` above, whose identity changes every render while the answer is
+   * still in flight.
+   *
+   * ONLY FROM `ALL_PROJECTS`, so it cannot fight `?project=`: that effect names
+   * a project, and a named one is never overwritten here. Switching Macs resets
+   * the picker to All, which is what re-arms this for the new host's list.
+   */
+  const answered = byHost[hostId];
+  const [lastAnswered, setLastAnswered] = useState(answered);
+  if (lastAnswered !== answered) {
+    setLastAnswered(answered);
+    if (answered?.length === 1 && selected === ALL_PROJECTS) setSelected(answered[0]!.id);
+  }
+
   const loadHost = useCallback(async (id: string) => {
     // ALWAYS AN EXPLICIT HOST, including the local one — the same rule the rail
     // follows: a pathname-following fetcher reads whichever engine the current
@@ -618,7 +641,10 @@ export function ProjectsPage() {
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+            {/* "All projects" is a filter, and there is nothing to filter when
+                the registry holds one folder — offering it would only be a way
+                back to the inert pane this cockpit just stopped opening on. */}
+            {projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}
             {projects.map((entry) => (
               <SelectItem key={entry.id} value={entry.id}>
                 {entry.name}
