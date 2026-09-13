@@ -228,6 +228,28 @@ function idleSince(session: SettleableSession): number {
 }
 
 /**
+ * HAS NOTHING HAPPENED HERE FOR A WHOLE SETTLING WINDOW?
+ *
+ * The clock's own question, with none of the guards that sit above it — which
+ * is the whole reason it is named: `isSettled` is this PLUS the pin, the
+ * snooze and the unread answer, and a caller that wants the clock alone would
+ * otherwise re-derive the baseline and get `updatedAt` wrong twice over.
+ *
+ * The sidebar's tree asks it directly (`leavesRelatedWork`, issue #370): a
+ * delegate whose assignment finished a week ago leaves its coordinator even
+ * when one of those guards is legitimately keeping the row in the LIST. The
+ * two are different questions — "is this off the list" and "is this still
+ * somebody's outstanding errand" — and the row stays visible either way.
+ *
+ * NO WINDOW MEANS NEVER STALE. A reader who turned the clock off asked for
+ * nothing to age out, and that answer has to hold everywhere it is asked.
+ */
+export function isStale(session: SettleableSession, options: SettlingOptions): boolean {
+  if (options.autoSettleAfterHours === null) return false;
+  return idleSince(session) < options.now - options.autoSettleAfterHours * HOUR_MS;
+}
+
+/**
  * Is this session off the list?
  *
  * The whole rule, in the order stated in this file's header. Read it top to
@@ -265,8 +287,7 @@ export function isSettled(session: SettleableSession, activity: SettlingActivity
   if (session.snoozedUntil !== undefined && Number.isFinite(session.snoozedUntil) && session.snoozedUntil > options.now) return false;
   if (hasUnreadResult(session)) return false;
   // 4. The clock, if the reader wants one.
-  if (options.autoSettleAfterHours === null) return false;
-  return idleSince(session) < options.now - options.autoSettleAfterHours * HOUR_MS;
+  return isStale(session, options);
 }
 
 /* ------------------------------------------------------------------ *
