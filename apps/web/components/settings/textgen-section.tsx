@@ -118,13 +118,13 @@ export function TextGenSection() {
   const pinnedLabel = pinned === undefined ? "Provider default" : (models.find((model) => model.id === pinned)?.label ?? pinned);
 
   return (
-    <SettingsGroup
-      title="Generated text"
-      description="After your first message, a small model writes the session title and branch name."
-    >
+    // NO CAPTION, BECAUSE TWO ROWS KEEP A REAL ONE (#357). "Written by" over a
+    // Claude/Codex control needs no gloss, and the caption was a third telling
+    // of what "Generated text" and "Name sessions" already say. The two
+    // sub-lines left are both traps a reader cannot see from the control.
+    <SettingsGroup title="Generated text">
       <Row
         label="Written by"
-        hint="Which harness writes the title and the branch name."
         // THE ERROR, NOT THE HINT. It used to BE the hint, so a row whose write
         // was refused had no sentence saying what the field is for — and the
         // whole group's error surfaced on this one row whichever field caused it.
@@ -145,13 +145,11 @@ export function TextGenSection() {
       />
       <Row
         label="Model"
-        // THE SENTINEL, DOCUMENTED IN THE ROW. "Provider default" is the only
-        // option here that is not a model name, and the select cannot say what
-        // it resolves to — a reader was left to guess whether it meant the
-        // harness's choice or nothing at all. The second sentence is the edge
-        // case that actually bites: switching harness above drops the pin
-        // server-side, so a model chosen here does not survive that change.
-        hint="Provider default lets the harness pick. Changing the harness above clears a pinned model."
+        // THE EDGE CASE THAT BITES, and only that. The sentence explaining that
+        // "Provider default" lets the harness pick was the select restating its
+        // own option; what a reader cannot see is that changing the harness
+        // above drops the pin server-side.
+        hint="Changing the harness above clears a pinned model."
         {...(pinned === DEFAULT_TEXT_GEN_POLICY.model
           ? {}
           : { onRevert: () => void save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null }) })}
@@ -180,7 +178,6 @@ export function TextGenSection() {
       />
       <ToggleRow
         label="Name sessions"
-        hint="Replaces the truncated first message. A title you set yourself is never touched."
         checked={policy.titles}
         onCheckedChange={(next) => void save({ titles: next })}
         {...(policy.titles === DEFAULT_TEXT_GEN_POLICY.titles

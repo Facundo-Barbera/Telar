@@ -164,7 +164,9 @@ function AboutSection({
   unreachable: boolean;
 }) {
   return (
-    <SettingsGroup title="This build" description="What is running, and where it keeps its state.">
+    // The caption listed the three rows under it in prose (#357); "State" keeps
+    // its sub-line because a path with no gloss does not say what is in it.
+    <SettingsGroup title="This build">
       <Row label="Version" control={<Mono>{about ? about.appVersion : "—"}</Mono>} />
       {/*
         THE ONE ENGINE FACT WORTH KEEPING. Not the daemon id or the worker

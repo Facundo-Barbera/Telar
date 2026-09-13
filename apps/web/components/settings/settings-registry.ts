@@ -105,7 +105,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Settle quiet sessions",
-            hint: "Off means nothing leaves the list on its own.",
+            hint: "Quiet sessions leave the list on their own, or nothing does.",
             keywords: ["inbox", "archive", "auto"],
             icon: TimerIcon,
           },
