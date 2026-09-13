@@ -39,6 +39,14 @@ export type ReviewRow = {
    * were earlier attempts. Absent below 2, because "×1" is every row.
    */
   edits?: number;
+  /**
+   * Telar's own ignore rules, written when the PROJECT was registered rather
+   * than by this session — see `isRegistrationGitignore`. A row nobody in this
+   * conversation wrote, and the one thing on the surface that is genuinely not
+   * the session's to answer for, so it is labelled instead of counted as a
+   * surprise.
+   */
+  registration?: true;
 };
 
 export type SessionReview = {
@@ -72,6 +80,88 @@ function journalEdits(file: GitFileChange, reported: ReadonlyMap<string, number>
 }
 
 /**
+ * THE TWO WITNESSES DO NOT SPELL A PATH THE SAME WAY, and until this they never
+ * met (#350).
+ *
+ * An agent's editor tool journals the file it opened — an ABSOLUTE path,
+ * `/private/tmp/exoplanets/paper/main.tex` — while git names everything from
+ * the repository root, `paper/main.tex`. Keyed as they arrive, the two sets are
+ * disjoint, so every edit the session actually made read "the transcript never
+ * mentioned this" and was ALSO counted as "wrote it and put it back": the exact
+ * pair of wrong answers a reviewer gets from a join on the wrong key.
+ *
+ * `/private` IS THE SAME DIRECTORY. macOS resolves `/tmp`, `/var` and `/etc`
+ * through `/private`, so one process's realpath and another's literal string
+ * name one file two ways, and a prefix match between them fails on four
+ * characters. Dropping the prefix from both sides is what a realpath would have
+ * achieved, in the one place a browser cannot call one.
+ *
+ * A path OUTSIDE the checkout is returned unchanged rather than mangled into a
+ * pile of `../`: it is not in this diff and never will be, and saying so by
+ * simply not matching is the honest answer.
+ */
+export function repoRelativePath(path: string, workspacePath: string): string {
+  if (!path.startsWith("/")) return path;
+  const file = withoutPrivate(path);
+  const root = withoutPrivate(workspacePath).replace(/\/+$/, "");
+  if (!root) return file;
+  return file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file;
+}
+
+function withoutPrivate(path: string): string {
+  return path.startsWith("/private/") ? path.slice("/private".length) : path;
+}
+
+/**
+ * The journal's map, keyed the way git names things.
+ *
+ * COUNTS ADD UP ACROSS SPELLINGS. One session can journal the same file both
+ * ways — a tool that took an absolute path and one that took a relative one —
+ * and those are two writes to one file, not two files written once.
+ */
+function relativeWrites(reported: ReadonlyMap<string, number>, workspacePath: string): Map<string, number> {
+  const writes = new Map<string, number>();
+  for (const [path, count] of reported) {
+    const key = repoRelativePath(path, workspacePath);
+    writes.set(key, (writes.get(key) ?? 0) + count);
+  }
+  return writes;
+}
+
+/**
+ * TELAR'S OWN IGNORE RULES, and why they are not the session's fault.
+ *
+ * Registering a project appends `telar.yaml` and `.telar/` to the repository's
+ * root `.gitignore` (`ensureTelarGitignore`, packages/core/src/manifest.ts) —
+ * the app writing its own housekeeping into your checkout, before any
+ * conversation existed. It then sat in every review as a file "the transcript
+ * never mentioned", which is true and useless.
+ *
+ * MATCHED BY ITS SHAPE, not by its name alone: the root `.gitignore`, growing
+ * by no more than the two rules registration writes and losing none. A
+ * `.gitignore` anyone actually edited removes a line, adds a third, or — far
+ * more decisive — appears in the transcript, and the caller only asks about
+ * rows the journal never claimed.
+ */
+const REGISTRATION_GITIGNORE_RULES = 2;
+
+function isRegistrationGitignore(file: GitFileChange): boolean {
+  if (file.path !== ".gitignore" || file.status === "deleted" || file.status === "renamed") return false;
+  if ((file.linesRemoved ?? 0) > 0) return false;
+  // An untracked file has no counts at all (git does not diff one), and an
+  // untracked root `.gitignore` in a project Telar registered is the file
+  // registration created.
+  return (file.linesAdded ?? REGISTRATION_GITIGNORE_RULES) <= REGISTRATION_GITIGNORE_RULES;
+}
+
+/** The rows a reviewer has not seen — which is not every unreported row: see
+ *  `ReviewRow.registration`. Shared so a filtered review counts them the same
+ *  way the whole one does. */
+export function unreportedFiles(rows: readonly ReviewRow[]): GitFileChange[] {
+  return rows.filter((row) => !row.reported && row.registration === undefined).map((row) => row.file);
+}
+
+/**
  * `reported` IS A MAP, PATH → HOW MANY TIMES THE JOURNAL SAW IT WRITTEN.
  *
  * It was a list of paths, back when the journal had a surface of its own to
@@ -79,11 +169,23 @@ function journalEdits(file: GitFileChange, reported: ReadonlyMap<string, number>
  * two tabs, so they are now one Diff — and this fold is the only place left that
  * can join the two witnesses. Taking the count as well as the path costs one
  * field and keeps the last thing the journal knew that git does not.
+ *
+ * IT IS ALSO THE ONLY PLACE THAT CAN RE-KEY THEM. The journal half is built
+ * from items alone (`journalWrites`, components/right-panel.tsx), which have no
+ * idea where the checkout is; the diff carries `workspacePath`, so the join is
+ * where the two spellings are made one — see `repoRelativePath`.
  */
 export function reconcileReview(diff: SessionDiff, reported: ReadonlyMap<string, number>): SessionReview {
+  const writes = relativeWrites(reported, diff.workspacePath);
   const rows = diff.files.map((file) => {
-    const edits = journalEdits(file, reported);
-    return { file, reported: edits !== undefined, ...(edits !== undefined && edits > 1 ? { edits } : {}) };
+    const edits = journalEdits(file, writes);
+    const known = edits !== undefined;
+    return {
+      file,
+      reported: known,
+      ...(edits !== undefined && edits > 1 ? { edits } : {}),
+      ...(!known && isRegistrationGitignore(file) ? { registration: true as const } : {}),
+    };
   });
   const onDisk = new Set<string>();
   for (const file of diff.files) {
@@ -92,8 +194,8 @@ export function reconcileReview(diff: SessionDiff, reported: ReadonlyMap<string,
   }
   return {
     rows,
-    unreported: rows.filter((row) => !row.reported).map((row) => row.file),
-    settled: [...reported.keys()].filter((path) => !onDisk.has(path)),
+    unreported: unreportedFiles(rows),
+    settled: [...writes.keys()].filter((path) => !onDisk.has(path)),
     filesChanged: diff.files.length,
     linesAdded: diff.linesAdded,
     linesRemoved: diff.linesRemoved,

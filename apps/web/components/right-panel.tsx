@@ -676,6 +676,11 @@ function useLivePages(scopeKeys: readonly string[]): ReadonlyMap<string, LivePag
  * What survives is the half of the reconciliation only the journal can supply, and
  * the count is the one fact git genuinely cannot state — a file rewritten four
  * times has the same net diff as a file written once.
+ *
+ * THE KEY IS WHATEVER THE TOOL WROTE DOWN, which is usually an absolute path and
+ * is not what git calls the same file. Re-keying happens where the checkout is
+ * known — `reconcileReview` has the diff's `workspacePath`, and this fold has
+ * only items (#350).
  */
 export function journalWrites(items: readonly Item[]): Map<string, number> {
   const writes = new Map<string, number>();
