@@ -244,6 +244,15 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// `GET /api/projects/:id/icon?v=<icon>` and may be cached immutably
     /// against it, because a changed file is a changed key.
     var icon: String?
+    /// `Project.iconName` — THE GLYPH A PERSON PICKED, which outranks the one
+    /// above. One id out of the identity vocabulary (`TELAR_ICONS`), in lucide's
+    /// own kebab-case; `telarIconSymbol` is what turns it into something this
+    /// platform can draw. Absent means nobody has chosen one.
+    var iconName: String?
+    /// `Project.iconEmoji` — a mark typed before the picker existed (#364).
+    /// Nothing writes it any more, and it is decoded rather than dropped
+    /// because a registry written by an older cockpit still carries them.
+    var iconEmoji: String?
     /// THE CHECKOUT'S PATH ON THAT MAC — the second line of a row in the
     /// new-conversation palette (#332), and the answer to "which of my two
     /// clones of this repo is that". Required by the contract's `Project`, so
@@ -264,6 +273,12 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// Absence is never treated as an answer: those projects keep the old
     /// per-Mac key rather than folding on their name.
     var remoteUrl: String?
+
+    /// THE THREE ANSWERS TO "WHAT DOES THIS PROJECT LOOK LIKE", carried
+    /// together — see `ProjectMark`. One value rather than three fields at every
+    /// call site, so a surface that forwards a mark cannot forward two thirds of
+    /// one.
+    var mark: ProjectMark { ProjectMark(icon: icon, iconName: iconName, iconEmoji: iconEmoji) }
 }
 
 /// Mirror of `SidebarLayout` in packages/engine-client: where each project
