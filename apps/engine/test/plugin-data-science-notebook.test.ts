@@ -224,6 +224,104 @@ test("clearOutputs empties one cell through the door and leaves its source and i
   expect(refused).toContain("is markdown, not code");
 });
 
+/**
+ * A NOTEBOOK TELAR DID NOT WRITE — the whole of #351.
+ *
+ * Most .ipynb files on disk are nbformat < 4.5 and carry no cell ids. The read
+ * minted a random one per cell and never wrote it down, so the id the panel
+ * rendered was not the id the run's own fresh parse produced and every Run
+ * came back "no cell with id …". This case is the exact sequence a person
+ * performs: open the notebook, then press Run on the first cell BY THE ID THE
+ * READ ANSWERED WITH.
+ */
+test("a cell-id-less notebook gets its ids persisted on read, and run and edit resolve against them", async () => {
+  const { client, checkout } = await ready();
+  const file = path.join(checkout, "hand-written.ipynb");
+  // nbformat 4.4, hand-written: no `id` on any cell, which is the shape almost
+  // everything on disk has.
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      cells: [
+        { cell_type: "code", execution_count: null, metadata: { vendor: "keep me" }, outputs: [], source: ["import math\n", "math.pi"] },
+        { cell_type: "markdown", metadata: {}, source: ["# notes"] },
+        { cell_type: "code", execution_count: null, metadata: {}, outputs: [], source: ["1 + 1"] },
+      ],
+      metadata: { kernelspec: { name: "python3" }, custom_vendor_key: { a: 1 } },
+      nbformat: 4,
+      nbformat_minor: 4,
+    }),
+  );
+
+  const read = await door<NotebookRead>(client, "notebook/read", { path: "hand-written.ipynb" });
+  expect(read.cells).toHaveLength(3);
+  const first = read.cells[0]!.id;
+  expect(first).toBeTruthy();
+
+  // PERSISTED: the ids the client was just shown are the ids on disk now, and
+  // the file says 4.5 so every other tool reads them as ids too.
+  const onDisk = JSON.parse(fs.readFileSync(file, "utf8")) as { nbformat_minor: number; metadata: Record<string, unknown>; cells: Array<{ id: string; metadata: unknown }> };
+  expect(onDisk.nbformat_minor).toBe(5);
+  expect(onDisk.cells.map((each) => each.id)).toEqual(read.cells.map((each) => each.id));
+  // Nothing else was taken: the vendor keys the file arrived with are still there.
+  expect(onDisk.metadata.custom_vendor_key).toEqual({ a: 1 });
+  expect(onDisk.cells[0]!.metadata).toEqual({ vendor: "keep me" });
+
+  // A SECOND READ AGREES — the ids are a fact about the file, not about a parse.
+  const reread = await door<NotebookRead>(client, "notebook/read", { path: "hand-written.ipynb" });
+  expect(reread.cells.map((each) => each.id)).toEqual(read.cells.map((each) => each.id));
+
+  // EDIT resolves against the id the read answered with.
+  const edited = await door<NotebookRead>(client, "notebook/edit", { path: "hand-written.ipynb", edit: { kind: "set", cellId: first, source: "import math\nmath.tau" } });
+  expect(edited.cells.find((each) => each.id === first)!.source).toContain("math.tau");
+
+  // RUN, the button that failed: without an interpreter it must fail on the
+  // KERNEL, never on the id — "no cell with id …" is the bug itself.
+  const outcome = await door(client, "notebook/run", { path: "hand-written.ipynb", cellId: first }).then(
+    () => "",
+    (error: EngineClientError) => error.message,
+  );
+  expect(outcome).not.toContain("no cell with id");
+});
+
+/**
+ * The write-back is best effort: a notebook the engine cannot write must still
+ * OPEN, and must still resolve its own cell ids — which is why they are derived
+ * from position and source rather than randomised.
+ */
+test("an id-less notebook that cannot be written back still reads and still resolves its ids", async () => {
+  const { client, checkout } = await ready();
+  // The DIRECTORY is the read-only one: the workspace writes through a
+  // temporary file and a rename, so a mode on the notebook itself would not
+  // stop it and this case would quietly be testing the happy path.
+  const directory = path.join(checkout, "locked");
+  const file = path.join(directory, "notes.ipynb");
+  fs.mkdirSync(directory);
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ cells: [{ cell_type: "code", execution_count: null, metadata: {}, outputs: [], source: ["1 + 1"] }], metadata: {}, nbformat: 4, nbformat_minor: 4 }),
+  );
+  fs.chmodSync(directory, 0o555);
+  try {
+    const read = await door<NotebookRead>(client, "notebook/read", { path: "locked/notes.ipynb" });
+    const first = read.cells[0]!.id;
+    // Refused, and the read still answered.
+    expect((JSON.parse(fs.readFileSync(file, "utf8")) as { nbformat_minor: number }).nbformat_minor).toBe(4);
+
+    // And the ids still hold across parses, because they are derived rather
+    // than randomised — which is what keeps #351 fixed where the write cannot land.
+    const again = await door<NotebookRead>(client, "notebook/read", { path: "locked/notes.ipynb" });
+    expect(again.cells[0]!.id).toBe(first);
+    const outcome = await door(client, "notebook/run", { path: "locked/notes.ipynb", cellId: first }).then(
+      () => "",
+      (error: EngineClientError) => error.message,
+    );
+    expect(outcome).not.toContain("no cell with id");
+  } finally {
+    fs.chmodSync(directory, 0o755);
+  }
+});
+
 test("a windowed read passes its options through rather than dropping them", async () => {
   const { client } = await ready();
   await door(client, "notebook/edit", { path: "long.ipynb", edit: { kind: "create" } });
