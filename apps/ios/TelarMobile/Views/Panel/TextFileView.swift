@@ -42,6 +42,10 @@ struct TextFileView: View {
     /// The read-only view's own size, so content narrower than it can be
     /// pinned to the top left rather than floating — see `codeView`.
     @State private var viewport: CGSize = .zero
+    /// How far the code has been scrolled off its leading edge. Two things read
+    /// it: the gutter, which rides it back so the line numbers stay put, and the
+    /// back-swipe, which stands down while there is somewhere to scroll back to.
+    @State private var sideways: CGFloat = 0
     @Environment(\.colorScheme) private var scheme
     @Environment(\.panel) private var panel
     @FocusState private var focused: Bool
@@ -74,9 +78,35 @@ struct TextFileView: View {
 
     // MARK: read-only code
 
+    /// READ-ONLY CODE, AND THE TWO AXES IT SCROLLS ON — issue #405.
+    ///
+    /// THE CONTENT WIDTH IS KNOWN BEFORE THE FIRST ROW IS LAID OUT. It used to
+    /// be discovered: the lazy stack held rows fixed at their natural width, so
+    /// the scroll view's horizontal extent was whatever the rows it had realised
+    /// happened to need, and it CHANGED as you scrolled down. A long line coming
+    /// into view widened the content under your finger, the axis the view could
+    /// scroll kept changing, and the gesture locked to whichever axis had moved
+    /// first. `CodeLayout` measures the widest line off the string — monospaced,
+    /// so the width is arithmetic — and the stack is given it as a floor, which
+    /// is what makes the extent stable from the first frame.
+    ///
+    /// A FLOOR, NOT A CUT. The rows keep their own width, so a line the measure
+    /// misjudges still draws whole rather than truncating: the worst an
+    /// imperfect measure can do is give back the jitter, on that one file.
+    ///
+    /// THE GUTTER DOES NOT SCROLL SIDEWAYS. Line numbers that slide off the left
+    /// edge are line numbers you then cannot read, which is most of what they are
+    /// for — so the gutter rides the horizontal offset back, drawn over the code
+    /// that passes beneath it. It stays inside the scrolled content (an overlay
+    /// outside it would have to re-derive every row's vertical position), and
+    /// `offset` does not lay out, so the content width is untouched by it.
     private func codeView(_ file: WorkspaceFile) -> some View {
         let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
         let gutter = CGFloat(String(lines.count).count) * 7 + 12
+        let content = CodeLayout.contentWidth(
+            columns: CodeLayout.widestLineColumns(file.text),
+            advance: CodeLayout.advance(ofSize: 12)
+        ) + gutter + 8
         return ScrollView(wrap ? [.vertical] : [.vertical, .horizontal]) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
@@ -86,6 +116,15 @@ struct TextFileView: View {
                             .foregroundStyle(Theme.textTertiary)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 8)
+                            // Opaque, FULL ROW HEIGHT, and above the line beside
+                            // it: the code slides UNDER the numbers rather than
+                            // through them. The height matters — a background
+                            // sized to the digits alone leaves a sliver below
+                            // each one for a wrapped line to show through.
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .background(Theme.codeBackground)
+                            .offset(x: wrap ? 0 : sideways)
+                            .zIndex(1)
                         // The colours arrive a beat after the text and replace
                         // it in place; nothing waits on the highlighter to draw
                         // a first frame, and an unknown language stays plain.
@@ -126,13 +165,22 @@ struct TextFileView: View {
                 }
             }
             .padding(10)
-            // Now that the rows are only as wide as they need to be, a short
-            // file would float in the middle of a two-axis scroll view. A
-            // MINIMUM of the viewport pins it to the top left — the same pin
-            // TableSurface needed for the same reason.
-            .frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading)
+            // THE MEASURED WIDTH, OR THE VIEWPORT'S, WHICHEVER IS LARGER. The
+            // first is what makes the horizontal extent stable; the second pins
+            // a file too short or too narrow to fill the view to the top left
+            // rather than letting it float — the same pin TableSurface needed
+            // for the same reason. Wrapping wants neither: the rows take the
+            // viewport's width and there is no horizontal axis left.
+            .frame(minWidth: wrap ? viewport.width : max(content, viewport.width),
+                   minHeight: viewport.height, alignment: .topLeading)
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
+        .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.x) } action: { _, offset in
+            sideways = offset
+        }
+        // A drag from the left edge is the reader coming back to column zero,
+        // not the reader leaving — see `InteractivePopGate`.
+        .interactivePopDisabled(!wrap && sideways > 0)
         .background(Theme.codeBackground)
         .task(id: "\(path):\(file.sha256):\(scheme == .dark)") {
             highlighted = await CodeHighlighter.shared.highlightedLines(

@@ -31,12 +31,47 @@ import Testing
         #expect(without.icon == nil)
     }
 
-    @Test func sidebarProjectsCarryTheIcon() throws {
+    /// THE CHOSEN GLYPH AND THE TYPED MARK ARE THEIR OWN FIELDS (#365, #364),
+    /// and the phone has to read both or a project a person gave a mark shows
+    /// the initial it was trying to replace. The JSON is the `/api/sessions/live`
+    /// shape, which forwards the engine's `Project` verbatim.
+    @Test func projectRefDecodesTheChosenGlyphAndTheTypedMark() throws {
+        let ref = try JSONDecoder().decode(ProjectRef.self, from: Data(
+            #"{"id":"p","name":"Telar","icon":"sha-abc","iconName":"flask-conical","iconEmoji":"🧪"}"#.utf8))
+        #expect(ref.iconName == "flask-conical")
+        #expect(ref.iconEmoji == "🧪")
+        #expect(ref.mark == ProjectMark(icon: "sha-abc", iconName: "flask-conical", iconEmoji: "🧪"))
+        let bare = try JSONDecoder().decode(ProjectRef.self, from: Data(#"{"id":"p","name":"Telar"}"#.utf8))
+        #expect(bare.mark == .none)
+    }
+
+    @Test func sidebarProjectsCarryTheWholeMark() throws {
         let host = UUID()
         let object: [String: Any] = ["id": "s", "projectId": "p", "title": "s", "createdAt": 1, "updatedAt": 1,
             "activity": "working", "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"]]
         let row = HostedSession(hostId: host, session: try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)))
-        let model = SidebarModel(sessions: [row], names: { _ in "Telar" }, icons: { _ in "sha-abc" })
-        #expect(model.projects.first?.icon == "sha-abc")
+        let mark = ProjectMark(icon: "sha-abc", iconName: "rocket")
+        let model = SidebarModel(sessions: [row], names: { _ in "Telar" }, marks: { _ in mark })
+        #expect(model.projects.first?.mark == mark)
+        #expect(model.projects.first?.places.first?.mark == mark)
+    }
+
+    /// EVERY ID IN THE VOCABULARY DRAWS SOMETHING. The stored value is one of
+    /// `TELAR_ICONS` (packages/engine-client/src/icons.ts); a pairing that names
+    /// a symbol this OS does not ship renders as nothing at all, which is why
+    /// `telarIconSymbol` probes rather than trusting the map.
+    @Test func everyPairedIconResolvesToASymbolThisBuildCanDraw() {
+        #expect(telarIconIds.count == 40)
+        for id in telarIconIds {
+            #expect(telarIconSymbol(id) != nil, "no drawable SF Symbol for \(id)")
+        }
+    }
+
+    /// AN ID THIS BUILD DOES NOT KNOW IS NOT A MARK — a registry written by a
+    /// newer Mac must fall through to the icon, the initial and the folder
+    /// rather than drawing a blank box. The web's `isTelarIcon` guard.
+    @Test func anUnknownIconIdIsNotAMark() {
+        #expect(telarIconSymbol("not-a-glyph-in-this-build") == nil)
+        #expect(telarIconSymbol(nil) == nil)
     }
 }
