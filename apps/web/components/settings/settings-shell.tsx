@@ -799,12 +799,17 @@ export function Segmented<T extends string>({
 }
 
 /**
- * TABS FOR A PANE THAT HAS MODES — an underline, not a pill.
+ * TABS FOR A CARD THAT HAS MODES — an underline, not a pill.
  *
- * The appearance studio's five tools were a Segmented, which made the pane's
- * primary navigation look like one of its fields. An underlined row is the
- * idiom every settings surface uses for this, and it reads as "these are
- * places" rather than "this is a value".
+ * NOT FOR A PANE (#399). The appearance studio used this for its whole
+ * top-level navigation — Colour / Backdrop / Type / Window — which hid three
+ * quarters of the pane behind a word and left settings search pointing at rows
+ * that only existed after a click. A settings pane is stacked `SettingsGroup`
+ * cards; a reader has to be able to SEE that a setting is there.
+ *
+ * What it is still right for is the surviving caller: the modes INSIDE one
+ * card, where the tabs and the thing they switch are in the same box and both
+ * are on screen at once (provider-instance-card.tsx).
  */
 export function Tabs<T extends string>({
   value,

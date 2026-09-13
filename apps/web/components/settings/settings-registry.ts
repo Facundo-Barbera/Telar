@@ -32,11 +32,14 @@
  *   - ROWS BUILT FROM DATA — one per MCP server, per paired device, per
  *     provider login, per other Mac. Their titles are values, not copy, and a
  *     stale index of them would be worse than none.
- *   - THE APPEARANCE STUDIO'S OWN TOOLS (looks, themes, palette, type). That
- *     pane bypasses `Row` and `SettingsGroup` entirely — survey item #4 is the
- *     port — so there are no anchors to aim at yet. Its three real rows live
- *     behind the studio's Window tab and are indexed with that caveat: choosing
- *     one lands on Appearance, and the row it named is one tab away.
+ *   - THE APPEARANCE STUDIO'S GALLERIES AND EDITORS (the looks shelf, the theme
+ *     grid, the sixteen colour swatches, the scene composer, the two font
+ *     fields). The pane is stacked `SettingsGroup` cards now rather than a
+ *     `Tabs` strip over panels (#399), so its rows ARE anchored and the "one
+ *     tab away" caveat is gone — but a gallery is not a `Row` and a colour
+ *     swatch's title is a token name, which is the "rows built from data" rule
+ *     two bullets up. What is indexed is the fields: the Window group, and the
+ *     accent.
  */
 
 import {
@@ -299,8 +302,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: PaletteIcon,
     groups: [
       {
-        // The studio's Window tool. No group wraps these — they sit in a Panel —
-        // so their ids are pane and label only, which is what `Row` derives there.
+        // ORDINARY ANCHORED ROWS NOW (#399). This pane used to be a `Tabs`
+        // strip over panels, so these three existed only after a click and the
+        // index carried a caveat saying the row was "one tab away". The pane is
+        // stacked `SettingsGroup` cards, the heading is real, and the group is
+        // half the anchor — `settings-row-appearance-window-translucency`.
+        title: "Window",
         rows: [
           {
             title: "Translucency",
@@ -314,6 +321,21 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The desktop behind a translucent window, and the backdrop under the app.",
             keywords: ["opacity", "wallpaper", "backdrop"],
             icon: MonitorIcon,
+          },
+        ],
+      },
+      {
+        // THE ONE ROW OF THE TYPE GROUP THAT IS A ROW. The rest of that group is
+        // two font fields with a specimen under each — not `Row`s, because a
+        // specimen has nowhere to live in one — so they carry no anchor to aim
+        // at, per the rule at the top of this file.
+        title: "Type",
+        rows: [
+          {
+            title: "Accent",
+            hint: "The one hue that means a person acted — buttons, links, the caret.",
+            keywords: ["colour", "color", "highlight", "primary", "hue"],
+            icon: PaletteIcon,
           },
         ],
       },
