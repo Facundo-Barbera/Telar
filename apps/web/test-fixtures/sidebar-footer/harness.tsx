@@ -13,7 +13,8 @@
  *
  * Scenarios: the published channel's states, a REJECTING bridge, an
  * already-downloaded REMOUNT (the pull contract), a failing getPrefs with
- * retry, the Dev local-checkout action, and the PULL/PUSH RACE — a deferred
+ * retry, the Dev build (which renders NOTHING here — its local-checkout
+ * updater is a File-menu item), and the PULL/PUSH RACE — a deferred
  * `status()` answering with older state after a push has already landed.
  * `BEFORE=1 bun build.mjs` bundles the same page with the race guard removed.
  * No Electron, no real updater.
