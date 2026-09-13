@@ -1,10 +1,12 @@
 /**
  * Which project the front door opens.
  *
- * The route this belongs to (`app/page.tsx`) is the first thing the desktop
- * window loads, and it used to ask the engine for one session list PER PROJECT
- * — 1.3-2.0 s on a real store (14 projects, 114 sessions) to decide a redirect.
- * It now takes one `liveSessions` read and folds it here.
+ * The screen this belongs to (`app/front-door.tsx`) is the first thing the
+ * desktop window loads, and it used to ask the engine for one session list PER
+ * PROJECT — 1.3-2.0 s on a real store (14 projects, 114 sessions) to decide a
+ * redirect. It now takes one `liveSessions` read and folds it here — in the
+ * BROWSER since #407, which is why the fold lives beside this test rather than
+ * inside a route.
  *
  * THAT CHANGED ONE ANSWER ON PURPOSE, and this is where that is pinned:
  * `liveSessions` reports ACTIVE sessions, so a project whose sessions are all
@@ -13,7 +15,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { composerProject } from "@/app/page";
+import { composerProject } from "./composer-project";
 
 const project = (id: string, createdAt: number) => ({ id, createdAt });
 const session = (projectId: string | undefined, updatedAt: number) => (projectId === undefined ? { updatedAt } : { projectId, updatedAt });
