@@ -192,7 +192,7 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
       <Row
         label="Name"
         icon={FolderKanbanIcon}
-        hint="What the rail, the pickers and every session header call it. The folder on disk is not renamed."
+        hint="Shown in the rail, the pickers and session headers. The folder on disk is not renamed."
         {...(savingFor("name") ? { status: savingFor("name") } : {})}
         {...(errorFor("name") ? { error: errorFor("name") } : {})}
         control={

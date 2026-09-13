@@ -413,7 +413,7 @@ export function RemoteSection() {
                   Served at <span className="font-mono text-foreground">{magicdns.url}/</span> — a real certificate, so phone browsers get a secure context.
                 </>
               ) : status.tailscaleServe ? (
-                "Will publish through Tailscale Serve at the next launch. Needs Tailscale running with HTTPS certificates enabled for your tailnet."
+                "Publishes at the next launch. Needs Tailscale running, with HTTPS certificates on for your tailnet."
               ) : (
                 "Use Tailscale Serve to expose this cockpit through a MagicDNS HTTPS URL."
               )
@@ -503,7 +503,7 @@ export function RemoteSection() {
               // The lifetime, on the row that is about the code. Five minutes
               // and five wrong tries is what a person needs when deciding
               // whether to mint one now or walk to the other device first.
-              hint={expired ? "Expired — mint a new one." : "Shown once and never stored. A code lives five minutes, and is destroyed after five wrong tries."}
+              hint={expired ? "Expired — mint a new one." : "Shown once and never stored. Five minutes, or five wrong tries."}
               control={null}
             />
           )}
@@ -736,7 +736,7 @@ function RevokeOthersRow({ count, onConfirm }: { count: number; onConfirm: () =>
   return (
     <Row
       label="Revoke all other devices"
-      hint="Keeps this one — the lost-phone button. Nothing on those devices changes, and any of them can pair again with a new code."
+      hint="Keeps this one — the lost-phone button. Any of them can pair again with a new code."
       control={
         <Button
           variant={armed ? "destructive" : "outline"}

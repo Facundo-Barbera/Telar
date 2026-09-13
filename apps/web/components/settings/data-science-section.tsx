@@ -185,7 +185,11 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
       </SettingsGroup>
 
       <SettingsGroup
-        title="Tools"
+        // WHOSE TOOLS, now that this pane shares a page with every other
+        // plugin's (#363). "Tools" was unambiguous on a screen that held only
+        // Data science; beside LaTeX's distributions and the project's MCP
+        // servers it is three different answers to the same heading.
+        title="Python tools"
         // "Anything missing installs from here" is what the rows' own Install
         // buttons say, in the place they can be pressed.
         description="What environments are made with."
@@ -287,7 +291,11 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
         // ONE SENTENCE, and it keeps the half that is a warning: the panel below
         // writes into a real environment on disk, and which one is not obvious
         // from a list of package names.
-        <SettingsGroup title="Packages" description={`What is installed in ${currentEnv.name} — installing here writes to that environment.`}>
+        //
+        // "Python packages", not "Packages": LaTeX's own packages group is on
+        // this same pane now (#363), and two headings reading Packages is a
+        // heading that names nothing.
+        <SettingsGroup title="Python packages" description={`What is installed in ${currentEnv.name} — installing here writes to that environment.`}>
           <div className="py-3">
             <PackagesPanel scope={{ projectId: project.id }} requirements={data?.requirements ?? []} />
           </div>
