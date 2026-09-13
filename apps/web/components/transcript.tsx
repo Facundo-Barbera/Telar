@@ -28,8 +28,9 @@
  * unified patches, so we render them.
  */
 
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
+  BookOpenIcon,
   BotIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -49,6 +50,7 @@ import {
 import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
+import { CONSULT_TALLY_LABEL, foldHarnessRows, harnessConsult } from "@/lib/harness-paths";
 import { attachmentUrl } from "@/lib/ds";
 import { fileReference } from "@/lib/drag-reference";
 import { MessageMenu, MessageResponse } from "@/components/ui/message";
@@ -148,6 +150,23 @@ export type RowGestures = {
    *  read beside whatever the Editor already holds. */
   onOpenFileInNewTab?: (path: string) => void;
 };
+
+/**
+ * THE SESSION'S OWN CHECKOUT, for the one rule that has to know what is outside
+ * it (see `lib/harness-paths.ts`).
+ *
+ * A CONTEXT RATHER THAN A PROP because it is not the transcript's business and
+ * every row would have to carry it: the path is a fact about the session, the
+ * same for every turn on screen, and threading it through four components to
+ * reach one predicate would put it in the signature of things that never use
+ * it. Unset is a legitimate state — the harness-root test still holds on its
+ * own, it is merely less guarded.
+ */
+const WorkspaceContext = createContext<string | undefined>(undefined);
+
+export function TranscriptWorkspace({ path, children }: { path?: string; children: React.ReactNode }) {
+  return <WorkspaceContext.Provider value={path}>{children}</WorkspaceContext.Provider>;
+}
 
 /** The path a row is ABOUT, when it is about one. */
 function rowPath(item: JournalItem): string | undefined {
@@ -739,15 +758,25 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
 }
 
 /** `Ran command ×12 · Read file ×2`, in FIRST-APPEARANCE order — that preserves
- *  the shape of the turn: what the agent reached for first stays first. */
-function tally(items: JournalItem[]): string {
+ *  the shape of the turn: what the agent reached for first stays first.
+ *
+ *  A ROW THE LIST FOLDED IS TALLIED AS WHAT THE FOLD CALLS IT. Otherwise the
+ *  summary re-states the noise the fold just removed — "Read file ×3 · Ran
+ *  command" over a line that says the harness consulted a skill (#354). */
+export function tallyParts(items: readonly JournalItem[], workspace?: string): string[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const action = item.detail.type === "reasoning" ? "Thought" : item.detail.type === "task" ? "Ran agent" : actionLabel(item);
+    const action = harnessConsult(item, workspace)
+      ? CONSULT_TALLY_LABEL
+      : item.detail.type === "reasoning"
+        ? "Thought"
+        : item.detail.type === "task"
+          ? "Ran agent"
+          : actionLabel(item);
     const label = /^Reconnecting(?:\.{3}|…)\s*\d+\/\d+$/i.test(action.trim()) ? "Reconnect attempt" : action;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label)).join(" · ");
+  return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label));
 }
 
 /**
@@ -1033,6 +1062,59 @@ function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
   );
 }
 
+/**
+ * THE HARNESS CONSULTING ITSELF, as one line (#354).
+ *
+ * Shaped like every other collapsed row — chevron, muted, expandable — because
+ * it is not a different KIND of thing, it is the same rows at a scale that
+ * matches how much they matter. The count rides the line so the fold never
+ * hides how much it is covering, and pressing it gives back the ordinary rows,
+ * paths and all.
+ */
+function HarnessConsultRow({ label, items, tasks, ...gestures }: { label: string; items: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)} className={cn(ROW, "text-muted-foreground hover:bg-muted/60")}>
+        <BookOpenIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+        {items.length > 1 && <span className="shrink-0 text-muted-foreground/60">{items.length} steps</span>}
+        <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+      {open && (
+        <div className="ml-3 flex flex-col gap-0.5 border-l border-border/70 py-1 pl-3">
+          {items.map((item) => (
+            <TranscriptItem key={item.id} item={item} tasks={tasks} {...gestures} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A list of rows, with the harness's own errands folded out of the way.
+ *
+ * THE ONE PLACE ROWS BECOME ELEMENTS in a run, live or settled, so the two
+ * cannot disagree about what a turn contained — a fold that applied only to
+ * history would make a live turn look busier than the same turn a second later.
+ */
+function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+  const workspace = useContext(WorkspaceContext);
+  const segments = useMemo(() => foldHarnessRows(rows, workspace), [rows, workspace]);
+  return (
+    <>
+      {segments.map((segment) =>
+        segment.kind === "consult" ? (
+          <HarnessConsultRow key={segment.items[0]!.id} label={segment.label} items={segment.items} tasks={tasks} {...gestures} />
+        ) : (
+          segment.items.map((item) => <TranscriptItem key={item.id} item={item} tasks={tasks} {...gestures} />)
+        ),
+      )}
+    </>
+  );
+}
+
 function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   // Only the rows the fold is HIDING can carry a surprise; the one on screen
@@ -1057,15 +1139,14 @@ function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInN
           <FailedCount count={failures} hidden={open} />
         </button>
       )}
-      {shown.map((item) => (
-        <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
-      ))}
+      <TranscriptRows rows={shown} tasks={tasks} {...pass} />
     </div>
   );
 }
 
 function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
+  const workspace = useContext(WorkspaceContext);
   const failures = failedCount(rows, tasks);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
@@ -1082,13 +1163,11 @@ function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFile
         </span>
         <FailedCount count={failures} hidden={open} />
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="min-w-0 truncate text-muted-foreground/80">{tally(rows)}</span>
+        <span className="min-w-0 truncate text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
       </button>
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          {rows.map((item) => (
-            <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
-          ))}
+          <TranscriptRows rows={rows} tasks={tasks} {...pass} />
         </div>
       )}
     </>
