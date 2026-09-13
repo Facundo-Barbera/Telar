@@ -361,11 +361,22 @@ export function ProviderInstanceCard({
                   built-in
                 </Badge>
               )}
+              {/* STATUS IS A BADGE, NOT A SENTENCE (#357), AND ONLY WHEN THERE
+                  IS SOMETHING TO SAY. Every row used to carry a line of prose
+                  about its own state — "Installed — Tested against 2.1.257; you
+                  have 2.1.267", "Base login — sign-in state cannot be verified
+                  from disk", "Off — Switched off — not offered to new sessions"
+                  — on a card whose dot, version chip and switch had already
+                  said it. A healthy login now reads name · version · switch and
+                  nothing else; the states a reader has to ACT on keep a word,
+                  and the detail behind it lives in the expanded body where the
+                  sign-in command and the advisory already are. */}
+              {summary && (
+                <Badge variant={status === "error" ? "destructive" : "outline"} className="text-[0.625rem]">
+                  {summary}
+                </Badge>
+              )}
             </div>
-            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[0.8125rem] leading-[1.45] text-muted-foreground/80">
-              <span>{summary.headline}</span>
-              {summary.detail && <span>— {summary.detail}</span>}
-            </p>
           </div>
           {/* THE ACTION CLUSTER IS FIXED and the title row is not: everything
               left of here wraps, so a long name and a long id cannot push the
