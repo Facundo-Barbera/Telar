@@ -7,6 +7,7 @@ import {
   hydrateSession,
   loadOlderTurns,
   mergeOlderPage,
+  mergeRows,
   needsSessionSnapshot,
   tailSession,
 } from "./session-sync";
@@ -300,5 +301,101 @@ describe("mergeOlderPage", () => {
     mergeOlderPage(current, page);
     expect(current.turns.map((t) => t.runId)).toEqual(["run_2"]);
     expect(page.turns.map((t) => t.runId)).toEqual(["run_1"]);
+  });
+});
+
+/**
+ * THE ONE-READ OPENING, AND THE QUIET TICK (#407) — the two halves of what made
+ * switching conversations cost more than it had to.
+ */
+describe("opening in one read", () => {
+  test("asks once where the engine offers it, and still meets the journal exactly", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: [] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { cursor: 1, session, turns: [turn], items, requests: [], tasks: [] };
+      },
+      sessionBootstrap: async (_sessionId: string, window?: SnapshotWindow) => {
+        calls.push(`bootstrap:${window?.turns ?? "all"}`);
+        return {
+          cursor: 1,
+          session,
+          turns: [{ ...turn, state: "running" as const }],
+          items,
+          requests: [],
+          tasks: [],
+          events: [started],
+          subscriptions: [],
+        };
+      },
+    };
+
+    const result = await hydrateSession(api, session.id, { turns: INITIAL_TURNS });
+    // ONE call, and neither of the two it replaces.
+    expect(calls).toEqual([`bootstrap:${INITIAL_TURNS}`]);
+    expect(result.events).toEqual([started]);
+    // The cursor a tail resumes from is the higher of the snapshot's stamp and
+    // the journal it came with — the same arithmetic as the two-call path.
+    expect(result.cursor).toBe(2);
+    expect(result.turns[0]?.state).toBe("running");
+    expect(result.subscriptions).toEqual([]);
+  });
+
+  test("an engine without the route is not a failed switch", async () => {
+    // A remote Mac may be older than this route. The two-call path is the
+    // fallback, not an error — a 404 per switch would be worse than the wait.
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: after === 0 ? [accepted] : [started] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { cursor: 1, session, turns: [turn], items, requests: [], tasks: [] };
+      },
+    };
+    const result = await hydrateSession(api, session.id);
+    expect(calls).toEqual(["session", "events:1"]);
+    expect(result.events).toEqual([started]);
+  });
+});
+
+describe("mergeRows", () => {
+  const a: Turn = { ...turn, runId: "run_a" };
+  const b: Turn = { ...turn, runId: "run_b" };
+  const id = (row: Turn) => row.runId;
+
+  test("a merge that changed nothing hands back the array it was given", () => {
+    /**
+     * The quiet second of a tail: the same row objects arrive again because no
+     * companion snapshot was fetched. A fresh array of identical rows is still
+     * a new value to `useState`, and that is a whole cockpit re-render and a
+     * whole transcript re-fold for a conversation that did not move.
+     */
+    const held = [a, b];
+    expect(mergeRows(held, [a, b], id)).toBe(held);
+    // …including when the fresh read carries only some of what is held.
+    expect(mergeRows(held, [b], id)).toBe(held);
+  });
+
+  test("a row that actually moved still produces a new array", () => {
+    const held = [a, b];
+    const moved = { ...b, state: "running" as const };
+    const merged = mergeRows(held, [moved], id);
+    expect(merged).not.toBe(held);
+    expect(merged).toEqual([a, moved]);
+  });
+
+  test("a new row is appended, and is a change", () => {
+    const held = [a];
+    const merged = mergeRows(held, [b], id);
+    expect(merged).not.toBe(held);
+    expect(merged).toEqual([a, b]);
   });
 });

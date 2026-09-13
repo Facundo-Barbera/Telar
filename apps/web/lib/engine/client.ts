@@ -75,6 +75,7 @@ import type {
   RequestDecision,
   RuntimeMode,
   Session,
+  SessionBootstrap,
   SessionSnapshot,
   SnapshotWindow,
   Turn,
@@ -504,6 +505,18 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     // arriving and a local re-declaration only hides it.
     session: (sessionId: string, window?: SnapshotWindow) =>
       request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`),
+    /**
+     * THE WHOLE OPENING IN ONE READ (#407) — snapshot, journal from its cursor,
+     * and this session's subscriptions.
+     *
+     * `session` + `events` cannot be issued together: the journal's `after` IS
+     * the snapshot's answer, so opening a conversation paid two SERIAL round
+     * trips through this adapter before a transcript could be folded. Kept
+     * beside `session` rather than replacing it — the paging path asks for a
+     * window whose cursor it already holds and wants none of this.
+     */
+    sessionBootstrap: (sessionId: string, window?: SnapshotWindow) =>
+      request<SessionBootstrap>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`),
     /** Rename, change the model, or change what the session may do without
      *  asking. The model must belong to the session's provider instance — the
      *  engine rejects anything else, because a turn is routed by that instance

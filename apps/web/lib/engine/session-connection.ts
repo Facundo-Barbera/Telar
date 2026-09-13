@@ -27,8 +27,17 @@ export class SessionConnection {
     const update = await tailSession(this.api, this.id, previous.cursor, this.window);
     const snapshot = update.snapshot;
     const baseCursor = snapshot?.cursor;
-    const events = appendJournalEvents(previous.events, update.events)
-      .filter((event) => baseCursor === undefined || event.id > baseCursor);
+    /**
+     * NOTHING ARRIVED, SO NOTHING IS REBUILT (#407). A quiet tail brings an
+     * empty page and no companion snapshot, and both the merge and the filter
+     * below are then provably no-ops — but each returns a NEW array, which is a
+     * new value to every `useState` downstream and a full re-fold of the
+     * transcript once a second for a conversation nobody is typing into.
+     */
+    const events =
+      update.events.length === 0 && baseCursor === undefined
+        ? previous.events
+        : appendJournalEvents(previous.events, update.events).filter((event) => baseCursor === undefined || event.id > baseCursor);
     const patched = [...events].reverse().find((event) => event.type === "session.updated");
     const next: HydratedSession = {
       ...previous,
