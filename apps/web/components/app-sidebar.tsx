@@ -70,6 +70,7 @@ import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandKeys } from "@/lib/use-command-keys";
 import { DraftRow } from "@/components/session/draft-row";
@@ -1248,7 +1249,7 @@ function SidebarBody() {
                         title={`Project settings for ${project.name}`}
                         onClick={() => {
                           onNavigate();
-                          router.push(`/projects/${encodeURIComponent(project.id)}/settings`);
+                          router.push(projectSettingsHref(project.id));
                         }}
                       >
                         <SlidersHorizontalIcon />
@@ -1261,7 +1262,7 @@ function SidebarBody() {
                       <DropdownMenuItem
                         onClick={() => {
                           onNavigate();
-                          router.push(`/projects/${encodeURIComponent(selectedProject.id)}/settings`);
+                          router.push(projectSettingsHref(selectedProject.id));
                         }}
                       >
                         <SlidersHorizontalIcon />
@@ -1540,7 +1541,7 @@ function SidebarBody() {
                       ? {
                           onProjectSettings: () => {
                             onNavigate();
-                            router.push(`/projects/${encodeURIComponent(here.projectId)}/settings`);
+                            router.push(projectSettingsHref(here.projectId));
                           },
                         }
                       : {})}

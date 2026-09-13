@@ -23,20 +23,23 @@
  * setting exists; a row that stayed live would apply somebody's change to a
  * project they never named.
  *
- * WHAT IS INERT AT BOTH SCOPES, AND WHY IT IS STILL HERE. Four of these rows
- * have no write path in today's engine: `PATCH /v2/projects/:id` takes plugin
- * switches and nothing else, so a project's NAME and ICON are facts of its
- * registration and its checkout, and there is no per-project default model or
- * workspace mode stored anywhere. Those rows render the true value with the
- * true reason in the hint slot rather than a control that would silently do
- * nothing. The scope selector still changes what they SAY: at All projects the
- * reason is "pick one", at one project it is why the engine cannot store it.
- * When the engine grows those fields the reasons come off and the controls go
- * live; nothing else here moves.
+ * WHAT IS INERT, AND WHY. Only two things now: a scope with no project named,
+ * and a project registered on ANOTHER MAC. Four of these rows used to be inert
+ * at every scope because the engine had nowhere to put them — `PATCH
+ * /v2/projects/:id` took plugin switches and nothing else — and that is the gap
+ * #308 closed. The reasons that remain are the two honest ones, and they still
+ * leave the control VISIBLE and inert rather than removing it (`Row`'s
+ * `unavailable`, see settings-shell.tsx).
  *
- * THE PLUGIN TOGGLES ARE THE WORKING HALF, and they are the same write
- * `project-settings-page.tsx` makes — one project's opt-in switches, through
- * the generic plugin arm.
+ * EVERY ROW HERE SAVES ON INTERACTION AND TAKES THE ENGINE'S ANSWER AS THE
+ * STATE — the two rules every settings pane follows. The text rows commit on
+ * blur rather than per keystroke, because each commit is an HTTP write.
+ *
+ * ABSENCE IS A VALUE ON TWO OF THEM. A project with no `defaultModel` and no
+ * `envMode` FOLLOWS THIS MAC, and that is a different answer from any value
+ * either could hold — so both controls offer a way back to it (the revert arrow
+ * on the model row, the first segment on the workspace one) and both write
+ * `null`, which is what the engine reads as "remove the stored answer".
  *
  * THE PER-PROJECT PAGE IS NOT REPLACED. `/projects/:id/settings` keeps its own
  * shell, its MCP scope and every plugin's bespoke editor; this pane links to it
@@ -54,9 +57,10 @@ import {
   MonitorIcon,
   SparklesIcon,
 } from "lucide-react";
-import type { EnvMode, PluginStatus, Project } from "@telar/engine-client";
-import { pluginEnabled, readProjectPlugins } from "@telar/engine-client";
+import type { EnvMode, ModelSelection, PluginStatus, Project, ProviderDriverKind, ProviderInstance } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, pluginEnabled, readProjectPlugins } from "@telar/engine-client";
 import type { PublicHost } from "@/lib/hosts/store";
+import type { ModelChoice } from "@/lib/models";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher } from "@/lib/hosts/client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
@@ -64,12 +68,83 @@ import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { AgentControl } from "@/components/composer-controls";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
 const api = createEngineApi();
+
+/**
+ * Everything a per-project row needs to write, in one prop rather than four.
+ *
+ * `save` HANDS BACK THE ENGINE'S RECORD, never the patch it sent: a row that
+ * advanced its own state on the request would show a value the engine refused.
+ * `busy` and `error` belong to the LAST write and are rendered by whichever row
+ * made it, which is why the key is a field name.
+ */
+type ProjectWriter = {
+  save: (field: string, patch: ProjectPatch) => void;
+  busy?: string;
+  error?: { field: string; message: string };
+};
+
+type ProjectPatch = Parameters<typeof api.updateProject>[1];
+
+/**
+ * WHY A ROW MAY NOT WRITE, or `undefined` when it may. Two reasons, and both
+ * are properties of the SCOPE rather than of the row — which is why this is one
+ * function the rows call rather than a prop the pane passes down. A row asked
+ * to render without a project (its test does exactly that) must go inert on its
+ * own, not because a writer happened to be withheld.
+ *
+ * A REMOTE PROJECT IS READ-ONLY: the patch would have to go to that Mac's
+ * engine and this pane's `api` is this one's. Rather than write to the wrong
+ * registry, the row says where to go.
+ */
+function blockedReason(project: ScopedProject | undefined, what: string): string | undefined {
+  if (!project) return `Select a project to ${what}.`;
+  if (project.hostId) return `Registered on ${project.hostName ?? "another Mac"}. Change it in that Mac's own settings.`;
+  return undefined;
+}
+
+/** The Segmented value for "no per-project answer" — a project that follows
+ *  this Mac. base-ui and `Segmented` both want a string, and absence is a real
+ *  choice here rather than the lack of one. */
+const FOLLOW_MAC = "__follow-mac";
+
+/**
+ * An input that reports on BLUR, not on every keystroke — the same shape
+ * `provider-instance-card.tsx` uses, and for its reason: every commit is an HTTP
+ * write, so a controlled input wired straight to the patch would write once per
+ * character and the last few would race. Uncontrolled against a `key` derived
+ * from the stored value, so an edit the engine refused snaps back to what was
+ * actually kept rather than lingering on screen as though it had saved.
+ */
+function BlurInput({
+  value,
+  onCommit,
+  ...rest
+}: { value: string; onCommit: (next: string) => void } & Omit<React.ComponentProps<"input">, "value" | "onChange" | "onBlur">) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <Input
+      {...rest}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          setDraft(value);
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
 
 /** The Select's value for "no project named". base-ui refuses `""`, and the
  *  sentinel keeps the All-projects scope a value rather than an absence. */
@@ -83,39 +158,76 @@ export type ScopedProject = Project & { hostId?: string; hostName?: string };
  * so the two states this pane exists to distinguish can both be rendered, by
  * the pane and by its test, without a network.
  */
-export function ProjectIdentityRows({ project }: { project?: ScopedProject }) {
+export function ProjectIdentityRows({ project, writer }: { project?: ScopedProject; writer?: ProjectWriter }) {
+  const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);
+  const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
+
   return (
     <SettingsGroup title="Identity" description="What this project is called, and the mark it wears in the rail.">
       <Row
         label="Name"
         icon={FolderKanbanIcon}
-        control={<span className="text-xs text-muted-foreground">{project?.name ?? "—"}</span>}
-        unavailable={{
-          reason: project
-            ? "Set when the folder was registered. The engine has no rename yet — registering the same folder again keeps this name."
-            : "Select a project to see its name.",
-        }}
+        hint="What the rail, the pickers and every session header call it. The folder on disk is not renamed."
+        {...(savingFor("name") ? { status: savingFor("name") } : {})}
+        {...(errorFor("name") ? { error: errorFor("name") } : {})}
+        control={
+          // KEYED BY THE STORED NAME so a refused rename snaps back to what the
+          // engine actually kept — see `BlurInput`.
+          <BlurInput
+            key={project?.name ?? ""}
+            className="h-8 w-56 text-xs"
+            aria-label="Project name"
+            value={project?.name ?? ""}
+            onCommit={(next) => writer?.save("name", { name: next })}
+          />
+        }
+        {...(blockedReason(project, "rename it") ? { unavailable: { reason: blockedReason(project, "rename it")! } } : {})}
       />
       <Row
         label="Icon"
         icon={ImageIcon}
-        control={
-          project ? (
-            <ProjectAvatar
-              name={project.name}
-              projectId={project.id}
-              {...(project.icon ? { icon: project.icon } : {})}
-              size={20}
-            />
-          ) : (
-            <span className="text-xs text-muted-foreground">—</span>
-          )
+        /*
+          TWO ANSWERS, AND THE ROW SAYS WHICH IT IS SHOWING. A checkout's own
+          icon is found rather than chosen (a favicon, an app icon, a
+          `.telar/icon.*`), and a mark typed here OUTRANKS it — which is the
+          point of being able to type one at all. So the sentence changes with
+          what is actually stored rather than describing both states at once.
+        */
+        hint={
+          project?.iconEmoji
+            ? "Your mark, which beats whatever icon the checkout carries. Clear it to go back to the file."
+            : "Type a character to mark this project. Left empty, the rail uses an icon found in the checkout — a favicon, an app icon, or .telar/icon.*."
         }
-        unavailable={{
-          reason: project
-            ? "Found in the checkout — a favicon, an app icon, or .telar/icon.*. Replace that file and the rail follows it."
-            : "Select a project to see its icon.",
-        }}
+        {...(savingFor("iconEmoji") ? { status: savingFor("iconEmoji") } : {})}
+        {...(errorFor("iconEmoji") ? { error: errorFor("iconEmoji") } : {})}
+        {...(project?.iconEmoji ? { onRevert: () => writer?.save("iconEmoji", { iconEmoji: null }) } : {})}
+        control={
+          <div className="flex items-center gap-2">
+            {project ? (
+              <ProjectAvatar
+                name={project.name}
+                projectId={project.id}
+                {...(project.icon ? { icon: project.icon } : {})}
+                {...(project.iconEmoji ? { iconEmoji: project.iconEmoji } : {})}
+                size={20}
+              />
+            ) : (
+              <span className="text-xs text-muted-foreground">—</span>
+            )}
+            <BlurInput
+              key={project?.iconEmoji ?? ""}
+              className="h-8 w-16 text-center text-xs"
+              aria-label="Project mark"
+              placeholder="🧵"
+              maxLength={16}
+              value={project?.iconEmoji ?? ""}
+              // An emptied field is a CLEAR, not an empty string: the engine
+              // reads `null` as "remove the stored answer" and would refuse "".
+              onCommit={(next) => writer?.save("iconEmoji", { iconEmoji: next.trim() === "" ? null : next.trim() })}
+            />
+          </div>
+        }
+        {...(blockedReason(project, "mark it") ? { unavailable: { reason: blockedReason(project, "mark it")! } } : {})}
       />
       {project && (
         <Row
@@ -130,43 +242,119 @@ export function ProjectIdentityRows({ project }: { project?: ScopedProject }) {
 }
 
 /**
- * WHAT A CONVERSATION IN THIS PROJECT OPENS ON. Both rows are inert today and
- * both say why in their own sentence — see the file comment. The workspace row
- * shows the MACHINE's standing answer, because that is the value a new session
- * here will actually be built with, and naming a value the reader can go and
- * change is more use than an em dash.
+ * WHAT A CONVERSATION IN THIS PROJECT OPENS ON.
+ *
+ * BOTH ROWS HAVE THREE STATES, NOT TWO, and the third is the interesting one:
+ * a project can store an answer, or store NOTHING and follow this Mac. Absence
+ * is what the engine reads as "follow", so neither control may collapse it into
+ * a value — the workspace row gives it a segment of its own and the model row
+ * gives it the revert arrow, and both write `null` to get back to it.
+ *
+ * `envMode` IS THE MACHINE'S STANDING ANSWER, passed in so the inherited state
+ * can SAY what it inherits rather than showing an em dash. A reader looking at
+ * "This Mac's answer" is owed the value that phrase resolves to.
  */
-export function ProjectConversationRows({ project, envMode }: { project?: ScopedProject; envMode: EnvMode }) {
+export function ProjectConversationRows({
+  project,
+  envMode,
+  instances,
+  writer,
+}: {
+  project?: ScopedProject;
+  envMode: EnvMode;
+  /** The configured logins, so the model picker can name the one a stored
+   *  selection routes to. Absent until the engine has answered once. */
+  instances?: ProviderInstance[];
+  writer?: ProjectWriter;
+}) {
+  const stored = project?.defaultModel;
+  /**
+   * WHICH PROVIDER THE PICKER IS SHOWING. Seeded from the stored selection's
+   * own login, because that is the only thing that can say which provider a
+   * stored `{instanceId, model}` belongs to — an instance id is a slug, and
+   * only the registry maps it back to a driver. Claude when nothing is stored,
+   * which is the driver `createSession` falls back to as well.
+   */
+  const storedDriver = instances?.find((instance) => instance.id === stored?.instanceId)?.driver;
+  const [picked, setPicked] = useState<ProviderDriverKind>();
+  const driver = picked ?? storedDriver ?? "claude";
+  const choice: ModelChoice = {
+    ...(stored?.model ? { model: stored.model } : {}),
+    ...(stored?.effort ? { effort: stored.effort } : {}),
+    ...(stored?.fastMode !== undefined ? { fastMode: stored.fastMode } : {}),
+  };
+
+  /**
+   * A SELECTION THAT SELECTS NOTHING IS AN ABSENT SELECTION — the contract says
+   * so and refuses one — so clearing every field here is a `null`, which is the
+   * same sentence the revert arrow writes.
+   */
+  const commitModel = (next: ModelChoice) => {
+    const named = next.model !== undefined || next.effort !== undefined || next.fastMode !== undefined;
+    if (!named) return writer?.save("defaultModel", { defaultModel: null });
+    // The stored login when it is still this driver's, else this driver's own
+    // default slot — a Claude selection must never keep a Codex instance id.
+    const instanceId = storedDriver === driver && stored ? stored.instanceId : defaultInstanceIdForDriver(driver);
+    const selection = {
+      instanceId,
+      ...(next.model !== undefined ? { model: next.model } : {}),
+      ...(next.effort !== undefined ? { effort: next.effort } : {}),
+      ...(next.fastMode !== undefined ? { fastMode: next.fastMode } : {}),
+    } as ModelSelection;
+    writer?.save("defaultModel", { defaultModel: selection });
+  };
+
+  const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);
+  const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
+
   return (
     <SettingsGroup title="New conversations" description="What a conversation in this project is built with before you change it.">
       <Row
         label="Default model"
         icon={SparklesIcon}
-        control={<Badge variant="outline">Last used</Badge>}
-        unavailable={{
-          reason: project
-            ? "A conversation opens on the model you last chose. The engine stores no per-project default yet."
-            : "Select a project to set the model its conversations open on.",
-        }}
+        hint={
+          stored
+            ? "Conversations in this project open on this. The composer still overrides it for the one in front of you."
+            : "Nothing stored, so a conversation opens on the provider's own default. Pick one to make this project differ."
+        }
+        {...(savingFor("defaultModel") ? { status: savingFor("defaultModel") } : {})}
+        {...(errorFor("defaultModel") ? { error: errorFor("defaultModel") } : {})}
+        {...(stored ? { onRevert: () => writer?.save("defaultModel", { defaultModel: null }) } : {})}
+        control={
+          <AgentControl
+            driver={driver}
+            choice={choice}
+            {...(stored?.instanceId && storedDriver === driver ? { instanceId: stored.instanceId } : {})}
+            onChange={commitModel}
+            onDriverChange={setPicked}
+          />
+        }
+        {...(blockedReason(project, "set the model its conversations open on") ? { unavailable: { reason: blockedReason(project, "set the model its conversations open on")! } } : {})}
       />
       <Row
         label="Where new conversations start"
         icon={FolderGitIcon}
+        hint={
+          project?.envMode === undefined
+            ? `Following this Mac, which says ${envMode === "worktree" ? "each session gets its own checkout" : "sessions share the project's checkout"}. Change that on General ▸ Workspace, or pin an answer here.`
+            : project.envMode === "worktree"
+              ? "Each session here gets its own checkout and branch, whatever this Mac says. A project without git falls back to the checkout."
+              : "Sessions here share the project's checkout, whatever this Mac says. Two at once will collide."
+        }
+        {...(savingFor("envMode") ? { status: savingFor("envMode") } : {})}
+        {...(errorFor("envMode") ? { error: errorFor("envMode") } : {})}
         control={
-          <Segmented<EnvMode>
-            value={envMode}
-            onChange={() => undefined}
+          <Segmented<string>
+            value={project?.envMode ?? FOLLOW_MAC}
+            onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_MAC ? null : (next as EnvMode) })}
             options={[
+              { value: FOLLOW_MAC, label: "Follow the Mac" },
               { value: "local", label: "Project checkout" },
               { value: "worktree", label: "Own worktree" },
             ]}
           />
         }
-        unavailable={{
-          reason: project
-            ? "This Mac's standing answer, shown because it is what a session here is built with. Change it on General ▸ Workspace; it is not stored per project yet."
-            : "Select a project to see where its conversations start.",
-        }}
+        {...(blockedReason(project, "say where its conversations start") ? { unavailable: { reason: blockedReason(project, "say where its conversations start")! } } : {})}
       />
     </SettingsGroup>
   );
@@ -248,7 +436,10 @@ export function ProjectsPage() {
   const [byHost, setByHost] = useState<Record<string, ScopedProject[]>>({});
   const [selected, setSelected] = useState<string>(ALL_PROJECTS);
   const [plugins, setPlugins] = useState<PluginStatus[]>();
+  const [instances, setInstances] = useState<ProviderInstance[]>();
   const [unreachable, setUnreachable] = useState(false);
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<{ field: string; message: string }>();
   const { defaults } = useSessionDefaults();
 
   const projects = byHost[hostId] ?? [];
@@ -282,6 +473,11 @@ export function ProjectsPage() {
         // WHICH PLUGINS EXIST is this Mac's answer. A project on another Mac
         // still lists them, and says so rather than offering a write.
         setPlugins(await api.health().then((health) => health.plugins ?? []).catch(() => []));
+        // WHICH LOGINS EXIST, so the model row can map a stored selection's
+        // instance id back to the provider it belongs to. Never fatal: with no
+        // answer the picker opens on Claude, which is where the engine's own
+        // fallback lands too.
+        setInstances(await api.providerInstances().then((answer) => answer.providerInstances).catch(() => []));
       })();
     }, 0);
     return () => window.clearTimeout(task);
@@ -328,6 +524,36 @@ export function ProjectsPage() {
       ...current,
       [hostId]: (current[hostId] ?? []).map((entry) => (entry.id === next.id ? { ...entry, ...next } : entry)),
     }));
+  };
+
+  /**
+   * ONE WRITER FOR EVERY IDENTITY ROW, and the reason it is one rather than four
+   * hooks is the same reason `ProjectPluginRows` keeps one `busy`: only one of
+   * these rows is ever mid-write, and the row that made the last write is the
+   * one that has to say what happened to it.
+   *
+   * THE STATE ADVANCES ON THE ENGINE'S OWN RECORD (`replaceProject`), never on
+   * the patch — a control that moved on the request would show a value the
+   * engine refused, which is exactly what `Row`'s `error` slot exists to make
+   * impossible.
+   *
+   * A REMOTE PROJECT IS READ-ONLY HERE, for `ProjectPluginRows`' reason: the
+   * patch would have to go to that Mac's engine and this pane's `api` is this
+   * one's. Rather than write to the wrong registry, the rows say where to go.
+   */
+  const writer: ProjectWriter = {
+    ...(busy ? { busy } : {}),
+    ...(error ? { error } : {}),
+    save: (field, patch) => {
+      if (!project || project.hostId) return;
+      setBusy(field);
+      setError(undefined);
+      void api
+        .updateProject(project.id, patch)
+        .then((answer) => replaceProject(answer.project))
+        .catch((cause) => setError({ field, message: cause instanceof Error ? cause.message : String(cause) }))
+        .finally(() => setBusy(undefined));
+    },
   };
 
   return (
@@ -407,8 +633,13 @@ export function ProjectsPage() {
         <p className="-mt-4 mb-6 text-xs text-muted-foreground">The engine is not answering, so there is nothing to choose from.</p>
       )}
 
-      <ProjectIdentityRows {...(project ? { project } : {})} />
-      <ProjectConversationRows {...(project ? { project } : {})} envMode={defaults.envMode} />
+      <ProjectIdentityRows {...(project ? { project } : {})} writer={writer} />
+      <ProjectConversationRows
+        {...(project ? { project } : {})}
+        envMode={defaults.envMode}
+        {...(instances ? { instances } : {})}
+        writer={writer}
+      />
       <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
 
       {/* WHAT IS LEFT ON THE PER-PROJECT PAGE, AND ONLY THAT. It used to be

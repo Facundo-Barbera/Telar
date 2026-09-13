@@ -2579,15 +2579,46 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * What a project OPTS INTO. `PATCH`, not `PUT`: identity stays where
-       * `registerProject` put it, and the body names only the switches it
-       * means to move. `dataScience: null` turns the feature off and removes
-       * the block, which is the difference between "never asked" and "off".
+       * What a project IS and what it OPTS INTO. `PATCH`, not `PUT`: the body
+       * names only the fields it means to move, and the ROOT is never one of
+       * them — moving a project means registering the new folder. `null` on an
+       * optional field REMOVES the stored answer, which is the difference
+       * between "never asked" and "off" for a plugin, and between "follows this
+       * Mac" and "insists on local" for a workspace mode.
+       *
+       * The store re-validates every one of these against the contract's own
+       * schemas; what the arms here do is refuse the WRONG SHAPE with a 400 and
+       * a sentence naming the field, rather than letting a JSON array reach a
+       * zod error the client reads as "project is invalid".
        */
       const projectPatch = /^\/v2\/projects\/([^/]+)$/.exec(url.pathname);
       if (request.method === "PATCH" && projectPatch) {
         const input = await body(request);
         const patch: Parameters<typeof store.updateProject>[1] = {};
+        if ("name" in input) {
+          if (typeof input.name !== "string" || input.name.trim() === "") {
+            throw new HttpError(400, "invalid_request", "name must be a non-empty string");
+          }
+          patch.name = input.name;
+        }
+        if ("iconEmoji" in input) {
+          if (input.iconEmoji !== null && typeof input.iconEmoji !== "string") {
+            throw new HttpError(400, "invalid_request", "iconEmoji must be a string or null");
+          }
+          patch.iconEmoji = input.iconEmoji as string | null;
+        }
+        if ("defaultModel" in input) {
+          if (input.defaultModel !== null && (typeof input.defaultModel !== "object" || Array.isArray(input.defaultModel))) {
+            throw new HttpError(400, "invalid_request", "defaultModel must be an object or null");
+          }
+          patch.defaultModel = input.defaultModel as Parameters<typeof store.updateProject>[1]["defaultModel"];
+        }
+        if ("envMode" in input) {
+          if (input.envMode !== null && input.envMode !== "local" && input.envMode !== "worktree") {
+            throw new HttpError(400, "invalid_request", "envMode must be local, worktree or null");
+          }
+          patch.envMode = input.envMode as Parameters<typeof store.updateProject>[1]["envMode"];
+        }
         if ("dataScience" in input) {
           if (input.dataScience !== null && (typeof input.dataScience !== "object" || Array.isArray(input.dataScience))) {
             throw new HttpError(400, "invalid_request", "dataScience must be an object or null");

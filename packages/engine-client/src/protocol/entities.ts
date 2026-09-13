@@ -357,6 +357,33 @@ export const Project = z.object({
    */
   icon: z.string().min(1).max(64).optional(),
   /**
+   * THE MARK THE READER CHOSE, which outranks the one above.
+   *
+   * `icon` is what the checkout HAPPENS to carry and is discovered; this is
+   * what a person picked on the Projects pane, and it is STORED. A separate
+   * key rather than a second meaning for `icon`, because that one is a cache
+   * key the engine serves bytes against (`GET /v2/projects/:id/icon`) — a
+   * client handed an emoji there would ask the engine for a file that does not
+   * exist. Two fields, two questions, and a surface that prefers this one
+   * answers "what does this project look like" without ever having to know
+   * which kind of answer it got.
+   *
+   * A GRAPHEME, NOT A SENTENCE. The cap is in UTF-16 code units and is
+   * generous on purpose: one emoji can be a ZWJ sequence of five.
+   */
+  iconEmoji: z.string().min(1).max(16).optional(),
+  /**
+   * WHAT A CONVERSATION IN THIS PROJECT OPENS ON, when nobody says otherwise.
+   *
+   * BOTH ARE OPTIONAL, AND ABSENCE IS A REAL ANSWER rather than a missing one:
+   * it means "whatever this Mac's standing answer is" — `SessionDefaults` for
+   * the workspace, and the provider's own default for the model. That is what
+   * makes a project able to DIFFER from the machine without every project
+   * having to restate what the machine already says.
+   */
+  defaultModel: ModelSelection.optional(),
+  envMode: EnvMode.optional(),
+  /**
    * WHICH REPOSITORY THIS IS A CHECKOUT OF — `origin`, reduced to
    * `host/owner/repo` (see the engine's `normalizeRemote`).
    *

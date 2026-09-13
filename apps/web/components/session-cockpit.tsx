@@ -25,6 +25,7 @@ import {
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { sessionLink } from "@/lib/session-link";
@@ -2666,7 +2667,7 @@ export function SessionCockpit({
               void (next ? patchFromMenu({ settledOverride: "settled" }, "Could not settle the session.") : unsettle()),
             snooze: (until) => void patchFromMenu({ snoozedUntil: until }, "Could not change the session's snooze."),
             copy: (text) => void navigator.clipboard.writeText(text).catch(() => window.alert("The browser refused to copy that.")),
-            projectSettings: ({ projectId: target }) => router.push(`/projects/${encodeURIComponent(target)}/settings`),
+            projectSettings: ({ projectId: target }) => router.push(projectSettingsHref(target)),
             remove: () => {
               const name = session.title || "Untitled session";
               // The same two presses as the rail's, word for word: the first
