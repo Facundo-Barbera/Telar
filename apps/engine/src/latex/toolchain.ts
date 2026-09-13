@@ -31,6 +31,22 @@ export type LatexToolchain = {
   tectonic?: ToolInfo;
   texlive: TexliveDistribution[];
   brew?: ToolInfo;
+  /**
+   * TELAR'S OWN TECTONIC — see `managed.ts`. Not discovered like the rest of
+   * this answer: it is reported by the store, which is the only thing that
+   * knows where the engine's state root is. Present whether or not it has been
+   * fetched, because the pane has to be able to OFFER an install, and a field
+   * that appeared only after the install would leave nothing to press.
+   */
+  managed?: {
+    version: string;
+    /** False on a platform with no release in the table. */
+    supported: boolean;
+    installed: boolean;
+    path?: string;
+    installing: boolean;
+    error?: string;
+  };
 };
 
 const home = () => os.homedir();
