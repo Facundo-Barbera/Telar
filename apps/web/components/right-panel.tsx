@@ -1554,17 +1554,22 @@ export function PanelSurface({
  * for but the menu itself.
  */
 /**
- * ROWS, NOT A CARD GRID.
+ * TWO COLUMNS ONCE THERE IS ROOM FOR TWO — issue #382, the owner: "it's getting
+ * a bit busier". Ten full-width rows is a column you scroll rather than a menu
+ * you read, and the panel opens at 480px with most of that width spent on the
+ * empty half of a truncated blurb.
  *
- * This was a `sm:grid-cols-2` grid of square cards, and `sm:` is a VIEWPORT
- * query — it fires on a wide window even when this panel is 240px, which is how
- * three-word blurbs ended up wrapping one word per line inside 90px columns. A
- * panel cannot use viewport breakpoints to decide its own layout; it does not
- * know how wide it is.
+ * A CONTAINER QUERY, NEVER A VIEWPORT ONE, and that distinction is the whole
+ * history of this layout. It was `sm:grid-cols-2` once: `sm:` fires on a wide
+ * WINDOW even when this panel is 240px, so three-word blurbs wrapped one word
+ * per line inside 90px columns, and the fix at the time was to give up on
+ * columns entirely. `@container` is the thing that was missing — the panel can
+ * now ask how wide IT is, so the second column appears exactly when it fits and
+ * a dragged-narrow panel still gets the single column the rows were written for.
  *
- * A full-width row per surface sidesteps the question entirely: icon, label and
- * one line of description on a single line that truncates, at any width the
- * panel can be dragged to.
+ * ROW-MAJOR, which is `grid` doing nothing special: the cards keep the order
+ * they are declared in, reading left to right. A column-major fill would put
+ * Agents beside Issues and make the list impossible to scan against the strip.
  */
 function PanelEmptyState({
   onOpen,
@@ -1587,12 +1592,18 @@ function PanelEmptyState({
   const pages = browser?.tabs ?? [];
   const starting = browserStart.status === "pending";
   return (
-    <div className="flex h-full flex-col justify-center p-4">
-      <div className="mx-auto w-full max-w-sm">
+    /* NAMED `@container/panel-empty`, not a bare `@container`: a bare one
+       answers for whichever ancestor is nearest, and this box sits inside a
+       panel whose surfaces are free to open containers of their own. */
+    <div className="@container/panel-empty flex h-full flex-col justify-center p-4">
+      {/* The cap grows with the columns. `max-w-sm` is one readable column; two
+          columns inside it would be 180px each, which is narrower than the rows
+          this replaced and would truncate every blurb to a word. */}
+      <div className="mx-auto w-full max-w-sm @[420px]/panel-empty:max-w-2xl">
         <PanelsTopLeftIcon className="mx-auto size-7 text-muted-foreground/40" />
         <h2 className="mt-3 text-center font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-center text-xs leading-relaxed text-muted-foreground">Choose what to keep beside the conversation.</p>
-        <div className="mt-4 flex flex-col gap-1">
+        <div className="mt-4 grid grid-cols-1 gap-1 @[420px]/panel-empty:grid-cols-2">
           {surfacesFor(dataScience, latex).map((candidate) => (
             <button
               key={candidate.id}
