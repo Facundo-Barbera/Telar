@@ -157,6 +157,14 @@ export * from "./protocol";
  */
 export * from "./look";
 
+/**
+ * THE IDENTITY VOCABULARY — the closed sets of icons and colours anything a
+ * person names may wear (a browser profile, a project). Like the look format,
+ * it is not part of the engine's model: the clients that draw an identity are
+ * what needs the two lists to agree.
+ */
+export * from "./icons";
+
 /** `?turns=N[&before=runId]`, or nothing — spelled once for every caller. */
 export function snapshotQuery(window?: SnapshotWindow): string {
   if (!window) return "";
