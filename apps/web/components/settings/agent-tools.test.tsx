@@ -3,60 +3,68 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
-import { engineHint } from "./permissions-section";
-import { Row } from "./settings-shell";
+import { computerUseHint, computerUseState, PermissionsSection } from "./permissions-section";
 
-const installed = { installed: true, hostRunning: true, backend: "cua", permission: "granted" } as unknown as ComputerUseStatus;
+const probe = (over: Partial<ComputerUseStatus> = {}) =>
+  ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
 
 /**
- * The Agent tools pane's three states, and the one that was lying.
+ * The Agent tools pane's states, and the one that was lying.
  *
- * Read from source rather than mounted: these components fetch on mount, and
- * what is being pinned is the COPY and the branch structure — a loading state
- * that names an engine before anything has been measured is a correctness bug,
- * not a layout preference.
+ * The readout is a pure function, so every branch is testable without a
+ * network; the structural claims are read from source, because these components
+ * fetch on mount and what is being pinned is the COPY and the branch structure.
  */
 const permissions = readFileSync(new URL("./permissions-section.tsx", import.meta.url), "utf8");
 const mcp = readFileSync(new URL("./mcp-section.tsx", import.meta.url), "utf8");
 const logins = readFileSync(new URL("./browser-logins-section.tsx", import.meta.url), "utf8");
 
-test("the three probe states each say something different, and only one names an engine", () => {
+test("the probe states each say something different, and a failure is not 'checking'", () => {
   // The regression this pins: once the request rejected, `checking` went false
   // and `status` stayed undefined, so a `!status` branch said "Checking" forever.
-  const checking = engineHint({ checking: true, failed: false, isCua: false });
-  const failed = engineHint({ checking: false, failed: true, isCua: false });
-  expect(checking).toBe("Checking which engine is installed.");
-  expect(failed).toContain("Could not reach the engine");
-  expect(failed).not.toBe(checking);
-  for (const hint of [checking, failed]) {
-    expect(hint).not.toContain("Codex");
-    expect(hint).not.toContain("cua-driver");
+  expect(computerUseState({ checking: true, failed: false })).toBe("checking");
+  expect(computerUseState({ checking: false, failed: true })).toBe("unknown");
+  expect(computerUseHint("unknown", false)).toContain("Could not reach the engine");
+  // Neither may name an engine before one has been measured.
+  for (const state of ["checking", "unknown"] as const) {
+    expect(computerUseHint(state, true) ?? "").not.toContain("cua-driver");
   }
 });
 
-test("an ANSWERED probe names the engine it measured", () => {
-  expect(engineHint({ status: installed, checking: false, failed: false, isCua: true })).toContain("Open source");
-  expect(engineHint({ status: installed, checking: false, failed: false, isCua: false })).toContain("Codex's bundled client");
-  const absent = { installed: false, hostRunning: false } as unknown as ComputerUseStatus;
-  expect(engineHint({ status: absent, checking: false, failed: false, isCua: false })).toContain("Install cua-driver");
+test("three rows became one readout, ordered by what stops the feature first", () => {
+  // Engine / Driver daemon / Access were three badges a reader had to combine
+  // to answer one question (#357). An engine that is not installed cannot be
+  // ungranted, and one that is not running cannot be tested.
+  expect(computerUseState({ status: probe(), checking: false, failed: false })).toBe("ready");
+  expect(computerUseState({ status: probe({ permission: "denied" }), checking: false, failed: false })).toBe("not-granted");
+  expect(computerUseState({ status: probe({ hostRunning: false, permission: "denied" }), checking: false, failed: false })).toBe("not-running");
+  expect(computerUseState({ status: probe({ installed: false, hostRunning: false }), checking: false, failed: false })).toBe("not-installed");
+});
+
+test("a working setup says so with its badge and no sentence at all", () => {
+  // "Open source — Telar holds the grants through CuaDriver.app" was an
+  // implementation note printed at every reader who had nothing to fix.
+  expect(computerUseHint("ready", true)).toBeUndefined();
+  expect(permissions).not.toContain("Open source");
+  expect(permissions).not.toContain("Codex's bundled client");
+  expect(permissions).not.toContain("Launches automatically when a session first needs it");
+});
+
+test("the security semantics survive the copy edit", () => {
+  // Compacting must not drop what a person needs to act: which grants are
+  // required, and where macOS hides the switch.
+  expect(computerUseHint("not-granted", true)).toContain("Accessibility + Screen Recording");
+  expect(computerUseHint("not-granted", false)).toContain("Privacy & Security → Automation");
+  expect(computerUseHint("not-installed", false)).toContain("Install cua-driver");
+  expect(logins).toContain("Telar asks before every fill");
 });
 
 test("the FAILED state renders Unknown with a Retry, never a spinner", () => {
-  const html = renderToStaticMarkup(
-    <Row
-      label="Engine"
-      hint={engineHint({ checking: false, failed: true, isCua: false })}
-      control={
-        <div>
-          <span>Unknown</span>
-          <button type="button">Retry</button>
-        </div>
-      }
-    />,
-  );
-  expect(html).toContain("Unknown");
-  expect(html).toContain("Retry");
-  expect(html).toContain("Could not reach the engine");
+  const html = renderToStaticMarkup(<PermissionsSection />);
+  // First paint, before the probe lands: a spinner, and no claim about a grant.
+  expect(html).not.toContain("Not granted");
+  expect(permissions).toContain('state === "unknown" && (');
+  expect(permissions).toContain("Retry");
 });
 
 test("the empty server list does not repeat itself in a pill", () => {
@@ -64,26 +72,25 @@ test("the empty server list does not repeat itself in a pill", () => {
   expect(empty.slice(0, 200)).not.toContain('<Badge variant="outline">None</Badge>');
 });
 
-test("Add a server is progressive, and closes once one lands", () => {
+test("Add is the list's own header button, not a card whose row is a button", () => {
+  // It used to be a whole SettingsGroup titled "Add a server" holding one row
+  // whose entire content was an Add button (#357) — the shape Browser profiles
+  // already avoids with "New profile" on the group header.
+  expect(mcp).toContain("const [adding, setAdding] = useState(false)");
+  expect(mcp).toContain("onClick={() => setAdding(true)}");
+  expect(mcp).toContain("{adding && <AddServerForm");
+  expect(mcp).not.toContain('label="Add a server"');
+});
+
+test("adding is progressive, and closes once one lands", () => {
   // The pane used to lead with an empty three-transport form instead of with
-  // what is configured.
-  expect(mcp).toContain("const [open, setOpen] = useState(false)");
-  expect(mcp).toContain("if (!open)");
-  // Opening is reversible, and success returns to the list.
+  // what is configured. Opening is reversible, and success returns to the list.
   expect(mcp).toContain("Cancel");
   const save = mcp.slice(mcp.indexOf("onAdded();"));
-  expect(save.slice(0, 200)).toContain("setOpen(false)");
+  expect(save.slice(0, 200)).toContain("onClose();");
 });
 
 test("remembered logins' empty state is a row on the same grid, not a loose paragraph", () => {
   expect(logins).toContain('<Row label="No remembered logins"');
   expect(logins).not.toContain("None. Telar asks before every credential fill");
-});
-
-test("the security semantics survive the copy edit", () => {
-  // Compacting must not drop what a person needs to act: which grants are
-  // required, and where macOS hides the switch.
-  expect(permissions).toContain("Accessibility + Screen Recording");
-  expect(permissions).toContain("Privacy & Security → Automation");
-  expect(logins).toContain("Telar asks before every fill");
 });

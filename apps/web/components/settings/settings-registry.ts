@@ -516,7 +516,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: WrenchIcon,
     groups: [
       {
-        title: "Add a server",
+        /**
+         * NAVIGATE-ONLY SINCE THE FORM BECAME PROGRESSIVE (#357). "Add a
+         * server" is the caption on a form that is not on screen until somebody
+         * presses Add, so there is no standing row to anchor to — but it is the
+         * question people open this pane with, so it stays indexed.
+         */
         rows: [
           {
             title: "Add a server",
@@ -527,18 +532,25 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
-        title: "Computer use",
+        // ONE ROW, NOT THREE. Engine, Driver daemon and Access were three
+        // readouts of one question; the pane answers it once now, so the index
+        // asks it once. Their old vocabulary survives as keywords.
         rows: [
           {
-            title: "Engine",
-            hint: "Which computer-use backend is installed — screenshots, clicks, typing in Mac apps.",
-            keywords: ["cua", "driver", "automation"],
-            icon: MonitorIcon,
-          },
-          {
-            title: "Access",
-            hint: "Accessibility and Screen Recording permission for driving the Mac.",
-            keywords: ["permission", "privacy", "accessibility", "screen recording", "grant"],
+            title: "Computer use",
+            hint: "Whether sessions can drive Mac apps — screenshots, clicks, typing.",
+            keywords: [
+              "cua",
+              "driver",
+              "automation",
+              "engine",
+              "access",
+              "permission",
+              "privacy",
+              "accessibility",
+              "screen recording",
+              "grant",
+            ],
             icon: MonitorIcon,
           },
         ],
