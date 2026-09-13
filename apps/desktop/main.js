@@ -33,6 +33,7 @@ const { createTabStore } = require("./browser-tab-store");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
+const { createInstallGate } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith } = require("./workspace-openers");
 
@@ -2167,8 +2168,27 @@ ipcMain.handle("telar:updates:check", async () => {
   await checkForUpdates();
   return { status: "checking" };
 });
+/**
+ * A SECOND PRESS MUST NOT REACH electron-updater (issue #389). Which press this
+ * is, and what it means, is decided in update-install.js — where it can be
+ * tested without an Electron to quit.
+ */
+const installGate = createInstallGate();
+
 ipcMain.handle("telar:updates:install", () => {
-  if (!app.isPackaged || DEV_BUILD) return;
+  const decision = installGate.press({ packaged: app.isPackaged, devBuild: DEV_BUILD });
+  if (decision === "unsupported") return { status: "unsupported" };
+
+  // SAID BEFORE ANYTHING IS STAGED, and said again on every repeat press. The
+  // renderer showed nothing during the seconds between the press and the quit,
+  // which is why people pressed twice; a status it can render is the whole
+  // difference between "restarting" and a dead button. A remounted window that
+  // missed the first broadcast picks this up through `telar:updates:status`.
+  broadcastUpdateStatus("restarting", { version: lastUpdateStatus?.version });
+  // Already on its way: nothing more to do, and calling quitAndInstall again is
+  // exactly what produced the warning.
+  if (decision === "pending") return { status: "restarting" };
+
   // AN EXPLICIT INSTALL MUST NOT RACE THE ON-QUIT INSTALLER.
   //
   // `quitAndInstall()` stages the update and then quits. With
@@ -2186,7 +2206,20 @@ ipcMain.handle("telar:updates:install", () => {
   // an attended one.
   autoUpdater.autoInstallOnAppQuit = false;
   app.isQuitting = true;
-  autoUpdater.quitAndInstall();
+  try {
+    autoUpdater.quitAndInstall();
+  } catch (err) {
+    // A THROW HERE IS THE ONE CASE THE RENDERER'S OWN DEADLINE CANNOT EXPLAIN.
+    // The gate is re-armed so the next press is a real install rather than a
+    // duplicate, and the app is no longer quitting — it plainly did not.
+    installGate.reset();
+    app.isQuitting = false;
+    const message = err && err.message ? err.message : String(err);
+    autoUpdater.logger?.error?.(`quitAndInstall failed: ${message}`);
+    broadcastUpdateStatus("error", { version: lastUpdateStatus?.version, message });
+    return { status: "error", message };
+  }
+  return { status: "restarting" };
 });
 
 // The pull half of the status contract — see `lastUpdateStatus`.

@@ -20,8 +20,11 @@ const stubs = {
  * it cannot silently bundle the fixed code and call it "before".
  */
 const before = process.env.BEFORE === "1";
+/** The guard moved into the hook when both surfaces stopped keeping their own
+ *  copy of the bridge wiring (#389); it is the same expression, in the one
+ *  place that now owns it. */
 const REVERT = {
-  filter: /components\/app-sidebar-footer\.tsx$/,
+  filter: /lib\/desktop-updates\.ts$/,
   fixed: "if (live && !pushed && current && current.status !== \"unsupported\") setStatus(current);",
   broken: "if (live && current && current.status !== \"unsupported\") setStatus(current);",
 };
@@ -41,7 +44,7 @@ const result = await Bun.build({
               build.onLoad({ filter: REVERT.filter }, async (args) => {
                 const source = await Bun.file(args.path).text();
                 if (!source.includes(REVERT.fixed)) throw new Error(`BEFORE=1 cannot find the guarded expression in ${args.path}`);
-                return { contents: source.replace(REVERT.fixed, REVERT.broken), loader: "tsx" };
+                return { contents: source.replace(REVERT.fixed, REVERT.broken), loader: "ts" };
               });
             },
           },

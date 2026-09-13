@@ -7,7 +7,10 @@
 # The jsxDEV failure the first repairs only bites .tsx tests, which all live
 # here. The second gives this workspace a DOM before any test file imports a UI
 # primitive, which is the only moment at which it can be given — see the file.
-preload = ["../../scripts/test-setup.mjs", "./scripts/test-dom.mjs"]
+# The third settles the other import-time decision a shared process makes once
+# for everybody: the global Next's server modules look for and bun does not
+# have.
+preload = ["../../scripts/test-setup.mjs", "./scripts/test-dom.mjs", "./scripts/test-async-storage.mjs"]
 
 # Build outputs copy web source, *.test.tsx included. Never run those stale
 # copies as part of the source test gate.

@@ -10,5 +10,8 @@ pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]
 # second lends the UI primitives a DOM for the one import at which they decide
 # whether their layout effects exist, so a test that CLICKS a menu finds a live
 # one; apps/web/scripts/test-dom.mjs has that story, and apps/web/bunfig.toml
-# carries the same pair for the workspace CI actually runs.
-preload = ["./scripts/test-setup.mjs", "./apps/web/scripts/test-dom.mjs"]
+# carries the same set for the workspace CI actually runs. The third gives
+# Next's server modules the `AsyncLocalStorage` global they read once at import
+# and bun does not provide; apps/web/scripts/test-async-storage.mjs has that
+# story.
+preload = ["./scripts/test-setup.mjs", "./apps/web/scripts/test-dom.mjs", "./apps/web/scripts/test-async-storage.mjs"]
