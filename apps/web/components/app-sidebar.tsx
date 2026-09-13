@@ -346,7 +346,7 @@ function SidebarBody() {
   const inSpool = pathname.startsWith("/spool");
   const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
@@ -650,16 +650,6 @@ function SidebarBody() {
     const timer = window.setInterval(() => void loadAll(), anyLive ? 3_000 : 10_000);
     return () => window.clearInterval(timer);
   }, [loadAll, anyLive]);
-
-  useEffect(() => {
-    const focusSearch = (event: KeyboardEvent) => {
-      if (event.key.toLocaleLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
-      event.preventDefault();
-      searchInput.current?.focus();
-    };
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, []);
 
   const projectIds = projects.map((project) => project.id);
   const selectedScope = scope && projectIds.includes(scope) ? scope : undefined;
@@ -994,8 +984,10 @@ function SidebarBody() {
   };
 
   /**
-   * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
+   * THE WHOLE COMMAND REGISTRY — mounted HERE because this is the one component
    * alive on every route that already draws the rows the number keys count.
+   * Every other surface (the panel, the composer) binds its own commands through
+   * `bindCommands` and this dispatcher looks them up; see lib/commands.ts.
    *
    * THE KEYS COUNT WHAT IS ON SCREEN, top to bottom: the "Needs you" band,
    * pinned, then each project group in the reader's own order, folded groups
@@ -1014,7 +1006,13 @@ function SidebarBody() {
     // opens its canvas; the palette replaced that guess. `newConversation`
     // below is the one place that decides between palette and canvas, so the
     // key and the button cannot disagree about what New conversation means.
-    "new-session": () => newConversation(),
+    "new-conversation": () => newConversation(),
+    // The rail's own two: its search field and its collapse. Both used to be
+    // hand-rolled window listeners here (⌘K) and inside the sidebar primitive
+    // (⌘B), which is precisely why neither appeared on the keybindings pane and
+    // neither could be changed. One registry, one dispatcher.
+    "search-sessions": () => searchInput.current?.focus(),
+    "toggle-rail": () => toggleSidebar(),
   });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
