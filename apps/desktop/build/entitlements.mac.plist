@@ -23,5 +23,19 @@
 	-->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!--
+	  SITE PERMISSIONS (#422). A page in Telar's own browser can only reach the
+	  camera or the microphone if the app itself holds these; under a hardened
+	  runtime macOS refuses the device before any consent dialog can appear, so
+	  without them `systemPreferences.askForMediaAccess` returns false on a
+	  SIGNED build while working perfectly in a dev checkout — the shape of
+	  failure this directory keeps collecting. The Info.plist usage strings
+	  (package.json `mac.extendInfo`) are the other half: the entitlement lets
+	  the app ask, the string is what the dialog says.
+	-->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

@@ -19,5 +19,17 @@
 	<true/>
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!--
+	  THE RENDERER IS WHERE THE CAPTURE ACTUALLY HAPPENS. A page's camera and
+	  microphone are opened by the Chromium helper processes this bundle signs
+	  with the inherit plist, not by the main process that asked for consent —
+	  so the device entitlements have to come down here too, exactly as the
+	  Apple-events one does for the engine child. The grant is still the app's:
+	  macOS attributes a helper's use to Telar.
+	-->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>
