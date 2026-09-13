@@ -129,7 +129,7 @@ test("A FOLLOWED SESSION is a child row, and the caption that mislabelled it is 
     />,
   );
   expect(html).toContain("Watched");
-  expect(html).not.toContain("Following</");
+  expect(html).not.toContain("Following");
   expect(html).not.toContain("Working on behalf of");
   // …and the block is still named to a screen reader without them.
   expect(html).toContain('aria-label="Related work"');
