@@ -1001,11 +1001,12 @@ function SidebarBody() {
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
   useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9), {
-    // ⌘N ASKS RATHER THAN GUESSES. The table's destination for this binding is
-    // "/", which resolves a project and opens its canvas — the same guess the
-    // button used to make. Now both open the palette, so the key and the button
-    // cannot disagree about what New conversation means.
-    "new-session": () => setPickerOpen(true),
+    // ⌘N ASKS RATHER THAN GUESSES — unless there is nothing to ask about. The
+    // table's destination for this binding is "/", which resolves a project and
+    // opens its canvas; the palette replaced that guess. `newConversation`
+    // below is the one place that decides between palette and canvas, so the
+    // key and the button cannot disagree about what New conversation means.
+    "new-session": () => newConversation(),
   });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
@@ -1080,6 +1081,25 @@ function SidebarBody() {
       hostName: project.hostName,
     })),
   ];
+
+  /**
+   * A PALETTE OF ONE IS A QUESTION WITH ONE ANSWER.
+   *
+   * On a cockpit with a single project registered — which is where most people
+   * start, and where many stay — pressing New conversation opened a search
+   * field over a list of one row, to be told the thing it already knew. The
+   * palette earns itself the moment there are two places a conversation could
+   * go; until then the button does what the button says.
+   *
+   * Undefined while the registry is still empty too: `startSession` has its own
+   * fallback for a cockpit with no project at all, and the palette's "No
+   * projects registered yet." is the better answer there.
+   */
+  const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;
+  const newConversation = () => {
+    if (soleTarget) startSession({ projectId: soleTarget.id, ...(soleTarget.hostId ? { hostId: soleTarget.hostId } : {}) });
+    else setPickerOpen(true);
+  };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1194,14 +1214,22 @@ function SidebarBody() {
               size="icon-sm"
               className="shrink-0"
               aria-label="New conversation"
-              title="New conversation — choose the project"
-              onClick={() => setPickerOpen(true)}
+              title={soleTarget ? `New conversation in ${soleTarget.name}` : "New conversation — choose the project"}
+              onClick={newConversation}
             >
               <MessageSquarePlusIcon />
             </Button>
           </div>
 
           <div className="flex items-center gap-1">
+            {/* A FILTER WITH ONE THING TO FILTER FOR IS FURNITURE. On a cockpit
+                with a single project registered, "All projects" and "that one
+                project" select the same rows, so the control spent a line of
+                the rail offering a choice that changes nothing. It comes back
+                the moment a second project — or a paired Mac's — exists. The
+                register button beside it stays either way, because that is how
+                the second one gets registered. */}
+            {pickerTargets.length > 1 && (
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="sm" className="h-8 min-w-0 flex-1 justify-start px-2 text-sm font-normal" />}
@@ -1273,6 +1301,10 @@ function SidebarBody() {
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
+            )}
+            {/* Holds the register button at the trailing edge when the filter
+                above is absent. */}
+            {pickerTargets.length <= 1 && <div className="min-w-0 flex-1" />}
             <RegisterProjectDialog
               onRegistered={() => void loadAll()}
               compact

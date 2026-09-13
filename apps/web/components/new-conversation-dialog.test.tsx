@@ -101,10 +101,23 @@ test("the empty state tells an empty registry apart from an empty search", () =>
 
 test("the rail has one New-conversation control, and ⌘N opens the same thing", () => {
   // It used to be two: a plain button, and — only with a Mac paired — a menu.
-  expect(sidebar).toContain('title="New conversation — choose the project"');
-  expect(sidebar).toContain("onClick={() => setPickerOpen(true)}");
-  expect(sidebar).toContain('"new-session": () => setPickerOpen(true),');
+  // Both now go through `newConversation`, which is the single place that
+  // decides between the palette and a canvas.
+  expect(sidebar).toContain("onClick={newConversation}");
+  expect(sidebar).toContain('"new-session": () => newConversation(),');
   expect(sidebar).not.toContain('title="New conversation — choose where"');
+});
+
+test("a registry of one skips the palette rather than asking a question with one answer", () => {
+  // A search field over a list of one row, to be told what the cockpit already
+  // knew. The palette earns itself once there are two places to go.
+  expect(sidebar).toContain("const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;");
+  const decide = sidebar.slice(sidebar.indexOf("const newConversation ="));
+  expect(decide.slice(0, 260)).toContain("if (soleTarget) startSession(");
+  expect(decide.slice(0, 260)).toContain("else setPickerOpen(true);");
+  // And the scope filter goes with it: "All projects" and "that one project"
+  // select the same rows.
+  expect(sidebar).toContain("{pickerTargets.length > 1 && (");
 });
 
 test("the palette is offered every project the rail already reads, this Mac's first", () => {
