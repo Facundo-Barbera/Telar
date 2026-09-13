@@ -22,6 +22,7 @@
 import { useState } from "react";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import type { SpoolLane } from "@telar/engine-client";
+import { laneItems, laneLabel } from "@/components/spool/lanes";
 import { cn } from "@/lib/utils";
 import { FieldGroup, FieldRow, RowInput } from "@/components/spool/field-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -162,15 +163,16 @@ export function RowDisclosure({
         <FieldGroup className="mt-1.5 mb-2 mr-3">
           {lanes.length > 0 && (
             <FieldRow label="Lane">
-              <Select value={lane ?? ""} onValueChange={(next) => onLane(next ?? "")}>
+              {/* `items` so the trigger reads the lane's NAME rather than its
+                  stored key — see `lanes.ts` (#352). */}
+              <Select value={lane ?? ""} items={laneItems(lanes)} onValueChange={(next) => onLane(next ?? "")}>
                 <SelectTrigger size="sm" className="w-full border-none bg-transparent shadow-none">
                   <SelectValue placeholder="Not filed" />
                 </SelectTrigger>
                 <SelectContent>
                   {lanes.map((l) => (
                     <SelectItem key={l.key} value={l.key}>
-                      {l.label}
-                      {l.window ? ` — ${l.window}` : ""}
+                      {laneLabel(l)}
                     </SelectItem>
                   ))}
                 </SelectContent>

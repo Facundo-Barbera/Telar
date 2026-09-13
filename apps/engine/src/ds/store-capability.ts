@@ -13,7 +13,7 @@ import path from "node:path";
 import type { WorkspaceFile, WorkspaceWriteResult, TurnAttachment, EngineEvent } from "@telar/engine-client";
 import type { DsCapability, EnvironmentRow, KernelStatus, NotebookEdit, NotebookRead, PackageRow, SnapshotDiff, VarRow } from "./capability";
 import type { KernelHost } from "./kernel-host";
-import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, mintCellId, moveCell, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
+import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, mintCellId, moveCell, parseNotebookText, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
 import { type CellOutput, type ExecResult, plainTraceback } from "./outputs";
 import { preflightPython } from "./python-env";
 import { ensureTelarVenv, removeTelarVenv, telarVenvPython } from "./telar-venv";
@@ -148,15 +148,38 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     files.saveWatches(watches);
   }
 
+  /**
+   * Read, AND PUT THE IDS ON DISK the answer is about to be phrased in (#351).
+   *
+   * Most notebooks on disk predate nbformat 4.5 and carry no cell ids, and
+   * every verb after the read — `notebook/run`, `notebook/edit` — names a cell
+   * by the id this answer gave the client and re-reads the file to find it. So
+   * the ids cannot be a fact about one parse: they are written back on the
+   * first read that mints them, nbformat_minor 5, which is the same upgrade
+   * JupyterLab performs and leaves the file readable everywhere.
+   *
+   * A REFUSED WRITE IS NOT A FAILED READ. A read-only checkout, or a file that
+   * changed between the read and the write-back, must still open — so the
+   * refusal is swallowed and the answer carries the pre-write sha. That path
+   * still resolves because `parseNotebookText` derives the ids from position
+   * and source rather than randomly, so the next parse agrees anyway.
+   */
   function readNotebook(target: string): { nb: Notebook; file: WorkspaceFile } {
     const file = deps.readFile(target);
     if (file.binary) throw new Error("that file is not text");
     if (file.truncated) throw new Error(`that notebook is ${Math.round(file.bytes / 1024 / 1024)} MB, larger than the ${Math.round(NOTEBOOK_MAX_BYTES / 1024 / 1024)} MB the engine reads`);
+    let parsed: { nb: Notebook; mintedIds: boolean };
     try {
-      return { nb: parseNotebook(file.text), file };
+      parsed = parseNotebookText(file.text);
     } catch (error) {
       throw new Error(`could not parse the notebook: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (!parsed.mintedIds) return { nb: parsed.nb, file };
+    try {
+      const outcome = deps.writeFile(target, serializeNotebook(parsed.nb), file.sha256);
+      if (outcome.written) return { nb: parsed.nb, file: outcome.file };
+    } catch { /* the notebook opens either way */ }
+    return { nb: parsed.nb, file };
   }
 
   function writeNotebook(target: string, nb: Notebook, expected: string): WorkspaceFile {
@@ -229,7 +252,10 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       if (edit.kind === "create") {
         let existing: WorkspaceFile | undefined;
         try { existing = deps.readFile(target); } catch { /* absent */ }
-        if (existing) { const { nb } = readNotebook(target); return summarise(target, nb, existing.sha256); }
+        // `readNotebook`'s own sha, not the probe's: an id-less notebook is
+        // rewritten on that read, and answering with the pre-write hash would
+        // fence the client's next edit against a file that no longer exists.
+        if (existing) { const { nb, file } = readNotebook(target); return summarise(target, nb, file.sha256); }
         const nb = emptyNotebook();
         const absolute = path.resolve(deps.cwd, target);
         fs.mkdirSync(path.dirname(absolute), { recursive: true });

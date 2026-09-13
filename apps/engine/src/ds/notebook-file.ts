@@ -8,6 +8,15 @@
  * (nbformat < 4.5), and the write uses nbformat's own 1-space indent and
  * trailing newline so an untouched notebook diffs to nothing.
  *
+ * A MINTED ID IS DERIVED, NOT RANDOM (#351). Most notebooks on disk predate
+ * nbformat 4.5 and carry no cell ids at all, and the id is what every later
+ * call names a cell by — so a random one made the id the panel rendered
+ * different from the id the run's own fresh parse produced, and `findCell`
+ * answered "no cell with id …" for every cell of every notebook Telar had not
+ * written itself. Deriving from position and source makes any two parses of
+ * the same bytes agree; `parseNotebookText` also reports that it minted, so
+ * the reader can write the ids back and stop deriving them.
+ *
  * OUTPUTS ARE TRANSLATED BOTH WAYS. The engine's `CellOutput` union becomes
  * `stream` / `execute_result` / `display_data` / `error` on write; images
  * carry an `attachmentId` in `metadata.telar` and the PNG bytes in
@@ -40,6 +49,22 @@ export function mintCellId(): string {
   return crypto.randomBytes(4).toString("hex");
 }
 
+/**
+ * The id a cell that has none gets: a hash of where it sits and what it says,
+ * in `mintCellId`'s own 8-hex shape and inside nbformat's `^[a-zA-Z0-9-_]{1,64}$`.
+ *
+ * DETERMINISTIC BECAUSE THE READER MAY NOT BE ABLE TO WRITE. Persisting the
+ * ids is the real fix and `readNotebook` does it, but a checkout mounted
+ * read-only, or a write refused because the file changed underneath, would
+ * otherwise put the id-less notebook straight back into #351's failure. Two
+ * parses of the same bytes agreeing costs a hash and removes that whole class.
+ */
+export function derivedCellId(index: number, source: string, salt = ""): string {
+  // `index` and `salt` are digits, so a colon separates them from the source
+  // unambiguously without smuggling a control character into this file.
+  return crypto.createHash("sha256").update(`${index}:${salt}:${source}`).digest("hex").slice(0, 8);
+}
+
 export function emptyNotebook(): Notebook {
   return {
     nbformat: 4,
@@ -50,6 +75,16 @@ export function emptyNotebook(): Notebook {
 }
 
 export function parseNotebook(text: string): Notebook {
+  return parseNotebookText(text).nb;
+}
+
+/**
+ * The same parse, plus whether any cell's id came from us rather than the file.
+ *
+ * `mintedIds` is the reader's cue to write the notebook back so the ids the
+ * client is about to be shown are the ids on disk — see `readNotebook`.
+ */
+export function parseNotebookText(text: string): { nb: Notebook; mintedIds: boolean } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
@@ -61,27 +96,40 @@ export function parseNotebook(text: string): Notebook {
   if (nb.nbformat !== 4) throw new Error(`nbformat ${String(nb.nbformat)} is not supported; only 4`);
   const cells = Array.isArray(nb.cells) ? nb.cells : [];
   const seen = new Set<string>();
-  const parsed: NbCell[] = cells.map((cell) => {
+  let mintedIds = false;
+  const parsed: NbCell[] = cells.map((cell, index) => {
     const c = (cell && typeof cell === "object" ? cell : {}) as Record<string, unknown>;
     const type = c.cell_type === "markdown" || c.cell_type === "raw" ? c.cell_type : "code";
-    let id = typeof c.id === "string" && c.id ? c.id : mintCellId();
-    while (seen.has(id)) id = mintCellId();
+    const source = joinSource(c.source);
+    const given = typeof c.id === "string" && c.id ? c.id : "";
+    if (!given) mintedIds = true;
+    let id = given || derivedCellId(index, source);
+    // A duplicate is the file's own bug (or two id-less twins at one index,
+    // which cannot happen) — salted rather than randomised so this parse and
+    // the next still agree, and reported so the resolved ids get written back.
+    for (let salt = 1; seen.has(id); salt += 1) {
+      id = derivedCellId(index, source, String(salt));
+      mintedIds = true;
+    }
     seen.add(id);
     return {
       ...c,
       id,
       cell_type: type,
-      source: joinSource(c.source),
+      source,
       metadata: c.metadata && typeof c.metadata === "object" ? (c.metadata as Record<string, unknown>) : {},
       ...(type === "code" ? { execution_count: typeof c.execution_count === "number" ? c.execution_count : null, outputs: Array.isArray(c.outputs) ? c.outputs : [] } : {}),
     } as NbCell;
   });
   return {
-    ...nb,
-    nbformat: 4,
-    nbformat_minor: typeof nb.nbformat_minor === "number" ? Math.max(nb.nbformat_minor, 5) : 5,
-    metadata: nb.metadata && typeof nb.metadata === "object" ? (nb.metadata as Record<string, unknown>) : {},
-    cells: parsed,
+    nb: {
+      ...nb,
+      nbformat: 4,
+      nbformat_minor: typeof nb.nbformat_minor === "number" ? Math.max(nb.nbformat_minor, 5) : 5,
+      metadata: nb.metadata && typeof nb.metadata === "object" ? (nb.metadata as Record<string, unknown>) : {},
+      cells: parsed,
+    },
+    mintedIds,
   };
 }
 
