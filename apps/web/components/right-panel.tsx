@@ -1851,6 +1851,25 @@ export function RightPanel({
   const [fullscreen, setFullscreen] = useState(false);
   const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
   /**
+   * WHAT THE PRESS ON THE "+" MEANT, decided while the button is down.
+   *
+   * A menu trigger toggles from `mousedown`, but the primitive defers the
+   * state change to a `requestAnimationFrame` (floating-ui's `useClick`, to
+   * let focus land before the popup opens). A frame that never arrives — an
+   * occluded or throttled renderer, which the shell's composited native
+   * browser view is very good at producing — therefore swallows the press
+   * entirely, which is #349: the pointer did nothing while the keyboard, whose
+   * path opens synchronously from `click`, still worked.
+   *
+   * So the decision is made here, on the event this component can see, and
+   * applied on `click`. The menu is CONTROLLED — this panel owns the boolean
+   * already — so when the deferred frame DID run, it has set exactly this
+   * value and the write is a no-op. `undefined` means no mouse press is in
+   * flight: a keyboard activation has no `mousedown`, and must be left to the
+   * primitive rather than repaired against a stale decision.
+   */
+  const chooserPress = useRef<boolean>(undefined);
+  /**
    * WHICH TAB'S CONTEXT MENU IS OPEN, or nothing — the strip's menus are
    * CONTROLLED for the same reason the chooser is: the native browser view
    * sits above this DOM, and `useNativeViewOverlay` needs a boolean to take it
@@ -2219,6 +2238,18 @@ export function RightPanel({
           {(openable.length > 0 || canStartBrowser) && (
             <DropdownMenu open={surfaceChooserOpen} onOpenChange={setSurfaceChooserOpen}>
               <DropdownMenuTrigger
+                // See `chooserPress`: the press decides, the release applies,
+                // and neither waits for a frame. Merged with the primitive's
+                // own handlers rather than replacing them, so its keyboard and
+                // focus behaviour is untouched.
+                onMouseDown={() => {
+                  chooserPress.current = !surfaceChooserOpen;
+                }}
+                onClick={() => {
+                  const wanted = chooserPress.current;
+                  chooserPress.current = undefined;
+                  if (wanted !== undefined) setSurfaceChooserOpen(wanted);
+                }}
                 render={
                   <button type="button" aria-label="Open a surface" title="Open a surface"
                     className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground">
