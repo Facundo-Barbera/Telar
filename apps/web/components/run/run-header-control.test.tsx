@@ -68,27 +68,27 @@ describe("the empty state", () => {
   const config = (over: Partial<RunConfigurationView> = {}): RunConfigurationView =>
     ({ id: "config_dev", name: "dev server", ...over }) as RunConfigurationView;
 
-  test("no saved configuration and nothing deployed is the one Setup case", () => {
+  test("no saved configuration and nothing deployed is the one setup case", () => {
     expect(headerMode([], undefined)).toBe("setup");
   });
 
   test("a list not read yet is unknown, not empty", () => {
-    // Offering Setup over a project that turns out to have three recipes is
-    // worse than a moment of "Run".
+    // Offering the form over a project that turns out to have three recipes is
+    // worse than a moment of the ordinary menu.
     expect(headerMode(undefined, undefined)).toBe("run");
   });
 
   test("a live run wins over an empty list", () => {
     // Its recipe was deleted mid-flight; the deployment is still the thing a
-    // human needs to see and stop, so the button must not become "Setup".
+    // human needs to see and stop, so the button must open the menu.
     expect(headerMode([], view())).toBe("run");
   });
 
-  test("any saved configuration is enough to leave Setup", () => {
+  test("any saved configuration is enough to leave the setup case", () => {
     expect(headerMode([config()], undefined)).toBe("run");
   });
 
-  test("Setup opens the editor, which paints the form rather than a menu", () => {
+  test("the setup case opens the editor, which paints the form rather than a menu", () => {
     // What the button opens INTO. `renderToStaticMarkup` runs no effects, so
     // the popover's own contents cannot be rendered here (see
     // run-header-host.test.tsx); the form it opens can.
@@ -100,6 +100,9 @@ describe("the empty state", () => {
     expect(html).toContain('aria-label="Database"');
     // `play` opens chosen, so a new configuration always has an icon.
     expect(html).toContain('role="radio" aria-checked="true" aria-label="Play"');
+    // And it opens QUIET: the first paint of a blank form used to carry its
+    // own complaint about being blank.
+    expect(html).not.toContain("Give this configuration a name.");
   });
 });
 

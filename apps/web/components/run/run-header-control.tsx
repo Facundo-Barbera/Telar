@@ -245,16 +245,20 @@ export function RunHeaderControl({
             // being popover triggers — actually have.
             variant="outline"
             size="sm"
-            aria-label={setup ? "Set up a run configuration" : active ? `Run: ${label}` : "Run this project"}
+            aria-label={setup ? "Run — set up a configuration" : active ? `Run: ${label}` : "Run this project"}
             className="h-7 gap-1.5 px-2 text-xs font-medium"
           >
             {setup ? (
-              // No dot: there is no run to have a status, and an idle-grey dot
-              // beside "Setup" would read as a state rather than as an
-              // invitation. No chevron either — this opens a form, not a menu.
+              // THE WORD IS "RUN" IN BOTH STATES, and the glyph carries the
+              // difference. "Setup" named the CONSEQUENCE of pressing an empty
+              // control rather than the thing the control is for, so the one
+              // button in the masthead that runs this project was the one
+              // button that never said run. The plus still says a form is what
+              // opens; no dot, because there is no run to have a status, and no
+              // chevron, because this is not a menu.
               <>
                 <PlusIcon className="size-3.5 shrink-0" />
-                <span className="max-w-32 truncate">Setup</span>
+                <span className="max-w-32 truncate">Run</span>
               </>
             ) : (
               <>
@@ -271,7 +275,16 @@ export function RunHeaderControl({
         align="end"
         side="bottom"
         sideOffset={6}
-        className={cn("flex-col gap-0 overflow-hidden rounded-xl p-0", editing ? "max-h-[min(34rem,80vh)] w-[26rem]" : "w-80")}
+        // THE FORM MUST REACH ITS OWN SAVE BUTTON. At 34rem the editor's last
+        // rows — Save and Cancel — sat below the fold on a 980px-tall window,
+        // so the one thing a human opened this form to do was behind a scroll
+        // they had no reason to expect. The viewport clamp is what actually
+        // binds on a short screen; the 40rem ceiling keeps it from becoming a
+        // full-height column on a tall one.
+        className={cn(
+          "flex-col gap-0 overflow-hidden rounded-xl p-0",
+          editing ? "max-h-[min(40rem,calc(100vh-7rem))] w-[26rem]" : "w-80",
+        )}
       >
         {editing ? (
           <div className="flex min-h-0 flex-col">

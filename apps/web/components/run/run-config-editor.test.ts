@@ -13,6 +13,7 @@ import {
   environmentBlocker,
   environmentTouched,
   toDraft,
+  visibleProblems,
 } from "./run-config-editor";
 
 const config = (overrides: Partial<RunConfigurationView> = {}): RunConfigurationView => ({
@@ -134,5 +135,35 @@ describe("environmentBlocker", () => {
   test("a new configuration validates its secrets normally", () => {
     const draft = { ...emptyDraft(), name: "api", command: "bun run api", env: [{ key: "T", value: "ab", secret: true }] };
     expect(editorProblems(undefined, draft).some((problem) => problem.message.includes("4 characters"))).toBe(true);
+  });
+});
+
+describe("when a problem is shown", () => {
+  /** A brand-new configuration: invalid by construction, because nothing has
+   *  been typed yet. */
+  const blank = () => editorProblems(undefined, emptyDraft());
+
+  test("an untouched form says nothing, however wrong it is", () => {
+    // The editor opened with "Give this configuration a name." already in red,
+    // addressed to somebody whose cursor had not reached the first box.
+    expect(blank().length).toBeGreaterThan(0);
+    expect(visibleProblems(blank(), {}, false)).toEqual([]);
+  });
+
+  test("leaving a field is what lets its own complaint speak — and only its own", () => {
+    const shown = visibleProblems(blank(), { name: true }, false);
+    expect(shown.map((problem) => problem.field)).toEqual(["name"]);
+    expect(shown[0]?.message).toBe("Give this configuration a name.");
+  });
+
+  test("pressing Save asks to be told everything", () => {
+    // Save stays pressable precisely so this is reachable: a disabled button on
+    // a form hiding its complaints does nothing for a reason it will not give.
+    expect(visibleProblems(blank(), {}, true)).toEqual(blank());
+  });
+
+  test("a valid form has nothing to show either way", () => {
+    const good = editorProblems(undefined, { ...emptyDraft(), name: "web", command: "bun run dev" });
+    expect(visibleProblems(good, { name: true, command: true }, true)).toEqual([]);
   });
 });

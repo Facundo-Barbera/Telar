@@ -1,4 +1,3 @@
-import { GREETINGS } from "@/lib/greetings";
 import { findHost } from "@/lib/hosts/store";
 import { forward } from "@/lib/hosts/proxy";
 import { SessionCockpit } from "@/components/session-cockpit";
@@ -17,17 +16,16 @@ export default async function RemoteNewSessionPage({ params }: { params: Promise
   return <SessionCockpit projectId={projectId} {...(await canvas(hostId, projectId))} />;
 }
 
-async function canvas(hostId: string, projectId: string): Promise<{ projectName?: string; greeting: number }> {
-  const greeting = Math.floor(Math.random() * GREETINGS.length);
+async function canvas(hostId: string, projectId: string): Promise<{ projectName?: string }> {
   try {
     const host = findHost(hostId);
-    if (!host) return { greeting };
+    if (!host) return {};
     const answer = await forward(new Request("http://cockpit.local/api/projects"), host, ["projects"]);
-    if (!answer.ok) return { greeting };
+    if (!answer.ok) return {};
     const { projects } = (await answer.json()) as { projects: Array<{ id: string; name: string }> };
     const found = projects.find((project) => project.id === projectId);
-    return { ...(found ? { projectName: found.name } : {}), greeting };
+    return found ? { projectName: found.name } : {};
   } catch {
-    return { greeting };
+    return {};
   }
 }

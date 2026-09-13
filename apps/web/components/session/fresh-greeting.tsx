@@ -3,17 +3,22 @@
 /**
  * The sentence over an empty composer, and the project picker inside it.
  *
- * TWO CONTROLS IN ONE LINE, and they are different gestures on purpose:
- *   - THE PROJECT is a dropdown. It is the one decision a new conversation has
- *     to make and could not previously be changed without going back to a
- *     different screen — you picked a project, then discovered you were on the
- *     wrong one, and the only way out was the browser's back button.
- *   - THE PHRASE rerolls. Costs nothing, changes nothing, and is the reason
- *     anybody notices the line is alive.
+ * ONE CONTROL IN THE LINE, and it is the project: a dropdown, because that is
+ * the one decision a new conversation has to make and could not previously be
+ * changed without going back to a different screen — you picked a project, then
+ * discovered you were on the wrong one, and the only way out was the browser's
+ * back button.
  *
- * THE ROTATION IS PER VISIT, NOT PER SECOND. A line that rewrites itself on a
- * timer, directly above the box you are typing into, is a distraction with no
- * upside. Each new conversation gets the next phrase; pressing it steps on.
+ * THE PHRASE NO LONGER REROLLS, BECAUSE THERE IS ONLY ONE. It used to be a
+ * rotation of fourteen quips with a press-to-reroll button on each half — see
+ * `lib/greetings.ts` for why a joke over the box you came here to type into
+ * stops being funny on the second reading.
+ *
+ * THE PUNCTUATION HUGS THE NAME. The trigger is a padded, marginned control, so
+ * the half-sentence after it began a full 8px away from the last letter and read
+ * as "exoplanets ?" (#355). The trailing text pulls itself back across that
+ * padding; the leading half needs no such thing, because it ends in a real
+ * space.
  *
  * THE PICKER IS ABOUT ONE MAC. A canvas can be a remote Mac's
  * (`/hosts/:id/projects/:id/sessions/new`), and project ids are minted per
@@ -24,10 +29,9 @@
  * (docs/investigations/204-host-identity.md).
  */
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderGit2Icon } from "lucide-react";
-import { GREETINGS, greetingForVisit, nextGreeting } from "@/lib/greetings";
+import { GREETING } from "@/lib/greetings";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { useHostProjects } from "@/lib/hosts/host-projects";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
@@ -40,19 +44,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { projectId: string; projectName?: string; index?: number }) {
+export function FreshGreeting({ projectId, projectName }: { projectId: string; projectName?: string }) {
   const router = useRouter();
-  /**
-   * CHOSEN BY THE PAGE, ON THE SERVER, and only ever changed by a human
-   * pressing it.
-   *
-   * This used to pick after mount from a localStorage counter, which meant the
-   * canvas painted the plain phrase and then visibly rewrote itself — one of
-   * three steps the reader could watch this screen take before it settled. The
-   * server can pick a number as well as the client can, and a number that
-   * arrives as a prop is a number the client never disagrees about.
-   */
-  const [index, setIndex] = useState(greetingForVisit(initial));
   /**
    * THE SHARED REGISTRY, NOT A ONE-SHOT FETCH, AND ONE MAC'S. This component
    * lives for the whole composer (switching projects is a router.push that
@@ -64,23 +57,12 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
    */
   const { hostId, projects } = useHostProjects();
 
-  const greeting = GREETINGS[index] ?? GREETINGS[0]!;
   const name = projectName ?? projectId;
 
   return (
     <div className="mb-6 px-4 text-center">
       <h1 className="text-pretty text-2xl font-semibold tracking-tight sm:text-3xl">
-        {/* The phrase, and pressing it steps to the next one. A `<button>`
-            rather than a click handler on the text so it is reachable from the
-            keyboard like everything else in this app. */}
-        <button
-          type="button"
-          onClick={() => setIndex((current) => nextGreeting(current))}
-          title="Another one"
-          className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {greeting.before}
-        </button>
+        {GREETING.before}
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -88,7 +70,7 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
                 type="button"
                 aria-label={`Project: ${name}. Change it.`}
                 title="Change project"
-                className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-lg px-1.5 text-primary underline decoration-primary/30 decoration-2 underline-offset-4 outline-none transition-colors hover:bg-primary/10 hover:decoration-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex max-w-full items-baseline gap-1 rounded-lg px-1.5 text-primary underline decoration-primary/30 decoration-2 underline-offset-4 outline-none transition-colors hover:bg-primary/10 hover:decoration-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
               />
             }
           >
@@ -136,14 +118,11 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
             )}
           </DropdownMenuContent>
         </DropdownMenu>
-        <button
-          type="button"
-          onClick={() => setIndex((current) => nextGreeting(current))}
-          title="Another one"
-          className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {greeting.after}
-        </button>
+        {/* PULLED BACK ACROSS THE TRIGGER'S PADDING (#355). The control above
+            carries `px-1.5` so its hover plate has room around the name, which
+            also put 6px between the last letter and the question mark — enough
+            to read as a typo rather than as a sentence. */}
+        <span className="-ml-1.5">{GREETING.after}</span>
       </h1>
     </div>
   );

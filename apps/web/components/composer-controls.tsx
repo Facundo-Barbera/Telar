@@ -913,10 +913,19 @@ export function ReasoningControl({
   const readOnly = !onChange;
   const effort = effortLabel(choice.effort);
   const suffix = windowSuffix(activeWindow, windows);
-  /** `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
-   *  which the pill hides at anything but the narrowest width — a fact you can
-   *  only see by opening a menu is the thing this row exists to avoid. */
-  const label = suffix ? `${effort} · ${suffix}` : effort;
+  /**
+   * `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
+   * which the pill hides at anything but the narrowest width — a fact you can
+   * only see by opening a menu is the thing this row exists to avoid.
+   *
+   * THE NOUN STANDS IN FOR THE DEFAULT. A session that has chosen neither an
+   * effort nor an access mode — which is most of them — put two pills reading
+   * "Auto" side by side in the composer's foot, one word repeated with nothing
+   * to say which was which. A chosen level names itself; an unchosen one names
+   * the QUESTION, so the pair reads "Reasoning · Access" at rest and swaps in
+   * the answer as each is decided.
+   */
+  const label = choice.effort ? (suffix ? `${effort} · ${suffix}` : effort) : suffix ? `Reasoning · ${suffix}` : "Reasoning";
 
   /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
    *  model, and picking a window must not clear the effort. */
@@ -1030,7 +1039,11 @@ export function AccessControl({
   onResumeAfterRateLimit?: (next: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const label = RUNTIME_MODE_LABELS[runtimeMode];
+  const mode = RUNTIME_MODE_LABELS[runtimeMode];
+  /** See ReasoningControl: the default mode is also spelled "Auto", and two
+   *  pills reading Auto side by side name neither of the two questions they
+   *  answer. The noun stands in until a mode is chosen. */
+  const label = runtimeMode === "auto" ? "Access" : mode;
   /**
    * THE USAGE-LIMIT SWITCH LIVES HERE rather than earning a pill of its own.
    *
@@ -1055,7 +1068,9 @@ export function AccessControl({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
-          <ControlTrigger open={open} icon={<ShieldCheckIcon className="size-3.5" />} label={label} ariaLabel={`Access: ${label}`} />
+          // The aria-label carries the MODE, not the stand-in noun: a reader
+          // who cannot see the pill still needs to hear which one is set.
+          <ControlTrigger open={open} icon={<ShieldCheckIcon className="size-3.5" />} label={label} ariaLabel={`Access: ${mode}`} />
         }
       />
       <PopoverContent align="start" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-2rem))] gap-0 rounded-2xl p-1.5">

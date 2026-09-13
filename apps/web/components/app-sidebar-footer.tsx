@@ -5,16 +5,15 @@
  * Settings left (their words live in tooltips and aria-labels), the
  * app-update control right. The update icon is one stateful control over the
  * shell's updater bridge (lib/desktop-updates.ts): check → spinner →
- * download progress → restart-to-install → error-with-message. On a Dev
- * build it drives the OTHER updater — the local-checkout window
- * (`openLocalUpdater`) — because Dev has no published feed; the two paths
- * stay distinct but both are reachable from here. In a plain browser tab
- * (no bridge) the right side renders nothing.
+ * download progress → restart-to-install → error-with-message. A Dev build
+ * has no published feed and renders nothing here — its local-checkout
+ * updater is a File-menu item, not a permanent glyph in the rail. In a plain
+ * browser tab (no bridge) the right side renders nothing either.
  */
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartNoAxesColumnIcon, DownloadIcon, HammerIcon, Loader2Icon, RefreshCwIcon, SettingsIcon, TriangleAlertIcon } from "lucide-react";
+import { ChartNoAxesColumnIcon, DownloadIcon, Loader2Icon, RefreshCwIcon, SettingsIcon, TriangleAlertIcon } from "lucide-react";
 import { desktopUpdates, updateStatusHint, type UpdateStatus } from "@/lib/desktop-updates";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -106,37 +105,20 @@ function UpdateButton() {
     };
   }, [bridge, readPrefs]);
 
-  if (!bridge || path === "none") return null;
-
-  // ── the Dev build's path: the local-checkout window ─────────────────────
-  if (path === "local") {
-    const label = failure ?? "Update from local checkout…";
-    return (
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              aria-label={label}
-              onClick={() =>
-                void bridge
-                  .openLocalUpdater?.()
-                  .then((result) => {
-                    if (result && !result.ok) setFailure(result.error ?? "The local updater window could not open.");
-                    else setFailure(undefined);
-                  })
-                  .catch((error: unknown) => setFailure(`Local updater failed: ${error instanceof Error ? error.message : String(error)}`))
-              }
-              className={cn(iconButton(), failure && "text-destructive")}
-            >
-              {failure ? <TriangleAlertIcon className="size-4" /> : <HammerIcon className="size-4" />}
-            </button>
-          }
-        />
-        <TooltipContent side="top">{label}</TooltipContent>
-      </Tooltip>
-    );
-  }
+  /**
+   * THE DEV BUILD'S LOCAL-CHECKOUT UPDATER IS NOT A RAIL CONTROL.
+   *
+   * It used to paint a wrench here, next to Usage and Settings — a permanent
+   * glyph in the one strip a person sees on every screen, for an action only a
+   * Dev build can take and only its builder ever wants. File ▸ "Update from
+   * Local Checkout…" is where it lives (apps/desktop/main.js), which is where
+   * a developer-only rebuild belongs.
+   *
+   * The path is still DETECTED rather than ignored, because it is what tells
+   * this component there is no published feed to offer either — a Dev build
+   * showing "Check for app updates" would be a button that cannot answer.
+   */
+  if (!bridge || path === "none" || path === "local") return null;
 
   // ── the published-feed path (and the "could not ask" retry state) ───────
   const busy = status.status === "checking";
