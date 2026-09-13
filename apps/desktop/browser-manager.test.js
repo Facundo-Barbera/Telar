@@ -62,6 +62,11 @@ class FakeWebContents extends EventEmitter {
     this.destroyed = false;
     this.loadGate = null;
     this.inputEvents = [];
+    this.devToolsOpen = false;
+    this.devToolsOptions = null;
+    this.inspected = [];
+    this.edits = [];
+    this.downloads = [];
     this.navigationHistory = {
       canGoBack: () => false,
       canGoForward: () => false,
@@ -138,6 +143,38 @@ class FakeWebContents extends EventEmitter {
 
   reload() {}
 
+  // DevTools, as much of them as the manager touches (#423). `inspected` is
+  // the point "Inspect" aimed them at.
+  isDevToolsOpened() {
+    return this.devToolsOpen;
+  }
+
+  openDevTools(options) {
+    this.devToolsOpen = true;
+    this.devToolsOptions = options;
+    this.emit("devtools-opened");
+  }
+
+  closeDevTools() {
+    if (!this.devToolsOpen) return;
+    this.devToolsOpen = false;
+    this.emit("devtools-closed");
+  }
+
+  inspectElement(x, y) {
+    this.inspected.push({ x, y });
+  }
+
+  // The edit and media verbs the context menu dispatches, recorded rather
+  // than performed.
+  cut() { this.edits.push("cut"); }
+  copy() { this.edits.push("copy"); }
+  paste() { this.edits.push("paste"); }
+  selectAll() { this.edits.push("select-all"); }
+  replaceMisspelling(word) { this.edits.push(`replace:${word}`); }
+  copyImageAt(x, y) { this.edits.push(`copy-image:${x},${y}`); }
+  downloadURL(url) { this.downloads.push(url); }
+
   sendInputEvent(event) {
     this.inputEvents.push(event);
   }
@@ -177,6 +214,21 @@ function makeHarness(options = {}) {
   const waits = [];
   const children = new Set();
   let nextId = 1;
+  // The one Electron seam the page context menu needs (#423): the native Menu
+  // it pops, and the clipboard "Copy Link" writes to. Every built menu is kept
+  // so a test can read the rows and click one by label.
+  const menus = [];
+  const clipboard = { text: "", writeText(value) { this.text = value; } };
+  const electron = () => ({
+    clipboard,
+    Menu: {
+      buildFromTemplate: (template) => {
+        const menu = { template, popups: 0, popup: () => { menu.popups += 1; } };
+        menus.push(menu);
+        return menu;
+      },
+    },
+  });
   const window = {
     isDestroyed: () => false,
     webContents: {
@@ -188,6 +240,7 @@ function makeHarness(options = {}) {
     },
   };
   const manager = new DesktopBrowserManager(window, {
+    electron,
     createId: () => `tab-${nextId++}`,
     createView: () => {
       const view = new FakeView();
@@ -218,7 +271,22 @@ function makeHarness(options = {}) {
   // pass `lifecycle: true` and drive it with a manual clock; the rest keep the
   // old explicit model (privacy ends via resumeFromPrivate/autoRelease).
   if (!options.lifecycle) manager.ensureAutoRelease = () => {};
-  return { children, manager, messages, views, waits };
+  return { children, clipboard, manager, menus, messages, views, waits };
+}
+
+/** Fire a real right-click on a tab's page and return the rows Chromium's menu
+ *  would have shown. */
+function rightClick(harness, view, params = {}) {
+  view.webContents.emit("context-menu", {}, { x: 12, y: 34, pageURL: view.webContents.getURL(), ...params });
+  return harness.menus.at(-1);
+}
+
+/** Pick a row by its label — what a person does with the mouse. */
+function pick(menu, label) {
+  const item = menu.template.find((entry) => entry.label === label);
+  if (!item) throw new Error(`No context-menu row labelled ${JSON.stringify(label)}; saw ${menu.template.map((entry) => entry.label ?? "—").join(", ")}`);
+  item.click();
+  return item;
 }
 
 function textOf(result) {
@@ -2767,5 +2835,159 @@ describe("the agent's scope finds its own window's browser", () => {
     expect(managerForScope(set, "session-a", one)).toBe(one);
     expect(one.scopeClaim("")).toBe(0);
     expect(one.scopeClaim(null)).toBe(0);
+  });
+});
+
+describe("the page's context menu and its DevTools (#423)", () => {
+  test("a right-click on the page pops a native menu built from Chromium's params", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    const menu = rightClick(harness, harness.views[0]);
+    expect(menu.popups).toBe(1);
+    expect(menu.template.map((entry) => entry.label ?? "—")).toEqual([
+      "Back",
+      "Forward",
+      "Reload",
+      "—",
+      "View Page Source",
+      "Inspect",
+    ]);
+  });
+
+  test("Inspect opens DevTools DETACHED, on the element under the pointer", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    const wc = harness.views[0].webContents;
+    pick(rightClick(harness, harness.views[0], { x: 120, y: 240 }), "Inspect");
+    // Detached: a docked DevTools would split the viewport the geometry
+    // pipeline has just finished placing.
+    expect(wc.devToolsOptions).toEqual({ mode: "detach" });
+    expect(wc.inspected).toEqual([{ x: 120, y: 240 }]);
+    expect(harness.manager.state("session-a").tabs[0].devtools).toBe(true);
+  });
+
+  test("DevTools are the TAB'S and close with it — never a window left addressing nothing", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    await harness.manager.createTab("session-a", "https://other.example");
+    const [first, second] = harness.views;
+    pick(rightClick(harness, first), "Inspect");
+    expect(first.webContents.isDevToolsOpened()).toBe(true);
+    // Per tab: the second tab's own state is untouched.
+    expect(harness.manager.state("session-a").tabs.map((tab) => tab.devtools)).toEqual([true, false]);
+    harness.manager.closeTab("session-a", 0, "human");
+    expect(first.webContents.isDevToolsOpened()).toBe(false);
+    expect(second.webContents.isDevToolsOpened()).toBe(false);
+  });
+
+  test("⌥⌘I toggles DevTools for the tab the human is looking at, and does nothing with no tab", async () => {
+    const harness = makeHarness();
+    // No tab at all: the command is answered with silence, not an error.
+    harness.manager.declareProfile("session-a", "none");
+    expect((await harness.manager.action("session-a", { action: "toggle-devtools" })).tabs).toEqual([]);
+
+    await harness.manager.createTab("session-a", "https://example.com");
+    const wc = harness.views[0].webContents;
+    await harness.manager.action("session-a", { action: "toggle-devtools" });
+    expect(wc.isDevToolsOpened()).toBe(true);
+    // No inspect point — the chord is "show me the tools", not "inspect this".
+    expect(wc.inspected).toEqual([]);
+    await harness.manager.action("session-a", { action: "toggle-devtools" });
+    expect(wc.isDevToolsOpened()).toBe(false);
+  });
+
+  test("DevTools stay out of the agent's reach — performAction refuses the id", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    await expect(harness.manager.performAction("session-a", { action: "toggle-devtools" })).rejects.toThrow(
+      "Unknown desktop browser action",
+    );
+    expect(harness.views[0].webContents.isDevToolsOpened()).toBe(false);
+  });
+
+  test("a devtools window the person closed themselves is a state push", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    const wc = harness.views[0].webContents;
+    pick(rightClick(harness, harness.views[0]), "Inspect");
+    const before = harness.messages.length;
+    wc.closeDevTools();
+    expect(harness.messages.length).toBeGreaterThan(before);
+    expect(harness.messages.at(-1).payload.tabs[0].devtools).toBe(false);
+  });
+
+  test("a link's new tab goes through the ordinary open-tab path, as the human's", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    pick(rightClick(harness, harness.views[0], { linkURL: "https://example.com/other" }), "Open Link in New Tab");
+    await harness.manager.settlePopupTabs();
+    const tabs = harness.manager.state("session-a").tabs;
+    expect(tabs).toHaveLength(2);
+    // The strip, the inventory and #383's rules are the same as the + button's.
+    expect(tabs[1]).toMatchObject({ url: "https://example.com/other", openedBy: "human", active: true });
+  });
+
+  test("Copy Link writes the link, not the page", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    pick(rightClick(harness, harness.views[0], { linkURL: "https://example.com/other" }), "Copy Link");
+    expect(harness.clipboard.text).toBe("https://example.com/other");
+  });
+
+  test("a link the popup rule refuses opens NOTHING, silently", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    pick(rightClick(harness, harness.views[0], { linkURL: "javascript:alert(1)" }), "Open Link in New Tab");
+    await harness.manager.settlePopupTabs();
+    expect(harness.manager.state("session-a").tabs).toHaveLength(1);
+  });
+
+  test("View Page Source opens a view-source: tab on the page", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    pick(rightClick(harness, harness.views[0]), "View Page Source");
+    await harness.manager.settlePopupTabs();
+    expect(harness.manager.state("session-a").tabs[1].url).toBe("view-source:https://example.com/");
+  });
+
+  test("a selection ALWAYS searches, even when it reads like an address", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    pick(rightClick(harness, harness.views[0], { selectionText: "example.org" }), "Search the web for “example.org”");
+    await harness.manager.settlePopupTabs();
+    expect(harness.manager.state("session-a").tabs[1].url).toBe("https://www.google.com/search?q=example.org");
+  });
+
+  test("the edit verbs and the spelling fix reach the page's own WebContents", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    const wc = harness.views[0].webContents;
+    const editable = { isEditable: true, misspelledWord: "recieve", dictionarySuggestions: ["receive"] };
+    pick(rightClick(harness, harness.views[0], editable), "receive");
+    pick(rightClick(harness, harness.views[0], { isEditable: true }), "Paste");
+    pick(rightClick(harness, harness.views[0], { hasImageContents: true, srcURL: "https://example.com/cat.png", x: 5, y: 7 }), "Copy Image");
+    pick(rightClick(harness, harness.views[0], { hasImageContents: true, srcURL: "https://example.com/cat.png" }), "Save Image As…");
+    expect(wc.edits).toEqual(["replace:receive", "paste", "copy-image:5,7"]);
+    expect(wc.downloads).toEqual(["https://example.com/cat.png"]);
+  });
+
+  test("a right-click is a human's hand on the tab before any row is picked", async () => {
+    const harness = makeHarness();
+    await harness.manager.createTab("session-a", "https://example.com");
+    const tab = harness.manager.state("session-a").tabs[0];
+    expect(tab.controller).not.toBe("human");
+    rightClick(harness, harness.views[0]);
+    expect(harness.manager.state("session-a").tabs[0].controller).toBe("human");
+  });
+});
+
+describe("view-source: is the one non-web scheme the tabs render", () => {
+  test("it wraps an ordinary web page, and refuses anything else", () => {
+    expect(normalizeUrl("view-source:https://example.com/a")).toBe("view-source:https://example.com/a");
+    expect(normalizeUrl("view-source:http://localhost:3000/")).toBe("view-source:http://localhost:3000/");
+    // Never a local file, and never a ladder of itself.
+    expect(() => normalizeUrl("view-source:file:///etc/passwd")).toThrow("only views the source of http and https");
+    expect(() => normalizeUrl("view-source:view-source:https://example.com/")).toThrow("only views the source of http and https");
+    expect(() => normalizeUrl("view-source:not a url")).toThrow("only views the source of http and https");
   });
 });
