@@ -244,7 +244,29 @@ describe("the diff surface's file row", () => {
   test("both row lists get the SAME menu, so the two halves of the review cannot drift", () => {
     const source = dif();
     expect((source.match(/\{\.\.\.rowMenu\}/g) ?? []).length).toBe(2);
-    expect(source).toContain("const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onInsertReference ? { onInsertReference } : {}) };");
+    expect(source).toContain(
+      "const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };",
+    );
+  });
+
+  test("Open in a new panel tab opens a SECOND DIFF filtered to the row, through the chooser's own verb (#335)", () => {
+    // The row hands up a path and nothing else; the panel is what decides that
+    // a new panel tab from this surface is another Diff rather than an Editor,
+    // and it does it with `onOpenNewTab` — the same call the "+" chooser makes.
+    expect(dif()).toContain("<ContextMenuItem onClick={() => onOpenInNewPanelTab(file.path)}>Open in a new panel tab</ContextMenuItem>");
+    const panel = code("right-panel.tsx");
+    expect(panel).toContain('onOpenInNewPanelTab: (path: string) => onOpenNewTab("diff", { filter: path })');
+  });
+
+  test("the header's filter field writes to the TAB's params, not to state of its own", () => {
+    // A filter held locally would be invisible to the strip's label and lost on
+    // every remount — see this surface's header and #335.
+    const source = dif();
+    expect(source).toContain("onChange={(event) => onFilterChange(event.target.value)}");
+    expect(source).not.toMatch(/useState[^\n]*filter/i);
+    // Clearing the field clears the param rather than storing a blank.
+    expect(source).toContain('onClick={() => onFilterChange("")}');
+    expect(code("right-panel.tsx")).toContain("onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {})");
   });
 
   test("the composer thread is the cockpit's, and it inserts TEXT rather than resolving anything", () => {

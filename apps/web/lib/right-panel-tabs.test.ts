@@ -425,6 +425,33 @@ describe("round-trips instances", () => {
     expect(activePanelTab(restored)?.params).toEqual({ path: "src/b.ts" });
   });
 
+  test("two Diffs come back under their own filters, which is what keeps them two tabs (#335)", () => {
+    // The filter IS the instance here: persisted with the arrangement, read
+    // back by the surface, and read by `panelTabSuffix` for the label.
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "diff");
+    panel = setPanelTabParams(panel, "diff", { filter: "apps/web" });
+    panel = openNewPanelTab(panel, "diff", { filter: "apps/engine" });
+    writePanelTabs("session_a", panel, 1);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown);
+    expect(restored.tabs).toEqual([
+      { id: "diff", kind: "diff", params: { filter: "apps/web" } },
+      { id: "diff#2", kind: "diff", params: { filter: "apps/engine" } },
+    ]);
+    expect(restored.tabs.map((entry) => describePanelTabInstance(entry, { duplicate: true }).label)).toEqual(["Diff · apps/web", "Diff · apps/engine"]);
+  });
+
+  test("a cleared filter is an absent param, so the tab goes back to reading Diff", () => {
+    let panel = openPanelTab(emptyPanelTabs<PanelTab>(), "diff");
+    panel = setPanelTabParams(panel, "diff", { filter: "apps/web" });
+    // What the surface's empty field sends: the whole params replaced, not a
+    // blank string left behind for the label to draw a separator after.
+    panel = setPanelTabParams(panel, "diff", {});
+    writePanelTabs("session_a", panel, 1);
+    const restored = readPanelTabs<PanelTab>("session_a", isKnown);
+    expect(restored.tabs).toEqual([{ id: "diff", kind: "diff", params: {} }]);
+    expect(describePanelTabInstance(restored.tabs[0]!, { duplicate: true }).label).toBe("Diff");
+  });
+
   test("a stored instance whose kind this build dropped goes, and its siblings stay", () => {
     writePanelTabs(
       "session_a",
