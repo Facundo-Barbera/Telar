@@ -73,6 +73,15 @@ describe("the registry follows the windows", () => {
     expect(credential).not.toMatch(/\bbrowserManager\b(?!s)/);
   });
 
+  test("the agent's control server resolves the host by scope, never from the bare global", () => {
+    // Issue #311: an agent has no window to be recognised by, so the scope it
+    // names is what picks the window. `getBrowserManager: () => browserManager`
+    // is the bug — one global, whichever window the human last focused.
+    const wiring = main.slice(main.indexOf("startBrowserControlServer({"), main.indexOf("let url = OVERRIDE_URL;"));
+    expect(wiring).toContain("getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, browserManager)");
+    expect(wiring).not.toContain("getBrowserManager: () =>");
+  });
+
   test("quitting writes every window's tab inventory, not just the focused one's", () => {
     const quit = main.slice(main.indexOf('app.on("will-quit"'), main.indexOf("ipcMain.handle(\"telar:app:relaunch\""));
     expect(quit).toContain("for (const manager of browserManagers) { try { manager.persistSync(); } catch {} }");

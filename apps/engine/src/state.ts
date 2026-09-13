@@ -6751,7 +6751,7 @@ export class EngineStore {
     let sender: { sessionId?: string } = {};
     if (proof) {
       assertId(proof.sessionId, "sender session id");
-      const claimed = this.requireRunningClaim(proof.sessionId, proof.runId, proof.claimToken);
+      const claimed = this.requireSenderClaim(proof);
       sender = { sessionId: claimed.sessionId };
     }
     const intent = input.intent ?? "report";
@@ -9118,6 +9118,57 @@ export class EngineStore {
 
   private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {
     return this.requireRunningClaimFromQueue(this.readQueue(sessionId), runId, claimToken);
+  }
+
+  /**
+   * THE SENDER'S CLAIM — `requireRunningClaim` with somewhere to go when it
+   * refuses.
+   *
+   * A REFUSAL HERE IS DIFFERENT IN KIND from a late observation's. An
+   * observation would MUTATE a terminal turn, so "no" is the whole answer and
+   * the turn's immutability is the reason. A `sessions_send` mutates nothing on
+   * the sender's turn — the claim is read only to say WHO is speaking — and the
+   * work it was carrying is a message to somebody else that now simply does not
+   * arrive. Measured: an orchestrator mid-restart lost every send it made for
+   * the rest of its turn, and the only workaround anybody found was to wait for
+   * its next turn, because the refusal said the turn had ended and nothing
+   * about what to do instead.
+   *
+   * SO IT STILL REFUSES — a settled claim does not prove a live sender, and
+   * accepting one would attribute a peer's message to a turn that is over — but
+   * it NAMES THE TURN THIS SESSION IS ACTUALLY RUNNING. The worker proves each
+   * send with the claim that is live when the call arrives (see `liveClaims` in
+   * worker.ts), so "retry" is a real instruction: the retry carries the turn
+   * named here. When there is no live turn, it says that instead, because
+   * retrying would be the same refusal again.
+   *
+   * ONLY FOR A CLAIM THAT REALLY IS THIS SESSION'S. A token that never matched
+   * the named turn is a foreign or forged claim and keeps the flat answer — the
+   * longer one would be a hint offered to whoever guessed wrong. A turn whose
+   * claim a RESTART retired (`recover()` deletes it) has no token left to match,
+   * so it is recognised by being terminal with no claim at all.
+   */
+  private requireSenderClaim(proof: { sessionId: string; runId: string; claimToken: string }): Turn {
+    const queue = this.readQueue(proof.sessionId);
+    try {
+      return this.requireRunningClaimFromQueue(queue, proof.runId, proof.claimToken);
+    } catch (error) {
+      if (!(error instanceof EngineStateError) || error.code !== "conflict") throw error;
+      const named = queue.turns.find((turn) => turn.runId === proof.runId);
+      // ONLY A TURN THAT ENDED. A claim against one that has not started yet,
+      // or is being steered, is early rather than stale, and the flat refusal
+      // is the true thing to say about it.
+      if (!named || (named.state !== "completed" && named.state !== "failed" && named.state !== "stopped")) throw error;
+      if (named.claim && named.claim.token !== proof.claimToken) throw error;
+      const live = queue.turns.find((turn) => turn.state === "running" && turn.claim);
+      const ending = named.state === "stopped" ? `was stopped (${named.stopReason ?? "stopped"})` : `has already settled (${named.state})`;
+      throw new EngineStateError(
+        "conflict",
+        live
+          ? `The turn this message was sent from (${proof.runId}) ${ending}, so it cannot be named as the sender. This session's live turn is ${live.runId} — send it again and it goes from that turn.`
+          : `The turn this message was sent from (${proof.runId}) ${ending}, and this session has no live turn to send from. Nothing was delivered; say it again on your next turn.`,
+      );
+    }
   }
 
   private requireRunningClaimFromQueue(queue: SessionQueue, runId: string, claimToken: string): Turn {

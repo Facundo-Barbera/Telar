@@ -3561,6 +3561,90 @@ describe("an agent's message is attributed, never the person's", () => {
     expect(() => store.submitAgentTurn("session_two", { intent: "task", runId: "run_ghost", input: "boo" }, { sessionId: "session_nope", runId: "run_host", claimToken: token })).toThrow(EngineStateError);
   });
 
+  test("a send from a turn that ENDED is refused with the session's live turn named, so a retry has somewhere to go (#297)", () => {
+    /**
+     * THE INCIDENT. A coordinator's `sessions_send` kept arriving with the
+     * claim of a turn that had already completed — its capability object
+     * outlives the turn it was assembled in, see `liveClaims` in worker.ts —
+     * and every one came back "turn has already settled (completed)" and
+     * nothing else. Eight peers got their tasks; the ninth could not be given
+     * its brief at all, and the only workaround anybody found was to wait for
+     * the coordinator's next turn.
+     *
+     * THE CLAIM IS STILL REFUSED. A settled claim does not prove a live
+     * sender, and attributing a peer's message to a turn that is over would be
+     * a lie in the record. What changes is that the refusal names the turn this
+     * session IS running — which is the turn a retry is proven by, because the
+     * worker reads its claim at call time.
+     */
+    const store = pair();
+    store.submitTurn("session_one", { runId: "run_host", input: "orchestrate" });
+    const first = store.claimTurn("session_one", "worker_one")!;
+    const firstToken = first.claim!.token;
+    store.markRunning("session_one", "run_host", firstToken);
+    store.completeTurn("session_one", "run_host", firstToken, { text: "handed out eight tasks" });
+
+    // NO LIVE TURN: retrying would be the same refusal, so it says so instead
+    // of pointing at a turn that does not exist.
+    const orphaned = () =>
+      store.submitAgentTurn("session_two", { intent: "task", runId: "run_a", input: "your brief" }, { sessionId: "session_one", runId: "run_host", claimToken: firstToken });
+    expect(orphaned).toThrow(/already settled \(completed\)/);
+    expect(orphaned).toThrow(/no live turn to send from/);
+
+    // A FOREIGN TOKEN AGAINST THE SAME SETTLED TURN keeps the flat refusal:
+    // the longer answer is for a session's own stale claim, never a hint
+    // offered to whoever guessed a runId.
+    expect(() =>
+      store.submitAgentTurn("session_two", { intent: "task", runId: "run_b", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) }),
+    ).toThrow(/not running under this worker claim/);
+
+    // The CLI opens a turn of its own — now there is one to name.
+    const provider = store.openProviderTurn("session_one", { workerId: "worker_one", input: "Background task completed.", reason: { kind: "unknown" } });
+    expect(() =>
+      store.submitAgentTurn("session_two", { intent: "task", runId: "run_c", input: "your brief" }, { sessionId: "session_one", runId: "run_host", claimToken: firstToken }),
+    ).toThrow(new RegExp(`live turn is ${provider.runId}`));
+
+    // And proven by THAT turn's claim the send lands, attributed to the
+    // session and sourced to the turn that actually sent it.
+    const { turn } = store.submitAgentTurn(
+      "session_two",
+      { intent: "task", runId: "run_d", input: "your brief" },
+      { sessionId: "session_one", runId: provider.runId, claimToken: provider.claim!.token },
+    );
+    expect(turn).toMatchObject({ sender: { sessionId: "session_one" }, agentSourceRunId: provider.runId });
+  });
+
+  test("a restart retires the sender's claim, and the refusal says the turn was stopped rather than blaming the token (#297)", () => {
+    /**
+     * WHAT SETTLES A TURN ON RESTART: `recover()`, which stops everything that
+     * was in flight AND deletes the claim — no worker registration survives a
+     * boot, so the token identifies nobody. A worker that outlived the engine
+     * therefore holds a token that matches nothing at all, and the generic
+     * "not running under this worker claim" read as a claim mix-up when the
+     * truth was a restart.
+     */
+    const stateRoot = root();
+    const store = new EngineStore(stateRoot, () => 100);
+    store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    store.createSession({ id: "session_one", projectId: "project_one" });
+    store.createSession({ id: "session_two", projectId: "project_one" });
+    store.submitTurn("session_one", { runId: "run_host", input: "orchestrate" });
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    const token = claimed.claim!.token;
+    store.markRunning("session_one", "run_host", token);
+
+    const rebooted = new EngineStore(stateRoot, () => 200);
+    expect(rebooted.recover().stopped).toContain("run_host");
+    const host = rebooted.turns("session_one").find((turn) => turn.runId === "run_host")!;
+    expect(host).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+    expect(host.claim).toBeUndefined();
+
+    const stale = () =>
+      rebooted.submitAgentTurn("session_two", { intent: "task", runId: "run_late", input: "your brief" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
+    expect(stale).toThrow(/was stopped \(engine_restart\)/);
+    expect(stale).toThrow(/no live turn to send from/);
+  });
+
   test("without proof it is still an agent's — unattributed, never a human bubble", () => {
     const store = pair();
     const { turn } = store.submitAgentTurn("session_two", { intent: "task", runId: "run_socket", input: "from a chat client" });

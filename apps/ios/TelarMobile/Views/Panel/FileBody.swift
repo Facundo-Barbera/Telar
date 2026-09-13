@@ -10,6 +10,9 @@ struct FileBody: View {
     let hostId: HostID?
     let file: OpenFile
     let active: Bool
+    /// The checkout's absolute path, when the listing has landed — what turns
+    /// a repo-relative path into the one "Copy path" writes.
+    var root: String?
     let onSaveState: (FilesSurface.SaveState?) -> Void
 
     var body: some View {
@@ -25,9 +28,9 @@ struct FileBody: View {
         case .image:
             ImageFileView(api: api, sessionId: sessionId, path: file.path, active: active)
         case .prose:
-            TextFileView(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active, editable: true, onSaveState: onSaveState)
+            TextFileView(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active, editable: true, root: root, onSaveState: onSaveState)
         case .code, .binary:
-            TextFileView(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active, editable: false, onSaveState: onSaveState)
+            TextFileView(api: api, sessionId: sessionId, hostId: hostId, path: file.path, active: active, editable: false, root: root, onSaveState: onSaveState)
         }
     }
 }
@@ -57,6 +60,20 @@ struct FileAddressRow: View {
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
+}
+
+/// The absolute path of a file in the checkout — the web's
+/// `workspaceFilePath`, join rule for join rule. Nil when the listing has not
+/// landed yet, which is what HIDES "Copy path" rather than copying a relative
+/// path under an absolute label.
+func workspaceFilePath(_ root: String?, _ relative: String) -> String? {
+    guard let root, !root.isEmpty, !relative.isEmpty else { return nil }
+    var base = root
+    while base.hasSuffix("/") { base.removeLast() }
+    var tail = relative
+    while tail.hasPrefix("/") { tail.removeFirst() }
+    guard !base.isEmpty, !tail.isEmpty else { return nil }
+    return base + "/" + tail
 }
 
 func humanBytes(_ bytes: Int) -> String {

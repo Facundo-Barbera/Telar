@@ -850,18 +850,45 @@ struct ItemRowView: View {
             .sheet(isPresented: $showDetail) {
                 ToolDetailSheet(item: item)
             }
-            .contextMenu {
-                // A file row can open its file in the panel — the path is
-                // workspace-relative, the same space the tree lists.
-                if let path = openablePath, let panel {
-                    Button("Open in panel", systemImage: "sidebar.trailing") { panel.openFile(path) }
-                }
-            }
+            .contextMenu { rowMenu }
         }
     }
 
     @Environment(\.panel) private var panel
 
+    /// THE ROW'S MENU IS ABOUT WHAT THE ROW IS ABOUT — the web's rule, row for
+    /// row: a command row offers its command, a file row offers its path, its
+    /// reference, and the one thing the row cannot do by itself, which is open
+    /// it. Each item appears only when the row carries that datum.
+    ///
+    /// NOTHING HERE IS A VERB. A transcript is a record, and a menu on a record
+    /// that could re-run a command or undo an edit would be offering to change
+    /// what happened.
+    @ViewBuilder private var rowMenu: some View {
+        if let command = item.rowCommand {
+            Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
+        }
+        if let body = item.rowBody {
+            Button(item.rowBodyIsPatch ? "Copy patch" : "Copy output", systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = body
+            }
+        }
+        if let path = item.rowPath {
+            Divider()
+            // The path is workspace-relative, the same space the tree lists.
+            if let panel, openablePath != nil {
+                Button("Open file in the Editor", systemImage: "sidebar.trailing") { panel.openFile(path) }
+            }
+            Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = path }
+            if let panel {
+                Button("Insert as reference", systemImage: "text.badge.plus") {
+                    panel.insertReference(ComposerReference.file(path))
+                }
+            }
+        }
+    }
+
+    /// A deleted file has a path worth copying but nothing left to open.
     private var openablePath: String? {
         switch item.detail {
         case .fileChange(let change): change.kind == "delete" ? nil : change.path

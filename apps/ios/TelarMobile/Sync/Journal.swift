@@ -57,6 +57,43 @@ struct JournalItem: Identifiable, Equatable {
         }
     }
 
+    // MARK: what a row's menu is about
+
+    /// The path this row is about, whatever happened to it — the web's
+    /// `rowPath`. A DELETED FILE STILL HAS ONE: its path can be copied and
+    /// referenced; only "Open file in the Editor" has nothing to open.
+    var rowPath: String? {
+        switch item.detail {
+        case .fileChange(let change): return change.path
+        case .fileRead(let read): return read.path
+        default: return nil
+        }
+    }
+
+    /// The command a command row ran, for "Copy command".
+    var rowCommand: String? {
+        guard case .commandExecution(let command) = item.detail, !command.command.isEmpty else { return nil }
+        return command.command
+    }
+
+    /// The body under the row: the patch when there is one, otherwise whatever
+    /// the tool printed — the web's `change?.unifiedDiff ?? toolOutput(item)`.
+    /// Streamed deltas win while the row is live, the way the detail sheet
+    /// reads it; the engine only folds them into the item when it closes.
+    var rowBody: String? {
+        if case .fileChange(let change) = item.detail, let diff = change.unifiedDiff { return diff }
+        let output = streamedText.isEmpty ? toolOutput : streamedText
+        guard let output, !output.isEmpty else { return nil }
+        return output
+    }
+
+    /// Whether that body is a patch, which is the only thing that changes the
+    /// menu's wording: "Copy patch" rather than "Copy output".
+    var rowBodyIsPatch: Bool {
+        guard case .fileChange(let change) = item.detail else { return false }
+        return change.unifiedDiff != nil
+    }
+
     /// The output body of a finished tool call, when it has one.
     var toolOutput: String? {
         switch item.detail {

@@ -436,6 +436,23 @@ export class EngineWorker {
    * stable for the session's life. Revoked in `stop()`.
    */
   private readonly sessionsLeases = new Map<string, SessionsSocketLease>();
+  /**
+   * THE SESSION'S CLAIM AS IT IS RIGHT NOW — what `sessions_send` proves itself
+   * with, read at CALL time rather than captured when the capability was built.
+   *
+   * The same rule the browser's `refs` states, for the one capability that also
+   * rides a claim token. `sessionsCapability` is assembled inside a turn and
+   * then outlives it twice over: the Claude wall reaches it through
+   * `bindings.current.sessions`, which a PROVIDER TURN does not replace (the
+   * driver swaps only `canUseTool` there), and the Codex lease is bound once
+   * per session and reused for every turn after. Both left `send` proving
+   * itself with a claim that had already settled — measured as an orchestrator
+   * whose every `sessions_send` came back "turn has already settled
+   * (completed)" from the moment its first turn ended, while its CLI went on
+   * working. Re-pointed at the top of every turn and whenever the CLI opens a
+   * turn of its own; dropped with the worker in `stop()`.
+   */
+  private readonly liveClaims = new Map<string, { runId: string; claimToken: string }>();
   /** One `telar` wall lease per session, keyed by the enabled set it serves. */
   private readonly telarLeases = new Map<
     string,
@@ -653,6 +670,7 @@ export class EngineWorker {
     this.browserLeases.clear();
     for (const lease of this.sessionsLeases.values()) lease.release();
     this.sessionsLeases.clear();
+    this.liveClaims.clear();
     for (const entry of this.telarLeases.values()) entry.lease?.release();
     this.telarLeases.clear();
     if (typeof this.options.driver !== "function") this.usedDrivers.add(this.options.driver);
@@ -1112,6 +1130,8 @@ export class EngineWorker {
     // See ./attribution.ts.
     const prompt = framedTurnInput(claim.turn);
     const claimToken = claim.turn.claim!.token;
+    // THIS is the session's live claim from here until something replaces it.
+    this.liveClaims.set(sessionId, { runId, claimToken });
     const controller = new AbortController();
     this.active.set(claimToken, controller);
     this.activeClaims.add(claimToken);
@@ -1255,16 +1275,23 @@ export class EngineWorker {
         list: () => this.options.client.liveSessions(),
         create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
         /**
-         * SENT AS THIS TURN, PROVABLY. The proof is the claim the worker is
-         * running under — the one thing a model inside the turn cannot see
-         * or forge — so the engine can stamp `Turn.sender` with this session
-         * and draw the message as a peer's report rather than the person's.
-         * Measured before this: the same call went through `submitTurn` and
-         * the receiving session showed an orchestrator's instructions in the
-         * human's own bubble, with the provider told the user had spoken.
+         * SENT AS WHATEVER TURN IS LIVE WHEN THE CALL ARRIVES, PROVABLY. The
+         * proof is the claim the worker is running under — the one thing a
+         * model inside the turn cannot see or forge — so the engine can stamp
+         * `Turn.sender` with this session and draw the message as a peer's
+         * report rather than the person's. Measured before this: the same call
+         * went through `submitTurn` and the receiving session showed an
+         * orchestrator's instructions in the human's own bubble, with the
+         * provider told the user had spoken.
+         *
+         * READ FROM `liveClaims`, NOT CAPTURED. This object outlives the turn
+         * that built it — see the field's note — so closing over `runId` and
+         * `claimToken` was what made an orchestrator's sends stop working the
+         * moment its first turn settled, with the CLI still going.
          */
         send: async (id, input) => {
-          const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, runId, claimToken } });
+          const proof = this.liveClaims.get(sessionId) ?? { runId, claimToken };
+          const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, ...proof } });
           return { turn: accepted.turn, replayed: accepted.replayed };
         },
         read: async (id, after) => (await this.options.client.events(id, after)).events,
@@ -1597,6 +1624,11 @@ export class EngineWorker {
             const providerController = new AbortController();
             this.active.set(providerToken, providerController);
             const bound = this.bindTurn(sessionId, providerRunId, providerToken, providerController);
+            // And so does `sessions_send`: a turn the CLI started on its own is
+            // a real turn under a real claim, and a message it sends is sent
+            // from THAT turn — not from the settled one whose capability object
+            // the wall is still holding.
+            this.liveClaims.set(sessionId, { runId: providerRunId, claimToken: providerToken });
             // The browser's per-turn gate now answers to THIS turn's claim.
             const cached = this.browserLeases.get(sessionId);
             if (cached) {

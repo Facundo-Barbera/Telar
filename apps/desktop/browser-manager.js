@@ -1236,6 +1236,58 @@ class DesktopBrowserManager {
     return this.tabs.filter((tab) => tab.scopeKey === scope);
   }
 
+  /**
+   * HOW SURELY THIS WINDOW'S BROWSER IS THE ONE A SESSION MEANS (issue #311).
+   *
+   * A panel request is answered by the window that sent it
+   * (`requireBrowserManager(event)` in main.js), but the agent-facing control
+   * server has no sender to resolve from: an agent names a SCOPE over HTTP. It
+   * used to be answered from one global — the focused window's host — so a
+   * session whose cockpit sits in a SECOND window had its `browser_*` tools
+   * land on the first window's native views, silently and only ever with two
+   * windows open.
+   *
+   * Three signals, strongest first, and each is a fact about THIS window rather
+   * than about the scope: the scope is on screen here; a panel here published
+   * bounds for it (the session's browser lives in this window even while
+   * another panel tab is on top); this window holds live pages of it. Zero is
+   * no claim, and the caller falls back to the window the human is in.
+   *
+   * A REMEMBERED TAB IS NOT A CLAIM. Every window's manager restores the same
+   * inventory at construction (`restoreInventory`), so a hibernated record and
+   * its profile binding say the scope EXISTED, not that it belongs here —
+   * counting them would hand every scope to whichever window was built first,
+   * which is the same bug wearing a different global.
+   *
+   * @param {string | null | undefined} scopeKey
+   * @returns {number} 0 when this window has no claim; higher is surer.
+   */
+  scopeClaim(scopeKey) {
+    const wanted = String(scopeKey ?? "").trim();
+    if (!wanted || this._disposed || this.window?.isDestroyed?.()) return 0;
+    /**
+     * THE REQUEST NAMES A SESSION, THE WINDOW HOLDS ITS INSTANCES. Since #334 a
+     * second Browser panel tab drives its own native browser under
+     * `${sessionId}#${instanceId}` and only the first keeps the bare session id
+     * — the one the engine drives. So a window holding `S#2` is the window
+     * session S's browser is in, even before its first panel tab exists. The
+     * scope key itself is never rewritten by this: it only locates the window.
+     */
+    const bySession = !wanted.includes("#");
+    let best = 0;
+    const consider = (scope, rank) => {
+      if (typeof scope !== "string" || !scope) return;
+      const exact = scope === wanted;
+      if (!exact && !(bySession && scope.startsWith(`${wanted}#`))) return;
+      const claim = exact ? EXACT_SCOPE_CLAIM + rank : rank;
+      if (claim > best) best = claim;
+    };
+    consider(this.visibleScopeKey, SCOPE_CLAIM.visible);
+    for (const scope of this.boundsByScope.keys()) consider(scope, SCOPE_CLAIM.panel);
+    for (const tab of this.tabs) if (tab.view) consider(tab.scopeKey, SCOPE_CLAIM.pages);
+    return best;
+  }
+
   state(scopeKey) {
     const scope = this.requireScope(scopeKey);
     const tabs = this.scopeTabs(scope);
@@ -3245,4 +3297,40 @@ class DesktopBrowserManager {
   }
 }
 
-module.exports = { DesktopBrowserManager, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
+/**
+ * WHAT A WINDOW'S CLAIM ON A SESSION'S BROWSER IS WORTH, strongest first —
+ * see `DesktopBrowserManager.scopeClaim`.
+ */
+const SCOPE_CLAIM = { visible: 3, panel: 2, pages: 1 };
+/** An exact scope outranks ANY claim on a sibling instance of the same
+ *  session: `S` is a scope of its own, not a stand-in for `S#2`. */
+const EXACT_SCOPE_CLAIM = 10;
+
+/**
+ * THE WINDOW A SESSION'S BROWSER LIVES IN (issue #311) — what the agent-facing
+ * control server resolves per request, where there is no sender to resolve
+ * from.
+ *
+ * The surest claim wins (`scopeClaim`). The fallback — the window the human is
+ * in — takes every tie, including the tie of nobody claiming anything at all,
+ * so a session whose panel has never been mounted still opens its first page
+ * where the person is, exactly as it did before there were two windows.
+ *
+ * @param {Iterable<DesktopBrowserManager>} managers - every live window's host.
+ * @param {string | null | undefined} scopeKey - the scope the agent named.
+ * @param {DesktopBrowserManager | null} fallback - the focused window's host.
+ */
+function managerForScope(managers, scopeKey, fallback = null) {
+  let best = fallback;
+  let claim = fallback ? fallback.scopeClaim(scopeKey) : 0;
+  for (const manager of managers || []) {
+    const next = manager.scopeClaim(scopeKey);
+    if (next > claim) {
+      best = manager;
+      claim = next;
+    }
+  }
+  return best;
+}
+
+module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };

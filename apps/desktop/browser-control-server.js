@@ -2,6 +2,10 @@ const http = require("node:http");
 
 const MAX_BODY_BYTES = 1_000_000;
 
+/** Every route this server answers. Anything else is a 404 before a body is
+ *  read or a browser host is resolved. */
+const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open"]);
+
 function json(response, status, value) {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -43,40 +47,52 @@ function startBrowserControlServer({ port, token, getBrowserManager }) {
     }
 
     try {
-      const manager = getBrowserManager();
+      const url = new URL(request.url || "/", "http://127.0.0.1");
+      const route = `${request.method} ${url.pathname}`;
+      if (!ROUTES.has(route)) {
+        json(response, 404, { error: "Not found." });
+        return;
+      }
+      // The body is read BEFORE the host is resolved, because the scope it
+      // names is what decides WHICH host answers — see below.
+      const input = request.method === "POST" ? await readJson(request) : {};
+      const scopeKey = request.method === "GET" ? url.searchParams.get("scopeKey") : input.scopeKey;
+      /**
+       * THE WINDOW THIS SESSION'S COCKPIT IS IN (issue #311). Every panel
+       * request is answered by the window that sent it, but an agent reaches
+       * the shell over HTTP and has no window to be recognised by — it names
+       * its SCOPE. Resolving that to a single host (the focused window's) sent
+       * a second window's session to the first window's native views.
+       */
+      const manager = getBrowserManager(scopeKey);
       if (!manager) {
         json(response, 503, { error: "The Telar desktop browser host is not ready." });
         return;
       }
 
-      const url = new URL(request.url || "/", "http://127.0.0.1");
-      if (request.method === "GET" && url.pathname === "/state") {
-        json(response, 200, await manager.state(url.searchParams.get("scopeKey")));
+      if (route === "GET /state") {
+        json(response, 200, await manager.state(scopeKey));
         return;
       }
       // A scope's profile binding — its project — declared by the engine from
       // the claim BEFORE any tool of the turn runs. Idempotent; a change
       // while tabs exist is refused by the manager.
-      if (request.method === "POST" && url.pathname === "/bind") {
-        const input = await readJson(request);
-        json(response, 200, manager.declareProfile(input.scopeKey, input.profileKey));
+      if (route === "POST /bind") {
+        json(response, 200, manager.declareProfile(scopeKey, input.profileKey));
         return;
       }
-      if (request.method === "POST" && url.pathname === "/tool") {
-        const input = await readJson(request);
-        json(response, 200, await manager.callTool(input.scopeKey, input.name, input.args || {}));
+      if (route === "POST /tool") {
+        json(response, 200, await manager.callTool(scopeKey, input.name, input.args || {}));
         return;
       }
       // A HUMAN opening a tab from the cockpit's "open a browser" — routed
       // through the engine, which is why it is not the shell's IPC. Distinct
       // from /tool so the tab is stamped `openedBy: human` without teaching
       // the agent's tool path an opener argument it must never be able to set.
-      if (request.method === "POST" && url.pathname === "/open") {
-        const input = await readJson(request);
-        json(response, 200, await manager.action(input.scopeKey, { action: "new", url: input.url || "about:blank" }));
+      if (route === "POST /open") {
+        json(response, 200, await manager.action(scopeKey, { action: "new", url: input.url || "about:blank" }));
         return;
       }
-      json(response, 404, { error: "Not found." });
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }
