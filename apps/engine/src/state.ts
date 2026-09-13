@@ -766,6 +766,12 @@ function assertInstanceId(value: unknown): asserts value is string {
  *  cannot turn one usage read into a hundred outbound requests. */
 const MAX_USAGE_LIMIT_SOURCES = 16;
 
+/** The shape a route may see: no key, and a flag saying one is held. A free
+ *  function so the one place that builds it is the one place that can forget. */
+function redactUsageLimitSource(source: UsageLimitSource, secrets: Record<string, string>): UsageLimitSource {
+  return { ...source, managementKey: "", ...(secrets[source.id] ? { keyRedacted: true } : {}) };
+}
+
 /** The same shape as an instance id, and for the same reason: it rides in a
  *  URL path and is the permanent key a stored key is filed under. */
 function assertUsageLimitSourceId(value: unknown): asserts value is string {
@@ -4184,7 +4190,11 @@ export class EngineStore {
    * from a route. `resolveUsageLimitSources` is the one that returns real keys.
    */
   listUsageLimitSources(): UsageLimitSource[] {
-    return this.readUsageLimitSources().map((source) => this.redactUsageLimitSource(source));
+    // Secrets read ONCE for the whole list rather than per row: this is a
+    // settings-page read, and a file open per configured hub to decide a
+    // boolean is a cost that grows with the thing it describes.
+    const secrets = this.readUsageLimitSecrets();
+    return this.readUsageLimitSources().map((source) => redactUsageLimitSource(source, secrets));
   }
 
   /**
@@ -4257,7 +4267,7 @@ export class EngineStore {
     }
     this.writeDocument(this.paths.usageLimitSources, { version: STATE_VERSION, usageLimitSources: next });
     this.writeDocument(this.paths.usageLimitSecrets, { version: STATE_VERSION, secrets });
-    return this.redactUsageLimitSource(parsed.data);
+    return redactUsageLimitSource(parsed.data, secrets);
   }
 
   /** Forget a hub and its key together. Returns false for an id nobody
@@ -4295,10 +4305,6 @@ export class EngineStore {
       }));
   }
 
-  private redactUsageLimitSource(source: UsageLimitSource): UsageLimitSource {
-    const stored = this.readUsageLimitSecrets()[source.id];
-    return { ...source, managementKey: "", ...(stored ? { keyRedacted: true } : {}) };
-  }
 
   /**
    * NEVER THROWS ON A BAD DOCUMENT, the rule `getInboxPolicy` set and for the
