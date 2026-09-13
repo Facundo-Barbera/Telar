@@ -15,6 +15,7 @@ import { EngineClient, EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createNote, getNote, listNotes, readShelf, retireNote, shelfPath, updateNote } from "../src/spool/shelf";
 import { ensureSpool, spoolPaths, type SpoolPaths } from "../src/spool/store";
+import { stubModels } from "./stub-models";
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "telar-spool-shelf-"));
 afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -102,7 +103,7 @@ describe("the shelf over HTTP", () => {
   async function client(): Promise<EngineClient> {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-spool-shelf-routes-"));
     roots.push(directory);
-    const daemon = await startEngine({ engineRoot: directory });
+    const daemon = await startEngine({ models: stubModels, engineRoot: directory });
     daemons.push(daemon);
     return new EngineClient(daemon.discovery);
   }

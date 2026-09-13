@@ -8,12 +8,14 @@ struct SessionSidebar: View {
     let openSettings: () -> Void
     let resumeDraft: (MobileDraft) -> Void
     @State private var query = ""
-    @State private var projectFilter: String?
     @State private var collapsed: Set<String> = []
     @State private var snoozedOpen = false
     @State private var settledOpen = false
     @State private var settledLimit = 25
     @State private var layoutError: String?
+    /// The Mac a registration is being made on, and the sheet's subject.
+    @State private var addingTo: AddProjectTarget?
+    @State private var showUsage = false
     /// The row whose snooze sheet is up.
     @State private var snoozing: HostedSession?
     /// The row being renamed, and the field's text. Two pieces of state
@@ -29,7 +31,7 @@ struct SessionSidebar: View {
         SidebarModel(
             sessions: inbox.sections.active,
             names: inbox.projectName,
-            icons: { inbox.project($0)?.icon },
+            marks: { inbox.project($0)?.mark ?? .none },
             remotes: { inbox.project($0)?.remoteUrl },
             hostNames: { settings.host($0)?.name },
             layouts: inbox.layouts
@@ -37,12 +39,7 @@ struct SessionSidebar: View {
     }
     private var all: [HostedSession] { inbox.sections.active + inbox.sections.tail }
     private func matches(_ row: HostedSession) -> Bool {
-        // THE FILTER KEYS BY GROUP, NOT BY MAC. Two Macs' checkouts of one
-        // repository are one group, so picking that project has to keep both
-        // Macs' rows — a `hostId:projectId` key would have kept one of them.
-        let key = SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: inbox.project(row)?.remoteUrl)
-        guard projectFilter == nil || projectFilter == key else { return false }
-        return query.isEmpty || [row.session.title, inbox.projectName(row) ?? "", settings.host(row.hostId)?.name ?? ""]
+        query.isEmpty || [row.session.title, inbox.projectName(row) ?? "", settings.host(row.hostId)?.name ?? ""]
             .contains { $0.localizedStandardContains(query) }
     }
 
@@ -108,7 +105,7 @@ struct SessionSidebar: View {
                             }
                     }
                 }
-                ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
+                ForEach(model.projects) { group in
                     Section {
                         if !collapsed.contains(group.id) {
                             // SLIM: the header above already names the project,
@@ -133,7 +130,7 @@ struct SessionSidebar: View {
                             HStack(spacing: 6) {
                                 Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
                                     .font(.caption).foregroundStyle(Theme.textMuted)
-                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, icon: group.icon, api: settings.api(for: group.hostId), size: 16)
+                                ProjectAvatar(name: group.name, projectId: group.projectId, hostId: group.hostId, mark: group.mark, api: settings.api(for: group.hostId), size: 16)
                                 // A HEADER IS A HEADER BY ITS WEIGHT. In
                                 // `textMuted` at body size this named the
                                 // project more quietly than the rows it was
@@ -213,8 +210,20 @@ struct SessionSidebar: View {
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
                 shelf("Settled", rows: inbox.sections.settled, open: $settledOpen)
             }
+            // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
+            // copy audit (`SidebarEmpty`, app-sidebar.tsx). "Your work starts
+            // here / Start a conversation or pick up work from your Mac" was a
+            // welcome, and it was the same welcome whether the Mac had fifty
+            // projects and a quiet week or no registry at all — which are two
+            // different situations with two different next steps. An empty
+            // registry says so and names the verb that fixes it; an empty list
+            // points at the button that fills it.
             if inbox.loaded && all.isEmpty {
-                ContentUnavailableView("Your work starts here", systemImage: "text.bubble", description: Text("Start a conversation or pick up work from your Mac."))
+                if inbox.hasProjects {
+                    ContentUnavailableView("No sessions yet", systemImage: "text.bubble", description: Text("Start one from the button above."))
+                } else {
+                    ContentUnavailableView("No projects yet", systemImage: "folder.badge.plus", description: Text("Register a project to start a session."))
+                }
             }
         }
         // ONE LIST STYLE, SO THERE IS ONE SIDEBAR.
@@ -271,8 +280,24 @@ struct SessionSidebar: View {
         // inside the bar — the search field under that.
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
+        // THE HEADER'S VERBS, THE DESKTOP'S SET — issue #404. The rail there is
+        // a search field with Add project and New conversation at its right
+        // (app-sidebar.tsx), and the phone had only the compose button.
+        //
+        // ADD PROJECT IS A VERB, NOT A SETTING. Registering a folder used to be
+        // reachable only from the new-conversation flow, which is the wrong way
+        // round: you add a project in order to start conversations in it, so the
+        // one that comes first cannot be behind the one that follows.
+        //
+        // THE PROJECT PICKER IS GONE, and the Mac filter stays. The desktop
+        // dropped its "All projects ▾" row (#400) because the rail is already
+        // grouped by project and the field already narrows it — a filter for the
+        // same fact, spending a control. The Mac filter has no desktop
+        // counterpart to drop: which machine a row is on is a fact only a phone
+        // holding several Macs has to ask about.
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                addProject
                 Button("New conversation", systemImage: "square.and.pencil", action: newSession).keyboardShortcut("n", modifiers: .command)
             }
             ToolbarItem(placement: .topBarLeading) {
@@ -281,11 +306,26 @@ struct SessionSidebar: View {
                         Text("All Macs").tag(nil as HostID?)
                         ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
                     }
-                    Picker("Project", selection: $projectFilter) {
-                        Text("All projects").tag(nil as String?)
-                        ForEach(projectOptions) { Text($0.name).tag(Optional($0.id)) }
-                    }
                 } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
+            }
+        }
+        // A REGISTRATION IS A PUSH INSIDE A SHEET, not a push onto the rail: the
+        // browser walks the MAC's folders and a person who gets lost in it wants
+        // one dismissal, not a stack of them to unwind.
+        .sheet(item: $addingTo) { target in
+            NavigationStack {
+                AddProjectView(api: target.api) { _ in
+                    addingTo = nil
+                    Task { await inbox.refresh() }
+                }
+                .navigationTitle("Add project")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { addingTo = nil } } }
+            }
+        }
+        .sheet(isPresented: $showUsage) {
+            NavigationStack {
+                UsageView(settings: settings, hostId: inbox.filter ?? settings.hosts.first?.id)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showUsage = false } } }
             }
         }
         // AN ICON ROW, NOT A SENTENCE. The desktop's footer
@@ -295,13 +335,17 @@ struct SessionSidebar: View {
         // reading as the sidebar's primary action directly beneath the work
         // that actually is.
         //
-        // ONE GLYPH, BECAUSE THERE IS ONE PAGE. The desktop puts Usage beside
-        // it; the phone has no usage screen to open, and a disabled or absent
-        // twin would be chrome. The desktop's update control has no counterpart
-        // either — this app updates through TestFlight, which is the App
-        // Store's job and not a button's.
+        // SETTINGS FIRST, THEN USAGE — the desktop's order and its reason
+        // (app-sidebar-footer.tsx, #389): Settings is the one a person reaches
+        // for, Usage is the one they look at. The phone drew only the gear
+        // because there was no usage screen to open; there is one now (#404), so
+        // the footer is the pair it is over there.
         //
-        // The glyph keeps the web's size and the tap target does not: 32pt is a
+        // The desktop's update control has no counterpart here — this app
+        // updates through TestFlight, which is the App Store's job and not a
+        // button's.
+        //
+        // The glyphs keep the web's size and the tap targets do not: 32pt is a
         // mouse target, and a finger is owed the full 44.
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 0) {
@@ -311,6 +355,12 @@ struct SessionSidebar: View {
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 .accessibilityLabel("Settings")
+                Button { showUsage = true } label: {
+                    Image(systemName: "chart.bar").font(.system(size: 17))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Usage")
+                .disabled(settings.hosts.isEmpty)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Theme.textMuted)
@@ -325,7 +375,6 @@ struct SessionSidebar: View {
         .task {
             collapsed = Set(savedCollapsed.split(separator: "\n").map(String.init))
         }
-        .onChange(of: inbox.filter) { projectFilter = nil }
         .sheet(item: $snoozing) { row in snoozeSheet(row) }
         // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
         // alert's whole shape, and a sheet for it would cost a push and a
@@ -367,12 +416,39 @@ struct SessionSidebar: View {
         Binding(get: { subject.wrappedValue != nil }, set: { if !$0 { subject.wrappedValue = nil } })
     }
 
-    private var projectOptions: [SidebarProject] { SidebarModel(sessions: all.map { row in
-        var session = row.session; session.activity = .idle; session.settledOverride = nil
-        return HostedSession(hostId: row.hostId, session: session)
-    }, names: inbox.projectName, remotes: { inbox.project($0)?.remoteUrl }, hostNames: { settings.host($0)?.name }).projects }
-
     private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
+
+    /// WHICH MAC A FOLDER IS BEING REGISTERED ON. A project lives in one
+    /// checkout on one machine, so "Add project" is only a plain button when
+    /// there is one Mac it could mean — the same shape `newConversation` already
+    /// uses for a group that spans two.
+    private struct AddProjectTarget: Identifiable {
+        let hostId: HostID
+        let api: any EngineAPI
+        var id: HostID { hostId }
+    }
+
+    private var addProjectHosts: [Host] {
+        settings.hosts.filter { settings.api(for: $0.id) != nil && (inbox.filter == nil || inbox.filter == $0.id) }
+    }
+
+    @ViewBuilder private var addProject: some View {
+        let hosts = addProjectHosts
+        if hosts.count == 1, let host = hosts.first, let api = settings.api(for: host.id) {
+            Button("Add project", systemImage: "folder.badge.plus") {
+                addingTo = AddProjectTarget(hostId: host.id, api: api)
+            }
+        } else if !hosts.isEmpty {
+            Menu("Add project", systemImage: "folder.badge.plus") {
+                ForEach(hosts) { host in
+                    Button(host.name, systemImage: "desktopcomputer") {
+                        guard let api = settings.api(for: host.id) else { return }
+                        addingTo = AddProjectTarget(hostId: host.id, api: api)
+                    }
+                }
+            }
+        }
+    }
 
     /// "HERE" IS A QUESTION ONCE A GROUP SPANS TWO MACS, so it stops being the
     /// answer and becomes a submenu — the desktop's own control
@@ -390,14 +466,15 @@ struct SessionSidebar: View {
             }
         } else {
             Button("New conversation here", systemImage: "square.and.pencil") {
-                startDraft(group.places.first ?? ProjectPlace(hostId: group.hostId, projectId: group.projectId, name: group.name, icon: group.icon))
+                startDraft(group.places.first ?? ProjectPlace(hostId: group.hostId, projectId: group.projectId, name: group.name, mark: group.mark))
             }
         }
     }
 
     private func startDraft(_ place: ProjectPlace) {
         resumeDraft(MobileDraft(hostId: place.hostId,
-                                project: ProjectRef(id: place.projectId, name: place.name, icon: place.icon),
+                                project: ProjectRef(id: place.projectId, name: place.name, icon: place.mark.icon,
+                                                    iconName: place.mark.iconName, iconEmoji: place.mark.iconEmoji),
                                 prompt: "", title: ""))
     }
 
@@ -451,6 +528,15 @@ struct SessionSidebar: View {
                 }
             }
         }
+        // WHY THE SHELF TOOK IT, ON EVERY VARIANT — the desktop carries this
+        // sentence in the row's own `title`, which is variant-independent
+        // (session-row.tsx), while the phone could only draw it in a slim row's
+        // right-hand slot. That slot is contested: a delegate that is working
+        // again takes it, and a card never had it at all, so the one settling
+        // fact a reader cannot reconstruct was dropped exactly when the row had
+        // something else to say. As a hint it is always there and costs no
+        // pixels — which is what the desktop's tooltip is.
+        .accessibilityHint(settledHint(row).map(Text.init) ?? Text(""))
         // MAIL'S GRAMMAR: the leading edge is the one-tap toggle you reach
         // for most (pin), the trailing edge is where a row LEAVES the list
         // (settle, snooze). Full swipe commits the first action on each edge.
@@ -575,7 +661,7 @@ struct SessionSidebar: View {
                 // mix projects, so the row names its own. A row under its
                 // project's own header says nothing the header has not.
                 if showsProject, let project = inbox.project(row) {
-                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 12)
+                    ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 12)
                     Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -638,7 +724,7 @@ struct SessionSidebar: View {
                 Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(Theme.textMuted.opacity(0.7))
             }
             if let project = inbox.project(row) {
-                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, icon: project.icon, api: settings.api(for: row.hostId), size: 13)
+                ProjectAvatar(name: project.name, projectId: project.id, hostId: row.hostId, mark: project.mark, api: settings.api(for: row.hostId), size: 13)
                     .opacity(0.8)
             } else {
                 ProviderIconView(driver: row.session.driver, size: 12).opacity(0.6)

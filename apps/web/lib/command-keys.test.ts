@@ -13,8 +13,8 @@
  */
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { groupSessions, railRowsForCommandKeys } from "./session-groups";
-import { deriveSessionList, sessionHref, type SidebarSession } from "./session-list";
+import { groupSessions, railJumpSlots, railRowsForCommandKeys } from "./session-groups";
+import { deriveSessionList, sessionHref, sessionKey, type SidebarSession } from "./session-list";
 
 const NOW = 1_800_000_000_000;
 
@@ -107,5 +107,57 @@ describe("what ⌘1..⌘9 count", () => {
     expect(recent).toHaveLength(9);
     expect(recent[0]).toBe("Session 0");
     expect(sessionHref(row("s0", "Session 0"))).toBe("/projects/p1/sessions/s0");
+  });
+});
+
+/**
+ * WHICH NUMBER EACH ROW WEARS while ⌘ is held — issue #401.
+ *
+ * The hints are drawn from `railJumpSlots` over the SAME array `useCommandKeys`
+ * is handed, which is the only arrangement in which a row's number and the key
+ * that fires cannot disagree. So the claim under test is a correspondence rather
+ * than a table: whatever the block above says ⌘N counts, the Nth of those rows
+ * is the one wearing N.
+ */
+describe("the numbers a row wears line up with what the keys count", () => {
+  const railRows = (rows: SidebarSession[], collapsed?: Set<string>) =>
+    railRowsForCommandKeys(groupSessions(deriveSessionList({ sessions: rows, now: NOW, autoSettleAfterHours: 72 }), []), collapsed);
+
+  test("slot N is the Nth counted row, bands, groups and folds included", () => {
+    const rows = [
+      row("s1", "Waiting", { activity: "blocked", createdAt: NOW - 9_000 }),
+      row("s2", "Kept", { settledOverride: "active", createdAt: NOW - 8_000 }),
+      row("a1", "Alpha", { projectId: "alpha", projectName: "Alpha" }),
+      row("b1", "Beta", { projectId: "beta", projectName: "Beta" }),
+    ];
+    const counted = railRows(rows);
+    const slots = railJumpSlots(counted);
+    expect(counted.map((session) => slots.get(sessionKey(session)))).toEqual([1, 2, 3, 4]);
+    // Said the other way round, which is the promise a reader makes with their
+    // fingers: the row wearing ⌘1 is the row at the top of the rail.
+    expect(counted[0]?.title).toBe("Waiting");
+  });
+
+  test("a row the keys do not count wears nothing", () => {
+    // The tenth row down: there is no ⌘10, and a number it could not honour is
+    // worse than no number.
+    const rows = Array.from({ length: 12 }, (_, index) => row(`s${index}`, `Session ${index}`, { createdAt: NOW - index * 1_000 }));
+    const slots = railJumpSlots(railRows(rows));
+    expect(slots.size).toBe(9);
+    expect(slots.get(sessionKey(row("s9", "Session 9")))).toBeUndefined();
+  });
+
+  test("folding a group renumbers the rows below it, exactly as the keys do", () => {
+    const rows = [
+      row("a1", "Alpha", { projectId: "alpha", projectName: "Alpha" }),
+      row("b1", "Beta", { projectId: "beta", projectName: "Beta" }),
+      row("c1", "Gamma", { projectId: "gamma", projectName: "Gamma" }),
+    ];
+    const open = railJumpSlots(railRows(rows));
+    expect(open.get(sessionKey(row("c1", "Gamma")))).toBe(3);
+    // Beta folded away: Gamma moves up on screen, and its number moves with it.
+    const folded = railJumpSlots(railRows(rows, new Set(["beta"])));
+    expect(folded.get(sessionKey(row("c1", "Gamma")))).toBe(2);
+    expect(folded.get(sessionKey(row("b1", "Beta")))).toBeUndefined();
   });
 });

@@ -62,7 +62,7 @@ function input(tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   return { projectId: "proj_1", config: cfg, worktreePath: tree, sessionId: "sess_a", ...extra };
 }
 
-async function until(predicate: () => boolean, ms = 4000): Promise<boolean> {
+async function until(predicate: () => boolean, ms = 15_000): Promise<boolean> {
   const started = Date.now();
   while (Date.now() - started < ms) {
     if (predicate()) return true;

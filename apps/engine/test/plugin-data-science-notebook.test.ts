@@ -27,6 +27,7 @@ import path from "node:path";
 import { EngineClient, type EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { dataScienceMeta } from "../src/plugins/data-science";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -52,7 +53,7 @@ afterEach(async () => {
  */
 async function ready(python = "/bin/echo") {
   const checkout = root();
-  const daemon = await startEngine({ engineRoot: root(), embeddedWorker: true });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), embeddedWorker: true });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_nb", name: "Notebooks", root: checkout });

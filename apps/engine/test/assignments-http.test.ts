@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -30,7 +31,7 @@ afterEach(async () => {
 });
 
 async function ready() {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: root() });
@@ -165,7 +166,7 @@ test("assignments SURVIVE A RESTART, because they are folded from durable turns"
   await daemon.close();
   daemons.length = 0;
 
-  const restarted = await startEngine({ engineRoot: home });
+  const restarted = await startEngine({ models: stubModels, engineRoot: home });
   daemons.push(restarted);
   const next = new EngineClient(restarted.discovery);
   const [assignment] = (await next.session("session_worker")).assignments ?? [];
