@@ -117,13 +117,19 @@ describe("withComputerUse — who gets it", () => {
     updatedAt: 0,
   });
 
-  test("cua goes to BOTH providers — Telar owns it", () => {
-    expect(withComputerUse([], [], "claude", cua).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
-    expect(withComputerUse([], [], "codex", cua).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
+  test("both backends go to Claude and OpenCode — the providers with no desktop of their own", () => {
+    for (const resolved of [cua, sky]) {
+      expect(withComputerUse([], [], "claude", resolved).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
+      expect(withComputerUse([], [], "opencode", resolved).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
+    }
   });
 
-  test("Sky goes to Claude only — it is already native on Codex", () => {
-    expect(withComputerUse([], [], "claude", sky).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
+  test("Codex gets neither, whatever is installed — it ships its own provider (#368)", () => {
+    // It used to get cua, with the Codex driver switching Codex's native
+    // computer use off to stop the model seeing two desktops. Withholding is
+    // the same outcome without the workaround, and it is what the Agent tools
+    // pane now says.
+    expect(withComputerUse([], [], "codex", cua)).toEqual([]);
     expect(withComputerUse([], [], "codex", sky)).toEqual([]);
   });
 
@@ -138,7 +144,7 @@ describe("withComputerUse — who gets it", () => {
     // check reads the unfiltered one: switching the server off must not
     // resurrect the built-in.
     const disabled = user(COMPUTER_USE_SERVER_ID, false);
-    expect(withComputerUse([], [disabled], "codex", cua)).toEqual([]);
+    expect(withComputerUse([], [disabled], "opencode", cua)).toEqual([]);
   });
 });
 

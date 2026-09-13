@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComputerUseStatus } from "@telar/engine-client";
-import { computerUseHint, computerUseState, PermissionsSection } from "./permissions-section";
+import { ComputerUseProviders, computerUseHint, computerUseState, PermissionsSection } from "./permissions-section";
 
 const probe = (over: Partial<ComputerUseStatus> = {}) =>
   ({ installed: true, hostRunning: true, backend: "cua", permission: "granted", ...over }) as unknown as ComputerUseStatus;
@@ -57,6 +57,25 @@ test("the security semantics survive the copy edit", () => {
   expect(computerUseHint("not-granted", false)).toContain("Privacy & Security → Automation");
   expect(computerUseHint("not-installed", false)).toContain("Install cua-driver");
   expect(logins).toContain("Telar asks before every fill");
+});
+
+test("the Computer use row says WHOSE sessions it governs, in one line", () => {
+  /**
+   * #368. The row measured a macOS grant and named no provider, which reads as
+   * "all of them" — and a Codex session's Grant access does nothing, because
+   * Codex ships its own computer-use provider and Telar withholds this one.
+   */
+  const html = renderToStaticMarkup(<ComputerUseProviders />);
+  expect(html).toContain("Claude");
+  expect(html).toContain("OpenCode");
+  expect(html).toContain("Codex uses its own");
+  // The engine's own list decides — not a hand-kept copy that can drift from
+  // what a claim actually folds in.
+  expect(permissions).toContain("driverTakesComputerUse");
+  // It rides the row rather than the hint: the hint is the sentence that
+  // changes with the state, and a working setup still has none.
+  expect(computerUseHint("ready", true)).toBeUndefined();
+  expect(permissions).toContain("<ComputerUseProviders />");
 });
 
 test("the FAILED state renders Unknown with a Retry, never a spinner", () => {

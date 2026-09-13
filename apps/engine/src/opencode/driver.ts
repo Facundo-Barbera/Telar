@@ -10,7 +10,32 @@ import { startOpenCodeRuntime, type OpenCodeRuntime } from "./runtime";
 type Options = { start?: typeof startOpenCodeRuntime; pollMs?: number };
 const requestOptions = () => ({ throwOnError: true as const, signal: AbortSignal.timeout(10_000) });
 
-function mcpConfiguration(input: DriverRun): NonNullable<Config["mcp"]> {
+/**
+ * REGISTERING A SERVER IS NOT A TEN-SECOND CALL, and computer use is the proof.
+ *
+ * `mcp.add` CONNECTS the server as part of adding it, against OpenCode's own
+ * 30s connect budget — so the 10s every other call here uses was shorter than
+ * the operation it was waiting on. cua-driver is exactly the server that needs
+ * the difference: its `mcp` proxy auto-launches CuaDriver.app's
+ * permission-holding daemon on first connect, and can sit behind a macOS grant
+ * dialog while it does. Past 10s the request aborted, and because these calls
+ * throw it took the whole TURN with it — a session that merely had computer use
+ * installed could not run at all.
+ */
+const MCP_REGISTER_TIMEOUT_MS = 35_000;
+
+/**
+ * The claim's servers as OpenCode's own config, including Telar's `mac` server
+ * when the claim carries one — computer use is not a special case here, it is
+ * an ordinary stdio entry, which is the whole point of serving it over MCP.
+ * `environment` is OVERLAID by OpenCode on the server process's own env, so a
+ * local server keeps PATH and HOME exactly as the Claude driver's is spawned.
+ *
+ * Exported for the per-provider fixture — what a session receives is a claim
+ * folded through here, and a test that asserted it any other way would be
+ * asserting its own copy of this function.
+ */
+export function mcpConfiguration(input: DriverRun): NonNullable<Config["mcp"]> {
   const mcp: NonNullable<Config["mcp"]> = {};
   for (const server of input.mcpServers ?? []) {
     const spec = server.spec;
@@ -64,11 +89,26 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
       const client = runtime.client;
       const mcp = mcpConfiguration(input);
       for (const name of owned.mcpNames) if (!(name in mcp)) await client.mcp.disconnect({ name }, requestOptions());
-      owned.mcpNames = new Set(Object.keys(mcp));
+      /**
+       * A SERVER THAT WILL NOT START COSTS ITS OWN TOOLS, NOT THE TURN — which
+       * is what the Claude driver has always done with a bad `mcpServers` entry,
+       * and what this one did not. Only the names that actually registered are
+       * remembered, so the next turn retries the rest instead of believing they
+       * are connected (and instead of disconnecting a name that never was).
+       */
+      const registered = new Set<string>();
       // Runtime MCP registration does not modify the user's opencode.json.
       for (const [name, config] of Object.entries(mcp)) {
-        if ("type" in config) await client.mcp.add({ name, config }, requestOptions());
+        if (!("type" in config)) continue;
+        try {
+          await client.mcp.add({ name, config }, { throwOnError: true, signal: AbortSignal.timeout(MCP_REGISTER_TIMEOUT_MS) });
+          registered.add(name);
+        } catch (error) {
+          // A cancelled turn is not a server that failed to start.
+          if (input.signal.aborted) throw error;
+        }
       }
+      owned.mcpNames = registered;
       let sessionID = input.providerSessionId;
       if (sessionID) await client.session.get({ sessionID }, requestOptions());
       else sessionID = (await client.session.create({ title: "Telar", permission: [{ permission: "*", pattern: "*", action: "ask" }] }, requestOptions())).data!.id;

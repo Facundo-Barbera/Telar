@@ -3,8 +3,9 @@
 /**
  * COMPUTER USE — whether sessions can drive Mac apps, in one row.
  *
- * Claude and Codex sessions drive Mac apps through a desktop engine Telar owns.
- * Two backends can supply it:
+ * Claude and OpenCode sessions drive Mac apps through a desktop engine Telar
+ * owns; Codex ships its own and keeps it, which is what the row's provider
+ * badges say (#368). Two backends can supply Telar's:
  *
  *   - cua-driver (trycua/cua, MIT) — Telar's own. CuaDriver.app holds the
  *     Accessibility + Screen Recording grants, and "Grant access" runs cua's
@@ -30,8 +31,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon } from "lucide-react";
-import type { ComputerUseStatus } from "@telar/engine-client";
+import { driverTakesComputerUse, type ComputerUseStatus } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { DRIVER_LABEL, DRIVERS } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -93,6 +95,41 @@ export function computerUseHint(state: ComputerUseState, isCua: boolean): string
         ? "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it."
         : "System Settings → Privacy & Security → Automation: enable the target under Telar (packaged) or the terminal (dev), then test again.";
   }
+}
+
+/**
+ * WHOSE SESSIONS THIS GRANT IS FOR — the row's missing half (#368).
+ *
+ * The pane measured a macOS permission and never said which providers it was a
+ * permission FOR, which every reader took as "all of them". It is not: Codex
+ * ships its own computer-use provider, so Telar withholds this one there rather
+ * than hand that model two desktops under two names — a Codex session's Grant
+ * access does nothing for it. Claude and OpenCode arrive without a desktop and
+ * get Telar's.
+ *
+ * BADGES, NOT A SENTENCE, and not a second hint: the answer is a LIST of three,
+ * the hint slot is the one that changes with the state, and a standing
+ * paragraph above a row is the doubling #357 already cut once.
+ *
+ * READ FROM THE ENGINE'S OWN LIST (`driverTakesComputerUse`), which is what the
+ * claim fold uses — so this row cannot promise a provider the engine withholds
+ * it from, which is the drift that made the pane wrong in the first place.
+ */
+export function ComputerUseProviders() {
+  const supplied = DRIVERS.filter(driverTakesComputerUse);
+  const theirOwn = DRIVERS.filter((driver) => !driverTakesComputerUse(driver));
+  return (
+    <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      {supplied.map((driver) => (
+        <Badge key={driver} variant="secondary" className="font-normal">
+          {DRIVER_LABEL[driver]}
+        </Badge>
+      ))}
+      {theirOwn.map((driver) => (
+        <span key={driver}>{DRIVER_LABEL[driver]} uses its own</span>
+      ))}
+    </p>
+  );
 }
 
 export function PermissionsSection() {
@@ -189,7 +226,9 @@ export function PermissionsSection() {
             )}
           </div>
         }
-      />
+      >
+        <ComputerUseProviders />
+      </Row>
     </SettingsGroup>
   );
 }

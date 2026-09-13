@@ -7242,10 +7242,11 @@ export class EngineStore {
        * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
        * at claim time like everything else here, and re-resolved per claim so
        * installing or removing the driver applies to the next turn rather than
-       * the next daemon. Goes to both providers when the backend is cua, Claude
-       * only when it is Sky — see `withComputerUse`. Absent installs inject
-       * nothing, silently, and the unfiltered `registered` list means a user's
-       * own entry (even a DISABLED one) is a decision this must not overrule.
+       * the next daemon. Goes to the providers that arrive without a desktop of
+       * their own — Claude and OpenCode, never Codex — see `withComputerUse`.
+       * Absent installs inject nothing, silently, and the unfiltered
+       * `registered` list means a user's own entry (even a DISABLED one) is a
+       * decision this must not overrule.
        */
       const mcpServers = withComputerUse(
         registered.filter((server) => server.enabled),
