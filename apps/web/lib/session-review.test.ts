@@ -9,11 +9,14 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitFileChange, SessionDiff } from "@telar/engine-client";
-import { describeReview, reconcileReview } from "./session-review";
+import { describeReview, reconcileReview, repoRelativePath } from "./session-review";
 
-const diff = (files: GitFileChange[], totals: { added?: number; removed?: number } = {}): SessionDiff => ({
+const diff = (
+  files: GitFileChange[],
+  totals: { added?: number; removed?: number; workspacePath?: string } = {},
+): SessionDiff => ({
   repository: true,
-  workspacePath: "/repo",
+  workspacePath: totals.workspacePath ?? "/repo",
   files,
   commits: [],
   linesAdded: totals.added ?? 0,
@@ -84,6 +87,97 @@ describe("reconcileReview", () => {
     const review = reconcileReview(diff([file("a.ts")]), journal());
     expect(review.rows[0]).toMatchObject({ reported: false });
     expect(review.settled).toEqual([]);
+  });
+});
+
+describe("the journal's absolute paths and git's repo-relative ones are the same files (#350)", () => {
+  test("an absolute journal path matches the row git filed under its short name", () => {
+    // The defect exactly: the agent edited paper/main.tex with its editor tool,
+    // which journalled `/tmp/exoplanets/paper/main.tex`, and the row read
+    // "unreported" while the same edit was ALSO counted as put back.
+    const review = reconcileReview(
+      diff([file("paper/main.tex")], { workspacePath: "/tmp/exoplanets" }),
+      journal("/tmp/exoplanets/paper/main.tex"),
+    );
+    expect(review.unreported).toEqual([]);
+    expect(review.settled).toEqual([]);
+    expect(review.rows[0]).toMatchObject({ reported: true });
+  });
+
+  test("/private/tmp and /tmp are one directory, as macOS means them to be", () => {
+    // The journal has the realpath and the workspace has the short form, or the
+    // other way round. Both are the same four characters apart.
+    const workspace = reconcileReview(
+      diff([file("paper/main.tex")], { workspacePath: "/tmp/exoplanets" }),
+      journal("/private/tmp/exoplanets/paper/main.tex"),
+    );
+    expect(workspace.unreported).toEqual([]);
+    const other = reconcileReview(
+      diff([file("paper/main.tex")], { workspacePath: "/private/tmp/exoplanets" }),
+      journal("/tmp/exoplanets/paper/main.tex"),
+    );
+    expect(other.unreported).toEqual([]);
+  });
+
+  test("two spellings of one file are one file written twice", () => {
+    // A session whose tools disagreed about paths wrote main.tex twice; the
+    // count is what the old Changes tab knew and must not be split in half.
+    const review = reconcileReview(
+      diff([file("paper/main.tex")], { workspacePath: "/tmp/repo" }),
+      journal("/tmp/repo/paper/main.tex", "paper/main.tex"),
+    );
+    expect(review.rows[0]).toMatchObject({ reported: true, edits: 2 });
+  });
+
+  test("a settled claim is named the way the reviewer reads every other row", () => {
+    // "the session wrote this and put it back" is a repo-relative path in the
+    // list beside it, not a machine-local absolute one.
+    const review = reconcileReview(diff([], { workspacePath: "/tmp/repo" }), journal("/tmp/repo/src/scratch.ts"));
+    expect(review.settled).toEqual(["src/scratch.ts"]);
+  });
+
+  test("a file outside the checkout stays as it was written and simply never matches", () => {
+    // An agent that edited its own config in $HOME did not edit this repository,
+    // and no amount of `../` would make that row appear.
+    expect(repoRelativePath("/Users/a/.zshrc", "/tmp/repo")).toBe("/Users/a/.zshrc");
+    // A path that merely shares a prefix is not inside it.
+    expect(repoRelativePath("/tmp/repo-other/a.ts", "/tmp/repo")).toBe("/tmp/repo-other/a.ts");
+    // A trailing slash on the workspace is the same workspace.
+    expect(repoRelativePath("/tmp/repo/a.ts", "/tmp/repo/")).toBe("a.ts");
+  });
+});
+
+describe("Telar's own ignore rules are not the session's doing", () => {
+  const gitignore = (extra: Partial<GitFileChange> = {}) => file(".gitignore", { linesAdded: 2, linesRemoved: 0, ...extra });
+
+  test("the two rules registration appends are labelled, not counted as a surprise", () => {
+    // `ensureTelarGitignore` adds `telar.yaml` and `.telar/` when the PROJECT is
+    // registered. The banner was blaming a conversation that had not started.
+    const review = reconcileReview(diff([gitignore(), file("bun.lock")]), journal());
+    expect(review.rows[0]).toMatchObject({ reported: false, registration: true });
+    expect(review.unreported.map((entry) => entry.path)).toEqual(["bun.lock"]);
+  });
+
+  test("a .gitignore that grew past those two rules, or lost one, is an ordinary row", () => {
+    expect(reconcileReview(diff([gitignore({ linesAdded: 3 })]), journal()).unreported).toHaveLength(1);
+    expect(reconcileReview(diff([gitignore({ linesRemoved: 1 })]), journal()).unreported).toHaveLength(1);
+    // Only the repository ROOT's. A nested one is somebody's actual work.
+    expect(reconcileReview(diff([file("apps/web/.gitignore", { linesAdded: 2 })]), journal()).unreported).toHaveLength(1);
+  });
+
+  test("a .gitignore the session says it wrote is the session's, label or no label", () => {
+    const review = reconcileReview(diff([gitignore()]), journal(".gitignore"));
+    expect(review.rows[0]).toMatchObject({ reported: true });
+    expect(review.rows[0]!.registration).toBeUndefined();
+  });
+
+  test("an untracked root .gitignore is the one registration created", () => {
+    // git diffs no untracked file, so there are no line counts to match on —
+    // and a project with no .gitignore before Telar touched it gets exactly the
+    // file `ensureTelarGitignore` writes.
+    const review = reconcileReview(diff([file(".gitignore", { status: "untracked" })]), journal());
+    expect(review.rows[0]).toMatchObject({ registration: true });
+    expect(review.unreported).toEqual([]);
   });
 });
 

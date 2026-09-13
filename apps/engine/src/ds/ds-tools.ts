@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
 import type { DsCapability } from "./capability";
-import { describeOutputs } from "./outputs";
+import { describeOutputs, PLOT_TITLE_PROBE } from "./outputs";
 
 const NAME = z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/).describe("A Python identifier in the kernel's namespace.");
 
@@ -193,7 +193,10 @@ ${py("_out")}`;
           code = `import matplotlib.pyplot as plt\n${code.replace(/^\s*plt\.show\(\)\s*$/gm, "")}\n`;
         }
         if (typeof args.title === "string") code += `plt.title(${JSON.stringify(args.title)})\n`;
-        code += "plt.tight_layout()\nplt.show()\n";
+        // The figure names itself while it still exists — see PLOT_TITLE_PROBE.
+        // After `show()` the inline backend has closed it and there is nothing
+        // left to ask, which is why this goes here and not after.
+        code += `plt.tight_layout()\n${PLOT_TITLE_PROBE}plt.show()\n`;
         try {
           const outcome = await capability.plot({ code, ...(typeof args.title === "string" ? { title: args.title } : {}) });
           if (!outcome.ok) return err(`Plot failed: ${outcome.error ?? "unknown"}\n${resultText(outcome.outputs)}`);

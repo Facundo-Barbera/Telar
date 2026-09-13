@@ -15,6 +15,34 @@ export type CellOutput =
 
 export type KernelState = "starting" | "idle" | "busy" | "restarting" | "dead" | "none";
 
+/**
+ * WHAT THE KERNEL IS DOING RIGHT NOW, folded out of the journal.
+ *
+ * The Data tab used to ASK — one `GET /kernel` on mount, and again only when
+ * the turn's state changed — so a pill sat on IDLE through a 35-second
+ * `ds_scratch` and told the reader nothing was running while something was
+ * (#356). It was not a slow poll; it was no poll at all.
+ *
+ * A read is the wrong shape for this regardless. The kernel already announces
+ * every transition (the bridge's `_set_state`, journalled as
+ * `kernel.state.changed`), those events already stream to this client, and
+ * folding them is how the panel learns the same fact about the browser next
+ * door. Busy then means busy for EVERY execution — a cell the human ran, a
+ * `ds_*` call the agent made — because the announcement is the kernel's, not
+ * the caller's.
+ *
+ * Undefined means the journal has not mentioned the kernel, which is not the
+ * same as no kernel: a session opened long after its kernel started has the
+ * event out of its window, and the caller's own read is the better answer.
+ */
+export function latestKernelState(events: readonly { type: string; state?: string }[]): KernelState | undefined {
+  let state: KernelState | undefined;
+  for (const event of events) {
+    if (event.type === "kernel.state.changed" && event.state) state = event.state as KernelState;
+  }
+  return state;
+}
+
 export type NotebookCell = {
   id: string;
   index: number;

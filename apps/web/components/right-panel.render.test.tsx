@@ -92,6 +92,28 @@ describe("a tab wears a suffix only when it has a sibling of its kind", () => {
   });
 });
 
+describe("the panel opens as wide as the widest thing in it (#357)", () => {
+  /**
+   * NOTHING IS REMEMBERED HERE, which is exactly the case under test: these
+   * renders have no `window`, so the stored width comes back empty and the
+   * panel falls through to its default. A person who has ever dragged this
+   * panel never reaches that path — `lib/right-panel-layout.test.ts` states
+   * the rule itself; this says the shell actually asks it.
+   */
+  const width = (markup: string) => markup.match(/--right-panel-width:(\d+)px/)?.[1];
+
+  test("a strip of lists opens at the column width", () => {
+    expect(width(strip([tab("diff", "diff")], "diff"))).toBe("480");
+  });
+
+  test("a notebook or a file beside its tree opens wide enough to read", () => {
+    expect(width(strip([tab("editor", "editor", { path: "a.ipynb" })], "editor"))).toBe("720");
+    expect(width(strip([tab("data", "data")], "data"))).toBe("720");
+    // And from behind a list tab, because the room is the strip's need.
+    expect(width(strip([tab("diff", "diff"), tab("editor", "editor")], "diff"))).toBe("720");
+  });
+});
+
 describe("the strip is keyed by instance, not by kind", () => {
   test("every tab gets its own chip and its own close button", () => {
     const markup = strip([tab("editor", "editor", { path: "a.ts" }), tab("editor#2", "editor", { path: "b.ts" })], "editor#2");

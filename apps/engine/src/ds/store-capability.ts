@@ -116,9 +116,19 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     return true;
   }
 
-  async function run(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string }): Promise<ExecResult> {
+  async function run(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string; title?: string }): Promise<ExecResult> {
     await ensure();
-    const result = await host.execute(sessionId, { code: input.code, ...(input.cellId ? { cellId: input.cellId } : {}), ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}) });
+    // The producer and the title travel WITH the execution: an image arrives on
+    // a notification that knows only its execution counter, and a figure filed
+    // under `exec_9` can be neither named nor recognised as the same figure
+    // drawn again (#353).
+    const result = await host.execute(sessionId, {
+      code: input.code,
+      ...(input.cellId ? { cellId: input.cellId } : {}),
+      ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.producer ? { producer: input.producer } : {}),
+      ...(input.title ? { title: input.title } : {}),
+    });
     if (result.error) result.error.traceback = plainTraceback(result.error.traceback);
     for (const output of result.outputs) if (output.kind === "error") output.traceback = plainTraceback(output.traceback);
     const producer = input.producer ?? input.cellId ?? "scratch";
@@ -312,7 +322,11 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
     },
 
     async plot(input) {
-      const result = await run({ code: input.code, producer: "ds_plot" });
+      // `title` is the caller's own name for it, and a fallback: the composed
+      // code asks the figure what IT is called, and that answer — which covers
+      // a plot drawn by code that set its own title — reaches the attachment
+      // through the kernel host.
+      const result = await run({ code: input.code, producer: "ds_plot", ...(input.title ? { title: input.title } : {}) });
       const image = result.outputs.find((o): o is Extract<CellOutput, { kind: "image" }> => o.kind === "image");
       return { ok: result.ok, outputs: result.outputs.filter((o) => o.kind !== "image"), ...(image?.attachmentId ? { attachmentId: image.attachmentId } : {}), ...(result.error ? { error: `${result.error.ename}: ${result.error.evalue}` } : {}) };
     },

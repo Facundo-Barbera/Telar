@@ -38,7 +38,7 @@ import type {
 import { createEngineApi } from "@/lib/engine/client";
 import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
 import type { JournalTask } from "@/lib/engine/journal";
-import { browserPageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { browserPageReference, startReferenceDrag, taskReference, type TelarReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
@@ -55,7 +55,7 @@ import {
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { clampSidebarWidth, setSidebarWidth, useSidebarPrefs } from "@/lib/sidebar-width";
 import {
-  RIGHT_PANEL_DEFAULT_WIDTH,
+  defaultRightPanelWidth,
   RIGHT_PANEL_MAIN_MIN_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
@@ -676,6 +676,11 @@ function useLivePages(scopeKeys: readonly string[]): ReadonlyMap<string, LivePag
  * What survives is the half of the reconciliation only the journal can supply, and
  * the count is the one fact git genuinely cannot state — a file rewritten four
  * times has the same net diff as a file written once.
+ *
+ * THE KEY IS WHATEVER THE TOOL WROTE DOWN, which is usually an absolute path and
+ * is not what git calls the same file. Re-keying happens where the checkout is
+ * known — `reconcileReview` has the diff's `workspacePath`, and this fold has
+ * only items (#350).
  */
 export function journalWrites(items: readonly Item[]): Map<string, number> {
   const writes = new Map<string, number>();
@@ -1238,6 +1243,7 @@ export function PanelSurface({
   tasks,
   focusedTask,
   browser,
+  events = [],
   sessionId,
   sessionTitle,
   projectId,
@@ -1267,6 +1273,10 @@ export function PanelSurface({
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
   browser?: BrowserState;
+  /** The session's journal, for the surfaces that fold a live fact out of it
+   *  rather than asking for it — the Data tab's kernel state (#356), the way
+   *  `browser` above is already a fold of the same list. */
+  events?: readonly EngineEvent[];
   /** Absent on a session that does not exist yet. Every surface that needs a
    *  checkout falls back to the project's own, which is the same directory until
    *  the session cuts a worktree. */
@@ -1373,10 +1383,28 @@ export function PanelSurface({
         {...(active ? { active } : {})}
         dataScience={dataScience === true}
         {...(onOpenImage ? { onOpenImage } : {})}
+        // THE TREE'S ROW MENU OFFERS THE REFERENCE TOO. It always could — the
+        // row builds the same `fileReference` its own drag carries — but this
+        // prop was never handed down, so the one place a person BROWSES for a
+        // file to mention was the one place that could not mention it (#357).
+        // Unwrapped to the text the cockpit's draft takes, exactly as the Diff
+        // surface's rows below already are.
+        {...(onInsertReference ? { onInsertReference: (reference: TelarReference) => onInsertReference(reference.text) } : {})}
         {...(onOpenFileInNewTab ? { onOpenInNewPanelTab: onOpenFileInNewTab } : {})}
       />
     ) : null;
-  if (kind === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  if (kind === "data")
+    return (
+      <DataSurface
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(active ? { active } : {})}
+        // The kernel announces every transition on the journal; the pill folds
+        // them rather than asking once and believing the answer all turn (#356).
+        events={events}
+        {...(onOpenImage ? { onOpenImage } : {})}
+      />
+    );
   if (kind === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   /**
@@ -1851,6 +1879,25 @@ export function RightPanel({
   const [fullscreen, setFullscreen] = useState(false);
   const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
   /**
+   * WHAT THE PRESS ON THE "+" MEANT, decided while the button is down.
+   *
+   * A menu trigger toggles from `mousedown`, but the primitive defers the
+   * state change to a `requestAnimationFrame` (floating-ui's `useClick`, to
+   * let focus land before the popup opens). A frame that never arrives — an
+   * occluded or throttled renderer, which the shell's composited native
+   * browser view is very good at producing — therefore swallows the press
+   * entirely, which is #349: the pointer did nothing while the keyboard, whose
+   * path opens synchronously from `click`, still worked.
+   *
+   * So the decision is made here, on the event this component can see, and
+   * applied on `click`. The menu is CONTROLLED — this panel owns the boolean
+   * already — so when the deferred frame DID run, it has set exactly this
+   * value and the write is a no-op. `undefined` means no mouse press is in
+   * flight: a keyboard activation has no `mousedown`, and must be left to the
+   * primitive rather than repaired against a stale decision.
+   */
+  const chooserPress = useRef<boolean>(undefined);
+  /**
    * WHICH TAB'S CONTEXT MENU IS OPEN, or nothing — the strip's menus are
    * CONTROLLED for the same reason the chooser is: the native browser view
    * sits above this DOM, and `useNativeViewOverlay` needs a boolean to take it
@@ -1870,7 +1917,9 @@ export function RightPanel({
   const [tabInsert, setTabInsert] = useState<{ id: string; side: "before" | "after" } | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
-  const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
+  // A stored width is the person's own answer and always wins; this is only
+  // what to open at when there is none — see `defaultRightPanelWidth`.
+  const width = prefs.width ?? defaultRightPanelWidth(tabs);
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   /** One native scope per open Browser tab, so the strip can name each of them
@@ -2219,6 +2268,18 @@ export function RightPanel({
           {(openable.length > 0 || canStartBrowser) && (
             <DropdownMenu open={surfaceChooserOpen} onOpenChange={setSurfaceChooserOpen}>
               <DropdownMenuTrigger
+                // See `chooserPress`: the press decides, the release applies,
+                // and neither waits for a frame. Merged with the primitive's
+                // own handlers rather than replacing them, so its keyboard and
+                // focus behaviour is untouched.
+                onMouseDown={() => {
+                  chooserPress.current = !surfaceChooserOpen;
+                }}
+                onClick={() => {
+                  const wanted = chooserPress.current;
+                  chooserPress.current = undefined;
+                  if (wanted !== undefined) setSurfaceChooserOpen(wanted);
+                }}
                 render={
                   <button type="button" aria-label="Open a surface" title="Open a surface"
                     className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground">
@@ -2307,6 +2368,7 @@ export function RightPanel({
               // a surface changes its own tab's params and no other's.
               {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}
               {...(browser ? { browser } : {})}
+              events={events}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}
               {...(projectId ? { projectId } : {})}

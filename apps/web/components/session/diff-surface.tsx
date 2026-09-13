@@ -72,7 +72,7 @@ import {
 import type { GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fmtAgo } from "@/lib/format";
-import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, type SessionReview } from "@/lib/session-review";
+import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -147,7 +147,7 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
   const rows = review.rows.filter((row) => fileUnderDiffFilter(row.file, under));
   return {
     rows,
-    unreported: rows.filter((row) => !row.reported).map((row) => row.file),
+    unreported: unreportedFiles(rows),
     settled: review.settled.filter((path) => underDiffFilter(path, under)),
     filesChanged: rows.length,
     linesAdded: rows.reduce((total, row) => total + (row.file.linesAdded ?? 0), 0),
@@ -194,6 +194,7 @@ function ReviewFileRow({
   file,
   reported,
   edits,
+  registration,
   onOpenFile,
   onOpenInNewPanelTab,
   onInsertReference,
@@ -206,6 +207,9 @@ function ReviewFileRow({
   /** How many times the journal saw this path written, when that is more than
    *  once — the one thing the old Changes tab knew that git does not. */
   edits?: number;
+  /** Telar's own ignore rules, added when the project was registered. Says so
+   *  in place of "unreported", which was true and blamed the wrong party. */
+  registration?: true;
   /** Open this path in the Editor. Threaded exactly the way LatexSurface's is
    *  — the panel derives it from its own `onOpenTab`, so there is no second
    *  route into the Editor. */
@@ -272,10 +276,20 @@ function ReviewFileRow({
             <span className="text-foreground">{file.path.slice(cut + 1)}</span>
           </span>
           {/* The one badge worth the width: this row is in the diff and was
-              never in the transcript. */}
-          {!reported && (
+              never in the transcript. Telar's own ignore rules are in neither,
+              and get their author's name rather than the session's. */}
+          {!reported && !registration && (
             <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal text-warning">
               unreported
+            </Badge>
+          )}
+          {registration && (
+            <Badge
+              variant="outline"
+              className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal"
+              title="Telar’s own ignore rules — telar.yaml and .telar/ — added when this project was registered, not by this session"
+            >
+              setup
             </Badge>
           )}
           {/* Rewritten more than once on the way here. Git shows the net result
@@ -762,7 +776,14 @@ export function DiffSurface({
           {shown.rows
             .filter((row) => !row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported={!sessionId} {...rowMenu} />
+              <ReviewFileRow
+                key={row.file.path}
+                readPatch={readPatch}
+                file={row.file}
+                reported={!sessionId}
+                {...(row.registration ? { registration: row.registration } : {})}
+                {...rowMenu}
+              />
             ))}
           {sessionId && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
             <PanelDivider label="the session wrote these" />

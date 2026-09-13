@@ -6402,7 +6402,7 @@ export class EngineStore {
    * to take the whole attachment from the client — including its PATH — and a
    * client-supplied path is a client-supplied file read.
    */
-  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string }): TurnAttachment {
+  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string; title?: string }): TurnAttachment {
     this.getSession(sessionId);
     if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
     if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
@@ -6418,6 +6418,7 @@ export class EngineStore {
       id, name, mediaType, bytes: input.data.byteLength, path: file, createdAt: this.now(),
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.producer ? { producer: input.producer } : {}),
+      ...(input.title?.trim() ? { title: input.title.trim().slice(0, 200) } : {}),
     };
     const index = this.readAttachments(sessionId);
     index.set(id, attachment);

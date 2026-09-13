@@ -26,7 +26,7 @@ import path from "node:path";
 // ANY tsconfig that pulls this file in, not only the engine's own.
 import BRIDGE_SOURCE from "./bridge.py" with { type: "text" };
 import { KernelBridge, type SpawnBridge } from "./kernel-bridge";
-import { CellOutput, type ExecResult, type KernelState } from "./outputs";
+import { CellOutput, plotTitleFrom, withoutPlotTitle, type ExecResult, type KernelState } from "./outputs";
 
 export type KernelSpec = {
   sessionId: string;
@@ -61,7 +61,7 @@ export type KernelHostEvents = {
   /** Every output as it arrives — the host has already persisted images. */
   onOutput?: (sessionId: string, execId: string, cellId: string | undefined, output: CellOutput) => void;
   /** Called with raw bytes; returns the attachment id to put in the output. */
-  persistImage?: (sessionId: string, input: { mediaType: string; data: Uint8Array; producer: string }) => string;
+  persistImage?: (sessionId: string, input: { mediaType: string; data: Uint8Array; producer: string; title?: string }) => string;
 };
 
 type Entry = {
@@ -69,6 +69,17 @@ type Entry = {
   info: KernelInfo;
   waiters: Map<string, CellOutput[]>;
   chain: Promise<unknown>;
+  /**
+   * HOW TO NAME WHAT THE RUNNING EXECUTION DRAWS.
+   *
+   * An image arrives on a notification, which knows the execution and nothing
+   * about who asked for it — so a figure from `ds_plot` was filed under
+   * `exec_9`, an execution counter, and the gallery could neither name it nor
+   * tell it from the same figure drawn again (#353). Held here rather than
+   * passed because `execute` is serialized per kernel: at most one is running,
+   * so "the current caption" is a well-defined thing.
+   */
+  caption?: { producer?: string; title?: string };
 };
 
 export type KernelHostOptions = {
@@ -165,7 +176,25 @@ export class KernelHost {
         const cellId = typeof params.cellId === "string" ? params.cellId : undefined;
         const parsed = CellOutput.safeParse(params.output);
         if (!parsed.success) return;
-        const output = this.persist(spec.sessionId, parsed.data, cellId ?? execId);
+        /**
+         * THE FIGURE'S OWN NAME ARRIVES JUST BEFORE THE FIGURE. `PLOT_TITLE_PROBE`
+         * prints it before `plt.show()`, and the bridge force-flushes streams
+         * before it pushes a display output — so by the time the image gets
+         * here, the title that belongs to it has already passed through. It is
+         * taken back OUT of the stream at this one seam, so nothing downstream
+         * — the journal, the notebook file, the tool's own result — ever sees
+         * a marker line.
+         */
+        const [carried] = withoutPlotTitle([parsed.data]);
+        const probed = plotTitleFrom([parsed.data]);
+        if (probed) entry.caption = { ...entry.caption, title: probed };
+        if (!carried) return;
+        // A CELL ID BEATS A TOOL NAME BEATS A COUNTER. The cell is the most
+        // specific thing that survives a re-run — re-running it is the same
+        // figure again — and the execution counter is the least: it is
+        // different every time by construction, which is what made the gallery
+        // draw one figure three times.
+        const output = this.persist(spec.sessionId, carried, cellId ?? entry.caption?.producer ?? execId, entry.caption?.title);
         entry.waiters.get(execId)?.push(output);
         this.options.events?.onOutput?.(spec.sessionId, execId, cellId, output);
         return;
@@ -195,10 +224,10 @@ export class KernelHost {
     return info;
   }
 
-  private persist(sessionId: string, output: CellOutput, producer: string): CellOutput {
+  private persist(sessionId: string, output: CellOutput, producer: string, title?: string): CellOutput {
     if (output.kind !== "image" || !output.dataB64 || !this.options.events?.persistImage) return output;
     const data = new Uint8Array(Buffer.from(output.dataB64, "base64"));
-    const attachmentId = this.options.events.persistImage(sessionId, { mediaType: output.mediaType, data, producer });
+    const attachmentId = this.options.events.persistImage(sessionId, { mediaType: output.mediaType, data, producer, ...(title ? { title } : {}) });
     const { dataB64: _dropped, ...rest } = output;
     return { ...rest, attachmentId };
   }
@@ -211,10 +240,13 @@ export class KernelHost {
   }
 
   /** Serialized per kernel: one shell channel, one execute at a time. */
-  execute(sessionId: string, input: { code: string; cellId?: string; timeoutMs?: number }): Promise<ExecResult> {
+  execute(sessionId: string, input: { code: string; cellId?: string; timeoutMs?: number; producer?: string; title?: string }): Promise<ExecResult> {
     const entry = this.entry(sessionId);
     const run = async (): Promise<ExecResult> => {
       const outputs: CellOutput[] = [];
+      // See `Entry.caption`: the notification that carries an image knows only
+      // its execution, so what to call the figure is parked here for the run.
+      entry.caption = { ...(input.producer ? { producer: input.producer } : {}), ...(input.title ? { title: input.title } : {}) };
       // The bridge mints execId; we learn it from the first notification or the
       // reply. Register under a placeholder keyed by the request, then remap.
       const placeholder = `pending_${crypto.randomUUID()}`;
@@ -231,6 +263,7 @@ export class KernelHost {
         return { ...reply, outputs };
       } finally {
         entry.bridge.onNotification = previous;
+        entry.caption = undefined;
         for (const [key, value] of entry.waiters) if (value === outputs) entry.waiters.delete(key);
       }
     };
