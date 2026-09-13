@@ -62,6 +62,6 @@ export function page(): string {
   );
   return `<!doctype html><html><head><meta charset="utf-8"><title>#199 fixture</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<style>body{font-family:ui-sans-serif,system-ui;} .group\\/row button,.group\\/follow button{opacity:.7 !important}</style>
+<style>body{font-family:ui-sans-serif,system-ui;} .group\\/row button{opacity:.7 !important}</style>
 </head><body>${body}</body></html>`;
 }
