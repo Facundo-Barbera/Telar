@@ -1,21 +1,25 @@
 "use client";
 
 /**
- * The sidebar's footer row — three icons, by the user's spec: Usage and
- * Settings left (their words live in tooltips and aria-labels), the
- * app-update control right. The update icon is one stateful control over the
- * shell's updater bridge (lib/desktop-updates.ts): check → spinner →
- * download progress → restart-to-install → error-with-message. A Dev build
- * has no published feed and renders nothing here — its local-checkout
- * updater is a File-menu item, not a permanent glyph in the rail. In a plain
- * browser tab (no bridge) the right side renders nothing either.
+ * The sidebar's footer row — three icons, by the user's spec: Settings and
+ * Usage left (their words live in tooltips and aria-labels), the app-update
+ * control right. SETTINGS COMES FIRST (#389): it is the one a person reaches
+ * for, and Usage is the one they look at.
+ *
+ * The update icon is one stateful control over the shell's updater bridge,
+ * and it reads as THREE STATES — check, download, apply — drawn from
+ * `useDesktopUpdate()` so this rail and Settings ▸ Updates cannot disagree
+ * about what the updater is doing. A Dev build has no published feed and
+ * renders nothing here: its local-checkout updater is a File-menu item, not a
+ * permanent glyph in the rail. In a plain browser tab (no bridge) the right
+ * side renders nothing either.
  */
-import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartNoAxesColumnIcon, DownloadIcon, Loader2Icon, RefreshCwIcon, SettingsIcon, TriangleAlertIcon } from "lucide-react";
-import { desktopUpdates, updateStatusHint, type UpdateStatus } from "@/lib/desktop-updates";
+import { ChartNoAxesColumnIcon, DownloadIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
+import { useDesktopUpdate } from "@/lib/desktop-updates";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { UpdateToast } from "@/components/ui/update-toast";
 import { cn } from "@/lib/utils";
 
 const iconButton = (active = false) =>
@@ -42,68 +46,8 @@ function FooterLink({ href, label, onNavigate, children }: { href: string; label
   );
 }
 
-/** Which updater this install has: the published feed, the Dev
- *  local-checkout window, neither, or "could not ask" (retryable). */
-type Path = "feed" | "local" | "none" | "unknown";
-
 function UpdateButton() {
-  const bridge = desktopUpdates();
-  const [path, setPath] = useState<Path>("unknown");
-  const [status, setStatus] = useState<UpdateStatus>({ status: "not-available" });
-  /** A failure of THIS surface's own calls (a rejected check/install/prefs
-   *  read) — shown on the button, retryable, never silently swallowed. */
-  const [failure, setFailure] = useState<string>();
-
-  const readPrefs = useCallback(() => {
-    if (!bridge) return;
-    bridge
-      .getPrefs()
-      .then((prefs) => {
-        setFailure(undefined);
-        setPath(prefs.localUpdater ? "local" : prefs.configured ? "feed" : "none");
-      })
-      .catch((error: unknown) => {
-        // NOT a permanent hide: the button stays, says why, and retries.
-        setPath("unknown");
-        setFailure(`Could not read updater state: ${error instanceof Error ? error.message : String(error)}. Click to retry.`);
-      });
-  }, [bridge]);
-
-  useEffect(() => {
-    if (!bridge) return;
-    let live = true;
-    /**
-     * A PUSH BEATS A PULL, WHATEVER ORDER THEY RESOLVE IN. The pull below is
-     * an async IPC round-trip asking what state we MISSED; a push that lands
-     * while it is in flight is newer by construction. Without this flag a
-     * slow `status()` answering "downloading 40%" would rewind a
-     * "downloaded" that had already arrived — and downloaded is the one
-     * state that never comes again.
-     */
-    let pushed = false;
-    readPrefs();
-    // The CURRENT state, not just future pushes: `update-downloaded` is never
-    // re-emitted, so a remounted footer must ask what it missed.
-    void bridge
-      .status?.()
-      .then((current) => {
-        if (live && !pushed && current && current.status !== "unsupported") setStatus(current);
-      })
-      .catch(() => undefined);
-    const unsubscribe = bridge.onStatus((next) => {
-      if (!live) return;
-      pushed = true;
-      if (next.status === "unsupported") setPath((current) => (current === "feed" ? "none" : current));
-      else {
-        setFailure(undefined);
-        setStatus(next);
-      }
-    });
-    return () => {
-      live = false;
-      unsubscribe();
-    };
-  }, [bridge, readPrefs]);
+  const { supported, path, status, action, label, busy, failure, act } = useDesktopUpdate();
 
   /**
    * THE DEV BUILD'S LOCAL-CHECKOUT UPDATER IS NOT A RAIL CONTROL.
@@ -118,68 +62,65 @@ function UpdateButton() {
    * this component there is no published feed to offer either — a Dev build
    * showing "Check for app updates" would be a button that cannot answer.
    */
-  if (!bridge || path === "none" || path === "local") return null;
+  if (!supported || path === "none" || path === "local") return null;
 
-  // ── the published-feed path (and the "could not ask" retry state) ───────
-  const busy = status.status === "checking";
-  const progress = status.status === "available" || status.status === "downloading";
-  const ready = status.status === "downloaded";
   const failed = Boolean(failure) || status.status === "error";
-  const label =
-    failure ??
-    (ready ? `${updateStatusHint(status)} Restart to install.` : progress || busy || status.status === "error" ? updateStatusHint(status) : "Check for app updates");
-  const act = () => {
-    if (path === "unknown") return readPrefs();
-    if (ready) {
-      void bridge.install().catch((error: unknown) => setFailure(`Install failed: ${error instanceof Error ? error.message : String(error)}`));
-    } else if (!busy && !progress) {
-      void bridge.check().catch((error: unknown) => setFailure(`Update check failed: ${error instanceof Error ? error.message : String(error)}`));
-    }
-  };
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={label}
-            aria-live="polite"
-            disabled={busy || progress}
-            onClick={act}
-            className={cn(iconButton(), ready && "text-primary", failed && "text-destructive", (busy || progress) && "cursor-default hover:bg-transparent")}
-          >
-            {busy ? (
-              <Loader2Icon className="size-4 animate-spin" />
-            ) : progress ? (
-              <span className="relative flex items-center justify-center">
+    // POSITIONED, because the toast anchors to this control rather than to a
+    // corner of the screen — see components/ui/update-toast.tsx.
+    <div data-slot="update-control" className="relative flex items-center">
+      <UpdateToast status={status} />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label={label}
+              aria-live="polite"
+              disabled={busy}
+              onClick={act}
+              className={cn(
+                iconButton(),
+                action === "apply" && "text-primary",
+                failed && "text-destructive",
+                busy && "cursor-default hover:bg-transparent",
+              )}
+            >
+              {action === "restarting" || status.status === "checking" ? (
                 <Loader2Icon className="size-4 animate-spin" />
-                <span className="absolute text-[0.5rem] font-semibold tabular-nums">{Math.round(status.percent ?? 0) || ""}</span>
-              </span>
-            ) : ready ? (
-              <RefreshCwIcon className="size-4" />
-            ) : failed ? (
-              <TriangleAlertIcon className="size-4" />
-            ) : (
-              <DownloadIcon className="size-4" />
-            )}
-          </button>
-        }
-      />
-      <TooltipContent side="top">{label}</TooltipContent>
-    </Tooltip>
+              ) : action === "download" ? (
+                // The DOWNLOAD glyph, with how far along it is — the state the
+                // old idle arrow was borrowing its look from.
+                <span className="relative flex items-center justify-center">
+                  <DownloadIcon className="size-4" />
+                  <span className="absolute -bottom-1.5 text-[0.5rem] font-semibold tabular-nums">{Math.round(status.percent ?? 0) || ""}</span>
+                </span>
+              ) : action === "apply" ? (
+                <PowerIcon className="size-4" />
+              ) : (
+                // CHECK — idle, failed, or up to date. The arrow-circle, which
+                // is the glyph for "ask again", not for "fetch this".
+                <RefreshCwIcon className="size-4" />
+              )}
+            </button>
+          }
+        />
+        <TooltipContent side="top">{label}</TooltipContent>
+      </Tooltip>
+    </div>
   );
 }
 
-/** The whole footer: icon row, Usage + Settings left, update right. */
+/** The whole footer: icon row, Settings + Usage left, update right. */
 export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) {
   return (
     <div className="flex items-center gap-0.5 p-1">
-      <FooterLink href="/usage" label="Usage" onNavigate={onNavigate}>
-        <ChartNoAxesColumnIcon className="size-4" />
-      </FooterLink>
       <FooterLink href="/settings" label="Settings" onNavigate={onNavigate}>
         <SettingsIcon className="size-4" />
+      </FooterLink>
+      <FooterLink href="/usage" label="Usage" onNavigate={onNavigate}>
+        <ChartNoAxesColumnIcon className="size-4" />
       </FooterLink>
       <div className="flex-1" />
       <UpdateButton />

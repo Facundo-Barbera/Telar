@@ -14,47 +14,35 @@
  * handler. An update is a property of this installation.
  */
 
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { DownloadIcon, MonitorIcon, RotateCwIcon } from "lucide-react";
-import { CHANNEL_HINT, desktopUpdates, updateAction, updateStatusHint, type UpdatePrefsInfo, type UpdateStatus } from "@/lib/desktop-updates";
+import { useEffect, useState } from "react";
+import { DownloadIcon, MonitorIcon, PowerIcon, RefreshCwIcon } from "lucide-react";
+import { CHANNEL_HINT, desktopUpdates, updateStatusHint, useDesktopUpdate, type UpdatePrefsInfo } from "@/lib/desktop-updates";
 import { Row, SettingsGroup } from "./settings-shell";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { UpdateToast } from "@/components/ui/update-toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
- * WHETHER THERE IS A SHELL AT ALL — an external fact, read as one.
+ * WHETHER THERE IS A SHELL AT ALL, what the updater is doing, and what a press
+ * would mean — all of it read from `useDesktopUpdate()`, which is the same
+ * state machine the sidebar footer renders from.
  *
- * The donor set this with `setIsDesktop(true)` inside an effect, which this
- * app's lint rule refuses (`react-hooks/set-state-in-effect`) and is right to:
- * it is a cascading render for something that was already true before React
- * started. It cannot simply be read during render either — the server has no
- * `window`, and disagreeing with the client is a hydration mismatch.
- *
- * `useSyncExternalStore` is the documented answer to exactly that pair, and it
- * is what `theme-provider.tsx` already uses for localStorage. SUBSCRIBE IS A
- * NO-OP because the preload injects the bridge before any page script runs and
- * never removes it: there is no change to hear about.
+ * THAT SHARING IS THE POINT OF #389. This pane and the rail each used to wire
+ * the bridge themselves and had drifted apart: one recovered the "restart to
+ * install" state after a remount and the other did not, one cleared its spinner
+ * for a build with no feed and the other did not. The prefs below (channel,
+ * install-on-quit) stay here, because they are this pane's alone.
  */
-const subscribeToNothing = () => () => {};
-const shellIsPresent = () => desktopUpdates() !== undefined;
-const noShellOnTheServer = () => false;
-
 export function UpdatesSection() {
-  const isDesktop = useSyncExternalStore(subscribeToNothing, shellIsPresent, noShellOnTheServer);
-  const [status, setStatus] = useState<UpdateStatus>({ status: "not-available" });
-  const [checking, setChecking] = useState(false);
+  const { supported: isDesktop, status, action, label, busy, failure, act } = useDesktopUpdate();
   const [prefs, setPrefs] = useState<UpdatePrefsInfo | null>(null);
 
   useEffect(() => {
     const updates = desktopUpdates();
     if (!updates) return;
     void updates.getPrefs().then(setPrefs);
-    return updates.onStatus((next) => {
-      setStatus(next);
-      if (next.status !== "checking") setChecking(false);
-    });
   }, []);
 
   // Optimistic, then reconciled with what the shell actually stored — the shell
@@ -78,40 +66,46 @@ export function UpdatesSection() {
     );
   }
 
-  const checkNow = async () => {
-    setChecking(true);
-    const result = await desktopUpdates()?.check();
-    // "unsupported" comes back from the handler rather than over onStatus, so
-    // nothing else would clear the spinner or correct the hint for a build that
-    // has no update feed baked in (a local package, or dev).
-    if (result?.status === "unsupported") {
-      setStatus({ status: "unsupported" });
-      setChecking(false);
-    }
-  };
-
-  const action = updateAction(status);
-  const control =
-    action === "install" ? (
-      <Button size="sm" onClick={() => void desktopUpdates()?.install()}>
-        <DownloadIcon /> Install &amp; restart
-      </Button>
-    ) : action === "progress" ? (
-      <span className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Spinner /> {status.status === "downloading" ? "Downloading…" : "Found"}
-      </span>
-    ) : (
-      <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
-        {checking ? <Spinner /> : <RotateCwIcon />} Check for updates
-      </Button>
-    );
+  /**
+   * THE SAME THREE STATES AS THE RAIL, and the same glyphs — check, download,
+   * apply — so a person who learned the control in one surface has not learned
+   * a second one here. Only the words differ, because there is room for them.
+   */
+  const control = (
+    // Positioned for the toast, which hangs over this row rather than in a
+    // corner of the window.
+    <span data-slot="update-control" className="relative inline-flex items-center">
+      <UpdateToast status={status} />
+      {action === "restarting" ? (
+        <Button size="sm" disabled aria-label={label}>
+          <Spinner /> Restarting…
+        </Button>
+      ) : action === "apply" ? (
+        <Button size="sm" onClick={act} aria-label={label}>
+          <PowerIcon /> Install &amp; restart
+        </Button>
+      ) : action === "download" ? (
+        <span className="flex items-center gap-2 text-sm text-muted-foreground" aria-label={label}>
+          <DownloadIcon className="size-4" />
+          {status.status === "downloading" ? `Downloading… ${Math.round(status.percent ?? 0)}%` : "Downloading…"}
+        </span>
+      ) : (
+        <Button size="sm" variant="outline" onClick={act} disabled={busy} aria-label={label}>
+          {status.status === "checking" ? <Spinner /> : <RefreshCwIcon />} Check for updates
+        </Button>
+      )}
+    </span>
+  );
 
   return (
     // NO CAPTION: every row here carries a LIVE sentence — what the updater is
     // doing, what the chosen channel means — and a standing caption over three
     // of those is the doubling #357 is about.
     <SettingsGroup title="Updates">
-      <Row label="Update status" hint={updateStatusHint(status)} control={control} />
+      {/* A FAILURE OF THIS SURFACE'S OWN CALLS REPLACES THE STATUS SENTENCE —
+          a rejected install, or a restart that never happened, is what the
+          reader needs to act on, not what the update was doing before it. */}
+      <Row label="Update status" hint={failure ?? updateStatusHint(status)} control={control} />
       <Row
         label="Channel"
         /* NO SUB-LINE WHEN THERE IS NOTHING SPECIFIC TO SAY (#364). The fallback

@@ -43,8 +43,12 @@ const { AppSidebarFooterRow } = await import("../../components/app-sidebar-foote
 const STATES: { name: string; status: UpdateStatus }[] = [
   { name: "idle", status: { status: "not-available" } },
   { name: "checking", status: { status: "checking" } },
+  { name: "available (toast)", status: { status: "available", version: "0.2.9" } },
   { name: "downloading 37%", status: { status: "downloading", version: "0.2.9", percent: 37 } },
   { name: "downloaded / ready", status: { status: "downloaded", version: "0.2.9" } },
+  // The state that used to be a stall: pressing Apply now switches here at
+  // once, and the shell broadcasts it too (#389).
+  { name: "restarting", status: { status: "restarting", version: "0.2.9" } },
   { name: "error", status: { status: "error", message: "feed unreachable" } },
 ];
 

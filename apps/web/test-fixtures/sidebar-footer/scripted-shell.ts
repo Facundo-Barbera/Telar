@@ -70,6 +70,13 @@ export const bridge: UpdatesBridge = {
   install: async () => {
     record("install");
     if (state.rejectInstall) throw new Error("squirrel refused (scripted)");
+    // The shell says `restarting` BEFORE it stages anything (#389), and says it
+    // again for a repeat press rather than staging twice — main.js's install
+    // gate, scripted. `state.current` moves with it so a remount recovers the
+    // restarting state the way it recovers a downloaded one.
+    state.current = { status: "restarting", version: state.current?.version };
+    push(state.current);
+    return { status: "restarting" };
   },
   onStatus: (listener) => {
     listeners.add(listener);
