@@ -41,6 +41,7 @@ const EXPECTED_IDS: CommandId[] = [
   "send",
   "stop-turn",
   "reveal-in-finder",
+  "pin-session",
   "search-sessions",
   "toggle-rail",
   "jump-1",
@@ -95,6 +96,31 @@ describe("the registry is the one source of truth", () => {
     const reveal = COMMANDS.find((command) => command.id === "reveal-in-finder");
     expect(reveal).toMatchObject({ label: "Reveal in Finder", defaultChord: "CommandOrControl+O", menu: "file" });
     expect(defaultKeymap()["reveal-in-finder"]).toBe("CommandOrControl+O");
+  });
+
+  test("⌘P pins the conversation you are reading, and says what unpinning is called", () => {
+    // #408. The chord has to be in the registry for Settings › Keybindings to
+    // draw a row at all, and `altLabel` is what lets a surface that KNOWS the
+    // session's state name the other half of the toggle without inventing a
+    // second command id for it.
+    const pin = COMMANDS.find((command) => command.id === "pin-session");
+    expect(pin).toMatchObject({
+      label: "Pin Conversation",
+      altLabel: "Unpin Conversation",
+      group: "Conversation",
+      defaultChord: "CommandOrControl+P",
+      menu: "file",
+    });
+    expect(defaultKeymap()["pin-session"]).toBe("CommandOrControl+P");
+    // And it is nobody else's chord — the guard above proves the table as a
+    // whole, this names the collision #408 was warned about (#402's go-to-file).
+    expect(keymapConflicts(defaultKeymap())["pin-session"]).toBeUndefined();
+  });
+
+  test("only a toggle carries an alternate label", () => {
+    // A second name for a command that cannot undo itself would be a name
+    // nothing could ever correctly show.
+    expect(COMMANDS.filter((command) => command.altLabel).map((command) => command.id)).toEqual(["pin-session"]);
   });
 
   test("only the jump commands carry a jump number, and it matches the id", () => {

@@ -2635,7 +2635,7 @@ export function createClaudeDriver(
        * a time, so a pump parked forever would park the whole worker.
        */
       let streamEnded = false;
-      let interruptEscalation: ReturnType<typeof setTimeout> | undefined;
+      let cancelReap: (() => void) | undefined;
       const onAbort = () => {
         if (!persistent) {
           runtime.destroy();
@@ -2647,8 +2647,9 @@ export function createClaudeDriver(
           return;
         }
         interrupted.catch(() => runtimes.destroy(sessionId));
-        interruptEscalation = setTimeout(() => runtimes.destroy(sessionId), 10_000);
-        interruptEscalation.unref?.();
+        // The grace is named and shared now — see STOP_REAP_GRACE_MS for what
+        // it does and does not bound (#409).
+        cancelReap = runtimes.reapAfter(sessionId);
       };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
@@ -3322,7 +3323,7 @@ export function createClaudeDriver(
         throw error;
       } finally {
         turnDone = true;
-        if (interruptEscalation !== undefined) clearTimeout(interruptEscalation);
+        cancelReap?.();
         signal.removeEventListener("abort", onAbort);
         if (persistent) {
           runtimes.release(sessionId);

@@ -54,66 +54,14 @@ import {
   type CommandId,
   type Keymap,
 } from "@/lib/commands";
+import { keyCaps, useKeyCapPlatform, type KeyCapPlatform } from "@/lib/key-caps";
 import { useKeymap } from "@/lib/use-command-keys";
 import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
-/**
- * Which key names a reader is looking at. The chords are `CommandOrControl+…`
- * by design (issue #16), so the SAME map reads ⌘ on a Mac and Ctrl on a Windows
- * build — a cap that hardcoded one would be wrong on the other rather than
- * merely unstyled.
- */
-export type KeyCapPlatform = "mac" | "other";
-
-/** Modifier glyphs, in the register macOS itself uses on a menu. */
-const MAC_GLYPHS: Record<string, string> = {
-  commandorcontrol: "⌘",
-  command: "⌘",
-  cmd: "⌘",
-  control: "⌃",
-  ctrl: "⌃",
-  shift: "⇧",
-  alt: "⌥",
-  option: "⌥",
-};
-
-/** The same modifiers spelled out, where there are no glyphs for them. */
-const OTHER_NAMES: Record<string, string> = {
-  commandorcontrol: "Ctrl",
-  command: "Ctrl",
-  cmd: "Ctrl",
-  control: "Ctrl",
-  ctrl: "Ctrl",
-  shift: "Shift",
-  alt: "Alt",
-  option: "Alt",
-};
-
-/** Keys whose accelerator token is not what a keyboard has printed on it. */
-const KEY_GLYPHS: Record<string, string> = {
-  Return: "↩",
-  Left: "←",
-  Right: "→",
-  Up: "↑",
-  Down: "↓",
-  Space: "␣",
-};
-
-/**
- * A chord as the caps a reader sees, one per key.
- *
- * A SPLIT RATHER THAN A STRING, because the row draws a box per key — "⌘ N" as
- * one cap reads as a key called "⌘ N". A single-character key is upper-cased
- * (`n` → `N`) and anything longer is left as the map wrote it unless it has a
- * glyph, so a future `PageDown` needs no entry here to render.
- */
-export function keyCaps(chord: string, platform: KeyCapPlatform): string[] {
-  if (!chord) return [];
-  const named = platform === "mac" ? MAC_GLYPHS : OTHER_NAMES;
-  return chord
-    .split("+")
-    .map((part) => named[part.toLowerCase()] ?? KEY_GLYPHS[part] ?? (part.length === 1 ? part.toUpperCase() : part));
-}
+/** THE FORMATTER MOVED TO `lib/key-caps.ts` (#401). This pane was the only
+ *  surface that drew a chord until every control bound to one started showing
+ *  its caps while ⌘ is held; a settings page is not where a rail row should
+ *  import them from. Only the rows below stayed. */
 
 export type KeybindingRow = {
   /** A command id, or "jump" for the folded range. */
@@ -321,22 +269,9 @@ function ChordButton({
 }
 
 export function KeybindingsPage() {
-  /**
-   * WHICH KEYBOARD, READ AFTER THE FIRST PAINT. The platform is a client fact
-   * and this pane renders on the server first, so seeding from `navigator`
-   * would make the two disagree about the same markup — the reason every loader
-   * in this directory defers a tick. macOS is the default because the desktop
-   * shell is a Mac app; a browser on anything else corrects it before the reader
-   * has finished reading the first row.
-   */
-  const [platform, setPlatform] = useState<KeyCapPlatform>("mac");
-  useEffect(() => {
-    const task = window.setTimeout(() => {
-      const agent = `${navigator.userAgent} ${navigator.platform ?? ""}`;
-      setPlatform(/mac|iphone|ipad|ipod/i.test(agent) ? "mac" : "other");
-    }, 0);
-    return () => window.clearTimeout(task);
-  }, []);
+  // Which keyboard, read after the first paint — see `useKeyCapPlatform`. The
+  // deferral lived here until #401 gave four other surfaces the same question.
+  const platform = useKeyCapPlatform();
 
   const keymap = useKeymap();
   const [recording, setRecording] = useState<string>();

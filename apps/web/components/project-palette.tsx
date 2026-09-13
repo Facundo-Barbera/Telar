@@ -1,8 +1,17 @@
 "use client";
 
 /**
- * ONE PALETTE, TWO PAGES: where a conversation goes, and where a project comes
- * from.
+ * ONE PALETTE: where a conversation goes, and where a project comes from.
+ *
+ * TWO LISTS AND THREE PAGES BEHIND THEM. The lists are the palette proper —
+ * Projects and Sources, both a field you type at. The three behind Sources are
+ * what a source row now WALKS TO instead of doing: a folder browser, a clone
+ * URL field, and the browser again for the clone's parent. They used to be
+ * Electron's `dialog.showOpenDialog`, which leaves the palette you were
+ * half-way through, has none of its keyboard, and — in a browser tab or on a
+ * paired Mac — opens on a machine nobody is looking at. `chooseDirectory`
+ * survives as the fallback for an engine the cockpit cannot reach, because the
+ * listing crosses HTTP and the shell's own IPC does not.
  *
  * IT WAS `new-conversation-dialog.tsx`, and it grew a second page because the
  * OTHER half of "which project" had no palette at all — registering one was a
@@ -20,7 +29,9 @@
  * BACKSPACE GOES BACK ONLY ON AN EMPTY FIELD. The field is the title, so
  * Backspace is a text key first: taking it while somebody is deleting a typo
  * would throw their page away mid-word. Empty field, nothing to delete, the key
- * is free — the same rule every palette that does this uses.
+ * is free — the same rule every palette that does this uses. And the rule stops
+ * at the lists: in a folder browser Backspace goes UP, which is that page's own
+ * decision to make (`lib/directory-browser.ts`).
  *
  * THE SOURCES PAGE ALWAYS HAS A BACK. Both doors lead here (the rail's add
  * button opens it directly; the Projects page's last row walks in), and Projects
@@ -41,12 +52,12 @@ import {
   FolderPlusIcon,
   GitBranchIcon,
   LinkIcon,
-  Loader2Icon,
   SearchIcon,
   ServerIcon,
   Undo2Icon,
   XIcon,
 } from "lucide-react";
+import { DirectoryBrowser } from "@/components/directory-browser";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";
@@ -70,8 +81,50 @@ export type NewConversationTarget = {
   root?: string;
 };
 
-/** Which list is in front of the reader. */
+/**
+ * Which list the palette can be OPENED on. Deliberately the two LISTS and not
+ * every page: `page` is a prop the rail and ⌘N pass, and the pages you can only
+ * walk to from a row — the folder browser, the clone URL field — are not
+ * destinations anything outside this file should be able to name.
+ */
 export type PalettePage = "projects" | "sources";
+
+/**
+ * Every page the palette can BE on.
+ *
+ * THE THREE NEW ONES REPLACE A NATIVE DIALOG. "Local folder" and the two clone
+ * rows used to call Electron's folder picker (lib/choose-directory.ts), which
+ * covers the palette you are half-way through and, in a browser tab or on a
+ * paired Mac, opens on a machine nobody is looking at. T3 Code browses inside
+ * the palette; `clone-url` is its own page for the same reason its Git URL page
+ * is one — "paste a URL" is a different question from "pick a source", and
+ * answering it in the search field meant the field was two things at once.
+ */
+type Page = PalettePage | "local" | "clone-url" | "clone-parent";
+
+/**
+ * WHAT THE DIALOG IS CALLED, per page — for the screen reader and the
+ * `aria-label`, which are the only places the palette has a heading at all.
+ *
+ * A MAP RATHER THAN A NESTED TERNARY, because there are five pages now: the
+ * two-page version read fine as `page === "sources" ? … : …` and a five-deep
+ * chain of those is where one page quietly ends up labelled as another.
+ */
+const PAGE_TITLES: Record<Page, string> = {
+  projects: "New conversation",
+  sources: "Add a project",
+  local: "Choose a project folder",
+  "clone-url": "Clone a repository",
+  "clone-parent": "Choose where to clone",
+};
+
+const PAGE_SENTENCES: Record<Page, string> = {
+  projects: "Choose the project this conversation belongs to.",
+  sources: "Choose where the project comes from.",
+  local: "Browse for the folder that holds the project.",
+  "clone-url": "Enter the repository to clone.",
+  "clone-parent": "Browse for the folder to clone into.",
+};
 
 /** ⌘1..⌘9 reach the first nine ROWS AS FILTERED, which is what makes them
  *  useful with a query typed: the number is the row's place in front of you,
@@ -217,13 +270,20 @@ export function ProjectPalette({
   /** A project just joined the registry — re-read whatever list you draw. */
   onRegistered: () => void;
 }) {
-  const [page, setPage] = useState<PalettePage>(openOn);
+  const [page, setPage] = useState<Page>(openOn);
   const [query, setQuery] = useState("");
   const composing = useRef(false);
   const [index, setIndex] = useState(0);
-  /** The row that is working, so its own line can say so rather than a spinner
-   *  over the whole palette. A picker or a clone is seconds to minutes. */
-  const [busy, setBusy] = useState<string>();
+  /** A register or a clone is in flight, so the browser's own button says so
+   *  rather than a spinner over the whole palette. A clone is seconds to
+   *  minutes; it is the browser page that is up while it runs, which is why
+   *  this is no longer which ROW is working. */
+  const [busy, setBusy] = useState(false);
+  /** The URL the clone pages are about, once somebody has given one. Held here
+   *  rather than on the URL page, because the page that ASKS for it and the
+   *  page that picks the parent are two pages and the answer outlives the
+   *  first. */
+  const [cloneUrl, setCloneUrl] = useState<string>();
   /** One line under the list. The palette has no other place to put a sentence,
    *  and swallowing the engine's refusal would leave a dead Enter key. */
   const [notice, setNotice] = useState<string>();
@@ -250,12 +310,13 @@ export function ProjectPalette({
       setPage(openOn);
       setQuery("");
       setIndex(0);
-      setBusy(undefined);
+      setBusy(false);
       setNotice(undefined);
+      setCloneUrl(undefined);
     }
   }
 
-  const go = (next: PalettePage) => {
+  const go = (next: Page) => {
     setPage(next);
     setQuery("");
     setIndex(0);
@@ -298,57 +359,91 @@ export function ProjectPalette({
 
   const failed = (cause: unknown) => setNotice(cause instanceof EngineApiError ? cause.message : String(cause));
 
-  /** Browse for a folder that already holds a repository, and register it. */
-  const addLocalFolder = async () => {
+  /** Register a folder that already holds a repository. */
+  const addLocalFolder = async (root: string) => {
     setNotice(undefined);
-    const chosen = await chooseDirectory({ title: "Choose a project folder for Telar" });
-    if ("cancelled" in chosen) return;
-    if ("unavailable" in chosen) {
-      setNotice(chosen.unavailable);
-      return;
-    }
+    setBusy(true);
     try {
-      await settle((await api.registerProject({ name: folderName(chosen.path), root: chosen.path })).project);
+      await settle((await api.registerProject({ name: folderName(root), root })).project);
     } catch (cause) {
       failed(cause);
+    } finally {
+      setBusy(false);
     }
   };
 
   /**
-   * Clone what the field holds into a folder the person picks.
+   * Clone the URL the reader gave into the folder they picked.
    *
    * THE PARENT IS ASKED FOR, never assumed. Telar has no "code folder" setting
    * and inventing one here would put somebody's repository in a directory they
    * would then have to go and find.
    */
-  const cloneInto = async (url: string) => {
+  const cloneInto = async (parent: string) => {
+    if (!cloneUrl) return;
     setNotice(undefined);
-    const chosen = await chooseDirectory({ title: "Choose the folder to clone into" });
-    if ("cancelled" in chosen) return;
-    if ("unavailable" in chosen) {
-      setNotice(chosen.unavailable);
-      return;
-    }
+    setBusy(true);
     try {
-      await settle((await api.cloneProject({ url, parent: chosen.path })).project);
+      await settle((await api.cloneProject({ url: cloneUrl, parent })).project);
     } catch (cause) {
       failed(cause);
+    } finally {
+      setBusy(false);
     }
   };
 
+  /**
+   * THE NATIVE PICKER, STILL HERE FOR THE ONE CASE THE BROWSER CANNOT COVER:
+   * an engine the cockpit cannot reach. The listing comes over HTTP, so a
+   * browser with no adapter behind it is a dead end — while `chooseDirectory`
+   * goes through the desktop shell's own IPC and keeps working. Offered by
+   * name from the browser's footer, never silently substituted.
+   */
+  const pickWithSystem = (title: string, then: (path: string) => void) => {
+    void chooseDirectory({ title }).then((chosen) => {
+      if ("cancelled" in chosen) return;
+      if ("unavailable" in chosen) {
+        setNotice(chosen.unavailable);
+        return;
+      }
+      then(chosen.path);
+    });
+  };
+
+  /**
+   * A SOURCE ROW NO LONGER DOES THE WHOLE JOB — it opens the page that does.
+   *
+   * It used to press a button and get a Finder sheet, which is the gesture this
+   * replaces. "Local folder" walks to the browser; the two clone rows walk to
+   * the URL page, or straight past it to the parent browser when the field
+   * already holds something clonable — a reader who pasted a URL has answered
+   * that question and should not be asked it twice.
+   */
   const pickSource = (source: ProjectSource | undefined) => {
     if (!source || busy) return;
     if (source.setupRequired) {
       setNotice(`${source.title} is not set up yet. Clone it yourself and add it as a local folder.`);
       return;
     }
-    const clone = source.clones ? cloneRequest(query) : undefined;
-    if (source.clones && !clone) {
-      setNotice("Paste the repository URL — or owner/repo — in the field above, then press Enter.");
+    if (!source.clones) {
+      go("local");
       return;
     }
-    setBusy(source.id);
-    void (clone ? cloneInto(clone.url) : addLocalFolder()).finally(() => setBusy(undefined));
+    const clone = cloneRequest(query);
+    setCloneUrl(clone?.url);
+    go(clone ? "clone-parent" : "clone-url");
+  };
+
+  /** The URL page's Enter. A clonable value walks on; anything else says what
+   *  is wrong rather than being a dead key. */
+  const takeCloneUrl = (typed: string) => {
+    const clone = cloneRequest(typed);
+    if (!clone) {
+      setNotice("That is not a clone URL. Paste an https, ssh or git URL — or owner/repo.");
+      return;
+    }
+    setCloneUrl(clone.url);
+    go("clone-parent");
   };
 
   const take = (at: number) => {
@@ -363,6 +458,10 @@ export function ProjectPalette({
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    // THE LIST PAGES ONLY. The browser and the URL page own their own fields
+    // and their own keys — Backspace goes UP in a folder browser, and this
+    // would have sent it back to Projects instead.
+    if (page !== "projects" && page !== "sources") return;
     // An IME's own Enter commits a candidate; it is not a selection.
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
     if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) {
@@ -398,17 +497,40 @@ export function ProjectPalette({
           showCloseButton={false}
           onKeyDown={onKeyDown}
           className="top-[18%] max-w-lg translate-y-0 gap-0 p-0 sm:max-w-lg"
-          aria-label={page === "sources" ? "Add a project" : "New conversation"}
+          aria-label={PAGE_TITLES[page]}
         >
           {/* The title and the sentence are for a screen reader; the palette's
               own chrome is the field and the list. */}
-          <DialogTitle className="sr-only">{page === "sources" ? "Add a project" : "New conversation"}</DialogTitle>
-          <DialogDescription className="sr-only">
-            {page === "sources"
-              ? "Choose where the project comes from."
-              : "Choose the project this conversation belongs to."}
-          </DialogDescription>
+          <DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>
+          <DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>
 
+          {page === "local" || page === "clone-parent" ? (
+            /* THE FOLDER BROWSER, in place of the field and the list — T3's
+               shape, and what replaces the Finder sheet this flow used to
+               open. The clone button says "Clone here" because the folder it
+               takes is the PARENT of the checkout, not the checkout. */
+            <DirectoryBrowser
+              actionLabel={page === "local" ? "Add" : "Clone here"}
+              busy={busy}
+              {...(notice ? { notice } : {})}
+              onBack={() => go("sources")}
+              onSubmit={(root) => void (page === "local" ? addLocalFolder(root) : cloneInto(root))}
+              onFallback={() =>
+                pickWithSystem(
+                  page === "local" ? "Choose a project folder for Telar" : "Choose the folder to clone into",
+                  (root) => void (page === "local" ? addLocalFolder(root) : cloneInto(root)),
+                )
+              }
+            />
+          ) : page === "clone-url" ? (
+            <CloneUrlPage
+              {...(notice ? { notice } : {})}
+              onBack={() => go("sources")}
+              onSubmit={takeCloneUrl}
+              onChange={() => setNotice(undefined)}
+            />
+          ) : (
+            <>
           {/* THE FIELD IS THE TITLE, with the back arrow in front of it — T3's
               shape, and the reason the pages need no heading of their own. */}
           <div className="flex items-center gap-2 border-b px-3 py-2.5">
@@ -516,13 +638,11 @@ export function ProjectPalette({
                     dim={Boolean(source.setupRequired)}
                     onPick={() => pickSource(source)}
                     onHover={() => setIndex(row)}
-                    glyph={
-                      busy === source.id ? (
-                        <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
-                      ) : (
-                        <source.icon className="size-4 text-muted-foreground" />
-                      )
-                    }
+                    // NO SPINNER HERE ANY MORE. A row used to open a Finder
+                    // sheet and then register or clone, so it span while that
+                    // ran; now it walks to a page, and the work happens with
+                    // that page's own button saying so.
+                    glyph={<source.icon className="size-4 text-muted-foreground" />}
                     title={source.title}
                     hint={source.hint}
                     mono={source.hint.startsWith("Clone ")}
@@ -564,10 +684,96 @@ export function ProjectPalette({
               <kbd className="font-sans">Esc</kbd> Close
             </span>
           </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
       <RegisteredToast toast={toast} onDismiss={() => setToast(undefined)} onChanged={onRegistered} />
+    </>
+  );
+}
+
+/**
+ * PASTE THE REPOSITORY, ON ITS OWN PAGE.
+ *
+ * IT USED TO BE THE SEARCH FIELD. The Sources page narrowed to one row when
+ * what you had typed looked clonable, which was neat and made the field two
+ * things at once: a filter over six rows, and the URL box. Somebody who chose
+ * "Git URL" without having pasted anything first got a sentence telling them to
+ * go and type in the field they had just left — a dead Enter key dressed up as
+ * guidance. T3 Code gives it a page, and the page can say what it wants.
+ *
+ * THE FIELD STAYS IN THE PALETTE'S OWN SHAPE — back arrow, then the input, no
+ * heading — so this reads as the same dialog one step along. The sentence under
+ * it is T3's.
+ *
+ * PASTING INTO THE SEARCH FIELD STILL WORKS and still skips this page: a reader
+ * who already answered the question is not asked it again (`pickSource`).
+ */
+function CloneUrlPage({
+  notice,
+  onBack,
+  onSubmit,
+  onChange,
+}: {
+  notice?: string;
+  onBack: () => void;
+  onSubmit: (url: string) => void;
+  onChange: () => void;
+}) {
+  const [url, setUrl] = useState("");
+
+  return (
+    <>
+      <div className="flex items-center gap-2 border-b px-3 py-2.5">
+        <button
+          type="button"
+          aria-label="Back to sources"
+          title="Back to sources"
+          onClick={onBack}
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeftIcon className="size-4" />
+        </button>
+        <input
+          autoFocus
+          value={url}
+          onChange={(event) => {
+            setUrl(event.target.value);
+            onChange();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            onSubmit(url);
+          }}
+          placeholder="https://github.com/owner/repo.git"
+          aria-label="Git clone URL"
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1 bg-transparent font-mono text-sm outline-none placeholder:text-muted-foreground"
+        />
+      </div>
+
+      <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+        Enter a Git clone URL and press Enter to continue
+      </p>
+
+      {notice && (
+        <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+          {notice}
+        </p>
+      )}
+
+      <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+        <span>
+          <kbd className="font-sans">Enter</kbd> Continue
+        </span>
+        <span>
+          <kbd className="font-sans">Esc</kbd> Close
+        </span>
+      </div>
     </>
   );
 }

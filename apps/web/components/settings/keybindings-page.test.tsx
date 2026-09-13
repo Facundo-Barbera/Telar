@@ -2,9 +2,12 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { COMMANDS, defaultKeymap, mergeKeymap, type Command, type Keymap } from "@/lib/commands";
+// The formatter moved out of the pane in #401 — every control bound to a chord
+// draws its caps now, so a settings page is not where they can live.
+import { keyCaps } from "@/lib/key-caps";
 import { searchSettings } from "@/lib/settings-search";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
-import { KeybindingsPage, jumpChordsFrom, keyCaps, keybindingRows, recordedChord } from "./keybindings-page";
+import { KeybindingsPage, jumpChordsFrom, keybindingRows, recordedChord } from "./keybindings-page";
 
 /**
  * THE PANE IS A VIEW OF THE REGISTRY, so what has to be true is that it stays

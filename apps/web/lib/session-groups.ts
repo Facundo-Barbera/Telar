@@ -465,3 +465,26 @@ export function railRowsForCommandKeys(grouped: GroupedSessions, collapsed?: Rea
   }
   return rows.slice(0, 9);
 }
+
+/** The nine numbers, as a type: a slot is 1-9 or there is no slot, and spelling
+ *  it this way is what makes `` `jump-${slot}` `` a `CommandId` with no cast. */
+export const RAIL_JUMP_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+export type RailJumpSlot = (typeof RAIL_JUMP_SLOTS)[number];
+
+/**
+ * WHICH NUMBER EACH ROW WEARS while ⌘ is held — issue #401.
+ *
+ * Keyed by `sessionKey`, off the SAME array `useCommandKeys` is handed, so the
+ * hint on a row and the key that fires cannot disagree: if one of them counts a
+ * folded group or a shelf, both do. That is the whole reason this takes rows
+ * rather than re-walking the groups — a second walk is a second chance to be
+ * wrong about what is on screen.
+ */
+export function railJumpSlots(rows: readonly SidebarSession[]): Map<string, RailJumpSlot> {
+  const slots = new Map<string, RailJumpSlot>();
+  rows.forEach((session, index) => {
+    const slot = RAIL_JUMP_SLOTS[index];
+    if (slot !== undefined) slots.set(sessionKey(session), slot);
+  });
+  return slots;
+}

@@ -24,6 +24,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { collectNotesWallTools } from "../src/notes-tools/socket";
 import { notesTools, type NotesCapability } from "../src/notes-tools/tools";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -47,7 +48,7 @@ function repo(): string {
 }
 
 async function engine(options: { engineRoot?: string } = {}): Promise<EngineDaemon> {
-  const daemon = await startEngine({ engineRoot: options.engineRoot ?? tmp("telar-notes-socket-") });
+  const daemon = await startEngine({ models: stubModels, engineRoot: options.engineRoot ?? tmp("telar-notes-socket-") });
   daemons.push(daemon);
   return daemon;
 }
