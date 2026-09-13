@@ -176,6 +176,68 @@ struct SidebarModel {
             .min() ?? Int.max
     }
 
+    /// THE PINNED BAND'S OWN SCOPE NAME — the desktop's `PINNED_ROW_SCOPE`.
+    static let pinnedScope = "pinned"
+
+    /// A ROW'S DRAG PAYLOAD, AND THAT IT CANNOT BE READ AS A GROUP'S IS THE
+    /// POINT: a row carried over a project header must not look like a group
+    /// being dropped there — moving a conversation into another project is a
+    /// different verb, with a worktree behind it. The desktop spells the
+    /// difference as a second MIME type (`SESSION_ROW_MIME`); a SwiftUI `String`
+    /// transfer has one type, so the discriminator rides in the value, and a
+    /// group's drop handler simply finds no group by this id.
+    ///
+    /// THE BAND RIDES ALONG for the same reason it does on the web: a drop
+    /// target can refuse a row from somewhere else without having to look the
+    /// row up. Separated by a control character, which no id or key contains.
+    static func rowDragPayload(scope: String, row: ScopedSessionID) -> String {
+        ["session", scope, row.hostId.uuidString, row.sessionId].joined(separator: "\u{1}")
+    }
+
+    static func rowDrag(_ payload: String) -> (scope: String, row: ScopedSessionID)? {
+        let parts = payload.components(separatedBy: "\u{1}")
+        guard parts.count == 4, parts[0] == "session", let hostId = UUID(uuidString: parts[2]), !parts[3].isEmpty else { return nil }
+        return (parts[1], ScopedSessionID(hostId: hostId, sessionId: parts[3]))
+    }
+
+    /// THE ORDER AFTER A DROP: `dragged` lands above `target` in the list AS
+    /// DRAWN, and the whole drawn list is what comes back — so every row on
+    /// screen keeps the place it had, not only the one that moved. A row nobody
+    /// had placed is thereby placed too, which is what stops it drifting back up
+    /// the next time something happens to it. The desktop's `movedOrder`
+    /// (apps/web/lib/session-groups.ts), less the "below" half a `.dropDestination`
+    /// cannot report.
+    ///
+    /// ONE BAND AT A TIME, ENFORCED BY WHAT THIS TAKES. It is handed one band's
+    /// drawn keys; a row dropped somewhere else is not among them, the anchor is
+    /// not found, and the drawn order comes back unchanged.
+    static func moved(_ drawn: [String], dragged: String, target: String) -> [String] {
+        var without = drawn.filter { $0 != dragged }
+        guard dragged != target, drawn.contains(dragged), let anchor = without.firstIndex(of: target) else { return drawn }
+        without.insert(dragged, at: anchor)
+        return without
+    }
+
+    /// KEYS THE RAIL IS NOT DRAWING KEEP THEIR SLOT — a row on a shelf, a
+    /// project with nothing live, a Mac that is away. Each stored key that is
+    /// absent from the drawn list falls in just after the last stored key that
+    /// was present, rather than being pruned by a drag that had nothing to do
+    /// with it. The tail of the desktop's `movedOrder`, applied against the
+    /// document as it was RE-READ rather than as this phone remembered it.
+    static func keepingUnseen(_ drawn: [String], stored: [String]) -> [String] {
+        var next = drawn
+        var after = -1
+        for key in stored {
+            if let index = next.firstIndex(of: key) {
+                after = index
+                continue
+            }
+            next.insert(key, at: after + 1)
+            after += 1
+        }
+        return next
+    }
+
     /// The desktop's `orderSessions`, to the letter: the rows somebody placed
     /// come first in that order, and the rest fall in after them in the order
     /// they arrived — which is the recency sort this list already had.

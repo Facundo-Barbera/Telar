@@ -101,7 +101,7 @@ struct SessionSidebar: View {
                 }
                 if !model.pinned.filter(matches).isEmpty {
                     Section {
-                        ForEach(model.pinned.filter(matches)) { row in sessionRow(row) }
+                        ForEach(model.pinned.filter(matches)) { row in sessionRow(row, band: .pinned) }
                     }
                 }
                 ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
@@ -111,7 +111,7 @@ struct SessionSidebar: View {
                             // and a card's status and branch lines are mostly
                             // empty on an idle row — so the card was spending
                             // three lines to restate the header.
-                            ForEach(group.sessions) { row in sessionRow(row, variant: .slim) }
+                            ForEach(group.sessions) { row in sessionRow(row, variant: .slim, band: .group(group)) }
                         }
                     } header: {
                         Button {
@@ -400,6 +400,26 @@ struct SessionSidebar: View {
     /// — pinned, and "Needs you" — keep the card.
     private enum RowVariant { case card, slim }
 
+    /// WHICH BAND A ROW CAN BE DRAGGED WITHIN, and the field that band's order
+    /// is written to. Absent for the bands that are not arrangeable: "Needs
+    /// you" is a queue the engine fills rather than a shelf you keep, the
+    /// shelves are off the list by definition, and a search result is already
+    /// the answer to a question you asked — the same three exclusions the Mac
+    /// makes.
+    private enum RowBand {
+        case pinned
+        case group(SidebarProject)
+
+        /// The scope a drag carries, so a drop elsewhere can refuse it without
+        /// looking the row up.
+        var scope: String {
+            switch self {
+            case .pinned: SidebarModel.pinnedScope
+            case .group(let group): group.id
+            }
+        }
+    }
+
     /// THE DISCLOSURE CHEVRON IS THE SYSTEM'S CALL, and is left to it.
     ///
     /// A `NavigationLink` in a compact width PUSHES, so it gets the chevron
@@ -409,7 +429,7 @@ struct SessionSidebar: View {
     /// would be the one place this file lied about what a tap does. The two
     /// widths look alike everywhere it is a matter of taste; here it is a
     /// matter of fact, so they are allowed to differ.
-    private func sessionRow(_ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true) -> some View {
+    private func sessionRow(_ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true, band: RowBand? = nil) -> some View {
         NavigationLink(value: row.id) {
             Group {
                 switch variant {
@@ -478,6 +498,48 @@ struct SessionSidebar: View {
                 } else {
                     menuButton(item, on: row)
                 }
+            }
+        }
+        // A BARE `.draggable`, THE SAME GESTURE THE GROUP HEADER ALREADY USES.
+        //
+        // The alternative was `.onMove` inside an editable section, which would
+        // have put the rail into a mode to move one row — and the header, a foot
+        // above, would still reorder on a plain long-press. One gesture for both
+        // levels of the same list beats a consistent-with-nothing second mode.
+        // The long-press menu and the grab do share a press, and iOS resolves it
+        // the way it does on the header: a press that moves is a drag, one that
+        // does not is a menu.
+        .modifier(RowDragModifier(band: band, row: row, onDrop: { dragged, scope in
+            Task { await dropRow(dragged, before: row, scope: scope) }
+        }))
+    }
+
+    /// Drag and drop for one row, or nothing at all for a band that is not
+    /// arrangeable — a modifier rather than an `if` inside the builder so an
+    /// undraggable row keeps exactly the view type it had.
+    private struct RowDragModifier: ViewModifier {
+        let band: RowBand?
+        let row: HostedSession
+        let onDrop: (ScopedSessionID, String) -> Void
+
+        func body(content: Content) -> some View {
+            if let band {
+                content
+                    .draggable(SidebarModel.rowDragPayload(scope: band.scope, row: row.id))
+                    .dropDestination(for: String.self) { payload, _ in
+                        guard let drag = SidebarModel.rowDrag(payload.first ?? ""),
+                              // The same band, and the SAME MAC. The list written
+                              // is one Mac's document listing that Mac's own
+                              // rows, so a row from the other half of a merged
+                              // group has no place in it — and there is no
+                              // document that could hold both.
+                              drag.scope == band.scope, drag.row.hostId == row.hostId, drag.row != row.id
+                        else { return false }
+                        onDrop(drag.row, band.scope)
+                        return true
+                    }
+            } else {
+                content
             }
         }
     }
@@ -849,6 +911,75 @@ struct SessionSidebar: View {
      Optimistic, like the desktop: the group lands where it was dropped on the
      same frame, and a Mac that refuses puts it back.
      */
+    /// A CONVERSATION DROPPED ON ANOTHER, within its group or within pinned.
+    ///
+    /// The band is looked up again HERE rather than captured when the row was
+    /// built: a drop happens after a poll may have moved something, and the list
+    /// that gets written has to be the one on screen when the finger lifted.
+    private func dropRow(_ dragged: ScopedSessionID, before target: HostedSession, scope: String) async {
+        let pinnedBand = scope == SidebarModel.pinnedScope
+        let group = pinnedBand ? nil : model.projects.first { $0.id == scope }
+        guard pinnedBand || group != nil else { return }
+        let band = pinnedBand ? model.pinned.filter(matches) : (group?.sessions ?? [])
+        // ONE MAC'S ROWS, because one Mac's document is what this writes. A
+        // merged group draws two Macs' conversations; the other Mac's are not
+        // in this list and cannot be placed by it.
+        let ids = band.filter { $0.hostId == dragged.hostId }.map(\.session.id)
+        let next = SidebarModel.moved(ids, dragged: dragged.sessionId, target: target.session.id)
+        guard next != ids else { return }
+        await saveRowOrder(next, key: group.map { .group($0.layoutKey) } ?? .pinned, host: dragged.hostId)
+    }
+
+    /// Which list a row drop writes. Two cases rather than an optional key, so a
+    /// group lookup that came back empty can never quietly write the pinned band.
+    private enum RowOrderKey {
+        case pinned
+        case group(String)
+    }
+
+    /**
+     THE SAME DISCIPLINE `saveOrder` DOCUMENTS, one level down: re-read, then
+     write ONE field.
+
+     `sessionOrder` is a map, so writing it means sending the whole map — and a
+     map this phone was holding from a minute ago would resurrect the group order
+     a drag on the Mac replaced in between. So the document is re-read
+     immediately before the write and this group's key is MERGED INTO IT, which
+     is the desktop's own rule (`setSessionOrder`, lib/sidebar-layout.ts): a drop
+     on the phone leaves every other group's rows exactly as the Mac has them.
+
+     `pinnedOrder` and `projectOrder` are never named, so the engine leaves them
+     alone — the field you dragged is the field that moves.
+     */
+    private func saveRowOrder(_ ids: [String], key: RowOrderKey, host: HostID) async {
+        guard let api = settings.api(for: host) else { return }
+        let previous = inbox.layout(host)
+        var optimistic = previous
+        switch key {
+        case .pinned: optimistic.pinnedOrder = ids
+        case .group(let group): optimistic.sessionOrder[group] = ids
+        }
+        inbox.applyLayout(host, optimistic)
+        do {
+            // A read that fails is not a reason to refuse the drop — the copy in
+            // hand is still this phone's best word.
+            let current = (try? await api.sidebarLayout()) ?? previous
+            switch key {
+            case .pinned:
+                let order = SidebarModel.keepingUnseen(ids, stored: current.pinnedOrder)
+                inbox.applyLayout(host, try await api.setSidebarLayout(pinnedOrder: order))
+            case .group(let group):
+                var map = current.sessionOrder
+                map[group] = SidebarModel.keepingUnseen(ids, stored: current.sessionOrder[group] ?? [])
+                inbox.applyLayout(host, try await api.setSidebarLayout(sessionOrder: map))
+            }
+            layoutError = nil
+        } catch {
+            inbox.applyLayout(host, previous)
+            layoutError = "Couldn't save conversation order. Try again when the Mac is connected."
+        }
+    }
+
     private func saveOrder(_ order: [String], host: HostID) async {
         guard let api = settings.api(for: host) else { return }
         let previous = inbox.layout(host)

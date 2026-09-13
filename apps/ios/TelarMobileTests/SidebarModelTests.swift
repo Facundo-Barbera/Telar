@@ -173,6 +173,51 @@ import Testing
         #expect(result.projects.map(\.name) == ["Zulu", "Alpha", "Mike"])
     }
 
+    /// A DROP PUTS THE ROW ABOVE THE ONE IT LANDED ON, and gives back the WHOLE
+    /// drawn list — so a row nobody had placed is placed by this drop rather
+    /// than drifting back up the next time something happens to it.
+    @Test func aDropPlacesEveryDrawnRowNotOnlyTheOneThatMoved() {
+        #expect(SidebarModel.moved(["a", "b", "c"], dragged: "c", target: "a") == ["c", "a", "b"])
+        #expect(SidebarModel.moved(["a", "b", "c"], dragged: "a", target: "c") == ["b", "a", "c"])
+    }
+
+    /// A DROP THAT NAMES NOTHING IN THIS BAND CHANGES NOTHING. The move is
+    /// handed one band's drawn keys, so a row dropped on another group's row
+    /// finds no anchor and the order comes back untouched — which is what keeps
+    /// "move a conversation between projects" a different verb.
+    @Test func aRowFromAnotherBandLeavesTheOrderAlone() {
+        #expect(SidebarModel.moved(["a", "b"], dragged: "elsewhere", target: "a") == ["a", "b"])
+        #expect(SidebarModel.moved(["a", "b"], dragged: "a", target: "elsewhere") == ["a", "b"])
+        #expect(SidebarModel.moved(["a", "b"], dragged: "a", target: "a") == ["a", "b"])
+    }
+
+    /// ROWS THE RAIL IS NOT DRAWING KEEP THEIR SLOT — a conversation on a shelf,
+    /// one filtered out, one on a Mac that is away. A drag that had nothing to
+    /// do with them must not prune them from the Mac's document.
+    @Test func aWriteKeepsTheRowsThisPhoneCannotSee() {
+        // `hidden` sat between b and c and stays there; `tail` was last and stays last.
+        #expect(SidebarModel.keepingUnseen(["c", "a", "b"], stored: ["a", "b", "hidden", "c", "tail"])
+                == ["c", "a", "b", "hidden", "tail"])
+        #expect(SidebarModel.keepingUnseen(["a"], stored: []) == ["a"])
+        // Nothing drawn is still not licence to drop what is stored.
+        #expect(SidebarModel.keepingUnseen([], stored: ["x", "y"]) == ["x", "y"])
+    }
+
+    /// A ROW'S DRAG CARRIES ITS BAND AND ITS MAC, and cannot be read as a
+    /// group's: a row carried over a project header must not look like a group
+    /// being dropped there.
+    @Test func aRowDragNamesItsBandAndSurvivesARoundTrip() throws {
+        let host = UUID()
+        let ref = ScopedSessionID(hostId: host, sessionId: "session_1")
+        let payload = SidebarModel.rowDragPayload(scope: "repo:github.com/owner/repo", row: ref)
+        let read = try #require(SidebarModel.rowDrag(payload))
+        #expect(read.scope == "repo:github.com/owner/repo")
+        #expect(read.row == ref)
+        // A group's own drag payload is its key, which is not one of these.
+        #expect(SidebarModel.rowDrag("repo:github.com/owner/repo") == nil)
+        #expect(SidebarModel.rowDrag("\(host.uuidString):project_1") == nil)
+    }
+
     @Test func deepLinksRoundTripAndRejectMalformedOrForeignLinks() {
         let ref = ScopedSessionID(hostId: UUID(), sessionId: "session / ? &= ü")
         #expect(ScopedSessionID(url: ref.url) == ref)
