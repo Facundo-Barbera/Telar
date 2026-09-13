@@ -73,6 +73,7 @@ import { ImageLightbox } from "@/components/session/image-lightbox";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
+import { useCommandHandlers } from "@/lib/use-command-keys";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
@@ -1878,6 +1879,16 @@ export function RightPanel({
 }) {
   const [fullscreen, setFullscreen] = useState(false);
   const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
+  /**
+   * "FILL THE WINDOW" IS THE ONE COMMAND THIS PANEL OWNS (#367) — the corner
+   * glyph and the context-menu row already share `setFullscreen`, and the chord
+   * is the third gesture on the same state rather than a fourth idea about it.
+   *
+   * BOUND ONLY WHILE THE PANEL IS OPEN. A chord that put a closed panel into
+   * fullscreen would fill the window with a surface nobody asked for; with
+   * nothing bound the key does nothing, which is the honest answer.
+   */
+  useCommandHandlers(open ? { "panel-fullscreen": () => setFullscreen((current) => !current) } : {}, [open]);
   /**
    * WHAT THE PRESS ON THE "+" MEANT, decided while the button is down.
    *

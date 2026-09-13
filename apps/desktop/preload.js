@@ -152,4 +152,16 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   commandKeys: {
     onInvoke: (listener) => on("telar:command-keys:invoke", listener),
   },
+  // Issue #367: the chords are the cockpit's to edit, and the shell's to mirror.
+  // `set` is what makes the application menu rebuild its accelerators — the
+  // blocker the old settings copy named. `get` is the recovery path for a
+  // renderer whose own storage was cleared inside a shell that still remembers.
+  keybindings: {
+    get: () => ipcRenderer.invoke("telar:keybindings:get"),
+    set: (overrides) => ipcRenderer.invoke("telar:keybindings:set", overrides),
+    // While a row is recording, the menu drops its accelerators — macOS matches
+    // a key equivalent before the page ever sees the keydown, so without this
+    // the pane could not record any chord the menu already carries.
+    capture: (capturing) => ipcRenderer.invoke("telar:keybindings:capture", capturing),
+  },
 });

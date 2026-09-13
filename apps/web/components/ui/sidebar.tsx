@@ -38,7 +38,6 @@ const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
-const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 // What a caller may ask for when it turns resizing on. Everything is optional;
 // `resizable` on its own (or `resizable={true}`) gives a drag with sensible
@@ -162,21 +161,10 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
 
-  // Adds a keyboard shortcut to toggle the sidebar.
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault()
-        toggleSidebar()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown, true)
-    return () => window.removeEventListener("keydown", handleKeyDown, true)
-  }, [toggleSidebar])
+  // NO KEY OF ITS OWN. The primitive shipped with a hardcoded ⌘B listener, which
+  // is why "toggle the rail" never appeared on the keybindings pane and could not
+  // be changed (#367). The chord is a command now — `toggle-rail`, bound by
+  // app-sidebar.tsx — so it lives in the registry with everything else.
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
