@@ -27,7 +27,10 @@ export function WorkspaceSection() {
   useRestoreDefaults(() => save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode }));
 
   return (
-    <SettingsGroup title="New sessions" description="What a conversation is built with before you change it.">
+    // NO CAPTION, BECAUSE THE ROW KEEPS ITS SENTENCE (#357). A group gets one or
+    // the other, and "Workspace" is the jargon here — the caption restated the
+    // group title while the row is where the two modes are actually explained.
+    <SettingsGroup title="New sessions">
       <Row
         label="Workspace"
         icon={FolderGitIcon}

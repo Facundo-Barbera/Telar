@@ -93,3 +93,9 @@ test("a row renders the name, the default badge and the account", () => {
   expect(html).toContain("me@work.example");
   expect(html).toContain("browses here");
 });
+
+test("a profile named Default does not also wear a Default badge", () => {
+  // It read "Default Default" (#357): a badge repeating the name beside it adds
+  // no fact. One named anything else still needs the mark.
+  expect(section).toContain('profile.label.trim().toLowerCase() !== "default"');
+});

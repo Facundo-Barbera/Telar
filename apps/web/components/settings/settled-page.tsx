@@ -149,7 +149,10 @@ export function SettledPage() {
   return (
     <SettingsGroup
       title="Settled sessions"
-      description="Off your list, not finished. Restoring one pins it back whatever the settling window says."
+      // ONE SENTENCE (#357). The second — that restoring pins a conversation
+      // back whatever the settling window says — is what the Restore button on
+      // every row does, read before there is a row to press it on.
+      description="Off your list, not finished."
       {...(rows && rows.length > 0 ? { action: <span className="text-xs tabular-nums text-muted-foreground">{rows.length} settled</span> } : {})}
     >
       {rows === undefined && <Row label="Reading the list" icon={ArchiveIcon} control={<Spinner />} />}

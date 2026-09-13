@@ -46,28 +46,35 @@ describe("providerSummary", () => {
   test("a missing engine answer is 'checking', not 'broken'", () => {
     // Before the first probe lands there is nothing to report, and a red row
     // that turns green a second later teaches people to ignore the colour.
-    expect(providerSummary(undefined).headline).toBe("Checking");
+    expect(providerSummary(undefined)).toBe("Checking");
   });
 
   test("off outranks everything, including a missing CLI", () => {
-    expect(providerSummary(probe({ status: "disabled", installed: false })).headline).toBe("Off");
+    expect(providerSummary(probe({ status: "disabled", installed: false }))).toBe("Off");
   });
 
   test("a missing CLI outranks any sign-in note", () => {
     // There is no point telling somebody their config folder looks fine when
     // the CLI it configures is not installed.
-    const summary = providerSummary(probe({ status: "error", installed: false, signIn: "signed-in", message: "not on PATH" }));
-    expect(summary).toEqual({ headline: "Not installed", detail: "not on PATH" });
+    expect(providerSummary(probe({ status: "error", installed: false, signIn: "signed-in", message: "not on PATH" }))).toBe("Not installed");
   });
 
-  test("an unprovable Claude login says 'Installed', never 'Signed in'", () => {
-    // THE ONE THIS FILE EXISTS FOR. The token is in the Keychain, so the only
-    // thing measured is that the binary is there. Claiming more would be a
-    // confident wrong answer about somebody's working account.
-    expect(providerSummary(probe({ signIn: "unknown" })).headline).toBe("Installed");
-    expect(providerSummary(probe({ signIn: "signed-in" })).headline).toBe("Signed in");
-    expect(providerSummary(probe({ status: "warning", signIn: "signed-out" })).headline).toBe("Not signed in");
-    expect(providerSummary(probe({ status: "warning", signIn: "missing-config-dir" })).headline).toBe("Config folder missing");
+  test("a working login gets no badge at all, however it was proved", () => {
+    /**
+     * THE ONE THIS FILE EXISTS FOR, restated for the badge (#357). Claude's
+     * token is in the Keychain, so "installed" was all that could be measured —
+     * and the old copy said so in a sentence on every healthy row ("Base login
+     * — sign-in state cannot be verified from disk"). Claiming "Signed in"
+     * would be a confident wrong answer; saying nothing is the honest one, and
+     * the row reads name · version · switch.
+     */
+    expect(providerSummary(probe({ signIn: "unknown" }))).toBeNull();
+    expect(providerSummary(probe({ signIn: "signed-in" }))).toBeNull();
+  });
+
+  test("the states a reader has to act on keep their word", () => {
+    expect(providerSummary(probe({ status: "warning", signIn: "signed-out" }))).toBe("Not signed in");
+    expect(providerSummary(probe({ status: "warning", signIn: "missing-config-dir" }))).toBe("Config folder missing");
   });
 });
 

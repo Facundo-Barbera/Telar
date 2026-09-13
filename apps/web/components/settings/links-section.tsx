@@ -24,7 +24,9 @@ export function LinksSection() {
   useRestoreDefaults(() => setOpenInSessionBrowser(false));
 
   return (
-    <SettingsGroup title="Links" description="What a link in a conversation does when you click it.">
+    // The caption asked the question the row's own sentence answers, so it went
+    // (#357): one of the two, never both.
+    <SettingsGroup title="Links">
       <Row
         label="Open in the session's browser"
         icon={ExternalLinkIcon}

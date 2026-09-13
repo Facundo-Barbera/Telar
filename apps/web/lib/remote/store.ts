@@ -168,13 +168,41 @@ export function storePath(): string {
   return path.join(remoteHome(), "remote.json");
 }
 
-const EMPTY: RemoteFile = { version: 1, requireAuth: false, devices: [] };
+/**
+ * A COCKPIT NOBODY HAS CONFIGURED REQUIRES PAIRING (#357).
+ *
+ * The Remote access pane used to open on "Require pairing" OFF with a sentence
+ * warning that anything able to reach this address has full control — a setting
+ * whose default the pane itself argues against. The default is the fix; the
+ * sentence stays, because it is still true whenever somebody turns it off.
+ *
+ * NOTHING IS LOCKED OUT BY THIS. The process that launched the server is not a
+ * guest: it carries the per-launch host secret as a header and a cookie
+ * (host-token.ts), and `decideApiAccess` admits it as a full-role caller before
+ * it ever looks for a device. Both real launch paths mint one — the desktop
+ * shell (apps/desktop/main.js) and `bun run dev` (scripts/dev.mjs) — so the
+ * window that opens on a fresh install is already inside.
+ */
+const FRESH: RemoteFile = { version: 1, requireAuth: true, devices: [] };
+
+/**
+ * A DAMAGED FILE IS NOT A FRESH ONE, AND MUST NOT BE TREATED AS ONE.
+ *
+ * `readRemote` falls back here when the file exists and cannot be trusted — a
+ * version this build does not know, a hand-edit gone wrong. Defaulting THAT to
+ * "require pairing" would lock a working install out of itself on the strength
+ * of a parse failure: every paired device is gone with the file, so a browser
+ * that has been reaching this cockpit for months would land on /pair with no
+ * way to mint a code. Falling open is the wrong answer in general and the right
+ * one here, because the alternative is a cockpit only a reinstall can reopen.
+ */
+const RESET: RemoteFile = { version: 1, requireAuth: false, devices: [] };
 
 export function readRemote(): RemoteFile {
   const file = storePath();
-  if (!fs.existsSync(file)) return { ...EMPTY, devices: [] };
+  if (!fs.existsSync(file)) return { ...FRESH, devices: [] };
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RemoteFile;
-  if (parsed.version !== 1) return { ...EMPTY, devices: [] };
+  if (parsed.version !== 1) return { ...RESET, devices: [] };
   for (const device of parsed.devices) {
     device.role = device.role === "observer" ? "observer" : "full";
   }

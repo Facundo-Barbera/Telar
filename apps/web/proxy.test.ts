@@ -52,7 +52,10 @@ describe("pairing proxy", () => {
   });
 
   test("no-op while requireAuth is off", () => {
+    // Stated rather than inherited: a fresh store requires pairing now (#357),
+    // so "off" is a thing this cockpit was switched to.
     freshHome();
+    setRequireAuth(false);
     expect(proxy(new NextRequest("http://cockpit.test/api/health"))).toBeUndefined();
   });
 

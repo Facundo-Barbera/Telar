@@ -246,8 +246,15 @@ function ServerRow({
   );
 }
 
-function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => void }) {
-  const [open, setOpen] = useState(false);
+/**
+ * THE FORM, ONCE SOMEBODY HAS ASKED FOR IT. Opening is the caller's business
+ * now: this used to own an `open` flag and render a whole card saying "Add a
+ * server ▸ [Add]" while closed — a group, a heading and a row whose entire
+ * content was a button (#357). The button moved onto the server list's own
+ * header, where Browser profiles already keeps "New profile", and what is left
+ * here is the form itself.
+ */
+function AddServerForm({ scope, onAdded, onClose }: { scope: McpScope; onAdded: () => void; onClose: () => void }) {
   const [transport, setTransport] = useState<Transport>("stdio");
   const [id, setId] = useState("");
   const [label, setLabel] = useState("");
@@ -278,7 +285,7 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
       setTarget("");
       onAdded();
       // Closes on success: the pane returns to what is configured.
-      setOpen(false);
+      onClose();
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause.message : "That server could not be saved.");
     } finally {
@@ -286,42 +293,16 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
     }
   };
 
-  /**
-   * PROGRESSIVE. The form was always open, so the pane led with an empty
-   * three-transport form rather than with what is configured. It opens on
-   * demand and closes after a server lands.
-   */
-  if (!open) {
-    return (
-      <SettingsGroup title="Add a server">
-        <Row
-          icon={PlusIcon}
-          label="Add a server"
-          // WHERE SAME-ID REPLACEMENT NOW LIVES. A project server shadowing a
-          // machine-wide one is how you point a familiar tool name at this
-          // workspace — and it is also how you silently lose the machine-wide
-          // one, so it is said where the id gets chosen rather than in a header.
-          hint={
-            scope
-              ? `Only sessions on ${scope.projectName}. An id that matches a machine-wide server replaces it here.`
-              : "Every project, unless one defines the same id."
-          }
-          control={
-            <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-              Add
-            </Button>
-          }
-        />
-      </SettingsGroup>
-    );
-  }
-
   return (
     <SettingsGroup
       title="Add a server"
+      // WHERE SAME-ID REPLACEMENT IS SAID. A project server shadowing a
+      // machine-wide one is how you point a familiar tool name at this
+      // workspace — and it is also how you silently lose the machine-wide one,
+      // so it is said where the id gets chosen rather than in a list header.
       description={
         scope
-          ? `Offered to every session on ${scope.projectName}, and to no other project.`
+          ? `Offered to every session on ${scope.projectName}, and to no other project. An id that matches a machine-wide server replaces it here.`
           : "Offered to every session on every project, unless a project defines one with the same id."
       }
     >
@@ -359,7 +340,7 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
           <Button type="button" size="sm" disabled={busy || !id.trim() || !target.trim()} onClick={() => void save()}>
             Add server
           </Button>
-          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
         </div>
@@ -373,6 +354,10 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
   const [inherited, setInherited] = useState<McpServer[]>([]);
   const [statuses, setStatuses] = useState<McpOAuthStatus[]>([]);
   const [unreachable, setUnreachable] = useState(false);
+  /** PROGRESSIVE. The form was always on the pane, so the reader met an empty
+   *  three-transport form before they met what is configured. It opens from the
+   *  list's own header and closes after a server lands. */
+  const [adding, setAdding] = useState(false);
   const [outcome, setOutcome] = useState<{ connected?: string; error?: string }>();
   /** The server whose sign-in is happening in another window right now. */
   const [awaiting, setAwaiting] = useState<string>();
@@ -516,13 +501,27 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         // THE OVERRIDE RULE MOVED TO WHERE THE ID IS TYPED. Both branches used
         // to explain same-id replacement in the header, which is the one place
         // it can do nothing: by the time you are reading a list of configured
-        // servers the id is already chosen. It is now the hint on "Add a
-        // server", where it is a warning rather than trivia.
+        // servers the id is already chosen. It is now the form's own caption,
+        // where it is a warning rather than trivia.
         description={
           scope
             ? "Tool servers only this project's sessions see."
             : "Tool servers every project sees."
         }
+        // ADD BELONGS TO THE LIST, NOT TO A CARD OF ITS OWN (#357). It used to
+        // be a whole group below this one whose single row's entire content was
+        // a button. This is the shape Browser profiles already uses for "New
+        // profile": the verb that adds to a list sits on the list's header.
+        {...(adding
+          ? {}
+          : {
+              action: (
+                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+                  <PlusIcon className="size-3.5" />
+                  Add
+                </Button>
+              ),
+            })}
       >
         {unreachable ? (
           <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
@@ -550,7 +549,7 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         )}
       </SettingsGroup>
 
-      <AddServerForm scope={scope} onAdded={() => void load()} />
+      {adding && <AddServerForm scope={scope} onAdded={() => void load()} onClose={() => setAdding(false)} />}
 
       {/* The other half of what this project's sessions get, shown here rather
           than left implicit: a tool arriving in a transcript that this page did

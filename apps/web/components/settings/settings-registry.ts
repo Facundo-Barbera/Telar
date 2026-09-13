@@ -46,7 +46,6 @@ import {
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
-  GitBranchIcon,
   GitPullRequestIcon,
   GlobeIcon,
   ImageIcon,
@@ -106,7 +105,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Settle quiet sessions",
-            hint: "Off means nothing leaves the list on its own.",
+            hint: "Quiet sessions leave the list on their own, or nothing does.",
             keywords: ["inbox", "archive", "auto"],
             icon: TimerIcon,
           },
@@ -380,7 +379,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Require pairing",
-            hint: "Unpaired devices are refused. Off, anything that can reach this address has full control.",
+            hint: "On by default. Unpaired devices are refused; off, anything that can reach this address has full control.",
             keywords: ["auth", "security", "phone", "ipad"],
             icon: SmartphoneIcon,
           },
@@ -446,7 +445,11 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     // indexed anyway because "where are my saved passwords" and "which account
     // does the browser sign in as" are exactly the questions search exists for,
     // and landing on the right pane answers most of both.
-    label: "Integrations",
+    //
+    // The label is the nav's, and the nav calls this Browser now (#357). The id
+    // stays `integrations` because it is the route; "integrations" survives as a
+    // keyword so the old word still finds the pane.
+    label: "Browser",
     icon: PlugZapIcon,
     groups: [
       {
@@ -454,13 +457,13 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           {
             title: "Browser profiles",
             hint: "The identities Telar's own browser signs in as, one set of cookies each.",
-            keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser"],
+            keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser", "integrations"],
             icon: CircleUserRoundIcon,
           },
           {
             title: "Remembered logins",
             hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
-            keywords: ["1password", "password", "credential", "autofill", "revoke", "vault"],
+            keywords: ["1password", "password", "credential", "autofill", "revoke", "vault", "integrations"],
             icon: KeyRoundIcon,
           },
         ],
@@ -500,14 +503,8 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           {
             title: "GitHub",
             hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
-            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge"],
+            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge", "gitlab"],
             icon: GitPullRequestIcon,
-          },
-          {
-            title: "GitLab",
-            hint: "Not supported — Telar reads GitHub through gh and has no GitLab reader.",
-            keywords: ["glab", "forge", "not supported"],
-            icon: GitBranchIcon,
           },
         ],
       },
@@ -519,7 +516,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: WrenchIcon,
     groups: [
       {
-        title: "Add a server",
+        /**
+         * NAVIGATE-ONLY SINCE THE FORM BECAME PROGRESSIVE (#357). "Add a
+         * server" is the caption on a form that is not on screen until somebody
+         * presses Add, so there is no standing row to anchor to — but it is the
+         * question people open this pane with, so it stays indexed.
+         */
         rows: [
           {
             title: "Add a server",
@@ -530,18 +532,25 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
-        title: "Computer use",
+        // ONE ROW, NOT THREE. Engine, Driver daemon and Access were three
+        // readouts of one question; the pane answers it once now, so the index
+        // asks it once. Their old vocabulary survives as keywords.
         rows: [
           {
-            title: "Engine",
-            hint: "Which computer-use backend is installed — screenshots, clicks, typing in Mac apps.",
-            keywords: ["cua", "driver", "automation"],
-            icon: MonitorIcon,
-          },
-          {
-            title: "Access",
-            hint: "Accessibility and Screen Recording permission for driving the Mac.",
-            keywords: ["permission", "privacy", "accessibility", "screen recording", "grant"],
+            title: "Computer use",
+            hint: "Whether sessions can drive Mac apps — screenshots, clicks, typing.",
+            keywords: [
+              "cua",
+              "driver",
+              "automation",
+              "engine",
+              "access",
+              "permission",
+              "privacy",
+              "accessibility",
+              "screen recording",
+              "grant",
+            ],
             icon: MonitorIcon,
           },
         ],

@@ -46,9 +46,11 @@ test("every indexed group is still a group heading that exists", () => {
 test("no two rows claim the same anchor", () => {
   const ids = SETTINGS_SEARCH_INDEX.entries.map((entry) => entry.id);
   expect(new Set(ids).size).toBe(ids.length);
-  // "Engine" is a row on two panes — the reason the pane is in the id.
+  // The pane is in the id, which is what lets two panes carry a row of the same
+  // name. "Engine" used to be the example on both sides; Agent tools answers
+  // that question in one row called "Computer use" now (#357).
   expect(ids).toContain("settings-row-general-this-build-engine");
-  expect(ids).toContain("settings-row-tools-computer-use-engine");
+  expect(ids).toContain("settings-row-tools-computer-use");
 });
 
 test("the questions a person actually types find the row", () => {

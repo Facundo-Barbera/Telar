@@ -107,7 +107,10 @@ export function UpdatesSection() {
     );
 
   return (
-    <SettingsGroup title="Updates" description="Beta and nightly builds check a private update feed.">
+    // NO CAPTION: every row here carries a LIVE sentence — what the updater is
+    // doing, what the chosen channel means — and a standing caption over three
+    // of those is the doubling #357 is about.
+    <SettingsGroup title="Updates">
       <Row label="Update status" hint={updateStatusHint(status)} control={control} />
       <Row
         label="Channel"
@@ -141,11 +144,6 @@ export function UpdatesSection() {
       />
       <Row
         label="Install on quit"
-        hint={
-          prefs?.installOnQuit
-            ? "A downloaded update installs itself the next time you quit Telar."
-            : "Downloaded updates wait for Install & restart."
-        }
         control={
           <Switch
             checked={prefs?.installOnQuit ?? false}

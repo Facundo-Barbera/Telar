@@ -60,33 +60,40 @@ export function isDefaultInstance(instance: Pick<ProviderInstance, "id" | "drive
 }
 
 /**
- * The headline and detail under an instance's name.
+ * ONE WORD FOR AN INSTANCE'S STATE, or `null` when the card already says it.
  *
  * ORDERED BY WHAT THE READER SHOULD DO FIRST. A missing CLI outranks everything
  * because no amount of config-folder correctness helps until it is installed;
  * a disabled instance outranks even that, because its owner already decided.
+ *
+ * IT USED TO BE A SENTENCE, AND THE SENTENCE WAS THE PROBLEM (#357). Each state
+ * carried a headline plus the engine's own `message` — "Installed — Tested
+ * against 2.1.257; you have 2.1.267", "Base login — sign-in state cannot be
+ * verified from disk" — printed under every row of a pane whose rows are mostly
+ * healthy. The version comparison is the update advisory's job and has its own
+ * marker with its own tooltip; the sign-in caveat belongs to the expanded body,
+ * beside the command that fixes it.
+ *
+ * `null` FOR "INSTALLED" IS THE POINT. A working login is the common row, and
+ * the common row should be name, version and a switch. The states that need a
+ * reader to do something keep a word, because a card that says nothing when
+ * nothing works is not restraint, it is a bug.
  */
-export function providerSummary(probe: ProviderProbe | undefined): { headline: string; detail: string | null } {
-  if (!probe) {
-    return { headline: "Checking", detail: "Waiting for the engine to report this instance." };
-  }
-  if (probe.status === "disabled") {
-    return { headline: "Off", detail: "Switched off — not offered to new sessions." };
-  }
-  if (!probe.installed) {
-    return { headline: "Not installed", detail: probe.message ?? "The CLI was not found on this machine's PATH." };
-  }
+export function providerSummary(probe: ProviderProbe | undefined): string | null {
+  if (!probe) return "Checking";
+  if (probe.status === "disabled") return "Off";
+  if (!probe.installed) return "Not installed";
   switch (probe.signIn) {
-    case "signed-in":
-      return { headline: "Signed in", detail: probe.message ?? null };
     case "signed-out":
-      return { headline: "Not signed in", detail: probe.message ?? null };
+      return "Not signed in";
     case "missing-config-dir":
-      return { headline: "Config folder missing", detail: probe.message ?? null };
+      return "Config folder missing";
+    // Both are a login that works. "Installed" is the common case for Claude —
+    // the token is in the Keychain, so installed is all that was proven — and a
+    // badge nobody can act on reading it is what this pane had too much of.
+    case "signed-in":
     default:
-      // The common case for Claude, and the one worth being careful about: the
-      // token is in the Keychain, so "installed" is all that was proven.
-      return { headline: "Installed", detail: probe.message ?? null };
+      return null;
   }
 }
 

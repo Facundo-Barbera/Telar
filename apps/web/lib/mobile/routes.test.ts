@@ -36,7 +36,11 @@ describe("paired mobile push registration", () => {
     expect((await PUT(request(token))).status).toBe(401);
   });
   test("observer cannot enable push or bypass the role gate", async () => {
-    setup(); const token = mintDeviceToken(); const device = addDevice("Viewer", token); setDeviceRole(device.id, "observer");
+    // A SECOND FULL DEVICE, because a fresh store requires pairing now (#357)
+    // and the store refuses to demote the last full one. That refusal is the
+    // right behaviour and has its own test; what this one needs is an observer.
+    setup(); addDevice("Mac", mintDeviceToken());
+    const token = mintDeviceToken(); const device = addDevice("Viewer", token); setDeviceRole(device.id, "observer");
     expect((await PUT(request(token))).status).toBe(403);
   });
   test("rejects invalid registrations and bounds streamed bodies", async () => {

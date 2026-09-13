@@ -335,7 +335,7 @@ export function RemoteSection() {
 
   if (!status) {
     return (
-      <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
+      <SettingsGroup title="Pairing">
         <Row label="Loading" hint="Reading the pairing store." {...(error ? { error } : {})} control={null} />
       </SettingsGroup>
     );
@@ -349,14 +349,24 @@ export function RemoteSection() {
 
   return (
     <>
-      <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
+      {/* NO CAPTION: the row's sentence changes with the switch and is the one
+          worth reading, and a standing "Who may reach this cockpit from other
+          devices" over a row called "Require pairing" was the doubling #357 is
+          about. */}
+      <SettingsGroup title="Pairing">
         <ToggleRow
           label="Require pairing"
           icon={SmartphoneIcon}
           hint={
             error ??
             (status.requireAuth
-              ? "Unpaired devices are refused. Whatever turned this on was paired in the same breath, so it cannot lock itself out."
+              ? // TRUE ON BOTH PATHS TO "ON", which the old wording was not: a
+                // fresh store starts here (#357) with nothing paired at all, and
+                // the app running the server is admitted by the host secret
+                // rather than by a device record. Flipping the switch by hand
+                // still pairs the browser that flipped it, in the same
+                // round-trip, so neither route can lock itself out.
+                "Unpaired devices are refused. The app running the server is always in."
               : "Anything that can reach this address has full control. The tailnet ACL is the only boundary.")
           }
           checked={status.requireAuth}
@@ -371,7 +381,9 @@ export function RemoteSection() {
           read by the shell at launch, so a change offers a restart rather
           than pretending it took. */}
       {status.requireAuth && (
-        <SettingsGroup title="This environment" description="How devices reach this cockpit.">
+        // NO CAPTION: both rows print the ADDRESS this cockpit is actually
+        // reachable at, which is the answer the caption was asking for (#357).
+        <SettingsGroup title="This environment">
           <ToggleRow
             label="Network access"
             icon={GlobeIcon}
@@ -505,6 +517,13 @@ export function RemoteSection() {
           is a button that says "Rename", the roles are a segmented control whose
           two options can carry their own tooltips, and the ✕ says what it does
           and what it leaves alone. */}
+      {/* THE HOST IS A BADGE ON THE HEADER, NOT A ROW (#357). It used to sit in
+          the list wearing the shape of a paired device — "This app · Runs the
+          server — always connected, nothing to revoke" — which is a row whose
+          whole content is that none of the list's controls apply to it. The
+          name is still worth showing, because a list of devices that omits the
+          one certain answer is the bug the row was added to fix; a badge says
+          it without pretending to be revocable. */}
       <SettingsGroup
         title="Paired devices"
         description={
@@ -512,11 +531,17 @@ export function RemoteSection() {
             ? "Devices that may reach this cockpit."
             : "Pairing is off — these credentials only matter again when you turn it back on."
         }
+        {...(status.host
+          ? {
+              action: (
+                <Badge variant="outline" title="Runs the server — always connected, nothing to revoke">
+                  {status.host.isCaller ? "This app" : "Host"} · {status.host.name}
+                </Badge>
+              ),
+            }
+          : {})}
       >
-        {status.host && <HostRow host={status.host} />}
-        {status.devices.length === 0 && !status.host && (
-          <Row label="None yet" hint="Devices appear here as they pair." control={null} />
-        )}
+        {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
         {status.devices.map((device) => (
           <DeviceRow
             key={device.id}
@@ -544,29 +569,6 @@ export function RemoteSection() {
         </SettingsGroup>
       )}
     </>
-  );
-}
-
-/**
- * The app hosting the server. It is not pairable and not revocable, so it gets
- * no role switch and no X — the controls a paired device needs would all be
- * lies here. It is listed anyway because a panel that answers "what is
- * connected" and omits the one certain answer is the bug this fixes.
- */
-function HostRow({ host }: { host: RemoteHost }) {
-  const Icon = KIND_ICONS[host.identity?.kind ?? "desktop"] ?? MonitorIcon;
-  return (
-    <Row
-      icon={Icon}
-      label={
-        <span className="inline-flex items-center gap-2">
-          {host.name}
-          <Badge variant="outline">{host.isCaller ? "This app" : "Host"}</Badge>
-        </span>
-      }
-      hint="Runs the server — always connected, nothing to revoke."
-      control={null}
-    />
   );
 }
 

@@ -109,7 +109,11 @@ export function BrowserProfilesSection() {
             label={
               <span className="flex items-center gap-2">
                 <span className="truncate">{profile.label}</span>
-                {profile.isDefault && <Badge variant="secondary">Default</Badge>}
+                {/* NOT ON A PROFILE ALREADY CALLED "DEFAULT" (#357): the row
+                    read "Default Default", which is a badge repeating the name
+                    beside it rather than adding a fact. A profile the user
+                    named something else still needs the mark. */}
+                {profile.isDefault && profile.label.trim().toLowerCase() !== "default" && <Badge variant="secondary">Default</Badge>}
                 {profile.account && <span className="truncate font-mono text-[0.625rem] text-muted-foreground">{profile.account}</span>}
               </span>
             }

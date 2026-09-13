@@ -163,7 +163,10 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
 
   return (
-    <SettingsGroup title="Identity" description="What this project is called, and the mark it wears in the rail.">
+    // NO CAPTION: it listed the two rows under it in prose, and both of them
+    // keep a real sentence — what renaming does NOT touch, and which of the two
+    // icon sources is in play (#357).
+    <SettingsGroup title="Identity">
       <Row
         label="Name"
         icon={FolderKanbanIcon}
@@ -308,7 +311,10 @@ export function ProjectConversationRows({
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
 
   return (
-    <SettingsGroup title="New conversations" description="What a conversation in this project is built with before you change it.">
+    // NO CAPTION, for General ▸ New sessions' reason: both rows below say what
+    // is actually stored and what overrides it, which is more than a standing
+    // sentence about the group could.
+    <SettingsGroup title="New conversations">
       <Row
         label="Default model"
         icon={SparklesIcon}
@@ -444,6 +450,29 @@ export function ProjectsPage() {
 
   const projects = byHost[hostId] ?? [];
   const project = projects.find((entry) => entry.id === selected);
+
+  /**
+   * ONE PROJECT IS NOT A CHOICE (#357). A cockpit with a single registered
+   * folder opened this pane on "All projects", which left every row below inert
+   * behind "Select a project to rename it" — a picker with one answer standing
+   * between the reader and the only rows the pane has.
+   *
+   * A RENDER-PHASE ADJUSTMENT, not an effect: this is React's own shape for
+   * "derive state when an input changes", and this app's lint enforces it. The
+   * input is the registry AS THE ENGINE ANSWERED IT — `byHost[hostId]`, not the
+   * `?? []` above, whose identity changes every render while the answer is
+   * still in flight.
+   *
+   * ONLY FROM `ALL_PROJECTS`, so it cannot fight `?project=`: that effect names
+   * a project, and a named one is never overwritten here. Switching Macs resets
+   * the picker to All, which is what re-arms this for the new host's list.
+   */
+  const answered = byHost[hostId];
+  const [lastAnswered, setLastAnswered] = useState(answered);
+  if (lastAnswered !== answered) {
+    setLastAnswered(answered);
+    if (answered?.length === 1 && selected === ALL_PROJECTS) setSelected(answered[0]!.id);
+  }
 
   const loadHost = useCallback(async (id: string) => {
     // ALWAYS AN EXPLICIT HOST, including the local one — the same rule the rail
@@ -618,7 +647,10 @@ export function ProjectsPage() {
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+            {/* "All projects" is a filter, and there is nothing to filter when
+                the registry holds one folder — offering it would only be a way
+                back to the inert pane this cockpit just stopped opening on. */}
+            {projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}
             {projects.map((entry) => (
               <SelectItem key={entry.id} value={entry.id}>
                 {entry.name}
