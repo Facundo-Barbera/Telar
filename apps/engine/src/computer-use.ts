@@ -2,23 +2,25 @@
  * COMPUTER USE FOR TELAR SESSIONS — Telar's own engine, not the provider's.
  *
  * The tool surface (list_apps, a screenshot + accessibility tree, click, type,
- * scroll, drag, keys) is served by an MCP server injected into a CLAIM, so both
- * providers reach the SAME desktop through the SAME approval pipeline runtime
- * modes already gate. Two backends can supply it, in preference order:
+ * scroll, drag, keys) is served by an MCP server injected into a CLAIM, so every
+ * provider Telar supplies reaches the SAME desktop through the SAME approval
+ * pipeline runtime modes already gate. Two backends can supply it, in preference
+ * order:
  *
  *   1. cua-driver (github.com/trycua/cua, MIT) — the open-source computer-use
  *      driver. A stdio MCP server that auto-launches its own permission-holding
  *      daemon (CuaDriver.app, `com.trycua.driver`), so the macOS grants belong
  *      to an app Telar can bundle rather than to a proprietary one. This is what
- *      lets Telar OWN computer use and hand it to Claude AND Codex, and it is
- *      why the Codex driver turns OFF Codex's native `computer_use` when a claim
- *      carries this server (see codex-driver.ts) — otherwise the model would see
- *      two desktops under two names.
+ *      lets Telar OWN computer use and hand it to CLAUDE and OPENCODE — the two
+ *      providers that arrive without a desktop of their own.
  *
  *   2. Codex's Sky client — the fallback for a machine that has Codex's bundled
  *      computer-use plugin but not cua-driver. Sky is proprietary and its grant
- *      belongs to OpenAI's app; it is native on Codex already, so it is offered
- *      to CLAUDE only (injecting it into Codex would double the tools).
+ *      belongs to OpenAI's app; it reaches the same two providers, for the same
+ *      reason, through the same injection.
+ *
+ * CODEX GETS NEITHER, and that is deliberate rather than an omission — see
+ * `COMPUTER_USE_DRIVERS` in the protocol package for why (#368).
  *
  * ══ INDEPENDENCE IS THE PRIME RULE (the Lintel precedent) ══
  *
@@ -31,7 +33,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ComputerUsePermission, ComputerUseStatus, McpServer } from "@telar/engine-client";
+import { driverTakesComputerUse, type ComputerUsePermission, type ComputerUseStatus, type McpServer, type ProviderDriverKind } from "@telar/engine-client";
 
 /**
  * The id is the provider-facing server name: tools arrive as `mcp__mac__click`.
@@ -41,7 +43,10 @@ import type { ComputerUsePermission, ComputerUseStatus, McpServer } from "@telar
  * --debug-to-stderr, and the refusal is otherwise silent: the server simply
  * never connects). A USER-registered server with this id wins — see
  * `withComputerUse`. The presence of a server with THIS id in a Codex claim is
- * also the signal that turns off Codex's native computer use.
+ * also the signal that turns off Codex's native computer use: Telar no longer
+ * injects one there, so that signal now means the USER pointed a `mac` server
+ * at a Codex session by hand, and two desktops under two names is still the
+ * thing worth avoiding.
  */
 export const COMPUTER_USE_SERVER_ID = "mac";
 
@@ -336,9 +341,11 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
 /**
  * Which servers a turn actually gets.
  *
- * cua goes to BOTH providers — it is Telar's own, and the point is that Claude
- * and Codex drive the same desktop. Sky goes to CLAUDE ONLY: it is already
- * native on Codex, so injecting it there would double the tools.
+ * WHO, NOT WHICH BACKEND. Both backends go to the same two providers — Claude
+ * and OpenCode — because the question a claim has to answer is whether this
+ * provider arrives with a desktop of its own, and neither of those does. Codex
+ * does, so it is withheld from Codex whatever is installed on the machine; the
+ * list lives in `COMPUTER_USE_DRIVERS` so the settings pane reads the same fact.
  *
  * THE USER'S ENTRY WINS. A registered server with this id — pointed elsewhere,
  * or disabled — is a decision injection must not overrule. `state.ts` filters
@@ -347,11 +354,11 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
 export function withComputerUse(
   servers: readonly McpServer[],
   allServers: readonly McpServer[],
-  driver: "claude" | "codex" | "opencode",
+  driver: ProviderDriverKind,
   resolved: ResolvedComputerUse | undefined,
 ): McpServer[] {
   if (!resolved) return [...servers];
-  if (driver === "codex" && resolved.backend !== "cua") return [...servers];
+  if (!driverTakesComputerUse(driver)) return [...servers];
   if (allServers.some((server) => server.id === COMPUTER_USE_SERVER_ID)) return [...servers];
   return [...servers, resolved.server];
 }

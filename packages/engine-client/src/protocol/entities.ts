@@ -892,6 +892,28 @@ export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
 export const ComputerUseBackend = z.enum(["cua", "sky"]);
 export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
 
+/**
+ * WHOSE SESSIONS TELAR'S OWN COMPUTER USE IS FOR — Claude and OpenCode.
+ *
+ * NOT CODEX, and that is the whole of the rule. Codex ships its own
+ * computer-use provider, so a Codex thread already has a desktop; injecting
+ * Telar's would hand that model a second one under a second name, which is the
+ * failure the driver used to work around by switching Codex's native feature
+ * OFF. Withholding is the simpler and more honest answer: each provider drives
+ * the desktop it came with.
+ *
+ * ONE FACT, ONE PLACE. The engine folds this into a claim (`withComputerUse`)
+ * and the Agent tools pane badges its Computer use row from it, so the pane
+ * cannot promise a provider the claim withholds it from — the drift #368 was
+ * filed about. A fourth provider is one entry here.
+ */
+export const COMPUTER_USE_DRIVERS: readonly ProviderDriverKind[] = ["claude", "opencode"];
+
+/** Whether Telar supplies this provider's desktop. See `COMPUTER_USE_DRIVERS`. */
+export function driverTakesComputerUse(driver: ProviderDriverKind): boolean {
+  return COMPUTER_USE_DRIVERS.includes(driver);
+}
+
 export const ComputerUseStatus = z.object({
   installed: z.boolean(),
   hostRunning: z.boolean(),
