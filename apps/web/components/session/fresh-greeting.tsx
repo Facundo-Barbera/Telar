@@ -28,6 +28,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderGit2Icon } from "lucide-react";
 import { GREETINGS, greetingForVisit, nextGreeting } from "@/lib/greetings";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 import { useHostProjects } from "@/lib/hosts/host-projects";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { canvasHref } from "@/lib/session-list";
@@ -129,7 +130,7 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
             */}
             {hostId === LOCAL_HOST_ID && projects.length > 0 && <DropdownMenuSeparator />}
             {hostId === LOCAL_HOST_ID && (
-              <DropdownMenuItem onClick={() => router.push(`/projects/${encodeURIComponent(projectId)}/settings`)}>
+              <DropdownMenuItem onClick={() => router.push(projectSettingsHref(projectId))}>
                 Project settings…
               </DropdownMenuItem>
             )}

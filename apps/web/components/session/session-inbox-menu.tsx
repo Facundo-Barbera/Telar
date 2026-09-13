@@ -38,6 +38,7 @@ import { useRouter } from "next/navigation";
 import { MoreHorizontalIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 import { canvasHref, type SidebarSession } from "@/lib/session-list";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
@@ -228,7 +229,7 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
     snooze: (until) => void run(() => patchSession(session, { snoozedUntil: until })),
     rename: () => onRename?.(),
     copy: (text) => void copyToClipboard(text),
-    projectSettings: ({ projectId }) => router.push(`/projects/${encodeURIComponent(projectId)}/settings`),
+    projectSettings: ({ projectId }) => router.push(projectSettingsHref(projectId)),
     remove: () => {
       const name = session.title || "Untitled session";
       // TWO PRESSES, AND THE SECOND ONE NAMES WHAT GOES. The first question is

@@ -44,10 +44,10 @@ test("at All projects every per-project row is still drawn, and says which choic
   expect(html).toContain("Default model");
   expect(html).toContain("Where new conversations start");
   // And each one names the step that would make it answer.
-  expect(html).toContain("Select a project to see its name.");
-  expect(html).toContain("Select a project to see its icon.");
+  expect(html).toContain("Select a project to rename it.");
+  expect(html).toContain("Select a project to mark it.");
   expect(html).toContain("Select a project to set the model its conversations open on.");
-  expect(html).toContain("Select a project to see where its conversations start.");
+  expect(html).toContain("Select a project to say where its conversations start.");
 });
 
 test("an inert row's control is rendered and taken out of reach, never removed", () => {
@@ -58,13 +58,61 @@ test("an inert row's control is rendered and taken out of reach, never removed",
   expect(html).toContain("opacity-50");
 });
 
-test("naming a project binds the rows to it and swaps the reason for the real one", () => {
+test("naming a project binds the rows to it and takes the inert reason off", () => {
   const html = renderToStaticMarkup(<ProjectIdentityRows project={project()} />);
   expect(html).toContain("Telar");
   expect(html).toContain("/Users/someone/code/telar");
-  expect(html).not.toContain("Select a project to see its name.");
-  // Still inert, and now for the honest reason: the engine has no rename.
-  expect(html).toContain("no rename yet");
+  expect(html).not.toContain("Select a project to rename it.");
+  /**
+   * LIVE, NOT INERT — the write path #308 added is what this asserts. The rows
+   * were inert at every scope while `PATCH /v2/projects/:id` took plugin
+   * switches only; a named project now binds them to a real field.
+   */
+  expect(html).not.toContain("inert");
+  expect(html).toContain('aria-label="Project name"');
+  expect(html).toContain('aria-label="Project mark"');
+});
+
+test("a project on another Mac keeps every identity row read-only, and says whose", () => {
+  // The patch would have to reach that Mac's engine and this pane's api is
+  // this one's — the same rule the plugin switches follow.
+  const html = renderToStaticMarkup(
+    <>
+      <ProjectIdentityRows project={project({ hostId: "host_mini", hostName: "mini" })} />
+      <ProjectConversationRows project={project({ hostId: "host_mini", hostName: "mini" })} envMode="local" />
+    </>,
+  );
+  expect(html).toContain("Registered on mini");
+  expect(html).toContain("inert");
+});
+
+test("a chosen mark outranks the checkout's icon, and can be cleared", () => {
+  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
+  // The mark itself, not the engine-served file the derived key points at.
+  expect(marked).toContain("🧵");
+  expect(marked).not.toContain("etag_abc");
+  // And a revert arrow, which is how the stored answer is removed — `null`,
+  // rather than an empty string the engine would refuse.
+  expect(marked).toContain('aria-label="Revert to the default"');
+  // With nothing chosen there is nothing to revert to.
+  expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).not.toContain('aria-label="Revert to the default"');
+});
+
+test("a project with no workspace answer follows the Mac, and says what it is following", () => {
+  const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
+  // The first segment is selected — absence is a CHOICE here, not a blank.
+  expect(html).toContain("Follow the Mac");
+  expect(html).toContain("Following this Mac, which says each session gets its own checkout");
+  expect(html).toContain("General ▸ Workspace");
+});
+
+test("a project that pinned an answer states it, whatever the Mac says", () => {
+  const html = renderToStaticMarkup(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" />);
+  // `renderToStaticMarkup` escapes the apostrophe, so the assertion stops
+  // short of it rather than pinning the entity.
+  expect(html).toContain("Sessions here share the project");
+  expect(html).toContain("checkout, whatever this Mac says");
+  expect(html).not.toContain("Following this Mac");
 });
 
 test("the checkout path appears only once a project is named", () => {
@@ -72,13 +120,13 @@ test("the checkout path appears only once a project is named", () => {
   expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).toContain("Checkout");
 });
 
-test("the workspace row shows the Mac's standing answer and says where to change it", () => {
+test("the workspace row offers both per-project answers beside following the Mac", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
+  expect(html).toContain("Project checkout");
   expect(html).toContain("Own worktree");
-  // aria-pressed is Segmented's selected mark — the row shows the real value
-  // rather than an em dash, even though it cannot be set per project.
-  expect(html).toContain('aria-pressed="true"');
-  expect(html).toContain("General ▸ Workspace");
+  // Three segments, exactly one of them pressed: a project either follows the
+  // Mac or pins one of the two, and the three are mutually exclusive.
+  expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(1);
 });
 
 test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
@@ -106,7 +154,7 @@ test("with no plugins registered the group says so rather than heading empty air
 test("the pane opens on All projects, so nothing is bound before a reader names one", () => {
   const html = renderToStaticMarkup(<ProjectsPage />);
   expect(html).toContain("All projects");
-  expect(html).toContain("Select a project to see its name.");
+  expect(html).toContain("Select a project to rename it.");
   // The Danger group belongs to a named project; at this scope there is none.
   expect(html).not.toContain("Remove project from Telar");
 });
@@ -145,7 +193,28 @@ test("the Mac segmented control appears only when a Mac has been paired", () => 
   // A one-segment control is a button that does nothing, and a cockpit with no
   // paired Mac is the common one.
   expect(source).toContain("{hosts.length > 0 && (");
-  expect(renderToStaticMarkup(<ProjectsPage />)).not.toContain("This Mac");
+  // The host control's own segment, matched as a whole label rather than as a
+  // substring: the workspace row below now says "Mac" too, and a bare
+  // `not.toContain("This Mac")` would pass or fail on that row's wording.
+  expect(renderToStaticMarkup(<ProjectsPage />)).not.toContain(">This Mac<");
+});
+
+test("a write goes to the named project only, and never to one on another Mac", () => {
+  // The guard that makes the inert rows above more than cosmetic: a control
+  // reached some other way still cannot patch this Mac's registry for a
+  // project that does not live in it.
+  expect(source).toContain("if (!project || project.hostId) return;");
+  // And the row's state advances on the ENGINE's record, never on the patch —
+  // a control that moved on the request would show a value it refused.
+  expect(source).toContain(".then((answer) => replaceProject(answer.project))");
+});
+
+test("clearing a per-project answer writes null, which is what removes it", () => {
+  // `null` is a VALUE on this route and the only way back to "follow this
+  // Mac"; an empty string or an absent key would mean something else.
+  expect(source).toContain('writer?.save("defaultModel", { defaultModel: null })');
+  expect(source).toContain("envMode: next === FOLLOW_MAC ? null : (next as EnvMode)");
+  expect(source).toContain('iconEmoji: next.trim() === "" ? null : next.trim()');
 });
 
 test("a remote Mac's registry is read when it is asked for, not on mount", () => {

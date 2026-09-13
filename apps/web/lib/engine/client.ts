@@ -175,6 +175,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     updateProject: (
       projectId: string,
       patch: {
+        name?: string;
+        // `null` REMOVES a stored answer rather than storing a neutral one: a
+        // project with no `envMode` follows this Mac's `SessionDefaults`, which
+        // is a different sentence from either value it could hold. `name` has
+        // no `null` — every project has one.
+        iconEmoji?: string | null;
+        defaultModel?: ModelSelection | null;
+        envMode?: EnvMode | null;
         dataScience?: DataScienceConfig | null;
         latex?: LatexConfig | null;
         // The generic arm — one entry per plugin, `null` to turn it off.
