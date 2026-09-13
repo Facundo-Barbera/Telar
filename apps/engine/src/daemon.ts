@@ -46,6 +46,7 @@ import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
+import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
@@ -193,6 +194,16 @@ export type EngineDaemonOptions = {
   /** INJECTED for the same reason as the probe: a test must never actually run
    *  `npm install -g`. The default spawns for real. */
   runProviderUpdate?: (driver: ProviderDriverKind, binaryPath: string | undefined) => Promise<CliUpdateRun>;
+  /**
+   * Where `/v2/sessions/:id/skills` reads from, and how it asks the provider.
+   *
+   * INJECTED FOR THE TWO REASONS EVERY SEAM ABOVE IS: a test must not read this
+   * machine's real `~/.claude`, and it must not spawn a CLI to find out what
+   * commands the CLI has. `env` redirects the machine-level roots
+   * (`CLAUDE_CONFIG_DIR`, exactly as the CLI itself reads it); the loader
+   * replaces the `supportedCommands()` handshake. Both default to the real thing.
+   */
+  providerSkills?: { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
 };
 
 export type EngineDaemon = {
@@ -3522,6 +3533,33 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             return;
           }
           writeJson(response, 200, { listing: await store.sessionFilesAsync(session.sessionId) });
+          return;
+        }
+        /**
+         * WHAT THE SESSION'S PROVIDER CAN BE ASKED TO DO — the composer's `$`
+         * and `/` menus (#387).
+         *
+         * Read where the session actually runs, which is its worktree when it
+         * cut one: a project's skills are the ones in ITS checkout, and the
+         * provider answers about the directory it was started in. Cached per
+         * session inside `provider-skills.ts` — the menu is allowed to ask on a
+         * keystroke, so the route must not be a subprocess per keystroke.
+         */
+        if (request.method === "GET" && session.tail === "/skills") {
+          const record = store.getSession(session.sessionId);
+          writeJson(
+            response,
+            200,
+            await readProviderSkillsCached({
+              sessionId: record.id,
+              driver: record.driver,
+              checkout: record.workspace.path,
+              ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
+              ...(options.providerSkills?.loadProviderCommands
+                ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
+                : {}),
+            }),
+          );
           return;
         }
         /** The session twin of `/v2/projects/:id/files/raw` — one file's bytes,

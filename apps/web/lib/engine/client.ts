@@ -61,6 +61,7 @@ import type {
   TurnAttachment,
   TurnModelSelection,
   ProviderDriverKind,
+  ProviderSkills,
   ProviderInstance,
   ProviderInstanceEnvVar,
   ProviderProbe,
@@ -584,6 +585,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/files`),
     sessionFiles: (sessionId: string) =>
       request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/files`),
+    /**
+     * The provider's own skills and slash commands, for the composer's `$` and
+     * `/` menus. Asked when a menu first opens and cached by the caller for the
+     * session, the way the path listing is — the engine caches it too, so the
+     * cost of asking twice is a round trip rather than a subprocess.
+     */
+    sessionSkills: (sessionId: string) =>
+      request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
     projectFile: (projectId: string, path: string) =>
       request<{ file: WorkspaceFile }>(
         fetcher,

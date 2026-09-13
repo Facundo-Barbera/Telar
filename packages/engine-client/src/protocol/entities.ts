@@ -1722,6 +1722,45 @@ export const WorkspaceListing = z.object({
 export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
 
 /**
+ * WHAT THE PROVIDER CAN BE ASKED TO DO — the composer's `$` and `/` menus.
+ *
+ * TWO LISTS, NOT ONE TAGGED LIST, because the two are reached by two different
+ * keys and inserted in two different ways: a skill is named inside a sentence,
+ * a slash command is a line the provider parses. A single array with a `kind`
+ * would make every consumer partition it before it could draw anything.
+ *
+ * `source` IS WHERE THE NAME CAME FROM, and it is contract rather than
+ * decoration: it is what lets a reader tell their own `~/.claude/skills` from a
+ * plugin's, and what a menu groups by. `provider` means the harness itself
+ * reported it (`supportedCommands()`), which is the only source Telar cannot
+ * point at a file for.
+ *
+ * A PROVIDER WITH NO INVENTORY ANSWERS WITH TWO EMPTY LISTS rather than a 404:
+ * "this harness exposes none" is a real answer about Codex, and a menu that
+ * draws nothing is the correct rendering of it.
+ */
+export const ProviderSkillSource = z.enum(["user", "project", "plugin", "provider"]);
+export type ProviderSkillSource = z.infer<typeof ProviderSkillSource>;
+
+export const ProviderSkill = z.object({
+  /** What a person types, WITHOUT the leading slash: `commit`, `vercel:deploy`.
+   *  Namespaced exactly as the provider addresses it — any other spelling is a
+   *  row that does nothing when it is picked. */
+  name: z.string().min(1),
+  /** One line about what it does. Empty when neither the front matter nor the
+   *  file's first heading said, which is commoner than it should be. */
+  description: z.string(),
+  source: ProviderSkillSource,
+});
+export type ProviderSkill = z.infer<typeof ProviderSkill>;
+
+export const ProviderSkills = z.object({
+  skills: z.array(ProviderSkill),
+  commands: z.array(ProviderSkill),
+});
+export type ProviderSkills = z.infer<typeof ProviderSkills>;
+
+/**
  * ONE FILE'S TEXT, as it is on disk right now.
  *
  * NOT A PATCH. `sessionFilePatch` answers "what changed"; this answers "what

@@ -25,11 +25,25 @@
  *     and because two spellings for one idea means two parsers and a choice at
  *     every insertion point. `@` is a TRIGGER here, not a syntax: it opens the
  *     menu and is gone by the time anything is inserted.
- *   - NO `$skill` TRIGGER. The donor lists the provider's skills and slash
- *     commands because its server asks the provider for them. Telar's engine
- *     does not expose either yet (`supportedCommands()` on the Agent SDK is
- *     unwired), and a menu of commands that do not exist is worse than no menu.
- *     `/` therefore offers what THIS composer can actually do.
+ *   - A SKILL IS NAMED IN PROSE, not typed as a command. `$` exists now — see
+ *     below — and what it inserts is `the "commit-messages" skill` rather than
+ *     `/commit-messages`, because `/` is only a command to any provider at the
+ *     START of a message. A chip mid-sentence that LOOKED like a command and
+ *     was inert would be the menu-of-lies the third deviation used to describe.
+ *     Prose is what the model acts on, and it is the same shape `taskReference`
+ *     and `checkReference` already use.
+ *
+ * `$` NOW EXISTS, AND THE REASON IT DID NOT IS GONE (#387).
+ *
+ * This file used to record a third deviation: no `$skill` trigger, because "the
+ * ENGINE does not ask and the contract has nowhere to put the answer"
+ * (`supportedCommands()` on the Agent SDK was unwired). `GET
+ * /v2/sessions/:id/skills` is that ask — the machine's `~/.claude/skills`, the
+ * checkout's, every installed plugin's, and the provider's own list — so the
+ * menu is no longer a list of plausible names. `/` keeps Telar's own verbs
+ * first, with the provider's commands grouped underneath them, because the
+ * verbs are what THIS composer does and a menu that buried them under forty
+ * provider rows would have made the common case the hard one.
  */
 
 import type { ReferenceKind, TelarReference } from "./drag-reference";
@@ -38,7 +52,7 @@ import type { ReferenceKind, TelarReference } from "./drag-reference";
  * Triggers — what the caret is sitting in the middle of, right now.
  * ------------------------------------------------------------------ */
 
-export type ComposerTriggerKind = "path" | "command";
+export type ComposerTriggerKind = "path" | "command" | "skill";
 
 export type ComposerTrigger = {
   kind: ComposerTriggerKind;
@@ -66,6 +80,13 @@ function clampCursor(text: string, cursor: number): number {
  * a date, a fraction or a path separator, while an at-sign mid-sentence is
  * almost always an address. Anchoring the slash is what keeps "9/10 tests pass"
  * from opening a menu.
+ *
+ * `$` IS ANCHORED TO THE START OF A WORD and excludes `${`, which are the two
+ * things that keep it from firing inside a shell snippet. `PATH=$HOME/bin`
+ * never opens a menu because the `$` follows a `=`; `${TELAR_ROOT}` never does
+ * because of the brace. What is left — a `$` after a space, not followed by a
+ * brace — is a sigil nobody types in prose, which is the property that lets it
+ * be a trigger at all.
  *
  * SCANNING BACK FROM THE CARET, not forward from the sigil: the question is
  * "what am I in the middle of", and only the token the caret is actually inside
@@ -97,9 +118,19 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   while (index >= 0 && !isWhitespace(text[index] ?? "")) index -= 1;
   const tokenStart = index + 1;
   const token = text.slice(tokenStart, cursor);
-  if (!token.startsWith("@")) return null;
-
-  return { kind: "path", query: token.slice(1), rangeStart: tokenStart, rangeEnd: cursor };
+  if (token.startsWith("@")) return { kind: "path", query: token.slice(1), rangeStart: tokenStart, rangeEnd: cursor };
+  /**
+   * THE TOKEN SCAN IS WHAT ENFORCES "START OF A WORD". It walks back to the
+   * last whitespace, so a `$` that is not the token's first character — the one
+   * in `PATH=$HOME`, or in `US$40` — is simply not at `tokenStart` and cannot
+   * match. The brace check is the second half: `${…}` is a substitution, and a
+   * menu over somebody's shell variable is the noise that would make the sigil
+   * unusable.
+   */
+  if (token.startsWith("$") && !token.startsWith("${")) {
+    return { kind: "skill", query: token.slice(1), rangeStart: tokenStart, rangeEnd: cursor };
+  }
+  return null;
 }
 
 /**
@@ -177,6 +208,10 @@ const PATTERNS: { kind: ReferenceKind; pattern: RegExp; label: (match: RegExpExe
   { kind: "pull", pattern: /PR #(\d+) "[^"]*" \(\S+?\)/g, label: (match) => `PR #${match[1]}` },
   { kind: "issue", pattern: /#(\d+) "[^"]*" \(\S+?\)/g, label: (match) => `#${match[1]}` },
   { kind: "task", pattern: /the "([^"]*)" sub-agent \([^)]*\)/g, label: (match) => match[1] ?? "sub-agent" },
+  // A skill the provider has — `skillReference`. The name shape is literal
+  // (what a slash command may be called, namespace included) so a sentence that
+  // merely says `the "old way" skill` about something else is prose.
+  { kind: "skill", pattern: /the "([A-Za-z0-9][A-Za-z0-9:._-]*)" skill/g, label: (match) => match[1] ?? "skill" },
   // A page the session's browser has open — `browserPageReference`. Starts
   // before its own URL, so it wins the overlap against the bare-URL pattern.
   { kind: "page", pattern: /the "([^"]*)" page open in the session's browser \(\S+?\)/g, label: (match) => match[1] || "page" },

@@ -1,7 +1,17 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { availableCommands, buildPathIndex, rankCommands, rankPaths } from "./composer-completions";
-import { directoryReference, fileReference } from "./drag-reference";
+import {
+  availableCommands,
+  buildPathIndex,
+  compactBlockedReason,
+  isCompactDraft,
+  PROVIDER_COMMAND_GROUP,
+  providerCommandCompletions,
+  rankCommands,
+  rankPaths,
+  rankSkills,
+} from "./composer-completions";
+import { directoryReference, fileReference, skillReference } from "./drag-reference";
 
 const FILES = [
   "README.md",
@@ -109,6 +119,52 @@ describe("what the slash menu offers", () => {
   });
 });
 
+describe("/compact, the wheel's button reached from the keyboard", () => {
+  const claude = { busy: false, fresh: false, driver: "claude" as const };
+
+  test("it is offered on a Claude session that exists, and nowhere else", () => {
+    expect(availableCommands(claude).map((command) => command.id)).toContain("compact");
+    // Codex has no out-of-turn compaction door, and a canvas has no
+    // conversation to squeeze — both are absence, not a disabled row.
+    expect(availableCommands({ ...claude, driver: "codex" }).map((command) => command.id)).not.toContain("compact");
+    expect(availableCommands({ ...claude, fresh: true }).map((command) => command.id)).not.toContain("compact");
+    expect(availableCommands({ busy: false, fresh: false }).map((command) => command.id)).not.toContain("compact");
+  });
+
+  test("picking it submits the same gesture the wheel does", () => {
+    expect(availableCommands(claude).find((command) => command.id === "compact")).toMatchObject({
+      label: "/compact",
+      action: { type: "compact" },
+      glyph: "compact",
+    });
+  });
+
+  test("a running turn or a compaction in flight disables it, with the wheel's own reason", () => {
+    const running = availableCommands({ ...claude, busy: true }).find((command) => command.id === "compact");
+    expect(running).toMatchObject({ disabled: true, detail: "A turn is running." });
+    const already = availableCommands({ ...claude, compacting: true }).find((command) => command.id === "compact");
+    expect(already).toMatchObject({ disabled: true, detail: "Already compacting." });
+    // Compacting wins the description when both are true: it is the more
+    // specific answer to "why can I not press this".
+    expect(compactBlockedReason({ busy: true, compacting: true })).toBe("Already compacting.");
+    expect(compactBlockedReason({ busy: false })).toBeUndefined();
+  });
+
+  test("an available row says what it would do rather than why it cannot", () => {
+    const offered = availableCommands(claude).find((command) => command.id === "compact");
+    expect(offered?.disabled).toBeUndefined();
+    expect(offered?.detail).toBe("Summarise the conversation to free space.");
+  });
+
+  test("the draft that IS the gesture is exactly `/compact`, trimmed", () => {
+    expect(isCompactDraft("/compact")).toBe(true);
+    expect(isCompactDraft("  /compact\n")).toBe(true);
+    // An argument this composer cannot pass on leaves it an ordinary message.
+    expect(isCompactDraft("/compact the API work")).toBe(false);
+    expect(isCompactDraft("please run /compact")).toBe(false);
+  });
+});
+
 describe("ranking commands", () => {
   const commands = availableCommands({ busy: true, fresh: true, runtimeMode: "auto" });
 
@@ -151,5 +207,84 @@ describe("ranking commands", () => {
   test("the description is searchable, but ranks below the name", () => {
     const byDescription = rankCommands(commands, "prompts");
     expect(byDescription[0]?.label).toBe("/full-access");
+  });
+});
+
+describe("the skills the dollar menu offers", () => {
+  const SKILLS = [
+    { name: "commit-messages", description: "Write a conventional commit.", source: "user" as const },
+    { name: "release-notes", description: "Draft the notes for a release.", source: "project" as const },
+    { name: "vercel:deploy", description: "Ship to production.", source: "plugin" as const },
+  ];
+
+  test("picking one inserts EXACTLY what the chip is read back from", () => {
+    // The same property the path rows have: one wire form per kind, produced in
+    // one place, so the text sent and the chip drawn cannot disagree.
+    expect(rankSkills(SKILLS, "commit")[0]).toMatchObject({
+      label: "commit-messages",
+      action: { type: "insert", text: skillReference({ name: "commit-messages" }).text },
+    });
+  });
+
+  test("nothing typed lists them in the order the engine ranked them", () => {
+    expect(rankSkills(SKILLS, "").map((completion) => completion.label)).toEqual(["commit-messages", "release-notes", "vercel:deploy"]);
+  });
+
+  test("a prefix wins, and a namespace is a boundary initials can reach", () => {
+    expect(rankSkills(SKILLS, "rel")[0]?.label).toBe("release-notes");
+    // `vd` is neither a prefix of nor a substring of `vercel:deploy` — the two
+    // letters are the two words, which is what the boundary marker is for.
+    expect(rankSkills(SKILLS, "vd")[0]?.label).toBe("vercel:deploy");
+    expect(rankSkills(SKILLS, "deploy")[0]?.label).toBe("vercel:deploy");
+  });
+
+  test("the description is searchable but cannot outrank a name", () => {
+    expect(rankSkills(SKILLS, "conventional")[0]?.label).toBe("commit-messages");
+    // `release` is a prefix of one name and appears in another's description.
+    expect(rankSkills(SKILLS, "release")[0]?.label).toBe("release-notes");
+  });
+
+  test("a leading dollar in the query is not searched for", () => {
+    expect(rankSkills(SKILLS, "$rel")[0]?.label).toBe("release-notes");
+  });
+
+  test("a query whose letters are not all there returns nothing, and so does an empty inventory", () => {
+    expect(rankSkills(SKILLS, "qqqq")).toEqual([]);
+    expect(rankSkills([], "anything")).toEqual([]);
+  });
+
+  test("a row with no description says where it came from rather than nothing", () => {
+    // An empty muted column reads as a broken row rather than a terse one.
+    expect(rankSkills([{ name: "bare", description: "", source: "plugin" }], "")[0]?.detail).toBe("Plugin");
+  });
+});
+
+describe("the provider's own slash commands", () => {
+  const COMMANDS = [
+    { name: "ship", description: "Tag and publish.", source: "project" as const },
+    { name: "commit-commands:clean_gone", description: "Prune dead branches.", source: "plugin" as const },
+  ];
+
+  test("picking one inserts `/name`, because the HARNESS parses it rather than this box", () => {
+    expect(providerCommandCompletions(COMMANDS)[0]).toMatchObject({
+      label: "/ship",
+      action: { type: "insert", text: "/ship" },
+      group: PROVIDER_COMMAND_GROUP,
+    });
+  });
+
+  test("every provider row carries the group, so the menu can head them as one section", () => {
+    expect(providerCommandCompletions(COMMANDS).every((row) => row.group === PROVIDER_COMMAND_GROUP)).toBe(true);
+    // Telar's own verbs carry none: they are the menu's subject and already
+    // have its title.
+    expect(availableCommands({ busy: true, fresh: false }).some((row) => row.group !== undefined)).toBe(false);
+  });
+
+  test("they rank by the same rules the verbs do, with the slash stripped from both sides", () => {
+    const rows = providerCommandCompletions(COMMANDS);
+    expect(rankCommands(rows, "ship")[0]?.label).toBe("/ship");
+    expect(rankCommands(rows, "/ship")[0]?.label).toBe("/ship");
+    expect(rankCommands(rows, "clean")[0]?.label).toBe("/commit-commands:clean_gone");
+    expect(rankCommands(rows, "qqqq")).toEqual([]);
   });
 });

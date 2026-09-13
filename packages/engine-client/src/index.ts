@@ -131,6 +131,7 @@ import {
   type ProviderTurnOpenInput,
   type AgentTurnInput,
   type WorkerStatus,
+  type ProviderSkills,
   type WorkspaceFile,
   type WorkspaceListing,
   type WorkerTurnFailure,
@@ -1653,6 +1654,19 @@ export class EngineClient {
 
   sessionFiles(sessionId: string): Promise<{ listing: WorkspaceListing }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files`);
+  }
+
+  /**
+   * What this session's provider can be asked to do — its skills and its slash
+   * commands, read where the session actually runs.
+   *
+   * PER SESSION RATHER THAN PER PROJECT because the checkout is: a worktree
+   * session's `.claude` is its own copy's, and the provider answers about the
+   * directory it was started in. Cached in the engine (see
+   * `provider-skills.ts`), so a menu may ask on every keystroke.
+   */
+  sessionSkills(sessionId: string): Promise<ProviderSkills> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
   }
 
   /** One file's text, as it is on disk. Fenced inside the checkout by the

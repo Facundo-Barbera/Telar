@@ -37,7 +37,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { EngineRequest, ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { EngineRequest, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
   advance as advanceQuestion,
   buildAnswers,
@@ -67,7 +67,17 @@ import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { ComposerMenu } from "./composer-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
-import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
+import {
+  availableCommands,
+  buildPathIndex,
+  compactBlockedReason,
+  providerCommandCompletions,
+  rankCommands,
+  rankPaths,
+  rankSkills,
+  type Completion,
+  type PathEntry,
+} from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
@@ -523,6 +533,11 @@ export function Composer({
    */
   const escArmed = armedRaw && busy;
 
+  /** WHICH HARNESS IS LISTENING, in one expression the slash menu can use. A
+   *  canvas is pointed at `driver`; a session was created on one and keeps it
+   *  for life. */
+  const menuDriver = fresh ? driver : session?.driver;
+
   /* ---------------------------------------------------------------- *
    * THE BANNER STACK — the notices tucked behind the composer's top edge.
    * ---------------------------------------------------------------- */
@@ -594,6 +609,10 @@ export function Composer({
    */
   const [pathCache, setPathCache] = useState<{ checkout: string; entries: PathEntry[] }>();
   const [reading, setReading] = useState(false);
+  /** The provider's own skills and slash commands, keyed by the session that
+   *  answered for exactly the reason the path cache is. */
+  const [skillCache, setSkillCache] = useState<{ checkout: string; value: ProviderSkills }>();
+  const [readingSkills, setReadingSkills] = useState(false);
 
   /* ---------------------------------------------------------------- *
    * THE STASH — ⌘S sets this box aside; any composer can pull it back.
@@ -725,6 +744,7 @@ export function Composer({
    */
   const checkout = sessionId ?? (projectId ? `project:${projectId}` : "none");
   const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
+  const skills = skillCache?.checkout === checkout ? skillCache.value : undefined;
   /**
    * THE NOTEBOOK, for the `@` menu. Read on mount rather than on the first `@`,
    * unlike the path listing: that one is a git call over a whole checkout and
@@ -772,8 +792,42 @@ export function Composer({
     return () => window.clearTimeout(task);
   }, [trigger?.kind, paths, reading, checkout, sessionId, projectId]);
 
+  /**
+   * READ ON THE FIRST `$` OR `/`, AND ONLY ON A SESSION THAT EXISTS.
+   *
+   * Same rule as the path listing above and the same reason: the engine may
+   * have to ask the harness itself, which is a subprocess, and most messages
+   * contain neither sigil. A CANVAS ASKS NOTHING — there is no session to ask
+   * about yet, and the skills of a session that does not exist is not a
+   * question with an answer.
+   */
+  useEffect(() => {
+    if (trigger?.kind !== "skill" && trigger?.kind !== "command") return;
+    if (skills || readingSkills || !sessionId) return;
+    const task = window.setTimeout(() => {
+      setReadingSkills(true);
+      void (async () => {
+        try {
+          setSkillCache({ checkout, value: (await api.sessionSkills(sessionId)) });
+        } catch {
+          // Two empty lists read as "this provider offers none", which is the
+          // honest answer when the engine could not be asked — and is what a
+          // Codex session legitimately returns. Cached so it is asked once.
+          setSkillCache({ checkout, value: { skills: [], commands: [] } });
+        } finally {
+          setReadingSkills(false);
+        }
+      })();
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [trigger?.kind, skills, readingSkills, checkout, sessionId]);
+
   const completions = useMemo<Completion[]>(() => {
     if (!trigger || dismissed) return [];
+    // `$` IS SKILLS AND NOTHING ELSE. Unlike `@`, which reaches two stores
+    // under one sigil because "did I mean the note or the file" is a question
+    // nobody wants to be asked, a skill has no second store to be confused with.
+    if (trigger.kind === "skill") return rankSkills(skills?.skills ?? [], trigger.query);
     /**
      * `@` OFFERS THE NOTEBOOK BESIDE THE CHECKOUT, under ONE sigil.
      *
@@ -789,23 +843,42 @@ export function Composer({
       const noteRows = rankNotes(notes, trigger.query);
       return [...noteRows, ...rankPaths(paths ?? [], trigger.query, Math.max(4, 12 - noteRows.length))];
     }
-    return rankCommands(
+    /**
+     * TELAR'S VERBS, THEN THE PROVIDER'S — two ranked lists concatenated rather
+     * than one ranking over both. A single pass would let a plugin command
+     * outscore `/stop` on a two-letter query, and the verbs are the ones this
+     * box performs itself.
+     */
+    return [
+      ...rankCommands(
       availableCommands({
         busy,
         fresh,
         ...(runtimeMode ? { runtimeMode } : {}),
-        ...(driver ? { driver } : {}),
+        // THE SESSION'S OWN AGENT ONCE IT HAS ONE. `driver` is the CANVAS's
+        // pending choice and the cockpit only passes it while fresh, so a row
+        // that depends on which harness is listening — `/compact` — saw
+        // `undefined` on every session that actually has one.
+        ...(menuDriver ? { driver: menuDriver } : {}),
+        ...(compacting ? { compacting } : {}),
         ...(envMode ? { envMode } : {}),
         models: commandChoices.models,
         efforts: commandChoices.efforts,
       }),
       trigger.query,
-    );
-  }, [trigger, dismissed, paths, notes, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
+      ),
+      ...rankCommands(providerCommandCompletions(skills?.commands ?? []), trigger.query),
+    ];
+  }, [trigger, dismissed, paths, notes, skills, busy, fresh, runtimeMode, menuDriver, compacting, envMode, commandChoices]);
 
   // No completions while a question is active: the editor's text is an ANSWER,
   // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
-  const menuOpen = !questionActive && trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
+  /** A menu that is still fetching its rows stays OPEN and says "Reading…" —
+   *  closing and reopening a beat later is the flicker that makes a person
+   *  stop trusting the sigil. `/` is exempt: it always has Telar's own verbs to
+   *  show immediately, so it never has an empty moment to cover. */
+  const menuLoading = (trigger?.kind === "path" && reading) || (trigger?.kind === "skill" && readingSkills);
+  const menuOpen = !questionActive && trigger !== null && !dismissed && (completions.length > 0 || menuLoading);
 
   /** Recompute the trigger from the live caret. Called after every edit and
    *  every caret move, because moving out of a `@word` must close the menu. */
@@ -816,6 +889,10 @@ export function Composer({
 
   const apply = useCallback(
     (completion: Completion) => {
+      // A DISABLED ROW IS A LABEL, NOT A CONTROL. It keeps the menu open and
+      // the trigger intact, so the reason it carries stays on screen — closing
+      // the menu on a press that did nothing is how you get pressed twice.
+      if (completion.disabled) return;
       const range = trigger;
       setTrigger(null);
       setDismissed(false);
@@ -837,9 +914,12 @@ export function Composer({
       if (action.type === "driver") onDriverChange?.(action.driver);
       if (action.type === "model") onModelChange?.({ ...modelChoiceOf(session, pendingModel), model: action.model });
       if (action.type === "effort") onModelChange?.({ ...modelChoiceOf(session, pendingModel), effort: action.effort });
+      // The same press as the usage wheel's button, and the same submission:
+      // the cockpit sends one `kind: "compact"` turn either way.
+      if (action.type === "compact") onCompact?.();
       if (action.type === "stop") onStop();
     },
-    [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onStop, session, pendingModel],
+    [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onCompact, onStop, session, pendingModel],
   );
 
   const onKeyDown = useCallback(
@@ -1246,8 +1326,16 @@ export function Composer({
             // constant: `@` reaches the checkout and the notebook, and a list
             // headed "Files and folders" with a note at the top of it is a
             // label contradicting the rows underneath it.
-            heading={trigger.kind !== "path" ? "Commands" : notes.length > 0 ? "Notes, files and folders" : "Files and folders"}
-            {...(trigger.kind === "path" && reading ? { loading: true } : {})}
+            heading={
+              trigger.kind === "skill"
+                ? "Skills"
+                : trigger.kind === "command"
+                  ? "Commands"
+                  : notes.length > 0
+                    ? "Notes, files and folders"
+                    : "Files and folders"
+            }
+            {...(menuLoading ? { loading: true } : {})}
             emptyText="No matches."
             onActive={setActive}
             onPick={apply}
@@ -1508,7 +1596,10 @@ export function Composer({
               {...(session ? { driver: session.driver } : {})}
               {...(onCompact ? { onCompact } : {})}
               compactDisabled={busy || sending || Boolean(compacting)}
-              compactReason={compacting ? "Already compacting." : "A turn is running."}
+              // ONE SENTENCE FOR ONE CAPABILITY: the `/compact` row in the
+              // slash menu reads the same helper, so the button and the row can
+              // never give a person two different reasons.
+              compactReason={compactBlockedReason({ busy, compacting }) ?? "Sending…"}
             />
             {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
                 oversight: `InputGroup` carries `has-disabled:opacity-50`, so a

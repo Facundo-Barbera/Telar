@@ -17,7 +17,8 @@
  * close the menu before the pick landed.
  */
 
-import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon } from "lucide-react";
+import { Fragment } from "react";
+import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
 import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,12 @@ const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {
   effort: GaugeIcon,
   driver: BotIcon,
   env: GitBranchIcon,
+  // The glyph the usage wheel's own Compact button wears — same gesture, two
+  // places to reach it.
+  compact: Minimize2Icon,
+  // The same glyph the chip a skill inserts draws (`glyph-paths.ts`), so the
+  // row you picked and the chip it produced are recognisably one thing.
+  skill: WandSparklesIcon,
   stop: SquareIcon,
 };
 
@@ -75,11 +82,24 @@ export function ComposerMenu({
       ) : (
         <div className="max-h-72 overflow-y-auto p-1">
           {completions.map((completion, index) => (
+            <Fragment key={completion.id}>
+            {/* A GROUP HEADING WHERE THE GROUP CHANGES, and nowhere else. The
+                provider's commands sit under one; Telar's own verbs are the
+                menu's subject and already carry its title, so they do not get
+                a second label saying so. */}
+            {completion.group && completion.group !== completions[index - 1]?.group && (
+              <div className="px-2 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                {completion.group}
+              </div>
+            )}
             <button
-              key={completion.id}
               type="button"
               role="option"
               aria-selected={index === active}
+              // Still focusable by the arrow keys and still highlighted: the
+              // row is on screen to be READ, and skipping it would make the
+              // reason it carries the one thing you cannot land on.
+              aria-disabled={completion.disabled ? true : undefined}
               // Prevented, not stopped: the editor must keep focus through the
               // whole gesture or the pick has nowhere to land.
               onMouseDown={(event) => event.preventDefault()}
@@ -90,6 +110,7 @@ export function ComposerMenu({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm",
                 index === active ? "bg-accent text-accent-foreground" : "text-foreground",
+                completion.disabled && "cursor-not-allowed opacity-50",
               )}
             >
               <RowIcon completion={completion} />
@@ -99,6 +120,7 @@ export function ComposerMenu({
                   worse than one that shows no detail at all. */}
               <span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{completion.detail}</span>
             </button>
+            </Fragment>
           ))}
         </div>
       )}
