@@ -201,10 +201,21 @@ import Testing
     /// ROWS THE RAIL IS NOT DRAWING KEEP THEIR SLOT — a conversation on a shelf,
     /// one filtered out, one on a Mac that is away. A drag that had nothing to
     /// do with them must not prune them from the Mac's document.
+    ///
+    /// A SLOT IS RELATIVE TO THE STORED KEY IT FOLLOWED, which is the desktop's
+    /// own rule and the only one available: an undrawn key has no position of
+    /// its own once the drawn ones have moved. The two cases below are
+    /// `moveProjectGroup`'s in `session-groups.test.ts`, run through this half
+    /// of the same arithmetic.
     @Test func aWriteKeepsTheRowsThisPhoneCannotSee() {
-        // `hidden` sat between b and c and stays there; `tail` was last and stays last.
-        #expect(SidebarModel.keepingUnseen(["c", "a", "b"], stored: ["a", "b", "hidden", "c", "tail"])
-                == ["c", "a", "b", "hidden", "tail"])
+        #expect(SidebarModel.keepingUnseen(SidebarModel.moved(["a", "b", "c"], dragged: "c", target: "a"),
+                                           stored: ["a", "away", "b", "quiet"])
+                == ["c", "a", "away", "b", "quiet"])
+        // A stored key whose every neighbour moved still lands somewhere sane —
+        // after the last stored key that IS drawn before it.
+        #expect(SidebarModel.keepingUnseen(SidebarModel.moved(["a", "b"], dragged: "b", target: "a"),
+                                           stored: ["x", "a", "b"])
+                == ["x", "b", "a"])
         #expect(SidebarModel.keepingUnseen(["a"], stored: []) == ["a"])
         // Nothing drawn is still not licence to drop what is stored.
         #expect(SidebarModel.keepingUnseen([], stored: ["x", "y"]) == ["x", "y"])
