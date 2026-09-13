@@ -336,6 +336,20 @@ struct SessionView: View {
         .onChange(of: draft) { _, text in
             if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
         }
+        // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
+        // file body, a transcript row and a diff row all reach the composer
+        // through the panel model they already share; this is the other end.
+        .onChange(of: panel.pendingReference) { _, pending in
+            guard let pending else { return }
+            panel.clearReference()
+            draft = ComposerReference.insert(pending, into: draft)
+            // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
+            // the composer already is; as a push or filling the window the
+            // panel is covering it, and an insert with nothing to show for it
+            // reads as a menu item that did nothing.
+            if !wantsColumn || panel.isFullScreen { panel.close() }
+            composerFocused = true
+        }
         .onChange(of: store.sync.session) { _, session in
             if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
         }
@@ -851,6 +865,16 @@ struct ComposerView: View {
         // transcript — which dismisses the keyboard.
         .contentShape(RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous))
         .onTapGesture { focus.wrappedValue = true }
+        // THE BOX'S OWN MENU — the desktop's `ComposerChromeMenu`. Remove
+        // attachment lives on the chip that has one (see `AttachmentChip`), so
+        // what is left here are the two verbs about the draft itself. Clearing
+        // is the one with no other affordance at all: stashing has the tray.
+        .contextMenu {
+            Button("Clear draft", systemImage: "eraser") { clearDraft() }
+                .disabled(draft.isEmpty)
+            Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
         // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
         // hands something over. `.onDrop` rather than `.dropDestination`: a
         // provider carries its own registered types, which is what decides
@@ -1110,6 +1134,16 @@ struct ComposerView: View {
 
     private func stop() {
         Task { await store.stopActiveTurn() }
+    }
+
+    /// The whole box, emptied — the one thing the composer could not do
+    /// without selecting everything and deleting it by hand. ATTACHMENTS ARE
+    /// NOT THE DRAFT: each chip carries its own remove, and clearing the text
+    /// must not quietly take the picture off the message too.
+    private func clearDraft() {
+        guard !draft.isEmpty else { return }
+        draft = ""
+        note = nil
     }
 
     /// TEXT ONLY, on the phone. The web also carries pictures; here an

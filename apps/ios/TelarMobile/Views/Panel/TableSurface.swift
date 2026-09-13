@@ -66,6 +66,7 @@ struct TableSurface: View {
                                 .frame(width: widths[i], height: 32, alignment: .leading)
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { headerMenu(column) }
                         }
                     }
                     .background(Theme.sheet)
@@ -81,6 +82,28 @@ struct TableSurface: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
     }
 
+    /// The desktop's header menu: the same three sort states the tap cycles
+    /// through, named rather than guessed at, plus the column's own name.
+    /// Radio groups have no context-menu shape on iOS, so the state that is on
+    /// wears the checkmark — the pattern the composer's menus already use.
+    @ViewBuilder private func headerMenu(_ column: String) -> some View {
+        Button { sort = (column, false) } label: {
+            sortRow("Sort ascending", on: sort?.column == column && sort?.desc == false)
+        }
+        Button { sort = (column, true) } label: {
+            sortRow("Sort descending", on: sort?.column == column && sort?.desc == true)
+        }
+        Button { sort = nil } label: {
+            sortRow("Clear sort", on: sort?.column != column)
+        }
+        Divider()
+        Button("Copy column name", systemImage: "doc.on.doc") { UIPasteboard.general.string = column }
+    }
+
+    @ViewBuilder private func sortRow(_ label: String, on: Bool) -> some View {
+        if on { Label(label, systemImage: "checkmark") } else { Text(label) }
+    }
+
     private func row(_ index: Int, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
             if let cells = rows[index] {
@@ -88,6 +111,17 @@ struct TableSurface: View {
                     cellText(cell)
                         .padding(.horizontal, 8)
                         .frame(width: widths[safe: i] ?? 100, height: Self.rowHeight, alignment: .leading)
+                        .contentShape(Rectangle())
+                        // ONE CELL, AND THE ONE THING ANYBODY WANTS FROM IT. A
+                        // cell is clipped to its column's width, so the value
+                        // you can SEE is often not the value that is there —
+                        // which is why this copies the whole string rather than
+                        // the rendered text.
+                        .contextMenu {
+                            Button("Copy value", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = tableCellValue(cell)
+                            }
+                        }
                 }
             } else {
                 Text("…").font(.system(size: 11)).foregroundStyle(Theme.textTertiary).padding(.horizontal, 8).frame(height: Self.rowHeight)
@@ -97,13 +131,16 @@ struct TableSurface: View {
     }
 
     private func cellText(_ cell: JSONValue) -> some View {
-        let (label, tone): (String, Color) = switch cell {
-        case .null: ("null", Theme.textTertiary)
-        case .string(let s): (s.isEmpty ? "\"\"" : s, s.isEmpty ? Theme.textTertiary : Theme.text)
-        case .number(let n): (n == n.rounded() && abs(n) < 1e15 ? String(Int(n)) : String(n), Theme.text)
-        case .bool(let b): (b ? "true" : "false", Theme.text)
-        default: (cell.prettyPrinted, Theme.textMuted)
+        let tone: Color = switch cell {
+        case .null: Theme.textTertiary
+        case .string(let s): s.isEmpty ? Theme.textTertiary : Theme.text
+        case .number, .bool: Theme.text
+        default: Theme.textMuted
         }
+        // AN EMPTY STRING IS DRAWN, NOT COPIED, as `""`: a blank cell is
+        // indistinguishable from a missing one on screen, and two quote marks
+        // on the clipboard are not what was in the column.
+        let label: String = if case .string(let s) = cell, s.isEmpty { "\"\"" } else { tableCellValue(cell) }
         return Text(label)
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(tone)
@@ -145,6 +182,19 @@ struct TableSurface: View {
         if sort?.column != column { sort = (column, false) }
         else if sort?.desc == false { sort = (column, true) }
         else { sort = nil }
+    }
+}
+
+/// One cell as text — what the grid draws and what "Copy value" writes. A
+/// whole number keeps its integer shape (`3`, not `3.0`), which is the one
+/// place a grid of floats reads as data rather than as arithmetic.
+func tableCellValue(_ cell: JSONValue) -> String {
+    switch cell {
+    case .null: "null"
+    case .string(let s): s
+    case .number(let n): n == n.rounded() && abs(n) < 1e15 ? String(Int(n)) : String(n)
+    case .bool(let b): b ? "true" : "false"
+    default: cell.prettyPrinted
     }
 }
 

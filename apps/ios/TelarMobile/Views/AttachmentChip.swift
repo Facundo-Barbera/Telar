@@ -57,6 +57,11 @@ struct AttachmentChip: View {
             .padding(4)
             .accessibilityLabel("Remove \(name)")
         }
+        // The chip's own ✕ as a row — it takes the file off the message, it
+        // does not delete anything, and a bin would say it did.
+        .contextMenu {
+            Button("Remove attachment", systemImage: "xmark", role: .destructive) { onRemove() }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(name)
     }
