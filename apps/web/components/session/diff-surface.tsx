@@ -50,14 +50,24 @@
  * human pressed it. Anything irreversible belongs in the terminal that is
  * already open two keystrokes away, and this surface says so rather than
  * offering a worse version of it.
+ *
+ * AND IT IS A SURFACE YOU CAN HAVE TWO OF (#335). A review of a big change is
+ * one list of forty files, and comparing what happened in `apps/web` against
+ * what happened in `apps/engine` meant scrolling between them. Each Diff tab
+ * carries a FILTER — a folder or one file, held in the tab's own params, so the
+ * strip can name it ("Diff · apps/web/") and the panel persists it with the
+ * rest of the arrangement. One Diff with no filter is the surface this file
+ * described before: the filter is an instance's identity, not a mode.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   GitBranchIcon,
   GitCommitHorizontalIcon,
+  ListFilterIcon,
   RotateCwIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import type { GitFileChange, SessionDiff, TurnState } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
@@ -88,6 +98,62 @@ const STATUS_TONE: Record<GitFileChange["status"], PanelTone> = {
   deleted: "danger",
   renamed: "none",
 };
+
+/**
+ * WHAT A FILTER MEANS: a folder or one file, and nothing cleverer (#335).
+ *
+ * `apps/web` keeps everything under it; `apps/web/lib/utils.ts` keeps that one
+ * file. MATCHED AT A SEGMENT BOUNDARY, so `apps/we` is not a prefix of
+ * `apps/web` — a field you type into character by character would otherwise
+ * spend every intermediate keystroke showing a different, accidental review,
+ * and `docs` would quietly drag in `docs-old`. A trailing slash is the same
+ * filter as none: `src/` and `src` are one folder to anybody who has typed a
+ * path, and the tab label reads the same either way.
+ *
+ * NOT A SEARCH. A basename (`utils.ts`) matches nothing, deliberately: this is
+ * the instance's identity — the thing the tab is named after and the thing it
+ * is persisted with — and a fuzzy rule would make two tabs whose labels agree
+ * show two different lists.
+ */
+export function underDiffFilter(path: string, filter: string): boolean {
+  const under = filter.trim().replace(/\/+$/, "");
+  if (!under) return true;
+  return path === under || path.startsWith(`${under}/`);
+}
+
+/** A rename is under the filter by EITHER name — the row is one change, and it
+ *  belongs to both folders it straddles. Same reasoning as `journalEdits` in
+ *  lib/session-review.ts, which reconciles the two names for the same reason. */
+function fileUnderDiffFilter(file: GitFileChange, filter: string): boolean {
+  return underDiffFilter(file.path, filter) || (file.renamedFrom !== undefined && underDiffFilter(file.renamedFrom, filter));
+}
+
+/**
+ * THE REVIEW UNDER ONE FILTER — the whole of what makes two Diff tabs different.
+ *
+ * A FOLD RATHER THAN A HIDDEN ROW, because every figure on this surface is a
+ * count of the rows beneath it: filtering the list and leaving `48 files +900
+ * −120` above four rows would be a headline about a review nobody is looking
+ * at. The line counts are re-summed from the rows that survived, which is the
+ * one case where `diff.linesAdded` stops being the answer — it is the
+ * repository's total, and stays the honest total when the list is capped.
+ *
+ * NO FILTER RETURNS THE SAME OBJECT, so an unfiltered Diff is byte for byte the
+ * surface it was before this existed.
+ */
+export function reviewUnderFilter(review: SessionReview, filter?: string): SessionReview {
+  const under = filter?.trim();
+  if (!under) return review;
+  const rows = review.rows.filter((row) => fileUnderDiffFilter(row.file, under));
+  return {
+    rows,
+    unreported: rows.filter((row) => !row.reported).map((row) => row.file),
+    settled: review.settled.filter((path) => underDiffFilter(path, under)),
+    filesChanged: rows.length,
+    linesAdded: rows.reduce((total, row) => total + (row.file.linesAdded ?? 0), 0),
+    linesRemoved: rows.reduce((total, row) => total + (row.file.linesRemoved ?? 0), 0),
+  };
+}
 
 /** A unified diff, tinted by line. Third copy of this in the app; the next one
  *  should extract it. */
@@ -129,6 +195,7 @@ function ReviewFileRow({
   reported,
   edits,
   onOpenFile,
+  onOpenInNewPanelTab,
   onInsertReference,
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
@@ -143,6 +210,13 @@ function ReviewFileRow({
    *  — the panel derives it from its own `onOpenTab`, so there is no second
    *  route into the Editor. */
   onOpenFile?: (path: string) => void;
+  /**
+   * Review this row's path in a DIFF TAB OF ITS OWN (#335) — the same verb the
+   * file tree and the transcript already offer, pointed at this surface rather
+   * than the Editor: the new tab is a second Diff whose filter is this path, so
+   * one part of a change can be read beside another. Absent hides the item.
+   */
+  onOpenInNewPanelTab?: (path: string) => void;
   /** Put the row's reference into the message being written — the same string
    *  and the same `fileReference` the row's own DRAG already carries. */
   onInsertReference?: (text: string) => void;
@@ -227,7 +301,8 @@ function ReviewFileRow({
         </ContextMenuTrigger>
         <ContextMenuContent className="w-auto">
           {onOpenFile && <ContextMenuItem onClick={() => onOpenFile(file.path)}>Open in Editor</ContextMenuItem>}
-          {onOpenFile && <ContextMenuSeparator />}
+          {onOpenInNewPanelTab && <ContextMenuItem onClick={() => onOpenInNewPanelTab(file.path)}>Open in a new panel tab</ContextMenuItem>}
+          {(onOpenFile || onOpenInNewPanelTab) && <ContextMenuSeparator />}
           <ContextMenuItem onClick={() => void navigator.clipboard.writeText(file.path)}>Copy path</ContextMenuItem>
           {onInsertReference && (
             <ContextMenuItem onClick={() => onInsertReference(fileReference(file.path).text)}>Insert as reference</ContextMenuItem>
@@ -438,7 +513,10 @@ export function DiffSurface({
   suggestion,
   /** A turn is running. Only used to hold the commit button. */
   active,
+  filter,
+  onFilterChange,
   onOpenFile,
+  onOpenInNewPanelTab,
   onInsertReference,
 }: {
   sessionId?: string;
@@ -446,10 +524,29 @@ export function DiffSurface({
   reported: ReadonlyMap<string, number>;
   suggestion: string;
   active?: TurnState;
+  /**
+   * THIS INSTANCE'S FILTER — a folder or one file, and the whole of what makes
+   * two Diff tabs different (#335).
+   *
+   * IT LIVES IN THE TAB'S PARAMS, NOT IN THIS COMPONENT, which is what makes it
+   * an instance rather than a mood: the strip reads it for the label
+   * ("Diff · src/"), the panel persists it with the rest of the arrangement, and
+   * a surface remounted by a session switch comes back filtered the same way.
+   * Local state here would be none of those things.
+   */
+  filter?: string;
+  /** Rewrite the filter. An EMPTY string clears the param entirely — see the
+   *  cockpit's handler — so a cleared field leaves a tab that reads "Diff".
+   *  Absent hides the field, for a caller that has no params to keep. */
+  onFilterChange?: (filter: string) => void;
   /** A changed file's row can open the file the Editor already draws — the
    *  panel derives this from its own `onOpenTab`, exactly as it does for
    *  LatexSurface, so no second route into the Editor is created here. */
   onOpenFile?: (path: string) => void;
+  /** A row's path, reviewed in a second Diff tab filtered to it — see
+   *  `ReviewFileRow`. The panel derives it from the same "open another
+   *  instance" verb the "+" chooser uses. */
+  onOpenInNewPanelTab?: (path: string) => void;
   /** Put a row's file reference into the message being written. */
   onInsertReference?: (text: string) => void;
 }) {
@@ -499,10 +596,26 @@ export function DiffSurface({
   }, [load, active]);
 
   const review = useMemo(() => (diff ? reconcileReview(diff, reported) : undefined), [diff, reported]);
+  /**
+   * WHAT THIS TAB IS A REVIEW OF. Everything on screen below the commit box is
+   * read out of this rather than out of `review`: the headline, the
+   * reconciliation band and both row lists all have to be counting the same
+   * files as the list under them.
+   *
+   * THE COMMIT BOX IS THE ONE EXCEPTION, and deliberately — it commits the
+   * whole tree (`git add -A`), so it goes on naming the unfiltered figure. A
+   * button reading "Commit 3 files" that committed forty-eight would be the
+   * worst kind of lie this surface could tell.
+   */
+  const shown = useMemo(() => (review ? reviewUnderFilter(review, filter) : undefined), [review, filter]);
+  /** The filter as it MEANS rather than as the field holds it — whitespace
+   *  alone is not a filter, and neither is an empty string. Shown as typed
+   *  otherwise, so the prose below and the tab's own label agree. */
+  const trimmed = filter?.trim() || undefined;
 
   /** Built once and spread onto both row lists, so the two can never drift
    *  into offering different menus for the same kind of row. */
-  const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
+  const rowMenu = { ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {}), ...(onInsertReference ? { onInsertReference } : {}) };
 
   if (!sessionId && !projectId) {
     return (
@@ -518,7 +631,7 @@ export function DiffSurface({
       </PanelEmpty>
     );
   }
-  if (!diff || !review) {
+  if (!diff || !review || !shown) {
     return (
       <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
         <Spinner className="size-3" /> reading the repository…
@@ -561,7 +674,7 @@ export function DiffSurface({
             <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
           </button>
         </div>
-        <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(review)}</p>
+        <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(shown)}</p>
         <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
           {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
               difference between an honest figure and a wrong one: a session
@@ -572,21 +685,69 @@ export function DiffSurface({
             : diff.base
               ? "Everything this session changed, committed and uncommitted."
               : "No starting commit was recorded, so this counts only what is uncommitted."}
+          {/* THE FILTER IS SAID OUT LOUD, because the figure above it is a
+              count of a SUBSET and everything else on this line describes the
+              whole. A tab you came back to an hour later has to be able to
+              explain why it disagrees with the one beside it. */}
+          {trimmed ? ` Filtered to ${trimmed} — ${review.filesChanged} ${review.filesChanged === 1 ? "file" : "files"} in all.` : ""}
           {diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
           {diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
+        {/* THE FIELD IS THE INSTANCE'S IDENTITY, so it sits in the header where
+            a tab's subject belongs — beside the branch it is a review of, not
+            buried in a menu. Typing writes straight through to the tab's
+            params: there is no local copy to fall out of step with the label,
+            and clearing the field clears the param. */}
+        {onFilterChange && (
+          <div className="mt-2 flex items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 focus-within:border-ring">
+            <ListFilterIcon className="size-3 shrink-0 text-muted-foreground" />
+            <input
+              type="text"
+              value={filter ?? ""}
+              onChange={(event) => onFilterChange(event.target.value)}
+              placeholder="Filter by folder or file"
+              aria-label="Filter this review by path"
+              spellCheck={false}
+              autoComplete="off"
+              className="min-w-0 flex-1 bg-transparent font-mono text-[0.6875rem] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+            />
+            {filter && (
+              <button
+                type="button"
+                aria-label="Clear the filter"
+                title="Clear the filter"
+                onClick={() => onFilterChange("")}
+                className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <XIcon className="size-3" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas has
           none, so the band would be reporting every file as "never mentioned"
           by a session that has not said anything yet. */}
-      {sessionId && <ReconciliationBand review={review} />}
+      {sessionId && <ReconciliationBand review={shown} />}
       <CommitList commits={diff.commits} />
 
-      {review.rows.length === 0 ? (
+      {shown.rows.length === 0 ? (
         <div className="px-4 py-6 text-center text-[0.6875rem] text-muted-foreground">
-          Nothing differs from where this session started.
-          {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
+          {/* A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW, and saying
+              "nothing differs" over a tree with forty changed files would send
+              somebody looking for a bug in git. */}
+          {trimmed ? (
+            <>
+              Nothing under <span className="font-mono">{trimmed}</span> differs.
+              {review.rows.length > 0 && ` The rest of the review has ${review.rows.length} ${review.rows.length === 1 ? "file" : "files"}.`}
+            </>
+          ) : (
+            <>
+              Nothing differs from where this session started.
+              {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
+            </>
+          )}
         </div>
       ) : (
         <div className="flex flex-col">
@@ -595,18 +756,18 @@ export function DiffSurface({
               canvas there is no transcript, so NOTHING is unreported — badging
               every row would be reporting a disagreement with a conversation
               that has not happened. */}
-          {sessionId && review.rows.filter((row) => !row.reported).length > 0 && review.rows.some((row) => row.reported) && (
+          {sessionId && shown.rows.filter((row) => !row.reported).length > 0 && shown.rows.some((row) => row.reported) && (
             <PanelDivider label="not in the transcript" />
           )}
-          {review.rows
+          {shown.rows
             .filter((row) => !row.reported)
             .map((row) => (
               <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported={!sessionId} {...rowMenu} />
             ))}
-          {sessionId && review.rows.some((row) => row.reported) && review.rows.some((row) => !row.reported) && (
+          {sessionId && shown.rows.some((row) => row.reported) && shown.rows.some((row) => !row.reported) && (
             <PanelDivider label="the session wrote these" />
           )}
-          {review.rows
+          {shown.rows
             .filter((row) => row.reported)
             .map((row) => (
               <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} {...rowMenu} />
@@ -616,6 +777,9 @@ export function DiffSurface({
 
       <div className="mt-auto">
         {sessionId ? (
+          /* `review`, NOT `shown`: the commit takes the whole tree, so the
+             count on the button is the whole tree's even when the list above
+             is filtered. See the note on `shown`. */
           <CommitBox
           sessionId={sessionId}
           suggestion={suggestion}
