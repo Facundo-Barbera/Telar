@@ -48,9 +48,13 @@ afterEach(() => {
 });
 
 describe("remote store", () => {
-  test("a missing file reads as the open default", () => {
+  test("a missing file reads as a FRESH store, which requires pairing", () => {
+    // #357: the pane opened on "Require pairing" off while warning that
+    // anything able to reach the address has full control. Nothing is locked
+    // out — the process that launched the server carries the host secret and is
+    // admitted before the gate looks for a device (gate.test.ts).
     freshHome();
-    expect(readRemote()).toEqual({ version: 1, requireAuth: false, devices: [] });
+    expect(readRemote()).toEqual({ version: 1, requireAuth: true, devices: [] });
   });
 
   test("writes are atomic and leave no temp files behind", () => {
@@ -142,6 +146,9 @@ describe("remote store", () => {
 
   test("tailscale serve is persisted only with pairing on, like exposure", () => {
     freshHome();
+    // Switched off explicitly: a fresh store requires pairing now (#357), and
+    // what this pins is the refusal, not which way the store starts.
+    setRequireAuth(false);
     expect(() => setTailscaleServe(true)).toThrow(/pairing/);
     setRequireAuth(true);
     expect(setTailscaleServe(true).tailscaleServe).toBe(true);
@@ -231,7 +238,14 @@ describe("remote store", () => {
     expect(revokeOtherDevices(keep.id)).toBe(0);
   });
 
-  test("an unknown version reads as the open default rather than crashing", () => {
+  test("an unknown version reads as the OPEN default, unlike a missing file", () => {
+    /**
+     * A DAMAGED FILE IS NOT A FRESH ONE. Every paired device is gone with it, so
+     * defaulting this branch to "require pairing" would lock a working install
+     * out of itself on the strength of a parse failure — a browser that has been
+     * reaching this cockpit for months would land on /pair with no way to mint a
+     * code. Falling open is the wrong answer in general and the right one here.
+     */
     freshHome();
     fs.mkdirSync(path.dirname(storePath()), { recursive: true });
     fs.writeFileSync(storePath(), JSON.stringify({ version: 99, requireAuth: true, devices: [{}] }));

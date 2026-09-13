@@ -109,10 +109,18 @@ async function stop(exitCode) {
   process.exit(exitCode);
 }
 
-/** requireAuth as the pairing store last wrote it — for the posture line only. */
+/**
+ * requireAuth as the pairing store last wrote it — for the posture line only.
+ *
+ * A MISSING FILE IS A FRESH STORE, WHICH REQUIRES PAIRING. Mirrors `FRESH` in
+ * apps/web/lib/remote/store.ts; without this the warning line would announce an
+ * unguarded cockpit on the one install that is guarded by default.
+ */
 function readRequireAuth(telarHome) {
+  const file = path.join(telarHome, "remote", "remote.json");
+  if (!fs.existsSync(file)) return true;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(telarHome, "remote", "remote.json"), "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     return parsed?.requireAuth === true;
   } catch {
     return false;

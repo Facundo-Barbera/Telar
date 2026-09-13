@@ -349,14 +349,24 @@ export function RemoteSection() {
 
   return (
     <>
-      <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
+      {/* NO CAPTION: the row's sentence changes with the switch and is the one
+          worth reading, and a standing "Who may reach this cockpit from other
+          devices" over a row called "Require pairing" was the doubling #357 is
+          about. */}
+      <SettingsGroup title="Pairing">
         <ToggleRow
           label="Require pairing"
           icon={SmartphoneIcon}
           hint={
             error ??
             (status.requireAuth
-              ? "Unpaired devices are refused. Whatever turned this on was paired in the same breath, so it cannot lock itself out."
+              ? // TRUE ON BOTH PATHS TO "ON", which the old wording was not: a
+                // fresh store starts here (#357) with nothing paired at all, and
+                // the app running the server is admitted by the host secret
+                // rather than by a device record. Flipping the switch by hand
+                // still pairs the browser that flipped it, in the same
+                // round-trip, so neither route can lock itself out.
+                "Unpaired devices are refused. The app running the server is always in."
               : "Anything that can reach this address has full control. The tailnet ACL is the only boundary.")
           }
           checked={status.requireAuth}

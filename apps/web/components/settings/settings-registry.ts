@@ -379,7 +379,7 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Require pairing",
-            hint: "Unpaired devices are refused. Off, anything that can reach this address has full control.",
+            hint: "On by default. Unpaired devices are refused; off, anything that can reach this address has full control.",
             keywords: ["auth", "security", "phone", "ipad"],
             icon: SmartphoneIcon,
           },
