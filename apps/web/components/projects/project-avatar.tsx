@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { FolderIcon } from "lucide-react";
+import { isTelarIcon } from "@telar/engine-client";
 import { projectHue, projectIconUrl, projectInitial } from "@/lib/project-avatar";
-import { projectGlyph } from "@/lib/project-icons";
+import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 
 /**
@@ -17,10 +18,11 @@ import { cn } from "@/lib/utils";
  * fields on the record rather than one (`Project.iconName` explains why), so
  * preferring one here costs no branch anywhere else.
  *
- * A NAME THIS BUILD DOES NOT KNOW IS NOT A MARK. `projectGlyph` answers
- * `undefined` for an id from a newer cockpit's set, and this falls straight
- * through to the checkout's own icon rather than drawing a hole where a glyph
- * should be.
+ * A NAME THIS BUILD DOES NOT KNOW IS NOT A MARK. `isTelarIcon` is the guard
+ * rather than `IdentityIcon`'s own fallback: that one draws a quiet ring for an
+ * unknown id, which is right for a browser profile (whose ring IS its identity)
+ * and wrong here — a project has three better answers behind this one, and a
+ * record from a newer build should reach them rather than stop at a circle.
  *
  * The `<img>` FAILS FORWARD: the engine's icon key is derived on list and the
  * file can vanish between the list and the fetch, so a broken image flips to
@@ -50,12 +52,15 @@ export function ProjectAvatar({
   const [broken, setBroken] = useState(false);
   const box = { width: size, height: size };
 
-  const picked = projectGlyph(iconName);
-  if (picked) {
-    // `currentColor` on purpose: a chosen glyph takes the ink of whatever list
-    // it is in — rail, picker, header — so it reads as part of the row rather
-    // than as a sticker on it.
-    return <picked.Glyph aria-hidden style={box} className={cn("shrink-0", className)} />;
+  if (isTelarIcon(iconName)) {
+    // `currentColor` on purpose — no `color` passed: a chosen glyph takes the
+    // ink of whatever list it is in (rail, picker, header), so it reads as part
+    // of the row rather than as a sticker on it.
+    return (
+      <span aria-hidden style={box} className={cn("flex shrink-0 items-center justify-center", className)}>
+        <IdentityIcon icon={iconName} className="size-full" />
+      </span>
+    );
   }
   if (iconEmoji) {
     return (

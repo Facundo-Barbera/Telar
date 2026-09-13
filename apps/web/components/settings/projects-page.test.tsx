@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
-import { PROJECT_ICONS, projectGlyph } from "@/lib/project-icons";
+import { isTelarIcon, TELAR_ICONS } from "@telar/engine-client";
 import { ProjectConversationRows, ProjectIdentityRows, ProjectPluginRows, ProjectsPage, type ScopedProject } from "./projects-page";
 
 /**
@@ -88,7 +88,7 @@ test("a project on another Mac keeps every identity row read-only, and says whos
 });
 
 test("a picked glyph outranks the checkout's icon, and can be cleared", () => {
-  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask", icon: "etag_abc" })} />);
+  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask-conical", icon: "etag_abc" })} />);
   // The glyph itself, not the engine-served file the derived key points at.
   expect(marked).toContain("lucide-flask-conical");
   expect(marked).not.toContain("etag_abc");
@@ -112,23 +112,34 @@ test("a mark typed before the picker existed still renders, and Auto-detect is i
   expect(typed).toContain("Typed mark");
 });
 
-test("the picker offers a fixed set of real icons, not a field that takes anything", () => {
-  // The row was a text input that took any grapheme, which made a project's
-  // mark whatever emoji font the reader's OS shipped — a different size, weight
-  // and colour from every other glyph in the list it sits in.
+test("the picker offers the SHARED icon set, not a field that takes anything", () => {
+  /**
+   * The row was a text input that took any grapheme, which made a project's
+   * mark whatever emoji font the reader's OS shipped — a different size, weight
+   * and colour from every other glyph in the list it sits in.
+   *
+   * And the set is `TELAR_ICONS`, the vocabulary browser profiles spend too
+   * (#366): two pickers offering two different forties would be the same choice
+   * made twice with different answers.
+   */
   expect(source).not.toContain('aria-label="Project mark"');
   expect(source).toContain("<ProjectIconPicker");
-  expect(PROJECT_ICONS.length).toBeGreaterThanOrEqual(40);
-  // Ids are stored on records, so duplicates would make two glyphs one answer.
-  expect(new Set(PROJECT_ICONS.map((entry) => entry.id)).size).toBe(PROJECT_ICONS.length);
-  // And every id is a name the protocol's own shape accepts.
-  for (const entry of PROJECT_ICONS) expect(entry.id).toMatch(/^[a-z][a-z0-9-]*$/);
+  const picker = readFileSync(new URL("../projects/project-icon-picker.tsx", import.meta.url), "utf8");
+  expect(picker).toContain('from "@telar/engine-client"');
+  expect(picker).toContain("TELAR_ICONS.map");
+  // Every id the protocol's own shape accepts, so nothing in the grid is a
+  // value the engine would refuse when it is picked.
+  for (const id of TELAR_ICONS) expect(id).toMatch(/^[a-z][a-z0-9-]*$/);
 });
 
 test("a glyph name this build does not know falls through to auto-detect", () => {
-  // A record may be written by a newer cockpit with a bigger set; a hole where
-  // the mark should be is a worse answer than the icon the checkout carries.
-  expect(projectGlyph("not-a-glyph-in-this-build")).toBeUndefined();
+  /**
+   * A record may be written by a build whose set had one more glyph. The shared
+   * renderer draws a quiet ring for an unknown id — right for a browser profile,
+   * whose ring IS its identity, and wrong here: a project has three better
+   * answers behind this one, so `isTelarIcon` guards rather than the fallback.
+   */
+  expect(isTelarIcon("not-a-glyph-in-this-build")).toBe(false);
   const html = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "not-a-glyph-in-this-build" })} />);
   expect(html).toContain("Auto-detect");
 });

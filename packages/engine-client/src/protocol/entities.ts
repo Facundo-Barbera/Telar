@@ -368,13 +368,15 @@ export const Project = z.object({
    * does this project look like" without ever having to know which kind of
    * answer it got.
    *
-   * A NAME, NOT A PICTURE. The value is one id out of the fixed set the cockpit
-   * offers (`apps/web/lib/project-icons.ts`) — `flask`, `rocket`, `terminal`.
-   * THE PROTOCOL DELIBERATELY DOES NOT HOLD THAT LIST: which glyphs a cockpit
-   * can draw is a property of the cockpit's icon library, not of the registry,
-   * and an engine that enforced last year's list would refuse a name a newer app
-   * renders perfectly. So the shape is checked here and the MEANING is the
-   * app's, which falls back to the discovered icon for a name it does not know.
+   * A NAME, NOT A PICTURE. The value is one id out of `TELAR_ICONS` — the
+   * identity vocabulary browser profiles spend too (`src/icons.ts`) — which is a
+   * lucide id in lucide's own kebab-case: `flask-conical`, `rocket`, `terminal`.
+   *
+   * THE SHAPE IS CHECKED HERE, NOT THE MEMBERSHIP, and that is `isTelarIcon`'s
+   * whole reason to exist: a registry written by a build whose set had one more
+   * glyph must still be READ rather than thrown away, and the renderer falls
+   * back for a name it cannot draw. Validating the enum here would turn a
+   * downgrade into a project that fails to load.
    */
   iconName: z
     .string()

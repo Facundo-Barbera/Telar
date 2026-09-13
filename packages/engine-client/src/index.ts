@@ -475,7 +475,7 @@ export class EngineClient {
     projectId: string,
     patch: {
       name?: string;
-      /** One id from the cockpit's own set — see `Project.iconName`. */
+      /** One id from `TELAR_ICONS` — see `Project.iconName`. */
       iconName?: string | null;
       /** Legacy; nothing writes a value now. `null` clears a stored mark. */
       iconEmoji?: string | null;

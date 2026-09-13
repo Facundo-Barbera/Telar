@@ -85,7 +85,7 @@ describe("the store's write path", () => {
 
   test("a picked glyph stores by NAME, and its shape is checked here (#364)", () => {
     const store = readyStore();
-    expect(store.updateProject("project_one", { iconName: "flask" }).iconName).toBe("flask");
+    expect(store.updateProject("project_one", { iconName: "flask-conical" }).iconName).toBe("flask-conical");
     expect("iconName" in store.updateProject("project_one", { iconName: null })).toBe(false);
     // WHICH names exist is the cockpit's question, not the registry's — an
     // engine enforcing last year's set would refuse a glyph a newer app draws.

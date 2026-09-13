@@ -96,9 +96,9 @@ describe("PATCH /api/projects/:projectId", () => {
     // route drops on the floor works on the engine and silently does nothing
     // through the cockpit.
     const client = await ready();
-    expect((await patch({ iconName: "flask" })).status).toBe(200);
+    expect((await patch({ iconName: "flask-conical" })).status).toBe(200);
     const stored = (await client.listProjects()).projects.find((project) => project.id === "project_one");
-    expect(stored?.iconName).toBe("flask");
+    expect(stored?.iconName).toBe("flask-conical");
 
     expect((await patch({ iconName: null, iconEmoji: null })).status).toBe(200);
     const cleared = (await client.listProjects()).projects.find((project) => project.id === "project_one");
