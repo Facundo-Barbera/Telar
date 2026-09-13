@@ -336,6 +336,20 @@ struct SessionView: View {
         .onChange(of: draft) { _, text in
             if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
         }
+        // "INSERT AS A REFERENCE", from wherever it was picked. The tree, the
+        // file body, a transcript row and a diff row all reach the composer
+        // through the panel model they already share; this is the other end.
+        .onChange(of: panel.pendingReference) { _, pending in
+            guard let pending else { return }
+            panel.clearReference()
+            draft = ComposerReference.insert(pending, into: draft)
+            // THE BOX IT LANDED IN HAS TO BE ON SCREEN. Beside the transcript
+            // the composer already is; as a push or filling the window the
+            // panel is covering it, and an insert with nothing to show for it
+            // reads as a menu item that did nothing.
+            if !wantsColumn || panel.isFullScreen { panel.close() }
+            composerFocused = true
+        }
         .onChange(of: store.sync.session) { _, session in
             if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
         }

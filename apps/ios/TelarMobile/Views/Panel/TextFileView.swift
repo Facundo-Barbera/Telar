@@ -23,6 +23,9 @@ struct TextFileView: View {
     let path: String
     let active: Bool
     let editable: Bool
+    /// The checkout's absolute path, for "Copy path". Nil until the tree's
+    /// listing has landed.
+    var root: String?
     let onSaveState: (FilesSurface.SaveState?) -> Void
 
     @State private var file: WorkspaceFile?
@@ -40,6 +43,7 @@ struct TextFileView: View {
     /// pinned to the top left rather than floating — see `codeView`.
     @State private var viewport: CGSize = .zero
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.panel) private var panel
     @FocusState private var focused: Bool
 
     private var draftKey: String { "telar.fileDraft.\(hostId?.uuidString ?? "local").\(sessionId).\(path)" }
@@ -47,7 +51,8 @@ struct TextFileView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            FileAddressRow(path: path, detail: file.map { humanBytes($0.bytes) }, trailing: editable ? AnyView(wrapToggle) : nil)
+            FileAddressRow(path: path, detail: file.map { humanBytes($0.bytes) })
+                .contextMenu { addressMenu }
             if let refusal { refusalBanner(refusal) }
             if let file {
                 if file.binary {
@@ -72,7 +77,7 @@ struct TextFileView: View {
     private func codeView(_ file: WorkspaceFile) -> some View {
         let lines = file.text.split(separator: "\n", omittingEmptySubsequences: false)
         let gutter = CGFloat(String(lines.count).count) * 7 + 12
-        return ScrollView([.vertical, .horizontal]) {
+        return ScrollView(wrap ? [.vertical] : [.vertical, .horizontal]) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     HStack(alignment: .top, spacing: 0) {
@@ -87,13 +92,13 @@ struct TextFileView: View {
                         if let coloured = highlighted?[safe: index] {
                             Text(coloured)
                                 .font(.system(size: 12, design: .monospaced))
-                                .lineLimit(1)
+                                .lineLimit(wrap ? nil : 1)
                                 .textSelection(.enabled)
                         } else {
                             Text(String(line))
                                 .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(Theme.text)
-                                .lineLimit(1)
+                                .lineLimit(wrap ? nil : 1)
                                 .textSelection(.enabled)
                         }
                     }
@@ -106,7 +111,12 @@ struct TextFileView: View {
                     // natural width and the content scrolls sideways instead,
                     // which is the whole reason the horizontal axis is there.
                     // The stack stays lazy, so a 10K-line file stays cheap.
-                    .fixedSize(horizontal: true, vertical: false)
+                    //
+                    // WRAPPING IS THAT RULE TURNED OFF ON PURPOSE: the row
+                    // takes the viewport's width again and grows downward, and
+                    // the horizontal axis goes with it so there is nothing left
+                    // to scroll sideways into.
+                    .fixedSize(horizontal: !wrap, vertical: false)
                 }
                 if file.truncated {
                     Text("Truncated: the first \(humanBytes(file.text.utf8.count)) of \(humanBytes(file.bytes)).")
@@ -152,18 +162,32 @@ struct TextFileView: View {
             }
     }
 
-    private var wrapToggle: some View {
-        Button {
-            wrap.toggle()
-        } label: {
-            Image(systemName: "text.word.spacing")
-                .font(.system(size: 11))
-                .foregroundStyle(wrap ? Theme.accent : Theme.textMuted)
+    // MARK: the address row's menu
+
+    /// The desktop's `FileViewMenu`, minus what a phone cannot honour.
+    ///
+    /// REVEAL IN FINDER AND "OPEN IN <app>" ARE ABSENT, not greyed: they reach
+    /// for a Mac this app is not running on, and a disabled row is a promise
+    /// restated on every long press. Rendered/Source has no counterpart either
+    /// — prose opens in the editor here and there is no source view to swap to.
+    ///
+    /// ON THE ROW, NOT THE WHOLE BODY: the text below is selectable, and a
+    /// long press there belongs to the selection. The address row is the one
+    /// piece of this surface that is chrome.
+    @ViewBuilder private var addressMenu: some View {
+        if let absolute = workspaceFilePath(root, path) {
+            Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = absolute }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(wrap ? "Wrap lines on" : "Wrap lines off")
-        .opacity(0)
-        .frame(width: 0)
+        Button("Copy relative path", systemImage: "doc.on.doc") { UIPasteboard.general.string = path }
+        Divider()
+        Button("Re-read from disk", systemImage: "arrow.clockwise") { Task { await read(discardingDraft: true) } }
+        Toggle(isOn: $wrap) { Label("Wrap lines", systemImage: "text.word.spacing") }
+        if let panel {
+            Divider()
+            Button("Insert as a reference", systemImage: "text.badge.plus") {
+                panel.insertReference(ComposerReference.file(path))
+            }
+        }
     }
 
     private func refusalBanner(_ refusal: WorkspaceWriteRefusal) -> some View {

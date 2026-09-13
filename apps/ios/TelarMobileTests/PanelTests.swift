@@ -85,6 +85,38 @@ import Testing
         #expect(editor.activePath == nil && editor.files.isEmpty)
     }
 
+    @Test func theStripsOtherClosesLeaveFocusWhereTheRuleSaysItGoes() {
+        var editor = EditorState()
+        for path in ["a", "b", "c", "d"] { editor.open(path, view: .code, pin: true) }
+        editor.activePath = "a"
+        editor.closeToTheRight("b")
+        #expect(editor.files.map(\.path) == ["a", "b"])
+        #expect(editor.activePath == "a")
+        // Closing everything but a file has to leave THAT file active, however
+        // the focus rule moved while the others went.
+        editor.closeOthers("b")
+        #expect(editor.files.map(\.path) == ["b"])
+        #expect(editor.activePath == "b")
+        editor.closeAll()
+        #expect(editor.files.isEmpty && editor.activePath == nil)
+    }
+
+    @Test @MainActor func aReferenceIsHandedOverOnceAndCleared() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = UUID()
+        let panel = PanelModel(hostId: host, sessionId: "s", defaults: defaults)
+        #expect(panel.pendingReference == nil)
+        panel.insertReference("`a.ts`")
+        #expect(panel.pendingReference == "`a.ts`")
+        panel.clearReference()
+        #expect(panel.pendingReference == nil)
+        // It is not persisted: a draft fragment must not outlive the app.
+        panel.insertReference("`b.ts`")
+        #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).pendingReference == nil)
+    }
+
     @Test @MainActor func persistenceIsHostScoped() {
         let suite = "telar.panel.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
