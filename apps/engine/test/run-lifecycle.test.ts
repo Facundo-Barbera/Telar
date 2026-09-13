@@ -65,13 +65,43 @@ const input = (tree: string, cfg: RunConfiguration, extra: Partial<StartRunInput
   ...extra,
 });
 
-async function until(predicate: () => boolean, ms = 6000): Promise<boolean> {
+/**
+ * The ceiling on one wait, NOT a performance assertion. Every signal in this
+ * file is scheduler-bound — a shell spawning, a shell exiting, a process group
+ * draining — and when this machine is idle they all arrive in well under a
+ * second (the group-drain verdict below measures at ~165 ms, which is its
+ * `groupDrainMs` plus scheduling). The budget is two orders of magnitude above
+ * that on purpose, so that reaching it means something is WEDGED rather than
+ * that the runner was busy.
+ *
+ * SIZING THIS UP DOES NOT FIX #266, and was never going to: the orphan test
+ * below stalls because the manager sometimes never receives the shell's `exit`
+ * event at all, so the run sits at `running` for as long as anything cares to
+ * wait — 34 s, in the measurement on that issue. A budget only decides how long
+ * the suite takes to notice.
+ */
+const SETTLE_MS = 10_000;
+
+/** A test's own timeout, with room for `waits` of them to expire and still report. */
+const settling = (waits = 1) => waits * SETTLE_MS + 10_000;
+
+/**
+ * Poll for a signal and SAY WHAT WAS MISSING if it never comes. The old shape,
+ * `expect(await until(…)).toBe(true)`, failed as "expected true, got false" —
+ * which reads like a blown assertion and cost two sessions the time to work out
+ * that it was a timeout. Throwing names the wait, how long it got, and how many
+ * times it actually managed to look.
+ */
+async function until(what: string, predicate: () => boolean, ms = SETTLE_MS): Promise<void> {
   const started = Date.now();
+  let polls = 0;
   while (Date.now() - started < ms) {
-    if (predicate()) return true;
+    polls += 1;
+    if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return predicate();
+  if (predicate()) return;
+  throw new Error(`waited ${Date.now() - started}ms over ${polls} polls for ${what}, and it never happened`);
 }
 
 /** Kill anything the fixture left behind, without caring whether it was there. */
@@ -93,7 +123,22 @@ test("a shell that exits leaving a child behind does NOT free the project", asyn
   const run = await manager.start(input(temp("tree"), config("sleep 30 &")));
   const pid = manager.run(run.runId).pid;
   try {
-    expect(await until(() => manager.run(run.runId).status === "unknown")).toBe(true);
+    // THIS WAIT IS STILL FLAKY, AND THE FLAKE IS NOT THE BUDGET (#266). The
+    // chain is: the shell is scheduled, backgrounds its child, exits, that exit
+    // is delivered to us, and only then does the manager spend `groupDrainMs`
+    // asking the group whether anything is left. Idle, it completes in ~165 ms.
+    //
+    // It failed 3 times in ~130 local runs while this machine was busy with
+    // other bun processes, and each time the run was still `running` with the
+    // shell already dead and reaped — the surviving `sleep` reparented to ppid
+    // 1 — meaning the manager never received the shell's `exit` event at all.
+    // One was watched for 34 s and never got a verdict, and `shutdown()` then
+    // hangs waiting for the same thing, which is the afterEach hook timeout
+    // that rides along with this failure. CI's 6.2 s failures are that stall
+    // meeting the 6 s budget this wait used to have. It did not reproduce in
+    // 70 consecutive runs afterwards, 20 of them under a load average of 11,
+    // so the trigger is not plain CPU contention and is not yet pinned.
+    await until("the surviving child to keep the run from settling clean", () => manager.run(run.runId).status === "unknown");
     const view = manager.run(run.runId);
     expect(view.error).toMatch(/still alive in its process group/);
     expect(view.endedAt).toBeGreaterThan(0);
@@ -111,7 +156,7 @@ test("a shell that exits leaving a child behind does NOT free the project", asyn
     reap(pid);
     await manager.shutdown();
   }
-}, 20_000);
+}, settling());
 
 test("stopping a run whose child ignores SIGTERM reports unknown rather than success", async () => {
   // The parent has the default disposition and dies on TERM; the child traps it
@@ -125,26 +170,29 @@ test("stopping a run whose child ignores SIGTERM reports unknown rather than suc
   try {
     // Wait for the trap to actually be installed: a TERM that arrives while the
     // child is still starting kills it, and would test nothing.
-    expect(await until(() => manager.output(run.runId).lines.some((line) => line.text === "armed"))).toBe(true);
+    await until('the child to print "armed", proving its TERM trap is installed', () =>
+      manager.output(run.runId).lines.some((line) => line.text === "armed"),
+    );
     await expect(manager.stop(run.runId)).rejects.toThrow(/lost contact/);
     expect(manager.run(run.runId).status).toBe("unknown");
   } finally {
     reap(pid);
     await manager.shutdown();
   }
-}, 30_000);
+  // Two waits' worth: the `armed` poll, then `stop`'s own grace period.
+}, settling(2));
 
 test("an ordinary run still exits cleanly — the group check does not make everything unknown", async () => {
   const manager = runManager({ groupDrainMs: 200 });
   const run = await manager.start(input(temp("tree"), config("echo done")));
   try {
-    expect(await until(() => manager.run(run.runId).status === "exited")).toBe(true);
+    await until("the ordinary run to be reported as exited", () => manager.run(run.runId).status === "exited");
     expect(manager.run(run.runId).exitCode).toBe(0);
     expect(manager.activeRun("proj_1")).toBeUndefined();
   } finally {
     await manager.shutdown();
   }
-}, 15_000);
+}, settling());
 
 // ── surviving the daemon ───────────────────────────────────────────────────
 
@@ -184,12 +232,12 @@ test("a run that ends cleanly leaves nothing in the journal to recover", async (
   const manager = runManager({ journal: new RunJournalFile(dir), groupDrainMs: 100 });
   const run = await manager.start(input(temp("tree"), config("echo hi")));
   try {
-    expect(await until(() => manager.run(run.runId).status === "exited")).toBe(true);
+    await until("the run to exit, which is what closes its journal record", () => manager.run(run.runId).status === "exited");
     expect(new RunJournalFile(dir).list()).toHaveLength(0);
   } finally {
     await manager.shutdown();
   }
-}, 15_000);
+}, settling());
 
 // ── shutting down mid-launch ───────────────────────────────────────────────
 
@@ -238,10 +286,10 @@ test("a spawn that fails outright is reported as failed and frees the slot", asy
   release({ answered: false, serving: false });
 
   const view = await starting;
-  expect(await until(() => manager.run(view.runId).status === "failed")).toBe(true);
+  await until("the spawn failure to be reported", () => manager.run(view.runId).status === "failed");
   expect(manager.activeRun("proj_1")).toBeUndefined();
   await manager.shutdown();
-}, 15_000);
+}, settling());
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -299,12 +347,12 @@ test("a run that never emits a newline is still bounded, and still scrubbed", as
     ),
   );
   try {
-    expect(await until(() => manager.run(run.runId).status === "exited")).toBe(true);
+    await until("the unbuffered run to exit", () => manager.run(run.runId).status === "exited");
     // `exit` can beat the last `data` events out of the pipe, so the captured
     // output is not complete just because the process is gone. Waiting on the
     // status alone made this assertion fail on a loaded machine — which is a
     // flaky test, not a flaky splitter.
-    expect(await until(() => manager.output(run.runId).lines.length > 1)).toBe(true);
+    await until("the pipe to deliver the output the exit raced", () => manager.output(run.runId).lines.length > 1);
     const output = manager.output(run.runId);
     expect(output.lines.length).toBeGreaterThan(1);
     for (const line of output.lines) {
@@ -315,7 +363,7 @@ test("a run that never emits a newline is still bounded, and still scrubbed", as
   } finally {
     await manager.shutdown();
   }
-}, 20_000);
+}, settling(2));
 
 // ── the working directory really is inside the tree ────────────────────────
 
