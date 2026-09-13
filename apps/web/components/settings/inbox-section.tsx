@@ -20,7 +20,13 @@
  */
 
 import { useState } from "react";
-import { MAX_AUTO_SETTLE_HOURS, MIN_AUTO_SETTLE_HOURS, DEFAULT_AUTO_SETTLE_HOURS, DEFAULT_INBOX_POLICY } from "@telar/engine-client";
+import {
+  MAX_AUTO_SETTLE_HOURS,
+  MIN_AUTO_SETTLE_HOURS,
+  DEFAULT_AUTO_SETTLE_HOURS,
+  DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
+  DEFAULT_INBOX_POLICY,
+} from "@telar/engine-client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -50,7 +56,7 @@ function unitFor(hours: number): Unit {
  * guidance for "adjust state when a prop changes", and this app's lint
  * enforces it.
  */
-function WindowInput({ hours, onCommit }: { hours: number; onCommit: (hours: number) => void }) {
+function WindowInput({ hours, onCommit, label }: { hours: number; onCommit: (hours: number) => void; label: string }) {
   // INVARIANT: `unit` only ever says "days" while `hours` divides by 24 —
   // both resync paths below maintain it, so `hours / HOURS_PER[unit]` is
   // always whole.
@@ -81,7 +87,7 @@ function WindowInput({ hours, onCommit }: { hours: number; onCommit: (hours: num
           if (Number.isInteger(parsed) && asHours >= MIN_AUTO_SETTLE_HOURS && asHours <= MAX_AUTO_SETTLE_HOURS) onCommit(asHours);
         }}
         onBlur={() => setDraft(String(hours / HOURS_PER[unit]))}
-        aria-label="How long a session must be quiet before it settles"
+        aria-label={label}
       />
       <Select
         value={unit}
@@ -110,7 +116,13 @@ function WindowInput({ hours, onCommit }: { hours: number; onCommit: (hours: num
 export function InboxSection() {
   const { policy, loading, save, error } = useInboxPolicy();
   const hours = policy.autoSettleAfterHours;
-  useRestoreDefaults(() => save({ autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours }));
+  const delegated = policy.settleDelegatedAfterHours;
+  useRestoreDefaults(() =>
+    save({
+      autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours,
+      settleDelegatedAfterHours: DEFAULT_INBOX_POLICY.settleDelegatedAfterHours,
+    }),
+  );
 
   return (
     // NO CAPTION. "Settle quiet sessions" with a switch beside it is the whole
@@ -142,7 +154,58 @@ export function InboxSection() {
           {...(hours === DEFAULT_AUTO_SETTLE_HOURS
             ? {}
             : { onRevert: () => void save({ autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS }) })}
-          control={<WindowInput hours={hours} onCommit={(next) => void save({ autoSettleAfterHours: next })} />}
+          control={
+            <WindowInput
+              hours={hours}
+              label="How long a session must be quiet before it settles"
+              onCommit={(next) => void save({ autoSettleAfterHours: next })}
+            />
+          }
+        />
+      )}
+      {/*
+        THE SECOND CLOCK, AND IT IS NOT THE FIRST ONE — issue #378.
+
+        A DELIVERED ERRAND IS NOT A QUIET SESSION. The window above guesses from
+        silence, which is why its default is three days; this one counts from a
+        fact the engine stamped — the coordinator has the result — so an hour is
+        enough. Sharing a number would have made one of the two wrong.
+
+        ONE SWITCH AND ONE DURATION, the shape the group already uses. The row
+        appears whatever the quiet clock is set to: they are independent
+        answers, and nesting this under "Settle quiet sessions" would say
+        otherwise.
+      */}
+      <Row
+        label="Settle delegated conversations after their result is delivered"
+        control={
+          <Switch
+            checked={delegated !== null}
+            disabled={loading}
+            onCheckedChange={(next: boolean) =>
+              void save({ settleDelegatedAfterHours: next ? DEFAULT_SETTLE_DELEGATED_AFTER_HOURS : null })
+            }
+            aria-label="Settle delegated conversations after their result is delivered"
+          />
+        }
+        {...((delegated === null) === (DEFAULT_INBOX_POLICY.settleDelegatedAfterHours === null)
+          ? {}
+          : { onRevert: () => void save({ settleDelegatedAfterHours: DEFAULT_INBOX_POLICY.settleDelegatedAfterHours }) })}
+      />
+      {delegated !== null && (
+        <Row
+          label="After"
+          hint="A failed errand, a pinned row and an open question all stay put."
+          {...(delegated === DEFAULT_SETTLE_DELEGATED_AFTER_HOURS
+            ? {}
+            : { onRevert: () => void save({ settleDelegatedAfterHours: DEFAULT_SETTLE_DELEGATED_AFTER_HOURS }) })}
+          control={
+            <WindowInput
+              hours={delegated}
+              label="How long after delivery a delegated conversation settles"
+              onCommit={(next) => void save({ settleDelegatedAfterHours: next })}
+            />
+          }
         />
       )}
     </SettingsGroup>

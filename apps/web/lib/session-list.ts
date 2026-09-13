@@ -30,7 +30,13 @@
  * "search flattens every band", the same survivor rule that keeps the session
  * you are LOOKING AT visible after it drops into a shelf.
  */
-import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity, type SessionAssignment } from "@telar/engine-client";
+import {
+  DEFAULT_AUTO_SETTLE_HOURS,
+  type Session,
+  type SessionActivity,
+  type SessionAssignment,
+  type SessionSettledBy,
+} from "@telar/engine-client";
 import { isSettled, isSnoozed, isStale, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
 
@@ -123,6 +129,22 @@ export type SidebarSession = {
    *  everything a row needs. */
   settledOverride?: "settled" | "active";
   settledAt?: number;
+  /**
+   * WHY THE ENGINE SHELVED IT, when it was not a person — issue #378. Present
+   * only alongside `settledOverride: "settled"`.
+   */
+  settledBy?: SessionSettledBy;
+  /**
+   * The coordinator's title, resolved ONCE by the rail off the list it already
+   * has. A row cannot look it up: a projection that went hunting for another
+   * session would be a read per row per render, and the stamp carries an id
+   * because ids are what survive a rename.
+   *
+   * ABSENT IS ORDINARY — the coordinator may have been archived since, and
+   * `liveSessions` does not carry archived rows. The hint then says what
+   * happened without naming anybody, which is better than a raw id.
+   */
+  settledForTitle?: string;
   snoozedUntil?: number;
   snoozedAt?: number;
   /**
@@ -167,6 +189,8 @@ export function toSidebarSession(
   assignments?: readonly SessionAssignment[],
   projectRemote?: string,
   projectIconName?: string,
+  /** The title of the session named by `settledBy` — see `settledForTitle`. */
+  coordinatorTitle?: string,
 ): SidebarSession {
   return {
     id: session.id,
@@ -201,6 +225,8 @@ export function toSidebarSession(
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),
     ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
     ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+    ...(session.settledBy ? { settledBy: session.settledBy } : {}),
+    ...(session.settledBy && coordinatorTitle ? { settledForTitle: coordinatorTitle } : {}),
     ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
     activity: session.activity,
@@ -235,6 +261,26 @@ export function settlingActivity(session: SidebarSession): SettlingActivity {
     // failed — the engine derives both from the same turn.
     ...(session.lastTurnFailed ? { failed: true, ...(session.lastTurnEndedAt === undefined ? {} : { failedAt: session.lastTurnEndedAt }) } : {}),
   };
+}
+
+/**
+ * WHY THIS ROW IS ON THE SHELF, in a sentence — issue #378.
+ *
+ * ONLY EVER FOR AN ENGINE SETTLE. A row a person shelved needs no explanation:
+ * they were there. This is the one case where the reader did not make the
+ * decision and would otherwise have to reconstruct it from an assignment list
+ * and a clock.
+ *
+ * THE COORDINATOR IS NAMED WHEN IT CAN BE, and the sentence stands up without
+ * it: an archived coordinator is not on the list the rail resolves titles from,
+ * and "settled after its work for session_abc was delivered" would be worse
+ * than not naming anyone.
+ */
+export function settledHint(session: Pick<SidebarSession, "settledBy" | "settledForTitle">): string | undefined {
+  if (!session.settledBy) return undefined;
+  return session.settledForTitle
+    ? `Settled after its work for ${session.settledForTitle} was delivered`
+    : "Settled after its delegated work was delivered";
 }
 
 export type SessionBand = "pinned" | "active" | "snoozed" | "settled";
@@ -399,6 +445,18 @@ export function settledRow(session: SidebarSession, options: RelatedWorkOptions)
  * nothing, so there is no outcome to age: it leaves when the row settles, and
  * not before.
  *
+ * AND SINCE #378 THE ENGINE ANSWERS 3 DIRECTLY, FOR A DELEGATE. `settledBy` is
+ * the engine saying "this errand was delivered and the row is off the list" —
+ * the exact question the clock below was guessing at, from a fact it does not
+ * have. So a stamped row leaves whatever else is keeping it visible: a snooze
+ * hides a row without making it somebody's outstanding work, and rule 2 would
+ * miss it because `bandOf` calls that row snoozed rather than settled.
+ *
+ * THE CLOCK STAYS FOR EVERYTHING THE STAMP DOES NOT COVER — a delegate whose
+ * assignment failed, one a person un-settled, and every row on a machine with
+ * the delegation grace switched off. Removing it would restore #370's lingering
+ * row for exactly those cases.
+ *
  * NOTHING HERE HIDES A ROW. A child that leaves a coordinator falls back to
  * being a row of its own — in its project group, or on the shelf it was already
  * on. The tree is an arrangement, never a filter.
@@ -406,6 +464,7 @@ export function settledRow(session: SidebarSession, options: RelatedWorkOptions)
 export function leavesRelatedWork(session: SidebarSession, finished: boolean, options: RelatedWorkOptions): boolean {
   const activity = settlingActivity(session);
   if (activity.working || activity.waitingOnYou) return false;
+  if (session.settledBy) return true;
   if (settledRow(session, options)) return true;
   if (!finished) return false;
   return isStale(session, { now: options.now, autoSettleAfterHours: windowFor(session, options.autoSettleAfterHours, options.windowsByHost) });

@@ -443,6 +443,66 @@ describe("leaving the tree", () => {
     expect(relatedWork([draft], { id: "coord" }, settling).independent.map((s) => s.id)).toEqual(["free"]);
   });
 
+  /**
+   * THE ENGINE NOW ANSWERS THIS DIRECTLY FOR A DELEGATE — issue #378. The
+   * clock below was guessing at "is this still somebody's outstanding errand"
+   * from silence; `settledBy` is the engine saying the result was delivered.
+   */
+  test("A STAMPED DELEGATE LEAVES ON THE STAMP, not on the quiet clock", () => {
+    const stamped = session("worker", {
+      assignments: [done("coord")],
+      settledOverride: "settled",
+      settledBy: { kind: "delegation", coordinatorSessionId: "coord", runId: "task_coord", at: NOW - HOUR },
+      updatedAt: NOW,
+    });
+    // The row is minutes old, so the clock would have kept it for three days.
+    expect(relatedWork([stamped], { id: "coord" }, settling).review).toEqual([]);
+  });
+
+  test("…AND IT LEAVES EVEN WHILE A SNOOZE KEEPS IT OUT OF THE SETTLED BAND", () => {
+    // The case the two answers disagree on: `bandOf` calls a snoozed row
+    // snoozed, not settled, so rule 2 misses it — and the clock cannot fire
+    // either, because a live snooze pushes the inactivity baseline forward.
+    // Hiding a row until Tuesday does not make it outstanding work.
+    const snoozed = session("worker", {
+      assignments: [done("coord")],
+      settledOverride: "settled",
+      settledBy: { kind: "delegation", coordinatorSessionId: "coord", runId: "task_coord", at: NOW - HOUR },
+      snoozedUntil: NOW + 10 * HOUR,
+      snoozedAt: NOW - HOUR,
+      updatedAt: NOW,
+    });
+    expect(relatedWork([snoozed], { id: "coord" }, settling).review).toEqual([]);
+  });
+
+  test("A STAMPED ROW STILL DOES NOT LEAVE WHILE IT IS WAITING ON YOU", () => {
+    // The stamp goes UNDER the blockers, like every other settling answer.
+    const asking = session("worker", {
+      assignments: [done("coord")],
+      settledOverride: "settled",
+      settledBy: { kind: "delegation", coordinatorSessionId: "coord", runId: "task_coord", at: NOW - HOUR },
+      activity: "blocked",
+      updatedAt: NOW,
+    });
+    expect(relatedWork([asking], { id: "coord" }, settling).review.map((s) => s.id)).toEqual(["worker"]);
+  });
+
+  test("AN UNSTAMPED DELEGATE KEEPS THE CLOCK — a failed errand, or the grace switched off", () => {
+    // Removing the fallback would restore #370's lingering row for exactly the
+    // cases the engine declines to stamp.
+    const failed = session("worker", {
+      assignments: [assignment("coord", { outcome: "failed", endedAt: NOW - 100 * HOUR })],
+      updatedAt: NOW - 100 * HOUR,
+    });
+    expect(relatedWork([failed], { id: "coord" }, settling).review).toEqual([]);
+    // …and it is still here while the window has not passed.
+    const recent = session("worker", {
+      assignments: [assignment("coord", { outcome: "failed", endedAt: NOW - HOUR })],
+      updatedAt: NOW - HOUR,
+    });
+    expect(relatedWork([recent], { id: "coord" }, settling).review.map((s) => s.id)).toEqual(["worker"]);
+  });
+
   test("A PAIRED MAC'S ROW IS MEASURED BY THAT MAC'S WINDOW", () => {
     // The same rule `windowFor` states for the bands: the settling window is an
     // engine's own document, so a row from the mini leaves when the mini would

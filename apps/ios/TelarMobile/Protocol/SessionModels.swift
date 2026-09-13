@@ -59,6 +59,30 @@ struct SessionProvenance: Codable, Equatable {
     var runId: EngineID?
 }
 
+/// WHY THE ENGINE SHELVED A CONVERSATION — issue #378, and the mirror of
+/// `SessionSettledBy` in packages/engine-client.
+///
+/// `settledOverride` used to mean one thing: a person decided. The Mac now
+/// shelves a DELEGATE once its coordinator has taken delivery of the result,
+/// and a shelf that hides a conversation the reader did not put there has to
+/// say why — reconstructing it from an assignment list and a clock is not
+/// something a phone should ask of anybody.
+///
+/// `kind` STAYS A `String`, like `SessionAssignment.outcome` beside it and for
+/// the same reason: it is compared, never rendered, and a Mac newer than this
+/// build may stamp a reason this one has never heard of. An enum would drop
+/// the whole session record over a word.
+struct SessionSettledBy: Codable, Equatable {
+    var kind: String
+    /// Who the work was for. A BARE id, meaningful only inside the engine that
+    /// stamped it — resolve it on that Mac and nowhere else.
+    var coordinatorSessionId: EngineID
+    /// The errand, by its task run. Not read on the phone; carried so a row's
+    /// hint and the Mac's own record cannot drift about which one this was.
+    var runId: EngineID?
+    var at: Timestamp?
+}
+
 /// WHAT A SESSION IS WORKING ON BEHALF OF — derived by the engine over each
 /// session's whole queue and sent on the live list, so the rail learns who is
 /// working for whom without a history read per row.
@@ -156,6 +180,10 @@ struct Session: Codable, Identifiable, Equatable {
 
     var settledOverride: String?
     var settledAt: Timestamp?
+    /// WHY THE SHELF TOOK IT, when the ENGINE decided rather than a person —
+    /// see `SessionSettledBy`. A settle somebody made needs no explanation;
+    /// this is the one they did not make.
+    var settledBy: SessionSettledBy?
     var snoozedUntil: Timestamp?
     var snoozedAt: Timestamp?
 
@@ -167,7 +195,7 @@ struct Session: Codable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId, resumeCursor
         case workspace, runtimeMode, detached, usage, activity, activityAt
-        case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt
+        case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt, settledBy
         case snoozedUntil, snoozedAt, startedFrom
         case lastTurnSequence, lastReadTurnSequence, readAt
     }
@@ -195,6 +223,10 @@ struct Session: Codable, Identifiable, Equatable {
         lastTurnFailed = try c.decodeIfPresent(Bool.self, forKey: .lastTurnFailed)
         settledOverride = try c.decodeIfPresent(String.self, forKey: .settledOverride)
         settledAt = try c.decodeIfPresent(Timestamp.self, forKey: .settledAt)
+        // `try?` like every other nested shape here: a Mac newer than this
+        // build may stamp a `kind` this one has never heard of, and losing a
+        // hint is not a reason to drop the whole row.
+        settledBy = try? c.decodeIfPresent(SessionSettledBy.self, forKey: .settledBy)
         snoozedUntil = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedUntil)
         snoozedAt = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedAt)
         startedFrom = try? c.decodeIfPresent(SessionProvenance.self, forKey: .startedFrom)

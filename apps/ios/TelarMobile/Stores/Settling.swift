@@ -80,6 +80,25 @@ enum Settling {
         return idleSince(session) < Double(now) - hours * hourMs
     }
 
+    /// WHY THE SHELF TOOK IT — issue #378, and the web's `settledHint` word for
+    /// word, so the phone and the Mac say the same sentence about the same row.
+    ///
+    /// ONLY EVER FOR AN ENGINE SETTLE. A row a person shelved needs no
+    /// explanation: they were there. This is the one case where the reader did
+    /// not make the decision.
+    ///
+    /// THE COORDINATOR IS NAMED WHEN IT CAN BE. Its id is meaningful only on
+    /// its own Mac, and an archived one is not on the list the rail resolves
+    /// titles from — so the sentence stands without a name rather than printing
+    /// a raw id at somebody.
+    static func settledHint(_ session: Session, coordinatorTitle: String?) -> String? {
+        guard session.settledBy != nil else { return nil }
+        guard let title = coordinatorTitle, !title.isEmpty else {
+            return "Settled after its delegated work was delivered"
+        }
+        return "Settled after its work for \(title) was delivered"
+    }
+
     /// Hidden until its wake time — unless it raised its hand: a parked
     /// request, a FRESH failure, or a turn that finished after the snooze.
     static func isSnoozed(_ session: Session, now: Timestamp) -> Bool {

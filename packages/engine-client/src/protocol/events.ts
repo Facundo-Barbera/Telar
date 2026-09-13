@@ -21,7 +21,7 @@ import { PluginStatus } from "./plugins";
 import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
-import { Project, Runtime, RuntimeState, Session, Turn, TurnFailure } from "./entities";
+import { Project, Runtime, RuntimeState, Session, SessionSettledBy, Turn, TurnFailure } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
@@ -52,6 +52,17 @@ const event = <T extends string, S extends z.ZodRawShape>(type: T, shape: S) =>
 const SessionCreated = event("session.created", { session: Session });
 const SessionUpdated = event("session.updated", { session: Session });
 const SessionArchived = event("session.archived", {});
+/**
+ * THE ENGINE SHELVED THIS CONVERSATION, AND SAID WHY — issue #378.
+ *
+ * A `session.updated` already carries the record, so this row is not how a
+ * client learns the new state; it is how anything that wants to ACT on the
+ * settling hears about it exactly once. Worktree removal is the case the issue
+ * names as out of scope for now and this is the seam it would use: a fold over
+ * `session.updated` would have to diff two snapshots to find the same moment,
+ * and would fire again on every unrelated write.
+ */
+const SessionSettled = event("session.settled", { settledBy: SessionSettledBy });
 
 // ── runtime: the process, not the conversation ─────────────────────────────
 const RuntimeStarted = event("runtime.started", { runtime: Runtime });
@@ -249,6 +260,7 @@ export const EngineEvent = z.discriminatedUnion("type", [
   SessionCreated,
   SessionUpdated,
   SessionArchived,
+  SessionSettled,
   SessionPaused,
   SessionResumed,
   RuntimeStarted,

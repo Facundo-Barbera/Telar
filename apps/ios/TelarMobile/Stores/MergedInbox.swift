@@ -94,6 +94,22 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         stores[hostId]?.projects[id]
     }
 
+    /// WHAT ANOTHER CONVERSATION ON THE SAME MAC IS CALLED — for a row that
+    /// names one by id, which today is a settled delegate naming its
+    /// coordinator (`SessionSettledBy`).
+    ///
+    /// SCOPED BY HOST, for `assignments`' reason: two Macs can mint the same
+    /// session id, so a global search could name a stranger. Nil when that Mac
+    /// is not answering, or when the coordinator has since been archived — the
+    /// hint says what happened without a name rather than inventing one.
+    func title(_ id: EngineID, on hostId: HostID) -> String? {
+        guard let sections = stores[hostId]?.sections else { return nil }
+        for band in [sections.active, sections.snoozed, sections.settled] {
+            if let found = band.first(where: { $0.id == id }) { return found.title }
+        }
+        return nil
+    }
+
     /// Each Mac's own arrangement, keyed by host — one document per Mac, and
     /// never merged: the keys inside are that Mac's, so folding two of them
     /// together would place one Mac's rows by another's decisions.

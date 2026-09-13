@@ -54,6 +54,7 @@ import {
   assignmentsOf,
   type AssignmentTurn,
   type SessionAssignment,
+  type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
   Session as SessionSchema,
@@ -153,6 +154,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
@@ -1006,6 +1008,35 @@ function storedSession(
     ...stored
   } = session;
   return stored;
+}
+
+/** How many errands one row remembers being pulled back off the shelf. The
+ *  schema's own bound, so a runaway loop cannot grow the record without end. */
+const MAX_UNSETTLED_ASSIGNMENTS = 64;
+
+/**
+ * TAKE A DELEGATION SETTLE BACK, AND REMEMBER THAT IT WAS TAKEN — issue #378.
+ *
+ * The facts an auto-settle is derived from are permanent: the assignment
+ * finished, and the coordinator took delivery. So the next evaluation would
+ * reach the same conclusion, and a person who un-settled the row would watch it
+ * shelve itself again — a control that appears to do nothing. Recording the
+ * errand is what makes the un-settle stick, and it is scoped to that errand: a
+ * NEW task on the same session settles on its own terms.
+ *
+ * A NO-OP ON A ROW THE ENGINE NEVER SETTLED, which is almost every row. Nothing
+ * is recorded for a person un-settling their own decision — there is no errand
+ * in it to disagree about.
+ */
+function releaseDelegationSettle(session: Session): void {
+  const stamp = session.settledBy;
+  if (!stamp) return;
+  delete session.settledBy;
+  const released = session.unsettledAssignments ?? [];
+  if (released.includes(stamp.runId)) return;
+  // Oldest out first: the errands somebody argued about most recently are the
+  // ones a re-settle would be most surprising on.
+  session.unsettledAssignments = [...released, stamp.runId].slice(-MAX_UNSETTLED_ASSIGNMENTS);
 }
 
 /**
@@ -1969,9 +2000,9 @@ export class EngineStore {
        * rewritten in the new shape on the next save.
        */
       const days = (stored as { autoSettleAfterDays?: unknown } | undefined)?.autoSettleAfterDays;
-      if (days === null) return { autoSettleAfterHours: null };
+      if (days === null) return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: null };
       if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 90) {
-        return { autoSettleAfterHours: days * 24 };
+        return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: days * 24 };
       }
       return { ...DEFAULT_INBOX_POLICY };
     } catch {
@@ -1987,21 +2018,25 @@ export class EngineStore {
    * the bound belongs next to the schema that states it, not spelled a second
    * time in the route that happens to be the way in today.
    */
-  setInboxPolicy(patch: { autoSettleAfterHours?: unknown }): InboxPolicy {
+  setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown }): InboxPolicy {
     const next: InboxPolicy = { ...this.getInboxPolicy() };
-    if (patch.autoSettleAfterHours !== undefined) {
-      if (patch.autoSettleAfterHours === null) {
-        next.autoSettleAfterHours = null;
-      } else {
-        const parsed = InboxPolicySchema.shape.autoSettleAfterHours.safeParse(patch.autoSettleAfterHours);
-        if (!parsed.success) {
-          throw new EngineStateError(
-            "invalid_request",
-            `auto-settle window must be a whole number of hours between ${MIN_AUTO_SETTLE_HOURS} and ${MAX_AUTO_SETTLE_HOURS}, or null`,
-          );
-        }
-        next.autoSettleAfterHours = parsed.data;
+    /** The same bound twice, stated once: both windows are hours in 1..90 days. */
+    const window = (value: unknown, what: string): number | null => {
+      if (value === null) return null;
+      const parsed = InboxPolicySchema.shape.autoSettleAfterHours.safeParse(value);
+      if (!parsed.success) {
+        throw new EngineStateError(
+          "invalid_request",
+          `${what} must be a whole number of hours between ${MIN_AUTO_SETTLE_HOURS} and ${MAX_AUTO_SETTLE_HOURS}, or null`,
+        );
       }
+      return parsed.data;
+    };
+    if (patch.autoSettleAfterHours !== undefined) {
+      next.autoSettleAfterHours = window(patch.autoSettleAfterHours, "auto-settle window");
+    }
+    if (patch.settleDelegatedAfterHours !== undefined) {
+      next.settleDelegatedAfterHours = window(patch.settleDelegatedAfterHours, "delegation grace");
     }
     this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
     return { ...next };
@@ -6125,7 +6160,23 @@ export class EngineStore {
       if (patch.settledOverride === null) {
         delete next.settledOverride;
         delete next.settledAt;
+        releaseDelegationSettle(next);
       } else if (patch.settledOverride === "settled" || patch.settledOverride === "active") {
+        /**
+         * A DECISION IN EITHER DIRECTION IS NOW THE PERSON'S — issue #378.
+         *
+         * `settledBy` describes an engine settle, and both of these replace it:
+         * "active" contradicts it outright, and "settled" relabels the same
+         * shelf as somebody's own choice. Leaving the stamp would have the row
+         * explaining a decision nobody made.
+         *
+         * "settled" DOES NOT RECORD THE ERRAND, and the asymmetry is the point:
+         * `releaseDelegationSettle` exists to stop the engine re-shelving a row
+         * a person pulled back, and a person who settled it is not asking for
+         * that protection.
+         */
+        if (patch.settledOverride === "settled") delete next.settledBy;
+        else releaseDelegationSettle(next);
         next.settledOverride = patch.settledOverride;
         next.settledAt = this.now();
       } else {
@@ -7673,6 +7724,10 @@ export class EngineStore {
     );
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
+    // AFTER THE WAKE, NOT BEFORE. A coordinator's turn completing is what makes
+    // its wake "consumed", and this session may be that coordinator — see
+    // `evaluateDelegationSettling`.
+    this.evaluateDelegationSettling(sessionId);
     return structuredClone(turn);
   }
 
@@ -7792,6 +7847,10 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+    // A FAILED TURN STILL ENDS ONE. It never makes this session settleable —
+    // clause 1 refuses a failed assignment — but the session may be the
+    // COORDINATOR whose delegate is now waiting on nothing.
+    this.evaluateDelegationSettling(sessionId);
     return structuredClone(turn);
   }
 
@@ -7845,6 +7904,7 @@ export class EngineStore {
     for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     // One wake for the live turn, not one per cancelled backlog message.
     if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
+    this.evaluateDelegationSettling(sessionId);
     return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
   }
 
@@ -7889,6 +7949,9 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
+    // A stopped assignment IS finished (clause 1 takes it), so a Stop is one of
+    // the moments a delegate can become settleable.
+    this.evaluateDelegationSettling(sessionId);
     return { turn: structuredClone(turn), stopped: true };
   }
 
@@ -8417,6 +8480,142 @@ export class EngineStore {
       }
     }
     if (changed) this.writeSubscriptions(all);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * DELEGATION SETTLING — issue #378. The rule is in
+   * `./delegation-settling.ts`; this is where the engine reads the facts and
+   * writes the answer.
+   *
+   * BESIDE `fireSubscriptions` BECAUSE IT READS THE SAME SIGNAL. The dedupe a
+   * few lines above — `agentIntent === "result"` plus `agentSourceRunId` — is
+   * exactly "the coordinator already has this run's outcome", which is clause 2
+   * of the settle. Two folds over one fact, kept where a reader will see both.
+   * ---------------------------------------------------------------- */
+
+  /**
+   * A TERMINAL TURN IS THE MOMENT TO ASK, on both sides of a delegation.
+   *
+   * The session that just ended a turn may be the DELEGATE whose errand this
+   * finished, and it may be the COORDINATOR whose turn just consumed a wake —
+   * an orchestrator is routinely both at once. Asking both questions here is
+   * what makes the two evaluation points the issue names one call site rather
+   * than a rule spelled twice.
+   *
+   * NEVER THROWS INTO THE TRANSITION. Same contract as the wake above it: the
+   * turn has already been written and journalled, and a shelf is not worth
+   * failing a completion for.
+   */
+  private evaluateDelegationSettling(sessionId: string): void {
+    try {
+      this.settleDelegateIfDue(sessionId);
+      /**
+       * WHOSE DELEGATES, WITHOUT A SCAN. A coordinator's OWN queue names every
+       * session that could have just become delivered: a wake carries the
+       * child in `wakeReason.sessionId`, and a result carries it as the
+       * sender. Walking those is one queue read; the alternative — asking
+       * every session on disk who it works for — is the N+1 over whole
+       * transcripts that `liveSessions` exists to avoid, on every turn.
+       */
+      const delegates = new Set<string>();
+      for (const turn of this.scanQueue(sessionId).turns) {
+        if (turn.wakeReason?.sessionId) delegates.add(turn.wakeReason.sessionId);
+        if (turn.origin === "session" && turn.agentIntent === "result" && turn.sender?.sessionId) {
+          delegates.add(turn.sender.sessionId);
+        }
+      }
+      delegates.delete(sessionId);
+      for (const delegate of delegates) this.settleDelegateIfDue(delegate);
+    } catch (error) {
+      this.appendEvent(sessionId, {
+        type: "runtime.warning",
+        message: `delegation settling was skipped: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
+   * EVERY ROW THE GRACE HAS COME DUE ON — the slow half of the rule.
+   *
+   * The two turn-completion points above catch the moment the FACTS change;
+   * neither of them fires when nothing more happens, which is precisely the
+   * common case: a coordinator takes delivery and then everybody goes quiet.
+   * So the grace needs something that ticks. Returns the sessions it settled,
+   * so a caller (and a test) can see the sweep's work without a timer.
+   *
+   * A WHOLE-STORE PASS, ON A SLOW TIMER, and the cost is bounded by the cheap
+   * refusals first: no grace configured is one document read for the entire
+   * sweep, and a session with no task turn costs one queue scan. There is no
+   * engine-side settling clock to ride — the quiet window is folded by each
+   * client — so this is the tick, and it is the daemon's only one besides the
+   * worker pruner.
+   */
+  sweepDelegatedSettling(): string[] {
+    if (this.getInboxPolicy().settleDelegatedAfterHours === null) return [];
+    const settled: string[] = [];
+    for (const sessionId of this.sessionIds()) {
+      try {
+        if (this.settleDelegateIfDue(sessionId)) settled.push(sessionId);
+      } catch {
+        // One unreadable session must not stop the sweep for the rest.
+      }
+    }
+    return settled;
+  }
+
+  /** The whole rule for one session: gather, fold, and write if it says so. */
+  private settleDelegateIfDue(sessionId: string): boolean {
+    let session: Session;
+    try {
+      session = this.getSession(sessionId);
+    } catch {
+      return false;
+    }
+    // Cheap refusals before the policy read: an archived row is off every list
+    // already, and a standing human decision is not the engine's to revisit.
+    if (session.state === "archived" || session.settledOverride !== undefined) return false;
+    const assignments = assignmentsOf(this.scanQueue(sessionId).turns as unknown as AssignmentTurn[]);
+    const newest = newestAssignment(assignments);
+    // Not a delegate. The overwhelming majority of sessions stop here.
+    if (!newest) return false;
+
+    const outcome = delegationSettle({
+      now: this.now(),
+      graceHours: this.getInboxPolicy().settleDelegatedAfterHours,
+      delegateSessionId: sessionId,
+      assignments,
+      // A coordinator that no longer exists reads as an empty queue, which is
+      // "no delivery" — the honest answer, not a settle on an absence.
+      coordinatorTurns: this.scanQueue(newest.fromSessionId).turns as unknown as DeliveryTurn[],
+      activity: session.activity,
+      archived: false,
+      unsettledAssignments: session.unsettledAssignments ?? [],
+    });
+    if (!outcome.settle) return false;
+    this.applyDelegationSettle(sessionId, outcome.settle);
+    return true;
+  }
+
+  /**
+   * WRITE THE SHELF AND SAY WHY.
+   *
+   * `updatedAt` IS DELIBERATELY NOT TOUCHED, for `markSessionRead`'s reason:
+   * it dates the session's WORK, and the quiet clock is measured from it.
+   * Stamping it here would make an engine settle look like fresh activity to
+   * every rule downstream — including the one a person would meet if they
+   * pulled the row back off the shelf.
+   *
+   * TWO EVENTS, AND THEY ARE NOT THE SAME ROW. `session.updated` is how a
+   * client's fold learns the new record; `session.settled` is the one moment
+   * something acting on the settling (worktree removal, later) can subscribe to
+   * without diffing snapshots.
+   */
+  private applyDelegationSettle(sessionId: string, settledBy: SessionSettledBy): void {
+    const session = this.getSession(sessionId);
+    const next: Session = { ...session, settledOverride: "settled", settledAt: this.now(), settledBy };
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
+    this.appendEvent(sessionId, { type: "session.settled", settledBy });
+    this.appendEvent(sessionId, { type: "session.updated", session: next });
   }
 
   /** Rewrite a still-queued wake about the same child run with newer words. True when one was found. */
@@ -9365,6 +9564,14 @@ export class EngineStore {
     if (session.settledOverride === "settled") {
       delete session.settledOverride;
       delete session.settledAt;
+      /**
+       * AND THE ERRAND IS REMEMBERED AS TAKEN BACK — issue #378. Work arriving
+       * on a row the ENGINE shelved is the shelf being lifted, and the facts
+       * behind that shelving do not expire: without the record, the next
+       * evaluation would put the row straight back and the message somebody
+       * just typed would land in a settled conversation.
+       */
+      releaseDelegationSettle(session);
     }
     delete session.snoozedUntil;
     delete session.snoozedAt;

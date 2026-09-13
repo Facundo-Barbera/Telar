@@ -21,6 +21,9 @@ import {
   Item,
   ItemDetail,
   EngineRequest,
+  DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
+  InboxPolicy,
+  MAX_AUTO_SETTLE_HOURS,
   RequestKind,
   RuntimeMode,
   Session,
@@ -135,6 +138,65 @@ describe("Session", () => {
   test("environmentId is pinned to local while there is one host", () => {
     expect(Session.safeParse({ ...session, environmentId: "remote" }).success).toBe(false);
   });
+
+  /**
+   * WHY THE SHELF SHELVED IT — issue #378. The stamp is what lets a row say
+   * "settled after its work for X was delivered" instead of leaving a person
+   * to wonder which of their decisions this was.
+   */
+  test("settledBy carries the coordinator, the errand and when", () => {
+    const parsed = Session.safeParse({
+      ...session,
+      settledOverride: "settled",
+      settledAt: at,
+      settledBy: { kind: "delegation", coordinatorSessionId: "session_coord", runId: "run_task", at },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.settledBy?.coordinatorSessionId).toBe("session_coord");
+  });
+
+  test("an unknown settle reason is rejected rather than kept unlabelled", () => {
+    // A union of one today. Accepting a kind this build does not understand
+    // would put an unreadable reason on a row that must be able to explain
+    // itself; a client meeting a newer engine drops the whole session record
+    // instead, which is the loud failure.
+    expect(
+      Session.safeParse({ ...session, settledBy: { kind: "vibes", coordinatorSessionId: "c", runId: "r", at } }).success,
+    ).toBe(false);
+  });
+
+  test("the never-re-settle record is a list of assignment runs", () => {
+    expect(Session.safeParse({ ...session, unsettledAssignments: ["run_task", "run_other"] }).success).toBe(true);
+    expect(Session.safeParse({ ...session, unsettledAssignments: [""] }).success).toBe(false);
+  });
+});
+
+/**
+ * THE DELEGATION GRACE, AND WHAT A POLICY WRITTEN BEFORE IT STILL MEANS.
+ *
+ * The second field is defaulted rather than required for one reason, and it is
+ * the reason worth a test: `getInboxPolicy` answers a failed parse with the
+ * WHOLE default, so a required field would have thrown away the quiet window
+ * every existing reader had chosen.
+ */
+describe("InboxPolicy", () => {
+  test("a policy written before the delegation grace keeps its own window", () => {
+    const parsed = InboxPolicy.safeParse({ autoSettleAfterHours: 6 });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.autoSettleAfterHours).toBe(6);
+    expect(parsed.success && parsed.data.settleDelegatedAfterHours).toBe(DEFAULT_SETTLE_DELEGATED_AFTER_HOURS);
+  });
+
+  test("`null` is the off switch, and is distinct from the default", () => {
+    const parsed = InboxPolicy.safeParse({ autoSettleAfterHours: null, settleDelegatedAfterHours: null });
+    expect(parsed.success && parsed.data.settleDelegatedAfterHours).toBeNull();
+  });
+
+  test("the grace shares the quiet window's bounds", () => {
+    expect(InboxPolicy.safeParse({ autoSettleAfterHours: 24, settleDelegatedAfterHours: 0 }).success).toBe(false);
+    expect(InboxPolicy.safeParse({ autoSettleAfterHours: 24, settleDelegatedAfterHours: 1.5 }).success).toBe(false);
+    expect(InboxPolicy.safeParse({ autoSettleAfterHours: 24, settleDelegatedAfterHours: MAX_AUTO_SETTLE_HOURS + 1 }).success).toBe(false);
+  });
 });
 
 describe("Turn", () => {
@@ -239,6 +301,18 @@ describe("EngineEvent", () => {
       text: "thinking…",
     });
     expect(parsed.success).toBe(true);
+  });
+
+  test("session.settled carries the reason, so a subscriber need not diff snapshots", () => {
+    const parsed = EngineEvent.safeParse({
+      ...base,
+      type: "session.settled",
+      settledBy: { kind: "delegation", coordinatorSessionId: "session_coord", runId: "run_task", at },
+    });
+    expect(parsed.success).toBe(true);
+    // The reason is the payload. An event that only said "settled" would leave
+    // worktree removal — the case the issue parks — with nothing to act on.
+    expect(EngineEvent.safeParse({ ...base, type: "session.settled" }).success).toBe(false);
   });
 
   test("event ids are positive — 0 is not a valid cursor origin", () => {

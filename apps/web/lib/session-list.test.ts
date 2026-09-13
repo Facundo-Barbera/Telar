@@ -17,6 +17,7 @@ import {
   sessionHref,
   sessionKey,
   SETTLED_AFTER_MS,
+  settledHint,
   settlingActivity,
   windowFor,
   toSidebarSession,
@@ -232,7 +233,70 @@ describe("deriveSessionList", () => {
   });
 });
 
+/**
+ * WHY THE SHELF TOOK IT — issue #378. The one settling fact a reader cannot
+ * reconstruct by remembering what they did, because they did not do it.
+ */
+describe("settledHint", () => {
+  test("names the coordinator when the rail could resolve it", () => {
+    const settled = row("s1", "Worker", {
+      settledBy: { kind: "delegation", coordinatorSessionId: "s_coord", runId: "run_task", at: NOW },
+      settledForTitle: "Ship the exports fix",
+    });
+    expect(settledHint(settled)).toBe("Settled after its work for Ship the exports fix was delivered");
+  });
+
+  test("still says what happened when the coordinator is gone", () => {
+    // An archived coordinator is not on the live list the rail resolves titles
+    // from. Printing its raw id would be worse than naming nobody.
+    const settled = row("s1", "Worker", {
+      settledBy: { kind: "delegation", coordinatorSessionId: "s_coord", runId: "run_task", at: NOW },
+    });
+    expect(settledHint(settled)).toBe("Settled after its delegated work was delivered");
+  });
+
+  test("a row a PERSON settled has nothing to explain", () => {
+    expect(settledHint(row("s1", "Worker", { settledOverride: "settled" }))).toBeUndefined();
+    expect(settledHint(row("s1", "Worker"))).toBeUndefined();
+  });
+});
+
 describe("toSidebarSession", () => {
+  test("carries the settle's reason, and its coordinator's title when given one", () => {
+    const projected = toSidebarSession(
+      {
+        id: "s1",
+        projectId: "p1",
+        environmentId: "local",
+        title: "The delegate",
+        state: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        providerInstanceId: "claude:default",
+        driver: "claude",
+        workspace: { mode: "local", path: "/repo" },
+        envMode: "local",
+        runtimeMode: "auto",
+        interactionMode: "default",
+        detached: false,
+        settledOverride: "settled",
+        settledBy: { kind: "delegation", coordinatorSessionId: "s_coord", runId: "run_task", at: NOW },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixture, not a wire payload
+      } as any,
+      "telar-vnext",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "The coordinator",
+    );
+    expect(projected.settledBy?.coordinatorSessionId).toBe("s_coord");
+    expect(projected.settledForTitle).toBe("The coordinator");
+    expect(settledHint(projected)).toBe("Settled after its work for The coordinator was delivered");
+  });
+
   test("carries usage and worktree facts the row and hover card read", () => {
     const projected = toSidebarSession(
       {

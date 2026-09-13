@@ -480,3 +480,31 @@ test("DELETE on a project unregisters it, and refuses while a turn is in flight"
   expect((await client.listProjects()).projects.map((each) => each.id)).toEqual([project.id]);
   await expect(client.restoreProject("project_nope")).rejects.toMatchObject({ code: "not_found", status: 404 });
 });
+
+test("the inbox route carries the delegation grace, and `null` over the wire is the off switch", async () => {
+  // ISSUE #378. Two windows in one document, and the reason they are two keys
+  // rather than one is exactly what this asserts: patching either leaves the
+  // other alone, so turning the delegation settling off cannot quietly change
+  // how long a quiet conversation stays in the list.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+
+  expect((await client.inboxPolicy()).inbox).toEqual({ autoSettleAfterHours: 72, settleDelegatedAfterHours: 1 });
+  expect((await client.setInboxPolicy({ settleDelegatedAfterHours: 6 })).inbox).toEqual({
+    autoSettleAfterHours: 72,
+    settleDelegatedAfterHours: 6,
+  });
+  expect((await client.setInboxPolicy({ autoSettleAfterHours: 12 })).inbox).toEqual({
+    autoSettleAfterHours: 12,
+    settleDelegatedAfterHours: 6,
+  });
+  // PRESENT-BUT-NULL is the off switch; an empty patch is "leave it alone".
+  expect((await client.setInboxPolicy({ settleDelegatedAfterHours: null })).inbox).toEqual({
+    autoSettleAfterHours: 12,
+    settleDelegatedAfterHours: null,
+  });
+  expect((await client.setInboxPolicy({})).inbox).toEqual({ autoSettleAfterHours: 12, settleDelegatedAfterHours: null });
+  // The bound lives beside the schema that states it, not in the route.
+  await expect(client.setInboxPolicy({ settleDelegatedAfterHours: 0 })).rejects.toMatchObject({ code: "invalid_request" });
+});

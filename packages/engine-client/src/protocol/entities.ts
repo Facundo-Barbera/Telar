@@ -573,6 +573,35 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
 ]);
 export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
 
+/**
+ * WHY A ROW IS ON THE SHELF, WHEN THE ENGINE PUT IT THERE — issue #378.
+ *
+ * `settledOverride: "settled"` was only ever a human's decision, and it says
+ * nothing about whose. The engine now settles a DELEGATE once the coordinator
+ * has taken delivery of its result, and a shelf that shelved a conversation
+ * without saying why is a shelf people stop trusting — so the reason travels
+ * with the decision rather than being reconstructed by whichever client is
+ * drawing the row.
+ *
+ * `kind` IS A UNION OF ONE, deliberately. Delegation is the only thing the
+ * engine settles on today; naming it leaves room for a second reason without
+ * a client having to guess that an unlabelled stamp meant this one.
+ *
+ * `runId` IS THE ASSIGNMENT'S IDENTITY — the task turn's run, the same id
+ * `SessionAssignment.taskRunId` carries — and NOT the run that did the work.
+ * It is what the never-re-settle record (`unsettledAssignments`) is keyed on:
+ * a human taking a row back off the shelf is answering about one errand, and
+ * the errand is the task they were handed.
+ */
+export const SessionSettledBy = z.object({
+  kind: z.literal("delegation"),
+  /** Who the work was for. Their title is what a row's hint names. */
+  coordinatorSessionId: Id,
+  runId: Id,
+  at: Timestamp,
+});
+export type SessionSettledBy = z.infer<typeof SessionSettledBy>;
+
 export const Session = z.object({
   id: Id,
   /**
@@ -758,6 +787,24 @@ export const Session = z.object({
   /** When the override was set. Its age is what lets a client tell an old
    *  decision from a fresh one. */
   settledAt: Timestamp.optional(),
+  /**
+   * THE ENGINE'S OWN REASON, when the settle was not a person's — see
+   * `SessionSettledBy`. Always accompanied by `settledOverride: "settled"`;
+   * a human patch in either direction clears it, because the reason described
+   * a decision that is no longer the standing one.
+   */
+  settledBy: SessionSettledBy.optional(),
+  /**
+   * ERRANDS A HUMAN TOOK BACK OFF THE SHELF, by `SessionAssignment.taskRunId`.
+   *
+   * A settle the reader undid is an argument the engine does not get to have
+   * twice: the facts that produced it (the assignment finished, the result was
+   * delivered) are permanent, so without this record the very next evaluation
+   * would shelve the row again and the un-settle would read as a button that
+   * does nothing. Bounded, and the bound is generous — it is one id per errand
+   * a person disagreed about, not per turn.
+   */
+  unsettledAssignments: z.array(Id).max(64).optional(),
   /** Hidden from the list until this passes. */
   snoozedUntil: Timestamp.optional(),
   /** When the snooze was set — the baseline "what has happened SINCE" is
@@ -814,6 +861,22 @@ export const MAX_AUTO_SETTLE_HOURS = 90 * 24;
 export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
 
 /**
+ * THE DELEGATION GRACE — how long after a coordinator takes delivery before
+ * the engine shelves the conversation that did the work (issue #378).
+ *
+ * A SETTING OF ITS OWN, NOT THE QUIET WINDOW, and the difference is the whole
+ * point: the quiet clock guesses from silence, and three days of it is right
+ * for a conversation nobody has touched. This one is measured from a FACT the
+ * engine stamped — the result reached the coordinator — so it needs only long
+ * enough for a person to notice the answer before the row recedes. An hour.
+ *
+ * The bounds are the quiet window's, so one number reads the same in both
+ * rows of the settings pane; `null` is the same "off" answer, and means the
+ * engine settles nothing on its own.
+ */
+export const DEFAULT_SETTLE_DELEGATED_AFTER_HOURS = 1;
+
+/**
  * HOW THE READER WANTS THEIR LIST BANDED — the POLICY half of settling.
  *
  * The per-session half (`settledOverride`, `snoozedUntil`) is a decision about
@@ -835,10 +898,29 @@ export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
  */
 export const InboxPolicy = z.object({
   autoSettleAfterHours: z.number().int().min(MIN_AUTO_SETTLE_HOURS).max(MAX_AUTO_SETTLE_HOURS).nullable(),
+  /**
+   * THE SECOND FIELD, AND IT EARNS THE PLACE THE COMMENT ABOVE DEMANDS: it
+   * decides what the inbox shows, for the same list, on the same machine.
+   *
+   * `.default` RATHER THAN REQUIRED, so a policy document written before this
+   * existed still parses. A required field would fail the schema on every
+   * stored file, and `getInboxPolicy` answers a failed parse with the whole
+   * default — which would silently throw away the window somebody chose.
+   */
+  settleDelegatedAfterHours: z
+    .number()
+    .int()
+    .min(MIN_AUTO_SETTLE_HOURS)
+    .max(MAX_AUTO_SETTLE_HOURS)
+    .nullable()
+    .default(DEFAULT_SETTLE_DELEGATED_AFTER_HOURS),
 });
 export type InboxPolicy = z.infer<typeof InboxPolicy>;
 
-export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS };
+export const DEFAULT_INBOX_POLICY: InboxPolicy = {
+  autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS,
+  settleDelegatedAfterHours: DEFAULT_SETTLE_DELEGATED_AFTER_HOURS,
+};
 
 /**
  * WHAT A SESSION IS CREATED WITH WHEN NOBODY SAID — the standing answer to a

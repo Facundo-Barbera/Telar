@@ -32,6 +32,11 @@ export async function PATCH(request: Request) {
         // `null` IS THE OFF SWITCH and `undefined` is "leave it alone", so the
         // key's presence is the question — not its truthiness.
         ...("autoSettleAfterHours" in body ? { autoSettleAfterHours: body.autoSettleAfterHours as number | null } : {}),
+        // The delegation grace (#378), forwarded by the same rule and for the
+        // same reason: the bound lives beside the schema that states it.
+        ...("settleDelegatedAfterHours" in body
+          ? { settleDelegatedAfterHours: body.settleDelegatedAfterHours as number | null }
+          : {}),
       }),
     );
   } catch (error) {

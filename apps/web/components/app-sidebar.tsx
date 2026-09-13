@@ -492,6 +492,12 @@ function SidebarBody() {
     // that is true on more than one Mac, and so the only thing two Macs'
     // registrations of the same work can be recognised by. See `projectGroupKey`.
     const remotes = new Map(result.projects.map((project) => [project.id, project.remoteUrl]));
+    // WHO EACH SETTLED DELEGATE DID ITS WORK FOR — issue #378. Resolved once
+    // here, off the list already in hand, because `settledBy` carries an id
+    // (ids survive renames) and a row that went looking for a title would be a
+    // lookup per row per render. A coordinator archived since is simply absent,
+    // and the hint says what happened without naming it.
+    const titles = new Map(result.sessions.map((session) => [session.id, session.title]));
     const sessions = result.sessions.map((session) =>
       // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
       // project-scoped list and the Spool's master chat is a destination, not a
@@ -509,6 +515,7 @@ function SidebarBody() {
         result.assignments?.[session.id],
         session.projectId ? remotes.get(session.projectId) : undefined,
         session.projectId ? glyphs.get(session.projectId) : undefined,
+        session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
       ),
     );
     return {
