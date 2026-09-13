@@ -703,6 +703,15 @@ function SidebarBody() {
    * coordinator's delegates costs no request.
    */
   const relatedPool = [...list.pinned, ...list.sessions, ...list.snoozed, ...list.settled];
+  /**
+   * THE CLOCK THE TREE IS MEASURED AGAINST, which is the rail's own — #370.
+   * The pool above deliberately reaches into both shelves, so without this a
+   * pinned coordinator drew the rows the list had already shelved: finished
+   * errands and settled conversations, indented under live work forever. Same
+   * `renderedAt` and same per-Mac windows the bands use, because "has this left"
+   * and "which band is this in" must not come back with two different answers.
+   */
+  const relatedSettling = { now: renderedAt, autoSettleAfterHours, windowsByHost: hostWindows };
 
   /**
    * WHO EACH PINNED SESSION FOLLOWS, keyed by `sessionKey`.
@@ -1472,7 +1481,7 @@ function SidebarBody() {
                       {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
                     />
                     <RelatedWork
-                      groups={relatedWork(relatedPool, session)}
+                      groups={relatedWork(relatedPool, session, relatedSettling)}
                       coordinatorId={session.id}
                       {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
                       {...(followState.byCoordinator.get(sessionKey(session))
@@ -1553,6 +1562,8 @@ function SidebarBody() {
                     {...(activeSessionId ? { activeSessionId } : {})}
                     renderedAt={renderedAt}
                     bandFor={bandFor}
+                    autoSettleAfterHours={autoSettleAfterHours}
+                    settlingWindows={hostWindows}
                     onRefresh={() => void loadAll()}
                     dragging={draggingGroup === group.key}
                     insert={groupInsert?.key === group.key ? groupInsert.position : null}

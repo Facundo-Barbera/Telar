@@ -165,6 +165,8 @@ export function ProjectGroupSection({
   activeSessionId,
   renderedAt,
   bandFor,
+  autoSettleAfterHours,
+  settlingWindows,
   onRefresh,
   dragging,
   insert,
@@ -191,6 +193,17 @@ export function ProjectGroupSection({
   /** The rail's own banding — a paired Mac's row is banded by that Mac's
    *  clock, and the group must not re-derive it with this Mac's. */
   bandFor: (session: SidebarSession) => SessionBand;
+  /**
+   * THE SETTLING WINDOW THE TREE IS MEASURED AGAINST — the rail's own, because
+   * the tree asks the same question the bands do (#370: when does a delegate
+   * stop hanging off its coordinator) and two answers to one question is how a
+   * row ends up indented in a group whose shelf already has it. `null` is the
+   * reader turning the clock off, and it means the same here: nothing ages out.
+   */
+  autoSettleAfterHours: number | null;
+  /** Each Mac's own window, for the same reason `bandFor` is passed in rather
+   *  than rebuilt: a paired Mac's row is measured by that Mac's clock. */
+  settlingWindows?: ReadonlyMap<string, number | null>;
   onRefresh: () => void;
   /** This group is the one being carried. */
   dragging: boolean;
@@ -286,11 +299,20 @@ export function ProjectGroupSection({
    * under it. That is the opposite of `withheld`, whose rows this group really
    * is not drawing.
    *
+   * A ROW ALSO LEAVES THE TREE — issue #370. A delegate whose errand is over,
+   * and any child the reader has settled, stops being drawn under its
+   * coordinator and falls back to being a row of this group; a settled
+   * coordinator stops claiming children at all. That needs the same clock the
+   * bands use, which is why the window arrives as a prop.
+   *
    * Memoised on the row list, which `groupSessions` and `withholdFollowedRows`
    * both hand back unchanged when nothing moved — this walks the group once per
    * row, and the rail re-renders on every poll.
    */
-  const tree = useMemo(() => relatedTree(group.sessions), [group.sessions]);
+  const tree = useMemo(
+    () => relatedTree(group.sessions, { now: renderedAt, autoSettleAfterHours, ...(settlingWindows ? { windowsByHost: settlingWindows } : {}) }),
+    [group.sessions, renderedAt, autoSettleAfterHours, settlingWindows],
+  );
   // A COLLAPSED GROUP STILL TELLS THE TRUTH. The chips live in the body, so the
   // header's own count is the only thing a folded group says about itself.
   const countLabel = withheldCount ? `${shown} shown, ${withheldCount} under Following` : `${shown} shown`;

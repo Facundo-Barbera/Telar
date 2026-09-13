@@ -211,6 +211,7 @@ describe("the project header menu, rendered", () => {
         onNavigate={() => {}}
         renderedAt={0}
         bandFor={() => "active"}
+        autoSettleAfterHours={null}
         onRefresh={() => {}}
         dragging={false}
         insert={null}
