@@ -24,6 +24,7 @@ import {
   type GitHubPullFilter,
   type GitHubPullRead,
   type GitHubSnapshot,
+  type GitignoreRemoval,
   type GitignoreResult,
   type ComputerUseBackend,
   type ComputerUseStatus,
@@ -439,6 +440,22 @@ export class EngineClient {
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects", input);
+  }
+
+  /**
+   * Clone a repository into `parent` and register what landed, in one call.
+   *
+   * ONE CALL BECAUSE THE CALLER CANNOT NAME THE PATH IN BETWEEN. `git clone`
+   * chooses the folder from the URL, so a client doing this in two steps would be
+   * registering a path it never picked. `name` is optional and defaults to that
+   * folder's own name.
+   *
+   * NOT STREAMED. The answer is the registered project, or a 400/409 whose message
+   * is the sentence to show: a URL that is not one, a parent that is not a
+   * directory, a target that already exists, or git's own stderr.
+   */
+  cloneProject(input: { url: string; parent: string; name?: string }): Promise<{ project: Project }> {
+    return this.request("POST", "/v2/projects/clone", input);
   }
 
   /**
@@ -1632,6 +1649,18 @@ export class EngineClient {
    */
   projectGitignore(projectId: string): Promise<{ gitignore: GitignoreResult }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`, {});
+  }
+
+  /**
+   * Take those rules back out — the Undo behind the toast that reports them.
+   *
+   * ONLY THE BLOCK THIS ENGINE WROTE: its header and the run of its own rules
+   * directly under it. A `.telar/` somebody added in their own section is theirs
+   * and survives. `removed: []` is a success, not a failure — it means there was
+   * nothing of Telar's left to remove.
+   */
+  undoProjectGitignore(projectId: string): Promise<{ gitignore: GitignoreRemoval }> {
+    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`);
   }
 
   /**

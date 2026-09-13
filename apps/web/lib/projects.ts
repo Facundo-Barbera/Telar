@@ -29,7 +29,7 @@ export const PROJECTS_CHANGED_EVENT = "telar:projects";
 const CHANGED = PROJECTS_CHANGED_EVENT;
 
 /** Say the registry changed. Callers that just registered a project call this
- *  AFTER the engine accepted it — see `register-dialog.tsx`. */
+ *  AFTER the engine accepted it — see `project-palette.tsx`. */
 export function announceProjectsChanged(): void {
   window.dispatchEvent(new Event(CHANGED));
 }

@@ -147,9 +147,9 @@ describe("the rail's empty space composes a third list", () => {
   const source = code(sidebar());
   const menu = source.slice(source.lastIndexOf("<ContextMenuTrigger"), source.lastIndexOf("</ContextMenu>"));
 
-  test("four rows: start something, register something, and the fold-all pair", () => {
+  test("four rows: start something, add something, and the fold-all pair", () => {
     expect(menu).toContain("New conversation");
-    expect(menu).toContain("New project");
+    expect(menu).toContain("Add project");
     expect(menu).toContain("Collapse all projects");
     expect(menu).toContain("Expand all");
   });
@@ -158,10 +158,10 @@ describe("the rail's empty space composes a third list", () => {
     // The New button's own `startSession` and its own project guess.
     expect(menu).toContain("onClick={() => startSession()}");
     expect(menu).toContain("disabled={!composerTarget}");
-    // The `+`'s own dialog, opened by lifting its `open` — so `chooseDirectory`
-    // is still called from exactly one place in the app.
-    expect(menu).toContain("onClick={() => setRegisteringProject(true)}");
-    expect(source).toContain("open={registeringProject}");
+    // The `+`'s own palette page — so `chooseDirectory` is still called from
+    // exactly one place in the app, and it is not this file.
+    expect(menu).toContain('onClick={() => openPalette("sources")}');
+    expect(source).toContain("const openPalette = (page: PalettePage)");
     expect(source).not.toContain("chooseDirectory");
     // The fold verbs act on the groups AS DRAWN, which is the rule
     // `foldedAfter` states and `session-groups.test.ts` pins.

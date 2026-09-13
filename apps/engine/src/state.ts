@@ -79,6 +79,7 @@ import {
   type GitHubPullFilter,
   type GitHubPullRead,
   type GitHubSnapshot,
+  type GitignoreRemoval,
   type GitignoreResult,
   type InboxPolicy,
   type SessionDefaults,
@@ -233,7 +234,8 @@ import { renameSpoolTag as renameSpoolTagInStore, spoolTags as spoolTagsList, ty
 import { searchSpool } from "./spool/search";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
-import { ensureTelarGitignore } from "./gitignore";
+import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
+import { cloneRepository, isCloneFailure } from "./clone";
 import { agentNotice } from "./agent-notice";
 import {
   DEFAULT_ISSUE_FILTER,
@@ -5758,6 +5760,42 @@ export class EngineStore {
    */
   projectGitignore(projectId: string): GitignoreResult {
     return ensureTelarGitignore(this.getProject(projectId).root);
+  }
+
+  /**
+   * Take those rules back out — the Undo behind the toast that reports them.
+   *
+   * IT EXISTS BECAUSE THE WRITE STOPPED ASKING. Registering a project now ignores
+   * Telar's files by default (the switch in the old Register dialog became a
+   * default), and a write into somebody's repository that nobody opted into needs
+   * a way back that is as cheap as the way in.
+   */
+  undoProjectGitignore(projectId: string): GitignoreRemoval {
+    return removeTelarGitignore(this.getProject(projectId).root);
+  }
+
+  /**
+   * CLONE A REPOSITORY AND REGISTER WHAT LANDED — the Sources palette's "Git URL"
+   * and "GitHub repository" rows, in one request.
+   *
+   * ONE CALL RATHER THAN TWO, because the cockpit cannot name the path in between:
+   * it hands over a URL and a parent folder, and only the engine knows which
+   * directory `git clone` created. Splitting it would mean answering a path to a
+   * client whose next call would be "now register this path I did not choose".
+   *
+   * THE CLONE IS NOT UNDONE WHEN THE REGISTRATION FAILS. The checkout on disk is
+   * the expensive half and it is perfectly good; `registerProject` refuses for
+   * reasons a person can act on (a root already registered under another name),
+   * and deleting somebody's fresh clone to tidy up after that would be the worst
+   * possible reading of the error.
+   */
+  cloneProject(input: { url: string; parent: string; name?: string }): Project {
+    const outcome = cloneRepository(this.git, { url: input.url, parent: input.parent });
+    if (isCloneFailure(outcome)) {
+      throw new EngineStateError(outcome.code === "failed" ? "invalid_request" : outcome.code, outcome.message);
+    }
+    const folder = outcome.root.split("/").pop() ?? outcome.root;
+    return this.registerProject({ name: input.name?.trim() || folder, root: outcome.root });
   }
 
   /** A positive whole number, because it is going into an argv and a URL. */

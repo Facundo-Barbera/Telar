@@ -92,7 +92,7 @@ import type { NotesCapability } from "./notes-tools/tools";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
-import type { AsyncGitRunner } from "./worktree";
+import type { AsyncGitRunner, GitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
 /**
@@ -156,6 +156,10 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   asyncGit?: AsyncGitRunner;
+  /** The MUTATING git, for the same reason `gh` is injected: a route test that
+   *  drives `POST /v2/projects/clone` must never reach somebody's network — or
+   *  write a checkout into a temp directory at the mercy of a remote. */
+  git?: GitRunner;
   /** Test seam: the provider model list, so a suite never spawns a real CLI. */
   models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
   /**
@@ -552,6 +556,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
+    ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
@@ -2671,6 +2676,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * And the way back out. DELETE rather than a flag on the POST, because it
+       * is the inverse of that write rather than a variant of it — the Sources
+       * palette ignores Telar's files without asking and reports it with an
+       * Undo, so the undo is a route rather than a second switch.
+       */
+      if (request.method === "DELETE" && projectGitignore) {
+        writeJson(response, 200, { gitignore: store.undoProjectGitignore(decodeURIComponent(projectGitignore[1])) });
+        return;
+      }
+      /**
        * ONE issue or ONE pull request, and merging one.
        *
        * `(\d+)` IN THE PATTERN rather than a parse afterwards: the number goes
@@ -2975,6 +2990,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "DELETE" && latexJob) {
         store.latexCancelJob(decodeURIComponent(latexJob[1]));
         writeJson(response, 200, {});
+        return;
+      }
+      /**
+       * CLONE, THEN REGISTER — and it is one route because the cockpit cannot
+       * name the path in between. It sends a URL and the parent folder somebody
+       * picked; only the engine knows what directory `git clone` created.
+       *
+       * ABOVE `POST /v2/projects` in this chain purely so the literal comparison
+       * below never has to think about a sub-path. No streaming progress: the
+       * answer is the registered project or a sentence saying why not.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/projects/clone") {
+        const input = await body(request);
+        writeJson(response, 201, {
+          project: store.cloneProject({
+            url: stringValue(input.url, "repository url")!,
+            parent: stringValue(input.parent, "parent folder")!,
+            ...(input.name === undefined ? {} : { name: stringValue(input.name, "project name")! }),
+          }),
+        });
         return;
       }
       if (request.method === "POST" && url.pathname === "/v2/projects") {

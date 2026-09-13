@@ -13,6 +13,7 @@ import type {
   GitHubPullFilter,
   GitHubPullRead,
   GitHubSnapshot,
+  GitignoreRemoval,
   GitignoreResult,
   GitOverview,
   ComputerUseBackend,
@@ -176,6 +177,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    /** Clone a repository into `parent` and register what landed, in one call —
+     *  the caller cannot name the path in between, because `git clone` chooses
+     *  the folder from the URL. `owner/repo` is expanded by the engine. */
+    cloneProject: (input: { url: string; parent: string; name?: string }) =>
+      request<{ project: Project }>(fetcher, "POST", "/api/projects/clone", input),
     updateProject: (
       projectId: string,
       patch: {
@@ -385,6 +391,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  somebody's checkout. */
     projectGitignore: (projectId: string) =>
       request<{ gitignore: GitignoreResult }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/gitignore`, {}),
+    /** Take those rules back out — the Undo in the toast that reports the write.
+     *  Only the block the engine wrote; a `.telar/` somebody added in their own
+     *  section survives, and `removed: []` is a success. */
+    undoProjectGitignore: (projectId: string) =>
+      request<{ gitignore: GitignoreRemoval }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/gitignore`),
     /**
      * ONE issue or ONE pull request, opened as its own panel tab.
      *

@@ -4,7 +4,7 @@
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
 // wordmark; a search field wearing its ⌘K hint and a new-session button beside
-// it; a project scope dropdown with a register button; then the five bands —
+// it; a project scope dropdown with an add-project button; then the five bands —
 //
 //   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
 //             in the rail: a conversation you started writing and did not send
@@ -47,13 +47,14 @@
 // not routing, and it occupies the switcher's OWN slot rather than adding a
 // second door beside the one it replaces.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   FolderGit2Icon,
+  FolderOpenIcon,
   FolderPlusIcon,
   FoldVerticalIcon,
   SlidersHorizontalIcon,
@@ -73,6 +74,7 @@ import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandKeys } from "@/lib/use-command-keys";
+import { workspaceOpener } from "@/lib/workspace-open";
 import { DraftRow } from "@/components/session/draft-row";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
@@ -129,8 +131,7 @@ import {
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
-import { NewConversationDialog, type NewConversationTarget } from "@/components/new-conversation-dialog";
-import { RegisterProjectDialog } from "@/components/projects/register-dialog";
+import { ProjectPalette, type NewConversationTarget, type PalettePage } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -172,6 +173,15 @@ const APP_SIDEBAR_RESIZABLE = {
  * happens, which is the whole reason `app-no-drag` is spelled on each one
  * rather than assumed.
  */
+/**
+ * The desktop shell never appears or disappears mid-session, so the store this
+ * rail reads it through has nothing to subscribe to and nothing to answer on the
+ * server. Both are module constants because `useSyncExternalStore` compares them
+ * by identity — inline arrows would resubscribe on every render.
+ */
+const subscribeNothing = () => () => {};
+const serverNoBridge = () => undefined;
+
 function TelarSidebarHeader() {
   return (
     // The inset is measured from the island's edge, never less than the 8px
@@ -375,9 +385,6 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
-  /** The register dialog, when something OTHER than its own button asked for it
-   *  — the rail's empty-space menu. Its trigger still works on its own. */
-  const [registeringProject, setRegisteringProject] = useState(false);
   const { collapsed: collapsedGroups, toggle: toggleGroup, collapseOthers, collapseAll, expandAll } = useCollapsedGroups();
   /**
    * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
@@ -429,9 +436,17 @@ function SidebarBody() {
    * the sessions; a Mac that is this Mac contributes nothing here.
    */
   const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
-  /** The New-conversation palette. Opened by the button and by ⌘N, which is
-   *  the whole point of it being state here rather than inside the button. */
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /**
+   * THE PROJECT PALETTE, and which of its two pages is up.
+   *
+   * ONE PIECE OF STATE FOR BOTH, because they are one surface: New conversation
+   * (the button, ⌘N) opens the Projects page, Add project (the header's pill, the
+   * empty-space menu) opens Sources, and the palette itself walks between them.
+   * They were two dialogs with two flags, which is how the rail ended up able to
+   * have a register form open behind a project picker.
+   */
+  const [palette, setPalette] = useState<{ open: boolean; page: PalettePage }>({ open: false, page: "projects" });
+  const openPalette = (page: PalettePage) => setPalette({ open: true, page });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
@@ -1117,8 +1132,140 @@ function SidebarBody() {
   const soleTarget = pickerTargets.length === 1 ? pickerTargets[0] : undefined;
   const newConversation = () => {
     if (soleTarget) startSession({ projectId: soleTarget.id, ...(soleTarget.hostId ? { hostId: soleTarget.hostId } : {}) });
-    else setPickerOpen(true);
+    else openPalette("projects");
   };
+
+  /**
+   * THE DESKTOP SHELL, READ THROUGH A STORE rather than during render.
+   *
+   * `workspaceOpener()` answers `undefined` on the server and an object in the
+   * shell, so reading it straight would make the first client render disagree
+   * with the markup it hydrates. The store's server snapshot is what keeps them
+   * in step — the same arrangement `OpenWorkspaceButton` makes for the opener
+   * preference. It never changes after load, so the subscribe is a no-op.
+   */
+  const revealBridge = useSyncExternalStore(subscribeNothing, workspaceOpener, serverNoBridge);
+
+  /**
+   * WHICH FOLDER THE FINDER BUTTON WOULD SHOW.
+   *
+   * The scoped project when there is one, and otherwise the rail's own existing
+   * guess — the project you are reading, then the one you touched last — which
+   * is what `New conversation` already acts on when nothing is scoped. Two
+   * different ideas of "the project at hand" in one header would be worse than
+   * one guess named in a tooltip, which is what the button's `title` does.
+   *
+   * THIS MAC'S PROJECTS ONLY. A paired Mac's checkout is on that Mac; revealing
+   * a same-named path here would show somebody the wrong folder, which is the
+   * refusal `workspaceOpenBlocker` makes everywhere else.
+   */
+  const revealProject = (() => {
+    const local = selectedProject ?? (composerTarget && !composerTarget.hostId ? projects.find((project) => project.id === composerTarget.projectId) : undefined);
+    return local?.root ? { name: local.name, root: local.root } : undefined;
+  })();
+
+  /**
+   * THE PROJECT FILTER, INSIDE THE FIELD IT NARROWS.
+   *
+   * It was a row of its own under the search field — "All projects ▾" and a lone
+   * `+` — which spent a whole line of a narrow rail on a control most cockpits
+   * never change. A chip in the field is the same menu at a quarter of the cost,
+   * and it sits where a reader looks when they want fewer rows.
+   *
+   * ABSENT ON A COCKPIT WITH ONE PROJECT, unchanged from #361: "All projects"
+   * and "that one project" select the same rows, so the chip would be furniture
+   * — and here it would also be furniture eating the width of the field.
+   */
+  const scopeChip =
+    pickerTargets.length > 1 ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label={selectedProject ? `Filtering by ${selectedProject.name} — change` : "Filter by project"}
+              title={selectedProject ? `Filtering by ${selectedProject.name}` : "Filter by project"}
+              className="flex h-6 max-w-[9rem] shrink-0 items-center gap-1 rounded px-1 text-xs text-sidebar-foreground/70 hover:bg-sidebar-accent"
+            />
+          }
+        >
+          {selectedProject ? (
+            <ProjectAvatar
+              name={selectedProject.name}
+              projectId={selectedProject.id}
+              {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
+              {...(selectedProject.iconName ? { iconName: selectedProject.iconName } : {})}
+              size={14}
+            />
+          ) : (
+            <FolderGit2Icon className="size-3.5" />
+          )}
+          {/* THE NAME ONLY WHEN THERE IS ONE TO SAY. Unscoped, the chip is two
+              small glyphs and the field keeps its width for typing; "All
+              projects" spelled out inside a search box is a label competing
+              with a placeholder. */}
+          {selectedProject && <span className="truncate">{selectedProject.name}</span>}
+          <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-64">
+          <DropdownMenuGroup>
+            {/* NO CAPTION. It read "Session scope" — the internal name for what
+                this menu does, over a list whose first row is "All projects" and
+                whose rest are project names. A menu of verbs and nouns says what
+                it is by being read. */}
+            <DropdownMenuItem onClick={() => selectScope()}>
+              <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
+              All projects
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {projects.map((project) => (
+              <div key={project.id} className="flex items-center">
+                <DropdownMenuItem className="min-w-0 flex-1" onClick={() => selectScope(project.id)}>
+                  <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
+                  <ProjectAvatar
+                    name={project.name}
+                    projectId={project.id}
+                    {...(project.icon ? { icon: project.icon } : {})}
+                    {...(project.iconName ? { iconName: project.iconName } : {})}
+                    size={14}
+                  />
+                  <span className="truncate">{project.name}</span>
+                </DropdownMenuItem>
+                {/* THIS project's settings. It went to the retired `/projects`
+                    table — a glyph beside one project's name that showed you all
+                    of them. */}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Settings for ${project.name}`}
+                  title={`Project settings for ${project.name}`}
+                  onClick={() => {
+                    onNavigate();
+                    router.push(projectSettingsHref(project.id));
+                  }}
+                >
+                  <SlidersHorizontalIcon />
+                </Button>
+              </div>
+            ))}
+            {selectedProject && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    onNavigate();
+                    router.push(projectSettingsHref(selectedProject.id));
+                  }}
+                >
+                  <SlidersHorizontalIcon />
+                  Project settings
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : undefined;
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1151,11 +1298,13 @@ function SidebarBody() {
           anywhere in the cockpit, and the rail is the one component alive on
           every route. It renders into a portal, so its place here is about
           lifetime rather than layout. */}
-      <NewConversationDialog
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
+      <ProjectPalette
+        open={palette.open}
+        page={palette.page}
+        onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
         targets={pickerTargets}
         onChoose={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        onRegistered={() => void loadAll()}
       />
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
@@ -1178,163 +1327,108 @@ function SidebarBody() {
             step wider than everything under it for no reason beyond the two
             areas having been built separately; the web pass that shared the
             search chrome brought the inset in line too. */}
-        <div className="space-y-1 px-2 pb-2 pt-3">
-          <div className="flex items-center gap-1">
-            <div className="min-w-0 flex-1">
-              <SidebarSearchField
-                ref={searchInput}
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setSearchIndex(0);
-                  setSessionLimit(SESSION_PAGE_SIZE);
-                }}
-                onKeyDown={handleSearchKeyDown}
-                onCompositionStart={() => {
-                  composing.current = true;
-                }}
-                onCompositionEnd={() => {
-                  composing.current = false;
-                }}
-                placeholder="Search sessions"
-                aria-label="Search sessions"
-                role="combobox"
-                aria-expanded={Boolean(query)}
-                aria-controls="sidebar-session-results"
-                aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
-                end={
-                  query ? (
-                    <button
-                      type="button"
-                      aria-label="Clear session search"
-                      onClick={() => {
-                        setQuery("");
-                        setSearchIndex(0);
-                      }}
-                      className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground"
-                    >
-                      <XIcon className="size-3.5" />
-                    </button>
-                  ) : (
-                    <kbd className="pointer-events-none font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
-                  )
-                }
-              />
-            </div>
-            {/* ONE CONTROL, WHETHER OR NOT A MAC IS PAIRED. This used to be two:
-                a plain button that opened the guess, and — only on a cockpit
-                with a remote — a menu of every project on every Mac. So the one
-                affordance for "start this on the mini" was invisible on the
-                machine most people run, and naming a project at all meant
-                navigating to it first. The palette answers both, and ⌘N opens
-                the same thing the button does. */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="shrink-0"
-              aria-label="New conversation"
-              title={soleTarget ? `New conversation in ${soleTarget.name}` : "New conversation — choose the project"}
-              onClick={newConversation}
-            >
-              <MessageSquarePlusIcon />
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-1">
-            {/* A FILTER WITH ONE THING TO FILTER FOR IS FURNITURE. On a cockpit
-                with a single project registered, "All projects" and "that one
-                project" select the same rows, so the control spent a line of
-                the rail offering a choice that changes nothing. It comes back
-                the moment a second project — or a paired Mac's — exists. The
-                register button beside it stays either way, because that is how
-                the second one gets registered. */}
-            {pickerTargets.length > 1 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={<Button variant="ghost" size="sm" className="h-8 min-w-0 flex-1 justify-start px-2 text-sm font-normal" />}
-              >
-                {selectedProject ? (
-                  <ProjectAvatar
-                    name={selectedProject.name}
-                    projectId={selectedProject.id}
-                    {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
-                    {...(selectedProject.iconName ? { iconName: selectedProject.iconName } : {})}
-                    size={14}
-                  />
+        <div className="px-2 pb-2 pt-3">
+          <div className="flex items-center gap-1.5">
+            <SidebarSearchField
+              ref={searchInput}
+              className="min-w-0 flex-1"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setSearchIndex(0);
+                setSessionLimit(SESSION_PAGE_SIZE);
+              }}
+              onKeyDown={handleSearchKeyDown}
+              onCompositionStart={() => {
+                composing.current = true;
+              }}
+              onCompositionEnd={() => {
+                composing.current = false;
+              }}
+              placeholder="Search"
+              aria-label="Search sessions"
+              role="combobox"
+              aria-expanded={Boolean(query)}
+              aria-controls="sidebar-session-results"
+              aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
+              {...(scopeChip ? { start: scopeChip } : {})}
+              end={
+                query ? (
+                  <button
+                    type="button"
+                    aria-label="Clear session search"
+                    onClick={() => {
+                      setQuery("");
+                      setSearchIndex(0);
+                    }}
+                    className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
                 ) : (
-                  <FolderGit2Icon />
-                )}
-                <span className="truncate">{selectedProject?.name ?? "All projects"}</span>
-                <ChevronDownIcon className="ml-auto" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-64">
-                <DropdownMenuGroup>
-                  {/* NO CAPTION. It read "Session scope" — the internal name
-                      for what this menu does, over a list whose first row is
-                      "All projects" and whose rest are project names. A menu
-                      of verbs and nouns says what it is by being read. */}
-                  <DropdownMenuItem onClick={() => selectScope()}>
-                    <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
-                    All projects
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {projects.map((project) => (
-                    <div key={project.id} className="flex items-center">
-                      <DropdownMenuItem className="min-w-0 flex-1" onClick={() => selectScope(project.id)}>
-                        <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
-                        <ProjectAvatar
-                          name={project.name}
-                          projectId={project.id}
-                          {...(project.icon ? { icon: project.icon } : {})}
-                          {...(project.iconName ? { iconName: project.iconName } : {})}
-                          size={14}
-                        />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                      {/* THIS project's settings. It went to the retired
-                          `/projects` table — a glyph beside one project's name
-                          that showed you all of them. */}
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label={`Settings for ${project.name}`}
-                        title={`Project settings for ${project.name}`}
-                        onClick={() => {
-                          onNavigate();
-                          router.push(projectSettingsHref(project.id));
-                        }}
-                      >
-                        <SlidersHorizontalIcon />
-                      </Button>
-                    </div>
-                  ))}
-                  {selectedProject && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={() => {
-                          onNavigate();
-                          router.push(projectSettingsHref(selectedProject.id));
-                        }}
-                      >
-                        <SlidersHorizontalIcon />
-                        Project settings
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            )}
-            {/* Holds the register button at the trailing edge when the filter
-                above is absent. */}
-            {pickerTargets.length <= 1 && <div className="min-w-0 flex-1" />}
-            <RegisterProjectDialog
-              onRegistered={() => void loadAll()}
-              compact
-              open={registeringProject}
-              onOpenChange={setRegisteringProject}
+                  <kbd className="pointer-events-none shrink-0 font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
+                )
+              }
             />
+            {/*
+              THREE VERBS IN ONE PILL, at the field's right — T3's header, and
+              the reason the rail is a line shorter than it was.
+
+              WHAT WENT: a second row under the field holding "All projects ▾"
+              and a lone `+`. It spent a whole line of a narrow rail on a filter
+              most cockpits never change, and it put the two things you press
+              most (add a project, start a conversation) on different rows at
+              opposite ends. The filter moved INTO the field as a chip, where it
+              belongs: it narrows the same list the field narrows.
+
+              THE PILL IS ONE BORDER AROUND THREE BUTTONS rather than three
+              loose glyphs, because they are one cluster of verbs about the rail
+              and the space beside the field is not theirs to float in.
+            */}
+            <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5">
+              {/* HIDDEN IN A BROWSER TAB, never disabled: `workspaceOpenBlocker`
+                  is the one place that decides whether a folder can be opened
+                  from this window, and a greyed Finder button in a tab would be
+                  the platform explained forever. Disabled is only for the case
+                  the desktop CAN do and there is simply nothing chosen yet. */}
+              {revealBridge && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!revealProject}
+                  aria-label="Reveal in Finder"
+                  title={revealProject ? `Reveal ${revealProject.name} in Finder` : "Reveal in Finder — choose a project first"}
+                  onClick={() => revealProject && void revealBridge.reveal(revealProject.root)}
+                >
+                  <FolderOpenIcon />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Add project"
+                title="Add project"
+                onClick={() => openPalette("sources")}
+              >
+                <FolderPlusIcon />
+              </Button>
+              {/* ONE CONTROL, WHETHER OR NOT A MAC IS PAIRED. This used to be two:
+                  a plain button that opened the guess, and — only on a cockpit
+                  with a remote — a menu of every project on every Mac. So the one
+                  affordance for "start this on the mini" was invisible on the
+                  machine most people run, and naming a project at all meant
+                  navigating to it first. The palette answers both, and ⌘N opens
+                  the same thing the button does. */}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="New conversation"
+                title={soleTarget ? `New conversation in ${soleTarget.name}` : "New conversation — choose the project"}
+                onClick={newConversation}
+              >
+                <MessageSquarePlusIcon />
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -1682,12 +1776,12 @@ function SidebarBody() {
                 <MessageSquarePlusIcon />
                 New conversation
               </ContextMenuItem>
-              {/* The `+` beside the project picker, as a row: the SAME dialog,
-                  so there is still exactly one registration path and one
-                  `chooseDirectory` call in the app. */}
-              <ContextMenuItem onClick={() => setRegisteringProject(true)}>
+              {/* The `+` in the header, as a row: the SAME palette page, so
+                  there is still exactly one way a project joins the registry and
+                  one `chooseDirectory` call in the app. */}
+              <ContextMenuItem onClick={() => openPalette("sources")}>
                 <FolderPlusIcon />
-                New project
+                Add project
               </ContextMenuItem>
               {/* Folds only the groups ON SCREEN — see `foldedAfter`. A rail
                   showing search results has none, so both rows stand down

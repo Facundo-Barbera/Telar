@@ -26,3 +26,20 @@ export async function POST(_request: Request, context: Context) {
     return engineErrorResponse(error);
   }
 }
+
+/**
+ * And the way back out — the Undo in the toast that reports the write.
+ *
+ * IT EXISTS BECAUSE THE WRITE STOPPED ASKING: adding a project ignores Telar's
+ * files by default now (the switch in the old Register dialog became a default),
+ * so a write nobody opted into needs a reverse as cheap as the way in. Bodyless
+ * for the same reason the POST is: the engine decides what its own block was.
+ */
+export async function DELETE(_request: Request, context: Context) {
+  try {
+    const { projectId } = await context.params;
+    return Response.json(await (await engineClient()).undoProjectGitignore(projectId));
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
