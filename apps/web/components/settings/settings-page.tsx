@@ -110,8 +110,15 @@ const SECTIONS: SettingsSection[] = [
    * profile is a set of cookies this install keeps, not a property of the machine
    * that runs turns — and it is where a remembered login is scoped, which is why
    * the two share a pane.
+   *
+   * CALLED "BROWSER", NOT "INTEGRATIONS" (#357). Both groups on it are about one
+   * thing — Telar's own browser: the identities it signs in as, and the logins
+   * it may fill without asking. "Integrations" is the word every app uses for
+   * the drawer of things it connects to, so it named a category rather than this
+   * pane. THE ID STAYS `integrations`: it is a route, bookmarks point at it, and
+   * renaming a nav label is not a reason to strand one.
    */
-  { id: "integrations", label: "Integrations", icon: PlugZapIcon, group: "Cockpit" },
+  { id: "integrations", label: "Browser", icon: PlugZapIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs

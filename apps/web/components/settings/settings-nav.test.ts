@@ -37,15 +37,24 @@ test("ONE Plugins destination, not an item per plugin", () => {
   expect(source).toContain("<PluginsPage />");
 });
 
-test("Integrations is a pane of its own, under Cockpit, and holds both groups", () => {
+test("Browser is a pane of its own, under Cockpit, and holds both groups", () => {
   // Profiles and remembered logins are one subject: a grant is scoped to a
   // profile, so reading one while the other lived in Agent tools meant holding a
   // profile list in your head.
   expect(source).toContain('{ id: "integrations"');
-  expect(source).toContain('label: "Integrations"');
+  // Named for what it is (#357) — "Integrations" is every app's word for the
+  // drawer of things it connects to, and named a category rather than this pane.
+  expect(source).toContain('label: "Browser"');
+  expect(source).not.toContain('label: "Integrations"');
   expect(source).toContain('<IntegrationsPage />');
   const tools = source.slice(source.indexOf('active === "tools"'));
   expect(tools.slice(0, 300)).not.toContain("<BrowserLoginsSection");
+});
+
+test("the renamed pane keeps its route, so a bookmark still lands", () => {
+  // The label is nav copy; the id is a contract. Renaming one is not a reason
+  // to strand the other.
+  expect(source).toContain('active === "integrations"');
 });
 
 test("the OAuth callback's section id is still routable", () => {

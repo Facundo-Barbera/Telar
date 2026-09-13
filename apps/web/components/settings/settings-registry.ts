@@ -445,7 +445,11 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     // indexed anyway because "where are my saved passwords" and "which account
     // does the browser sign in as" are exactly the questions search exists for,
     // and landing on the right pane answers most of both.
-    label: "Integrations",
+    //
+    // The label is the nav's, and the nav calls this Browser now (#357). The id
+    // stays `integrations` because it is the route; "integrations" survives as a
+    // keyword so the old word still finds the pane.
+    label: "Browser",
     icon: PlugZapIcon,
     groups: [
       {
@@ -453,13 +457,13 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           {
             title: "Browser profiles",
             hint: "The identities Telar's own browser signs in as, one set of cookies each.",
-            keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser"],
+            keywords: ["cookies", "account", "sign in", "chrome", "profile", "default", "browser", "integrations"],
             icon: CircleUserRoundIcon,
           },
           {
             title: "Remembered logins",
             hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
-            keywords: ["1password", "password", "credential", "autofill", "revoke", "vault"],
+            keywords: ["1password", "password", "credential", "autofill", "revoke", "vault", "integrations"],
             icon: KeyRoundIcon,
           },
         ],
