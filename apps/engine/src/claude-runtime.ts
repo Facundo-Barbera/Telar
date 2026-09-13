@@ -253,6 +253,26 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
 const MAX_IDLE_RUNTIMES = 3;
 
 /**
+ * HOW LONG A STOPPED TURN'S PROCESS GETS TO UNWIND POLITELY before it is
+ * killed.
+ *
+ * THIS IS NOT THE STOP'S LATENCY and must not be read as one: the engine writes
+ * `stopped` before the worker has even heard about it, so the transcript is
+ * already correct while this grace runs. What it bounds is the TAIL — one pump
+ * per session, so the person's next message parks on `idle()` until the
+ * interrupted turn lets go of the stream.
+ *
+ * IT WAS TEN SECONDS, inline, and that was the wrong bound for the wrong
+ * reason: it was chosen against "how long might a CLI take to answer an
+ * interrupt" when the question the person actually asks is "how long after I
+ * stop can I type again". A CLI that has not acknowledged an interrupt in three
+ * seconds is not about to; the escalation destroys the process, and the next
+ * turn cold-starts from `resume` — which costs a process spawn, not a
+ * conversation.
+ */
+export const STOP_REAP_GRACE_MS = 3_000;
+
+/**
  * The store: sessionId → live runtime, owned by one driver instance.
  *
  * NO TIMERS. Eviction happens lazily on `adopt()` (oldest-idle beyond the
@@ -418,6 +438,19 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.wakeActive = active;
     runtime.lastUsedAt = Date.now();
     if (!active) this.prune();
+  }
+
+  /**
+   * Kill this session's process unless it has let go first.
+   *
+   * Returns the canceller the turn's `finally` calls when the CLI DID answer
+   * its interrupt — so a polite unwind never trips the escalation. Unref'd:
+   * a pending reap must not hold the worker process open for its grace.
+   */
+  reapAfter(sessionId: string, graceMs: number = STOP_REAP_GRACE_MS): () => void {
+    const timer = setTimeout(() => this.destroy(sessionId), graceMs);
+    timer.unref?.();
+    return () => clearTimeout(timer);
   }
 
   destroy(sessionId: string): void {

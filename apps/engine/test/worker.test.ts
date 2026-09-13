@@ -1137,3 +1137,129 @@ test("a claim already granted when Stop lands never reaches the driver; a new me
   await eventually(async () => expect((await client.session("session_one")).turns[2]?.state).toBe("completed"));
   expect(spawned).toEqual(["Continue"]);
 });
+
+/**
+ * #409 — A STOP MUST NOT RIDE A POLL.
+ *
+ * THE MEASURED FAILURE: pressing Stop on a running Claude turn took up to five
+ * seconds to take effect. Every party did its part promptly and the sum was
+ * still seconds, because ONE HOP WAS A POLL. The engine writes `stopped`
+ * synchronously in the request that carries the Stop, so the transcript was
+ * never the slow part — but the worker holding the claim learned about it only
+ * on its next heartbeat, and had to wait for the one in flight to answer first.
+ * `onQueueChanged`'s doorbell could not help: it only lifts a BACKED-OFF worker
+ * back onto its fast interval, and a worker with a turn running is never backed
+ * off, so for the stop case it was exactly a no-op.
+ *
+ * These two tests pin both halves of the answer with a provider that IGNORES
+ * the abort for three seconds — the shape of a long tool call.
+ */
+test("a Stop reaches an embedded worker's provider in-process, without waiting for a heartbeat", async () => {
+  let abortedAt: number | undefined;
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  const driver: TurnDriver = {
+    async run({ signal, onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      signal.addEventListener("abort", () => { abortedAt = Date.now(); }, { once: true });
+      // Ignores the stop, the way a CLI inside a long tool call does.
+      await Bun.sleep(3_000);
+      return { text: "too late" };
+    },
+  };
+  /**
+   * A HEARTBEAT DELIBERATELY TOO SLOW TO BE THE ANSWER. Two seconds is not the
+   * production interval — it is the bound this test needs the fix to beat, and
+   * it stands in for every real reason a beat is late (a busy daemon, a tick
+   * already in flight, a worker that just backed off).
+   */
+  const daemon = await startEngine({
+    engineRoot: root(),
+    embeddedWorker: { createDriver: () => driver, pollMs: 2_000, idlePollMs: 2_000 },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Long task" });
+  await running;
+
+  const pressedAt = Date.now();
+  await client.stopSession("session_one");
+  await eventually(() => expect(abortedAt).toBeDefined());
+  // The point of the whole change: well inside one heartbeat, not after it.
+  expect(abortedAt! - pressedAt).toBeLessThan(1_000);
+});
+
+test("a provider that ignores a Stop never delays the turn's stopped state", async () => {
+  // The provider is reaped in the background — its three seconds are its own,
+  // and the person is not made to watch them.
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  let returnedAfterStop = false;
+  const driver: TurnDriver = {
+    async run({ onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      await Bun.sleep(3_000);
+      returnedAfterStop = true;
+      return { text: "too late" };
+    },
+  };
+  const daemon = await startEngine({
+    engineRoot: root(),
+    embeddedWorker: { createDriver: () => driver, pollMs: 2_000, idlePollMs: 2_000 },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Long task" });
+  await running;
+
+  const pressedAt = Date.now();
+  const stopped = await client.stopSession("session_one");
+  expect(stopped.live?.runId).toBe("run_one");
+  // Read back through the API the cockpit reads, not from the return value.
+  expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
+  expect((await client.events("session_one")).events.at(-1)).toMatchObject({ type: "turn.stopped", runId: "run_one" });
+  expect(Date.now() - pressedAt).toBeLessThan(300);
+  // …and the provider really was still running when that was already true.
+  expect(returnedAfterStop).toBe(false);
+});
+
+test("a Stop for another worker's claim is ignored, and the claim it does hold is aborted once", async () => {
+  // `cancelClaims` is PUSHED rather than asked for, so the receiver has to
+  // check the claim is its own — and the heartbeat carries the same
+  // cancellation, so aborting twice must be the no-op it looks like.
+  let aborts = 0;
+  let ready!: () => void;
+  const running = new Promise<void>((resolve) => { ready = resolve; });
+  const driver: TurnDriver = {
+    async run({ signal, onObservations }) {
+      await onObservations([{ kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } }]);
+      ready();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => { aborts += 1; resolve(); }, { once: true });
+      });
+      return { text: "stopped" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, { runId: "run_one", input: "Stop me" });
+  await worker.tick();
+  await running;
+
+  // Nobody else's claim moves this worker.
+  worker.cancelClaims([{ claimToken: "tok_not_mine", workerId: "worker_two" }]);
+  expect(aborts).toBe(0);
+
+  await client.stopSession(sessionId);
+  // This worker is out-of-process as far as the daemon is concerned, so the
+  // heartbeat is its only delivery — and it must still work.
+  await worker.tick();
+  await eventually(() => expect(aborts).toBe(1));
+  for (let i = 0; i < 3; i += 1) await worker.tick();
+  expect(aborts).toBe(1);
+});
