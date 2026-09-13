@@ -10,6 +10,7 @@
  */
 import { expect, test } from "bun:test";
 import { activeAssignments, assignmentsOf, reviewableAssignments, unresolvedAssignments, type AssignmentTurn } from "../src/protocol/assignments";
+import { Turn } from "../src/protocol/entities";
 
 const task = (runId: string, from: string, extra: Partial<AssignmentTurn> = {}): AssignmentTurn => ({
   runId,
@@ -18,8 +19,36 @@ const task = (runId: string, from: string, extra: Partial<AssignmentTurn> = {}):
   sender: { sessionId: from },
   agentIntent: "task",
   agentSourceRunId: `${from}_run`,
-  createdAt: 1,
+  acceptedAt: 1,
   ...extra,
+});
+
+/**
+ * A REAL `Turn`, NOT A HAND-WRITTEN SHAPE — issue #380.
+ *
+ * The fold read `turn.createdAt`, which no `Turn` has ever had. Every test above
+ * passed because they all wrote the field the fold expected, and every caller in
+ * the app passed a real turn and got `receivedAt: undefined` on an assignment
+ * whose schema declares it required. Only a turn the SCHEMA produced can catch
+ * that, so this one is parsed rather than typed.
+ */
+test("folding a real Turn gives an assignment a NUMBER for receivedAt", () => {
+  const turn = Turn.parse({
+    runId: "run_task",
+    sessionId: "session_worker",
+    sequence: 1,
+    state: "running",
+    input: "Implement the parser",
+    origin: "session",
+    sender: { sessionId: "session_coord" },
+    agentIntent: "task",
+    agentSourceRunId: "run_coord",
+    acceptedAt: 1_789_328_886_517,
+    updatedAt: 1_789_328_886_517,
+  });
+  const [assignment] = assignmentsOf([turn]);
+  expect(typeof assignment?.receivedAt).toBe("number");
+  expect(assignment?.receivedAt).toBe(turn.acceptedAt);
 });
 
 test("a task from a peer is an assignment; a report from the same peer is not", () => {
@@ -27,13 +56,13 @@ test("a task from a peer is an assignment; a report from the same peer is not", 
   // would make a session look like somebody's employee.
   const turns: AssignmentTurn[] = [
     task("run_task", "session_coord"),
-    { runId: "run_report", origin: "session", state: "completed", sender: { sessionId: "session_coord" }, agentIntent: "report", createdAt: 2 },
+    { runId: "run_report", origin: "session", state: "completed", sender: { sessionId: "session_coord" }, agentIntent: "report", acceptedAt: 2 },
   ];
   expect(activeAssignments(turns).map((a) => a.taskRunId)).toEqual(["run_task"]);
 });
 
 test("a human turn is never an assignment", () => {
-  const turns: AssignmentTurn[] = [{ runId: "run_user", state: "running", createdAt: 1 }];
+  const turns: AssignmentTurn[] = [{ runId: "run_user", state: "running", acceptedAt: 1 }];
   expect(assignmentsOf(turns)).toEqual([]);
 });
 
@@ -60,14 +89,14 @@ test("a STEERED task follows the run it joined — delivery is not completion", 
   // `steered` is terminal for the MESSAGE and says nothing about the work.
   const turns: AssignmentTurn[] = [
     task("run_task", "session_coord", { state: "steered", steer: { intoRunId: "run_live" } }),
-    { runId: "run_live", state: "running", createdAt: 0 },
+    { runId: "run_live", state: "running", acceptedAt: 0 },
   ];
   const active = activeAssignments(turns);
   expect(active).toHaveLength(1);
   expect(active[0]).toMatchObject({ taskRunId: "run_task", runId: "run_live" });
 
   // …and it ends when the JOINED run ends, not when the steer landed.
-  const ended: AssignmentTurn[] = [turns[0]!, { runId: "run_live", state: "completed", createdAt: 0, completedAt: 9 }];
+  const ended: AssignmentTurn[] = [turns[0]!, { runId: "run_live", state: "completed", acceptedAt: 0, completedAt: 9 }];
   expect(activeAssignments(ended)).toEqual([]);
   expect(reviewableAssignments(ended)[0]).toMatchObject({ outcome: "completed", endedAt: 9 });
 });
@@ -119,7 +148,7 @@ test("detaching a RUNNING assignment does not mark it finished", () => {
 test("a task with no engine-stamped sender is ignored", () => {
   // Attribution comes from a claim token. A turn without one cannot assert a
   // coordinator, and inventing one would be exactly the laundering this forbids.
-  const turns: AssignmentTurn[] = [{ runId: "run_task", origin: "session", state: "running", agentIntent: "task", createdAt: 1 }];
+  const turns: AssignmentTurn[] = [{ runId: "run_task", origin: "session", state: "running", agentIntent: "task", acceptedAt: 1 }];
   expect(assignmentsOf(turns)).toEqual([]);
 });
 
@@ -139,7 +168,7 @@ test("a PAGED window cannot prove a carrier is running — it reports unknown", 
 test("the same turns folded over COMPLETE records resolve to the carrier's real outcome", () => {
   const complete: AssignmentTurn[] = [
     task("run_task", "session_coord", { state: "steered", steer: { intoRunId: "run_gone" } }),
-    { runId: "run_gone", state: "completed", createdAt: 0, completedAt: 12 },
+    { runId: "run_gone", state: "completed", acceptedAt: 0, completedAt: 12 },
   ];
   expect(unresolvedAssignments(complete)).toEqual([]);
   expect(reviewableAssignments(complete)[0]).toMatchObject({ runId: "run_gone", outcome: "completed", endedAt: 12 });

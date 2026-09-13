@@ -4771,7 +4771,10 @@ export class EngineStore {
    * honest answer — not "running", and not a guess at an outcome.
    */
   sessionAssignments(sessionId: string): SessionAssignment[] {
-    return assignmentsOf(this.readQueue(sessionId).turns as unknown as AssignmentTurn[]);
+    // A PLAIN cast, not `as unknown as`: the structural type names fields a
+    // `Turn` really has, so a rename that breaks the fold is a type error here
+    // rather than an `undefined` on every assignment (issue #380).
+    return assignmentsOf(this.readQueue(sessionId).turns as AssignmentTurn[]);
   }
 
   /**

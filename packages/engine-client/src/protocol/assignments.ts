@@ -62,7 +62,16 @@ export const SessionAssignment = z.object({
 });
 export type SessionAssignment = z.infer<typeof SessionAssignment>;
 
-/** The turn shape this fold needs. Structural, so a caller may pass a `Turn`. */
+/**
+ * The turn shape this fold needs. Structural, so a caller may pass a `Turn`.
+ *
+ * `acceptedAt` IS THE TURN'S OWN NAME FOR WHEN IT ARRIVED. This type said
+ * `createdAt`, which no `Turn` has ever carried, so every caller passing a real
+ * turn satisfied the type by accident and every assignment's `receivedAt` was
+ * `undefined` at runtime while being declared required (issue #380). A field a
+ * `Turn` actually has is the only version of this type that can be wrong in a
+ * way a compiler will say out loud.
+ */
 export type AssignmentTurn = {
   runId: string;
   origin?: string;
@@ -73,7 +82,8 @@ export type AssignmentTurn = {
   assignmentScope?: string;
   assignmentDetachedAt?: number;
   steer?: { intoRunId?: string };
-  createdAt: number;
+  /** When the engine accepted the turn — the moment the work arrived. */
+  acceptedAt: number;
   completedAt?: number;
 };
 
@@ -110,7 +120,7 @@ export function assignmentsOf(turns: readonly AssignmentTurn[]): SessionAssignme
     const endedAt = detached
       ? turn.assignmentDetachedAt
       : outcome && carrier
-        ? (carrier.completedAt ?? carrier.createdAt)
+        ? (carrier.completedAt ?? carrier.acceptedAt)
         : undefined;
 
     assignments.push({
@@ -118,7 +128,7 @@ export function assignmentsOf(turns: readonly AssignmentTurn[]): SessionAssignme
       fromSessionId,
       ...(turn.agentSourceRunId ? { sourceRunId: turn.agentSourceRunId } : {}),
       ...(turn.assignmentScope ? { scope: turn.assignmentScope } : {}),
-      receivedAt: turn.createdAt,
+      receivedAt: turn.acceptedAt,
       runId: joined ?? turn.runId,
       ...(outcome ? { outcome } : {}),
       ...(endedAt === undefined ? {} : { endedAt }),
