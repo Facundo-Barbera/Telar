@@ -95,7 +95,7 @@ function Harness() {
               onWatchOutput: () => setWatched((value) => value + 1),
             }),
             h(OpenWorkspaceButton, { path: "/Users/x/code/telar", hostId, hostLabel: hostId === "local" ? undefined : "mac.lan" }),
-            h(WorkspaceInspector, { projectId: "project_1", projectName: "telar", tasks: [], onOpenPanel: () => {} }),
+            h(WorkspaceInspector, { projectId: "project_1" }),
             h(RailToggle, { open: false, onToggle: () => {} }),
           ),
         ),

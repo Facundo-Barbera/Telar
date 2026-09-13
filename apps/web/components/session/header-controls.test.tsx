@@ -52,7 +52,7 @@ afterAll(() => {
 const cluster = () => ({
   run: renderToStaticMarkup(<RunHeaderControl sessionId="session_1" api={runApi} />),
   open: renderToStaticMarkup(<OpenWorkspaceButton path="/tmp/workspace" hostId="local" />),
-  summary: renderToStaticMarkup(<WorkspaceInspector projectId="project_1" tasks={[]} onOpenPanel={() => {}} />),
+  summary: renderToStaticMarkup(<WorkspaceInspector projectId="project_1" />),
 });
 
 describe("the header cluster reads as buttons", () => {
