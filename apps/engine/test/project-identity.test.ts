@@ -112,6 +112,90 @@ describe("the store's write path", () => {
   });
 });
 
+/**
+ * THE LADDER: the session's own answer, then the project's, then the Mac's.
+ *
+ * Each rung's ABSENCE is a real answer rather than a missing one, which is what
+ * makes these cases distinguishable at all — a project that stored `"local"` and
+ * a project that stored nothing must behave differently the moment the Mac's
+ * standing answer changes underneath them.
+ */
+describe("a new conversation honours the project before the Mac", () => {
+  /** A checkout that is a real git repo, so `worktree` is reachable. */
+  function gitStore(): EngineStore {
+    const checkout = dir("telar-identity-git-");
+    for (const args of [["init"], ["config", "user.email", "t@t"], ["config", "user.name", "T"], ["commit", "--allow-empty", "-m", "root"]]) {
+      Bun.spawnSync(["git", ...args], { cwd: checkout });
+    }
+    const store = new EngineStore(dir("telar-identity-home-"), () => 100);
+    store.registerProject({ id: "project_one", name: "One", root: checkout });
+    return store;
+  }
+
+  test("the project's answer beats the Mac's, in both directions", () => {
+    const store = gitStore();
+    store.setSessionDefaults({ envMode: "local" });
+    store.updateProject("project_one", { envMode: "worktree" });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).envMode).toBe("worktree");
+
+    store.setSessionDefaults({ envMode: "worktree" });
+    store.updateProject("project_one", { envMode: "local" });
+    expect(store.createSession({ id: "session_b", projectId: "project_one" }).envMode).toBe("local");
+  });
+
+  test("a project that stored nothing follows the Mac, and keeps following when it moves", () => {
+    const store = gitStore();
+    store.setSessionDefaults({ envMode: "worktree" });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).envMode).toBe("worktree");
+    store.setSessionDefaults({ envMode: "local" });
+    expect(store.createSession({ id: "session_b", projectId: "project_one" }).envMode).toBe("local");
+  });
+
+  test("clearing the project's answer hands it back to the Mac", () => {
+    const store = gitStore();
+    store.setSessionDefaults({ envMode: "worktree" });
+    store.updateProject("project_one", { envMode: "local" });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).envMode).toBe("local");
+    store.updateProject("project_one", { envMode: null });
+    expect(store.createSession({ id: "session_b", projectId: "project_one" }).envMode).toBe("worktree");
+  });
+
+  test("a caller that STATES a mode still gets exactly that", () => {
+    const store = gitStore();
+    store.updateProject("project_one", { envMode: "worktree" });
+    expect(store.createSession({ id: "session_a", projectId: "project_one", envMode: "local" }).envMode).toBe("local");
+  });
+
+  test("a pinned worktree yields on an unversioned checkout rather than refusing the session", () => {
+    // Nobody typed `worktree` for THIS session — it is a preference, like the
+    // Mac's, and a project without git must still be openable.
+    const store = readyStore();
+    store.updateProject("project_one", { envMode: "worktree" });
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).envMode).toBe("local");
+  });
+
+  test("the project's default model rides the session, when the session lands on its login", () => {
+    const store = readyStore();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "opus", effort: "high" } });
+    const session = store.createSession({ id: "session_a", projectId: "project_one" });
+    expect(session.model).toEqual({ instanceId: "claude", model: "opus", effort: "high" });
+  });
+
+  test("…and does not, when the caller routed the session to another provider", () => {
+    // A selection is a MODEL ON A LOGIN. Carrying a Claude default onto a Codex
+    // session would name a model that login has never heard of.
+    const store = readyStore();
+    store.updateProject("project_one", { defaultModel: { instanceId: "claude", model: "opus" } });
+    const session = store.createSession({ id: "session_a", projectId: "project_one", driver: "codex" });
+    expect(session.model).toBeUndefined();
+  });
+
+  test("a project with no default model leaves the session on the provider's own", () => {
+    const store = readyStore();
+    expect(store.createSession({ id: "session_a", projectId: "project_one" }).model).toBeUndefined();
+  });
+});
+
 describe("PATCH /v2/projects/:id", () => {
   async function daemon(): Promise<{ client: EngineClient; port: number; token: string }> {
     const home = dir("telar-identity-daemon-");
