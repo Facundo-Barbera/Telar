@@ -45,6 +45,8 @@ import type {
   TextGenPolicy,
   UsageReport,
   UsageResolution,
+  UsageLimits,
+  UsageLimitSource,
   ModelCatalogue,
   ModelOverlay,
   CustomProviderModel,
@@ -254,6 +256,20 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       if (input.timeZone) query.set("tz", input.timeZone);
       return request<{ usage: UsageReport }>(fetcher, "GET", `/api/usage?${query.toString()}`);
     },
+    /** The CLIProxyAPI hubs quota is read from. Keys never come back: every row
+     *  reads `managementKey: ""`, with `keyRedacted` when one is stored. */
+    usageLimitSources: () => request<{ sources: UsageLimitSource[] }>(fetcher, "GET", "/api/usage/sources"),
+    /** Create or replace one. An EMPTY `managementKey` keeps the stored one, so
+     *  saving a row read back redacted is safe. */
+    saveUsageLimitSource: (input: { id: string; label?: string | null; url?: string; managementKey?: string; enabled?: boolean }) => {
+      const { id, ...patch } = input;
+      return request<{ source: UsageLimitSource }>(fetcher, "PUT", `/api/usage/sources/${encodeURIComponent(id)}`, patch);
+    },
+    removeUsageLimitSource: (id: string) => request<{ removed: boolean }>(fetcher, "DELETE", `/api/usage/sources/${encodeURIComponent(id)}`),
+    /** What the hubs currently report. Served from a short-lived cache unless
+     *  `refresh`, which waits for a fresh read of every configured hub. */
+    usageLimits: (options: { refresh?: boolean } = {}) =>
+      request<{ limits: UsageLimits }>(fetcher, "GET", `/api/usage/limits${options.refresh ? "?refresh=1" : ""}`),
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
