@@ -45,14 +45,26 @@ describe("the address row's width budget", () => {
   /** Panel width → the content width the row's ResizeObserver reports. */
   const row = (panel: number) => panel - ADDRESS_ROW_PADDING;
 
-  test("at the panel's default 510px the labels come off", () => {
-    expect(addressRowCompact(row(510))).toBe(true);
+  /**
+   * THE ACCEPTANCE IS THE FLOOR, NOT THE LABELS. #319 asked that the input never
+   * be squeezed below something you can type a URL into; dropping the labels was
+   * the means. Since #366 the profile is a glyph rather than its `max-w-28`
+   * name, which hands the row back 116px — so the default panel now seats the
+   * input AND the viewport's words, and the assertion that matters is the one
+   * the issue actually made.
+   */
+  test("at the panel's default 510px the input clears the floor — the issue's acceptance", () => {
+    expect(addressInputRoom(row(510), false)).toBeGreaterThanOrEqual(ADDRESS_INPUT_FLOOR);
+    expect(addressInputRoom(row(510), true)).toBeGreaterThanOrEqual(ADDRESS_INPUT_FLOOR);
+    expect(addressRowCompact(row(510))).toBe(false);
   });
 
-  test("and what that leaves the input clears the floor — the issue's acceptance", () => {
-    expect(addressInputRoom(row(510), false)).toBeGreaterThanOrEqual(ADDRESS_INPUT_FLOOR);
-    // The bug itself, stated: labelled, this row cannot seat the input.
-    expect(addressInputRoom(row(510), true)).toBeLessThan(ADDRESS_INPUT_FLOOR);
+  test("a panel narrow enough still drops the labels rather than the input", () => {
+    // Somewhere below the default the labelled row stops fitting, and the row
+    // gives up words before it gives up the address bar. That trade is the
+    // whole mechanism, so it is pinned at a width where it still happens.
+    expect(addressRowCompact(row(420))).toBe(true);
+    expect(addressInputRoom(row(420), false)).toBeGreaterThanOrEqual(ADDRESS_INPUT_FLOOR);
   });
 
   test("a panel with room keeps its labels, and the input still clears the floor", () => {
@@ -89,9 +101,17 @@ describe("the row's markup is the budget's own claim", () => {
     expect(source).toContain("setCompact(addressRowCompact(entry.contentRect.width))");
   });
 
-  test("both labelled controls are the ones that give way", () => {
+  test("the viewport control is the one label that gives way", () => {
     expect(source).toContain('{!compactRow && <span>{viewportMode === "fit" ? "Fit panel"');
-    expect(source).toContain('{!compactRow && <span className="max-w-28 truncate">{state.profile.label}</span>}');
+  });
+
+  test("the profile control writes no name at any width — it is a glyph, so the budget is honest", () => {
+    // The budget above no longer buys a profile label back, which is only true
+    // while the markup does not draw one. A label reintroduced here would make
+    // ADDRESS_CONTROLS_LABELLED understate the row by 116px and quietly bring
+    // back the crushed input of #319.
+    expect(source).not.toContain("{state.profile.label}</span>");
+    expect(source).toContain('<IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />');
   });
 
   test("the 1Password warning is a mark with the sentence in its tooltip, not a paragraph in the toolbar", () => {
