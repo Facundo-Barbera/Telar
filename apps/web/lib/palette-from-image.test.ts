@@ -162,7 +162,10 @@ describe("themeFromPalette", () => {
     expect(Number(hue)).toBeLessThanOrEqual(260);
     expect(Number(chroma)).toBeLessThan(0.03); // a tint, never a poster
     // Telar's lightness spine is untouched: every contrast claim is about L.
-    expect(lightness).toBe("0.992");
+    // Read off TELAR_LIGHT rather than written as a literal — the spine is
+    // allowed to move (it did, when light mode got its elevation ladder), and
+    // what this test is for is that a derived theme MOVES WITH IT.
+    expect(lightness).toBe(/^oklch\(([\d.]+) /.exec(TELAR_LIGHT.background)![1]);
   });
 
   test("the whole light half keeps Telar's lightnesses exactly", () => {
