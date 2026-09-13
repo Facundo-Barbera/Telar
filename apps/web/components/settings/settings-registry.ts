@@ -510,6 +510,47 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     groups: [
       {
         /**
+         * FIRST ON THE PANE AND FIRST HERE. The keywords are the words a person
+         * uses when they are not looking for a feature but auditing one —
+         * "prompt", "system prompt", "what do you inject", "preamble" — because
+         * that is what brings anybody to this group. "Telar" itself is a
+         * keyword: it is the only group in Settings whose subject is the app's
+         * own voice.
+         */
+        title: "Telar orientation",
+        rows: [
+          {
+            title: "Tell agents they are inside Telar",
+            hint: "One paragraph per turn saying what Telar's words mean — the browser, a session, the panel, the rail, Spool, Looks.",
+            keywords: [
+              "orientation",
+              "preamble",
+              "system prompt",
+              "prompt",
+              "context",
+              "inject",
+              "briefing",
+              "instructions",
+              "telar",
+            ],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Show the text",
+            hint: "The exact paragraph this engine injects, read from the engine itself.",
+            keywords: ["preamble", "prompt", "text", "reveal", "audit", "what does it say"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Install the telar skill",
+            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, Warps, assignment and settling, browser tabs, the Spool's verbs.",
+            keywords: ["skill", "SKILL.md", "claude", "codex", "opencode", "docs", "reference", "telar"],
+            icon: SparklesIcon,
+          },
+        ],
+      },
+      {
+        /**
          * NAVIGATE-ONLY SINCE THE FORM BECAME PROGRESSIVE (#357). "Add a
          * server" is the caption on a form that is not on screen until somebody
          * presses Add, so there is no standing row to anchor to — but it is the

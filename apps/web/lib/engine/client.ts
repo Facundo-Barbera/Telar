@@ -40,6 +40,7 @@ import type {
   LatexToolchain,
   ManagedTectonic,
   InboxPolicy,
+  AgentOrientation,
   EnvMode,
   SessionDefaults,
   SidebarLayout,
@@ -246,6 +247,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
     setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Whether Telar may tell an agent where it is — the preamble and the
+     *  `telar` skill. One answer for every client of this engine. */
+    orientation: () => request<{ orientation: AgentOrientation; text: string }>(fetcher, "GET", "/api/orientation"),
+    setOrientation: (patch: { preamble?: boolean; skill?: boolean }) =>
+      request<{ orientation: AgentOrientation; text: string }>(fetcher, "PATCH", "/api/orientation", patch),
     /** What a new session is built with when nobody said — see
      *  `SessionDefaults`. One answer for every client of this engine. */
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
