@@ -30,6 +30,7 @@ const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
+const { createSitePermissionStore } = require("./site-permissions");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
@@ -963,6 +964,11 @@ function createWindow(url) {
     // manager reads what the old one wrote in destroy(); the smoke run keeps
     // its temp userData so nothing leaks between runs.
     tabStore: createTabStore(app.getPath("userData")),
+    // WHAT EACH SITE MAY DO, PER PROFILE (#422). Beside the profile registry
+    // and the tab inventory, keyed by the partition the answer was given in —
+    // two projects sharing an identity share its answers, which is what sharing
+    // an identity means.
+    sitePermissions: createSitePermissionStore(app.getPath("userData")),
     // ONE EXTENSION HOST PER PARTITION, created when a partition first gets a
     // tab. chrome.tabs of one project's 1Password sees that project only.
     createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
@@ -1354,6 +1360,53 @@ ipcMain.handle("telar:browser:set-scope-profile", (event, input) =>
   requireBrowserManager(event).setScopeProfile(input?.scopeKey, input?.profileId),
 );
 ipcMain.handle("telar:browser:private-resume", (event) => requireBrowserManager(event).resumeFromPrivate());
+/**
+ * SITE PERMISSIONS (#422) — the answer to a prompt, the prompts still open, and
+ * the memory of every answer already given.
+ *
+ * THE ANSWER IS THE COCKPIT'S ALONE, and it is guarded like "open in system
+ * browser" above and for the same reason: the question is drawn over the address
+ * bar in Telar's own window, so an answer arriving from a page's preload, a
+ * subframe, or anything an agent can reach would be a site granting itself a
+ * camera. The prompt times out to Block by itself (site-permissions.js), so a
+ * refused sender costs nothing but the wait.
+ */
+function requireCockpitSender(event, what) {
+  const manager = requireBrowserManager(event);
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error(`Only the Telar window may ${what}.`);
+  }
+  return manager;
+}
+ipcMain.handle("telar:browser:permission-answer", (event, input) =>
+  requireCockpitSender(event, "answer a site permission prompt").answerSitePermission(input?.requestId, {
+    decision: input?.decision,
+    ...(input?.sourceId ? { sourceId: input.sourceId } : {}),
+  }),
+);
+/** What is still being asked — how a panel that remounted (a renderer reload,
+ *  a session switch) finds a page still waiting on its prompt. */
+ipcMain.handle("telar:browser:permission-prompts", (event, scopeKey) => ({
+  prompts: requireBrowserManager(event).pendingPermissionPrompts(scopeKey || undefined),
+}));
+/** The lock popover: what this session's profile remembers about one origin,
+ *  or about every origin it has an answer for. */
+ipcMain.handle("telar:browser:site-permissions", (event, input) => {
+  const manager = requireBrowserManager(event);
+  if (!input?.scopeKey) return manager.listSitePermissions();
+  return manager.scopeSitePermissions(input.scopeKey, input?.origin || undefined);
+});
+/** Take one back — one kind, or an origin's whole row (the popover's Reset and
+ *  Settings ▸ Browser ▸ Site permissions). */
+ipcMain.handle("telar:browser:forget-site-permission", (event, input) =>
+  requireCockpitSender(event, "change a site permission").forgetSitePermission({
+    ...(input?.partition ? { partition: input.partition } : {}),
+    ...(input?.scopeKey ? { scopeKey: input.scopeKey } : {}),
+    origin: input?.origin,
+    ...(input?.kind ? { kind: input.kind } : {}),
+  }),
+);
 ipcMain.handle("telar:browser:action", (event, input) =>
   requireBrowserManager(event).action(input?.scopeKey, input?.action),
 );

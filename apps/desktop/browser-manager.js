@@ -4,6 +4,13 @@ const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
 const { ProfileRegistry, requireProjectKey } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
 const { captureEntry } = require("./login-offer");
+const {
+  SitePermissionStore,
+  PermissionPrompts,
+  installSitePermissions,
+  desktopCaptureSources,
+  PERMISSION_KINDS,
+} = require("./site-permissions");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -212,6 +219,18 @@ function withTimeout(promise, ms, message) {
 function createElectronView(options) {
   const { WebContentsView } = require("electron");
   return new WebContentsView(options);
+}
+
+/** A partition's Chromium session, or null where there is no Electron to ask
+ *  (the unit layer, which injects its own views and never opens one). */
+function electronSessionFor(partition) {
+  let session;
+  try {
+    ({ session } = require("electron"));
+  } catch {
+    return null;
+  }
+  return session?.fromPartition ? session.fromPartition(partition) : null;
 }
 
 function okText(text) {
@@ -556,6 +575,33 @@ class DesktopBrowserManager {
     this.extensionHosts = new Map(); // partition → host
     this.createExtensionHost = dependencies.createExtensionHost || null;
     /**
+     * SITE PERMISSIONS (site-permissions.js, #422). Camera, microphone,
+     * notifications, location, clipboard and screen share, asked once per
+     * origin per profile and remembered there.
+     *
+     * THE HANDLERS GO ON THE PARTITION, ONCE, the first time it gets a view —
+     * `preparePartition` below. Without them Chromium's default applies, which
+     * is to deny every request without asking, so a page's getUserMedia failed
+     * with NotAllowedError as though a person had refused something they were
+     * never shown.
+     *
+     * A manager with no store (a test, the smoke run) gets an EPHEMERAL one:
+     * the prompts still work and nothing is written to disk.
+     */
+    this.sitePermissions = dependencies.sitePermissions || new SitePermissionStore(null);
+    this.permissionPrompts =
+      dependencies.permissionPrompts ||
+      new PermissionPrompts({ deliver: (record) => this.deliverPermissionPrompt(record), now: this.now });
+    /** Injected so the electron-free tests can seat stub handlers. */
+    this.installSitePermissions = dependencies.installSitePermissions || installSitePermissions;
+    /** The screen/window list a share picker draws, or null off Electron. */
+    this.captureSources = dependencies.captureSources || desktopCaptureSources();
+    /** The partition's Chromium session. Injected so nothing here imports
+     *  electron at construction time; NULL outside a shell, which is a browser
+     *  with no partitions to seat rather than an error worth logging. */
+    this.sessionFor = dependencies.sessionFor || electronSessionFor;
+    this.preparedPartitions = new Set();
+    /**
      * THE PERSISTED TAB INVENTORY (browser-tab-store.js). The manager owns
      * every tab's lifetime — not the panel, not the renderer — so a session's
      * pages survive switching away, closing the panel, a renderer reload and
@@ -775,6 +821,128 @@ class DesktopBrowserManager {
     if (!partition) throw new Error("attachExtensionHost needs the partition the host serves.");
     this.extensionHosts.set(partition, host);
     for (const tab of this.tabs) if (tab.view && tab.partition === partition) host.addTab(tab.view.webContents, this.window);
+  }
+
+  // ── site permissions (site-permissions.js, #422) ─────────────────────────
+
+  /**
+   * SEAT THE PERMISSION HANDLERS ON A PARTITION, ONCE.
+   *
+   * Called before the first `WebContentsView` of a partition is created, which
+   * is the only moment that matters: a session with no handler denies silently,
+   * and a handler installed after a page has already asked is a page that has
+   * already been refused. Idempotent per partition — every later tab in the
+   * same jar finds them seated.
+   *
+   * A FAILURE HERE MUST NOT COST THE TAB. Without handlers the browser behaves
+   * exactly as it did before this existed (Chromium's deny-by-default), which
+   * is a browser missing a feature rather than a browser that will not open.
+   */
+  preparePartition(partition) {
+    if (!partition || this.preparedPartitions.has(partition)) return;
+    this.preparedPartitions.add(partition);
+    let ses;
+    try {
+      ses = this.sessionFor(partition);
+    } catch (error) {
+      console.error(`[telar-desktop] could not reach the session for ${partition}: ${error && error.message ? error.message : error}`);
+      return;
+    }
+    if (!ses) return;
+    try {
+      this.installSitePermissions(ses, {
+        partition,
+        store: this.sitePermissions,
+        prompts: this.permissionPrompts,
+        sources: this.captureSources,
+        locate: (webContents) => this.locatePermission(webContents),
+        onDenied: (context) => this.reportPermissionDenied(context),
+      });
+    } catch (error) {
+      console.error(`[telar-desktop] could not install site permission handlers on ${partition}: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  /**
+   * Which session and tab a permission request belongs to. The handlers hand us
+   * a WebContents (or, for a screen share, a WebFrameMain), and only the manager
+   * knows which of its tabs that is — an unmatched one still gets a prompt, just
+   * one the panel shows on whatever session is in front of the person.
+   */
+  locatePermission(source) {
+    const id = source?.id ?? null;
+    const url = typeof source?.url === "string" ? source.url : null;
+    for (const tab of this.tabs) {
+      if (!tab.view || tab.view.webContents.isDestroyed()) continue;
+      const contents = tab.view.webContents;
+      const matches = id !== null && contents.id === id;
+      // A frame, not a WebContents: match by the page it is in.
+      const sameFrame = !matches && url !== null && contents.getURL() === url;
+      if (matches || sameFrame) return { scopeKey: tab.scopeKey, tabId: tab.id };
+    }
+    return { scopeKey: this.visibleScopeKey ?? null, tabId: null };
+  }
+
+  /** Push one question to the renderer. The panel draws it over the address
+   *  bar of the session it names, and marks the tab if it is a background one. */
+  deliverPermissionPrompt(record) {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send("telar:browser:permission-request", record);
+  }
+
+  /** The human answered. Unknown ids are no-ops — see PermissionPrompts. */
+  answerSitePermission(requestId, answer) {
+    return { answered: this.permissionPrompts.answer(requestId, answer || {}) };
+  }
+
+  /** What is still being asked — everything, or one session's. The read a
+   *  remounted panel makes so a reload does not strand a page on its prompt. */
+  pendingPermissionPrompts(scopeKey) {
+    return scopeKey ? this.permissionPrompts.pending(this.requireScope(scopeKey)) : this.permissionPrompts.pending();
+  }
+
+  /**
+   * WHAT THIS SESSION'S PROFILE REMEMBERS — the lock popover's list. With an
+   * `origin` it is that site's decisions; without one it is every site the
+   * profile holds anything for.
+   */
+  scopeSitePermissions(scopeKey, origin) {
+    const partition = this.partitionOf(scopeKey);
+    return origin
+      ? { partition, origin, kinds: this.sitePermissions.listOrigin(partition, origin) }
+      : { partition, origins: this.sitePermissions.list(partition) };
+  }
+
+  /** Every decision this install holds, named by the profile that holds it —
+   *  Settings ▸ Browser ▸ Site permissions. */
+  listSitePermissions() {
+    const labels = new Map(this.profiles.list().map((profile) => [profile.partition, profile]));
+    return {
+      kinds: PERMISSION_KINDS,
+      profiles: this.sitePermissions.all().map((entry) => ({
+        partition: entry.partition,
+        // A jar whose profile record is gone is still listed, under its
+        // partition: a decision you cannot see is a decision you cannot revoke.
+        profileId: labels.get(entry.partition)?.id ?? null,
+        label: labels.get(entry.partition)?.label ?? entry.partition,
+        origins: entry.origins,
+      })),
+    };
+  }
+
+  /** Take one back. With no `kind`, the origin's whole row. */
+  forgetSitePermission({ partition, scopeKey, origin, kind } = {}) {
+    const jar = partition || this.partitionOf(scopeKey);
+    if (!origin) throw new Error("Forgetting a site permission needs the origin it was given to.");
+    this.sitePermissions.forget(jar, origin, kind === undefined || kind === null ? undefined : kind);
+    return this.listSitePermissions();
+  }
+
+  /** macOS refused the device after the human allowed the site. Said on the
+   *  panel's own error strip, because the page will only report NotAllowedError. */
+  reportPermissionDenied(context) {
+    if (this.window.isDestroyed()) return;
+    this.window.webContents.send("telar:browser:permission-denied", { origin: context.origin, kinds: context.kinds, reason: context.reason });
   }
 
   /** Privacy began or ended. On BEGIN every tab's captured console and
@@ -1622,6 +1790,9 @@ class DesktopBrowserManager {
   }
 
   createViewForTab(tab) {
+    // BEFORE THE VIEW, NOT AFTER: a page may ask for the camera on its first
+    // frame, and a session with no handler denies without asking (#422).
+    this.preparePartition(tab.partition);
     const view = this.createView({
       webPreferences: {
         partition: tab.partition,
@@ -1851,6 +2022,9 @@ class DesktopBrowserManager {
 
   removeTab(tab) {
     const scope = tab.scopeKey;
+    // A question has nowhere left to be answered once its tab is gone; it is
+    // settled as Block rather than left for the sixty-second timer.
+    this.permissionPrompts.cancelWhere((record) => record.tabId === tab.id);
     this.tabs = this.tabs.filter((candidate) => candidate !== tab);
     this.noteAgentTabClosed(tab);
     if (this.activeTabIds.get(scope) === tab.id) {
@@ -3307,6 +3481,9 @@ class DesktopBrowserManager {
     if (this.tabStore && !this._disposed) this.tabStore.flushSync(this.inventory());
     // Stop the auto-release loop: its next poll sees this and exits.
     this._disposed = true;
+    // Nothing outlives the window that was asking: every open question is
+    // settled as Block rather than left holding a page for a minute.
+    this.permissionPrompts.dispose();
     for (const tab of [...this.tabs]) {
       this.hibernateTab(tab);
     }

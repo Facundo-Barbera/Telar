@@ -83,6 +83,27 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
     resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),
     onExtension: (listener) => on("telar:browser:extension", listener),
+    // SITE PERMISSIONS (#422): camera, microphone, notifications, location,
+    // clipboard and screen share, asked with Telar's own prompt over the address
+    // bar and remembered per profile and origin.
+    //
+    // THE ANSWER GOES BACK OVER ITS OWN CHANNEL and the main process refuses it
+    // from anything but this window's main frame — the question is drawn here,
+    // so this is the only place an answer can honestly come from.
+    onPermissionRequest: (listener) => on("telar:browser:permission-request", listener),
+    // macOS refused the device AFTER the human allowed the site. The page will
+    // only ever report NotAllowedError; this is the sentence that names the
+    // System Settings pane to open.
+    onPermissionDenied: (listener) => on("telar:browser:permission-denied", listener),
+    answerPermission: (input) => ipcRenderer.invoke("telar:browser:permission-answer", input),
+    // What is still being asked, so a panel that remounted does not leave a page
+    // waiting on a prompt nobody can see.
+    permissionPrompts: (scopeKey) => ipcRenderer.invoke("telar:browser:permission-prompts", scopeKey),
+    // Read: this session's profile, one origin or all of them (the lock popover),
+    // or — with no scope — every decision this install holds, by profile, for
+    // Settings ▸ Browser. Revoking takes one kind, or an origin's whole row.
+    sitePermissions: (input) => ipcRenderer.invoke("telar:browser:site-permissions", input ?? {}),
+    forgetSitePermission: (input) => ipcRenderer.invoke("telar:browser:forget-site-permission", input),
     // The EXPLICIT login-offer fallback (AUTH-001): ask, about this session's
     // current page, "may agents use the login I signed in with here?". Opens
     // the trusted offer window; the answer only ever happens inside it.
