@@ -1,0 +1,6 @@
+{
+  "//": "NOT a workspace member (the root only globs apps/* and packages/*) and it has no dependencies. This file exists so `src/index.js` is read as ESM — by node --test for worker.test.mjs, and by wrangler for the same reason.",
+  "name": "telar-updates-proxy",
+  "private": true,
+  "type": "module"
+}

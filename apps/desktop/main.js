@@ -18,7 +18,7 @@ const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
-const { autoUpdater } = require("electron-updater");
+const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
@@ -32,6 +32,7 @@ const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
+const updateWatchdog = require("./update-watchdog");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith } = require("./workspace-openers");
 
@@ -1747,10 +1748,105 @@ function updatesConfigured() {
   return app.isPackaged && Boolean(updateProxyKey());
 }
 
-function checkForUpdates() {
-  // The 'error' event already reports failures to the UI; this catch only stops
-  // a background check's rejection from surfacing as an unhandled rejection.
-  return autoUpdater.checkForUpdates().catch(() => null);
+// --- A DEAD DOWNLOAD MUST NOT WEDGE EVERY LATER CHECK (issue #317) ----------
+//
+// Observed on 0.1.0-nightly.20260911.3: a full download stopped at 11 MB of
+// 145 and neither finished nor errored, and every "Check for updates" after it
+// sat on "Checking for a newer build…" until the app was quit. Nothing in
+// electron-updater times a transfer out, and its `checkForUpdates()` hands back
+// the in-flight check's promise — so one stalled socket poisoned the feature
+// for the rest of the session.
+//
+// TWO CHANGES MAKE THAT SHAPE UNREACHABLE.
+//
+//   · THE DOWNLOAD IS OURS. `autoDownload` mints the CancellationToken inside
+//     checkForUpdates and starts the transfer there, which puts the token out
+//     of reach and entangles the check with the download. Starting it here, on
+//     `update-available`, keeps downloading just as automatic and makes the
+//     transfer killable.
+//
+//   · EVERY WAIT HAS A CLOCK. No progress for STALL_MS cancels the transfer,
+//     deletes its part-file and says so in the pane; a check that has not
+//     answered in CHECK_TIMEOUT_MS reports a timeout and drops the cached
+//     promise so the next press starts clean.
+//
+// The decisions live in update-watchdog.js, where they are testable without an
+// Electron to run in; the consequences live here.
+const downloadWatch = updateWatchdog.createDownloadWatch({
+  stallMs: updateWatchdog.STALL_MS,
+  onStall: (stalled) => abandonDownload(stalled, "stalled"),
+});
+
+/** Delete the part-file a cancelled transfer leaves behind, wherever this
+ *  build's updater happens to keep it. */
+function discardPendingDownload() {
+  try {
+    return updateWatchdog.removeStaleTempFiles(updateWatchdog.pendingUpdateDir(autoUpdater));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Kill a transfer and account for it. `reason` distinguishes the watchdog
+ * firing on its own from a person pressing Check and finding a corpse — the
+ * user is only told about the first, because the second is about to be replaced
+ * by a fresh check's own status within the second.
+ */
+function abandonDownload(download, reason) {
+  if (!download) return;
+  try {
+    download.token?.cancel();
+  } catch {
+    /* a token that will not cancel is still a download we are done with */
+  }
+  const removed = discardPendingDownload();
+  const percent = Math.round(download.percent ?? 0);
+  const label = download.version ? `v${download.version}` : "the update";
+  autoUpdater.logger?.warn?.(
+    `download of ${label} ${reason} at ${percent}% — cancelled${removed.length ? `, removed ${removed.join(", ")}` : ""}`,
+  );
+  if (reason !== "stalled") return;
+  broadcastUpdateStatus("error", {
+    version: download.version,
+    message: `Download stalled at ${percent}% — nothing arrived for ${Math.round(updateWatchdog.STALL_MS / 1000)}s, so it was cancelled. Check again to retry.`,
+  });
+}
+
+/**
+ * Start the download for an update the feed just offered.
+ *
+ * GUARDED AGAINST A SECOND START: two checks can race (the six-hourly timer and
+ * a channel switch), and two `downloadUpdate` calls write the same temp file.
+ */
+function startUpdateDownload(info) {
+  if (downloadWatch.inFlight()) return;
+  const token = new CancellationToken();
+  downloadWatch.begin({ token, version: info?.version });
+  autoUpdater.downloadUpdate(token).catch((err) => {
+    // A real failure has already reached the UI through the `error` event, and
+    // a cancellation was this process's own decision. Either way the transfer
+    // is over and the watchdog must stop counting.
+    downloadWatch.settle();
+    if (updateWatchdog.isCancellationError(err)) return;
+    autoUpdater.logger?.error?.(`download failed: ${err?.message || err}`);
+  });
+}
+
+async function checkForUpdates() {
+  // The 'error' event already reports failures to the UI; settleWithin's own
+  // catch only stops a background check's rejection from surfacing as an
+  // unhandled rejection.
+  const outcome = await updateWatchdog.settleWithin(autoUpdater.checkForUpdates(), updateWatchdog.CHECK_TIMEOUT_MS);
+  if (!outcome.timedOut) return outcome.value ?? null;
+  // The wedge itself. Saying so beats a spinner that never stops, and dropping
+  // the cached promise is what stops the NEXT press inheriting this one's hang.
+  updateWatchdog.clearCachedCheckPromise(autoUpdater);
+  autoUpdater.logger?.warn?.(`update check did not answer within ${updateWatchdog.CHECK_TIMEOUT_MS / 1000}s — giving up on it`);
+  broadcastUpdateStatus("error", {
+    message: `Update check timed out after ${Math.round(updateWatchdog.CHECK_TIMEOUT_MS / 1000)}s. Check again to retry.`,
+  });
+  return null;
 }
 
 // Long enough to be invisible on a working day, short enough that a nightly
@@ -1934,29 +2030,40 @@ function applyUpdatePrefs(prefs) {
 
 function configureAutoUpdater() {
   autoUpdater.logger = updateLogger();
-  autoUpdater.autoDownload = true;
+  // OFF, AND STILL AUTOMATIC. The download starts on `update-available` below,
+  // with a CancellationToken this process holds — see the issue-#317 block
+  // above for why owning the token is the difference between a stalled
+  // transfer that can be killed and one that outlives the feature.
+  autoUpdater.autoDownload = false;
   applyUpdatePrefs(readUpdatePrefs());
   const key = updateProxyKey();
   if (key) autoUpdater.requestHeaders = { "X-Telar-Update-Key": key };
 
   // electron-updater's download-progress payload carries only transfer figures
   // (percent/bytesPerSecond/transferred/total) — never a version. The preceding
-  // update-available event is the only place the version is known, so it's held
-  // here and threaded onto every downloading broadcast rather than left absent.
-  let pendingVersion = null;
+  // update-available event is the only place the version is known, so the watch
+  // holds it and it is threaded onto every downloading broadcast.
   autoUpdater.on("checking-for-update", () => broadcastUpdateStatus("checking"));
   autoUpdater.on("update-available", (info) => {
-    pendingVersion = info.version;
     broadcastUpdateStatus("available", { version: info.version });
+    startUpdateDownload(info);
   });
   autoUpdater.on("update-not-available", (info) => broadcastUpdateStatus("not-available", { version: info.version }));
-  autoUpdater.on("download-progress", (progress) =>
-    broadcastUpdateStatus("downloading", { percent: progress.percent, version: pendingVersion ?? undefined }),
-  );
-  autoUpdater.on("update-downloaded", (info) => broadcastUpdateStatus("downloaded", { version: info.version }));
-  autoUpdater.on("error", (err) =>
-    broadcastUpdateStatus("error", { message: err && err.message ? err.message : String(err) }),
-  );
+  autoUpdater.on("download-progress", (progress) => {
+    const live = downloadWatch.progress(progress.percent);
+    broadcastUpdateStatus("downloading", { percent: progress.percent, version: live?.version ?? undefined });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    downloadWatch.settle();
+    broadcastUpdateStatus("downloaded", { version: info.version });
+  });
+  autoUpdater.on("error", (err) => {
+    downloadWatch.settle();
+    // A cancellation is this process's own doing and has already been explained
+    // as a stall; re-reporting it would replace that sentence with "cancelled".
+    if (updateWatchdog.isCancellationError(err)) return;
+    broadcastUpdateStatus("error", { message: err && err.message ? err.message : String(err) });
+  });
 
   if (!updatesConfigured()) return;
   void checkForUpdates();
@@ -1966,6 +2073,18 @@ function configureAutoUpdater() {
 
 ipcMain.handle("telar:updates:check", async () => {
   if (!updatesConfigured()) return { status: "unsupported" };
+  const plan = downloadWatch.plan();
+  if (plan === "report") {
+    // A DOWNLOAD THAT IS MOVING IS ALREADY THE ANSWER to "is there an update?".
+    // Re-broadcasting where it has got to also clears the renderer's spinner,
+    // which is the whole reason the button was pressed.
+    const live = downloadWatch.inFlight();
+    broadcastUpdateStatus("downloading", { percent: live.percent, version: live.version });
+    return { status: "downloading", version: live.version, percent: live.percent };
+  }
+  // `restart`: a transfer whose deadline passed while the watchdog's timer was
+  // suspended — the machine slept. The press is the wake-up; bury it and go.
+  if (plan === "restart") abandonDownload(downloadWatch.settle(), "went quiet while the machine slept");
   await checkForUpdates();
   return { status: "checking" };
 });
