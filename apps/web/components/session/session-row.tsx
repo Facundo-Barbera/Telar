@@ -42,7 +42,7 @@ import {
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
-import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { canvasHref, sessionHref, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, SessionRowContextMenu, patchSession, runSessionPatch, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
@@ -176,6 +176,12 @@ export function SessionDetails({ session, renderedAt }: { session: SidebarSessio
         {session.projectName ? <DetailRow label="Project" value={session.projectName} /> : null}
         {session.worktreeBranch ? <DetailRow label="Branch" value={session.worktreeBranch} /> : null}
         <DetailRow label="Started" value={fmtAgo(session.createdAt, renderedAt)} />
+        {/* WHY THE SHELF TOOK IT, when the reader did not decide — #378. The
+            one settling fact a person cannot reconstruct by remembering what
+            they did, so it earns a row of its own here. */}
+        {session.settledBy ? (
+          <DetailRow label="Settled" value={session.settledForTitle ? `for ${session.settledForTitle}` : "work delivered"} />
+        ) : null}
       </div>
     </div>
   );
@@ -611,7 +617,18 @@ export function SessionRow({
       // same way an archived one does — the list is still there, it just is not
       // being told anything. The hover title carries the only fact that is
       // actually different about it: when it was last true.
-      title={session.stale === undefined ? undefined : `Last read ${fmtAgo(session.stale, renderedAt)}`}
+      //
+      // AND ON THE SHELF IT CARRIES THE SETTLE'S REASON (#378), which is the
+      // one variant-independent place a slim row can say it: a plain row has no
+      // hover card, and the mobile sheet cannot host one at all.
+      title={
+        [
+          session.stale === undefined ? undefined : `Last read ${fmtAgo(session.stale, renderedAt)}`,
+          settledHint(session),
+        ]
+          .filter(Boolean)
+          .join(" · ") || undefined
+      }
       className={`group/session relative flex items-center rounded-md ${
         active || searchSelected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"
       } ${session.archived || session.stale !== undefined ? "opacity-60" : ""} ${

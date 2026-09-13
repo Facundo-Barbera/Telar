@@ -114,7 +114,7 @@ export type InboxPolicyHandle = {
   /** True until the engine has answered once. The rail uses the default while
    *  this is true rather than showing an empty list — see below. */
   loading: boolean;
-  save: (patch: { autoSettleAfterHours?: number | null }) => Promise<void>;
+  save: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) => Promise<void>;
   /** The engine refused — a window outside 1..90, or an unreachable daemon. */
   error?: string;
 };
@@ -180,7 +180,7 @@ export function useInboxPolicy(): InboxPolicyHandle {
     };
   }, [hostId]);
 
-  const save = useCallback(async (patch: { autoSettleAfterHours?: number | null }) => {
+  const save = useCallback(async (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) => {
     // The host is fixed here, before the request: a save that resolves after a
     // navigation must still be attributed to the Mac it was sent to.
     const asked = hostId;

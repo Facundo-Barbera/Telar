@@ -235,7 +235,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterHours?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
     /** What a new session is built with when nobody said — see
      *  `SessionDefaults`. One answer for every client of this engine. */
