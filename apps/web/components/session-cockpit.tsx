@@ -38,6 +38,7 @@ import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
+import { isCompactDraft } from "@/lib/composer-completions";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { insertReference } from "@/lib/drag-reference";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
@@ -2338,6 +2339,23 @@ export function SessionCockpit({
   };
   const submit = async () => {
     if (!draft.trim() || browserDraftSendPending.current) return;
+    /**
+     * `/compact` TYPED OUT IS THE SAME PRESS AS THE WHEEL'S BUTTON.
+     *
+     * Picking the row in the slash menu already routes here through `onCompact`;
+     * this catches the other way in — typed in full, menu dismissed, Enter —
+     * so the two gestures cannot disagree about what `/compact` does.
+     *
+     * ONLY WHEN THE DOOR IS ACTUALLY OPEN. On Codex, on a canvas, or while a
+     * compaction is already in flight, the words stay an ordinary message
+     * rather than becoming a press that would be refused.
+     */
+    if (isCompactDraft(draft) && sessionId && session?.driver === "claude" && !active && !compacting) {
+      setDraft("");
+      writeDraft(sessionId, projectId, "");
+      await compact();
+      return;
+    }
     // A send racing the first browser open joins its stable session identity.
     let browserTarget: string | undefined;
     if (browserDraftFlight.current) {

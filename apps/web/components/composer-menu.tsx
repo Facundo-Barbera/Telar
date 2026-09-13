@@ -17,7 +17,7 @@
  * close the menu before the pick landed.
  */
 
-import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon } from "lucide-react";
+import { BotIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon } from "lucide-react";
 import type { Completion, CompletionGlyph } from "@/lib/composer-completions";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,9 @@ const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {
   effort: GaugeIcon,
   driver: BotIcon,
   env: GitBranchIcon,
+  // The glyph the usage wheel's own Compact button wears — same gesture, two
+  // places to reach it.
+  compact: Minimize2Icon,
   stop: SquareIcon,
 };
 
@@ -80,6 +83,10 @@ export function ComposerMenu({
               type="button"
               role="option"
               aria-selected={index === active}
+              // Still focusable by the arrow keys and still highlighted: the
+              // row is on screen to be READ, and skipping it would make the
+              // reason it carries the one thing you cannot land on.
+              aria-disabled={completion.disabled ? true : undefined}
               // Prevented, not stopped: the editor must keep focus through the
               // whole gesture or the pick has nowhere to land.
               onMouseDown={(event) => event.preventDefault()}
@@ -90,6 +97,7 @@ export function ComposerMenu({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm",
                 index === active ? "bg-accent text-accent-foreground" : "text-foreground",
+                completion.disabled && "cursor-not-allowed opacity-50",
               )}
             >
               <RowIcon completion={completion} />

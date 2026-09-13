@@ -67,7 +67,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { ComposerMenu } from "./composer-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
-import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
+import { availableCommands, buildPathIndex, compactBlockedReason, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
 import { rankNotes, useProjectNotes } from "@/lib/project-notes";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
@@ -523,6 +523,11 @@ export function Composer({
    */
   const escArmed = armedRaw && busy;
 
+  /** WHICH HARNESS IS LISTENING, in one expression the slash menu can use. A
+   *  canvas is pointed at `driver`; a session was created on one and keeps it
+   *  for life. */
+  const menuDriver = fresh ? driver : session?.driver;
+
   /* ---------------------------------------------------------------- *
    * THE BANNER STACK — the notices tucked behind the composer's top edge.
    * ---------------------------------------------------------------- */
@@ -794,14 +799,19 @@ export function Composer({
         busy,
         fresh,
         ...(runtimeMode ? { runtimeMode } : {}),
-        ...(driver ? { driver } : {}),
+        // THE SESSION'S OWN AGENT ONCE IT HAS ONE. `driver` is the CANVAS's
+        // pending choice and the cockpit only passes it while fresh, so a row
+        // that depends on which harness is listening — `/compact` — saw
+        // `undefined` on every session that actually has one.
+        ...(menuDriver ? { driver: menuDriver } : {}),
+        ...(compacting ? { compacting } : {}),
         ...(envMode ? { envMode } : {}),
         models: commandChoices.models,
         efforts: commandChoices.efforts,
       }),
       trigger.query,
     );
-  }, [trigger, dismissed, paths, notes, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
+  }, [trigger, dismissed, paths, notes, busy, fresh, runtimeMode, menuDriver, compacting, envMode, commandChoices]);
 
   // No completions while a question is active: the editor's text is an ANSWER,
   // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
@@ -816,6 +826,10 @@ export function Composer({
 
   const apply = useCallback(
     (completion: Completion) => {
+      // A DISABLED ROW IS A LABEL, NOT A CONTROL. It keeps the menu open and
+      // the trigger intact, so the reason it carries stays on screen — closing
+      // the menu on a press that did nothing is how you get pressed twice.
+      if (completion.disabled) return;
       const range = trigger;
       setTrigger(null);
       setDismissed(false);
@@ -837,9 +851,12 @@ export function Composer({
       if (action.type === "driver") onDriverChange?.(action.driver);
       if (action.type === "model") onModelChange?.({ ...modelChoiceOf(session, pendingModel), model: action.model });
       if (action.type === "effort") onModelChange?.({ ...modelChoiceOf(session, pendingModel), effort: action.effort });
+      // The same press as the usage wheel's button, and the same submission:
+      // the cockpit sends one `kind: "compact"` turn either way.
+      if (action.type === "compact") onCompact?.();
       if (action.type === "stop") onStop();
     },
-    [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onStop, session, pendingModel],
+    [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onCompact, onStop, session, pendingModel],
   );
 
   const onKeyDown = useCallback(
@@ -1508,7 +1525,10 @@ export function Composer({
               {...(session ? { driver: session.driver } : {})}
               {...(onCompact ? { onCompact } : {})}
               compactDisabled={busy || sending || Boolean(compacting)}
-              compactReason={compacting ? "Already compacting." : "A turn is running."}
+              // ONE SENTENCE FOR ONE CAPABILITY: the `/compact` row in the
+              // slash menu reads the same helper, so the button and the row can
+              // never give a person two different reasons.
+              compactReason={compactBlockedReason({ busy, compacting }) ?? "Sending…"}
             />
             {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
                 oversight: `InputGroup` carries `has-disabled:opacity-50`, so a

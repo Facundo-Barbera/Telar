@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { availableCommands, buildPathIndex, rankCommands, rankPaths } from "./composer-completions";
+import { availableCommands, buildPathIndex, compactBlockedReason, isCompactDraft, rankCommands, rankPaths } from "./composer-completions";
 import { directoryReference, fileReference } from "./drag-reference";
 
 const FILES = [
@@ -106,6 +106,52 @@ describe("what the slash menu offers", () => {
     });
     expect(withModels.find((command) => command.glyph === "model")).toMatchObject({ label: "/model Opus 5", action: { type: "model", model: "opus[1m]" } });
     expect(withModels.filter((command) => command.glyph === "effort").map((command) => command.label)).toEqual(["/effort low", "/effort high"]);
+  });
+});
+
+describe("/compact, the wheel's button reached from the keyboard", () => {
+  const claude = { busy: false, fresh: false, driver: "claude" as const };
+
+  test("it is offered on a Claude session that exists, and nowhere else", () => {
+    expect(availableCommands(claude).map((command) => command.id)).toContain("compact");
+    // Codex has no out-of-turn compaction door, and a canvas has no
+    // conversation to squeeze — both are absence, not a disabled row.
+    expect(availableCommands({ ...claude, driver: "codex" }).map((command) => command.id)).not.toContain("compact");
+    expect(availableCommands({ ...claude, fresh: true }).map((command) => command.id)).not.toContain("compact");
+    expect(availableCommands({ busy: false, fresh: false }).map((command) => command.id)).not.toContain("compact");
+  });
+
+  test("picking it submits the same gesture the wheel does", () => {
+    expect(availableCommands(claude).find((command) => command.id === "compact")).toMatchObject({
+      label: "/compact",
+      action: { type: "compact" },
+      glyph: "compact",
+    });
+  });
+
+  test("a running turn or a compaction in flight disables it, with the wheel's own reason", () => {
+    const running = availableCommands({ ...claude, busy: true }).find((command) => command.id === "compact");
+    expect(running).toMatchObject({ disabled: true, detail: "A turn is running." });
+    const already = availableCommands({ ...claude, compacting: true }).find((command) => command.id === "compact");
+    expect(already).toMatchObject({ disabled: true, detail: "Already compacting." });
+    // Compacting wins the description when both are true: it is the more
+    // specific answer to "why can I not press this".
+    expect(compactBlockedReason({ busy: true, compacting: true })).toBe("Already compacting.");
+    expect(compactBlockedReason({ busy: false })).toBeUndefined();
+  });
+
+  test("an available row says what it would do rather than why it cannot", () => {
+    const offered = availableCommands(claude).find((command) => command.id === "compact");
+    expect(offered?.disabled).toBeUndefined();
+    expect(offered?.detail).toBe("Summarise the conversation to free space.");
+  });
+
+  test("the draft that IS the gesture is exactly `/compact`, trimmed", () => {
+    expect(isCompactDraft("/compact")).toBe(true);
+    expect(isCompactDraft("  /compact\n")).toBe(true);
+    // An argument this composer cannot pass on leaves it an ordinary message.
+    expect(isCompactDraft("/compact the API work")).toBe(false);
+    expect(isCompactDraft("please run /compact")).toBe(false);
   });
 });
 
