@@ -15,6 +15,8 @@ import {
   defaultInstanceIdForDriver,
   isBackgroundWork,
   livenessOf,
+  AgentOrientation as AgentOrientationSchema,
+  DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
   DEFAULT_SESSION_DEFAULTS,
   DEFAULT_SIDEBAR_LAYOUT,
@@ -81,6 +83,7 @@ import {
   type GitHubSnapshot,
   type GitignoreRemoval,
   type GitignoreResult,
+  type AgentOrientation,
   type InboxPolicy,
   type SessionDefaults,
   type SidebarLayout,
@@ -157,6 +160,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { TELAR_ORIENTATION } from "./orientation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -588,6 +592,15 @@ export type EngineStatePaths = {
    */
   inbox: string;
   /**
+   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
+   *
+   * ENVIRONMENT-SCOPED, beside inbox.json and for the sharper version of its
+   * reason: this decides what every session on the machine is told, so a
+   * per-browser copy would mean one engine injecting a paragraph some of its
+   * own clients had switched off.
+   */
+  orientation: string;
+  /**
    * The CLIProxyAPI hubs quota is read from — see `listUsageLimitSources`.
    *
    * ENVIRONMENT-SCOPED, beside mcp-servers.json and for the same reason: a hub
@@ -711,6 +724,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    orientation: path.join(resolved, "orientation.json"),
     usageLimitSources: path.join(resolved, "usage-limit-sources.json"),
     usageLimitSecrets: path.join(resolved, "usage-limit-secrets.json"),
     subscriptions: path.join(resolved, "subscriptions.json"),
@@ -2082,6 +2096,42 @@ export class EngineStore {
       next.settleDelegatedAfterHours = window(patch.settleDelegatedAfterHours, "delegation grace");
     }
     this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /**
+   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here it decides what every
+   * turn on the machine is told: a file somebody hand-edited into nonsense must
+   * cost the preference and fall back to the shipped default, never the turn.
+   * The default is BOTH ON, because the orientation exists to fix a bug rather
+   * than to add a feature somebody opts into.
+   */
+  getAgentOrientation(): AgentOrientation {
+    try {
+      const parsed = AgentOrientationSchema.safeParse(this.readDocument(this.paths.orientation));
+      return parsed.success ? parsed.data : { ...DEFAULT_AGENT_ORIENTATION };
+    } catch {
+      return { ...DEFAULT_AGENT_ORIENTATION };
+    }
+  }
+
+  /** By presence, like every other patch here: turning the skill off must not
+   *  re-decide the preamble. Takes `unknown` and validates against the schema
+   *  for the reason `setInboxPolicy` states — the rule lives next to the shape,
+   *  not spelled a second time in whichever route is the way in today. */
+  setAgentOrientation(patch: { preamble?: unknown; skill?: unknown }): AgentOrientation {
+    const next: AgentOrientation = { ...this.getAgentOrientation() };
+    for (const key of ["preamble", "skill"] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      if (typeof value !== "boolean") {
+        throw new EngineStateError("invalid_request", `${key} must be true or false`);
+      }
+      next[key] = value;
+    }
+    this.writeDocument(this.paths.orientation, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -7735,6 +7785,15 @@ export class EngineStore {
           const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
           return live.length > 0 ? { tasks: live } : {};
         })(),
+        /**
+         * THE ORIENTATION PARAGRAPH, RESOLVED HERE. The decision ("is this
+         * machine's preamble on") and the words are both the engine's, and the
+         * claim carries the OUTCOME — the same rule `mcpServers` follows, for
+         * the same reason: a worker trusted to apply a flag would be a second
+         * place the rule lives. Absent means off, and the drivers inject
+         * nothing.
+         */
+        ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
         turn,
       };
     }
