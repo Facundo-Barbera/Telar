@@ -160,7 +160,11 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
         >
           <PlusIcon className="size-4" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-64">
+        {/* TWO ROWS, NO PARAGRAPH. The grey sentence under them explained where
+            an attachment lands — an internal, told to somebody who has not yet
+            attached anything, every time they open a two-item menu. The menu is
+            verbs with icons, like every other menu in this cockpit. */}
+        <DropdownMenuContent align="start" className="w-56">
           <DropdownMenuItem onClick={() => input.current?.click()}>
             <ImageIcon />
             Add photos or files
@@ -172,9 +176,6 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             <MonitorIcon />
             Take screenshot
           </DropdownMenuItem>
-          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
-            Images go to the model; other files land beside the session, named by path.
-          </p>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
