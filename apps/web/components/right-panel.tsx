@@ -38,7 +38,7 @@ import type {
 import { createEngineApi } from "@/lib/engine/client";
 import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
 import type { JournalTask } from "@/lib/engine/journal";
-import { browserPageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { browserPageReference, startReferenceDrag, taskReference, type TelarReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
@@ -1383,6 +1383,13 @@ export function PanelSurface({
         {...(active ? { active } : {})}
         dataScience={dataScience === true}
         {...(onOpenImage ? { onOpenImage } : {})}
+        // THE TREE'S ROW MENU OFFERS THE REFERENCE TOO. It always could — the
+        // row builds the same `fileReference` its own drag carries — but this
+        // prop was never handed down, so the one place a person BROWSES for a
+        // file to mention was the one place that could not mention it (#357).
+        // Unwrapped to the text the cockpit's draft takes, exactly as the Diff
+        // surface's rows below already are.
+        {...(onInsertReference ? { onInsertReference: (reference: TelarReference) => onInsertReference(reference.text) } : {})}
         {...(onOpenFileInNewTab ? { onOpenInNewPanelTab: onOpenFileInNewTab } : {})}
       />
     ) : null;

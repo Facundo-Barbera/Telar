@@ -270,4 +270,25 @@ describe("every trigger paints a box, and none of them is the drag handle", () =
     expect(panel).toContain("<ContextMenu open={menuTab === id} onOpenChange={(next: boolean) => setMenuTab(next ? id : undefined)}>");
     expect(panel).toContain("useNativeViewOverlay(menuTab !== undefined);");
   });
+
+  test("a menu sizes to its longest verb rather than to the cursor it hangs from (#357)", () => {
+    // A context menu is anchored to a POINT, so `w-(--anchor-width)` — right
+    // for a dropdown under a button — collapsed it to the `min-w` floor and
+    // wrapped "Open in a new panel tab" and "Open in Visual Studio Code" onto
+    // two lines each. Read off the primitive, which is where the four surfaces
+    // above all get their width from.
+    const primitive = code(fs.readFileSync(path.join(dir, "..", "ui", "context-menu.tsx"), "utf8"));
+    expect(primitive).toContain("w-max");
+    expect(primitive).toContain("max-w-(--available-width)");
+    expect(primitive).not.toContain("w-(--anchor-width)");
+    expect(primitive).toContain("whitespace-nowrap");
+  });
+
+  test("the tree's rows can put a file into the message, because the panel hands the Editor the way to (#357)", () => {
+    // `FileRowMenuItems` has always built the reference; the prop that turns
+    // the item on stopped at the panel, so the one place a person BROWSES for
+    // a file to mention was the one place that could not mention it.
+    expect(files).toContain("Insert into composer as a reference");
+    expect(panel).toContain("onInsertReference: (reference: TelarReference) => onInsertReference(reference.text)");
+  });
 });
