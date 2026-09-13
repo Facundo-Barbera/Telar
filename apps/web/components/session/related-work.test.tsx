@@ -324,3 +324,138 @@ describe("relatedTree", () => {
     ]);
   });
 });
+
+/**
+ * WHEN A ROW LEAVES ITS COORDINATOR — issue #370.
+ *
+ * A delegate used to hang off the row that delegated to it forever: an
+ * assignment ends, and nothing said what happened next, so a session that
+ * finished last week and one the reader had explicitly settled both kept
+ * drawing as live work under somebody else's conversation.
+ *
+ * NOTHING HERE HIDES A ROW, and every test below says so by checking where the
+ * row went rather than only that it left: a child that leaves a coordinator
+ * becomes a row of its own. The tree is an arrangement, never a filter.
+ */
+describe("leaving the tree", () => {
+  const HOUR = 60 * 60 * 1000;
+  /** An arbitrary now with a few hundred hours of room behind it. */
+  const NOW = 1_000 * HOUR;
+  const settling = { now: NOW, autoSettleAfterHours: 72 };
+  const done = (from: string) => assignment(from, { outcome: "completed", endedAt: NOW - HOUR });
+  const ids = (tree: ReturnType<typeof relatedTree>) =>
+    tree.rows.map(({ session: s, related }) => [
+      s.id,
+      [...related.active, ...related.review, ...related.independent].map((child) => child.id),
+    ]);
+
+  test("A COMPLETED ASSIGNMENT AND A SETTLED CHILD: the row leaves, and draws on its own", () => {
+    const child = session("worker", { assignments: [done("coord")], settledOverride: "settled", updatedAt: NOW });
+    expect(relatedWork([child], { id: "coord" }, settling).review).toEqual([]);
+    // …and it is a row of the list rather than one that vanished.
+    expect(ids(relatedTree([session("coord", { updatedAt: NOW }), child], settling))).toEqual([
+      ["coord", []],
+      ["worker", []],
+    ]);
+  });
+
+  test("A COMPLETED ASSIGNMENT AND A STILL-ACTIVE CHILD: the row stays", () => {
+    // The `review` band's whole purpose: a delegated result is not hidden the
+    // moment its run ended. The window is how long that grace lasts.
+    const child = session("worker", { assignments: [done("coord")], updatedAt: NOW - HOUR });
+    expect(relatedWork([child], { id: "coord" }, settling).review.map((s) => s.id)).toEqual(["worker"]);
+    expect(ids(relatedTree([session("coord", { updatedAt: NOW }), child], settling))).toEqual([["coord", ["worker"]]]);
+  });
+
+  test("A SETTLED COORDINATOR CLAIMS NOTHING: its children fall back to the group", () => {
+    const tree = relatedTree(
+      [
+        session("coord", { settledOverride: "settled", updatedAt: NOW }),
+        session("worker", { assignments: [assignment("coord")], updatedAt: NOW }),
+      ],
+      settling,
+    );
+    expect(ids(tree)).toEqual([
+      ["coord", []],
+      ["worker", []],
+    ]);
+    // Nothing was nested, so nothing was taken out of the list it came from.
+    expect(tree.nested.size).toBe(0);
+  });
+
+  test("A SETTLED CHILD LEAVES EVEN MID-ERRAND — the shelf is believed", () => {
+    // The reader settled a row that still has an outstanding assignment. A
+    // second copy of it indented under its coordinator is the shelf not being
+    // taken at its word.
+    const child = session("worker", { assignments: [assignment("coord")], settledOverride: "settled", updatedAt: NOW });
+    expect(relatedWork([child], { id: "coord" }, settling).active).toEqual([]);
+  });
+
+  test("A FINISHED ERRAND AGES OUT even while its answer keeps the row in the list", () => {
+    // An unread result is never shelved by neglect (`isSettled` says so, and
+    // must). That is about the LIST. Whether this is still the coordinator's
+    // outstanding errand is a different question, and a week later it is not.
+    const child = session("worker", {
+      assignments: [assignment("coord", { outcome: "completed", endedAt: NOW - 100 * HOUR })],
+      updatedAt: NOW - 100 * HOUR,
+      lastTurnSequence: 4,
+    });
+    expect(relatedWork([child], { id: "coord" }, settling).review).toEqual([]);
+    expect(ids(relatedTree([session("coord", { updatedAt: NOW }), child], settling))).toEqual([
+      ["coord", []],
+      ["worker", []],
+    ]);
+  });
+
+  test("PROVENANCE DOES NOT AGE OUT. It ends nothing, so there is no outcome to age", () => {
+    const old = { startedFrom: { sessionId: "coord" }, updatedAt: NOW - 100 * HOUR, lastTurnSequence: 4 };
+    expect(relatedWork([session("free", old)], { id: "coord" }, settling).independent.map((s) => s.id)).toEqual(["free"]);
+    // It leaves when the ROW leaves, and not before.
+    expect(relatedWork([session("free", { ...old, settledOverride: "settled" })], { id: "coord" }, settling).independent).toEqual([]);
+  });
+
+  test("NOTHING LEAVES WHILE IT IS WAITING ON YOU, settled or not", () => {
+    // The precedence the whole settling system is built on: the worst outcome
+    // of a rule that removes rows is removing the one that needed you.
+    const child = session("worker", {
+      assignments: [done("coord")],
+      settledOverride: "settled",
+      updatedAt: NOW - 100 * HOUR,
+      activity: "blocked",
+    });
+    expect(relatedWork([child], { id: "coord" }, settling).review.map((s) => s.id)).toEqual(["worker"]);
+  });
+
+  test("NO CLOCK MEANS NOTHING AGES OUT — but a decision is still a decision", () => {
+    const off = { now: NOW, autoSettleAfterHours: null };
+    const ancient = session("worker", {
+      assignments: [assignment("coord", { outcome: "completed", endedAt: NOW - 10_000 * HOUR })],
+      updatedAt: NOW - 10_000 * HOUR,
+    });
+    expect(relatedWork([ancient], { id: "coord" }, off).review.map((s) => s.id)).toEqual(["worker"]);
+    expect(relatedWork([{ ...ancient, settledOverride: "settled" }], { id: "coord" }, off).review).toEqual([]);
+  });
+
+  test("SETTLED MEANS WHAT THE RAIL MEANS BY IT: a draft is not aged out", () => {
+    // `bandOf` exempts a draft from the clock, and a tree that re-derived the
+    // rule would decide a row was shelved while the list beside it drew it.
+    const draft = session("free", { draft: true, startedFrom: { sessionId: "coord" }, updatedAt: NOW - 10_000 * HOUR });
+    expect(relatedWork([draft], { id: "coord" }, settling).independent.map((s) => s.id)).toEqual(["free"]);
+  });
+
+  test("A PAIRED MAC'S ROW IS MEASURED BY THAT MAC'S WINDOW", () => {
+    // The same rule `windowFor` states for the bands: the settling window is an
+    // engine's own document, so a row from the mini leaves when the mini would
+    // agree it has — not when this Mac would.
+    const coordinator = { id: "coord", hostId: "mini" };
+    const child = session("worker", {
+      hostId: "mini",
+      assignments: [assignment("coord", { outcome: "completed", endedAt: NOW - 10 * HOUR })],
+      updatedAt: NOW - 10 * HOUR,
+    });
+    const windows = new Map<string, number | null>([["mini", 1]]);
+    expect(relatedWork([child], coordinator, { ...settling, windowsByHost: windows }).review).toEqual([]);
+    // …and this Mac's own 72 hours would still have kept it.
+    expect(relatedWork([child], coordinator, settling).review.map((s) => s.id)).toEqual(["worker"]);
+  });
+});
