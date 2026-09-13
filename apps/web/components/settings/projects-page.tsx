@@ -41,16 +41,24 @@
  * on the model row, the first segment on the workspace one) and both write
  * `null`, which is what the engine reads as "remove the stored answer".
  *
- * THE PER-PROJECT PAGE IS NOT REPLACED. `/projects/:id/settings` keeps its own
- * shell, its MCP scope and every plugin's bespoke editor; this pane links to it
- * rather than trying to nest a settings shell inside a settings shell.
+ * THIS IS THE ONLY PROJECT PAGE NOW (#363). `/projects/:id/settings` was a
+ * second settings shell with a second nav, holding the two things this pane had
+ * no room for — MCP servers scoped to the project, and each plugin's own editor
+ * — so a reader answering "what is this project set to" had to know which of two
+ * screens held which half. Both halves are groups here, and the old route
+ * redirects rather than 404s (`app/projects/[projectId]/settings/page.tsx`).
+ *
+ * A PLUGIN'S EDITOR APPEARS WHEN THE PLUGIN IS ON. Off, it is one row with a
+ * switch (`PluginSettings`); on, it is the plugin's own pane. That is not
+ * decoration — LaTeX probes for TeX distributions and Data science probes for
+ * interpreters the moment their editors mount, and a project that never asked
+ * for either should not pay for both to open this pane.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BlocksIcon,
   CircleAlertIcon,
-  ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   ImageIcon,
@@ -67,11 +75,14 @@ import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AgentControl } from "@/components/composer-controls";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DataScienceSection } from "./data-science-section";
+import { LatexSection } from "./latex-section";
+import { McpSection } from "./mcp-section";
+import { PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
@@ -436,6 +447,49 @@ export function ProjectPluginRows({
   );
 }
 
+/**
+ * EVERY PLUGIN'S OWN EDITOR, for a project on this Mac — what the standalone
+ * page used to hold behind a nav of its own (#363).
+ *
+ * ONE PLUGIN, ONE GROUP, and which group depends on whether the plugin is ON.
+ * Off, it is `PluginSettings`: a switch and the reason a failed plugin cannot be
+ * turned on. On, it is the plugin's own pane, which carries that same switch at
+ * the top of its first group — so the enable never appears twice, and the
+ * toolchain probes behind those panes only run for projects that asked for them.
+ *
+ * THE BESPOKE PANES ARE NAMED, NOT INFERRED — `BESPOKE_PLUGIN_PANES` in
+ * lib/plugins/sections.ts says why: silently replacing an environment picker
+ * with a checkbox is a downgrade nobody would notice until they needed it.
+ */
+function ProjectPluginPanes({
+  project,
+  plugins,
+  onChange,
+}: {
+  project: Project;
+  plugins?: PluginStatus[];
+  onChange: (project: Project) => void;
+}) {
+  const entries = useMemo(() => projectPluginSections(plugins), [plugins]);
+  const enabled = readProjectPlugins(project).plugins;
+
+  return (
+    <>
+      {entries.map((entry) =>
+        !pluginEnabled(enabled, entry.pluginId) ? (
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
+        ) : entry.pluginId === "data-science" ? (
+          <DataScienceSection key={entry.key} project={project} onChange={onChange} />
+        ) : entry.pluginId === "latex" ? (
+          <LatexSection key={entry.key} project={project} onChange={onChange} />
+        ) : (
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
+        ),
+      )}
+    </>
+  );
+}
+
 export function ProjectsPage() {
   const [hosts, setHosts] = useState<PublicHost[]>([]);
   const [hostId, setHostId] = useState<string>(LOCAL_HOST_ID);
@@ -672,35 +726,24 @@ export function ProjectsPage() {
         {...(instances ? { instances } : {})}
         writer={writer}
       />
-      <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+      {/* THE COMPACT SWITCH LIST IS THE UNBOUND STATE'S ANSWER, and only that.
+          With a project on this Mac named, each plugin gets its own group below
+          — switch included — so showing both would be the enable twice. At All
+          projects, or on a project this Mac cannot write to, those groups would
+          be editors bound to nothing: the switch list stays, visible and inert,
+          so the reader still learns which plugins the setting is about. */}
+      {(!project || project.hostId) && (
+        <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+      )}
 
-      {/* WHAT IS LEFT ON THE PER-PROJECT PAGE, AND ONLY THAT. It used to be
-          offered as "everything this pane does not hold"; the pane holds the
-          identity, the conversation defaults and the plugin switches now, so
-          the page is the destination for the two things that cannot be rows
-          here — MCP servers scoped to the project, and each plugin's own
-          bespoke editor. There is no `/hosts/:id/projects/:id/settings` route,
-          so a project on another Mac says so rather than offering a link that
-          would open this Mac's page for a foreign id. */}
-      {project && (
-        <SettingsGroup title="Elsewhere">
-          <Row
-            label="This project's own page"
-            icon={ExternalLinkIcon}
-            control={
-              project.hostId ? (
-                <Badge variant="outline">On {project.hostName ?? "another Mac"}</Badge>
-              ) : (
-                <Button variant="outline" size="sm" render={<a href={`/projects/${encodeURIComponent(project.id)}/settings`} />}>
-                  Open
-                </Button>
-              )
-            }
-            {...(project.hostId
-              ? { unavailable: { reason: "Open it in that Mac's own cockpit — this route names projects on this Mac only." } }
-              : { hint: "MCP servers scoped to it, and each plugin's own editor. Everything else about this project is on this pane." })}
-          />
-        </SettingsGroup>
+      {/* WHAT THE STANDALONE PAGE HELD (#363). Only for a project on THIS Mac:
+          every write below goes through this pane's `api`, which is this Mac's,
+          and there is no `/hosts/:id/…` counterpart to send a foreign id to. */}
+      {project && !project.hostId && (
+        <>
+          <McpSection scope={{ projectId: project.id, projectName: project.name }} />
+          <ProjectPluginPanes project={project} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+        </>
       )}
 
       {/* THE DANGER GROUP IS LAST, AND ONLY FOR A PROJECT ON THIS MAC. Removing

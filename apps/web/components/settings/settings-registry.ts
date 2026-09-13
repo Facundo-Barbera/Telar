@@ -20,11 +20,12 @@
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *
- *   - THE PER-PROJECT ROUTE (`project-settings-page.tsx`). A different shell
- *     with a different nav and a project id in every route; indexing it from
- *     the machine's Settings would offer to jump somewhere this shell cannot
- *     go. The PROJECTS PANE is indexed — it lives on this shell, and its rows
- *     are copy rather than one entry per registered folder.
+ *   - THE PROJECT-SCOPED GROUPS ON THE PROJECTS PANE — its MCP list and every
+ *     plugin's own editor, which arrived there when the standalone per-project
+ *     page was retired (#363). Both are built from data: the MCP group's
+ *     heading is the project's own name and a plugin's is the plugin's, which
+ *     is the rule two bullets down. The pane's STANDING rows are indexed, and
+ *     they are copy rather than one entry per registered folder.
  *   - PLUGIN-CONTRIBUTED SECTIONS. They arrive from the engine at runtime, and
  *     a plugin does not declare searchable rows in its manifest today. The
  *     Plugins pane itself is indexed; what a plugin puts inside it is not.
@@ -266,17 +267,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The project's own checkout, or a worktree cut from it.",
             keywords: ["worktree", "checkout", "workspace", "branch"],
             icon: FolderGitIcon,
-          },
-        ],
-      },
-      {
-        title: "Elsewhere",
-        rows: [
-          {
-            title: "This project's own page",
-            hint: "MCP servers scoped to it, and each plugin's own editor.",
-            keywords: ["mcp", "plugin editor", "per project", "latex", "notebook"],
-            icon: ExternalLinkIcon,
           },
         ],
       },

@@ -29,18 +29,25 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * `section=mcp` IS LOAD-BEARING, not decoration.
+ * THE SECTION IS LOAD-BEARING, not decoration.
  *
- * Settings renders one pane at a time, and the machine-wide page opens on
- * Appearance. Without this the browser comes back from the consent screen to a
- * colour-scheme picker: the grant is stored, the flow worked, and the person is
- * told nothing — while the announcement sits unread in a pane that never
- * mounted, ready to fire the next time it does. Found by pressing the button.
+ * Settings renders one pane at a time. Without this the browser comes back from
+ * the consent screen to whichever pane Settings opens on: the grant is stored,
+ * the flow worked, and the person is told nothing — while the announcement sits
+ * unread in a pane that never mounted, ready to fire the next time it does.
+ * Found by pressing the button.
+ *
+ * A PROJECT-SCOPED GRANT LANDS ON PROJECTS, NOT ON A PAGE OF ITS OWN (#363).
+ * `/projects/:id/settings` is a redirect now, and it would drop the query this
+ * whole function exists to carry; `?section=projects&project=` puts the reader
+ * in front of that project's own MCP group, which is where the server they just
+ * signed in to is listed.
  */
 function settingsUrl(projectId: string | undefined, params: Record<string, string>): string {
-  const path = projectId ? `/projects/${encodeURIComponent(projectId)}/settings` : "/settings";
-  const query = new URLSearchParams({ section: "mcp", ...params });
-  return `${path}?${query.toString()}`;
+  const query = new URLSearchParams(
+    projectId ? { section: "projects", project: projectId, ...params } : { section: "mcp", ...params },
+  );
+  return `/settings?${query.toString()}`;
 }
 
 export async function GET(request: Request) {

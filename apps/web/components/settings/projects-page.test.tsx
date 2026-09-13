@@ -251,6 +251,42 @@ test("?project= opens the pane on one project, read after the first paint", () =
   expect(source).toContain('new URLSearchParams(window.location.search).get("project")');
 });
 
+test("the standalone per-project page's two halves are groups on this pane (#363)", () => {
+  // MCP servers scoped to the project, and every plugin's own editor — the two
+  // things `/projects/:id/settings` held that this pane had no room for.
+  expect(source).toContain("<McpSection scope={{ projectId: project.id, projectName: project.name }} />");
+  expect(source).toContain("<ProjectPluginPanes project={project}");
+  // On THIS Mac only: every write goes through this pane's `api`, and there is
+  // no `/hosts/:id/…` counterpart to send a foreign project id to.
+  expect(source).toContain("{project && !project.hostId && (");
+});
+
+test("a plugin's editor mounts only once the plugin is on", () => {
+  /**
+   * Not tidiness: LaTeX probes for TeX distributions and Data science probes
+   * for interpreters the moment their editors mount, and a project that asked
+   * for neither would pay for both to open this pane.
+   */
+  expect(source).toContain("!pluginEnabled(enabled, entry.pluginId) ? (");
+  expect(source).toContain("<PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />");
+});
+
+test("the compact switch list is the unbound scope's answer, and only that", () => {
+  // With a project named, each plugin's own group carries the same switch —
+  // rendering both would be the enable twice.
+  expect(source).toContain("{(!project || project.hostId) && (");
+  const html = renderToStaticMarkup(<ProjectsPage />);
+  expect(html).toContain("Plugins");
+});
+
+test("the retired route redirects here rather than 404ing", () => {
+  const route = readFileSync(new URL("../../app/projects/[projectId]/settings/page.tsx", import.meta.url), "utf8");
+  expect(route).toContain("redirect(projectSettingsHref(projectId))");
+  // And the one link helper every gear uses already points at this pane.
+  const link = readFileSync(new URL("../../lib/project-settings-link.ts", import.meta.url), "utf8");
+  expect(link).toContain("`/settings?section=projects&project=${encodeURIComponent(projectId)}`");
+});
+
 test("the pane's rows are findable by search before the pane has ever been opened", () => {
   const first = (query: string) => searchSettings(SETTINGS_SEARCH_INDEX, query)[0];
   expect(first("project icon")?.pageId).toBe("projects");
