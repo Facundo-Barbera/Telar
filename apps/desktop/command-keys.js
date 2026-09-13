@@ -35,7 +35,11 @@
  * @property {string} defaultChord - an Electron accelerator string. Always
  *   "CommandOrControl+…", never a hardcoded "Cmd" or "Ctrl" — issue #16 asks for
  *   CommandOrControl semantics explicitly so the same table works unmodified on
- *   macOS today and on a Windows/Linux build later.
+ *   macOS today and on a Windows/Linux build later. "" is a real value: the
+ *   command SHIPS UNBOUND, which is what the command palette (#402) made
+ *   necessary — a palette row is a thing you find by typing its name, and most
+ *   of them do not deserve one of the twenty-six letters a person has left.
+ *   Unbound is still rebindable: the pane draws the row either way.
  * @property {"file"|"panel"} [menu] - which application menu carries it. Absent
  *   means the command has no menu item at all and is dispatched by the
  *   renderer's own keydown listener, which is where every contextual command
@@ -48,6 +52,11 @@
 /** @type {Command[]} */
 const COMMANDS = [
   { id: "new-conversation", label: "New Conversation", group: "Conversation", defaultChord: "CommandOrControl+N", menu: "file" },
+  // THE SAME VERB, ASKED RATHER THAN GUESSED. ⌘N opens the project you are
+  // already in (or the palette, on a cockpit with several); this one always
+  // walks to the list, and is the palette's "New conversation in…" sub-page.
+  // No chord of its own: ⌘N already reaches the same page when it has to.
+  { id: "new-conversation-in", label: "New Conversation In…", group: "Conversation", defaultChord: "" },
   { id: "new-tab", label: "New Tab", group: "Conversation", defaultChord: "CommandOrControl+T", menu: "file" },
   { id: "new-window", label: "New Window", group: "Conversation", defaultChord: "CommandOrControl+Shift+N", menu: "file" },
   { id: "focus-composer", label: "Focus Composer", group: "Conversation", defaultChord: "CommandOrControl+L" },
@@ -59,7 +68,16 @@ const COMMANDS = [
   // with the bridge, in components/session/open-workspace-button.tsx.
   { id: "reveal-in-finder", label: "Reveal in Finder", group: "Conversation", defaultChord: "CommandOrControl+O", menu: "file" },
 
-  { id: "search-sessions", label: "Search Conversations", group: "Rail", defaultChord: "CommandOrControl+K" },
+  // ⌘K IS THE PALETTE NOW (#402), WHICH IS WHY THE LABEL MOVED AND THE ID DID
+  // NOT. It used to put the cursor in the rail's search field; it opens one
+  // dialog over commands, projects and recent conversations instead — the rail's
+  // field stays exactly what it was, a filter over the rows in front of you.
+  // The id is what a person's stored override names, so renaming it would throw
+  // away every rebinding of this key that exists on disk.
+  { id: "search-sessions", label: "Command Palette", group: "Rail", defaultChord: "CommandOrControl+K" },
+  // The rail's add-project button, as a command — so the button, the palette row
+  // and the empty-space menu are one thing rather than three.
+  { id: "add-project", label: "Add Project…", group: "Rail", defaultChord: "" },
   { id: "toggle-rail", label: "Toggle Rail", group: "Rail", defaultChord: "CommandOrControl+B" },
   // jump-1..jump-9: the Nth conversation in the rail, top to bottom as drawn.
   // Generated, not hand-written nine times — see railRowsForCommandKeys in
@@ -84,9 +102,40 @@ const COMMANDS = [
   { id: "open-editor", label: "Open Editor", group: "Panel", defaultChord: "CommandOrControl+Shift+E", menu: "panel" },
   { id: "open-data", label: "Open Data", group: "Panel", defaultChord: "CommandOrControl+Shift+B", menu: "panel" },
   { id: "open-latex", label: "Open LaTeX", group: "Panel", defaultChord: "CommandOrControl+Shift+X", menu: "panel" },
+  /**
+   * ⇧⌘P, NOT ⌘P: #408 gave ⌘P to `pin-session`, and an editor's "go to file" is
+   * the shifted one in every app that has both. Opens the Editor and puts the
+   * cursor in its file filter — the cockpit answers it (see
+   * apps/web/lib/use-command-keys.ts), because the panel's strip is the
+   * cockpit's state and only it can open a tab.
+   */
+  { id: "go-to-file", label: "Go to File…", group: "Panel", defaultChord: "CommandOrControl+Shift+P" },
+  /**
+   * SEARCH THE PROJECT'S CONTENTS — and it is deliberately UNANSWERED today.
+   * Telar has no content search: the Editor's field filters file NAMES, and
+   * binding this to that would be a row promising something it does not do. The
+   * chord is reserved and editable, and the palette lists a command only once
+   * something can run it (`paletteActions`), so this stays out of the list until
+   * the surface exists rather than sitting in it as a dead row.
+   */
+  { id: "search-project-contents", label: "Search in Project…", group: "Panel", defaultChord: "CommandOrControl+Shift+F" },
 
   { id: "settings", label: "Settings…", group: "Application", defaultChord: "CommandOrControl+,", menu: "file" },
   { id: "search-settings", label: "Search Settings…", group: "Application", defaultChord: "CommandOrControl+Shift+,", menu: "file" },
+  /**
+   * THE PANES A PERSON ASKS FOR BY NAME. Every one of these was reachable only
+   * by opening Settings and then reading a nav — which is exactly the question a
+   * command palette answers, and the reason they are commands rather than rows
+   * the palette knows about privately: one list, and the keybindings pane can
+   * put a chord on any of them.
+   */
+  { id: "appearance", label: "Appearance…", group: "Application", defaultChord: "" },
+  // The project you are working in, wherever you are. The rail is what knows
+  // which one that is, so the rail answers it.
+  { id: "project-settings", label: "Project Settings…", group: "Application", defaultChord: "" },
+  { id: "open-usage", label: "Usage…", group: "Application", defaultChord: "" },
+  { id: "open-plugins", label: "Plugins…", group: "Application", defaultChord: "" },
+  { id: "check-for-updates", label: "Check for Updates…", group: "Application", defaultChord: "" },
 ];
 
 /** The order modifiers are written in, so two spellings of one chord compare
