@@ -33,6 +33,8 @@ import {
   ModelSelection,
   ProviderInstance as ProviderInstanceSchema,
   ProviderInstanceEnvVar as ProviderInstanceEnvVarSchema,
+  UsageLimitSource as UsageLimitSourceSchema,
+  type UsageLimitSource,
   resolveMcpServers,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
@@ -581,6 +583,22 @@ export type EngineStatePaths = {
    * the same session in two different bands depending on which window you opened.
    */
   inbox: string;
+  /**
+   * The CLIProxyAPI hubs quota is read from — see `listUsageLimitSources`.
+   *
+   * ENVIRONMENT-SCOPED, beside mcp-servers.json and for the same reason: a hub
+   * is configured once and every client reads the same list.
+   */
+  usageLimitSources: string;
+  /**
+   * Their management keys, in a file of their own at 0600.
+   *
+   * SPLIT FOR EXACTLY THE REASON `providerSecrets` IS: the list beside it is
+   * handed to a settings page over HTTP, and a key stored on the record would
+   * be echoed back to every browser that opened Providers. Keeping them apart
+   * makes redaction the default rather than a step somebody has to remember.
+   */
+  usageLimitSecrets: string;
   /** Which sessions want to be woken by which — engine-wide, because a
    *  subscription spans two sessions and belongs to neither's directory. */
   subscriptions: string;
@@ -689,6 +707,8 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    usageLimitSources: path.join(resolved, "usage-limit-sources.json"),
+    usageLimitSecrets: path.join(resolved, "usage-limit-secrets.json"),
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
@@ -738,6 +758,21 @@ function assertInstanceId(value: unknown): asserts value is string {
     throw new EngineStateError(
       "invalid_request",
       "provider instance id must start with a letter and contain only letters, numbers, underscores, or hyphens",
+    );
+  }
+}
+
+/** A person configures one or two hubs; the cap is here so a scripted client
+ *  cannot turn one usage read into a hundred outbound requests. */
+const MAX_USAGE_LIMIT_SOURCES = 16;
+
+/** The same shape as an instance id, and for the same reason: it rides in a
+ *  URL path and is the permanent key a stored key is filed under. */
+function assertUsageLimitSourceId(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)) {
+    throw new EngineStateError(
+      "invalid_request",
+      "usage limit source id must start with a letter and contain only letters, numbers, underscores, or hyphens",
     );
   }
 }
@@ -4128,6 +4163,172 @@ export class EngineStore {
       if (!seen.has(variable.name)) delete next[secretKey(instanceId, variable.name)];
     }
     return { stored, secrets: next };
+  }
+
+  // ── usage limit sources ───────────────────────────────────────────────────
+  //
+  // THE HUBS QUOTA IS READ FROM. A CLIProxyAPI hub pools several subscription
+  // logins and routes turns across them, so the windows that gate that work sit
+  // on accounts this Mac never signs in as — the usage page's transcript scan
+  // cannot see them and never will.
+  //
+  // CONFIGURATION ONLY LIVES HERE. What the hub currently reports is live state
+  // that `usage-limits.ts` fetches and `daemon.ts` caches; persisting a quota
+  // figure would mean serving one that is stale by exactly as long as the
+  // engine was down.
+
+  /**
+   * Every configured hub, WITH MANAGEMENT KEYS WITHHELD.
+   *
+   * This is the read a settings page gets, and it is the only one reachable
+   * from a route. `resolveUsageLimitSources` is the one that returns real keys.
+   */
+  listUsageLimitSources(): UsageLimitSource[] {
+    return this.readUsageLimitSources().map((source) => this.redactUsageLimitSource(source));
+  }
+
+  /**
+   * Create or replace one hub.
+   *
+   * THE REDACTED ROUND TRIP IS THE POINT, the same rule `applyEnvEdits` follows:
+   * a client reads `{ managementKey: "", keyRedacted: true }` and hands that
+   * back on the next save, so only a NON-EMPTY key replaces a stored one.
+   * Clearing a key is done by removing the hub — saving it blank is
+   * indistinguishable from "I did not retype it".
+   */
+  saveUsageLimitSource(input: {
+    id: string;
+    kind?: unknown;
+    label?: string | null;
+    url?: unknown;
+    managementKey?: unknown;
+    enabled?: boolean;
+  }): UsageLimitSource {
+    assertUsageLimitSourceId(input.id);
+    const sources = this.readUsageLimitSources();
+    const existing = sources.find((source) => source.id === input.id);
+    const at = this.now();
+    const url = input.url === undefined ? existing?.url : input.url;
+    if (typeof url !== "string" || url.trim().length === 0) {
+      throw new EngineStateError("invalid_request", "a usage limit source needs a hub URL");
+    }
+    let origin: URL;
+    try {
+      origin = new URL(url.trim());
+    } catch {
+      throw new EngineStateError("invalid_request", "the hub URL is not a valid URL");
+    }
+    if (origin.protocol !== "http:" && origin.protocol !== "https:") {
+      throw new EngineStateError("invalid_request", "the hub URL must be http or https");
+    }
+    const kind = input.kind === undefined ? (existing?.kind ?? "cliproxy") : input.kind;
+    if (kind !== "cliproxy") throw new EngineStateError("invalid_request", "usage limit source kind must be cliproxy");
+    const secrets = this.readUsageLimitSecrets();
+    if (input.managementKey !== undefined) {
+      if (typeof input.managementKey !== "string") {
+        throw new EngineStateError("invalid_request", "the management key must be a string");
+      }
+      // Non-empty replaces; empty leaves whatever is stored, which is what makes
+      // saving a redacted row safe. NEVER logged, here or anywhere.
+      if (input.managementKey !== "") secrets[input.id] = input.managementKey;
+      else if (!(input.id in secrets)) secrets[input.id] = "";
+    } else if (!(input.id in secrets)) {
+      secrets[input.id] = "";
+    }
+    const label = input.label === undefined ? existing?.label : input.label === null ? undefined : input.label.trim() || undefined;
+    const source = {
+      id: input.id,
+      kind,
+      ...(label ? { label } : {}),
+      url: origin.toString(),
+      // The stored record carries no key: redaction is the shape, not a step.
+      managementKey: "",
+      enabled: typeof input.enabled === "boolean" ? input.enabled : (existing?.enabled ?? true),
+      createdAt: existing?.createdAt ?? at,
+      updatedAt: at,
+    };
+    const parsed = UsageLimitSourceSchema.safeParse(source);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "usage limit source configuration is invalid");
+    const next = existing
+      ? sources.map((entry) => (entry.id === source.id ? parsed.data : entry))
+      : [...sources, parsed.data];
+    if (next.length > MAX_USAGE_LIMIT_SOURCES) {
+      throw new EngineStateError("invalid_request", `at most ${MAX_USAGE_LIMIT_SOURCES} usage limit sources can be configured`);
+    }
+    this.writeDocument(this.paths.usageLimitSources, { version: STATE_VERSION, usageLimitSources: next });
+    this.writeDocument(this.paths.usageLimitSecrets, { version: STATE_VERSION, secrets });
+    return this.redactUsageLimitSource(parsed.data);
+  }
+
+  /** Forget a hub and its key together. Returns false for an id nobody
+   *  configured, so a double-press is not an error. */
+  removeUsageLimitSource(id: string): boolean {
+    assertUsageLimitSourceId(id);
+    const sources = this.readUsageLimitSources();
+    const next = sources.filter((source) => source.id !== id);
+    if (next.length === sources.length) return false;
+    const secrets = this.readUsageLimitSecrets();
+    delete secrets[id];
+    this.writeDocument(this.paths.usageLimitSources, { version: STATE_VERSION, usageLimitSources: next });
+    this.writeDocument(this.paths.usageLimitSecrets, { version: STATE_VERSION, secrets });
+    return true;
+  }
+
+  /**
+   * The ENABLED hubs with their keys resolved — what actually reads a hub.
+   *
+   * NOT REACHABLE FROM A ROUTE, the same rule `resolveProviderInstance` lives
+   * by. A disabled hub is dropped here rather than filtered by each caller:
+   * "enabled" means "may be contacted", and one caller forgetting that would
+   * be a request to a service the user switched off.
+   */
+  resolveUsageLimitSources(): { id: string; kind: "cliproxy"; label?: string; url: string; managementKey: string }[] {
+    const secrets = this.readUsageLimitSecrets();
+    return this.readUsageLimitSources()
+      .filter((source) => source.enabled)
+      .map((source) => ({
+        id: source.id,
+        kind: source.kind,
+        ...(source.label ? { label: source.label } : {}),
+        url: source.url,
+        managementKey: secrets[source.id] ?? "",
+      }));
+  }
+
+  private redactUsageLimitSource(source: UsageLimitSource): UsageLimitSource {
+    const stored = this.readUsageLimitSecrets()[source.id];
+    return { ...source, managementKey: "", ...(stored ? { keyRedacted: true } : {}) };
+  }
+
+  /**
+   * NEVER THROWS ON A BAD DOCUMENT, the rule `getInboxPolicy` set and for the
+   * same reason sharpened: a malformed hub list is a preference, and the worst
+   * it can cost is a section of the usage page. Refusing would take the whole
+   * engine's settings read down with it.
+   */
+  private readUsageLimitSources(): UsageLimitSource[] {
+    try {
+      const stored = this.readDocument(this.paths.usageLimitSources) as { usageLimitSources?: unknown } | undefined;
+      const parsed = UsageLimitSourceSchema.array().safeParse(stored?.usageLimitSources ?? []);
+      return parsed.success ? parsed.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private readUsageLimitSecrets(): Record<string, string> {
+    try {
+      const stored = this.readDocument(this.paths.usageLimitSecrets) as { secrets?: unknown } | undefined;
+      const secrets = stored?.secrets;
+      if (typeof secrets !== "object" || secrets === null) return {};
+      const out: Record<string, string> = {};
+      for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
+        if (typeof value === "string") out[key] = value;
+      }
+      return out;
+    } catch {
+      return {};
+    }
   }
 
   constructor(
