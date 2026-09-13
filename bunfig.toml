@@ -3,3 +3,8 @@
 # copy web source — including *.test.ts — into packaged bundles. Never run those
 # stale copies as part of the source test gate.
 pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]
+
+# Normalises an inherited NODE_ENV=production, which otherwise makes every .tsx
+# render test fail on a jsxDEV that React's production build deliberately does
+# not export. scripts/test-setup.mjs has the full story.
+preload = ["./scripts/test-setup.mjs"]

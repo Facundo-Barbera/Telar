@@ -1,0 +1,12 @@
+# BUN READS bunfig.toml FROM THE DIRECTORY IT WAS INVOKED IN and does not walk
+# up to the repo root, so `bun run --cwd apps/web test` — the one CI runs — and
+# any bare `bun test` from here see none of the root bunfig.toml. This file is
+# that copy for the one workspace whose tests render React; it is not an
+# override, so keep the two in step.
+[test]
+# The jsxDEV failure this repairs only bites .tsx tests, which all live here.
+preload = ["../../scripts/test-setup.mjs"]
+
+# Build outputs copy web source, *.test.tsx included. Never run those stale
+# copies as part of the source test gate.
+pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]
