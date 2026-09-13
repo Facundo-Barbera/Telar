@@ -163,7 +163,10 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
 
   return (
-    <SettingsGroup title="Identity" description="What this project is called, and the mark it wears in the rail.">
+    // NO CAPTION: it listed the two rows under it in prose, and both of them
+    // keep a real sentence — what renaming does NOT touch, and which of the two
+    // icon sources is in play (#357).
+    <SettingsGroup title="Identity">
       <Row
         label="Name"
         icon={FolderKanbanIcon}
@@ -308,7 +311,10 @@ export function ProjectConversationRows({
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
 
   return (
-    <SettingsGroup title="New conversations" description="What a conversation in this project is built with before you change it.">
+    // NO CAPTION, for General ▸ New sessions' reason: both rows below say what
+    // is actually stored and what overrides it, which is more than a standing
+    // sentence about the group could.
+    <SettingsGroup title="New conversations">
       <Row
         label="Default model"
         icon={SparklesIcon}

@@ -335,7 +335,7 @@ export function RemoteSection() {
 
   if (!status) {
     return (
-      <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
+      <SettingsGroup title="Pairing">
         <Row label="Loading" hint="Reading the pairing store." {...(error ? { error } : {})} control={null} />
       </SettingsGroup>
     );
@@ -381,7 +381,9 @@ export function RemoteSection() {
           read by the shell at launch, so a change offers a restart rather
           than pretending it took. */}
       {status.requireAuth && (
-        <SettingsGroup title="This environment" description="How devices reach this cockpit.">
+        // NO CAPTION: both rows print the ADDRESS this cockpit is actually
+        // reachable at, which is the answer the caption was asking for (#357).
+        <SettingsGroup title="This environment">
           <ToggleRow
             label="Network access"
             icon={GlobeIcon}
