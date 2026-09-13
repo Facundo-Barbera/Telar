@@ -160,7 +160,25 @@ export function journalCursor(events: EngineEvent[]): number {
  * is what makes a live turn stream. Applying the tail second means a row the
  * snapshot caught mid-flight is corrected by the events that followed it.
  */
-export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent[], tasks: Task[] = []): JournalTurn[] {
+export function projectJournal(
+  turns: Turn[],
+  items: Item[],
+  events: EngineEvent[],
+  tasks: Task[] = [],
+  /**
+   * The tab set in force BEFORE each `browser.state.changed` event, when a
+   * caller has already worked it out — see `createJournalProjector`.
+   *
+   * THE ONE PIECE OF STATE THIS FOLD CARRIES ACROSS TURNS. Everything else is
+   * filed under a runId and can be folded a turn at a time; the open/close row
+   * is a DIFF against whatever the last journalled tab set was, which may have
+   * been established by an earlier turn. A projector folding one turn cannot see
+   * that, so it computes the diffs' left-hand sides in one pass and hands them
+   * in. Absent, the fold keeps its own running copy and behaves exactly as it
+   * always has.
+   */
+  previousTabs?: ReadonlyMap<number, readonly { url: string; title: string }[] | undefined>,
+): JournalTurn[] {
   const byRun = new Map<string, JournalTurn>(
     turns.map((turn) => [
       turn.runId,
@@ -399,7 +417,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
          * journals them from inside the turn), so the guard is the filter.
          */
         if (!turn) break;
-        const previous = lastBrowserTabs.get(event.sessionId);
+        const previous = previousTabs ? previousTabs.get(event.id) : lastBrowserTabs.get(event.sessionId);
         const current = event.tabs;
         if (previous && current.length !== previous.length) {
           const grew = current.length > previous.length;
@@ -668,3 +686,279 @@ export function toolOutput(item: JournalItem): string | undefined {
 }
 
 export type { Session };
+
+// ── the memoised projection ────────────────────────────────────────────────
+
+/**
+ * THE SAME FOLD, BUT ONLY OVER WHAT MOVED (#407).
+ *
+ * `projectJournal` is pure and re-folds everything it is given. That is the
+ * right shape for a function and the wrong amount of work for a cockpit: the
+ * transcript is recomputed whenever `turns`, `items`, `events` or `tasks`
+ * changes identity, and on a live conversation that is once per streamed chunk
+ * — each time rebuilding ten settled turns and a few hundred items that cannot
+ * possibly have changed, because a settled turn is settled.
+ *
+ * A JOURNAL IS ALREADY PARTITIONED BY TURN. Every row and every event names the
+ * run it belongs to, so the fold of run A cannot be affected by anything filed
+ * under run B — with exactly one exception, the browser tab diff, which this
+ * projector resolves as it walks and hands to the fold (`previousTabs`). Each
+ * run is therefore folded against its own slice, and the result cached against
+ * the identity of that slice.
+ *
+ * AND THE PARTITION ITSELF IS INCREMENTAL, which is the difference between this
+ * being a saving and being a second full pass wearing a cache. The journal is
+ * append-only, so a tick that brought three deltas walks three events; the row
+ * buckets are rebuilt only when the arrays holding them actually change.
+ *
+ * IDENTITY, NOT EQUALITY, IS THE KEY throughout. These rows come off
+ * `JSON.parse`, so a fresh snapshot really does produce fresh objects and the
+ * cache correctly misses. When no snapshot was fetched the client hands the same
+ * objects back (see `mergeRows`), and that is precisely the case worth skipping.
+ *
+ * THE RETURNED TURNS ARE SHARED. A cached `JournalTurn` is the same object the
+ * previous call returned, which is what lets React skip a subtree — so nothing
+ * downstream may mutate one.
+ */
+export type JournalProjector = (turns: Turn[], items: Item[], events: EngineEvent[], tasks?: Task[]) => JournalTurn[];
+
+/** A run's slice, and the fold it produced. Compared by identity — plus a
+ *  count, because the event slices are APPENDED to in place rather than
+ *  rebuilt, so their reference alone cannot say whether anything arrived. */
+type ProjectedRun = {
+  row: Turn | undefined;
+  items: readonly Item[];
+  tasks: readonly Task[];
+  events: readonly EngineEvent[];
+  eventCount: number;
+  out: JournalTurn;
+};
+
+const NO_ITEMS: readonly Item[] = [];
+const NO_TASKS: readonly Task[] = [];
+const NO_EVENTS: readonly EngineEvent[] = [];
+
+/** Whether `next` begins with the first `count` entries of `previous`, by
+ *  identity. A journal is append-only, so this is the ordinary case — and it is
+ *  what lets a tick partition only what arrived. */
+function extendsPrefix(previous: readonly EngineEvent[], next: readonly EngineEvent[], count: number): boolean {
+  if (next.length < count || previous.length < count) return false;
+  for (let index = 0; index < count; index += 1) if (previous[index] !== next[index]) return false;
+  return true;
+}
+
+/**
+ * THE SAME ROWS, WHETHER OR NOT THEY ARRIVED IN THE SAME ARRAY.
+ *
+ * `mergeRows` hands back the array it was given when nothing moved, so the
+ * usual quiet tick is caught by the reference check alone. This is the belt:
+ * any caller that copies an array of unchanged rows — a test, a future merge,
+ * the paging path — still gets the cheap path, and an identity sweep is
+ * strictly cheaper than the map-building it avoids.
+ */
+function sameRows<T>(previous: readonly T[] | undefined, next: readonly T[]): boolean {
+  if (previous === next) return true;
+  if (previous === undefined || previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) if (previous[index] !== next[index]) return false;
+  return true;
+}
+
+/**
+ * WHICH RUNS AN EVENT CAN AFFECT.
+ *
+ * Usually just its envelope's `runId`. The others are defensive rather than
+ * theoretical: an item or task event carries the row's own run, a delta names an
+ * item rather than a run, and the fold files each by the ROW's run — so
+ * partitioning on the envelope alone could drop a delta whose envelope was bare.
+ * Landing an event in two buckets is harmless: it is a no-op in the one whose
+ * turn it does not name.
+ */
+function runsTouched(event: EngineEvent, runOfItem: ReadonlyMap<string, string>): string[] {
+  const envelope = event.runId;
+  const both = (owner: string | undefined): string[] => {
+    if (!owner) return envelope ? [envelope] : [];
+    if (!envelope || envelope === owner) return [owner];
+    return [envelope, owner];
+  };
+  switch (event.type) {
+    case "turn.accepted":
+      return both(event.turn.runId);
+    case "item.started":
+    case "item.updated":
+    case "item.completed":
+    case "turn.plan.updated":
+      return both(event.item.runId);
+    case "task.started":
+    case "task.progress":
+    case "task.completed":
+      return both(event.task.runId);
+    case "content.delta":
+      return both(runOfItem.get(event.itemId));
+    default:
+      return envelope ? [envelope] : [];
+  }
+}
+
+export function createJournalProjector(): JournalProjector {
+  let folds = new Map<string, ProjectedRun>();
+
+  // The partition, kept between calls and rebuilt only where its inputs moved.
+  let heldTurns: readonly Turn[] | undefined;
+  let heldItems: readonly Item[] | undefined;
+  let heldTasks: readonly Task[] | undefined;
+  let heldEvents: readonly EngineEvent[] | undefined;
+  let consumed = 0;
+
+  let rowOf = new Map<string, Turn>();
+  let itemsOf = new Map<string, Item[]>();
+  let tasksOf = new Map<string, Task[]>();
+  let eventsOf = new Map<string, EngineEvent[]>();
+  /** Where a delta's text belongs: the fold files a row under the run its ITEM
+   *  names, so a delta has to be partitioned the same way. */
+  const runOfItem = new Map<string, string>();
+  /** The tab set in force before each `browser.state.changed` event. */
+  let previousTabs = new Map<number, readonly { url: string; title: string }[] | undefined>();
+  let carry = new Map<string, { url: string; title: string }[]>();
+  /**
+   * The runs the fold knows about AT EACH POINT in the walk, which is why this
+   * grows as events are read rather than being computed up front: `byRun` is
+   * seeded from `turns` and then extended by `turn.accepted`, so a browser event
+   * that precedes its own run's acceptance advances nothing. A set computed in
+   * advance would quietly disagree with the fold about exactly that.
+   */
+  let live = new Set<string>();
+  /** The output order, which is the fold's own: every turn in `turns`, then each
+   *  run a `turn.accepted` introduced, in event order. */
+  let order: string[] = [];
+
+  return (turns, items, events, tasks = []) => {
+    const turnsMoved = !sameRows(heldTurns, turns);
+    if (turnsMoved) {
+      rowOf = new Map(turns.map((turn) => [turn.runId, turn]));
+      heldTurns = turns;
+    }
+    if (!sameRows(heldItems, items)) {
+      itemsOf = new Map();
+      for (const item of items) {
+        const held = itemsOf.get(item.runId);
+        if (held) held.push(item);
+        else itemsOf.set(item.runId, [item]);
+        runOfItem.set(item.id, item.runId);
+      }
+      heldItems = items;
+    }
+    if (!sameRows(heldTasks, tasks)) {
+      tasksOf = new Map();
+      for (const task of tasks) {
+        const held = tasksOf.get(task.runId);
+        if (held) held.push(task);
+        else tasksOf.set(task.runId, [task]);
+      }
+      heldTasks = tasks;
+    }
+
+    /**
+     * THE JOURNAL IS WALKED ONCE, AND ONLY FORWARD — the difference between a
+     * streaming turn costing what it just produced and costing everything the
+     * conversation has produced all session. The walk resumes where the last one
+     * stopped, as long as the array it is handed still begins with what has
+     * already been read. It does not when the tail is replaced wholesale (a
+     * hydrate, a reconnect), nor when `turns` moved: the run set seeds the carry
+     * rule below, and a different seed can reach a different answer for an event
+     * that has already been walked.
+     */
+    if (turnsMoved || heldEvents === undefined || !extendsPrefix(heldEvents, events, consumed)) {
+      eventsOf = new Map();
+      previousTabs = new Map();
+      carry = new Map();
+      live = new Set(rowOf.keys());
+      order = [...rowOf.keys()];
+      consumed = 0;
+    }
+    for (let index = consumed; index < events.length; index += 1) {
+      const event = events[index]!;
+      if (event.type === "turn.accepted" && !live.has(event.turn.runId)) {
+        live.add(event.turn.runId);
+        order.push(event.turn.runId);
+      }
+      if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
+        runOfItem.set(event.item.id, event.item.runId);
+      }
+      for (const runId of runsTouched(event, runOfItem)) {
+        const held = eventsOf.get(runId);
+        if (held) held.push(event);
+        else eventsOf.set(runId, [event]);
+      }
+      // The carry advances only on an event the fold could FILE, which is the
+      // rule `projectJournal` applies by returning before it writes.
+      if (event.type === "browser.state.changed" && event.runId && live.has(event.runId)) {
+        previousTabs.set(event.id, carry.get(event.sessionId));
+        carry.set(event.sessionId, event.tabs);
+      }
+    }
+    consumed = events.length;
+    heldEvents = events;
+
+    const slices = order.map((runId) => {
+      const row = rowOf.get(runId);
+      const runItems = itemsOf.get(runId) ?? NO_ITEMS;
+      const runTasks = tasksOf.get(runId) ?? NO_TASKS;
+      const runEvents = eventsOf.get(runId) ?? NO_EVENTS;
+      const held = folds.get(runId);
+      const reusable =
+        held !== undefined &&
+        held.row === row &&
+        held.items === runItems &&
+        held.tasks === runTasks &&
+        held.events === runEvents &&
+        held.eventCount === runEvents.length;
+      return { runId, row, runItems, runTasks, runEvents, out: reusable ? held!.out : undefined };
+    });
+
+    /**
+     * WHEN NOTHING CAN BE REUSED, FOLD THE WHOLE THING ONCE.
+     *
+     * A companion snapshot replaces every row with a fresh object, so every
+     * entry misses — and ten one-turn folds are strictly more work than one
+     * ten-turn fold, for an identical answer. Falling back here is what keeps
+     * the memo from being a tax on the one case it cannot help with. The slices
+     * above are still needed either way: they are what the NEXT tick compares
+     * against.
+     */
+    const whole =
+      slices.length > 1 && slices.every((slice) => slice.out === undefined)
+        ? new Map(projectJournal(turns, items, events, tasks).map((turn) => [turn.runId, turn]))
+        : undefined;
+
+    // Rebuilt rather than pruned, so a run that left the window — a page
+    // scrolled away, a conversation switched — takes its cache entry with it.
+    const next = new Map<string, ProjectedRun>();
+    const projected: JournalTurn[] = [];
+    for (const slice of slices) {
+      const folded =
+        slice.out ??
+        whole?.get(slice.runId) ??
+        projectJournal(
+          slice.row ? [slice.row] : [],
+          slice.runItems as Item[],
+          slice.runEvents as EngineEvent[],
+          slice.runTasks as Task[],
+          previousTabs,
+        ).find((turn) => turn.runId === slice.runId);
+      // A run named only by rows the fold drops (an item whose turn nobody sent)
+      // produces nothing, exactly as the whole-journal fold does.
+      if (!folded) continue;
+      next.set(slice.runId, {
+        row: slice.row,
+        items: slice.runItems,
+        tasks: slice.runTasks,
+        events: slice.runEvents,
+        eventCount: slice.runEvents.length,
+        out: folded,
+      });
+      projected.push(folded);
+    }
+    folds = next;
+    return projected;
+  };
+}

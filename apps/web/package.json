@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "test": "NODE_ENV=test bun test",
+    "bench:journal": "bun run bench/journal-fold.ts",
     "typecheck": "bunx --bun tsc --noEmit",
     "lint": "eslint"
   },
