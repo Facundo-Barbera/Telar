@@ -287,6 +287,10 @@ export function WorkspaceInspector({
   const activityRunning = processes.length + agents.length > 0;
   const needsAttention = tasks.some((task) => task.state === "waiting" || task.state === "failed");
 
+  /** The trees CUT from the project, never the checkout itself — `git worktree
+   *  list` reports the main checkout as an entry and it is not a worktree. */
+  const cutWorktrees = (git?.worktrees ?? []).filter((entry) => !entry.isMainCheckout);
+
   const worktreeBranch = session?.workspace.mode === "worktree" ? session.workspace.branch : undefined;
   const branch = worktreeBranch ?? git?.branch;
   const dirty = git?.dirtyFiles ?? 0;
@@ -309,13 +313,19 @@ export function WorkspaceInspector({
             // never had as a hand-rolled <button>. `outline` already paints the
             // open state through aria-expanded, so this no longer carries its
             // own.
+            // "Workspace", NOT "Pinned summary". An unlabelled glyph whose
+            // tooltip names the FURNITURE ("pinned summary") tells a reader
+            // where the thing sits rather than what is in it. The popover's
+            // own first heading has always said Workspace; the trigger now
+            // agrees with it, which is the whole of what a person needs to
+            // decide whether to press it.
             <Button
               type="button"
               variant="outline"
               size="icon-sm"
-              aria-label={open ? "Close pinned summary" : "Open pinned summary"}
+              aria-label="Workspace"
               aria-expanded={open}
-              title="Pinned summary"
+              title="Workspace"
               className="relative text-muted-foreground"
             />
           }
@@ -336,7 +346,7 @@ export function WorkspaceInspector({
           align="end"
           side="bottom"
           sideOffset={8}
-          aria-label="Pinned summary"
+          aria-label="Workspace"
           className="max-h-[min(44rem,calc(100vh-6rem))] w-80 gap-0 overflow-y-auto rounded-3xl border border-border bg-popover p-2.5 text-popover-foreground shadow-2xl"
         >
           <SectionHeading label={`Workspace · ${projectName ?? projectId}`} />
@@ -358,11 +368,18 @@ export function WorkspaceInspector({
             ) : (
               <InspectorRow icon={GitBranchIcon} label="Not a git repository" />
             )}
-            {git?.repository && git.worktrees.length > 0 && (
+            {/* THE PROJECT'S OWN CHECKOUT IS NOT A WORKTREE, and counting it
+                as one is what made a session on the checkout announce
+                "1 worktree — exoplanets" — the project's name, offered as
+                evidence of a cut tree that does not exist. `git worktree list`
+                reports the main checkout as its first entry (see
+                `parseWorktreeList`); the row is about the trees CUT from it,
+                so a repository with none has no row at all. */}
+            {git?.repository && cutWorktrees.length > 0 && (
               <InspectorRow
                 icon={FolderGit2Icon}
-                label={`${git.worktrees.length} worktree${git.worktrees.length === 1 ? "" : "s"}`}
-                detail={git.worktrees.find((entry) => entry.isMainCheckout)?.basename}
+                label={`${cutWorktrees.length} worktree${cutWorktrees.length === 1 ? "" : "s"}`}
+                {...(cutWorktrees.length === 1 ? { detail: cutWorktrees[0]!.branch ?? cutWorktrees[0]!.basename } : {})}
               />
             )}
           </div>
@@ -425,9 +442,10 @@ export function WorkspaceInspector({
             </>
           )}
 
-          {!activityRunning && browserTabs.length === 0 && (
-            <p className="px-2 pb-1 pt-2 text-[0.6875rem] text-muted-foreground">Nothing else is running.</p>
-          )}
+          {/* NOTHING SAYS NOTHING. This used to close with "Nothing else is
+              running." — a sentence whose only job was to report the absence
+              of the three sections above it, which are absent. The popover is
+              the present tense; an empty present tense is an empty popover. */}
         </PopoverContent>
       </Popover>
     </div>
