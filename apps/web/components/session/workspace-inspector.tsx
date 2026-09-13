@@ -184,7 +184,7 @@ export function WorkspaceInspector({ projectId }: { projectId: string }) {
           side="bottom"
           sideOffset={8}
           aria-label="Notes"
-          className="max-h-[min(44rem,calc(100vh-6rem))] w-80 gap-0 overflow-y-auto rounded-3xl border border-border bg-popover p-2.5 text-popover-foreground shadow-2xl"
+          className="max-h-[min(44rem,calc(100vh-6rem))] w-80 gap-0 overflow-y-auto rounded-3xl border border-border bg-popover p-2.5 text-popover-foreground shadow-3"
         >
           <InspectorNotes projectId={projectId} notes={notes} />
         </PopoverContent>

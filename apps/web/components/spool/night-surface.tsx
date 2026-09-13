@@ -171,7 +171,7 @@ export function NightSurface({
             <Label>Working now</Label>
             <ul className="space-y-1 px-2 pb-1">
               {work.running.map((entry) => (
-                <li key={entry.id} className="rounded-xl bg-card p-2.5 shadow-sm ring-1 ring-foreground/10">
+                <li key={entry.id} className="rounded-xl bg-card p-2.5 shadow-1 ring-1 ring-foreground/10">
                   <div className="flex items-center gap-2">
                     <Loader2Icon className="size-3.5 shrink-0 animate-spin text-spool" />
                     {/* A SUBJECT-SCOPED PASS HAS NO PACKET TO OPEN — the same
@@ -217,7 +217,7 @@ export function NightSurface({
             <Label>It could not answer these alone</Label>
             <ul className="space-y-1 px-2 pb-1">
               {questions.map((job) => (
-                <li key={job.id} className="rounded-xl bg-card p-2.5 shadow-sm ring-1 ring-foreground/10">
+                <li key={job.id} className="rounded-xl bg-card p-2.5 shadow-1 ring-1 ring-foreground/10">
                   {/* A JOB MAY HAVE NO PACKET TO OPEN — the `verify` shape this
                       file already guards for below. */}
                   {job.itemId ? (

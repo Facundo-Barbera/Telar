@@ -2196,7 +2196,7 @@ export function Stance({
        content over empty ground reads as a page with room left, never as a
        dead field. */
     <div className="mx-auto w-full max-w-3xl px-6 py-6">
-      <div className="rounded-xl bg-card px-4 py-6 shadow-sm ring-1 ring-foreground/10">
+      <div className="rounded-xl bg-card px-4 py-6 shadow-1 ring-1 ring-foreground/10">
       {/* ── THE CASCADE'S ONE SENTENCE — §9.2. A close that settled questions
              says so here, once, in the quiet inline idiom: the engine's own
              counts and refusal reasons, quoted, no colour. A close that
@@ -2751,7 +2751,7 @@ export function SelectionBar({
   };
   return (
     <div className="pointer-events-none sticky bottom-4 z-10 mx-auto w-full max-w-3xl px-6">
-      <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-xl bg-card px-3 py-2 shadow-md ring-1 ring-foreground/10">
+      <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-xl bg-card px-3 py-2 shadow-2 ring-1 ring-foreground/10">
         <span className="shrink-0 text-xs font-medium text-foreground">
           {count} selected
         </span>
@@ -3672,7 +3672,7 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
             resident chat aside any more; the Assistant room is where the
             same conversation goes full-width instead. */}
         {layer && (
-          <div className="absolute inset-y-0 right-0 z-20 flex w-96 min-w-80 shrink-0 flex-col border-l border-border bg-sidebar shadow-lg">
+          <div className="absolute inset-y-0 right-0 z-20 flex w-96 min-w-80 shrink-0 flex-col border-l border-border bg-sidebar shadow-3">
             {layer.kind === "chat" ? (
               <MasterChat
                 onChanged={load}

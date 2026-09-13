@@ -225,7 +225,7 @@ test("a group draws one card, with its rows hairlined inside it", () => {
   // ONE card around BOTH rows, not one per row — the group is the object.
   // The arbitrary variant arrives HTML-escaped in a server render — matched as
   // it actually reaches the DOM rather than as it is written in the source.
-  const card = 'class="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-sm [&amp;&gt;*]:px-4"';
+  const card = 'class="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-1 [&amp;&gt;*]:px-4"';
   expect(html).toContain(card);
   expect(html.split(card).length - 1).toBe(1);
   expect(html).toContain("Project grouping");

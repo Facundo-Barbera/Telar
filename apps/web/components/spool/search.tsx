@@ -99,7 +99,7 @@ export function SpoolSearchControl({ onHit }: { onHit: (hit: SpoolSearchHit) => 
              input and let a fixed `w-96` hang off past the viewport's left
              edge. `min-w` no wider than the input needs, `max-w-sm` so nothing
              this wide ever needs a negative offset to stay onscreen. */
-          className="absolute top-full left-0 z-20 mt-1 max-h-80 min-w-56 max-w-sm overflow-y-auto rounded-xl bg-card p-1.5 shadow-md ring-1 ring-foreground/10"
+          className="absolute top-full left-0 z-20 mt-1 max-h-80 min-w-56 max-w-sm overflow-y-auto rounded-xl bg-card p-1.5 shadow-3 ring-1 ring-foreground/10"
         >
           {KINDS.map(({ kind, header }) => {
             const group = hits.filter((h) => h.kind === kind);

@@ -117,7 +117,7 @@ export function UsageChart({
           {hover !== undefined && (
             <div
               className={cn(
-                "pointer-events-none absolute z-10 min-w-32 -translate-y-full rounded-lg border border-border bg-popover p-2 text-xs shadow-md",
+                "pointer-events-none absolute z-10 min-w-32 -translate-y-full rounded-lg border border-border bg-popover p-2 text-xs shadow-3",
                 hover > count / 2 ? "-translate-x-full" : "",
               )}
               style={{ left: `${(x(hover) / W) * 100}%`, top: `${(y(peak) / H) * 100}%` }}

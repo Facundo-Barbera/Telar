@@ -43,7 +43,7 @@ export function ComposerStashMenu({
     <div
       role="listbox"
       aria-label="Stashed prompts"
-      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl"
+      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-3 backdrop-blur-xl"
     >
       <div className="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Stash</div>
       {entries.length === 0 ? (

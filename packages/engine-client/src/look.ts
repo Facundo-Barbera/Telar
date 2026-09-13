@@ -56,22 +56,22 @@ export type ThemeHalf = Record<ThemeToken, string>;
  *  nothing precisely because these ARE its values. A parser needs them
  *  concrete: a half filled from a partial file must still paint a whole app. */
 export const TELAR_LIGHT: ThemeHalf = {
-  background: "oklch(0.992 0 0)",
+  background: "oklch(0.975 0.002 286)",
   foreground: "oklch(0.274 0.006 286)",
   card: "oklch(1 0 0)",
   "card-foreground": "oklch(0.274 0.006 286)",
   popover: "oklch(1 0 0)",
   "popover-foreground": "oklch(0.274 0.006 286)",
-  secondary: "oklch(0.96 0.002 286)",
+  secondary: "oklch(0.943 0.002 286)",
   "secondary-foreground": "oklch(0.274 0.006 286)",
-  muted: "oklch(0.967 0.001 286)",
+  muted: "oklch(0.952 0.001 286)",
   "muted-foreground": "oklch(0.525 0.016 286)",
-  accent: "oklch(0.955 0.002 286)",
+  accent: "oklch(0.939 0.002 286)",
   "accent-foreground": "oklch(0.21 0.006 286)",
   border: "oklch(0.92 0.004 286)",
-  input: "oklch(0.66 0.008 286)",
-  sidebar: "oklch(0.972 0.001 286)",
-  "sidebar-accent": "oklch(0.945 0.003 286)",
+  input: "oklch(0.645 0.008 286)",
+  sidebar: "oklch(0.955 0.002 286)",
+  "sidebar-accent": "oklch(0.938 0.003 286)",
 };
 
 export const TELAR_DARK: ThemeHalf = {
@@ -148,6 +148,32 @@ export const DEFAULT_MONO_FONT_SIZE = 13;
  *  alpha range before any CSS sees it). */
 export const MIN_TRANSLUCENCY = 0;
 export const MAX_TRANSLUCENCY = 100;
+
+/**
+ * HOW FAR THE ELEVATION LADDER TRAVELS — `data-depth` on the cockpit's <html>,
+ * and the multipliers behind it live in globals.css beside the rungs.
+ *
+ * IT IS TASTE, SO IT TRAVELS IN A LOOK. `translucent` and `frost` are facts
+ * about a MACHINE (macOS vibrancy, a window that has to be rebuilt); depth is
+ * a fact about how you want surfaces to read, it means the same thing in a
+ * browser tab and a desktop window, and a look built around flat hairlines is
+ * a different look from the same palette under deep shadow. So it sits with
+ * the accent and the type rather than with the window group.
+ *
+ * "soft" is the default and, like `indigo` and `geist`, writes no attribute at
+ * all — the tokens as authored are soft, and the stylesheet stays the single
+ * source of the default look.
+ *
+ * THE DEFAULT IS FIRST IN THIS LIST AND HAS TO STAY THERE. The cockpit's
+ * pre-paint script (APPEARANCE_INIT_SCRIPT) is dependency-free and decides
+ * "is this the default?" by comparing against element zero of the list it is
+ * handed — the same contract ACCENTS and APP_FONTS already live under.
+ * Reordering these would make the default write an attribute and one of the
+ * other two stop writing one.
+ */
+export const DEPTHS = ["soft", "flat", "deep"] as const;
+export type Depth = (typeof DEPTHS)[number];
+export const DEFAULT_DEPTH: Depth = "soft";
 
 export const DEFAULT_ACCENT: Accent = "indigo";
 export const DEFAULT_SANS_FONT: SansFont = "geist";
@@ -408,6 +434,8 @@ export type Look = {
   fontSize: number;
   fontMonoSize: number;
   translucencyLevel: number;
+  /** How far the elevation ladder travels — see DEPTHS. */
+  depth: Depth;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -527,6 +555,10 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
     // parser must not reject those — it defaults, like every other member.
     fontMonoSize: clampInt(value.fontMonoSize, MIN_MONO_FONT_SIZE, MAX_MONO_FONT_SIZE, DEFAULT_MONO_FONT_SIZE),
     translucencyLevel: clampInt(value.translucencyLevel, MIN_TRANSLUCENCY, MAX_TRANSLUCENCY, DEFAULT_TRANSLUCENCY_LEVEL),
+    // Absent in every Look written before the elevation ladder existed, which
+    // is exactly what the default is for — an older file wears "soft" and
+    // looks the way it always did.
+    depth: oneOf<Depth>(value.depth, DEPTHS, DEFAULT_DEPTH),
   };
 }
 
