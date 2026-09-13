@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
-import { followedSessions, RelatedWork } from "./related-work";
+import { followedSessions, relatedTree, RelatedWork } from "./related-work";
 import { ProjectGroupSection } from "./project-group";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { groupSessions, withholdFollowedRows, type ProjectGroup } from "@/lib/session-groups";
@@ -229,5 +229,69 @@ describe("the group's chip", () => {
     expect(block).toContain("const open = expanded.has(entry.coordinatorKey);");
     // Whitespace-insensitive: a formatter run must not fail this.
     expect(block).toMatch(/\{open\s*&&\s*entry\.sessions\.map\(/);
+  });
+});
+
+/**
+ * THE GROUP DRAWS THE SAME TREE — issue #323.
+ *
+ * A pinned coordinator has drawn its delegates underneath it since #199; inside
+ * a project group the same sessions sat as siblings, so an indent meant one
+ * thing in one band and nothing in the other. `relatedTree` is the arrangement
+ * they now share, and `related-work.test.tsx` pins what it answers.
+ *
+ * PINNED IN SOURCE, for this file's own reason: the group's rows are
+ * `SessionRow`s, which reach for the Next app router a server render has no
+ * mount for. What can be decided here is the structure — that the group maps
+ * the TREE rather than the flat list, and that each row's children are rendered
+ * inside that row's own element.
+ */
+describe("the tree inside a project group", () => {
+  const source = fs.readFileSync(path.join(dir, "project-group.tsx"), "utf8");
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  test("the group's rows come from `relatedTree`, not from the flat list", () => {
+    expect(code).toContain("relatedTree(group.sessions)");
+    expect(code).toMatch(/\{tree\.rows\.map\(\(\{ session, related \}\) =>/);
+    // The flat map is gone: two maps would put every child after every row.
+    expect(code).not.toContain("{group.sessions.map((session) => (");
+  });
+
+  test("a row's children are drawn INSIDE that row's own element", () => {
+    const block = code.slice(code.indexOf("{tree.rows.map("));
+    expect(block).toContain("<RelatedWork");
+    expect(block).toContain("groups={related}");
+    expect(block).toContain("coordinatorId={session.id}");
+    // Host-qualified, like every other id comparison the rail makes.
+    expect(block).toContain("coordinatorHostId: session.hostId");
+  });
+
+  test("DRAG STAYS ON THE PARENT — a child is drawn where its coordinator is", () => {
+    const block = code.slice(code.indexOf("{tree.rows.map("));
+    expect(block.match(/drag=\{rowDrag\(/g)).toHaveLength(1);
+    // …and `RelatedWork` has no drag to give it in the first place.
+    expect(fs.readFileSync(path.join(dir, "related-work.tsx"), "utf8")).not.toContain("draggable");
+  });
+
+  test("THE HEADER COUNT IS UNTOUCHED: a nested row is still a row this group shows", () => {
+    // The opposite of `withheld`, whose rows the group really is not drawing.
+    expect(code).toContain("const shown = group.sessions.length;");
+  });
+
+  test("the withhold rule still takes its rows out first, so the tree never sees them", () => {
+    // #300's bargain is between the PINNED band and the group; the tree is drawn
+    // from what the group is LEFT with, which is why the two cannot both claim
+    // one row — the followed session is not in the group to be nested.
+    const pinned = session("coord", { title: "Coordinator", settledOverride: "active" });
+    const worker = session("worker", {
+      assignments: [{ taskRunId: "t", fromSessionId: "coord", receivedAt: 1, runId: "t" } as never],
+    });
+    const grouped = groupSessions({ pinned: [pinned], sessions: [worker] });
+    const [group] = withholdFollowedRows(grouped.groups, [
+      { key: sessionKey(pinned), title: pinned.title, following: [sessionKey(worker)] },
+    ]);
+    expect(group?.sessions).toEqual([]);
+    expect(relatedTree(group?.sessions ?? []).rows).toEqual([]);
+    expect(group?.withheld?.[0]?.sessions.map((s) => s.id)).toEqual(["worker"]);
   });
 });

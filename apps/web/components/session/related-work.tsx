@@ -30,7 +30,13 @@
 import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, CornerDownRightIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
-import { sessionHref, sessionKey, type RelatedWork as RelatedWorkGroups, type SidebarSession } from "@/lib/session-list";
+import {
+  relatedWork,
+  sessionHref,
+  sessionKey,
+  type RelatedWork as RelatedWorkGroups,
+  type SidebarSession,
+} from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
 
 /**
@@ -147,6 +153,58 @@ export function followedSessions(
     else seen.set(key, { session: match, subscriptionIds: [subscription.id] });
   }
   return [...seen.values()];
+}
+
+/** A flat list of rows, arranged into one level of parents and children. */
+export type RelatedTree = {
+  /** Rows still drawn at the list's own level, in the order they arrived. */
+  rows: { session: SidebarSession; related: RelatedWorkGroups }[];
+  /** Keys drawn as somebody's child, and so not drawn beside their parent. */
+  nested: ReadonlySet<string>;
+};
+
+/**
+ * THE TREE A FLAT LIST OF ROWS MAKES — issue #323, for a coordinator that is
+ * NOT pinned.
+ *
+ * The pinned band has drawn its delegates underneath it since #199; everywhere
+ * else the same sessions sat as siblings with nothing saying whose they were.
+ * One shape for both is the whole point of the elbow: a reader should not have
+ * to know a row is pinned to know what an indent means.
+ *
+ * SCOPED TO THE LIST IT IS GIVEN, which the caller makes one project group. A
+ * child here is a row that list would otherwise draw beside its parent — moving
+ * a row out of the project it belongs to is the PINNED band's bargain
+ * (`withholdFollowedRows`, which pays for it with a chip on the group it took
+ * from), and nothing about drawing a tree in place needs it.
+ *
+ * ONE LEVEL, AND FIRST POSITION WINS. A row already drawn — as somebody's child
+ * or at the top level — is never claimed again, so two coordinators delegating
+ * to one session is one row under the first of them, and a chain of delegations
+ * reads as a list under its head rather than a staircase down the rail.
+ */
+export function relatedTree(sessions: readonly SidebarSession[]): RelatedTree {
+  const nested = new Set<string>();
+  const drawn = new Set<string>();
+  const rows: RelatedTree["rows"] = [];
+  for (const session of sessions) {
+    const key = sessionKey(session);
+    if (nested.has(key)) continue;
+    drawn.add(key);
+    const found = relatedWork(sessions, session);
+    const claim = (candidates: readonly SidebarSession[]) =>
+      candidates.filter((child) => {
+        const childKey = sessionKey(child);
+        if (nested.has(childKey) || drawn.has(childKey)) return false;
+        nested.add(childKey);
+        return true;
+      });
+    rows.push({
+      session,
+      related: { active: claim(found.active), review: claim(found.review), independent: claim(found.independent) },
+    });
+  }
+  return { rows, nested };
 }
 
 export function RelatedWork({

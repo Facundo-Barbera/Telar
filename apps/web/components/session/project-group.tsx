@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { OpenerIcon } from "@/components/session/opener-icon";
+import { RelatedWork, relatedTree } from "@/components/session/related-work";
 import { SessionRow } from "@/components/session/session-row";
 import {
   ContextMenu,
@@ -271,6 +272,25 @@ export function ProjectGroupSection({
   const [pickingHost, setPickingHost] = useState(false);
   const withheld = group.withheld ?? [];
   const withheldCount = withheld.reduce((total, entry) => total + entry.sessions.length, 0);
+  /**
+   * THE GROUP'S OWN TREE — issue #323, the unpinned half of it.
+   *
+   * A pinned coordinator has drawn its delegates underneath itself since #199;
+   * an unpinned one drew them as siblings, with nothing but recency saying whose
+   * they were. `relatedTree` is the same one-level arrangement, so the elbow
+   * means the same thing in both bands and a reader does not have to know a row
+   * is pinned to read an indent.
+   *
+   * THE COUNT IS UNTOUCHED, deliberately: a nested row is still a row this group
+   * is showing, and subtracting it would make the header disagree with the rows
+   * under it. That is the opposite of `withheld`, whose rows this group really
+   * is not drawing.
+   *
+   * Memoised on the row list, which `groupSessions` and `withholdFollowedRows`
+   * both hand back unchanged when nothing moved — this walks the group once per
+   * row, and the rail re-renders on every poll.
+   */
+  const tree = useMemo(() => relatedTree(group.sessions), [group.sessions]);
   // A COLLAPSED GROUP STILL TELLS THE TRUTH. The chips live in the body, so the
   // header's own count is the only thing a folded group says about itself.
   const countLabel = withheldCount ? `${shown} shown, ${withheldCount} under Following` : `${shown} shown`;
@@ -523,20 +543,32 @@ export function ProjectGroupSection({
               </div>
             );
           })}
-          {group.sessions.map((session) => (
-            <SessionRow
-              key={sessionKey(session)}
-              session={session}
-              active={sessionKey(session) === activeSessionId}
-              showProject={false}
-              // Slim: the header already names the project, and a card's
-              // status/branch lines are mostly empty on an idle row.
-              variant="slim"
-              band={bandFor(session)}
-              renderedAt={renderedAt}
-              onRefresh={onRefresh}
-              drag={rowDrag(sessionKey(session))}
-            />
+          {/* One fragment per row: the row, then what it delegated. The DRAG
+              stays on the parent — a child is drawn where its coordinator is,
+              so a handle on it would offer to move a row out of its own tree. */}
+          {tree.rows.map(({ session, related }) => (
+            <div key={sessionKey(session)} className="space-y-0.5">
+              <SessionRow
+                session={session}
+                active={sessionKey(session) === activeSessionId}
+                showProject={false}
+                // Slim: the header already names the project, and a card's
+                // status/branch lines are mostly empty on an idle row.
+                variant="slim"
+                band={bandFor(session)}
+                renderedAt={renderedAt}
+                onRefresh={onRefresh}
+                drag={rowDrag(sessionKey(session))}
+              />
+              {/* No follow controls here: subscriptions are read for the PINNED
+                  coordinators only, and polling one per row would be an IPC
+                  round trip per paint to fill in a control nobody asked for. */}
+              <RelatedWork
+                groups={related}
+                coordinatorId={session.id}
+                {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
+              />
+            </div>
           ))}
         </SidebarGroupContent>
       )}

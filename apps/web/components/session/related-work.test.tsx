@@ -1,8 +1,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { RelatedWork } from "./related-work";
-import { relatedWork, type SidebarSession } from "@/lib/session-list";
+import { RelatedWork, relatedTree } from "./related-work";
+import { relatedWork, sessionKey, type SidebarSession } from "@/lib/session-list";
 
 /**
  * The three relationships, rendered — and kept apart, because merging them is
@@ -234,4 +234,93 @@ test("no onFollow means no control at all", () => {
     <RelatedWork groups={relatedWork([session("worker", { assignments: [assignment("coord")] })], { id: "coord" })} coordinatorId="coord" />,
   );
   expect(html).not.toContain("Follow ");
+});
+
+/**
+ * THE SAME TREE WHERE THE COORDINATOR IS NOT PINNED — issue #323.
+ *
+ * The pinned band has drawn its delegates underneath it since #199; a project
+ * group drew the same sessions as siblings. `relatedTree` is the arrangement
+ * both now share, so an indent means one thing in the rail rather than two.
+ */
+describe("relatedTree", () => {
+  const ids = (tree: ReturnType<typeof relatedTree>) =>
+    tree.rows.map(({ session: s, related }) => [
+      s.id,
+      [...related.active, ...related.review, ...related.independent].map((child) => child.id),
+    ]);
+
+  test("a delegate is drawn UNDER its coordinator and not beside it", () => {
+    const tree = relatedTree([
+      session("coord", { title: "Coord" }),
+      session("worker", { assignments: [assignment("coord")] }),
+      session("plain"),
+    ]);
+    expect(ids(tree)).toEqual([
+      ["coord", ["worker"]],
+      ["plain", []],
+    ]);
+    expect([...tree.nested]).toEqual(["worker"]);
+  });
+
+  test("provenance nests too — the elbow is the edge, whatever kind it is", () => {
+    const tree = relatedTree([session("coord"), session("free", { startedFrom: { sessionId: "coord" } })]);
+    expect(ids(tree)).toEqual([["coord", ["free"]]]);
+  });
+
+  test("FIRST POSITION WINS: two coordinators delegating to one session is ONE row", () => {
+    // Drawing it under both would re-create the duplicate the rail's whole
+    // dedupe story exists to remove.
+    const shared = session("shared", { assignments: [assignment("coord_a"), assignment("coord_b")] });
+    const tree = relatedTree([session("coord_a"), session("coord_b"), shared]);
+    expect(ids(tree)).toEqual([
+      ["coord_a", ["shared"]],
+      ["coord_b", []],
+    ]);
+  });
+
+  test("a row already drawn at the top is never pulled down under a later parent", () => {
+    // The delegate comes FIRST in the group's arranged order, so it is a row of
+    // its own by the time its coordinator is reached. Moving it then would make
+    // an arrangement the reader chose reorder itself.
+    const tree = relatedTree([session("worker", { assignments: [assignment("coord")] }), session("coord")]);
+    expect(ids(tree)).toEqual([
+      ["worker", []],
+      ["coord", []],
+    ]);
+    expect(tree.nested.size).toBe(0);
+  });
+
+  test("ONE LEVEL, NOT A STAIRCASE: a child's own delegates stay at the top", () => {
+    const tree = relatedTree([
+      session("coord"),
+      session("middle", { assignments: [assignment("coord")] }),
+      session("leaf", { assignments: [assignment("middle")] }),
+    ]);
+    expect(ids(tree)).toEqual([
+      ["coord", ["middle"]],
+      ["leaf", []],
+    ]);
+  });
+
+  test("HOST-QUALIFIED, like every other id comparison in this file", () => {
+    const tree = relatedTree([
+      session("coord"),
+      session("worker", { hostId: "other-mac", assignments: [assignment("coord")] }),
+    ]);
+    // A bare `fromSessionId` from another engine is a stranger, so both are rows.
+    expect(ids(tree)).toEqual([
+      ["coord", []],
+      ["worker", []],
+    ]);
+    expect(tree.rows.map(({ session: s }) => sessionKey(s))).toEqual(["coord", "other-mac:worker"]);
+  });
+
+  test("a list with no relationships in it comes back exactly as it went in", () => {
+    const tree = relatedTree([session("a"), session("b")]);
+    expect(ids(tree)).toEqual([
+      ["a", []],
+      ["b", []],
+    ]);
+  });
 });
