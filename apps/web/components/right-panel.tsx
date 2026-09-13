@@ -1245,8 +1245,10 @@ export function PanelSurface({
   openIssueNumbers,
   openPullNumbers,
   onOpenTab,
+  onOpenNewTab,
   onOpenFileInNewTab,
   onInsertReference,
+  onTabParams,
   active,
   dataScience,
   onOpenImage,
@@ -1293,12 +1295,25 @@ export function PanelSurface({
    */
   onOpenFileInNewTab?: (path: string) => void;
   /**
+   * Open ANOTHER instance of a multi-instance kind, with params — the "+"
+   * chooser's verb, reached from inside a surface. A Diff row uses it to review
+   * its own path in a second Diff (#335).
+   */
+  onOpenNewTab?: (tab: PanelTab, params?: PanelTabParams) => void;
+  /**
    * Put a reference into the message being written — the same text a row's own
    * DRAG already carries (`lib/drag-reference.ts`), reached with a gesture that
    * does not require aiming at the composer. The cockpit owns the draft, so it
    * owns this; absent (a canvas with no composer) simply hides the item.
    */
   onInsertReference?: (text: string) => void;
+  /**
+   * Rewrite THIS instance's params — what a surface calls when the thing that
+   * identifies it changes, so the strip's label follows (#335). Bound to the
+   * active tab's id by the caller, exactly as `onEditorChange` is: a surface
+   * must not be able to name another tab.
+   */
+  onTabParams?: (params: PanelTabParams) => void;
   active?: TurnState;
   /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
   dataScience?: boolean;
@@ -1406,10 +1421,20 @@ export function PanelSurface({
         reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
         {...(active ? { active } : {})}
+        // THIS instance's filter, read from and written back to the tab's own
+        // params — the same round trip the Editor's open file makes, which is
+        // what lets `panelTabSuffix` name the tab "Diff · apps/web/". An empty
+        // field clears the params rather than storing a blank, so a cleared
+        // filter leaves a tab that reads "Diff".
+        {...(tab.params.filter ? { filter: tab.params.filter } : {})}
+        {...(onTabParams ? { onFilterChange: (filter: string) => onTabParams(filter.trim() ? { filter } : {}) } : {})}
         // Derived from `onOpenTab`, exactly as LatexSurface's is above — a
         // changed file opens through the ONE route into the Editor rather than
         // a second one cut for this menu.
         onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}
+        // ...and the row's own path in a second Diff, through the same verb the
+        // "+" chooser presses for another instance.
+        {...(onOpenNewTab ? { onOpenInNewPanelTab: (path: string) => onOpenNewTab("diff", { filter: path }) } : {})}
         {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
@@ -1745,6 +1770,7 @@ export function RightPanel({
   onCloseTab,
   onMoveTab,
   onClose,
+  onTabParams,
   open = true,
   dataScience = false,
   latex = false,
@@ -1788,14 +1814,17 @@ export function RightPanel({
   /** Open a surface, or focus the one of that kind already open — every "go
    *  there" gesture in the cockpit. */
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
-  /** Open ANOTHER instance of a multi-instance kind. Absent leaves the "+"
-   *  chooser offering each kind once, which is what a caller with no
-   *  per-instance state to give them wants. */
-  onOpenNewTab?: (tab: PanelTab) => void;
+  /** Open ANOTHER instance of a multi-instance kind, with the params that make
+   *  it a different one. Absent leaves the "+" chooser offering each kind once,
+   *  which is what a caller with no per-instance state to give them wants. */
+  onOpenNewTab?: (tab: PanelTab, params?: PanelTabParams) => void;
   /** Open a file in a NEW Editor tab — see `PanelSurface`. */
   onOpenFileInNewTab?: (path: string) => void;
   /** Put a reference into the message being written — see `PanelSurface`. */
   onInsertReference?: (text: string) => void;
+  /** Rewrite one instance's params, so a surface can keep its own tab's label
+   *  true — see `PanelSurface`. By id, like `onEditorChange`. */
+  onTabParams?: (id: string, params: PanelTabParams) => void;
   onCloseTab: (id: string) => void;
   /** Reorder the strip — `toIndex` is the place in the strip WITHOUT the moved
    *  tab, which is what `movePanelTab` takes. Absent leaves the tabs draggable
@@ -2271,8 +2300,12 @@ export function RightPanel({
               openIssueNumbers={openIssueNumbers}
               openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
+              {...(onOpenNewTab ? { onOpenNewTab } : {})}
               {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
               {...(onInsertReference ? { onInsertReference } : {})}
+              // Bound to THIS instance, exactly as `onEditorChange` below is —
+              // a surface changes its own tab's params and no other's.
+              {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}
