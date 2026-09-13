@@ -583,11 +583,40 @@ code, pre, kbd, samp {
    through the `--sidebar-wash` indirection the @theme block explains, rather
    than re-derived from --background. Ratios are unchanged, so Telar's default
    look is pixel-identical; Ember's rail now frosts ember instead of grey. */
+/* ─── THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY (#399) ────────────
+
+   `--translucency` is what the person asked for. `--wash-transparency` is what
+   this half can afford to give them, and they are the same number in dark only.
+
+   WHY LIGHT GETS LESS. Transparency costs contrast, and the two halves do not
+   start from the same place: dark text on a near-white canvas is already the
+   narrower margin, and thinning that canvas mixes the DESKTOP into it — an
+   arbitrary photograph, usually brighter than the ink and never chosen to be
+   read against. The dark half thins toward black, which is where its own text
+   is not. So the identical ratio that reads as glass at 45% dark read as fog at
+   45% light: the slider was honest and the result was not.
+
+   0.6, AND IT IS A TUNING, NOT A DERIVATION. It is the factor at which the
+   default 45% lands the light canvas at the same legibility the dark one has
+   there (73% opaque against 55%). Anyone re-tuning it moves both rules at once,
+   which is the reason the number is a variable rather than two hand-mixed
+   ratios that could drift apart.
+
+   ONLY THE LIGHT HALF DECLARES ANYTHING. The two rules below read the slider
+   THROUGH `--wash-transparency`, falling back to the slider itself — so the
+   dark half sets nothing, takes the fallback, and computes byte-for-byte what
+   it computed before this rule existed. Light is the exception and says so in
+   one place. `.dark` is the class the theme provider toggles on <html>
+   (theme-provider.tsx), which is the same element both attributes are written
+   on, so `:not(.dark)` is the light half of exactly this scene. */
+html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --wash-transparency: calc(var(--translucency, 45%) * 0.6);
+}
 :is([data-telar-shell][data-translucent], [data-backdrop]) body {
-  background-color: color-mix(in oklab, var(--background) calc(100% - var(--translucency, 45%)), transparent);
+  background-color: color-mix(in oklab, var(--background) calc(100% - var(--wash-transparency, var(--translucency, 45%))), transparent);
 }
 :is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--translucency, 45%)), transparent);
+  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--wash-transparency, var(--translucency, 45%))), transparent);
 }
 /* THE OPT-IN IS A CLASS, NOT A CLASS NAME. This used to also match
    `.bg-background\/65` and `.bg-background\/80` — the utilities the two
