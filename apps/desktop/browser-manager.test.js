@@ -3,7 +3,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { DesktopBrowserManager, normalizeUrl, looksLikeAddress } = require("./browser-manager");
+const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress } = require("./browser-manager");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -2559,5 +2559,127 @@ describe("duplicating a tab", () => {
     await manager.createTab("s", "https://one.example/", "human");
     await expect(manager.action("s", { action: "duplicate", index: 9 })).rejects.toThrow(/does not exist/);
     expect(manager.state("s").tabs).toHaveLength(1);
+  });
+});
+
+/**
+ * WHICH WINDOW'S BROWSER AN AGENT'S SCOPE MEANS (issue #311).
+ *
+ * Two windows, two hosts — what "Open in a new window" (#310) builds. A panel
+ * request carries its sender and is answered by that window; the agent-facing
+ * control server carries only a SCOPE, and used to be answered by one global.
+ * These are the fixture's two windows standing in for that.
+ */
+describe("the agent's scope finds its own window's browser", () => {
+  const windows = () => {
+    const one = makeHarness().manager;
+    const two = makeHarness().manager;
+    return { one, two, set: new Set([one, two]) };
+  };
+  const PANEL = { x: 0, y: 0, width: 800, height: 600 };
+
+  test("no window claims the scope: the window the human is in answers, as it always did", async () => {
+    const { one, two, set } = windows();
+    // Another session's pages in window one must not make it session-a's window.
+    await one.createTab("session-b", "https://b.example/");
+    expect(managerForScope(set, "session-a", two)).toBe(two);
+    expect(managerForScope(set, "session-a", one)).toBe(one);
+  });
+
+  test("the session's panel is in the second window: that window answers, whichever one is focused", async () => {
+    const { one, two, set } = windows();
+    two.setBounds("session-a", PANEL);
+    await two.setVisible("session-a", true);
+    expect(managerForScope(set, "session-a", one)).toBe(two);
+  });
+
+  test("live pages are a claim of their own, for a session no panel is mounted for", async () => {
+    const { one, two, set } = windows();
+    await two.createTab("session-a", "https://a.example/");
+    expect(managerForScope(set, "session-a", one)).toBe(two);
+  });
+
+  test("a panel showing the session outranks another window's live pages of it", async () => {
+    const { one, two, set } = windows();
+    await one.createTab("session-a", "https://a.example/");
+    two.setBounds("session-a", PANEL);
+    await two.setVisible("session-a", true);
+    // The human is in window one AND its host holds pages; the browser they are
+    // looking at is still the one in window two, and that is the one to drive.
+    expect(managerForScope(set, "session-a", one)).toBe(two);
+  });
+
+  test("a second Browser panel tab is the same session: `S` finds the window holding `S#2`", async () => {
+    // Since #334 a second Browser tab drives `${sessionId}#${instanceId}` and
+    // only the first keeps the bare session id — the one the engine drives.
+    const { one, two, set } = windows();
+    two.setBounds("session-a#browser-2", PANEL);
+    await two.setVisible("session-a#browser-2", true);
+    expect(managerForScope(set, "session-a", one)).toBe(two);
+    // The WINDOW is all that was resolved: the sibling's scope key is not a
+    // stand-in for the session's own, and its pages stay its own.
+    expect(two.state("session-a").tabs).toEqual([]);
+  });
+
+  test("but an instance-qualified scope never borrows the window of its session", async () => {
+    const { one, two, set } = windows();
+    await one.createTab("session-a", "https://a.example/");
+    expect(managerForScope(set, "session-a#browser-2", two)).toBe(two);
+  });
+
+  test("an exact scope outranks a sibling instance with a stronger claim", async () => {
+    const { one, two, set } = windows();
+    await one.createTab("session-a", "https://a.example/");
+    two.setBounds("session-a#browser-2", PANEL);
+    await two.setVisible("session-a#browser-2", true);
+    expect(managerForScope(set, "session-a", two)).toBe(one);
+  });
+
+  test("two windows with an equal claim: the window the human is in breaks the tie", () => {
+    const { one, two, set } = windows();
+    one.setBounds("session-a", PANEL);
+    two.setBounds("session-a", PANEL);
+    expect(managerForScope(set, "session-a", one)).toBe(one);
+    expect(managerForScope(set, "session-a", two)).toBe(two);
+  });
+
+  test("a remembered tab is not a claim — every window's host restores the same inventory", async () => {
+    const { manager: source } = makeHarness();
+    const saved = [];
+    source.tabStore = { load: () => null, save: (doc) => saved.push(doc), flushSync: () => {} };
+    await source.createTab("session-a", "https://a.example/");
+    await Promise.resolve(); // the inventory walk is coalesced to a microtask
+    const doc = saved.at(-1);
+
+    const reopen = () => {
+      const window = { isDestroyed: () => false, webContents: { send: () => {} }, contentView: { addChildView: () => {}, removeChildView: () => {} } };
+      const manager = new DesktopBrowserManager(window, {
+        createId: () => "x",
+        createView: () => new FakeView(),
+        wait: async () => {},
+        profiles: source.profiles,
+        tabStore: { load: () => doc, save: () => {}, flushSync: () => {} },
+      });
+      manager.ensureAutoRelease = () => {};
+      return manager;
+    };
+    const one = reopen();
+    const two = reopen();
+    // Both remember the page, so counting remembered tabs would hand the scope
+    // to whichever window was built first — today's bug with a new global.
+    expect(one.state("session-a").tabs).toHaveLength(1);
+    expect(two.state("session-a").tabs).toHaveLength(1);
+    expect(one.scopeClaim("session-a")).toBe(0);
+    expect(managerForScope(new Set([one, two]), "session-a", two)).toBe(two);
+  });
+
+  test("a closed window's host claims nothing, and an empty scope claims nowhere", async () => {
+    const { one, two, set } = windows();
+    await two.createTab("session-a", "https://a.example/");
+    two.destroy();
+    expect(two.scopeClaim("session-a")).toBe(0);
+    expect(managerForScope(set, "session-a", one)).toBe(one);
+    expect(one.scopeClaim("")).toBe(0);
+    expect(one.scopeClaim(null)).toBe(0);
   });
 });
