@@ -2868,7 +2868,7 @@ export function SessionCockpit({
           being an outline and became a straight hairline down the full height
           of the row, right at the panel's edge. Unpaint it there; the geometry
           stays, so the panel's `-ml-2` still lands on the row's edge. */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
         <SessionMasthead
           projectId={projectId}
           hostId={hostId}

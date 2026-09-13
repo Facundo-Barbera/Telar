@@ -34,7 +34,7 @@ describe("the mark the row's cards share", () => {
 
   test("the card drops outline AND shadow under it, and keeps both without it", () => {
     expect(card).toContain("md:ring-1");
-    expect(card).toContain("md:shadow-sm");
+    expect(card).toContain("md:shadow-1");
     expect(card).toContain("md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0");
     expect(card).toContain("md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none");
   });

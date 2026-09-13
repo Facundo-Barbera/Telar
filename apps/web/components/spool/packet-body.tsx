@@ -83,7 +83,7 @@ export function BornAs({ item, dense = false }: { item: SpoolItem; dense?: boole
               fixed
             </div>
           )}
-          <div className="rounded-xl bg-card p-3 shadow-sm ring-1 ring-foreground/10">
+          <div className="rounded-xl bg-card p-3 shadow-1 ring-1 ring-foreground/10">
             {/* `max-w-prose` in the DENSE arrangement only. The page's grid
                 already holds the measure; the panel can be dragged to 900px and
                 a brief set in one unbroken line across it is the "big context"
@@ -123,7 +123,7 @@ export function ProposedApproach({ item }: { item: SpoolItem }) {
   return (
     <section>
       <SectionLabel>Proposed approach</SectionLabel>
-      <div className="rounded-xl bg-card shadow-sm ring-1 ring-foreground/10">
+      <div className="rounded-xl bg-card shadow-1 ring-1 ring-foreground/10">
         {item.openQuestions && item.openQuestions.length > 0 && (
           <div className="border-b border-border/70 p-3">
             <p className="mb-2 text-[0.6875rem] text-muted-foreground">
@@ -283,7 +283,7 @@ export function ExpertControl({
   return (
     <div className="space-y-2 border-t border-border/70 pt-3">
       {running ? (
-        <div className="rounded-xl bg-card p-2.5 shadow-sm ring-1 ring-foreground/10">
+        <div className="rounded-xl bg-card p-2.5 shadow-1 ring-1 ring-foreground/10">
           <div className="flex items-center gap-2">
             <Loader2Icon className="size-3.5 shrink-0 animate-spin text-spool" />
             <span className="min-w-0 flex-1 truncate text-xs text-foreground">
