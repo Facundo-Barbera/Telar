@@ -90,6 +90,9 @@ import type {
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { pathnameFetcher } from "@/lib/hosts/client";
+// Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
+// must not follow into the browser bundle.
+import type { DirectoryListing } from "@/lib/fs-dirs";
 import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
 // Type-only, like `Channel` above: the store reads the filesystem and must not
 // follow into the browser bundle.
@@ -183,6 +186,22 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  the folder from the URL. `owner/repo` is expanded by the engine. */
     cloneProject: (input: { url: string; parent: string; name?: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects/clone", input),
+    /**
+     * The folders inside one folder, for the Add-project browser — the same
+     * route the phone's browser drills through (app/api/fs/route.ts).
+     *
+     * No `path` means the ANSWERING machine's home, which on a remote screen is
+     * the paired Mac's: this fetcher follows the address bar
+     * (lib/hosts/client.ts), so the browser lists the disk the project is
+     * actually being registered on. `hidden` opts in to dotfolders.
+     */
+    fsDirs: (input: { path?: string; hidden?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (input.path) query.set("path", input.path);
+      if (input.hidden) query.set("hidden", "1");
+      const search = query.toString();
+      return request<DirectoryListing>(fetcher, "GET", search ? `/api/fs?${search}` : "/api/fs");
+    },
     updateProject: (
       projectId: string,
       patch: {

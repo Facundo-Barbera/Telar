@@ -195,8 +195,15 @@ test("ordinary words are not mistaken for URLs", () => {
   expect(cloneRequest("/Users/someone/code/telar")).toBeUndefined();
 });
 
-test("a clone row with nothing to clone asks for the URL instead of doing nothing", () => {
-  expect(source).toContain("Paste the repository URL");
+test("a clone row with nothing to clone opens the URL page instead of scolding the reader", () => {
+  // It used to answer with a sentence telling you to go and type in the field
+  // you had just left — a dead Enter key dressed up as guidance. Now the row
+  // walks to a page with a field on it, which is T3's shape.
+  expect(source).toContain('go(clone ? "clone-parent" : "clone-url");');
+  expect(source).toContain("Enter a Git clone URL and press Enter to continue");
+  // And a URL already in the search field skips that page, because the reader
+  // has already answered the question.
+  expect(source).toContain("const clone = cloneRequest(query);");
 });
 
 test("Backspace goes back ONLY on an empty field", () => {
@@ -245,8 +252,62 @@ test("the two ways in share one after-the-fact path", () => {
   // what they ignore and what they report.
   expect(source).toContain("await settle((await api.registerProject(");
   expect(source).toContain("await settle((await api.cloneProject(");
-  // And the clone asks where to put it rather than inventing a code folder.
-  expect(source).toContain('chooseDirectory({ title: "Choose the folder to clone into" })');
+  // And the clone still asks where to put it rather than inventing a code
+  // folder — it is the browser page that asks now, not a Finder sheet.
+  expect(source).toContain('actionLabel={page === "local" ? "Add" : "Clone here"}');
+});
+
+/* ─── the three pages that replaced the Finder sheet ──────────────────────── */
+
+test("the source rows walk to a page instead of opening a native dialog", () => {
+  // `dialog.showOpenDialog` leaves the palette, has none of its keyboard, and
+  // from a browser tab or a paired Mac opens where nobody is looking.
+  expect(source).toContain("<DirectoryBrowser");
+  expect(source).toContain('go("local");');
+  // Every page the palette can be ON, including the ones you can only walk to.
+  expect(source).toContain('type Page = PalettePage | "local" | "clone-url" | "clone-parent";');
+});
+
+test("the exported page type still names only the two lists, for the command palette to reuse", () => {
+  // `page` is a prop the rail and ⌘N pass; the browser and the URL field are
+  // not destinations anything outside this file should be able to name.
+  expect(source).toContain('export type PalettePage = "projects" | "sources";');
+});
+
+test("the palette's own keys stop at the list pages", () => {
+  // Backspace goes UP in a folder browser. Left unguarded, the palette's rule
+  // would have sent it back to Projects instead.
+  expect(source).toContain('if (page !== "projects" && page !== "sources") return;');
+});
+
+test("every page is named for a screen reader, from a map rather than a five-deep ternary", () => {
+  expect(source).toContain("const PAGE_TITLES: Record<Page, string> = {");
+  expect(source).toContain("const PAGE_SENTENCES: Record<Page, string> = {");
+  expect(source).toContain("aria-label={PAGE_TITLES[page]}");
+});
+
+test("the native picker survives as the fallback for an unreachable engine", () => {
+  // The listing crosses HTTP; `chooseDirectory` goes through the shell's own
+  // IPC and keeps working when the adapter does not.
+  expect(source).toContain("const pickWithSystem = (title: string, then: (path: string) => void) => {");
+  expect(source).toContain("onFallback={() =>");
+  expect(source).toContain('"Choose a project folder for Telar"');
+  expect(source).toContain('"Choose the folder to clone into"');
+});
+
+test("the clone URL outlives the page that asked for it", () => {
+  // Two pages: one asks for the URL, the next picks the parent. A URL held on
+  // the first would be gone by the time the clone runs.
+  expect(source).toContain("const [cloneUrl, setCloneUrl] = useState<string>();");
+  expect(source).toContain("api.cloneProject({ url: cloneUrl, parent })");
+  // And a fresh opening does not carry the last one's URL.
+  const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
+  expect(fresh.slice(0, 320)).toContain("setCloneUrl(undefined);");
+});
+
+test("the URL page refuses junk with a sentence rather than walking on", () => {
+  expect(source).toContain("That is not a clone URL.");
+  expect(source).toContain("const takeCloneUrl = (typed: string) => {");
 });
 
 /* ─── the rail ────────────────────────────────────────────────────────────── */
