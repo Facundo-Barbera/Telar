@@ -25,6 +25,7 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
+const { vibrancyMaterial, vibrancyWindowOptions } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
@@ -910,14 +911,13 @@ function createWindow(url) {
     // the shadow is the only one that changes with key status. Translucent
     // windows barely show a shadow anyway.
     ...(translucent ? { transparent: true, hasShadow: false } : {}),
-    // "hud" is the most TRANSPARENT of macOS's vibrancy materials —
-    // "under-window" (the obvious choice) is also the milkiest, and buried the
-    // desktop no matter how far the strength slider went.
-    // `active`, NOT `followWindow`: followWindow deactivates the material when
-    // the window loses focus — alt-tab away and the glass turns opaque, come
-    // back and it flickers through the state transition. A window whose look
-    // changes with focus reads as a bug, so the material stays active.
-    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "hud", visualEffectState: "active" } : {}),
+    // THE MATERIAL FOLLOWS THE SCHEME — see ./window-material.js for which one
+    // and why. "hud" is the clearest material macOS offers, and it is also a
+    // DARK one: wearing it under a light canvas is what made translucent light
+    // read muddy (#399). `nativeTheme.shouldUseDarkColors` is the resolved
+    // answer — the cockpit pushes its own scheme into `themeSource` through
+    // `telar:appearance:setTheme`, so this is Telar's half, not the OS's.
+    ...vibrancyWindowOptions({ translucent, frost: uiPrefs.frost, dark: nativeTheme.shouldUseDarkColors }),
     show: false,
     title,
     ...macWindowChrome(),
@@ -1768,12 +1768,14 @@ function applyTranslucency(on, frost) {
     recreateWindowTranslucent(wins[0]);
     return;
   }
+  const material = vibrancyMaterial({ translucent: on, frost, dark: nativeTheme.shouldUseDarkColors });
   for (const win of wins) {
     try {
       // Frost changes are safe live in BOTH directions — attaching or removing
       // the effect view does not re-plumb the compositor the way opacity does.
-      // "hud" over "under-window": the clearest material macOS offers.
-      win.setVibrancy(on && frost !== "clear" ? "hud" : null);
+      // The material is the scheme's (./window-material.js); `null` removes the
+      // effect view, which is what both "off" and "clear" want.
+      win.setVibrancy(material);
       // The opaque colour is the app's darkest canvas, matching createWindow's
       // — a translucent window turned opaque again must not flash white first.
       win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
@@ -1781,6 +1783,46 @@ function applyTranslucency(on, frost) {
       console.error("[telar-desktop] failed to retint a window:", err.message);
     }
   }
+}
+
+/**
+ * THE SCHEME MOVED, SO THE MATERIAL HAS TO. Light and dark wear DIFFERENT
+ * vibrancy materials (./window-material.js), and the material is attached to a
+ * live NSVisualEffectView — nothing re-picks it on its own. Without this, going
+ * Light in the cockpit left the window on the dark "hud" frost until the next
+ * launch, which is the muddy half of #399 arriving by a second route.
+ *
+ * RETINT ONLY, NEVER REBUILD. `applyTranslucency` recreates a window that was
+ * born opaque, because transparency is a creation-time fact; a colour scheme is
+ * not, and rebuilding the window on every evening's system switch would throw
+ * the page away for a repaint it does not need. A window that cannot do glass
+ * is skipped: it has no effect view to retint.
+ */
+function reapplyVibrancy() {
+  if (!supportsTranslucency()) return;
+  const { translucent, frost } = readUiPrefs();
+  const material = vibrancyMaterial({ translucent, frost, dark: nativeTheme.shouldUseDarkColors });
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || !win.telarTranslucentCapable) continue;
+    try {
+      win.setVibrancy(material);
+    } catch (err) {
+      console.error("[telar-desktop] failed to retint a window for the new scheme:", err.message);
+    }
+  }
+}
+
+/**
+ * `nativeTheme` fires `updated` for BOTH ways the resolved scheme can move: the
+ * cockpit writing `themeSource` (the handler below), and — while that source is
+ * `system` — the Mac itself flipping at sunset. One listener covers both, which
+ * is why the ipc handler does not also call `reapplyVibrancy` by hand.
+ *
+ * Registered from `whenReady`, because nativeTheme is not addressable before it.
+ */
+function watchSchemeForVibrancy() {
+  if (!supportsTranslucency()) return;
+  nativeTheme.on("updated", reapplyVibrancy);
 }
 
 function recreateWindowTranslucent(old) {
@@ -2279,6 +2321,11 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
  * reverse) then composites a dark wash over a bright frost and reads as milk.
  * The cockpit reports its scheme here (theme-provider.tsx) and the shell keeps
  * nativeTheme in agreement.
+ *
+ * AND THE MATERIAL FOLLOWS IT. Writing `themeSource` fires nativeTheme's
+ * `updated`, which `watchSchemeForVibrancy` turns into a retint — so the light
+ * half gets the light material the moment the cockpit switches, rather than at
+ * the next launch (#399).
  */
 ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
   if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
@@ -2531,6 +2578,8 @@ if (SMOKE) {
         startHeapLog();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
+        // Before the first window exists, so no scheme change can be missed.
+        watchSchemeForVibrancy();
         // Before anything reads the update preferences, and before the updater
         // is configured with a channel.
         adoptLegacyUpdatePrefs();
