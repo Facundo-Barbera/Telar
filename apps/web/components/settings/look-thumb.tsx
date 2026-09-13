@@ -41,7 +41,7 @@ export function LookThumb({ look, className }: { look: Look; className?: string 
       <Half look={look} mode="dark" className="right-0 w-1/2" />
       {/* The mini panel, straddling the seam so it is legible on either half. */}
       <span
-        className="absolute inset-x-[18%] top-[30%] flex h-[40%] items-center overflow-hidden rounded-[3px] shadow-sm"
+        className="absolute inset-x-[18%] top-[30%] flex h-[40%] items-center overflow-hidden rounded-[3px] shadow-1"
         style={{ background: look.theme.dark.card, border: `1px solid ${look.theme.dark.border}` }}
       >
         <span className="h-full w-[3px] shrink-0" data-accent={look.accent} style={{ background: "var(--primary)" }} />

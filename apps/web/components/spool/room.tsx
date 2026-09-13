@@ -426,7 +426,7 @@ export function SubjectRoom({
              Dismissed, nothing here renders at all: "the room is just the
              list." Resume session stays reachable in both states. */}
       {!briefDismissed && (
-        <div className="mb-6 space-y-1 rounded-xl bg-card px-4 py-3 shadow-sm ring-1 ring-foreground/10">
+        <div className="mb-6 space-y-1 rounded-xl bg-card px-4 py-3 shadow-1 ring-1 ring-foreground/10">
           {!brief && <p className="px-1 text-xs text-muted-foreground/60">Reading…</p>}
           {brief && (
             <>
@@ -590,7 +590,7 @@ export function SubjectRoom({
               className={cn(
                 "rounded-[7px] px-2.5 py-1 text-xs font-medium capitalize transition-colors",
                 tab === option
-                  ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
+                  ? "bg-background text-foreground shadow-1 ring-1 ring-foreground/10"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -610,7 +610,7 @@ export function SubjectRoom({
             className={cn(
               "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
               selecting
-                ? "border-border bg-background text-foreground shadow-sm"
+                ? "border-border bg-background text-foreground shadow-1"
                 : "border-border text-muted-foreground hover:border-spool/40 hover:text-foreground",
             )}
           >
@@ -740,7 +740,7 @@ export function SubjectRoom({
               a task" button (still kept for Board/Calendar below): typing
               into it and pressing Enter creates through the same route
               `AddTaskDialog` speaks, preset to this room's subject. */}
-          <ul className="mt-1 overflow-hidden rounded-xl bg-card shadow-sm ring-1 ring-foreground/10">
+          <ul className="mt-1 overflow-hidden rounded-xl bg-card shadow-1 ring-1 ring-foreground/10">
             <GhostTaskRow
               subject={subjectKey}
               onCreated={() => {

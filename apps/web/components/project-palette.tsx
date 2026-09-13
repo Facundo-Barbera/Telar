@@ -896,7 +896,7 @@ function RegisteredToast({
     <div
       role="status"
       aria-live="polite"
-      className="fixed right-4 bottom-4 z-50 flex max-w-sm items-start gap-3 rounded-lg border bg-popover px-3 py-2.5 text-popover-foreground shadow-lg"
+      className="fixed right-4 bottom-4 z-50 flex max-w-sm items-start gap-3 rounded-lg border bg-popover px-3 py-2.5 text-popover-foreground shadow-3"
     >
       <span className="min-w-0 flex-1 text-xs leading-snug">
         <span className="block font-medium">{toast.name} was added.</span>

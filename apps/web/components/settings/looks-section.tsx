@@ -158,7 +158,7 @@ function LookCard({
           <Button
             size="sm"
             variant="secondary"
-            className="pointer-events-auto h-7 shadow-sm"
+            className="pointer-events-auto h-7 shadow-1"
             title={`Wear ${look.label} now`}
             onClick={(event) => (event.stopPropagation(), onWear())}
           >
@@ -181,7 +181,7 @@ function LookCard({
             <Button
               size="icon-sm"
               variant="secondary"
-              className="size-6 shadow-sm"
+              className="size-6 shadow-1"
               title="Export"
               aria-label={`Export ${look.label}`}
               onClick={(event) => (event.stopPropagation(), onExport())}
@@ -197,7 +197,7 @@ function LookCard({
             <Button
               size="icon-sm"
               variant="secondary"
-              className="size-6 shadow-sm"
+              className="size-6 shadow-1"
               title="Take this look off the shelf. Its theme stays in the library, and the window keeps what it has on."
               aria-label={`Delete ${look.label}`}
               onClick={(event) => (event.stopPropagation(), onRemove())}

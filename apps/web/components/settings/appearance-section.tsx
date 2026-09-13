@@ -104,6 +104,7 @@ import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { BackdropTool } from "./studio/backdrop-tool";
@@ -628,14 +629,9 @@ export function AppearanceSection() {
             }
           />
         )}
-        {/* ── DEPTH GOES HERE (#397) ────────────────────────────────────────
-            The depth control is a property of this window's drawing, like
-            everything else in this group, and its session owns
-            `components/settings/depth-control.tsx`. Mounting it is one line:
-
-                <DepthControl />
-
-            with the matching import. Nothing else in this group moves. */}
+        {/* DEPTH (#397): a property of this window's drawing, like everything
+            else in this group; the control itself lives in depth-control.tsx. */}
+        {current && <DepthControl draft={current} onDraft={edit} />}
       </SettingsGroup>
     </div>
   );

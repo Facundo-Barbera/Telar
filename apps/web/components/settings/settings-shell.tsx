@@ -318,7 +318,7 @@ export function SettingsShell({
       <nav
         className={cn(
           "flex w-[var(--settings-nav-width)] shrink-0 flex-col gap-4 overflow-x-hidden overflow-y-auto border-r border-border bg-sidebar p-3",
-          "md:w-[calc(var(--settings-nav-width)-1rem)] md:rounded-xl md:border-r-0 md:shadow-sm md:ring-1 md:ring-sidebar-border",
+          "md:w-[calc(var(--settings-nav-width)-1rem)] md:rounded-xl md:border-r-0 md:shadow-1 md:ring-1 md:ring-sidebar-border",
         )}
       >
         {/*
@@ -403,7 +403,7 @@ export function SettingsShell({
           second island: the conversation card's recipe from the cockpit
           (`bg-sidebar`, hairline ring, the inset's radius), clipping its own
           content so the sticky header keeps the rounded corners. */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border">
         {/* Drag region: the top of the window on the macOS shell. */}
         {/* EXACTLY the titlebar height, as the app header is — `min-h` plus
             padding let this bar settle a few pixels off the one it replaces,
@@ -524,7 +524,7 @@ export function SettingsGroup({
           that puts something other than a Row inside a group still lines up.
           Vertical padding stays even at both ends: inside a card, an eaten
           first-row `pt` presses the text against the border. */}
-      <div className="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-sm [&>*]:px-4">
+      <div className="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-1 [&>*]:px-4">
         {/* Only a plain-string title names a group for the rows beneath it. A
             title spliced from a value ("Telar's servers") would put the project
             name into every anchor under it, so those rows fall back to the

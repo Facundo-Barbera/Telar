@@ -101,7 +101,7 @@ function DayLine({
          in-flow button was reserving ~40px of every pill, which is what made
          "Telar: revisar…" truncate to three characters with free width
          visibly left beside it. */
-      className="group relative flex w-full min-w-0 cursor-grab items-center gap-1.5 rounded-md bg-card px-1.5 py-1 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
+      className="group relative flex w-full min-w-0 cursor-grab items-center gap-1.5 rounded-md bg-card px-1.5 py-1 shadow-1 ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
     >
       {/* THE PILL'S OWN CONTEXT MENU — drag stays on the `<li>` above
           (unchanged); only the pill's own content is wrapped in the trigger.
@@ -264,7 +264,7 @@ export function SpoolCalendar({
               className={cn(
                 "rounded-[7px] px-2.5 py-1 text-xs font-medium capitalize transition-colors",
                 view === option
-                  ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
+                  ? "bg-background text-foreground shadow-1 ring-1 ring-foreground/10"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -331,7 +331,7 @@ export function SpoolCalendar({
       <div className="flex min-w-0 items-start gap-4">
         {/* ── THE GRID — the app's card language: one rounded-xl ring surface,
                hairline-divided cells, text-sm words. No room colour spent. */}
-        <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-card shadow-sm ring-1 ring-foreground/10">
+        <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-card shadow-1 ring-1 ring-foreground/10">
           <div className="grid grid-cols-7 border-b border-border/60">
             {weekOf(anchor).map((day) => (
               <div key={day} className="px-2 py-1.5 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
@@ -442,7 +442,7 @@ export function SpoolCalendar({
                         setDragging(row.item.id);
                       }}
                       title={!scope && row.item.project ? `${words} — ${row.item.project}` : words}
-                      className="flex w-full min-w-0 cursor-grab items-center gap-1.5 rounded-md bg-card px-2 py-1.5 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
+                      className="flex w-full min-w-0 cursor-grab items-center gap-1.5 rounded-md bg-card px-2 py-1.5 shadow-1 ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
                     >
                       <CloseCheckbox
                         closed={false}
