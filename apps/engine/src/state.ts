@@ -4476,15 +4476,36 @@ export class EngineStore {
   }
 
   /**
-   * Change what a project OPTS INTO. Identity — name, root — is not patchable:
-   * moving a project means registering it again, and this method refuses any
-   * key it does not know rather than storing it. `dataScience: null` removes
-   * the block, which is how "off" is spelled so the registry does not grow a
-   * `{enabled: false}` for every project that tried it once.
+   * Change what a project IS CALLED, what it OPENS ON, and what it OPTS INTO.
+   *
+   * THE ROOT IS STILL NOT PATCHABLE, and that is the line this method keeps:
+   * moving a project means registering the new folder, because the root is what
+   * every session, worktree and browser profile on it resolves against. A NAME
+   * IS NOT THAT. It was refused here only because nothing had asked yet, and a
+   * registry whose only rename was "register the same folder again, typing the
+   * name differently" made a rename look like a re-registration in every log
+   * that watched one.
+   *
+   * `null` REMOVES A STORED ANSWER rather than storing a neutral one — for
+   * `dataScience` and `latex` that is how "off" is spelled, so the registry
+   * does not grow a `{enabled: false}` for every project that tried a feature
+   * once; for `iconEmoji`, `defaultModel` and `envMode` it is how "go back to
+   * following this Mac" is spelled, which is a different sentence from any
+   * value they could hold.
+   *
+   * This method still refuses any key it does not know rather than storing it.
    */
   updateProject(
     projectId: string,
-    patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null; plugins?: PluginPatch },
+    patch: {
+      name?: string;
+      iconEmoji?: string | null;
+      defaultModel?: ModelSelectionValue | null;
+      envMode?: EnvMode | null;
+      dataScience?: DataScienceConfig | null;
+      latex?: LatexConfig | null;
+      plugins?: PluginPatch;
+    },
   ): Project {
     assertId(projectId, "project id");
     const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
@@ -4498,6 +4519,44 @@ export class EngineStore {
       throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
     }
     const next: Project = { ...current, updatedAt: this.now() };
+    /**
+     * IDENTITY FIRST, AND BEFORE THE PLUGIN MAP BELOW — these four are plain
+     * scalars on the record and none of them participates in the mirroring
+     * dance, so they are applied and then forgotten about.
+     *
+     * EVERY ONE OF THEM IS VALIDATED AGAINST THE CONTRACT'S OWN SCHEMA rather
+     * than against a rule re-typed here. A second spelling of "what a model
+     * selection is" would be a second thing to forget when the contract moves.
+     */
+    if (patch.name !== undefined) {
+      const name = typeof patch.name === "string" ? patch.name.trim() : "";
+      if (name === "") throw new EngineStateError("invalid_request", "project name must be non-empty");
+      if (name.length > 200) throw new EngineStateError("invalid_request", "project name is too long");
+      next.name = name;
+    }
+    if (patch.iconEmoji === null) {
+      delete next.iconEmoji;
+    } else if (patch.iconEmoji !== undefined) {
+      const mark = ProjectSchema.shape.iconEmoji.safeParse(
+        typeof patch.iconEmoji === "string" ? patch.iconEmoji.trim() : patch.iconEmoji,
+      );
+      if (!mark.success || mark.data === undefined) throw new EngineStateError("invalid_request", "project icon must be a short mark");
+      next.iconEmoji = mark.data;
+    }
+    if (patch.defaultModel === null) {
+      delete next.defaultModel;
+    } else if (patch.defaultModel !== undefined) {
+      const model = ProjectSchema.shape.defaultModel.safeParse(patch.defaultModel);
+      if (!model.success || model.data === undefined) throw new EngineStateError("invalid_request", "default model selection is invalid");
+      next.defaultModel = model.data;
+    }
+    if (patch.envMode === null) {
+      delete next.envMode;
+    } else if (patch.envMode !== undefined) {
+      const mode = ProjectSchema.shape.envMode.safeParse(patch.envMode);
+      if (!mode.success || mode.data === undefined) throw new EngineStateError("invalid_request", "workspace mode must be local or worktree");
+      next.envMode = mode.data;
+    }
     if (patch.dataScience === null) {
       delete next.dataScience;
     } else if (patch.dataScience !== undefined) {

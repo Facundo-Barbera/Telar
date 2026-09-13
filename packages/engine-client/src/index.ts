@@ -449,10 +449,26 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/restore`, {});
   }
 
-  /** Move a project's opt-in switches. `dataScience: null` / `latex: null` turn them off. */
+  /**
+   * Move a project's identity and its opt-in switches. `dataScience: null` /
+   * `latex: null` turn a feature off.
+   *
+   * `iconEmoji`, `defaultModel` and `envMode` take `null` for the same reason
+   * and with the same meaning as the two above: REMOVE the stored answer, which
+   * is not the same as storing a neutral one. A project with no `envMode`
+   * follows this Mac's `SessionDefaults`; a project that stored `"local"`
+   * insists on the checkout however the Mac's answer moves later.
+   *
+   * `name` HAS NO `null`. Every project has a name — clearing it would leave a
+   * row with nothing to render — so it takes a new one or is left alone.
+   */
   updateProject(
     projectId: string,
     patch: {
+      name?: string;
+      iconEmoji?: string | null;
+      defaultModel?: ModelSelection | null;
+      envMode?: EnvMode | null;
       dataScience?: DataScienceConfig | null;
       latex?: LatexConfig | null;
       /**
