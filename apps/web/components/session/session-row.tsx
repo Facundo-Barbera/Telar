@@ -86,8 +86,9 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** One cell of the stat band. An ABSENT figure renders as an em dash, never a
- *  confident zero — absent is not zero. */
+/** One cell of the stat band. Only ever built for a figure that EXISTS —
+ *  `hasFigures` below is what keeps an absent one out, rather than an em dash
+ *  standing in for it. */
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-center gap-0.5 bg-popover py-2">
@@ -97,11 +98,37 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * WHETHER THIS CARD HAS ANYTHING THE ROW DOES NOT.
+ *
+ * The band used to paint "— CONTEXT / — TOKENS" for every session that has not
+ * run a turn yet, and the rest of the card is the row again: the title, the
+ * project, the provider mark. A card of three em dashes over facts you can
+ * already see is a hover that costs a reader a glance and repays nothing.
+ *
+ * The usage figures are the one thing here the row deliberately withholds (see
+ * the SPEND doctrine at the top of this file), so they are exactly the test:
+ * no figures, no card. Absent is `undefined` — `deriveSessionList` omits both
+ * keys when the engine reported no usage — so a genuine zero still counts.
+ */
+export function hasFigures(session: SidebarSession): boolean {
+  return session.contextTokens !== undefined || session.tokens !== undefined;
+}
+
 /** The detail that used to fight the title for space on the row itself.
  *
  *  LAYOUT: status strip → identity (provider mark + title + state line) →
  *  the figures you scan as a stat band → the long-tail facts as label rows. */
-function SessionDetails({ session, renderedAt }: { session: SidebarSession; renderedAt: number }) {
+export function SessionDetails({ session, renderedAt }: { session: SidebarSession; renderedAt: number }) {
+  /** Built from what is KNOWN, so the band has two cells or three rather than a
+   *  fixed three with dashes in the gaps. */
+  const tiles = [
+    ...(session.contextTokens === undefined ? [] : [{ label: "Context", value: fmtTokens(session.contextTokens) }]),
+    // Was "Cost". Tokens are the unit this cockpit reports — see lib/format.ts
+    // for why money left.
+    ...(session.tokens === undefined ? [] : [{ label: "Tokens", value: fmtTokens(session.tokens) }]),
+    { label: "Workspace", value: session.worktreeBranch ? "Worktree" : "Local" },
+  ];
   return (
     <div>
       {/* The strip carries the one ambient fact this row can state: whether the
@@ -133,12 +160,12 @@ function SessionDetails({ session, renderedAt }: { session: SidebarSession; rend
           </span>
         </span>
       </div>
-      <div className="mt-2.5 grid grid-cols-3 gap-px border-y border-border/60 bg-border/60">
-        <StatTile label="Context" value={session.contextTokens ? fmtTokens(session.contextTokens) : "—"} />
-        {/* Was "Cost". Tokens are the unit this cockpit reports — see
-            lib/format.ts for why money left. */}
-        <StatTile label="Tokens" value={session.tokens === undefined ? "—" : fmtTokens(session.tokens)} />
-        <StatTile label="Workspace" value={session.worktreeBranch ? "Worktree" : "Local"} />
+      <div
+        className={`mt-2.5 grid gap-px border-y border-border/60 bg-border/60 ${tiles.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}
+      >
+        {tiles.map((tile) => (
+          <StatTile key={tile.label} label={tile.label} value={tile.value} />
+        ))}
       </div>
       <div className="space-y-0.5 px-3 py-2">
         <DetailRow
@@ -515,6 +542,36 @@ export function SessionRow({
   const rowBody = variant === "card" ? cardBody : slimBody;
 
   /**
+   * NO HOVER CARD AT ALL IN TWO CASES, and they are different failures.
+   *
+   * THE MOBILE SHEET. Under 768px <Sidebar> stops being a docked panel and
+   * renders the mobile <Sheet> — a MODAL dialog. HoverCardContent portals to
+   * <body>, i.e. outside that dialog, so the modal treats the card as an
+   * outside element and dismisses it the instant it appears. A hover
+   * affordance in a modal sheet at phone width has nothing to offer anyway.
+   *
+   * NOTHING TO SAY. See `hasFigures`: a session that has not run a turn has no
+   * usage, and without it the card is the row again with a band of em dashes
+   * on top.
+   */
+  const plain = isMobile || !hasFigures(session);
+
+  /**
+   * THE TITLE NO LONGER MAKES ROOM FOR THE ACTIONS — they overlay it.
+   *
+   * This used to grow the link's right padding on hover/focus/menu-open so the
+   * title truncated before the buttons rather than running under them. The
+   * effect a reader actually got was a title that REWROTE ITSELF under the
+   * pointer: "Exoplanets…" became "Exo…" on the way to pressing something, on
+   * the one line they were using to find the row. Losing the name of the thing
+   * you are pointing at is a worse trade than covering its last few
+   * characters, so the cluster below carries its own backdrop and sits on top.
+   */
+  const linkClass = `flex min-w-0 flex-1 items-center gap-2 px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+    variant === "card" ? "py-2.5" : "py-1.5"
+  }`;
+
+  /**
    * ONE SET OF ANSWERS FOR BOTH MENUS ON THIS ROW. The `⋯` and the right-click
    * menu render the same definition, so giving them the same props is what
    * stops the two disagreeing about, say, whether this row is settled — which
@@ -563,13 +620,7 @@ export function SessionRow({
           : ""
       }`}
     >
-      {/* NO HOVER CARD IN THE MOBILE SHEET, AND THAT IS THE WHOLE BUG.
-          Under 768px <Sidebar> stops being a docked panel and renders the mobile
-          <Sheet> — a MODAL dialog. HoverCardContent portals to <body>, i.e.
-          outside that dialog, so the modal treats the card as an outside element
-          and dismisses it the instant it appears. A hover affordance in a modal
-          sheet at phone width has nothing to offer anyway. */}
-      {isMobile ? (
+      {plain ? (
         <Link
           id={`sidebar-session-${session.id}`}
           href={href}
@@ -582,7 +633,11 @@ export function SessionRow({
           role={searchable ? "option" : undefined}
           aria-selected={searchable ? searchSelected : undefined}
           aria-current={active ? "page" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onDoubleClick={(event: React.MouseEvent) => {
+            event.preventDefault();
+            beginRename();
+          }}
+          className={linkClass}
         >
           {rowBody}
         </Link>
@@ -601,7 +656,7 @@ export function SessionRow({
                 // Session routes are force-dynamic and carry the transcript.
                 // They are deliberately fetched only when selected.
                 prefetch={false}
-                // See the mobile branch: an anchor drags its own URL unless
+                // See the plain branch: an anchor drags its own URL unless
                 // told not to, which would beat the row wrapper's drag.
                 draggable={false}
                 role={searchable ? "option" : undefined}
@@ -611,14 +666,7 @@ export function SessionRow({
                   event.preventDefault();
                   beginRename();
                 }}
-                // RESERVE THE ACTIONS' WIDTH ON HOVER/FOCUS/MENU-OPEN so the
-                // title TRUNCATES before the buttons instead of running under
-                // them. The controls stay absolute (a resting row is all title);
-                // this padding only appears when they do, and it covers keyboard
-                // focus (focus-within) and an open row menu (popup-open) too.
-                className={`flex min-w-0 flex-1 items-center gap-2 px-2 text-left outline-none transition-[padding] focus-visible:ring-2 focus-visible:ring-ring group-hover/session:pr-[5.5rem] group-focus-within/session:pr-[5.5rem] group-has-data-popup-open/session:pr-[5.5rem] ${
-                  variant === "card" ? "py-2.5" : "py-1.5"
-                }`}
+                className={linkClass}
               />
             }
           >
@@ -649,7 +697,8 @@ export function SessionRow({
       )}
 
       {/*
-        THE CONTROLS OVERLAY THE ROW; THEY DO NOT SIT IN IT.
+        THE CONTROLS OVERLAY THE ROW; THEY DO NOT SIT IN IT, AND THE ROW NO
+        LONGER MOVES OUT OF THEIR WAY.
         This was `opacity-0` alone, which hides a thing without unreserving its
         space — so three buttons' worth of width was subtracted from every
         title, on every row, permanently. Titles truncated as though the
@@ -657,15 +706,20 @@ export function SessionRow({
         were. Reported as "the controls feel always present", which is exactly
         right and is a description of the layout rather than of the opacity.
 
-        Positioned absolutely so a resting row is all title, with a background
-        so the buttons are legible over whatever they cover on hover. The
-        status/time slot beneath fades as they arrive (`group-hover` in the
-        card and slim bodies), which is t3's own swap: the read-only label
-        yields to the actions rather than being crowded by them.
+        THE BACKDROP IS WHAT REPLACED THE RESERVED PADDING. The fix above left
+        the link growing its padding on hover, which traded a permanent
+        truncation for one that happened under the pointer — the title
+        rewriting itself as you reached for it. A small opaque plate behind the
+        three glyphs lets them sit on top of the trailing edge and stay
+        legible, and the title underneath is left alone.
+
+        The status/time slot beneath still fades as they arrive (`group-hover`
+        in the card and slim bodies), which is t3's own swap: the read-only
+        label yields to the actions rather than being crowded by them.
       */}
       {!searchable && (
         <span
-          className={`absolute right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100 ${
+          className={`absolute right-1 z-10 flex items-center gap-0.5 rounded-md bg-sidebar-accent opacity-0 shadow-sm transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100 ${
             // TOP-ALIGNED ON A CARD, as t3 has them: the actions belong to the
             // header line, where they take the status label's place rather than
             // floating over the title. A slim row has only one line, so they

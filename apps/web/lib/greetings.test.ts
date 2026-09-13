@@ -1,51 +1,30 @@
 /**
- * The greeting rotation.
+ * The greeting, which is now one line rather than a rotation of fourteen.
  *
- * Small, and worth pinning for one reason: phrase 0 is what the SERVER renders,
- * so it has to stay the plainest line in the list. Every other phrase swaps in
- * after mount, and a joke that flickers into a different joke reads as a bug.
+ * Worth pinning for two reasons, both of which were real defects. It has to
+ * stay NEUTRAL — the quips it replaced ("exoplanets is not going to fix
+ * itself") sat directly over the box a person came to type into — and its
+ * trailing half has to be punctuation that can HUG the project name, because
+ * the name is a padded control and #355 was that padding showing.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { GREETINGS, greetingForVisit, nextGreeting } from "./greetings";
+import { GREETING } from "./greetings";
 
-describe("the greeting list", () => {
-  test("every phrase reads as a sentence around the project name", () => {
-    // The project is a BUTTON in the middle, so each entry is the two halves
-    // either side of it. A phrase with neither half is not a phrase.
-    for (const greeting of GREETINGS) {
-      expect(`${greeting.before}${greeting.after}`.trim().length).toBeGreaterThan(0);
-    }
+describe("the greeting", () => {
+  test("reads as a sentence around the project name", () => {
+    // The project is a BUTTON in the middle, so the phrase is the two halves
+    // either side of it.
+    expect(`${GREETING.before}exoplanets${GREETING.after}`).toBe("What's next for exoplanets?");
   });
 
-  test("the plain one is still in the list, and is what an out-of-range index falls back to", () => {
-    // No longer special — the server picks the phrase now, so nothing has to be
-    // safe to flicker away from. It is still the sensible fallback.
-    expect(GREETINGS[0]).toEqual({ before: "Let's work on ", after: "" });
-  });
-});
-
-describe("rotation", () => {
-  test("steps and wraps, so every phrase gets its turn", () => {
-    // Modulo rather than random: the same three coming up all week is the
-    // failure mode of picking at random from a short list.
-    const seen = new Set<number>();
-    let index = 0;
-    for (let step = 0; step < GREETINGS.length; step += 1) {
-      seen.add(index);
-      index = nextGreeting(index);
-    }
-    expect(seen.size).toBe(GREETINGS.length);
-    expect(index).toBe(0);
+  test("the leading half ends in a real space, so the name is not jammed against it", () => {
+    expect(GREETING.before.endsWith(" ")).toBe(true);
   });
 
-  test("a chosen index is clamped into range rather than trusted", () => {
-    // It crosses a serialization boundary from the server, and an index past
-    // the end renders nothing at all.
-    expect(greetingForVisit(0)).toBe(0);
-    expect(greetingForVisit(GREETINGS.length)).toBe(0);
-    expect(greetingForVisit(-3)).toBe(3 % GREETINGS.length);
-    expect(greetingForVisit(2.7)).toBe(2);
-    expect(greetingForVisit(Number.NaN)).toBe(0);
+  test("the trailing half is punctuation only — nothing that needs a space in front of it", () => {
+    // `fresh-greeting.tsx` pulls this back across the trigger's own padding, so
+    // anything wordy here would end up jammed against the name instead.
+    expect(GREETING.after).toMatch(/^[.,?!]?$/);
   });
 });

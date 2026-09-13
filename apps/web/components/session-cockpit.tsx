@@ -995,7 +995,6 @@ export function SessionCockpit({
   projectId,
   sessionId: routeSessionId,
   projectName: serverProjectName,
-  greeting,
   observe = false,
 }: {
   projectId: string;
@@ -1003,10 +1002,6 @@ export function SessionCockpit({
   /** Resolved by the page, so the breadcrumb and the greeting never paint the
    *  raw id first and correct themselves a moment later. */
   projectName?: string;
-  /** Which phrase the canvas opens on. Chosen on the server for the same
-   *  reason: a phrase picked after mount is a phrase the reader watches
-   *  change. */
-  greeting?: number;
   /**
    * WATCHING, NOT DRIVING. A loom's worker thread is driven by its loom —
    * brief, contract, conductor nudges — and a human typing into it would be
@@ -2956,7 +2951,6 @@ export function SessionCockpit({
             : {})}
           projectId={session?.projectId ?? projectId}
           {...(projectName ? { projectName } : {})}
-          {...(greeting === undefined ? {} : { greeting })}
           {...(session ? { session } : {})}
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}

@@ -107,6 +107,25 @@ export function editorProblems(original: RunConfigurationView | undefined, draft
   return blocker ? [...problems, { field: "env", message: blocker }] : problems;
 }
 
+/** Which fields a human has finished with: blurred, or swept in by a submit. */
+export type TouchedFields = Partial<Record<DraftProblem["field"], true>>;
+
+/**
+ * WHAT TO SAY OUT LOUD, WHICH IS NOT EVERYTHING THAT IS WRONG.
+ *
+ * A blank form is invalid by construction, so the editor opened with "Give
+ * this configuration a name." already in red — a complaint about not having
+ * typed anything yet, addressed to somebody whose cursor had not reached the
+ * first box. A problem earns its sentence once the human has LEFT the field it
+ * is about, or once they have pressed Save and asked to be told.
+ *
+ * The list itself is unchanged: `editorProblems` still decides what may be
+ * saved. This only decides what is shown.
+ */
+export function visibleProblems(problems: DraftProblem[], touched: TouchedFields, submitted: boolean): DraftProblem[] {
+  return submitted ? problems : problems.filter((problem) => touched[problem.field]);
+}
+
 /** What to PATCH: `env` only when it changed, so an untouched secret survives
  *  the engine's shallow merge untouched. */
 export function configurationPatch(original: RunConfigurationView | undefined, draft: EditorDraft): Partial<RunConfigurationDraft> {
@@ -127,7 +146,13 @@ type Props = {
 
 export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props) {
   const [draft, setDraft] = useState<EditorDraft>(() => (config ? draftFromConfiguration(config) : emptyDraft()));
+  /** Blurred fields, and whether Save has been pressed — see `visibleProblems`
+   *  for why a blank form does not start out shouting. */
+  const [touched, setTouched] = useState<TouchedFields>({});
+  const [submitted, setSubmitted] = useState(false);
   const problems = editorProblems(config, draft);
+  const shown = visibleProblems(problems, touched, submitted);
+  const touch = (field: DraftProblem["field"]) => setTouched((current) => ({ ...current, [field]: true }));
   const set = (patch: Partial<EditorDraft>) => setDraft((current) => ({ ...current, ...patch }));
   const setRow = (index: number, patch: Partial<EnvRow>) =>
     setDraft((current) => ({
@@ -140,6 +165,10 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
       className="space-y-4"
       onSubmit={(event) => {
         event.preventDefault();
+        // SAVE IS ALWAYS PRESSABLE, and pressing it is how a human asks to be
+        // told. A disabled Save on a form that is hiding its complaints is a
+        // button that does nothing for a reason it will not give.
+        setSubmitted(true);
         if (!problems.length && !busy) onSave(configurationPatch(config, draft));
       }}
     >
@@ -150,6 +179,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           value={draft.name}
           placeholder="Dev server"
           onChange={(event) => set({ name: event.target.value })}
+          onBlur={() => touch("name")}
         />
       </label>
       {/* A radio group, not a dropdown: ten glyphs fit, and a human picking one
@@ -188,29 +218,37 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
           value={draft.command}
           placeholder="bun run dev"
           onChange={(event) => set({ command: event.target.value })}
+          onBlur={() => touch("command")}
         />
       </label>
+      {/* THE PLACEHOLDER IS THE EXPLANATION. Both of these rows carried a grey
+          sentence under the box — "Relative to the worktree the run is started
+          from", "Optional. Only counted when the address was silent…" — which
+          is an implementation note under a labelled field that already shows
+          the shape of its answer. The label says what it is, the placeholder
+          says what one looks like, and the two sentences were the difference
+          between this form fitting a short window and not. */}
       <label className="block space-y-1">
         <span className="text-xs font-medium text-muted-foreground">Working directory</span>
         <input
           className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
           value={draft.cwd}
           placeholder="apps/web"
+          title="Relative to the worktree the run is started from."
           onChange={(event) => set({ cwd: event.target.value })}
+          onBlur={() => touch("cwd")}
         />
-        <span className="text-xs text-muted-foreground">Relative to the worktree the run is started from.</span>
       </label>
       <label className="block space-y-1">
         <span className="text-xs font-medium text-muted-foreground">Readiness check</span>
         <input
           className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
           value={draft.readinessUrl}
-          placeholder="http://localhost:3000"
+          placeholder="http://localhost:3000 — optional"
+          title="Only counted when the address was silent before the run started."
           onChange={(event) => set({ readinessUrl: event.target.value })}
+          onBlur={() => touch("readinessUrl")}
         />
-        <span className="text-xs text-muted-foreground">
-          Optional. Only counted when the address was silent before the run started.
-        </span>
       </label>
 
       <section className="space-y-2" aria-label="Environment variables">
@@ -222,6 +260,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
               className="w-40 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
               value={row.key}
               onChange={(event) => setRow(index, { key: event.target.value })}
+              onBlur={() => touch("env")}
             />
             {row.kept ? (
               <button
@@ -238,6 +277,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
                 className="flex-1 rounded-md border border-border bg-transparent px-2 py-1 font-mono text-sm focus-visible:outline focus-visible:outline-ring"
                 value={row.value}
                 onChange={(event) => setRow(index, { value: event.target.value })}
+                onBlur={() => touch("env")}
               />
             )}
             <label className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -267,7 +307,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
         </button>
       </section>
 
-      {problems.map((problem, index) => (
+      {shown.map((problem, index) => (
         <p key={index} role="alert" className="text-xs text-destructive">
           {problem.message}
         </p>
@@ -281,7 +321,7 @@ export function RunConfigEditor({ config, busy, error, onSave, onCancel }: Props
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={busy || problems.length > 0}
+          disabled={busy}
           className="rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-muted disabled:opacity-50 focus-visible:outline focus-visible:outline-ring"
         >
           Save
