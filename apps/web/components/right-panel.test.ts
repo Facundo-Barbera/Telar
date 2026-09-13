@@ -205,7 +205,7 @@ describe("issue and pull-request tabs", () => {
   test("the open set is read per kind, so a list marks its own rows only", () => {
     // An issue #12 open as a tab must not put the "already open" mark on pull
     // request #12 in the other list.
-    const tabs = ["issues", "issue:82", "issue:9", "pull:12", "file:a.ts"] as const;
+    const tabs = (["issues", "issue:82", "issue:9", "pull:12", "file:a.ts"] as const).map((kind) => ({ id: kind, kind, params: {} }));
     expect(openForgeNumbers(tabs, "issue")).toEqual([82, 9]);
     expect(openForgeNumbers(tabs, "pull")).toEqual([12]);
   });
@@ -444,7 +444,9 @@ describe("the panel's tabs drag to reorder", () => {
   test("the drop asks for an index in the strip WITHOUT the carried tab", () => {
     // Which is what `movePanelTab` takes. Measuring against the strip as drawn
     // instead would make every rightward move off by one.
-    expect(strip).toContain("const rest = tabs.filter((entry) => entry !== dragged);");
-    expect(strip).toContain('onMoveTab?.(dragged, rest.indexOf(id) + (side === "after" ? 1 : 0));');
+    // By INSTANCE id, not by kind: with two Editors open, filtering by kind
+    // would drop both and move the wrong one.
+    expect(strip).toContain("const rest = tabs.filter((other) => other.id !== dragged);");
+    expect(strip).toContain('onMoveTab?.(dragged, rest.findIndex((other) => other.id === id) + (side === "after" ? 1 : 0));');
   });
 });

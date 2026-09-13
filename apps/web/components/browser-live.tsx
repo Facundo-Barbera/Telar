@@ -541,7 +541,17 @@ export function addressValue(url: string | undefined): string {
  *  caller aborts the (now stale) action instead of running it. */
 class StaleScopeError extends Error {}
 
-export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge: DesktopBrowserBridge; sessionId: string; projectId?: string }) {
+/**
+ * THE SCOPE, NOT THE SESSION. This prop was `sessionId` — the shell keys a
+ * native browser on an opaque scope string and the renderer had only ever one
+ * per session to hand it. A session can now hold two Browser tabs (#322), each
+ * driving its own native browser, so what identifies this surface's browser is
+ * the SCOPE KEY its panel tab derives (`browserScopeKey` in right-panel.tsx):
+ * the bare session id for the first Browser tab — the one the agent drives and
+ * the one every persisted native tab was filed under — and a suffixed key for
+ * any other. Every use below was already a scope; only the name was wrong.
+ */
+export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge: DesktopBrowserBridge; scopeKey: string; projectId?: string }) {
   const [state, setState] = useState<DesktopBrowserPanelState>();
   const [draft, setDraft] = useState<string>();
   const [extension, setExtension] = useState<DesktopExtensionStatus>();
@@ -552,7 +562,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
 
   /**
    * SCOPE GENERATION — this component is REUSED across sessions (Next reuses
-   * the instance when only the `sessionId` prop changes), so an async result
+   * the instance when only the `scopeKey` prop changes), so an async result
    * for the OLD session must never be applied under the NEW one: it would show
    * the old project's tabs, whose indices then act against the new scope. Every
    * async UI result checks this stamp before `setState`; a stale one is
@@ -591,7 +601,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     // the session you just arrived at.
     setOpenOverlay(null);
     setProfilePane("menu");
-  }, [scope, sessionId, projectId]);
+  }, [scope, scopeKey, projectId]);
 
   // Typing an address is the human's hands on the tab BEFORE submit; the
   // agent should already be deferring. One signal per burst is enough.
@@ -602,8 +612,8 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     intentAt.current = now;
     // Intent is only a deferral signal; it opens no tab, so it needs no bind.
     const gen = scope.capture();
-    void bridge.action(sessionId, { action: "intent" }).then((next) => { if (scope.isCurrent(gen)) setState(next); }, () => undefined);
-  }, [bridge, scope, sessionId]);
+    void bridge.action(scopeKey, { action: "intent" }).then((next) => { if (scope.isCurrent(gen)) setState(next); }, () => undefined);
+  }, [bridge, scope, scopeKey]);
   const activeTab = state?.tabs.find((tab) => tab.active);
   // Advisory, per tab: the mark speaks about the tab you are LOOKING at.
   const [newProfileLabel, setNewProfileLabel] = useState("");
@@ -635,21 +645,21 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         overlayRef.current = hidden;
         // Showing restores the scope's own remembered rect (see setVisible),
         // so nothing has to be republished here.
-        void bridge.setVisible(sessionId, !hidden).catch(() => undefined);
+        void bridge.setVisible(scopeKey, !hidden).catch(() => undefined);
       }),
-    [bridge, sessionId],
+    [bridge, scopeKey],
   );
 
   const refresh = useCallback(async () => {
     const gen = scope.capture();
     try {
-      const next = await bridge.getState(sessionId);
+      const next = await bridge.getState(scopeKey);
       // Drop a read that resolved after the user navigated to another session.
       if (scope.isCurrent(gen)) setState(next);
     } catch {
       // The shell mid-reload must not take the panel down with it.
     }
-  }, [bridge, scope, sessionId]);
+  }, [bridge, scope, scopeKey]);
 
   // BIND THE PROJECT PROFILE BEFORE ANYTHING OPENS. The host refuses tabs for
   // an unbound scope. Binding is IDEMPOTENT and re-issued on EVERY mutating
@@ -661,10 +671,10 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   // the partition when still current. Non-desktop is a no-op.
   const bindNow = useCallback(async (gen: number = scope.capture()) => {
     if (!bridge.bindProfile) return;
-    const result = await bridge.bindProfile(sessionId, projectId ?? "none");
+    const result = await bridge.bindProfile(scopeKey, projectId ?? "none");
     if (!scope.isCurrent(gen)) throw new StaleScopeError();
     partitionRef.current = result?.partition;
-  }, [bridge, scope, sessionId, projectId]);
+  }, [bridge, scope, scopeKey, projectId]);
 
   useEffect(() => {
     // A microtask, not a direct call: refresh sets state, and React's lint is
@@ -674,21 +684,21 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     // suspender (a push lost during a renderer reload).
     const timer = window.setInterval(() => void refresh(), 2_000);
     const unsubscribe = bridge.onState((next) => {
-      if (next.scopeKey === sessionId) setState(next);
+      if (next.scopeKey === scopeKey) setState(next);
     });
     return () => {
       window.clearTimeout(first);
       window.clearInterval(timer);
       unsubscribe();
     };
-  }, [bridge, refresh, sessionId]);
+  }, [bridge, refresh, scopeKey]);
 
   // Republish the stage whenever what the host shows changes shape: the
   // active tab, its viewport/mode, the rows above it, a loading strip, an
   // error strip. A size the observer already reports is harmless to resend.
   useDesktopBrowserViewport(
     bridge,
-    sessionId,
+    scopeKey,
     hostRef,
     [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
     viewportMode,
@@ -709,7 +719,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         // The binding landed for THIS scope: the start page may read now.
         setBound(true);
         if (!bridge.extensionStatus) return undefined;
-        return bridge.extensionStatus(sessionId);
+        return bridge.extensionStatus(scopeKey);
       })
       .then((status) => { if (!cancelled && scope.isCurrent(gen) && status) setExtension(status); })
       .catch((error: unknown) => {
@@ -729,7 +739,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
       cancelled = true;
       unsubscribe?.();
     };
-  }, [bridge, bindNow, scope, sessionId]);
+  }, [bridge, bindNow, scope, scopeKey]);
 
   /**
    * One profile action, then a refresh. Every one of these changes what the
@@ -760,14 +770,14 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     try {
       // The popup opens for this session's tab, so its profile must be bound.
       await bindNow(gen);
-      const status = await bridge.openExtensionPopup(sessionId, rect ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height } : { x: 0, y: 0, width: 24, height: 24 });
+      const status = await bridge.openExtensionPopup(scopeKey, rect ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height } : { x: 0, y: 0, width: 24, height: 24 });
       if (scope.isCurrent(gen)) setExtension(status);
     } catch (error) {
       // A scope change mid-flight is not an error to show — just drop it.
       if (!scope.isCurrent(gen) || error instanceof StaleScopeError) return;
       setExtensionError(error instanceof Error ? error.message : String(error));
     }
-  }, [bridge, bindNow, scope, sessionId]);
+  }, [bridge, bindNow, scope, scopeKey]);
 
   const act = useCallback(
     async (action: Record<string, unknown>) => {
@@ -778,7 +788,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         // a cached bind would be stale. `bindNow(gen)` THROWS if the scope
         // changed while it awaited, cancelling the action before it runs.
         await bindNow(gen);
-        const next = await bridge.action(sessionId, action);
+        const next = await bridge.action(scopeKey, action);
         // Drop a result that resolved after the user navigated away — applying
         // it would show another project's tabs and index against this scope.
         if (!scope.isCurrent(gen)) return;
@@ -793,7 +803,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
         void refresh();
       }
     },
-    [bridge, bindNow, refresh, scope, sessionId],
+    [bridge, bindNow, refresh, scope, scopeKey],
   );
 
   /**
@@ -1100,7 +1110,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                         ].filter(Boolean).join("\n")}
                         onClick={() => {
                           closeOverlay();
-                          void profileAction(() => bridge.setScopeProfile!(sessionId, profile.id));
+                          void profileAction(() => bridge.setScopeProfile!(scopeKey, profile.id));
                         }}
                         className={cn(menuRow, current && "text-foreground")}
                       >
@@ -1117,7 +1127,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                       title="Every session of this project opens in this profile from now on."
                       onClick={() => {
                         closeOverlay();
-                        void profileAction(() => bridge.assignProjectProfile!({ scopeKey: sessionId, profileId: state.profile!.id }));
+                        void profileAction(() => bridge.assignProjectProfile!({ scopeKey, profileId: state.profile!.id }));
                       }}
                       className={cn(menuRow, "pl-9")}
                     >
@@ -1144,7 +1154,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                       onClick={() => {
                         closeOverlay();
                         void profileAction(async () => {
-                          const result = await bridge.offerLoginMemory!(sessionId);
+                          const result = await bridge.offerLoginMemory!(scopeKey);
                           // The shell's refusal ("open an http(s) page first") is
                           // the panel's error, same as any profile action's.
                           if (!result.ok && result.error) throw new Error(result.error);
@@ -1211,7 +1221,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
                     setNewProfileLabel("");
                     setNewProfileAccount("");
                     closeOverlay();
-                    void profileAction(() => bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey: sessionId }));
+                    void profileAction(() => bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey }));
                   }}
                 >
                   <label htmlFor="telar-browser-profile-new" className="text-[0.6875rem] text-muted-foreground">New profile</label>
@@ -1317,7 +1327,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             preview={dragPreview}
             onPreview={setDragPreview}
             onCommit={(size) => void act({ action: "resize", index: activeTab.index, width: size.width, height: size.height })}
-            railsKey={`${sessionId}:${activeTab.id}`}
+            railsKey={`${scopeKey}:${activeTab.id}`}
           />
         ) : null}
         {/* A hairline progress band at the top of the viewport while a page
@@ -1335,7 +1345,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             opens one. */}
         {bound && state && ((state.tabs.length === 0) || (activeTab && !activeTab.sleeping && addressValue(activeTab.url) === "" && !activeTab.loading)) && (
           <BrowserStartPage
-            scopeKey={sessionId}
+            scopeKey={scopeKey}
             onOpen={(url) => void act(activeTab && addressValue(activeTab.url) === "" ? { action: "navigate", url } : { action: "new", url })}
           />
         )}

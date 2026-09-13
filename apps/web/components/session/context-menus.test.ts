@@ -183,8 +183,10 @@ describe("the file body and its address row are one surface with one list", () =
 describe("the right panel's tab strip", () => {
   test("Close, Close others, Close all and the fullscreen toggle — all on callbacks the strip already has", () => {
     expect(panel).toContain("<ContextMenuItem onClick={() => onCloseTab(id)}>Close</ContextMenuItem>");
-    expect(panel).toContain("tabs.filter((other) => other !== id).forEach((other) => onCloseTab(other))");
-    expect(panel).toContain("<ContextMenuItem onClick={() => tabs.forEach((other) => onCloseTab(other))}>Close all</ContextMenuItem>");
+    // Addressed by INSTANCE id, not by kind: with two Editors open, sweeping
+    // by kind would close the one you asked to keep (#322).
+    expect(panel).toContain("tabs.filter((other) => other.id !== id).forEach((other) => onCloseTab(other.id))");
+    expect(panel).toContain("<ContextMenuItem onClick={() => tabs.forEach((other) => onCloseTab(other.id))}>Close all</ContextMenuItem>");
     expect(panel).toContain("<ContextMenuItem onClick={() => setFullscreen((current) => !current)}>");
     expect(panel).toContain('{fullscreen ? "Exit fullscreen" : "Fill the window"}');
   });

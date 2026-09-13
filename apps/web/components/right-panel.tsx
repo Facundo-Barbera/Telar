@@ -72,7 +72,7 @@ import { RunPanel } from "@/components/run/run-panel";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
-import { PANEL_TAB_MIME } from "@/lib/right-panel-tabs";
+import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
@@ -275,6 +275,35 @@ export type PanelTab =
   | `issue:${number}`
   | `pull:${number}`;
 
+/**
+ * ONE OPEN TAB — a KIND plus the params that make it this one (#322).
+ *
+ * `PanelTab` above is the kind; this is what the strip actually holds. The
+ * distinction only matters for the three surfaces you can want two of.
+ */
+export type PanelTabItem = PanelTabInstance<PanelTab>;
+
+/**
+ * THE SURFACES YOU CAN HAVE MORE THAN ONE OF, and why only these three.
+ *
+ * Every other tab here is a fold over one record — the session's agents, its
+ * processes, the project's issues, the project's one dev server — so a second
+ * copy would show exactly what the first one shows, which is the argument tabs
+ * were singletons on in the first place. These three stopped being folds: an
+ * Editor holds the files YOU opened, a Browser holds the pages you navigated to
+ * (in its own native scope — see `browserScopeKey`), and a Diff is a review you
+ * can want two of when comparing one part of a change against another.
+ *
+ * A FILE, AN ISSUE AND A BROWSER PAGE ARE NOT ON THIS LIST and do not need to
+ * be: their subject is already in the kind (`issue:322`), so two of them are
+ * two kinds, and a second tab for the same issue would show the same thing.
+ */
+const MULTI_INSTANCE: ReadonlySet<string> = new Set<string>(["editor", "diff"]);
+
+export function isMultiInstancePanelTab(kind: PanelTab): boolean {
+  return MULTI_INSTANCE.has(kind) || kind === LIVE_BROWSER_TAB;
+}
+
 const BROWSER_PREFIX = "browser:";
 const FILE_PREFIX = "file:";
 const NOTEBOOK_PREFIX = "notebook:";
@@ -332,6 +361,36 @@ export function browserPanelTab(tabId: string): PanelTab {
  */
 export const LIVE_BROWSER_PAGE_ID = "__integrated__";
 export const LIVE_BROWSER_TAB: PanelTab = `${BROWSER_PREFIX}${LIVE_BROWSER_PAGE_ID}`;
+
+/**
+ * WHICH NATIVE BROWSER A BROWSER TAB DRIVES.
+ *
+ * The shell keys everything about a browser — its pages, its profile binding,
+ * its bounds — on an opaque `scopeKey` (apps/desktop/browser-manager.js), and
+ * the renderer has always handed it the session id. A second Browser tab needs
+ * a second native browser, so it needs a second key, and the instance id is the
+ * only thing that distinguishes the two.
+ *
+ * THE FIRST INSTANCE KEEPS THE BARE SESSION ID, which is not a nicety: that is
+ * the scope the ENGINE drives when the agent browses, the one `openBrowser`
+ * binds and the one every persisted native tab was filed under. A suffix on it
+ * would hand the agent's browser to nobody and orphan the pages already open in
+ * it. `nextPanelTabId` gives the first instance of a kind the kind as its id,
+ * so "the first one" is exactly `id === LIVE_BROWSER_TAB`.
+ */
+export function browserScopeKey(sessionId: string, instanceId: string): string {
+  return instanceId === LIVE_BROWSER_TAB ? sessionId : `${sessionId}#${instanceId}`;
+}
+
+/**
+ * WHERE ONE EDITOR INSTANCE'S OPEN FILES ARE KEPT — the same argument as
+ * `browserScopeKey`, one layer up: the first Editor keeps the bare panel key it
+ * has always used, so nobody's open files move on upgrade, and a second Editor
+ * gets its own drawer in the same store (lib/editor-workspace.ts).
+ */
+export function editorInstanceKey(panelKey: string, instanceId: string): string {
+  return instanceId === "editor" ? panelKey : `${panelKey}#${instanceId}`;
+}
 
 /** The engine tab id behind a panel tab, or undefined for anything else. */
 export function browserTabId(tab: PanelTab): string | undefined {
@@ -411,9 +470,9 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
 
 /** Which numbers are already open, so a list row can say so instead of opening a
  *  second tab for the same issue. The same courtesy the file tree does. */
-export function openForgeNumbers(tabs: readonly PanelTab[], kind: "issue" | "pull"): number[] {
+export function openForgeNumbers(tabs: readonly PanelTabItem[], kind: "issue" | "pull"): number[] {
   const read = kind === "issue" ? issuePanelNumber : pullPanelNumber;
-  return tabs.map(read).filter((number): number is number => number !== undefined);
+  return tabs.map((tab) => read(tab.kind)).filter((number): number is number => number !== undefined);
 }
 
 /** Anything shaped like a tab id this build understands — the validator for
@@ -503,26 +562,106 @@ export function describePanelTab(
   return { label: browserTabLabel(page), icon: GlobeIcon, blurb: page.url };
 }
 
-/** The shell's live tab list for this session, or nothing outside the shell.
- *  Subscribed rather than polled: the manager pushes on every change. */
-function useLivePages(sessionId: string | undefined): LivePage[] | undefined {
+/**
+ * WHAT TELLS TWO TABS OF ONE KIND APART, in the few characters a tab has.
+ *
+ * Read out of `params`, which is where the instance's identity lives — the file
+ * an Editor is on, the page a Browser is showing, the filter a Diff is under.
+ * A basename and a host rather than the path and the URL: a tab is 44px wide at
+ * its narrowest, and `apps/web/components/right-panel.tsx` truncates to
+ * something that names nothing while `right-panel.tsx` still reads.
+ *
+ * NOTHING TO SAY IS NOT A FAILURE. Two Editors with no file open are two empty
+ * Editors, and "Editor · " would be worse than "Editor" twice — the caller
+ * drops the suffix rather than drawing a separator with nothing after it.
+ */
+export function panelTabSuffix(params: PanelTabParams): string | undefined {
+  const path = params.path;
+  if (path) return path.slice(path.lastIndexOf("/") + 1) || path;
+  const url = params.url;
+  if (url) {
+    try {
+      return new URL(url).host || url;
+    } catch {
+      return url;
+    }
+  }
+  return params.filter || undefined;
+}
+
+/**
+ * A TAB IN THE STRIP: its kind's label, and — only when a sibling of the same
+ * kind is open — the suffix that says which one it is.
+ *
+ * THE SUFFIX APPEARS ON BOTH OR NEITHER. A single Editor is "Editor", because
+ * naming the file you are looking at, in a tab, above a surface whose own
+ * header already names it, is a word of chrome buying nothing. The moment there
+ * are two, the label is the only thing distinguishing them, so both take it.
+ */
+export function describePanelTabInstance(
+  tab: PanelTabItem,
+  options: { browser?: BrowserState; live?: readonly LivePage[]; duplicate?: boolean } = {},
+): { label: string; icon: typeof BotIcon; blurb: string; missing?: boolean } {
+  const described = describePanelTab(tab.kind, options.browser, options.live);
+  if (!options.duplicate) return described;
+  const suffix = panelTabSuffix(tab.params) ?? (tab.kind === LIVE_BROWSER_TAB ? livePageSuffix(options.live) : undefined);
+  if (!suffix) return described;
+  return { ...described, label: `${described.label} · ${suffix}`, blurb: `${described.blurb} — ${suffix}` };
+}
+
+/** A live native browser names its own page; the host is what fits in a tab. */
+function livePageSuffix(live?: readonly LivePage[]): string | undefined {
+  const page = live?.find((entry) => entry.active) ?? live?.[0];
+  if (!page) return undefined;
+  try {
+    return new URL(page.url).host || browserTabLabel(page);
+  } catch {
+    return browserTabLabel(page);
+  }
+}
+
+/**
+ * The shell's live tab lists, PER BROWSER SCOPE, or nothing outside the shell.
+ * Subscribed rather than polled: the manager pushes on every change.
+ *
+ * A MAP NOW THAT A SESSION CAN HOLD TWO BROWSERS (#322). Each Browser tab
+ * drives its own native scope (`browserScopeKey`), and the strip has to name
+ * each of them from what that scope is actually showing — one shared list would
+ * label both tabs with whichever browser reported last. The keys are stamped on
+ * the state so a session switch cannot leave the previous session's pages
+ * labelling this one's tabs.
+ */
+function useLivePages(scopeKeys: readonly string[]): ReadonlyMap<string, LivePage[]> | undefined {
   const bridge = desktopBrowserBridge();
-  const [result, setResult] = useState<{ scopeKey: string; pages: LivePage[] }>();
+  /** Joined, because a fresh array literal every render would re-run the effect
+   *  on every render; the content is what changed or did not. A newline is the
+   *  separator because a scope key is a session id and a tab id, and neither
+   *  can contain one. */
+  const keys = scopeKeys.join("\n");
+  const [result, setResult] = useState<{ keys: string; pages: ReadonlyMap<string, LivePage[]> }>();
   useEffect(() => {
-    if (!bridge || !sessionId) return;
+    const wanted = keys ? keys.split("\n") : [];
+    if (!bridge || wanted.length === 0) return;
     let cancelled = false;
     const take = (state: { scopeKey: string; tabs: LivePage[] }) => {
-      if (!cancelled && state.scopeKey === sessionId) setResult({ scopeKey: sessionId, pages: state.tabs });
+      if (cancelled || !wanted.includes(state.scopeKey)) return;
+      setResult((current) => {
+        const pages = new Map(current?.keys === keys ? current.pages : []);
+        pages.set(state.scopeKey, state.tabs);
+        return { keys, pages };
+      });
     };
-    const first = window.setTimeout(() => void bridge.getState(sessionId).then(take, () => undefined), 0);
+    const first = window.setTimeout(() => {
+      for (const key of wanted) void bridge.getState(key).then(take, () => undefined);
+    }, 0);
     const unsubscribe = bridge.onState(take);
     return () => {
       cancelled = true;
       window.clearTimeout(first);
       unsubscribe();
     };
-  }, [bridge, sessionId]);
-  return bridge && result && result.scopeKey === sessionId ? result.pages : undefined;
+  }, [bridge, keys]);
+  return bridge && result?.keys === keys ? result.pages : undefined;
 }
 
 // ── folds over the session record ──────────────────────────────────────────
@@ -662,7 +801,21 @@ const BROWSER_POLL_MS = 3_000;
  * says the picture belongs elsewhere rather than showing a different page's
  * pixels under this page's title.
  */
-function BrowserPageSurface({ pageId, state, sessionId, projectId }: { pageId: string; state?: BrowserState; sessionId?: string; projectId?: string }) {
+function BrowserPageSurface({
+  pageId,
+  state,
+  sessionId,
+  projectId,
+  scopeKey,
+}: {
+  pageId: string;
+  state?: BrowserState;
+  sessionId?: string;
+  projectId?: string;
+  /** Which native browser this tab drives — see `browserScopeKey`. Absent on
+   *  the screenshot clients, which have no native view to scope. */
+  scopeKey?: string;
+}) {
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
    * WebContentsView can be glued under this panel — tab strip, URL bar, the
@@ -673,8 +826,12 @@ function BrowserPageSurface({ pageId, state, sessionId, projectId }: { pageId: s
    * must not conditionally skip.
    */
   const bridge = desktopBrowserBridge();
-  if (bridge && sessionId) {
-    return <DesktopBrowserSurface key={sessionId} bridge={bridge} sessionId={sessionId} {...(projectId ? { projectId } : {})} />;
+  const scope = scopeKey ?? sessionId;
+  if (bridge && scope) {
+    // KEYED BY THE SCOPE, not the session: two Browser tabs in one session are
+    // two native browsers, and sharing a key would make React reuse one
+    // instance's bounds, tab list and profile binding for the other.
+    return <DesktopBrowserSurface key={scope} bridge={bridge} scopeKey={scope} {...(projectId ? { projectId } : {})} />;
   }
   return <BrowserScreenshotSurface pageId={pageId} {...(state ? { state } : {})} {...(sessionId ? { sessionId } : {})} />;
 }
@@ -1088,6 +1245,7 @@ export function PanelSurface({
   openIssueNumbers,
   openPullNumbers,
   onOpenTab,
+  onOpenFileInNewTab,
   onInsertReference,
   active,
   dataScience,
@@ -1097,7 +1255,9 @@ export function PanelSurface({
   hostId,
   visible = true,
 }: {
-  tab: PanelTab;
+  /** The INSTANCE — its kind chooses the surface, its id keys anything that
+   *  must not be shared with another tab of the same kind. */
+  tab: PanelTabItem;
   /** What the journal says was written, path → count. The Diff surface's half of
    *  the reconciliation — see `journalWrites`. */
   writes: ReadonlyMap<string, number>;
@@ -1126,6 +1286,12 @@ export function PanelSurface({
    * deliberate the gesture was, and is ignored for anything but a file.
    */
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
+  /**
+   * Open a file in a NEW Editor tab (#322) — offered by the tree's row menu and
+   * a file's own body menu. Absent simply hides the item, which is what a
+   * caller with no second Editor to give wants.
+   */
+  onOpenFileInNewTab?: (path: string) => void;
   /**
    * Put a reference into the message being written — the same text a row's own
    * DRAG already carries (`lib/drag-reference.ts`), reached with a gesture that
@@ -1160,26 +1326,30 @@ export function PanelSurface({
    * stay because they are still correct, and a tab that somehow arrives here
    * should draw its file rather than nothing.
    */
-  const notebookPath = notebookPanelPath(tab);
+  const kind = tab.kind;
+  const notebookPath = notebookPanelPath(kind);
   if (notebookPath !== undefined)
     return <NotebookSurface path={notebookPath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
-  const tablePath = tablePanelPath(tab);
+  const tablePath = tablePanelPath(kind);
   if (tablePath !== undefined) return <TableSurface path={tablePath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
-  const pdfPath = pdfPanelPath(tab);
+  const pdfPath = pdfPanelPath(kind);
   if (pdfPath !== undefined)
     return <PdfSurface path={pdfPath} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} />;
-  if (tab === "editor")
+  if (kind === "editor")
     return editor && onEditorChange ? (
       /**
-       * KEYED BY THE CHECKOUT. Moving between sessions replaces the Editor
-       * rather than re-rendering it, so nothing it holds per file — the saving
-       * dots, a half-confirmed close, where each file was scrolled to — can be
-       * read as belonging to the session you just arrived in. The unsaved text
-       * itself is not in here to lose (lib/editor-drafts.ts keys it by the same
-       * scope and outlives every one of these mounts).
+       * KEYED BY THE CHECKOUT AND THE INSTANCE. Moving between sessions
+       * replaces the Editor rather than re-rendering it, so nothing it holds
+       * per file — the saving dots, a half-confirmed close, where each file was
+       * scrolled to — can be read as belonging to the session you just arrived
+       * in. The instance id joins it for the same reason one level down: two
+       * Editor tabs are two Editors, and a shared key would have React carry
+       * one's half-confirmed close into the other. The unsaved text itself is
+       * not in here to lose (lib/editor-drafts.ts keys it by the same scope and
+       * outlives every one of these mounts).
        */
       <EditorSurface
-        key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}`}
+        key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${tab.id}`}
         state={editor}
         onState={onEditorChange}
         {...(sessionId ? { sessionId } : {})}
@@ -1188,10 +1358,11 @@ export function PanelSurface({
         {...(active ? { active } : {})}
         dataScience={dataScience === true}
         {...(onOpenImage ? { onOpenImage } : {})}
+        {...(onOpenFileInNewTab ? { onOpenInNewPanelTab: onOpenFileInNewTab } : {})}
       />
     ) : null;
-  if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
-  if (tab === "latex")
+  if (kind === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  if (kind === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   /**
    * KEYED BY HOST AND SESSION. The surface polls and holds a cursor into one
@@ -1199,9 +1370,9 @@ export function PanelSurface({
    * are per-Mac, so the session alone would reuse one host's panel for
    * another's. The host is in the props too (components/run/run-panel.tsx).
    */
-  if (tab === "run")
+  if (kind === "run")
     return sessionId ? <RunPanel key={`${hostId ?? "local"}:${sessionId}`} sessionId={sessionId} {...(hostId ? { hostId } : {})} visible={visible} /> : null;
-  const filePath = filePanelPath(tab);
+  const filePath = filePanelPath(kind);
   if (filePath !== undefined)
     return (
       <FileViewSurface
@@ -1211,16 +1382,23 @@ export function PanelSurface({
         {...(active ? { active } : {})}
       />
     );
-  const issueNumber = issuePanelNumber(tab);
+  const issueNumber = issuePanelNumber(kind);
   if (issueNumber !== undefined)
     return <ForgeDetailSurface kind="issue" number={issueNumber} {...(projectId ? { projectId } : {})} />;
-  const pullNumber = pullPanelNumber(tab);
+  const pullNumber = pullPanelNumber(kind);
   if (pullNumber !== undefined)
     return <ForgeDetailSurface kind="pull" number={pullNumber} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
-  const pageId = browserTabId(tab);
+  const pageId = browserTabId(kind);
   if (pageId !== undefined)
-    return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} />;
-  if (tab === "diff")
+    return (
+      <BrowserPageSurface
+        pageId={pageId}
+        {...(browser ? { state: browser } : {})}
+        {...(sessionId ? { sessionId, scopeKey: browserScopeKey(sessionId, tab.id) } : {})}
+        {...(projectId ? { projectId } : {})}
+      />
+    );
+  if (kind === "diff")
     return (
       <DiffSurface
         {...(sessionId ? { sessionId } : {})}
@@ -1235,18 +1413,18 @@ export function PanelSurface({
         {...(onInsertReference ? { onInsertReference } : {})}
       />
     );
-  if (tab === "issues" || tab === "pulls")
+  if (kind === "issues" || kind === "pulls")
     return (
       <GitHubSurface
-        kind={tab}
+        kind={kind}
         {...(projectId ? { projectId } : {})}
         {...(branch ? { branch } : {})}
-        onOpen={(number) => onOpenTab(tab === "issues" ? issuePanelTab(number) : pullPanelTab(number))}
-        openNumbers={tab === "issues" ? openIssueNumbers : openPullNumbers}
+        onOpen={(number) => onOpenTab(kind === "issues" ? issuePanelTab(number) : pullPanelTab(number))}
+        openNumbers={kind === "issues" ? openIssueNumbers : openPullNumbers}
       />
     );
-  if (tab === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
-  if (tab === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  if (kind === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  if (kind === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
   // Every tab kind is handled above. This used to be the Usage surface's arm;
   // as a fallthrough it would render some OTHER pane for an unknown tab id, so
   // an unknown tab now renders nothing rather than the wrong thing.
@@ -1561,6 +1739,8 @@ export function RightPanel({
   tab,
   onTabChange,
   onOpenTab,
+  onOpenNewTab,
+  onOpenFileInNewTab,
   onInsertReference,
   onCloseTab,
   onMoveTab,
@@ -1568,7 +1748,7 @@ export function RightPanel({
   open = true,
   dataScience = false,
   latex = false,
-  editor,
+  editors,
   onEditorChange,
   hostId,
 }: {
@@ -1601,21 +1781,30 @@ export function RightPanel({
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
    *  composer's foot are "go there" gestures, and they have to be able to say
    *  WHERE — which means opening a tab that may not be open yet. */
-  tabs: readonly PanelTab[];
-  tab?: PanelTab;
-  onTabChange: (tab: PanelTab) => void;
+  tabs: readonly PanelTabItem[];
+  /** The ACTIVE INSTANCE's id, not its kind — two Editors are two tabs. */
+  tab?: string;
+  onTabChange: (id: string) => void;
+  /** Open a surface, or focus the one of that kind already open — every "go
+   *  there" gesture in the cockpit. */
   onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
+  /** Open ANOTHER instance of a multi-instance kind. Absent leaves the "+"
+   *  chooser offering each kind once, which is what a caller with no
+   *  per-instance state to give them wants. */
+  onOpenNewTab?: (tab: PanelTab) => void;
+  /** Open a file in a NEW Editor tab — see `PanelSurface`. */
+  onOpenFileInNewTab?: (path: string) => void;
   /** Put a reference into the message being written — see `PanelSurface`. */
   onInsertReference?: (text: string) => void;
-  onCloseTab: (tab: PanelTab) => void;
+  onCloseTab: (id: string) => void;
   /** Reorder the strip — `toIndex` is the place in the strip WITHOUT the moved
    *  tab, which is what `movePanelTab` takes. Absent leaves the tabs draggable
    *  but inert, which is what a caller that does not persist a strip wants. */
-  onMoveTab?: (tab: PanelTab, toIndex: number) => void;
+  onMoveTab?: (id: string, toIndex: number) => void;
   onClose: () => void;
-  /** The Editor's open files — see `PanelSurface`. */
-  editor?: EditorState;
-  onEditorChange?: (next: (current: EditorState) => EditorState) => void;
+  /** Each Editor instance's open files, by tab id — see `PanelSurface`. */
+  editors?: Readonly<Record<string, EditorState>>;
+  onEditorChange?: (id: string, next: (current: EditorState) => EditorState) => void;
   /** Which Mac this cockpit is about. */
   hostId?: string;
   /**
@@ -1639,25 +1828,40 @@ export function RightPanel({
    * down by. One piece of state for the whole strip rather than one per chip,
    * because at most one context menu is ever open.
    */
-  const [menuTab, setMenuTab] = useState<PanelTab>();
+  const [menuTab, setMenuTab] = useState<string>();
   // The native browser view is composited above this DOM; drop it while the
   // chooser or a tab's menu is open so the menu is the thing on top. No-op on
   // the web build.
   useNativeViewOverlay(surfaceChooserOpen);
   useNativeViewOverlay(menuTab !== undefined);
-  /** The tab being carried, and the edge of the tab it is over. Held by the
-   *  strip rather than by a tab, because a drop lands on a DIFFERENT tab than
-   *  the one that started the drag. */
-  const [draggingTab, setDraggingTab] = useState<PanelTab | null>(null);
-  const [tabInsert, setTabInsert] = useState<{ id: PanelTab; side: "before" | "after" } | null>(null);
+  /** The tab being carried, and the edge of the tab it is over — instance ids.
+   *  Held by the strip rather than by a tab, because a drop lands on a
+   *  DIFFERENT tab than the one that started the drag. */
+  const [draggingTab, setDraggingTab] = useState<string | null>(null);
+  const [tabInsert, setTabInsert] = useState<{ id: string; side: "before" | "after" } | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
-  const livePages = useLivePages(sessionId);
+  /** One native scope per open Browser tab, so the strip can name each of them
+   *  from what that browser is actually showing. */
+  const browserScopes = useMemo(
+    () => (sessionId ? tabs.filter((entry) => browserTabId(entry.kind) !== undefined).map((entry) => browserScopeKey(sessionId, entry.id)) : []),
+    [sessionId, tabs],
+  );
+  const livePages = useLivePages(browserScopes);
   const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
   const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
+  /** The instance the panel is showing, resolved once. */
+  const activeTab = useMemo(() => tabs.find((entry) => entry.id === tab), [tabs, tab]);
+  /** Which kinds the strip holds more than one of — what decides whether a tab
+   *  wears its params as a suffix. */
+  const duplicated = useMemo(() => {
+    const counted = new Map<string, number>();
+    for (const entry of tabs) counted.set(entry.kind, (counted.get(entry.kind) ?? 0) + 1);
+    return new Set([...counted].filter(([, count]) => count > 1).map(([kind]) => kind));
+  }, [tabs]);
   /**
    * A WARP RUN IS A CONTAINER, NOT A WORKER, so it is not counted as one:
    * a four-agent fan-out would otherwise read as five running.
@@ -1692,22 +1896,37 @@ export function RightPanel({
     agents: roster.groups.length + roster.agents.length,
     processes: roster.processes.length,
   };
-  /** Everything openable that is not already open — fixed surfaces first, then
-   *  one entry per browser page the engine currently reports. */
-  const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
-    ...surfacesFor(dataScience, latex).filter((surface) => !tabs.includes(surface.id)).map((surface) => ({
-      id: surface.id as PanelTab,
-      label: surface.label,
-      icon: surface.icon,
-    })),
-    // On desktop the native strip owns the pages: offer ONE "Browser" entry.
+  const holdsKind = (kind: PanelTab) => tabs.some((entry) => entry.kind === kind);
+  /** A kind already open is worth offering again only when a second one is a
+   *  different thing AND this caller can mint it. */
+  const offersAnother = (kind: PanelTab) => isMultiInstancePanelTab(kind) && onOpenNewTab !== undefined;
+  /**
+   * WHAT THE "+" OFFERS.
+   *
+   * A SINGLETON DISAPPEARS ONCE IT IS OPEN, because pressing it again could
+   * only focus the tab already in the strip beside the button. A MULTI-INSTANCE
+   * KIND STAYS, and pressing it opens another one — that is the whole of #322
+   * at the chooser: "Editor" is not a place, it is a thing you can have two of.
+   * `another` says which of the two a press means, so the row can say so too.
+   */
+  const openable: { id: PanelTab; label: string; icon: typeof BotIcon; another: boolean }[] = [
+    ...surfacesFor(dataScience, latex)
+      .filter((surface) => !holdsKind(surface.id) || offersAnother(surface.id))
+      .map((surface) => ({
+        id: surface.id as PanelTab,
+        label: surface.label,
+        icon: surface.icon,
+        another: holdsKind(surface.id),
+      })),
+    // On desktop the native strip owns the pages: offer ONE "Browser" entry —
+    // which, once one is open, opens a SECOND browser in its own native scope.
     ...(desktopBrowserBridge()
-      ? (browser?.tabs?.length ?? 0) > 0 && !tabs.includes(LIVE_BROWSER_TAB)
-        ? [{ id: LIVE_BROWSER_TAB, label: "Browser", icon: GlobeIcon }]
+      ? (browser?.tabs?.length ?? 0) > 0 && (!holdsKind(LIVE_BROWSER_TAB) || offersAnother(LIVE_BROWSER_TAB))
+        ? [{ id: LIVE_BROWSER_TAB, label: "Browser", icon: GlobeIcon, another: holdsKind(LIVE_BROWSER_TAB) }]
         : []
       : (browser?.tabs ?? [])
-          .filter((page) => !tabs.includes(browserPanelTab(page.id)))
-          .map((page) => ({ id: browserPanelTab(page.id), label: browserTabLabel(page), icon: GlobeIcon }))),
+          .filter((page) => !holdsKind(browserPanelTab(page.id)))
+          .map((page) => ({ id: browserPanelTab(page.id), label: browserTabLabel(page), icon: GlobeIcon, another: false }))),
   ];
 
   return (
@@ -1788,10 +2007,16 @@ export function RightPanel({
         )}
       >
         <div role="tablist" aria-label="Right panel tabs" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
-          {tabs.map((id) => {
+          {tabs.map((entry) => {
+            const id = entry.id;
             const on = id === tab;
-            const { label, icon: Icon, missing } = describePanelTab(id, browser, livePages);
-            const count = counts[id];
+            const live = sessionId ? livePages?.get(browserScopeKey(sessionId, id)) : undefined;
+            const { label, icon: Icon, missing } = describePanelTabInstance(entry, {
+              ...(browser ? { browser } : {}),
+              ...(live ? { live } : {}),
+              duplicate: duplicated.has(entry.kind),
+            });
+            const count = counts[entry.kind];
             return (
               <span
                 key={id}
@@ -1831,15 +2056,15 @@ export function RightPanel({
                 onDrop={(event: React.DragEvent) => {
                   if (!event.dataTransfer.types.includes(PANEL_TAB_MIME)) return;
                   event.preventDefault();
-                  const dragged = (event.dataTransfer.getData(PANEL_TAB_MIME) || draggingTab) as PanelTab | null;
+                  const dragged = event.dataTransfer.getData(PANEL_TAB_MIME) || draggingTab;
                   const side = tabInsert?.id === id ? tabInsert.side : "after";
                   setDraggingTab(null);
                   setTabInsert(null);
-                  if (!dragged || dragged === id || !tabs.includes(dragged)) return;
+                  if (!dragged || dragged === id || !tabs.some((other) => other.id === dragged)) return;
                   // Measured in the strip WITHOUT the carried tab, which is the
                   // index `movePanelTab` takes — see its own note on why.
-                  const rest = tabs.filter((entry) => entry !== dragged);
-                  onMoveTab?.(dragged, rest.indexOf(id) + (side === "after" ? 1 : 0));
+                  const rest = tabs.filter((other) => other.id !== dragged);
+                  onMoveTab?.(dragged, rest.findIndex((other) => other.id === id) + (side === "after" ? 1 : 0));
                 }}
                 className={cn(
                   // The layout classes live on the trigger below, not here —
@@ -1912,16 +2137,16 @@ export function RightPanel({
                         <span
                           className={cn(
                             "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[0.5625rem] leading-4",
-                            (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
+                            (entry.kind === "agents" ? failed : entry.kind === "processes" ? processesFailed : 0) > 0
                               ? "bg-destructive/15 text-destructive"
-                              : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
+                              : (entry.kind === "agents" ? running : entry.kind === "processes" ? processesRunning : 0) > 0
                                 ? "bg-primary/15 text-primary"
                                 : "bg-muted-foreground/15 text-muted-foreground",
                           )}
                           title={
-                            id === "agents" && running > 0
+                            entry.kind === "agents" && running > 0
                               ? `${running} running`
-                              : id === "processes" && processesRunning > 0
+                              : entry.kind === "processes" && processesRunning > 0
                                 ? `${processesRunning} running`
                                 : undefined
                           }
@@ -1944,10 +2169,10 @@ export function RightPanel({
                   </ContextMenuTrigger>
                   <ContextMenuContent>
                     <ContextMenuItem onClick={() => onCloseTab(id)}>Close</ContextMenuItem>
-                    <ContextMenuItem onClick={() => tabs.filter((other) => other !== id).forEach((other) => onCloseTab(other))}>
+                    <ContextMenuItem onClick={() => tabs.filter((other) => other.id !== id).forEach((other) => onCloseTab(other.id))}>
                       Close others
                     </ContextMenuItem>
-                    <ContextMenuItem onClick={() => tabs.forEach((other) => onCloseTab(other))}>Close all</ContextMenuItem>
+                    <ContextMenuItem onClick={() => tabs.forEach((other) => onCloseTab(other.id))}>Close all</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem onClick={() => setFullscreen((current) => !current)}>
                       {fullscreen ? "Exit fullscreen" : "Fill the window"}
@@ -1974,9 +2199,16 @@ export function RightPanel({
               />
               <DropdownMenuContent align="start" sideOffset={6} className="w-48">
                 {openable.map((candidate) => (
-                  <DropdownMenuItem key={candidate.id} onClick={() => onOpenTab(candidate.id)}>
+                  /* A kind already in the strip can only be here because it is
+                     one you can have two of, so the row says "New Editor" and
+                     opens one rather than focusing what is already open —
+                     which is what the tab beside the button already does. */
+                  <DropdownMenuItem
+                    key={candidate.id}
+                    onClick={() => (candidate.another && onOpenNewTab ? onOpenNewTab(candidate.id) : onOpenTab(candidate.id))}
+                  >
                     <candidate.icon className="size-3.5" />
-                    <span className="min-w-0 flex-1 truncate">{candidate.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{candidate.another && onOpenNewTab ? `New ${candidate.label}` : candidate.label}</span>
                   </DropdownMenuItem>
                 ))}
                 {/* Last, and only when there is no browser yet to open a tab
@@ -2018,7 +2250,7 @@ export function RightPanel({
         {...(tab ? { id: `right-panel-${tab}`, role: "tabpanel" } : {})}
         className="min-h-0 flex-1 overflow-y-auto md:rounded-b-xl"
       >
-        {tab && (sessionId || browserTabId(tab) === undefined) ? (
+        {activeTab && (sessionId || browserTabId(activeTab.kind) === undefined) ? (
           <>
             {/* The active turn's state, in the machine's register: one word
                 saying what the RECORD below is currently doing. A page, a file,
@@ -2028,17 +2260,18 @@ export function RightPanel({
                 any surface that fills the panel itself: these tabs own their own
                 header and scroller, and a line above them pushes an `h-full`
                 child past the bottom of the box. */}
-            {active && OWNS_ITS_HEIGHT.every((holds) => !holds(tab)) && (
+            {active && OWNS_ITS_HEIGHT.every((holds) => !holds(activeTab.kind)) && (
               <p className="px-4 pt-2 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
             <PanelSurface
-              tab={tab}
+              tab={activeTab}
               writes={writes}
               tasks={tasks}
               {...(focusedTask ? { focusedTask } : {})}
               openIssueNumbers={openIssueNumbers}
               openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
+              {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
               {...(onInsertReference ? { onInsertReference } : {})}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
@@ -2048,8 +2281,10 @@ export function RightPanel({
               {...(active ? { active } : {})}
               dataScience={dataScience}
               onOpenImage={setLightbox}
-              {...(editor ? { editor } : {})}
-              {...(onEditorChange ? { onEditorChange } : {})}
+              // THIS instance's files, and a change handler bound to it — two
+              // Editors must not write into one state.
+              {...(editors?.[activeTab.id] ? { editor: editors[activeTab.id] } : {})}
+              {...(onEditorChange ? { onEditorChange: (next: (current: EditorState) => EditorState) => onEditorChange(activeTab.id, next) } : {})}
               {...(hostId ? { hostId } : {})}
               visible={open}
             />

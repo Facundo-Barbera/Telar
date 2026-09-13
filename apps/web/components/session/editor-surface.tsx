@@ -80,6 +80,7 @@ export function EditorSurface({
   dataScience = false,
   onOpenImage,
   onInsertReference,
+  onOpenInNewPanelTab,
 }: {
   state: EditorState;
   /** Updates go through the cockpit, which owns the state and persists it —
@@ -97,6 +98,14 @@ export function EditorSurface({
    *  Nothing in this Editor's own strip offers it: a tab is a thing you have
    *  open, and the file it holds already has the item one pane over. */
   onInsertReference?: (reference: TelarReference) => void;
+  /**
+   * OPEN THIS FILE IN A SECOND EDITOR (#322) — handed to the tree's row menu
+   * and the file header's, the two places a file is named. Not offered by this
+   * Editor's own strip: a tab in there is a file you already have open here,
+   * and "open it somewhere else" is a thing you ask of the file, not of its
+   * tab. Absent hides the item.
+   */
+  onOpenInNewPanelTab?: (path: string) => void;
 }) {
   /**
    * WHERE EACH FILE WAS LEFT, for as long as this Editor is on screen.
@@ -307,6 +316,7 @@ export function EditorSurface({
         onEdit={() => onState((current) => pinEditorFile(current, file.path))}
         {...(workspacePath ? { workspacePath } : {})}
         {...(onInsertReference ? { onInsertReference } : {})}
+        {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
       />
     );
   };
@@ -339,6 +349,7 @@ export function EditorSurface({
             onOpenFile={openFile}
             onWorkspacePath={setWorkspacePath}
             {...(onInsertReference ? { onInsertReference } : {})}
+            {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
             {...(reveal ? { reveal } : {})}
             {...(active ? { active } : {})}
           />

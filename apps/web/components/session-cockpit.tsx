@@ -47,7 +47,7 @@ import { Composer } from "./composer";
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
 import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -57,14 +57,19 @@ import { OpenWorkspaceButton } from "./session/open-workspace-button";
 import { PromptText } from "./session/prompt-text";
 import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
 import {
+  activePanelTab,
+  addPanelTab,
   canvasPanelKey,
   closePanelTab,
   collapseBrowserTabs,
   emptyPanelTabs,
   movePanelTab,
+  nextPanelTabId,
+  openNewPanelTab,
   openPanelTab,
   readPanelTabIds,
   readPanelTabs,
+  setPanelTabParams,
   writePanelTabs,
   clearPanelTabs,
   type PanelTabState,
@@ -662,6 +667,7 @@ function SessionTurnBody({
   onResumeNow,
   onInsert,
   onOpenFile,
+  onOpenFileInNewTab,
   roster = [],
 }: {
   /**
@@ -691,6 +697,9 @@ function SessionTurnBody({
    */
   onInsert?: (text: string) => void;
   onOpenFile?: (path: string) => void;
+  /** …and into an Editor of its OWN, so a file the agent touched can be read
+   *  beside whatever the Editor already holds (#322). */
+  onOpenFileInNewTab?: (path: string) => void;
   turn: JournalTurn;
   /** The session's whole task roster, for a wake-up row: the task that woke
    *  a provider turn belongs to the turn that started it, not to this one. */
@@ -735,6 +744,7 @@ function SessionTurnBody({
     ...(onOpenAgent ? { onOpenAgent } : {}),
     ...(onInsert ? { onInsert } : {}),
     ...(onOpenFile ? { onOpenFile } : {}),
+    ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}),
   };
   /**
    * THE TURN'S RESPONSES. A message sent into a running turn is a boundary in
@@ -1175,15 +1185,29 @@ export function SessionCockpit({
    */
   const [panel, setPanel] = useState<PanelTabState<PanelTab>>(() => emptyPanelTabs<PanelTab>());
   /**
-   * THE EDITOR'S OPEN FILES, beside the panel's open tabs and for the same
-   * reasons: it is restored from localStorage after mount, it is written on
-   * every change, and it has to survive the session being BORN (a canvas's
-   * files are handed to the session the first message creates). Kept here
-   * rather than inside the Editor because "open this file" is a gesture the
-   * conversation makes — a chip, the agent's display tool, a compiled PDF —
-   * and those are all up here.
+   * THE PANEL AS LAST COMMITTED, readable from a callback that must not take
+   * `panel` as a dependency.
+   *
+   * A gesture that opens a file has to know WHICH Editor instance it is opening
+   * it in before it touches either state (#322), and `showPanelTab` is handed
+   * to every row in the transcript — depending on `panel` there would re-render
+   * the whole conversation on each tab change.
    */
-  const [editor, setEditor] = useState<EditorState>(() => emptyEditor());
+  const panelNow = useRef(panel);
+  /**
+   * EACH EDITOR INSTANCE'S OPEN FILES, beside the panel's open tabs and for the
+   * same reasons: restored from localStorage after mount, written on every
+   * change, and carried through the session being BORN (a canvas's files are
+   * handed to the session the first message creates). Kept here rather than
+   * inside the Editor because "open this file" is a gesture the conversation
+   * makes — a chip, the agent's display tool, a compiled PDF — and those are
+   * all up here.
+   *
+   * KEYED BY PANEL-TAB ID because there can be two Editors. The first one's id
+   * IS `"editor"`, which is what lets its files keep the storage key they have
+   * always had (`editorInstanceKey`).
+   */
+  const [editors, setEditors] = useState<Record<string, EditorState>>(() => ({}));
   // Keep the panel MOUNTED through its close animation so the shell can animate
   // out (see RightPanel `open`). `shown` drives the width; `mounted` the DOM.
   const panelPresence = usePanelPresence(panel.open);
@@ -1381,12 +1405,24 @@ export function SessionCockpit({
       const ids = readPanelTabIds(panelKey);
       const legacy = stored.files.length === 0 ? editorFromLegacyTabs(ids.tabs, ids.activeTab) : undefined;
       if (legacy) writeEditor(panelKey, legacy, Date.now());
-      setEditor(legacy ?? stored);
       const restored = readPanelTabs<PanelTab>(panelKey, isPanelTab, migratePanelTab);
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.
-      setPanel(desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored);
+      const next = desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored;
+      /**
+       * THE FIRST EDITOR IS LOADED WHETHER OR NOT ITS TAB IS OPEN — closing the
+       * Editor has never thrown away the files in it, and reopening must still
+       * find them. Any FURTHER Editor instance is loaded only because its tab
+       * came back, since nothing else could name it.
+       */
+      const loaded: Record<string, EditorState> = { editor: legacy ?? stored };
+      for (const entry of next.tabs) {
+        if (entry.kind === "editor" && !(entry.id in loaded)) loaded[entry.id] = readEditor(editorInstanceKey(panelKey, entry.id));
+      }
+      setEditors(loaded);
+      panelNow.current = next;
+      setPanel(next);
     }, 0);
     return () => window.clearTimeout(task);
   }, [panelKey]);
@@ -1395,6 +1431,11 @@ export function SessionCockpit({
     (next: (current: PanelTabState<PanelTab>) => PanelTabState<PanelTab>) => {
       setPanel((current) => {
         const updated = next(current);
+        // A reducer that decided nothing changed is not a write: the params
+        // sync below runs on every Editor keystroke-ish change and most of
+        // them leave the strip exactly as it was.
+        if (updated === current) return current;
+        panelNow.current = updated;
         writePanelTabs(panelKey, updated, Date.now());
         return updated;
       });
@@ -1468,18 +1509,55 @@ export function SessionCockpit({
     setRailOpen(false);
   }, [railOpen, setRailOpen]);
 
-  /** The Editor's files, persisted on every change exactly as the panel's tabs
-   *  are — same key, so a session's arrangement is one thing. */
+  /** One Editor instance's files, persisted on every change exactly as the
+   *  panel's tabs are — same key, so a session's arrangement is one thing. */
   const updateEditor = useCallback(
-    (next: (current: EditorState) => EditorState) => {
-      setEditor((current) => {
-        const updated = next(current);
-        writeEditor(panelKey, updated, Date.now());
-        return updated;
+    (id: string, next: (current: EditorState) => EditorState) => {
+      setEditors((current) => {
+        const updated = next(current[id] ?? emptyEditor());
+        writeEditor(editorInstanceKey(panelKey, id), updated, Date.now());
+        return { ...current, [id]: updated };
       });
     },
-    [panelKey, setEditor],
+    [panelKey, setEditors],
   );
+
+  /**
+   * WHICH EDITOR A FILE OPENS IN, when the gesture did not say.
+   *
+   * THE ONE YOU ARE LOOKING AT. With two Editors open, clicking a file in the
+   * second one's tree and having it appear in the first — and the strip jump
+   * back to it — would make the second Editor unusable. Failing that, the
+   * leftmost; failing that, the id a first Editor would take, so the caller can
+   * seed its files before the tab exists.
+   */
+  const editorTargetId = useCallback((state: PanelTabState<PanelTab>) => {
+    const active = activePanelTab(state);
+    if (active?.kind === "editor") return active.id;
+    return state.tabs.find((entry) => entry.kind === "editor")?.id ?? nextPanelTabId(state, "editor");
+  }, []);
+
+  /**
+   * THE STRIP'S LABELS FOLLOW THE FILES. An Editor instance's params ARE its
+   * open file (#322), which is what "Editor · README.md" is read out of, so
+   * they are kept true here rather than at each of the dozen call sites that
+   * can open a file.
+   *
+   * ONLY FOR INSTANCES THIS COCKPIT HAS LOADED. A restored tab whose files have
+   * not arrived yet keeps the params it was persisted with; clearing them for a
+   * frame would blank the label and write the blank to disk.
+   */
+  useEffect(() => {
+    updatePanel((current) => {
+      let next = current;
+      for (const entry of current.tabs) {
+        if (entry.kind !== "editor" || !(entry.id in editors)) continue;
+        const path = editors[entry.id]?.activePath;
+        next = setPanelTabParams(next, entry.id, path ? { path } : {});
+      }
+      return next;
+    });
+  }, [editors, updatePanel]);
 
   /**
    * Open the panel on a named surface — what every "go there" gesture calls.
@@ -1502,14 +1580,63 @@ export function SessionCockpit({
       makeRoomForPanel();
       const path = filePanelTabPath(tab);
       if (path !== undefined) {
-        updateEditor((current) => openInEditor(current, editorFileForPath(path, dataScience), intent));
+        // Resolved from the committed strip, and handed to BOTH updates, so the
+        // file and the tab that comes forward cannot name different Editors.
+        const target = editorTargetId(panelNow.current);
+        updateEditor(target, (current) => openInEditor(current, editorFileForPath(path, dataScience), intent));
         updatePanel((current) => openPanelTab(current, "editor"));
         return;
       }
       updatePanel((current) => openPanelTab(current, tab));
     },
+    [makeRoomForPanel, updatePanel, updateEditor, editorTargetId, dataScience],
+  );
+
+  /**
+   * OPEN A FILE IN A SECOND EDITOR — the gesture #322 is for, offered by the
+   * file tree, a file's own body and the transcript's file chips.
+   *
+   * A NEW INSTANCE EVERY TIME, deliberately: "open in a new panel tab" that
+   * sometimes reused a tab would be a worse version of the ordinary open, which
+   * is one menu row above it and already focuses what is open.
+   */
+  const openFileInNewPanelTab = useCallback(
+    (path: string) => {
+      makeRoomForPanel();
+      // Minted from the committed strip so the files can be seeded under the
+      // same id the tab is about to take.
+      const id = nextPanelTabId(panelNow.current, "editor");
+      updateEditor(id, (current) => openInEditor(current, editorFileForPath(path, dataScience), "pin"));
+      updatePanel((current) => addPanelTab(current, { id, kind: "editor", params: { path } }));
+    },
     [makeRoomForPanel, updatePanel, updateEditor, dataScience],
   );
+
+  /** Another instance of a surface you can have two of — the "+" chooser's verb
+   *  once one is already open. */
+  const showNewPanelTab = useCallback(
+    (tab: PanelTab) => {
+      makeRoomForPanel();
+      updatePanel((current) => openNewPanelTab(current, tab));
+    },
+    [makeRoomForPanel, updatePanel],
+  );
+
+  /**
+   * THE BROWSER THE ENGINE DRIVES, which is a specific one.
+   *
+   * A session can hold two Browser tabs now, each on its own native scope
+   * (`browserScopeKey`), and only the FIRST is the session's own — the one the
+   * agent navigates and the one `openBrowser` starts. So a page the engine just
+   * opened, or a link routed into the session browser, must bring THAT tab
+   * forward: `showPanelTab` would focus whichever Browser you happened to be
+   * reading, which for a second browser means arriving at a page that is not
+   * the one anything just opened.
+   */
+  const showSessionBrowser = useCallback(() => {
+    makeRoomForPanel();
+    updatePanel((current) => addPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
+  }, [makeRoomForPanel, updatePanel]);
 
   /**
    * PUT TEXT INTO THE MESSAGE BEING WRITTEN — the keyboard-and-menu twin of the
@@ -1580,7 +1707,7 @@ export function SessionCockpit({
         }
         const landed = await openUrlInSessionBrowser(sessionId, projectId, href, hostId);
         if (landed === "native") {
-          showPanelTab(LIVE_BROWSER_TAB);
+          showSessionBrowser();
           return;
         }
         if (landed === "engine") {
@@ -1593,7 +1720,7 @@ export function SessionCockpit({
         window.open(href, "_blank", "noopener,noreferrer");
       })();
     },
-    [hostId, projectId, sessionId, showPanelTab, updatePanel],
+    [hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
   );
 
   /**
@@ -1622,7 +1749,9 @@ export function SessionCockpit({
       if (!current.open) return current;
       // Desktop: one stable browser tab (the native strip lists the pages);
       // other clients: one panel tab per page (their only way to switch).
-      if (desktopBrowserBridge()) return openPanelTab(current, LIVE_BROWSER_TAB);
+      // The engine's pages belong to the SESSION's own scope, which is the
+      // first Browser tab — see `showSessionBrowser`.
+      if (desktopBrowserBridge()) return addPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} });
       return fresh.reduce((state, page) => openPanelTab(state, browserPanelTab(page.id)), current);
     });
   }, [browser, updatePanel]);
@@ -1717,10 +1846,10 @@ export function SessionCockpit({
       writeDraft(id, projectId, draftText.current);
       writeDraft(undefined, projectId, "");
       writePanelTabs(id, panel, Date.now());
-      // …and the files open in the Editor with them: the arrangement a person
+      // …and the files open in EACH Editor with them: the arrangement a person
       // built while writing the first message is the arrangement they want
       // while it runs.
-      writeEditor(id, editor, Date.now());
+      for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(id, instance), state, Date.now());
       /**
        * AND THE CANVAS FORGETS IT, which is the difference between a hand-off
        * and a default. `new:<projectId>` is ONE key shared by every new
@@ -1730,6 +1859,7 @@ export function SessionCockpit({
        * for it and the next one starts closed.
        */
       clearPanelTabs(canvasPanelKey(projectId));
+      for (const instance of Object.keys(editors)) clearEditor(editorInstanceKey(canvasPanelKey(projectId), instance));
       clearEditor(canvasPanelKey(projectId));
       owner.current = { sessionId: id, projectId };
       setSession(patched.session);
@@ -1763,7 +1893,10 @@ export function SessionCockpit({
       setBrowserStart(describeBrowserStart(result.browser));
       const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
       // On desktop the native strip owns the pages — one stable "Browser" tab.
-      if (active) showPanelTab(desktopBrowserBridge() ? LIVE_BROWSER_TAB : browserPanelTab(active.id));
+      if (active) {
+        if (desktopBrowserBridge()) showSessionBrowser();
+        else showPanelTab(browserPanelTab(active.id));
+      }
     } catch (error) {
       // NEVER SILENT: a press that ends in nothing is the one outcome a person
       // cannot tell apart from "still starting".
@@ -2222,8 +2355,8 @@ export function SessionCockpit({
         // want open while it runs; without this hand-off the key changes from
         // the canvas's to the session's and the panel resets exactly then.
         writePanelTabs(target, panel, Date.now());
-        // The Editor's files travel with them — same hand-off, same reason.
-        writeEditor(target, editor, Date.now());
+        // Every Editor's files travel with them — same hand-off, same reason.
+        for (const [instance, state] of Object.entries(editors)) writeEditor(editorInstanceKey(target, instance), state, Date.now());
         // A NEW SESSION STARTS EMPTY. Ordinarily this state is already empty —
         // the canvas polls nothing — but a canvas reached by pressing "New
         // conversation" inherits whatever the last conversation left here, and
@@ -2730,6 +2863,7 @@ export function SessionCockpit({
                 onOpenTab={showPanelTab}
                 onInsert={insertIntoComposer}
                 onOpenFile={(path) => showPanelTab(`file:${path}`)}
+                onOpenFileInNewTab={openFileInNewPanelTab}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 {...(turn.failureCode === "rate_limited" && turn.state === "failed"
@@ -2828,15 +2962,17 @@ export function SessionCockpit({
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}
-          onTabChange={(tab) => updatePanel((current) => ({ ...current, activeTab: tab }))}
+          onTabChange={(id) => updatePanel((current) => ({ ...current, activeTab: id }))}
           onOpenTab={showPanelTab}
+          onOpenNewTab={showNewPanelTab}
+          onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
-          onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
+          onCloseTab={(id) => updatePanel((current) => closePanelTab(current, id))}
           // Persisted through the same `updatePanel` every other tab gesture
           // writes, so a reordered strip comes back reordered.
-          onMoveTab={(tab, toIndex) => updatePanel((current) => movePanelTab(current, tab, toIndex))}
+          onMoveTab={(id, toIndex) => updatePanel((current) => movePanelTab(current, id, toIndex))}
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
-          editor={editor}
+          editors={editors}
           onEditorChange={updateEditor}
           hostId={hostId}
           dataScience={dataScience}
