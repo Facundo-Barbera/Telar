@@ -59,6 +59,52 @@ func fixture(_ name: String) throws -> Data {
         #expect(try decode(#"{"sessions":[],"projects":[],"layout":"b,a"}"#).layout == nil)
     }
 
+    /// WHICH REPOSITORY A PROJECT IS A CHECKOUT OF, and the absence of one.
+    /// The engine derives `remoteUrl` on its metadata refresh and sends it
+    /// already reduced; a Mac too old to derive it, an unversioned directory
+    /// and a checkout with no origin all send nothing, and nothing must stay
+    /// nothing rather than becoming a name to fold two strangers on.
+    @Test func projectRefsCarryTheRepositoryTheyAreACheckoutOf() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        let live = try decode(#"""
+        {"sessions":[],"projects":[
+          {"id":"p1","name":"Telar","icon":"abc","remoteUrl":"github.com/owner/repo"},
+          {"id":"p2","name":"scratch"}
+        ]}
+        """#)
+        #expect(live.projects.first?.remoteUrl == "github.com/owner/repo")
+        #expect(live.projects.last?.remoteUrl == nil)
+    }
+
+    /// WHO IS WORKING FOR WHOM, on the wire — the two relationships the rail's
+    /// tree is made of. `assignments` rides the live list as a map keyed by
+    /// session id (the engine folds it over each session's whole queue);
+    /// `startedFrom` rides the session itself.
+    ///
+    /// AN ABSENT MAP IS THE ORDINARY ANSWER, not a failure: a cockpit that does
+    /// not forward the field sends none, and the rail then draws exactly the
+    /// flat list it always did rather than losing the list.
+    @Test func theLiveReadCarriesWhoIsWorkingForWhom() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        let session = #"""
+        {"id":"child","projectId":"p","title":"Child","createdAt":1,"updatedAt":1,"activity":"working",
+         "driver":"claude","workspace":{"mode":"local","path":"/tmp"},"startedFrom":{"sessionId":"coord","runId":"run_1"}}
+        """#
+        let live = try decode(#"""
+        {"sessions":[\#(session)],"projects":[],
+         "assignments":{"child":[{"taskRunId":"run_1","fromSessionId":"coord","runId":"run_1","receivedAt":1,"scope":"the parser"}]}}
+        """#)
+        #expect(live.sessions.first?.startedFrom == SessionProvenance(sessionId: "coord", runId: "run_1"))
+        #expect(live.assignments["child"]?.first?.fromSessionId == "coord")
+        #expect(live.assignments["child"]?.first?.scope == "the parser")
+        // Outstanding: no outcome, not unresolved.
+        #expect(live.assignments["child"]?.first?.outcome == nil)
+
+        #expect(try decode(#"{"sessions":[],"projects":[]}"#).assignments.isEmpty)
+        // A map this build cannot read costs the tree, never the list.
+        #expect(try decode(#"{"sessions":[],"projects":[],"assignments":"nope"}"#).assignments.isEmpty)
+    }
+
     @Test func snapshotDecodes() throws {
         let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture("snapshot"))
         #expect(!snapshot.turns.isEmpty)

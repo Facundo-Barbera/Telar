@@ -101,6 +101,32 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         stores.mapValues(\.layout)
     }
 
+    /// WHO EACH SESSION IS WORKING FOR, scoped by Mac. An assignment's
+    /// `fromSessionId` is a BARE id, meaningful only inside the engine that
+    /// stamped it — so the coordinator it names must be looked for on that Mac
+    /// and nowhere else, exactly as `applyRead` is routed rather than broadcast.
+    var assignments: [ScopedSessionID: [SessionAssignment]] {
+        var found: [ScopedSessionID: [SessionAssignment]] = [:]
+        for (hostId, store) in stores {
+            for (sessionId, held) in store.assignments {
+                found[ScopedSessionID(hostId: hostId, sessionId: sessionId)] = held
+            }
+        }
+        return found
+    }
+
+    /// Who the pinned conversations have asked to be woken by, scoped the same
+    /// way and for the same reason.
+    var following: [ScopedSessionID: [Subscription]] {
+        var found: [ScopedSessionID: [Subscription]] = [:]
+        for (hostId, store) in stores {
+            for (sessionId, held) in store.following {
+                found[ScopedSessionID(hostId: hostId, sessionId: sessionId)] = held
+            }
+        }
+        return found
+    }
+
     func layout(_ hostId: HostID) -> SidebarLayout {
         stores[hostId]?.layout ?? SidebarLayout()
     }

@@ -26,11 +26,23 @@ struct SessionSidebar: View {
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
-        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, icons: { inbox.project($0)?.icon }, layouts: inbox.layouts)
+        SidebarModel(
+            sessions: inbox.sections.active,
+            names: inbox.projectName,
+            icons: { inbox.project($0)?.icon },
+            remotes: { inbox.project($0)?.remoteUrl },
+            hostNames: { settings.host($0)?.name },
+            assignments: inbox.assignments,
+            following: inbox.following,
+            layouts: inbox.layouts
+        )
     }
     private var all: [HostedSession] { inbox.sections.active + inbox.sections.tail }
     private func matches(_ row: HostedSession) -> Bool {
-        let key = "\(row.hostId.uuidString):\(row.session.projectId ?? "")"
+        // THE FILTER KEYS BY GROUP, NOT BY MAC. Two Macs' checkouts of one
+        // repository are one group, so picking that project has to keep both
+        // Macs' rows — a `hostId:projectId` key would have kept one of them.
+        let key = SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: inbox.project(row)?.remoteUrl)
         guard projectFilter == nil || projectFilter == key else { return false }
         return query.isEmpty || [row.session.title, inbox.projectName(row) ?? "", settings.host(row.hostId)?.name ?? ""]
             .contains { $0.localizedStandardContains(query) }
@@ -89,9 +101,16 @@ struct SessionSidebar: View {
                         .accessibilityLabel("Needs you, \(attention.count)")
                     }
                 }
-                if !model.pinned.filter(matches).isEmpty {
+                let pinnedRows = model.pinnedRows.filter { matches($0.row) }.drawn
+                if !pinnedRows.isEmpty {
                     Section {
-                        ForEach(model.pinned.filter(matches)) { row in sessionRow(row) }
+                        ForEach(pinnedRows) { entry in
+                            if let child = entry.child { childRow(child).moveDisabled(true) }
+                            else { sessionRow(entry.row) }
+                        }
+                        .onMove { offsets, destination in
+                            Task { await reorder(pinnedRows, offsets: offsets, to: destination, key: .pinned) }
+                        }
                     }
                 }
                 ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
@@ -101,7 +120,18 @@ struct SessionSidebar: View {
                             // and a card's status and branch lines are mostly
                             // empty on an idle row — so the card was spending
                             // three lines to restate the header.
-                            ForEach(group.sessions) { row in sessionRow(row, variant: .slim) }
+                            // ONE ENTRY PER ROW: the row, then what it delegated.
+                            // THE LIFT STAYS ON THE PARENT — a child is drawn
+                            // where its coordinator is, so lifting it would offer
+                            // to move a row out of its own tree.
+                            let drawn = group.rows.drawn
+                            ForEach(drawn) { entry in
+                                if let child = entry.child { childRow(child).moveDisabled(true) }
+                                else { sessionRow(entry.row, variant: .slim) }
+                            }
+                            .onMove { offsets, destination in
+                                Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
+                            }
                         }
                     } header: {
                         Button {
@@ -122,10 +152,19 @@ struct SessionSidebar: View {
                                 // semibold, near-full strength.
                                 Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
                                     .lineLimit(1).truncationMode(.tail)
-                                if settings.hosts.count > 1 {
-                                    Text(hostName(group.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
-                                        .lineLimit(1).padding(.horizontal, 4)
-                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                // ONE HEADER, EVERY MAC IT LIVES ON — the
+                                // desktop's rule (project-group.tsx). A group on
+                                // one Mac wears a badge only when there is more
+                                // than one Mac to tell apart; the moment a group
+                                // SPANS two, both are named regardless, because
+                                // then which Mac a row is on is the one thing
+                                // the reader cannot infer from the group.
+                                if group.places.count > 1 || settings.hosts.count > 1 {
+                                    ForEach(group.places) { place in
+                                        Text(hostName(place.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                            .lineLimit(1).padding(.horizontal, 4)
+                                            .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                    }
                                 }
                                 Spacer(minLength: 4)
                                 // HOW MANY ARE IN HERE, which a collapsed group
@@ -145,11 +184,7 @@ struct SessionSidebar: View {
                             // secondary verbs, so it goes there — the
                             // affordance differs because the input does, the
                             // action is the same one.
-                            Button("New conversation here", systemImage: "square.and.pencil") {
-                                resumeDraft(MobileDraft(hostId: group.hostId,
-                                                        project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
-                                                        prompt: "", title: ""))
-                            }
+                            newConversation(group)
                             Divider()
                             // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
                             // (#327). Tapping the header already collapses the
@@ -165,14 +200,21 @@ struct SessionSidebar: View {
                                 setCollapsed(ProjectHeaderMenu.collapseOthers(all: model.projects.map(\.id), keeping: group.id))
                             }
                             Divider()
+                            // MOVE UP AND MOVE DOWN ARE THE HEADER'S REORDER, and
+                            // on this platform they are the whole of it (#348).
+                            //
+                            // The header carried a `.draggable` and it could never
+                            // be lifted by touch: the long press is the menu's,
+                            // and the drag never began. `.onMove` cannot replace
+                            // it either — a header is a section, not a row in a
+                            // `ForEach`, and the List reorders rows. So the drag
+                            // is gone rather than left as an affordance that does
+                            // nothing, and these two do the work on every input.
+                            // They write the same document a drop would have
+                            // (`saveOrder`), including for a group that lives on
+                            // two Macs.
                             Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
                             Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
-                        }
-                        .draggable(group.id)
-                        .dropDestination(for: String.self) { ids, _ in
-                            guard let id = ids.first, let source = model.projects.first(where: { $0.id == id }), source.hostId == group.hostId else { return false }
-                            Task { await place(source, before: group) }
-                            return true
                         }
                     }
                 }
@@ -336,9 +378,36 @@ struct SessionSidebar: View {
     private var projectOptions: [SidebarProject] { SidebarModel(sessions: all.map { row in
         var session = row.session; session.activity = .idle; session.settledOverride = nil
         return HostedSession(hostId: row.hostId, session: session)
-    }, names: inbox.projectName).projects }
+    }, names: inbox.projectName, remotes: { inbox.project($0)?.remoteUrl }, hostNames: { settings.host($0)?.name }).projects }
 
     private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
+
+    /// "HERE" IS A QUESTION ONCE A GROUP SPANS TWO MACS, so it stops being the
+    /// answer and becomes a submenu — the desktop's own control
+    /// (project-group.tsx). With one place the row is exactly what it was.
+    ///
+    /// EACH ENTRY IS BUILT FROM ITS PLACE, never from the group: project ids are
+    /// minted per engine, so a draft carrying the laptop's id opens nothing on
+    /// the mini.
+    @ViewBuilder private func newConversation(_ group: SidebarProject) -> some View {
+        if group.places.count > 1 {
+            Menu("New conversation here", systemImage: "square.and.pencil") {
+                ForEach(group.places) { place in
+                    Button(hostName(place.hostId), systemImage: "desktopcomputer") { startDraft(place) }
+                }
+            }
+        } else {
+            Button("New conversation here", systemImage: "square.and.pencil") {
+                startDraft(group.places.first ?? ProjectPlace(hostId: group.hostId, projectId: group.projectId, name: group.name, icon: group.icon))
+            }
+        }
+    }
+
+    private func startDraft(_ place: ProjectPlace) {
+        resumeDraft(MobileDraft(hostId: place.hostId,
+                                project: ProjectRef(id: place.projectId, name: place.name, icon: place.icon),
+                                prompt: "", title: ""))
+    }
 
     /// HOW MUCH ROOM A ROW HAS EARNED — the desktop's `variant: "card" |
     /// "slim"` (apps/web/components/session/session-row.tsx), ported because
@@ -433,6 +502,13 @@ struct SessionSidebar: View {
                 }
             }
         }
+        // NO `.draggable` HERE, AND THAT IS THE FIX (#348). A row carrying both a
+        // `.draggable` and a `.contextMenu` cannot be reordered by touch: the
+        // long press is claimed by the menu and the drag never begins, which is
+        // exactly what the phone build reported. The List's own reorder is
+        // attached to the band's `ForEach` instead (`.onMove`), and it does not
+        // compete for the press — a press that MOVES lifts the row, a press that
+        // is HELD opens this menu.
     }
 
     /// The row's menu, resolved against one clock — two items reading their
@@ -591,6 +667,48 @@ struct SessionSidebar: View {
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             statusSlot(row.session)
+        }
+    }
+
+    /// A CONVERSATION THAT HANGS OFF THE ONE ABOVE IT — #324's shape, ported.
+    ///
+    /// NO CAPTION, AND THAT IS THE POINT. The four relationships used to carry a
+    /// heading each, and in a band with nothing indented "FOLLOWING" read as a
+    /// header for the row BELOW it rather than as a label on the one above. They
+    /// still differ and they still sort in the same order; what the rail has to
+    /// say about a child row is "this comes from the row above", which an elbow
+    /// says in a glyph's width and a heading could not say at all.
+    ///
+    /// THE ELBOW OCCUPIES THE PARENT'S MARK, WHICH IS WHAT MAKES THE TITLES LINE
+    /// UP. It is drawn at the slim row's own avatar size, before the slim row's
+    /// own gap, so a child's title lands in the same column as the title of the
+    /// conversation it hangs off — one ruler, not two.
+    ///
+    /// THE STATE RIDES A TRAILING HINT, because it is the one thing that still
+    /// differs per child once the captions are gone: the scope the coordinator
+    /// named, or "working", or "finished". Provenance has none — the edge was
+    /// the whole fact, and the elbow is now the edge.
+    @ViewBuilder private func childRow(_ child: SidebarChild) -> some View {
+        NavigationLink(value: child.row.id) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                    .frame(width: 13)
+                    .accessibilityHidden(true)
+                unreadDot(child.row.session)
+                Text(child.row.session.title.isEmpty ? "Untitled session" : child.row.session.title)
+                    .font(Settling.showsUnreadMark(child.row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
+                    .foregroundStyle(Settling.showsUnreadMark(child.row.session) ? Theme.text : Theme.text.opacity(0.7))
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 4)
+                if let hint = child.hint {
+                    Text(hint).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
+                        .lineLimit(1).truncationMode(.tail)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(child.hint.map { "\(child.row.session.title), \($0), from the conversation above" }
+                                ?? "\(child.row.session.title), from the conversation above")
         }
     }
 
@@ -753,17 +871,29 @@ struct SessionSidebar: View {
         savedCollapsed = collapsed.sorted().joined(separator: "\n")
     }
     private func move(_ group: SidebarProject, offset: Int) async {
-        let peers = model.projects.filter { $0.hostId == group.hostId }
-        guard let index = peers.firstIndex(where: { $0.id == group.id }), peers.indices.contains(index + offset) else { return }
-        var order = peers.map(\.projectId); order.swapAt(index, index + offset)
-        await saveOrder(order, host: group.hostId)
+        var drawn = model.projects
+        guard let index = drawn.firstIndex(where: { $0.id == group.id }), drawn.indices.contains(index + offset) else { return }
+        drawn.swapAt(index, index + offset)
+        await saveOrder(drawn)
     }
-    private func place(_ source: SidebarProject, before target: SidebarProject) async {
-        guard source.id != target.id else { return }
-        var order = model.projects.filter { $0.hostId == source.hostId }.map(\.projectId)
-        order.removeAll { $0 == source.projectId }
-        order.insert(source.projectId, at: order.firstIndex(of: target.projectId) ?? 0)
-        await saveOrder(order, host: source.hostId)
+    /// THE WHOLE DRAWN LIST, WRITTEN ONCE PER MAC IT TOUCHES.
+    ///
+    /// A group that lives on two Macs is one row here and an entry in BOTH
+    /// documents, so a move has to say so on both — and each Mac is told only
+    /// about the groups it actually holds, in the new relative order, keyed the
+    /// way that Mac keys them (`SidebarProject.layoutKey`).
+    ///
+    /// A MAC WHOSE ORDER DID NOT CHANGE IS NOT WRITTEN. Moving one group past
+    /// another on the same Mac must not cost a round trip to every other Mac in
+    /// the book.
+    private func saveOrder(_ drawn: [SidebarProject]) async {
+        var byHost: [HostID: [String]] = [:]
+        for group in drawn {
+            for place in group.places { byHost[place.hostId, default: []].append(group.layoutKey) }
+        }
+        for (host, order) in byHost where order != inbox.layout(host).projectOrder.filter(order.contains) {
+            await saveOrder(order, host: host)
+        }
     }
     /**
      RE-READ, THEN WRITE ONE FIELD.
@@ -782,6 +912,67 @@ struct SessionSidebar: View {
      Optimistic, like the desktop: the group lands where it was dropped on the
      same frame, and a Mac that refuses puts it back.
      */
+    /// A CONVERSATION LIFTED AND PUT DOWN SOMEWHERE ELSE IN ITS BAND — the List's
+    /// own reorder, handed the band exactly as it was drawn when the finger went
+    /// down.
+    ///
+    /// A GESTURE THAT RESOLVED TO WHERE THE ROW ALREADY WAS COSTS NOTHING:
+    /// `reordered` answers nil, and no write is made.
+    private func reorder(_ drawn: [SidebarDrawnRow], offsets: IndexSet, to destination: Int, key: RowOrderKey) async {
+        guard let move = SidebarModel.reordered(drawn, offsets: offsets, to: destination) else { return }
+        await saveRowOrder(move.ids, key: key, host: move.host)
+    }
+
+    /// Which list a row's move writes. Two cases rather than an optional key, so
+    /// a group lookup that came back empty can never quietly write the pinned band.
+    private enum RowOrderKey {
+        case pinned
+        case group(String)
+    }
+
+    /**
+     THE SAME DISCIPLINE `saveOrder` DOCUMENTS, one level down: re-read, then
+     write ONE field.
+
+     `sessionOrder` is a map, so writing it means sending the whole map — and a
+     map this phone was holding from a minute ago would resurrect the group order
+     a drag on the Mac replaced in between. So the document is re-read
+     immediately before the write and this group's key is MERGED INTO IT, which
+     is the desktop's own rule (`setSessionOrder`, lib/sidebar-layout.ts): a drop
+     on the phone leaves every other group's rows exactly as the Mac has them.
+
+     `pinnedOrder` and `projectOrder` are never named, so the engine leaves them
+     alone — the field you dragged is the field that moves.
+     */
+    private func saveRowOrder(_ ids: [String], key: RowOrderKey, host: HostID) async {
+        guard let api = settings.api(for: host) else { return }
+        let previous = inbox.layout(host)
+        var optimistic = previous
+        switch key {
+        case .pinned: optimistic.pinnedOrder = ids
+        case .group(let group): optimistic.sessionOrder[group] = ids
+        }
+        inbox.applyLayout(host, optimistic)
+        do {
+            // A read that fails is not a reason to refuse the drop — the copy in
+            // hand is still this phone's best word.
+            let current = (try? await api.sidebarLayout()) ?? previous
+            switch key {
+            case .pinned:
+                let order = SidebarModel.keepingUnseen(ids, stored: current.pinnedOrder)
+                inbox.applyLayout(host, try await api.setSidebarLayout(pinnedOrder: order))
+            case .group(let group):
+                var map = current.sessionOrder
+                map[group] = SidebarModel.keepingUnseen(ids, stored: current.sessionOrder[group] ?? [])
+                inbox.applyLayout(host, try await api.setSidebarLayout(sessionOrder: map))
+            }
+            layoutError = nil
+        } catch {
+            inbox.applyLayout(host, previous)
+            layoutError = "Couldn't save conversation order. Try again when the Mac is connected."
+        }
+    }
+
     private func saveOrder(_ order: [String], host: HostID) async {
         guard let api = settings.api(for: host) else { return }
         let previous = inbox.layout(host)

@@ -83,6 +83,14 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// it) reaches the phone on the next poll without a request, a timer or a
     /// connection of its own.
     private(set) var layout = SidebarLayout()
+    /// WHO EACH SESSION IS WORKING FOR, by session id — folded by the engine
+    /// over each session's whole queue and carried on the live read, so the
+    /// rail's tree costs no request of its own. Empty from a cockpit that does
+    /// not forward the field, which draws the flat list this rail always had.
+    private(set) var assignments: [EngineID: [SessionAssignment]] = [:]
+    /// Who the PINNED conversations have asked to be woken by, by session id.
+    /// A bounded read — see `readFollowing`.
+    private(set) var following: [EngineID: [Subscription]] = [:]
 
     /// Which Mac this store polls; the merged inbox keys by it.
     let hostId: HostID
@@ -105,6 +113,9 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// Mac too old to send the layout on its live read. One that does send it
     /// stamps this on every poll, so the extra request is never made.
     private var layoutReadAt: ContinuousClock.Instant?
+    /// The pinned set the subscriptions in hand were read for, and when.
+    private var followingFor: Set<EngineID> = []
+    private var followingReadAt: ContinuousClock.Instant?
     private var lastInboxData: Data?
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
@@ -219,6 +230,7 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
                 layoutReadAt = .now
             }
             apply(live)
+            await readFollowing()
             lastError = nil
             unauthorized = false
             loaded = true
@@ -230,6 +242,41 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         }
     }
 
+    /// WHO THE PINNED CONVERSATIONS FOLLOW — one read per pinned row, and only
+    /// the pinned rows.
+    ///
+    /// A SUBSCRIPTION IS NOT ON THE LIVE LIST, unlike an assignment: it lives in
+    /// an engine-wide file rather than on either session, so there is no fold
+    /// over the inbox that could carry it. Pinned is the handful a person keeps
+    /// in view, so asking per pinned row is bounded where asking per row of the
+    /// list would be an N+1 over the whole inbox, every poll.
+    ///
+    /// RATIONED, like the policy and the layout above: re-read when the pinned
+    /// SET changes, and otherwise every fifteen seconds — an agent can add,
+    /// remove or consume a `once` subscription while the same conversations stay
+    /// pinned, which a set-keyed read alone would never notice. A read that
+    /// fails leaves the last answer standing; a Mac being slow must not empty
+    /// the tree it already drew.
+    private func readFollowing() async {
+        let pinned = Set(sections.active.filter { $0.settledOverride == "active" }.map(\.id))
+        guard !pinned.isEmpty else {
+            following = [:]
+            followingFor = []
+            followingReadAt = nil
+            return
+        }
+        let stale = followingReadAt.map { $0.duration(to: .now) > .seconds(15) } ?? true
+        guard pinned != followingFor || stale else { return }
+        var next: [EngineID: [Subscription]] = [:]
+        for id in pinned {
+            guard let held = try? await api.sessionSubscriptions(id), !held.isEmpty else { continue }
+            next[id] = held
+        }
+        following = next
+        followingFor = pinned
+        followingReadAt = .now
+    }
+
     private func apply(_ live: LiveSessions) {
         // The Mac's own word about where things sit. Absent means an engine
         // that cannot say, never "nobody has arranged anything" — so the copy
@@ -237,6 +284,7 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         if let arrangement = live.layout { layout = arrangement }
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
+        assignments = live.assignments
         sections = groupInbox(
             live.sessions,
             now: Timestamp(Date().timeIntervalSince1970 * 1000),

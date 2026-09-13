@@ -51,6 +51,10 @@ protocol EngineAPI: Sendable {
     /// new enough to send it is never asked for this; it is here for one that
     /// is not, where a rail with no arrangement at all would be the regression.
     func sidebarLayout() async throws -> SidebarLayout
+    /// WHO THIS SESSION HAS ASKED TO BE WOKEN BY. Read for the PINNED handful
+    /// only and never per row of the list: pinned is what a person keeps in
+    /// view, so this stays a bounded read rather than an N+1 over the inbox.
+    func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription]
     /// One file's bytes, uploaded BEFORE the message that refers to it.
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment
     /// The provider's own model list for a driver.
@@ -103,6 +107,10 @@ extension EngineAPI {
     /// returning rather than throwing: a test standing in for one endpoint
     /// should not have to implement every other one to compile.
     func deleteSession(_ id: EngineID) async throws {}
+
+    /// And "this session follows nobody", which is the ordinary answer rather
+    /// than an error — a cockpit too old to serve the route says the same.
+    func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription] { [] }
 }
 
 /// A raw read that keeps the content type: the PDF viewer and the image
@@ -340,6 +348,12 @@ struct HTTPEngineAPI: EngineAPI {
         if let pinnedOrder { patch["pinnedOrder"] = .array(pinnedOrder.map { .string($0) }) }
         let reply: Reply = try await send("PATCH", "api/sidebar-layout", body: JSONValue.object(patch))
         return reply.layout
+    }
+
+    func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription] {
+        struct Reply: Decodable { var subscriptions: [Skippable<Subscription>] }
+        let reply: Reply = try await get("api/sessions/\(escape(id))/subscriptions")
+        return reply.subscriptions.compactMap(\.value)
     }
 
     func registerPush(_ registration: PushRegistration) async throws -> PushStatus {
