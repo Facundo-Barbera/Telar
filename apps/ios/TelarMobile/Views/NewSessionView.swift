@@ -2,11 +2,35 @@ import PhotosUI
 import SwiftUI
 
 /// t3 mobile's creation flow, ported: two steps, both in the sheet's stack.
-/// Step 1 — "Choose project": one inset 24pt card of project rows.
-/// Step 2 — the draft: a composer-first screen; the auto-focused prompt owns
-/// the whole sheet, every setting is a chip at the bottom you MAY touch, and
-/// the arrow creates the session, sends the prompt as its first turn, and
+/// Step 1 — the palette: every project on every paired Mac, in one searchable
+/// list. Step 2 — the draft: a composer-first screen; the auto-focused prompt
+/// owns the whole sheet, every setting is a chip at the bottom you MAY touch,
+/// and the arrow creates the session, sends the prompt as its first turn, and
 /// drops you straight into the live conversation.
+
+/**
+ ONE FLAT LIST, THIS PHONE'S DEFAULT MAC FIRST — the Mac's palette (#332).
+
+ WHAT THIS REPLACES, AND WHY. The picker used to ask for the Mac FIRST, as a
+ menu above a per-Mac list. That made the host a MODE rather than a fact: the
+ reachable set was one Mac at a time, so "start this on the mini" needed a
+ change of mode before it was even visible, and the order of the list was
+ whatever that one Mac happened to return. Naming the Mac on each row costs one
+ line of muted text and removes the question — the same argument the dialog on
+ the Mac makes about its own local/remote sections.
+
+ THE DEFAULT MAC IS FIRST because the phone's host book is ordered by when each
+ was paired, and the first one is the Mac this phone was set up against. That is
+ the closest thing a phone has to the cockpit's "this Mac", and it is the one
+ most rows belong to.
+
+ THE ROOT PATH IS UNDER THE NAME, which is the whole answer to "which of my two
+ clones is that" — and the reason a search over paths is worth having.
+
+ NO KEYBOARD LEGEND. The Mac's footer explains ⌘1..⌘9 to a reader whose hands
+ are already on a keyboard; a phone has none to explain, and a strip of key caps
+ on a touch screen is chrome. The shortcuts themselves stay, for the iPad.
+ */
 struct NewSessionView: View {
     let settings: AppSettings
     /// Called with the created session's scoped ref — the caller navigates
@@ -14,73 +38,53 @@ struct NewSessionView: View {
     let onCreated: (ScopedSessionID) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    /// t3's environment selector: the Mac is picked FIRST — the project
-    /// list is per Mac, so picking later would only invalidate it.
-    @State private var hostId: HostID
-    @State private var projects: [ProjectRef] = []
-    @State private var loadError: String?
-    /// `-newSessionProject <id>` launch arg — jumps straight to the draft.
-    @State private var autoProject: ProjectRef?
+    @State private var targets: [NewConversationTarget] = []
+    @State private var query = ""
+    @State private var loading = true
+    /// The Macs that did not answer this read, by name. ONE MAC GOING DARK
+    /// MUST NOT BLANK THE LIST — the merged inbox's rule, and the same one
+    /// applies to a palette drawn from every Mac at once.
+    @State private var unreachable: [String] = []
+    /// `-newSessionProject <id>` launch arg, and the resumed draft — both jump
+    /// straight past the palette into the draft.
+    @State private var autoTarget: NewConversationTarget?
     @State private var addingProject = false
+    /// Which Mac the `+` registers a folder on. Nil until the sheet opens.
+    @State private var addHostId: HostID?
 
     init(settings: AppSettings, draft: MobileDraft? = nil, onCreated: @escaping (ScopedSessionID) -> Void) {
         self.settings = settings
         self.onCreated = onCreated
-        _hostId = State(initialValue: draft?.hostId ?? settings.hosts.first?.id ?? HostID())
-        _autoProject = State(initialValue: draft?.project)
+        if let draft, let host = settings.host(draft.hostId) {
+            _autoTarget = State(initialValue: NewConversationTarget(hostId: host.id, hostName: host.name, project: draft.project))
+        }
     }
 
-    private var api: any EngineAPI {
-        settings.api(for: hostId) ?? HTTPEngineAPI(baseURL: URL(string: "http://invalid.local")!)
+    private var matches: [NewConversationTarget] { matchNewConversationTargets(targets, query: query) }
+
+    /// The Mac a newly registered folder lands on: the one the `+` named, or
+    /// the default when there is only one to name.
+    private var addHost: Host? {
+        settings.host(addHostId ?? settings.hosts.first?.id ?? HostID()) ?? settings.hosts.first
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                if settings.hosts.count > 1 {
-                    VStack(spacing: 0) {
-                        Menu {
-                            ForEach(settings.hosts) { host in
-                                Button {
-                                    hostId = host.id
-                                } label: {
-                                    if host.id == hostId {
-                                        Label(host.name, systemImage: "checkmark")
-                                    } else {
-                                        Text(host.name)
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "desktopcomputer")
-                                    .font(.system(size: 17))
-                                    .foregroundStyle(Theme.textMuted2)
-                                    .frame(width: 27, height: 27)
-                                Text(settings.host(hostId)?.name ?? "Mac")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundStyle(Theme.text)
-                                Spacer(minLength: 8)
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Theme.chevron)
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 14)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .background(Theme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                if !unreachable.isEmpty {
+                    Label("\(unreachable.joined(separator: ", ")) didn't answer — showing the rest.", systemImage: "wifi.slash")
+                        .font(.caption).foregroundStyle(Theme.statusAmber)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if projects.isEmpty {
+                if matches.isEmpty {
                     VStack(spacing: 12) {
-                        if loadError == nil { ProgressView() }
-                        Text(loadError == nil ? "Loading projects" : "No projects found")
+                        if loading { ProgressView() }
+                        Text(loading ? "Loading projects" : targets.isEmpty ? "No projects found" : "No project matches that")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(Theme.text)
-                        Text(loadError ?? "Loading projects from the cockpit.")
+                        Text(loading ? "Reading every paired Mac's registry."
+                             : targets.isEmpty ? "No Mac reported a project. Add one below."
+                             : "Try another name, Mac or path.")
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.textMuted2)
                             .multilineTextAlignment(.center)
@@ -90,132 +94,210 @@ struct NewSessionView: View {
                     .padding(.vertical, 32)
                     .background(Theme.card)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    if loadError != nil {
-                        VStack(spacing: 0) { addProjectRow }
-                            .background(Theme.card)
-                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    }
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
-                            NavigationLink(value: project) {
-                                HStack(spacing: 12) {
-                                    ProjectAvatar(name: project.name, projectId: project.id, hostId: hostId, icon: project.icon, api: settings.api(for: hostId), size: 27)
-                                    Text(project.name)
-                                        .font(.system(size: 16, weight: .bold))
-                                        .foregroundStyle(Theme.text)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 8)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Theme.chevron)
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 14)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            if index < projects.count - 1 {
-                                Rectangle().fill(Theme.borderSubtle).frame(height: 1)
-                            }
-                        }
-                        Rectangle().fill(Theme.borderSubtle).frame(height: 1)
-                        addProjectRow
-                    }
-                    .background(Theme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 }
+                VStack(spacing: 0) {
+                    ForEach(Array(matches.enumerated()), id: \.element.id) { index, target in
+                        NavigationLink(value: target) { targetRow(target) }
+                            .buttonStyle(.plain)
+                            // ⌘1..⌘9 TAKE THE FIRST NINE ROWS AS FILTERED,
+                            // which is what makes them useful with a query
+                            // typed: the number is the row's place in front of
+                            // you, not its place in an unfiltered registry.
+                            // Inert on a phone, which is why nothing draws them.
+                            .modifier(QuickPick(index: index))
+                        if index < matches.count - 1 {
+                            Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+                        }
+                    }
+                    if !matches.isEmpty {
+                        Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+                    }
+                    addProjectRow
+                }
+                .background(Theme.card)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
         }
         .background(Theme.sheet)
-        .navigationTitle("Choose project")
-        .navigationDestination(for: ProjectRef.self) { project in
-            NewSessionDraftView(api: api, project: project, hostId: hostId, hostName: draftHostName) { sessionId in
-                onCreated(ScopedSessionID(hostId: hostId, sessionId: sessionId))
-            }
-        }
-        .navigationDestination(item: $autoProject) { project in
-            NewSessionDraftView(api: api, project: project, hostId: hostId, hostName: draftHostName) { sessionId in
-                onCreated(ScopedSessionID(hostId: hostId, sessionId: sessionId))
-            }
-        }
+        .navigationTitle("New conversation")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search projects, Macs, paths")
+        .navigationDestination(for: NewConversationTarget.self) { target in draft(target) }
+        .navigationDestination(item: $autoTarget) { target in draft(target) }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    addingProject = true
-                } label: {
-                    Image(systemName: "plus")
+                // WHICH MAC IS A QUESTION ONLY WHEN THERE ARE TWO. With one
+                // paired the `+` is the button it always was.
+                if settings.hosts.count > 1 {
+                    Menu {
+                        ForEach(settings.hosts) { host in
+                            Button(host.name, systemImage: "desktopcomputer") { addHostId = host.id; addingProject = true }
+                        }
+                    } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add project")
+                } else {
+                    Button {
+                        addHostId = settings.hosts.first?.id
+                        addingProject = true
+                    } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add project")
                 }
-                .accessibilityLabel("Add project")
             }
         }
         .sheet(isPresented: $addingProject) {
             NavigationStack {
-                AddProjectView(api: api) { project in
-                    addingProject = false
-                    if !projects.contains(project) { projects.append(project) }
-                    projects.sort { $0.name < $1.name }
-                    // Straight into the draft for the folder just added.
-                    autoProject = project
-                }
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { addingProject = false }
+                if let host = addHost, let api = settings.api(for: host.id) {
+                    AddProjectView(api: api) { project in
+                        addingProject = false
+                        let target = NewConversationTarget(hostId: host.id, hostName: host.name, project: project)
+                        if !targets.contains(where: { $0.id == target.id }) { targets.append(target) }
+                        // Straight into the draft for the folder just added.
+                        autoTarget = target
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { addingProject = false }
+                        }
                     }
                 }
             }
         }
-        // Re-runs when the Mac changes — the project list is per Mac.
-        .task(id: hostId) {
-            projects = []
-            loadError = nil
-            do {
-                let live = try await api.liveSessions()
-                projects = live.projects.sorted { $0.name < $1.name }
-                if projects.isEmpty { loadError = "The cockpit did not report any projects." }
-                if let seeded = UserDefaults.standard.string(forKey: "newSessionProject") {
-                    autoProject = projects.first { $0.id == seeded }
-                }
-            } catch {
-                loadError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+        // RE-READ WHEN THE HOST BOOK CHANGES, not when a picker moves: there
+        // is no picker any more, and the list is every Mac's at once.
+        .task(id: settings.book.membershipFingerprint) { await load() }
+    }
+
+    @ViewBuilder private func draft(_ target: NewConversationTarget) -> some View {
+        if let api = settings.api(for: target.hostId) {
+            NewSessionDraftView(
+                api: api, project: target.project, hostId: target.hostId,
+                hostName: settings.hosts.count > 1 ? target.hostName : nil
+            ) { sessionId in
+                onCreated(ScopedSessionID(hostId: target.hostId, sessionId: sessionId))
             }
+        } else {
+            ContentUnavailableView("That Mac is gone", systemImage: "desktopcomputer.trianglebadge.exclamationmark",
+                                   description: Text("It was unpaired while this was open."))
         }
     }
 
-    /// The draft names the Mac only when there is a choice to remember.
-    private var draftHostName: String? {
-        settings.hosts.count > 1 ? settings.host(hostId)?.name : nil
+    /// THE HOST IS A FACT ON THE ROW, not a heading above a section — a reader
+    /// scrolling a mixed list should not have to remember which section they
+    /// passed. The path is the second line, in a monospaced face because it is
+    /// something you compare character by character rather than read.
+    private func targetRow(_ target: NewConversationTarget) -> some View {
+        HStack(spacing: 12) {
+            ProjectAvatar(name: target.project.name, projectId: target.project.id, hostId: target.hostId,
+                          icon: target.project.icon, api: settings.api(for: target.hostId), size: 27)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(target.project.name)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    HStack(spacing: 3) {
+                        Image(systemName: "desktopcomputer").font(.system(size: 10))
+                        Text(target.hostName).font(.system(size: 11)).lineLimit(1)
+                    }
+                    .foregroundStyle(Theme.textMuted2)
+                }
+                if let root = target.root {
+                    Text(root)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.textMuted2)
+                        .lineLimit(1).truncationMode(.head)
+                }
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.chevron)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    /// EVERY PAIRED MAC AT ONCE, in the host book's order so the default Mac
+    /// leads. Read concurrently and assembled in that order afterwards: a slow
+    /// Mac must not decide where its projects sit, and a dead one must not
+    /// hold up the ones that answered.
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        let hosts = settings.hosts
+        var found: [HostID: [ProjectRef]] = [:]
+        var failed: [HostID: String] = [:]
+        await withTaskGroup(of: (HostID, [ProjectRef]?).self) { group in
+            for host in hosts {
+                guard let api = settings.api(for: host.id) else { continue }
+                group.addTask { (host.id, try? await api.liveSessions().projects) }
+            }
+            for await (id, projects) in group {
+                if let projects { found[id] = projects } else { failed[id] = "" }
+            }
+        }
+        targets = newConversationTargets(hosts: hosts, projects: found)
+        unreachable = hosts.filter { failed[$0.id] != nil }.map(\.name)
+        if autoTarget == nil, let seeded = UserDefaults.standard.string(forKey: "newSessionProject") {
+            autoTarget = targets.first { $0.project.id == seeded }
+        }
     }
 
     /// The registration entry INSIDE the card, not only the nav-bar `+` —
     /// a control at the end of the list you are already reading.
-    private var addProjectRow: some View {
-        Button {
-            addingProject = true
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 17))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 27, height: 27)
-                Text("Add project…")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Theme.text)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.chevron)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .contentShape(Rectangle())
+    @ViewBuilder private var addProjectRow: some View {
+        if settings.hosts.count > 1 {
+            Menu {
+                ForEach(settings.hosts) { host in
+                    Button(host.name, systemImage: "desktopcomputer") { addHostId = host.id; addingProject = true }
+                }
+            } label: { addProjectLabel }
+                .buttonStyle(.plain)
+        } else {
+            Button {
+                addHostId = settings.hosts.first?.id
+                addingProject = true
+            } label: { addProjectLabel }
+                .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+    }
+
+    private var addProjectLabel: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 17))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 27, height: 27)
+            Text("Add project…")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Theme.text)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.chevron)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+}
+
+/// ⌘1..⌘9 on the first nine rows, and nothing at all on the tenth — a
+/// modifier rather than an inline `if` so the row itself stays one expression.
+private struct QuickPick: ViewModifier {
+    let index: Int
+    func body(content: Content) -> some View {
+        if index < 9, let key = "123456789".dropFirst(index).first {
+            content.keyboardShortcut(KeyEquivalent(key), modifiers: .command)
+        } else {
+            content
+        }
     }
 }
 
