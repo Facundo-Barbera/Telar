@@ -54,6 +54,61 @@ describe("desktop browser control server", () => {
   });
 });
 
+describe("the scope decides which window's browser answers (#311)", () => {
+  // The shell resolves the host per request (`managerForScope` in main.js);
+  // the server's part of that contract is handing the resolver the scope the
+  // request names — on every route, before the manager is touched.
+  test("every route resolves its host from the scope in the request", async () => {
+    const asked = [];
+    const hosts = {
+      "session-a": { state: () => ({ window: "one" }), declareProfile: () => ({ window: "one" }), callTool: () => ({ window: "one" }), action: () => ({ window: "one" }) },
+      "session-b": { state: () => ({ window: "two" }), declareProfile: () => ({ window: "two" }), callTool: () => ({ window: "two" }), action: () => ({ window: "two" }) },
+    };
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: (scopeKey) => {
+        asked.push(scopeKey);
+        return hosts[scopeKey] || null;
+      },
+    });
+    const origin = `http://127.0.0.1:${control.port}`;
+    const headers = { Authorization: "Bearer secret", "Content-Type": "application/json" };
+    const post = (path, body) => fetch(`${origin}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+    try {
+      expect(await (await fetch(`${origin}/state?scopeKey=session-b`, { headers })).json()).toEqual({ window: "two" });
+      expect(await (await post("/tool", { scopeKey: "session-b", name: "browser_tabs" })).json()).toEqual({ window: "two" });
+      expect(await (await post("/open", { scopeKey: "session-a" })).json()).toEqual({ window: "one" });
+      expect(await (await post("/bind", { scopeKey: "session-a", profileKey: "none" })).json()).toEqual({ window: "one" });
+      expect(asked).toEqual(["session-b", "session-b", "session-a", "session-a"]);
+      // No window has this session's browser open yet: the shell's fallback is
+      // a window, and only a shell with none at all answers "not ready".
+      const none = await fetch(`${origin}/state?scopeKey=session-c`, { headers });
+      expect(none.status).toBe(503);
+    } finally {
+      await control.close();
+    }
+  });
+
+  test("an unknown route is still a 404, and asks for no host at all", async () => {
+    let asked = 0;
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => { asked += 1; return { state: () => ({}) }; },
+    });
+    try {
+      const headers = { Authorization: "Bearer secret" };
+      expect((await fetch(`http://127.0.0.1:${control.port}/nope`, { headers })).status).toBe(404);
+      // /state is a GET; the method is part of the route, not decoration.
+      expect((await fetch(`http://127.0.0.1:${control.port}/state`, { method: "POST", headers })).status).toBe(404);
+      expect(asked).toBe(0);
+    } finally {
+      await control.close();
+    }
+  });
+});
+
 describe("control state over the wire", () => {
   test("/state relays per-tab controller and opener so the engine can route around a human", async () => {
     // A fake manager with the REAL state shape: what the engine's desktop
