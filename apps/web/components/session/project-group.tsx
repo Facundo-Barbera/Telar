@@ -37,7 +37,7 @@ import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectPlace } from "@/lib/hosts/project-places";
 import type { ProjectGroup as Group, RailJumpSlot } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
-import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpener } from "@/lib/workspace-open";
+import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
 import {
   preferredOpenerSnapshot,
   remembersOpener,
@@ -67,7 +67,7 @@ import { cn } from "@/lib/utils";
  * the split button's own first-run wording.
  */
 function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root: string | undefined) {
-  const [openers, setOpeners] = useState<WorkspaceOpener[]>();
+  const [answer, setAnswer] = useState<WorkspaceOpenersAnswer>();
   const preferred = useSyncExternalStore(
     subscribePreferredOpener,
     useCallback(() => preferredOpenerSnapshot(place.hostId), [place.hostId]),
@@ -85,11 +85,11 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
     if (blocker || !bridge?.openers) return;
     void bridge
       .openers()
-      .then((answer) => setOpeners(answer.openers))
-      .catch(() => setOpeners([]));
+      .then((found) => setAnswer(found))
+      .catch(() => setAnswer({ openers: [] }));
   }, [blocker, bridge]);
 
-  const entries = workspaceOpenerEntries({ openers: openers ?? [], preferred });
+  const entries = workspaceOpenerEntries({ openers: answer?.openers ?? [], preferred, revealIconDataUrl: answer?.revealIconDataUrl });
   /**
    * AN EDITOR, OR NOTHING — which is where this menu parts company with the
    * split button. `workspaceOpenerPrimary` falls back to the reveal (#384),
@@ -103,7 +103,7 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
    * is pressed. With no editor at all the row is disabled and reads "Open".
    */
   const primary =
-    openers === undefined
+    answer === undefined
       ? undefined
       : (entries.find((entry) => entry.preferred && entry.kind === "opener") ?? entries.find((entry) => entry.kind === "opener"));
 
@@ -127,6 +127,9 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
     load,
     label: primary?.primaryLabel ?? "Open",
     icon: primary?.icon,
+    /** The app's real icon when the shell could read one (#398); `icon` above
+     *  is the vector fallback for when it could not. */
+    iconDataUrl: primary?.iconDataUrl,
     /** Nothing to open with until the shell has answered; the row is disabled
      *  for that beat rather than opening whatever it guesses. */
     open: primary ? () => act(primary) : undefined,
@@ -409,7 +412,7 @@ export function ProjectGroupSection({
                     Reveal in Finder
                   </ContextMenuItem>
                   <ContextMenuItem disabled={!folder.open} {...(folder.open ? { onClick: folder.open } : {})}>
-                    <OpenerIcon icon={folder.icon} />
+                    <OpenerIcon icon={folder.icon} iconDataUrl={folder.iconDataUrl} />
                     {folder.label}
                   </ContextMenuItem>
                 </>

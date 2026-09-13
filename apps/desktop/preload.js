@@ -105,6 +105,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
    * the main-process handler; nothing is ever interpolated into a command.
    */
   workspace: {
+    // `{ openers: [{ id, label, path, icon?, iconDataUrl? }], revealIconDataUrl? }`.
+    // `iconDataUrl` is the app's OWN icon, read from its `.app` bundle by the
+    // main process (#398); `icon` is the vendored vector mark the renderer
+    // falls back to when macOS produced no bitmap. Both are optional and the
+    // renderer handles either being absent — see components/session/opener-icon.tsx.
     openers: () => ipcRenderer.invoke("telar:workspace:openers"),
     open: (path, openerId) => ipcRenderer.invoke("telar:workspace:open", { path, ...(openerId ? { openerId } : {}) }),
     reveal: (path) => ipcRenderer.invoke("telar:workspace:open", { path, reveal: true }),

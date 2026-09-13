@@ -60,7 +60,12 @@ import {
 import { IDENTITY_COLORS, isTelarIcon, type IdentityColor, type TelarIcon } from "@telar/engine-client";
 import { createElement, type ComponentType, type CSSProperties } from "react";
 
-type Glyph = ComponentType<{ className?: string; style?: CSSProperties }>;
+/** `shapeRendering` is in the contract because `IdentityIcon` passes it: these
+ *  are 24-unit lucide glyphs drawn at 14–16px, where the default rasteriser
+ *  snaps a 2-unit stroke onto the device grid and thickens one side of a ring
+ *  against the other. Lucide spreads any SVG prop onto its `<svg>`, so naming
+ *  it here is only about the type. */
+type Glyph = ComponentType<{ className?: string; style?: CSSProperties; shapeRendering?: "geometricPrecision" }>;
 
 const GLYPHS: Record<TelarIcon, Glyph> = {
   globe: GlobeIcon,
@@ -148,5 +153,9 @@ export function IdentityIcon({
   color?: IdentityColor | string | null;
   className?: string;
 }) {
-  return createElement(telarIconGlyph(icon), { className, style: { color: identityColorVar(color) } });
+  return createElement(telarIconGlyph(icon), {
+    className,
+    style: { color: identityColorVar(color) },
+    shapeRendering: "geometricPrecision",
+  });
 }
