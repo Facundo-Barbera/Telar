@@ -403,7 +403,6 @@ export function Composer({
   session,
   projectId,
   projectName,
-  greeting,
   usage,
   backgroundTasks,
   settled,
@@ -465,8 +464,6 @@ export function Composer({
    */
   projectId?: string;
   projectName?: string;
-  /** Which greeting the canvas opens on, chosen by the page. */
-  greeting?: number;
   /** The newest turn's usage — the context readout's only honest source. */
   usage?: UsageSnapshot;
   /** Work that outlives the turn that started it. */
@@ -1121,7 +1118,7 @@ export function Composer({
       {/* The greeting offers to start work IN A PROJECT, so a project-less chat
           has nothing for it to offer. Omitted rather than blanked. */}
       {fresh && projectId && (
-        <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} {...(greeting === undefined ? {} : { index: greeting })} />
+        <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} />
       )}
 
       <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />
