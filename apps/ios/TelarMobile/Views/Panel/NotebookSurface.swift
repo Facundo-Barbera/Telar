@@ -305,12 +305,22 @@ struct NotebookSurface: View {
                     // cell means no colour and a caret wherever you touch; the
                     // editor now appears when you ask for it, and until then
                     // the code is coloured like every other code in the app.
-                    HighlightedCode(text: drafts[cell.id] ?? cell.source, language: "python")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
-                        .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityHint(selected == cell.id ? "Edit this cell" : "Select this cell")
+                    //
+                    // HORIZONTALLY SCROLLED, NOT WRAPPED — #405. A source line
+                    // is a line, and a cell at rest wrapped its long ones while
+                    // the read-only notebook beside it scrolled the same source
+                    // sideways: two views of one file that disagreed about what
+                    // a line is. The axis is the cell's own, inset past the run
+                    // gutter, so it never reaches the screen's left edge and
+                    // never argues with the panel's back-swipe.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HighlightedCode(text: drafts[cell.id] ?? cell.source, language: "python")
+                            .padding(6)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint(selected == cell.id ? "Edit this cell" : "Select this cell")
                 } else {
                     TextEditor(text: Binding(get: { drafts[cell.id] ?? cell.source }, set: { edit(cell, $0) }))
                         .font(.system(size: 12, design: .monospaced))
