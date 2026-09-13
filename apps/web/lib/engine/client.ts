@@ -37,6 +37,7 @@ import type {
   LatexJob,
   LatexPackagesAnswer,
   LatexToolchain,
+  ManagedTectonic,
   InboxPolicy,
   EnvMode,
   SessionDefaults,
@@ -225,6 +226,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/latex/packages`, input),
     latexBootstrap: (input: LatexBootstrap) => request<{ jobId: string }>(fetcher, "POST", "/api/latex/bootstrap", input),
     latexToolchain: (fresh = false) => request<{ toolchain: LatexToolchain }>(fetcher, "GET", `/api/latex/toolchain${fresh ? "?fresh=1" : ""}`),
+    /** Telar's own Tectonic — cheap enough to poll while an install downloads. */
+    managedTectonic: () => request<{ managed: ManagedTectonic }>(fetcher, "GET", "/api/latex/managed"),
+    /** Fetch it. Idempotent: a second press joins the install already running. */
+    installManagedTectonic: () => request<{ managed: ManagedTectonic }>(fetcher, "POST", "/api/latex/managed", {}),
     latexJob: (jobId: string, after = 0) => request<{ job: LatexJob }>(fetcher, "GET", `/api/latex/jobs/${encodeURIComponent(jobId)}?after=${after}`),
     latexCancelJob: (jobId: string) => request<Record<string, never>>(fetcher, "DELETE", `/api/latex/jobs/${encodeURIComponent(jobId)}`),
     /** How this machine's inbox bands — the auto-settle window, or `null` for

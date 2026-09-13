@@ -10,9 +10,12 @@
  * three providers through the shared `telar` socket, under the same key.
  */
 import { z } from "zod";
-import { PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
+import { LatexMachineSettings, LatexMachineSettingsWrite, PLUGIN_API_VERSION, type PluginMeta } from "@telar/engine-client";
 import type { LatexCapability } from "../latex/capability";
 import type { PluginEngineModule, PluginInitContext } from "./contract";
+
+/** The lenient reader, for the store's own resolve. See `protocol/plugins.ts`. */
+export { LatexMachineSettings };
 
 /**
  * WHAT THE PROJECT STORES. Deliberately the same shape the legacy
@@ -66,8 +69,8 @@ export const latexMeta: PluginMeta = {
     {
       id: "toolchain",
       scope: "machine",
-      label: "TeX distribution",
-      blurb: "Which TeX install this Mac compiles with.",
+      label: "LaTeX",
+      blurb: "The distribution, engine and package behaviour a project inherits on this Mac.",
       icon: "HardDrive",
     },
     {
@@ -106,6 +109,20 @@ export function latexPlugin(deps: LatexPluginDeps): PluginEngineModule<LatexSett
   return {
     meta: latexMeta,
     settingsSchema: LatexSettings,
+    /**
+     * THE MAC-WIDE DEFAULTS, and a wider `toolchain` than the project's.
+     *
+     * The project schema requires a `path` because a project naming a
+     * distribution is naming a place on disk. The machine one does not, because
+     * `kind: "managed"` names Telar's OWN Tectonic — an install whose path is
+     * versioned and therefore moves — and the store resolves that to today's
+     * binary rather than to a string that was true last release.
+     *
+     * THE STRICT VARIANT, because this is the WRITE path: a settings pane that
+     * sent `mainFile` here would otherwise be told it saved a default that was
+     * dropped on the way in.
+     */
+    machineSettingsSchema: LatexMachineSettingsWrite,
 
     /**
      * Nothing is ACQUIRED here — the job registry is the store's and outlives

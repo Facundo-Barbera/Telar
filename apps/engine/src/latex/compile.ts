@@ -24,6 +24,13 @@ export type ResolvedLatex = {
   engine?: LatexEngineName;
   /** Relative to the workspace, when the project configured one. */
   mainFile?: string;
+  /**
+   * May a failed compile install the packages it says are missing and try once
+   * more? A TEX LIVE BEHAVIOUR ONLY — Tectonic fetches on first use and cannot
+   * be told not to, so the flag is simply moot there rather than contradicted.
+   * Resolved from this Mac's LaTeX defaults; see `resolveLatex`.
+   */
+  autoInstallPackages?: boolean;
 };
 
 export type CompilePlan = {

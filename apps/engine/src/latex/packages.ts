@@ -72,3 +72,32 @@ export function texRemoveSteps(dist: TexliveDistribution, names: string[]): JobS
   const clean = assertTexPackageNames(names);
   return [{ title: `Removing ${clean.join(", ")}`, file: dist.tlmgr.path, args: ["remove", ...clean] }];
 }
+
+/**
+ * The tlmgr names a failed compile is probably missing, taken from its own
+ * diagnostics.
+ *
+ * "PROBABLY" IS THE HONEST WORD and it is why this feeds an opt-in setting
+ * rather than happening by default. `\usepackage{foo}` that cannot be resolved
+ * reports `File foo.sty not found`, and the tlmgr package is USUALLY named
+ * after the file — but not always (`algorithm2e.sty` is `algorithm2e`, while
+ * `subfigure.sty` lives in a bundle called something else). A guess that misses
+ * costs one failed `tlmgr install` and a compile that fails the way it already
+ * was; a guess that hits saves the person a round trip. Neither is worth doing
+ * behind their back, which is what the setting is for.
+ *
+ * Names are run through `assertTexPackageNames`'s own pattern here rather than
+ * trusted from a log — a filename in TeX's output is attacker-adjacent input
+ * the moment somebody compiles a `.tex` they were sent.
+ */
+export function missingTexPackages(diagnostics: { code?: string; message: string }[]): string[] {
+  const names = new Set<string>();
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.code !== "missing-package") continue;
+    const file = /^File (\S+?) not found$/.exec(diagnostic.message)?.[1];
+    if (!file) continue;
+    const base = file.replace(/\.(sty|cls)$/i, "");
+    if (NAME_ONLY.test(base)) names.add(base);
+  }
+  return [...names].sort();
+}

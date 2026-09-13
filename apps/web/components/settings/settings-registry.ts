@@ -542,8 +542,24 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Plugins",
-            hint: "Which plugins are registered with the engine, and whether each is on for this Mac.",
-            keywords: ["latex", "data science", "extension", "enable"],
+            hint: "Which plugins are registered with the engine, whether each is on for this Mac, and the defaults a project inherits.",
+            // The Mac-wide defaults live on this page and are contributed at
+            // runtime, so they have no rows of their own to be found by. These
+            // are what a person actually types when looking for them — "tectonic"
+            // most of all, because somebody with no TeX installed does not yet
+            // know the feature is called anything else.
+            keywords: [
+              "latex",
+              "data science",
+              "extension",
+              "enable",
+              "tectonic",
+              "tex distribution",
+              "texlive",
+              "default engine",
+              "packages",
+              "default python",
+            ],
             icon: BlocksIcon,
           },
         ],
