@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
-import { describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
+import { cockpitPlugins, describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
   test("names every durable turn state without relying on colour", () => {
@@ -479,5 +479,40 @@ describe("a held message is not a running one", () => {
     );
     expect(released!.held).toBe(false);
     expect(released!.heldReason).toBeUndefined();
+  });
+});
+
+/**
+ * ISSUE #269. The plugin map is the whole truth once a project carries one, and
+ * the legacy `dataScience`/`latex` blocks beside it are a mirror written for an
+ * older engine binary — never a fallback. The cockpit read the mirror, so a
+ * project that turned Data Science OFF through the map kept being offered the
+ * Data tab, and `.ipynb` kept routing to the notebook surface, which then hit a
+ * disabled plugin route.
+ */
+describe("which plugin surfaces the cockpit offers", () => {
+  test("a map that disables Data Science beats a stale legacy mirror", () => {
+    expect(
+      cockpitPlugins({
+        plugins: { version: 1, entries: { latex: { enabled: true } } },
+        dataScience: { enabled: true },
+      }),
+    ).toEqual({ dataScience: false, latex: true });
+  });
+
+  test("an entry the map never grew is off, whatever the mirror says", () => {
+    expect(
+      cockpitPlugins({ plugins: { version: 1, entries: {} }, dataScience: { enabled: true }, latex: { enabled: true } }),
+    ).toEqual({ dataScience: false, latex: false });
+  });
+
+  test("a project that predates the map is still read from its legacy blocks", () => {
+    // `readProjectPlugins` migrates an unmigrated project from the mirror, so
+    // the switch a person threw before the map existed still holds.
+    expect(cockpitPlugins({ dataScience: { enabled: true } })).toEqual({ dataScience: true, latex: false });
+  });
+
+  test("a project that has not loaded yet offers nothing", () => {
+    expect(cockpitPlugins(undefined)).toEqual({ dataScience: false, latex: false });
   });
 });
