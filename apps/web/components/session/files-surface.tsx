@@ -106,6 +106,7 @@ export function FileRowMenuItems({
   onToggle,
   onCollapseAll,
   onInsertReference,
+  onOpenInNewPanelTab,
 }: {
   path: string;
   directory: boolean;
@@ -118,6 +119,9 @@ export function FileRowMenuItems({
   onToggle: () => void;
   onCollapseAll: () => void;
   onInsertReference?: ((reference: TelarReference) => void) | undefined;
+  /** Open this file in a SECOND Editor beside this one (#322). A directory has
+   *  no such row: what a second Editor holds is a file. Absent hides it. */
+  onOpenInNewPanelTab?: ((path: string) => void) | undefined;
 }) {
   const kind = directory ? "directory" : "file";
   return (
@@ -131,6 +135,12 @@ export function FileRowMenuItems({
         <>
           <ContextMenuItem onClick={onOpen}>Open</ContextMenuItem>
           <ContextMenuItem onClick={onKeep}>Open pinned</ContextMenuItem>
+          {/* NEXT TO THE OTHER TWO OPENS, because that is what it is: the same
+              file, in an Editor of its own, so it can be read beside whatever
+              this one is holding. */}
+          {onOpenInNewPanelTab && (
+            <ContextMenuItem onClick={() => onOpenInNewPanelTab(path)}>Open in a new panel tab</ContextMenuItem>
+          )}
         </>
       )}
       {files.reveal && files.open && (
@@ -180,6 +190,7 @@ function FileTreeRow({
   files,
   onCollapseAll,
   onInsertReference,
+  onOpenInNewPanelTab,
 }: {
   row: Row;
   expanded: boolean;
@@ -202,6 +213,7 @@ function FileTreeRow({
   files: WorkspaceFileMenu;
   onCollapseAll: () => void;
   onInsertReference?: ((reference: TelarReference) => void) | undefined;
+  onOpenInNewPanelTab?: ((path: string) => void) | undefined;
 }) {
   const directory = row.node.kind === "directory";
   const Folder = expanded ? FolderOpenIcon : FolderIcon;
@@ -291,6 +303,7 @@ function FileTreeRow({
             onToggle={onToggle}
             onCollapseAll={onCollapseAll}
             {...(onInsertReference ? { onInsertReference } : {})}
+            {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
           />
         </ContextMenuContent>
       </ContextMenu>
@@ -307,6 +320,7 @@ export function FilesSurface({
   onOpenFile,
   onWorkspacePath,
   onInsertReference,
+  onOpenInNewPanelTab,
   reveal,
   /** A turn settling is the moment the tree has actually changed. */
   active,
@@ -340,6 +354,9 @@ export function FilesSurface({
    *  composer is listening, and the item is absent with it — never a row that
    *  does nothing. */
   onInsertReference?: (reference: TelarReference) => void;
+  /** Open a row's file in a SECOND Editor (#322). Absent hides the row, the
+   *  same way `onInsertReference` does. */
+  onOpenInNewPanelTab?: (path: string) => void;
   /**
    * "Show me this file in the tree", from the strip's own menu. A NONCE rather
    * than a bare path, because asking twice for the same file is a real request
@@ -679,6 +696,7 @@ export function FilesSurface({
                   files={files}
                   onCollapseAll={collapseAll}
                   {...(onInsertReference ? { onInsertReference } : {})}
+                  {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
                 />
               ))}
             </div>

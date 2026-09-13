@@ -130,10 +130,10 @@ const running = (item: JournalItem) => item.status === "inProgress";
 const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
 
 /**
- * THE TWO GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
+ * THE GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
  *
- * Both belong to the cockpit — it owns the draft and it owns the panel — and
- * both are threaded rather than reached for, exactly as `onOpenAgent` and
+ * All of them belong to the cockpit — it owns the draft and it owns the panel —
+ * and all are threaded rather than reached for, exactly as `onOpenAgent` and
  * `onOpenTab` already are. Absent means the item is not rendered; nothing here
  * falls back to a second route.
  */
@@ -144,6 +144,9 @@ export type RowGestures = {
   /** Open a path in the Editor — the cockpit's own `showPanelTab`, which reads
    *  a file-shaped id and routes it there. */
   onOpenFile?: (path: string) => void;
+  /** Open a path in a NEW Editor tab (#322), so a file the agent touched can be
+   *  read beside whatever the Editor already holds. */
+  onOpenFileInNewTab?: (path: string) => void;
 };
 
 /** The path a row is ABOUT, when it is about one. */
@@ -199,7 +202,7 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-function ToolRow({ item, onInsert, onOpenFile }: { item: JournalItem } & RowGestures) {
+function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: JournalItem } & RowGestures) {
   const [open, setOpen] = useState(false);
   const change = item.detail.type === "file_change" ? item.detail.change : undefined;
   const output = toolOutput(item);
@@ -284,6 +287,11 @@ function ToolRow({ item, onInsert, onOpenFile }: { item: JournalItem } & RowGest
         )}
         {path && (command || body) && <ContextMenuSeparator />}
         {path && onOpenFile && <ContextMenuItem onClick={() => onOpenFile(path)}>Open file in the Editor</ContextMenuItem>}
+        {/* …or in an Editor of its own, so this file can be read beside the one
+            already open rather than replacing it (#322). */}
+        {path && onOpenFileInNewTab && (
+          <ContextMenuItem onClick={() => onOpenFileInNewTab(path)}>Open in a new panel tab</ContextMenuItem>
+        )}
         {path && <ContextMenuItem onClick={() => void navigator.clipboard.writeText(path)}>Copy path</ContextMenuItem>}
         {path && onInsert && <ContextMenuItem onClick={() => onInsert(fileReference(path).text)}>Insert as reference</ContextMenuItem>}
       </ContextMenuContent>
@@ -681,7 +689,7 @@ function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: stri
   );
 }
 
-export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, onOpenFile }: {
+export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, onOpenFile, onOpenFileInNewTab }: {
   item: JournalItem;
   tasks?: readonly JournalTask[];
   onOpenAgent?: (taskId: string) => void;
@@ -689,7 +697,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
    *  as the same message sent idle does. */
   onOpenTab?: OpenTab;
 } & RowGestures) {
-  const gestures = { ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
+  const gestures = { ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   if (item.detail.type === "task") {
     const taskId = item.detail.taskId;
     const task = tasks?.find((candidate) => candidate.id === taskId);
@@ -918,6 +926,7 @@ export function LiveActivity({
   onOpenAgent,
   onInsert,
   onOpenFile,
+  onOpenFileInNewTab,
 }: {
   items: JournalItem[];
   tasks: JournalTask[];
@@ -926,7 +935,7 @@ export function LiveActivity({
 } & RowGestures) {
   const segments = segmentActivity(items);
   const tail = liveTail ? segments.length - 1 : -1;
-  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
+  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <>
       {segments.map((segment, index) =>
@@ -959,6 +968,7 @@ export function ActivityGroup({
   onOpenAgent,
   onInsert,
   onOpenFile,
+  onOpenFileInNewTab,
 }: {
   items: JournalItem[];
   live: boolean;
@@ -966,7 +976,7 @@ export function ActivityGroup({
   onOpenAgent?: (taskId: string) => void;
 } & RowGestures) {
   const rows = useMemo(() => renderable(items, tasks), [items, tasks]);
-  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
+  const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   if (rows.length === 0) return null;
   if (live) return <LiveRun rows={rows} tasks={tasks} {...open} />;
   const cuts = cutAroundLiveAgents(rows, tasks);
@@ -1023,14 +1033,14 @@ function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
   );
 }
 
-function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   // Only the rows the fold is HIDING can carry a surprise; the one on screen
   // reports itself. Same rule as the settled run, applied to its own window.
   const failures = failedCount(rows.slice(0, -1), tasks);
   const hidden = Math.max(0, rows.length - 1);
   const shown = open ? rows : rows.slice(-1);
-  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
+  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
       {hidden > 0 && (
@@ -1054,10 +1064,10 @@ function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile }: { rows: Jou
   );
 }
 
-function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   const failures = failedCount(rows, tasks);
-  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}) };
+  const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <>
       <button

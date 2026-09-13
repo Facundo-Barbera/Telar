@@ -23,6 +23,9 @@ import {
 
 type Tab = "run" | "changes" | "editor";
 const isTab = (tab: string): tab is Tab => tab === "run" || tab === "changes" || tab === "editor";
+/** The strip as KINDS — the hand-off is about which surfaces travel, not about
+ *  which instance ids they took. */
+const kinds = (state: PanelTabState<Tab>) => state.tabs.map((tab) => tab.kind);
 
 /** A localStorage that behaves like the real one, per test. */
 beforeEach(() => {
@@ -53,7 +56,7 @@ describe("the canvas hand-off", () => {
     handOff("project_1", "session_a", arranged);
     const restored = readPanelTabs<Tab>("session_a", isTab);
     expect(restored.open).toBe(true);
-    expect(restored.tabs).toEqual(["run"]);
+    expect(kinds(restored)).toEqual(["run"]);
   });
 
   test("and the NEXT conversation in the same project does not inherit it", () => {
@@ -68,8 +71,8 @@ describe("the canvas hand-off", () => {
     writePanelTabs("session_a", openPanelTab(emptyPanelTabs<Tab>(), "run"), 1);
     writePanelTabs("session_b", openPanelTab(emptyPanelTabs<Tab>(), "changes"), 1);
     writePanelTabs("session_a", emptyPanelTabs<Tab>(), 2);
-    expect(readPanelTabs<Tab>("session_a", isTab).tabs).toEqual([]);
-    expect(readPanelTabs<Tab>("session_b", isTab).tabs).toEqual(["changes"]);
+    expect(kinds(readPanelTabs<Tab>("session_a", isTab))).toEqual([]);
+    expect(kinds(readPanelTabs<Tab>("session_b", isTab))).toEqual(["changes"]);
     expect(readPanelTabs<Tab>("session_b", isTab).open).toBe(true);
   });
 
@@ -86,6 +89,6 @@ describe("the canvas hand-off", () => {
     writePanelTabs("session_a", openPanelTab(emptyPanelTabs<Tab>(), "run"), 1);
     writePanelTabs(canvasPanelKey("project_1"), openPanelTab(emptyPanelTabs<Tab>(), "editor"), 1);
     clearPanelTabs(canvasPanelKey("project_1"));
-    expect(readPanelTabs<Tab>("session_a", isTab).tabs).toEqual(["run"]);
+    expect(kinds(readPanelTabs<Tab>("session_a", isTab))).toEqual(["run"]);
   });
 });

@@ -200,6 +200,7 @@ function FileMenuItems({
   source,
   onSource,
   onInsertReference,
+  onOpenInNewPanelTab,
 }: {
   path: string;
   absolute?: string | undefined;
@@ -214,9 +215,20 @@ function FileMenuItems({
   source: boolean;
   onSource: (source: boolean) => void;
   onInsertReference?: ((reference: TelarReference) => void) | undefined;
+  /** Open this file in a SECOND Editor beside this one (#322). Absent hides
+   *  the row. */
+  onOpenInNewPanelTab?: ((path: string) => void) | undefined;
 }) {
   return (
     <>
+      {/* FIRST, because it is the only row here that opens anything — the rest
+          copy, re-read or change how this view draws. */}
+      {onOpenInNewPanelTab && (
+        <>
+          <ContextMenuItem onClick={() => onOpenInNewPanelTab(path)}>Open in a new panel tab</ContextMenuItem>
+          <ContextMenuSeparator />
+        </>
+      )}
       {absolute && <ContextMenuItem onClick={() => void navigator.clipboard?.writeText(absolute)}>Copy path</ContextMenuItem>}
       <ContextMenuItem onClick={() => void navigator.clipboard?.writeText(path)}>Copy relative path</ContextMenuItem>
       {files.reveal && files.open && (
@@ -266,6 +278,7 @@ export function FileViewSurface({
   onView,
   workspacePath,
   onInsertReference,
+  onOpenInNewPanelTab,
 }: {
   path: string;
   sessionId?: string;
@@ -313,6 +326,9 @@ export function FileViewSurface({
   /** Put a reference to this file in the message being written. Absent until a
    *  composer is listening, and the item is absent with it. */
   onInsertReference?: (reference: TelarReference) => void;
+  /** Open this file in a SECOND Editor (#322) — offered by this file's own
+   *  menu, beside the tree's row menu that offers the same thing. */
+  onOpenInNewPanelTab?: (path: string) => void;
 }) {
   const [file, setFile] = useState<WorkspaceFile>();
   const [error, setError] = useState<string>();
@@ -822,6 +838,7 @@ export function FileViewSurface({
       source={source}
       onSource={setSource}
       {...(onInsertReference ? { onInsertReference } : {})}
+      {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
     />
   );
   /** The bytes URL for a binary the panel can RENDER (image, audio, video —
