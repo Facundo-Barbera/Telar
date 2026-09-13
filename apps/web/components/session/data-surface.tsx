@@ -14,11 +14,11 @@
  * of the kernel a person prefers is a habit rather than a fact about a
  * conversation.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BracesIcon, ChartLineIcon, PackageIcon, RotateCwIcon, SquareIcon } from "lucide-react";
-import type { TurnState } from "@telar/engine-client";
+import type { EngineEvent, TurnState } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
-import type { KernelState } from "@/lib/ds";
+import { latestKernelState, type KernelState } from "@/lib/ds";
 import { cn } from "@/lib/utils";
 import { KernelPill } from "./kernel-pill";
 import { PlotsSurface } from "./plots-surface";
@@ -41,10 +41,33 @@ function readSubTab(): SubTab {
   return SUB_TABS.some((t) => t.id === stored) ? (stored as SubTab) : "plots";
 }
 
-export function DataSurface({ sessionId, projectId, active, onOpenImage }: { sessionId?: string; projectId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void }) {
+export function DataSurface({
+  sessionId,
+  projectId,
+  active,
+  events = [],
+  onOpenImage,
+}: {
+  sessionId?: string;
+  projectId?: string;
+  active?: TurnState;
+  /** The session's journal, for the one fact on this strip that changes while
+   *  nobody touches it — see `latestKernelState`. */
+  events?: readonly EngineEvent[];
+  onOpenImage?: (attachmentId: string) => void;
+}) {
   const [sub, setSub] = useState<SubTab>(readSubTab);
-  const [kernel, setKernel] = useState<KernelState>("none");
+  /** What the engine said when asked. The starting point, and the answer for a
+   *  kernel whose transitions all happened before this client was listening. */
+  const [read, setRead] = useState<KernelState>("none");
   const [acting, setActing] = useState<"interrupt" | "restart">();
+  /**
+   * THE JOURNAL WINS WHENEVER IT HAS SPOKEN. Its last word is by construction
+   * the kernel's latest transition, and it is the only one of the two that
+   * arrives while a 35-second call is still running.
+   */
+  const journalled = useMemo(() => latestKernelState(events), [events]);
+  const kernel = journalled ?? read;
 
   const choose = (next: SubTab) => {
     setSub(next);
@@ -54,9 +77,9 @@ export function DataSurface({ sessionId, projectId, active, onOpenImage }: { ses
   const readKernel = useCallback(async () => {
     if (!sessionId) return;
     try {
-      setKernel((await api.kernel(sessionId)).state);
+      setRead((await api.kernel(sessionId)).state);
     } catch {
-      setKernel("none");
+      setRead("none");
     }
   }, [sessionId]);
 

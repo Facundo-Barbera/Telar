@@ -1243,6 +1243,7 @@ export function PanelSurface({
   tasks,
   focusedTask,
   browser,
+  events = [],
   sessionId,
   sessionTitle,
   projectId,
@@ -1272,6 +1273,10 @@ export function PanelSurface({
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
   browser?: BrowserState;
+  /** The session's journal, for the surfaces that fold a live fact out of it
+   *  rather than asking for it — the Data tab's kernel state (#356), the way
+   *  `browser` above is already a fold of the same list. */
+  events?: readonly EngineEvent[];
   /** Absent on a session that does not exist yet. Every surface that needs a
    *  checkout falls back to the project's own, which is the same directory until
    *  the session cuts a worktree. */
@@ -1381,7 +1386,18 @@ export function PanelSurface({
         {...(onOpenFileInNewTab ? { onOpenInNewPanelTab: onOpenFileInNewTab } : {})}
       />
     ) : null;
-  if (kind === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  if (kind === "data")
+    return (
+      <DataSurface
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(active ? { active } : {})}
+        // The kernel announces every transition on the journal; the pill folds
+        // them rather than asking once and believing the answer all turn (#356).
+        events={events}
+        {...(onOpenImage ? { onOpenImage } : {})}
+      />
+    );
   if (kind === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   /**
@@ -2343,6 +2359,7 @@ export function RightPanel({
               // a surface changes its own tab's params and no other's.
               {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}
               {...(browser ? { browser } : {})}
+              events={events}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}
               {...(projectId ? { projectId } : {})}
