@@ -1151,19 +1151,26 @@ function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFile
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <>
+      {/* THE SUMMARY WRAPS RATHER THAN TRUNCATING (#354). At panel width a
+          busy turn ended "· Ran command ×4 · …" with the ellipsis eating the
+          part a reader actually scans for — what the agent DID — while the
+          generic head of the list survived. Two lines is the whole budget: a
+          fold that grows without limit stops being a fold. `items-start` keeps
+          the chevron and the step count on the first line rather than centring
+          them against a two-line block. */}
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((c) => !c)}
-        className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
+        className={cn(ROW, "items-start text-muted-foreground hover:bg-muted/50")}
       >
-        <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <ChevronRightIcon className={cn("mt-0.5 size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
         <span className="shrink-0">
           {rows.length} step{rows.length === 1 ? "" : "s"}
         </span>
         <FailedCount count={failures} hidden={open} />
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="min-w-0 truncate text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
+        <span className="line-clamp-2 min-w-0 text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
       </button>
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
