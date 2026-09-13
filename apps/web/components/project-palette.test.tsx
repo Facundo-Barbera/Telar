@@ -119,7 +119,7 @@ test("the mouse and the arrows never disagree about what Enter would take", () =
 
 test("choosing closes before it navigates, and opening starts from a blank query on the asked-for page", () => {
   const choose = source.slice(source.indexOf("const choose ="));
-  expect(choose.slice(0, 220)).toContain("onOpenChange(false)");
+  expect(choose.slice(0, 220)).toContain("onClose()");
   const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
   expect(fresh.slice(0, 260)).toContain("setPage(openOn);");
   expect(fresh.slice(0, 260)).toContain('setQuery("");');
@@ -208,23 +208,27 @@ test("a clone row with nothing to clone opens the URL page instead of scolding t
 
 test("Backspace goes back ONLY on an empty field", () => {
   // The field is the title, so Backspace is a text key first — taking it while
-  // somebody deletes a typo would throw their page away mid-word.
-  expect(source).toContain('if (event.key === "Backspace" && page === "sources" && query === "") {');
-  expect(source).toContain('go("projects");');
+  // somebody deletes a typo would throw their page away mid-word. The rule
+  // itself is `paletteBack`, shared with the command palette that embeds these
+  // pages, and pinned in lib/command-palette.test.ts.
+  expect(source).toContain('if (event.key === "Backspace" && paletteBack(list, query, backRoot)) {');
+  expect(source).toContain("goBack();");
 });
 
-test("the legend names Backspace only on the page that has a back", () => {
+test("the legend names Backspace only on a page that has a back", () => {
   expect(source).toContain("↑↓</kbd> Navigate");
   expect(source).toContain("Enter</kbd> Select");
   expect(source).toContain("Esc</kbd> Close");
   const legend = source.slice(source.indexOf("Backspace</kbd> Back") - 200, source.indexOf("Backspace</kbd> Back"));
-  expect(legend).toContain('page === "sources" &&');
+  expect(legend).toContain('page === "sources" || onBack');
 });
 
 test("the Sources page always has a back, and the Projects page has a door", () => {
   // Both entry points converge here, and Projects is a legitimate place to
-  // arrive at from either.
-  expect(source).toContain('aria-label="Back to projects"');
+  // arrive at from either — which is what `backRoot` says when there is nowhere
+  // further to go than these pages.
+  expect(source).toContain('const backRoot: PalettePage = onBack ? openOn : "projects";');
+  expect(source).toContain('backsTo === "projects" ? "Back to projects" : "Back"');
   expect(source).toContain('title="Add a project…"');
   // The door is a ROW, so the arrows reach it — `count` above already counts it.
   expect(source).toContain('if (at >= matches.length) go("sources");');
@@ -283,7 +287,11 @@ test("the palette's own keys stop at the list pages", () => {
 test("every page is named for a screen reader, from a map rather than a five-deep ternary", () => {
   expect(source).toContain("const PAGE_TITLES: Record<Page, string> = {");
   expect(source).toContain("const PAGE_SENTENCES: Record<Page, string> = {");
-  expect(source).toContain("aria-label={PAGE_TITLES[page]}");
+  // The name belongs to the PAGE, so it is drawn by the pages rather than set on
+  // the dialog around them: on the command palette that dialog is not even ours,
+  // and it outlives whichever of its pages is up.
+  expect(source).toContain('<DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>');
+  expect(source).toContain('<DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>');
 });
 
 test("the native picker survives as the fallback for an unreachable engine", () => {
@@ -315,8 +323,9 @@ test("the URL page refuses junk with a sentence rather than walking on", () => {
 test("the rail has one New-conversation control, and ⌘N opens the same thing", () => {
   // It used to be two: a plain button, and — only with a Mac paired — a menu.
   // Both now go through `newConversation`, which is the single place that
-  // decides between the palette and a canvas.
-  expect(sidebar).toContain("onClick={newConversation}");
+  // decides between the palette and a canvas — and since #402 the button asks
+  // for it by pressing the command rather than calling it.
+  expect(sidebar).toContain('onClick={() => run("new-conversation")}');
   expect(sidebar).toContain('"new-conversation": () => newConversation(),');
 });
 
@@ -338,8 +347,10 @@ test("the palette is offered every project the rail already reads, this Mac's fi
 
 test("the register dialog is gone, and every way in is the palette's Sources page", () => {
   // Two dialogs with two flags is how the rail ended up able to have a register
-  // form open behind a project picker.
+  // form open behind a project picker. One piece of state still, now that the
+  // command palette's own list is a third page of the same surface.
   expect(sidebar).not.toContain("RegisterProjectDialog");
-  expect(sidebar).toContain('const openPalette = (page: PalettePage) => setPalette({ open: true, page });');
+  expect(sidebar).toContain('const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });');
   expect(sidebar).toContain('onClick={() => openPalette("sources")}');
+  expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
 });
