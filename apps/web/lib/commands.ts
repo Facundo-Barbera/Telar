@@ -57,6 +57,7 @@ export type CommandId =
   | "focus-composer"
   | "send"
   | "stop-turn"
+  | "reveal-in-finder"
   | "search-sessions"
   | "toggle-rail"
   | `jump-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`

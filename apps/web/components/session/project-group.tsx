@@ -45,7 +45,6 @@ import {
   serverPreferredOpenerSnapshot,
   subscribePreferredOpener,
   workspaceOpenerEntries,
-  workspaceOpenerPrimary,
   writePreferredOpener,
   type WorkspaceOpenerEntry,
 } from "@/lib/workspace-opener-preference";
@@ -53,8 +52,9 @@ import { cn } from "@/lib/utils";
 
 /**
  * THE PROJECT FOLDER, IN THE APPS THIS MACHINE ACTUALLY HAS — the same bridge,
- * the same remembered opener and the same three fallbacks as the cockpit's
- * `OpenWorkspaceButton`, reached from a menu instead of a split button.
+ * the same remembered opener as the cockpit's `OpenWorkspaceButton`, reached
+ * from a menu instead of a split button. Which app the "Open in…" row names is
+ * decided a little differently here — see `primary` below.
  *
  * NOTHING NEW IS OFFERED HERE. `workspaceOpenBlocker` is the one place that
  * decides whether a folder can be opened from this window at all — no bridge (a
@@ -92,14 +92,21 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
 
   const entries = workspaceOpenerEntries({ openers: openers ?? [], preferred });
   /**
-   * A MACHINE WITH NO EDITOR STILL GETS A ROW THAT NAMES WHAT IT WILL DO.
-   * `workspaceOpenerPrimary` answers `undefined` there — the split button
-   * responds by showing its list, which a menu row cannot — so the system
-   * default stands in, and it says so in its own words ("Open in the default
-   * app") rather than hiding behind a bare "Open".
+   * AN EDITOR, OR NOTHING — which is where this menu parts company with the
+   * split button. `workspaceOpenerPrimary` falls back to the reveal (#384),
+   * because the button's left half must always name something it can do; this
+   * menu already carries "Reveal in Finder" as its own row one line up, so
+   * taking that fallback would draw the same row twice.
+   *
+   * So: the app you last opened with, else the first editor the machine has
+   * — which is a guess the split button deliberately no longer makes, and is
+   * safe here because a MENU ROW names the app in full and is read before it
+   * is pressed. With no editor at all the row is disabled and reads "Open".
    */
   const primary =
-    openers === undefined ? undefined : (workspaceOpenerPrimary(entries) ?? entries.find((entry) => entry.kind === "system"));
+    openers === undefined
+      ? undefined
+      : (entries.find((entry) => entry.preferred && entry.kind === "opener") ?? entries.find((entry) => entry.kind === "opener"));
 
   /** The shell's refusal is reported, never swallowed — this rail has no error
    *  surface of its own, which is the argument `runSessionPatch` makes for the

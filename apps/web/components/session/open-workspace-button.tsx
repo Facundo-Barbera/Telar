@@ -7,11 +7,15 @@
  * click and wears its brand mark; the chevron lists every app the shell found.
  * The preference is written on every open (lib/workspace-opener-preference.ts),
  * so this becomes "Open in Zed" the first time you pick Zed and there is no
- * setting anywhere to keep in step with it. Before you have picked anything it
- * offers VS Code, or whatever editor the machine does have — a first run is
- * still one click, and one pick replaces the guess for good. Only a machine
- * with no editor at all leaves the half reading "Open" and showing the list,
- * because a button whose label cannot name what it will do should not do it.
+ * setting anywhere to keep in step with it.
+ *
+ * BEFORE YOU HAVE PICKED ANYTHING IT REVEALS IN FINDER (#384). It used to guess
+ * an editor, and a guess is the one thing this half cannot afford: it launches
+ * on a single click, so guessing wrong opens somebody's folder in an
+ * application they did not ask for. Finder shows you the folder and decides
+ * nothing, and the first pick from the menu replaces it for good — without
+ * teaching the button anything on the way back, since revealing is a look
+ * rather than an open (`remembersOpener`).
  *
  * The apps listed are the ones the shell actually found installed
  * (workspace-openers.js); the renderer names an id, never a path. On a remote
@@ -19,9 +23,9 @@
  * that beats opening a same-named folder on the wrong machine.
  *
  * Revealing in Finder is an entry in the same list rather than a control beside
- * it: it answers the same question ("where do I want this folder?"). It is the
- * one entry the button never learns from, because a reveal is a look and not an
- * open — see `remembersOpener`.
+ * it: it answers the same question ("where do I want this folder?"). ⌘O is the
+ * same verb from the keyboard, bound here rather than in the cockpit because
+ * this is where the bridge and the path already are.
  */
 import { Fragment, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
@@ -37,6 +41,7 @@ import {
   writePreferredOpener,
   type WorkspaceOpenerEntry,
 } from "@/lib/workspace-opener-preference";
+import { useCommandHandlers } from "@/lib/use-command-keys";
 import { OpenerIcon } from "@/components/session/opener-icon";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group";
@@ -87,8 +92,44 @@ export function OpenWorkspaceButton({
 
   /** And again on each open: an editor installed since last time should appear
    *  without a reload. A shell too old to enumerate answers nothing, and the
-   *  system default below is still offered. */
+   *  reveal below is still offered. */
   useEffect(() => (open ? refresh() : undefined), [open, refresh]);
+
+  /**
+   * ⌘O — REVEAL IN FINDER, the same verb the menu's last row carries.
+   *
+   * Bound here because this is where the bridge, the path and the refusals
+   * already live; the cockpit would have to learn all three to own it. Only
+   * while it can actually act, so the chord is silently nothing on a remote
+   * session or in a browser tab rather than failing when pressed — which is
+   * exactly what `bindCommands` means by a command nobody answers.
+   *
+   * A failure OPENS THE POPOVER, because that is the only place this control
+   * has to say a sentence; a keyboard press that failed invisibly would be
+   * worse than one that did nothing.
+   */
+  const canReveal = !blocker && Boolean(bridge) && Boolean(path);
+  useCommandHandlers(
+    canReveal
+      ? {
+          "reveal-in-finder": () => {
+            setError(undefined);
+            void bridge!
+              .reveal(path!)
+              .then((result) => {
+                if (result.ok) return;
+                setError(result.error ?? "That folder could not be shown.");
+                setOpen(true);
+              })
+              .catch((cause: unknown) => {
+                setError(cause instanceof Error ? cause.message : "That folder could not be shown.");
+                setOpen(true);
+              });
+          },
+        }
+      : {},
+    [canReveal],
+  );
 
   if (!bridge && typeof window !== "undefined" && !(window as { telarDesktop?: unknown }).telarDesktop) return null;
 
@@ -104,10 +145,9 @@ export function OpenWorkspaceButton({
      *  the re-validation above rather than by refusing to store it.
      *
      *  EXCEPT A REVEAL, which teaches this button nothing: showing a folder in
-     *  Finder is a look, not an open, and a left half reading "Reveal in
-     *  Finder" because you once checked where the folder lives is the control
-     *  drawing the wrong conclusion from the gesture. The system default is a
-     *  real open and is remembered like any app. */
+     *  Finder is a look, not an open. It is what the half does by DEFAULT, and
+     *  a default is what happens before you have said anything — so picking it
+     *  from the list, which says nothing, must not undo the editor you chose. */
     if (remembersOpener(entry)) writePreferredOpener(hostId, entry.id);
     void (entry.kind === "reveal" ? bridge!.reveal(path!) : bridge!.open(path!, entry.openerId))
       .then((result) => {
@@ -137,8 +177,9 @@ export function OpenWorkspaceButton({
             type="button"
             variant="outline"
             size="sm"
-            // Only a machine with no editor at all reaches the second branch;
-            // there is nothing to name, so this half shows the list.
+            // Only the second branch's cause is left now: the shell's list has
+            // not arrived, so there is nothing to name and this half shows the
+            // list instead of acting.
             onClick={primary ? () => act(primary) : () => setOpen(true)}
             title={primary ? `${primaryLabel} — ${path}` : "Open this session's folder"}
             // THE MARK NAMES THE APP; THE WORD NAMES THE VERB. Spelling both out
@@ -179,10 +220,10 @@ export function OpenWorkspaceButton({
                   <button type="button" title={entry.path} onClick={() => act(entry)} className={row}>
                     <OpenerIcon icon={entry.icon} />
                     <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-                    {/* Only the preferred row can carry one, and nothing binds a
-                        chord to opening a workspace today — the whole table is
-                        in lib/command-keys.ts — so this renders nothing until
-                        something does. */}
+                    {/* Only the PREFERRED row can carry one, and the chord this
+                        control has (⌘O, on the reveal row) is not that row —
+                        so nothing is handed down and this renders nothing.
+                        Settings › Keybindings is where ⌘O is taught. */}
                     {entry.shortcut && <span className="shrink-0 text-[0.6875rem] tracking-widest text-muted-foreground">{entry.shortcut}</span>}
                   </button>
                 )}
