@@ -356,31 +356,55 @@ describe("the transcript's message and tool rows", () => {
 });
 
 /**
- * THE COMPOSER'S CHROME — and, just as importantly, NOT the box you type in.
+ * THE COMPOSER'S CHROME — the WHOLE card (#320), and the one gesture inside it
+ * that still belongs to the box you type in.
  *
- * A `<textarea>` already has a menu and it is the browser's: cut, copy, paste,
- * undo, spell-check, Look Up, Share. Replacing it with our four rows would take
- * away six useful things to add two, and take away the one menu on this screen
- * nobody had to learn.
+ * It wrapped only the left control cluster, so a right-press on the box, on the
+ * chrome beside the `+`, or on the send side answered with nothing: a menu on
+ * about a fifth of the object it belongs to. The trigger is now the card, and
+ * the box keeps the press that is genuinely the editor's — one over TEXT THAT
+ * IS SELECTED, where cut, copy and Look Up live. With nothing selected there is
+ * no editing verb to protect and the card's own menu answers.
  */
-describe("the composer's chrome, and the textarea it leaves alone", () => {
+describe("the composer's chrome, and the selection it leaves alone", () => {
   const cmp = () => code("composer.tsx");
 
-  test("the menu is on the chips and the control strip, and the editor is untouched", () => {
+  test("the trigger is the whole card — it wraps the InputGroup itself", () => {
+    // Nothing between the menu and the card: a wrapper in between would be a
+    // second box to keep in sync with the card's own bounds.
+    expect(flat("composer.tsx")).toContain('<ComposerChromeMenu draft={draft} attachments={attachments} stashing={stashing} onClear={() => onDraftChange("")} onStash={() => void doStash()} > <InputGroup');
+  });
+
+  test("and it is a REAL box — `contents` paints nothing and is never an event target", () => {
+    // The lesson from #286, which is the exact bug this fix would otherwise
+    // reintroduce: a trigger with no box has no hit area.
+    const trigger = cmp().slice(cmp().indexOf("<ContextMenuTrigger"), cmp().indexOf("<ContextMenuContent"));
+    expect(trigger).not.toContain("contents");
+  });
+
+  test("the chips keep their own menus, and the left cluster keeps its box without being one", () => {
     const source = cmp();
-    // The chips.
     expect(source).toContain("<AttachmentChip file={file} onRemove={() => onAttach(attachments.filter((_, at) => at !== index))} />");
     expect(source).toContain("onRemoveAttachment={() => onAttach(attachments.filter((_, at) => at !== index))}");
-    // The foot strip: the trigger IS the left cluster, so the addon's flex
-    // layout is unchanged.
-    expect(source).toContain('className="flex min-w-0 flex-wrap items-center gap-1"');
-    // And nothing wraps the editor.
-    expect(source).not.toMatch(/<ContextMenu[\s\S]{0,400}<ComposerEditor/);
-    expect(source).not.toMatch(/<ComposerEditor[\s\S]{0,200}<\/ContextMenuTrigger>/);
+    // Still a box for its `min-w-0`, no longer a trigger.
+    expect(source).toContain('<div className="flex min-w-0 flex-wrap items-center gap-1">');
+  });
+
+  test("a selection in the box keeps the editor's own menu, and BOTH stops are what keep it", () => {
+    const source = cmp();
+    expect(source).toContain("if (!selection || selection.isCollapsed || !anchor || !event.currentTarget.contains(anchor)) return;");
+    // The React stop keeps the card's trigger shut. The native IMMEDIATE stop
+    // is the one that matters for the browser's own menu: Base UI's trigger
+    // also listens on the DOCUMENT and `preventDefault`s every `contextmenu`
+    // inside itself, which a React-only stop never reaches.
+    expect(source).toContain("event.stopPropagation();");
+    expect(source).toContain("event.nativeEvent.stopImmediatePropagation();");
   });
 
   test("the rule is written down where the next person would undo it", () => {
-    expect(read("composer.tsx")).toContain("THE COMPOSER'S CHROME ANSWERS A RIGHT-CLICK; THE BOX YOU TYPE IN DOES NOT");
+    const source = read("composer.tsx");
+    expect(source).toContain("THE COMPOSER'S CHROME ANSWERS A RIGHT-CLICK; THE BOX YOU TYPE IN DOES NOT");
+    expect(source).toContain("THE TRIGGER IS THE WHOLE CARD, AND IT IS A REAL BOX");
   });
 
   test("Clear draft and Stash draft fire what the box and the ⌘S chord already fire", () => {
@@ -403,7 +427,17 @@ describe("the composer's chrome, and the textarea it leaves alone", () => {
 
   test("Remove attachment appears only on a chip, which is the only place it means anything", () => {
     expect(cmp()).toContain("{onRemoveAttachment && (");
-    expect(cmp()).toContain("<ContextMenuItem onClick={onRemoveAttachment}>Remove attachment</ContextMenuItem>");
+    expect(flat("composer.tsx")).toContain("<ContextMenuItem onClick={onRemoveAttachment}> <XIcon /> Remove attachment </ContextMenuItem>");
+  });
+
+  test("every row wears the glyph of the control it fires — the sidebar's menus and this one are one system", () => {
+    // #286 gave the sidebar's menus icons; a menu beside them with none reads
+    // as somebody else's. Each glyph is the one on the visible control: the
+    // chip's own ×, and the stash badge's layers.
+    const flattened = flat("composer.tsx");
+    expect(flattened).toContain("<EraserIcon /> Clear draft");
+    expect(flattened).toContain("<LayersIcon /> Stash draft");
+    expect(flattened).toContain("<XIcon /> Remove attachment");
   });
 });
 

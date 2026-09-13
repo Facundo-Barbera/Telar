@@ -91,7 +91,12 @@ describe("nothing the stash adds is ever disabled", () => {
     // `has-disabled:opacity-50` on the box means a single permanently-disabled
     // descendant makes the entire composer look broken for the life of the
     // session — the trap composer.tsx already documents twice.
-    const badge = composer.slice(composer.indexOf("aria-label=\"Stashed prompts\""), composer.indexOf("<LayersIcon"));
+    // Anchored AFTER the badge, not at the file's first `<LayersIcon`: the
+    // chrome menu's Stash draft row wears the same glyph, and a slice taken
+    // from the first one is empty — a test that passes by measuring nothing.
+    const at = composer.indexOf("aria-label=\"Stashed prompts\"");
+    const badge = composer.slice(at, composer.indexOf("<LayersIcon", at));
+    expect(badge.length).toBeGreaterThan(0);
     expect(badge).not.toContain("disabled");
     expect(menu).not.toContain("disabled");
   });
