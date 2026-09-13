@@ -49,6 +49,7 @@ import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
 import { createLoginGrantStore } from "./secrets/login-grants";
+import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
@@ -427,6 +428,24 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
+}
+
+/**
+ * `?turns=N[&before=runId]` — the newest N settled turns plus everything
+ * unsettled, or the whole session when absent (the read a client older than the
+ * window still makes). Shared by the snapshot route and `/bootstrap`, so the
+ * two cannot disagree about what a window means or which inputs are rejected.
+ */
+function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
+  const raw = url.searchParams.get("turns");
+  const before = url.searchParams.get("before") ?? undefined;
+  if (raw === null) {
+    if (before !== undefined) throw new HttpError(400, "invalid_request", "before needs turns");
+    return undefined;
+  }
+  const turns = Number(raw);
+  if (!Number.isSafeInteger(turns) || turns < 1) throw new HttpError(400, "invalid_request", "turns must be a positive integer");
+  return { turns, ...(before === undefined ? {} : { before }) };
 }
 
 type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
@@ -3559,63 +3578,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const session = sessionPath(url.pathname);
       if (session) {
         if (request.method === "GET" && session.tail === "") {
-          // `?turns=N[&before=runId]` windows the snapshot to the newest N
-          // settled turns (plus everything unsettled). Absent, the whole
-          // session — the read a client older than the window still makes.
-          const turnsParam = url.searchParams.get("turns");
-          const limit = turnsParam === null ? undefined : Number(turnsParam);
-          if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-            throw new HttpError(400, "invalid_request", "turns must be a positive integer");
-          }
-          const before = url.searchParams.get("before") ?? undefined;
-          if (before !== undefined && limit === undefined) {
-            throw new HttpError(400, "invalid_request", "before needs turns");
-          }
-          // READ FIRST. The snapshot below is what the client renders; the
-          // cursor says which events it already reflects. A cursor read
-          // after the snapshot could name an event whose effect the
-          // snapshot does not carry, and the client would skip it forever.
-          // Read before, the worst case is one event replayed onto a
-          // snapshot that already has it — which the fold is built for.
-          const cursor = store.eventCursor(session.sessionId);
-          const window =
-            limit === undefined
-              ? {
-                  turns: store.turns(session.sessionId),
-                  items: store.items(session.sessionId),
-                  // On the snapshot rather than behind its own route: a
-                  // background task outlives its turn, so "is this session
-                  // still working" must be answerable from the FIRST fetch of
-                  // a cold session, before any event has streamed.
-                  tasks: store.tasks(session.sessionId),
-                  requests: store.requests(session.sessionId),
-                }
-              : store.snapshotWindow(session.sessionId, { limit, ...(before === undefined ? {} : { before }) });
-          /**
-           * AN OPEN ITEM CARRIES WHAT IT HAS STREAMED (#214).
-           *
-           * `detail` is only filled in when an item closes, so without this a
-           * client opening mid-reply — a remount, a surface switch, a live
-           * reload — saw an empty row and then only the text that arrived after
-           * it looked. Bounded by the SAME cursor written above, so the prefix
-           * and the tail meet exactly: never a gap, and any overlap is rejected
-           * by the watermark that travels with it.
-           */
-          const items = window.items.map((item) => {
-            if (item.status !== "inProgress") return item;
-            const prefix = store.openItemPrefix(session.sessionId, item.id, cursor);
-            return prefix ? { ...item, ...prefix } : item;
-          });
-          writeJson(response, 200, {
-            cursor,
-            session: store.getSession(session.sessionId),
-            ...window,
-            items,
-            // Folded over the WHOLE queue, not the window above: a client
-            // paging its transcript must not have to guess at a carrier it
-            // cannot see. See `sessionAssignments`.
-            assignments: store.sessionAssignments(session.sessionId),
-          });
+          writeJson(response, 200, sessionSnapshot(store, session.sessionId, snapshotWindowParam(url)));
+          return;
+        }
+        /**
+         * ONE READ TO OPEN A CONVERSATION (#407) — the snapshot, the journal
+         * from its cursor, and this session's subscriptions.
+         *
+         * The two reads it replaces were strictly SERIAL: the journal's `after`
+         * is the snapshot's own cursor, so the second request could not be sent
+         * until the first had come back, and a cockpit paid the full
+         * browser → cockpit route → engine round trip twice before it could
+         * paint a transcript. The engine holds both halves at one instant, so
+         * it can answer both at once. The fold is `session-bootstrap.ts`;
+         * `GET /v2/sessions/:id` above goes through the same one, so the two
+         * cannot drift.
+         */
+        if (request.method === "GET" && session.tail === "/bootstrap") {
+          writeJson(response, 200, sessionBootstrap(store, session.sessionId, snapshotWindowParam(url)));
           return;
         }
         if (request.method === "GET" && session.tail === "/events") {

@@ -296,6 +296,32 @@ export type SessionSnapshot = {
   tasks: Task[];
 };
 
+/**
+ * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
+ * needs to OPEN a conversation, from one read (#407).
+ *
+ * IT IS THE SNAPSHOT PLUS TWO KEYS, deliberately: the same fold answers both
+ * routes, so a field the snapshot grows arrives here too and the two can never
+ * describe different sessions.
+ *
+ * WHY IT EXISTS AT ALL — the shape, not the size. A client opening on a
+ * snapshot must then tail the journal from the cursor that snapshot stamped, so
+ * the second request cannot be sent until the first has returned; the two round
+ * trips are strictly serial and each one crosses a cockpit route handler as
+ * well as the engine. The engine holds both halves at one instant.
+ */
+export type SessionBootstrap = SessionSnapshot & {
+  /**
+   * The journal from `cursor`. Empty on a quiet session, which is the ordinary
+   * case and the point: nobody pays a round trip to be told nothing happened.
+   * A client's own cursor after applying this is `max(cursor, last event id)`.
+   */
+  events: EngineEvent[];
+  /** Who this conversation has asked to be woken by — the same list
+   *  `GET /v2/sessions/:id/subscriptions` answers with. */
+  subscriptions: Subscription[];
+};
+
 /** The run surface hangs off the session that is asking — see `runStatus` for
  *  why a project-scoped answer lives under a session-scoped path. */
 function runBase(sessionId: string): string {
@@ -1958,6 +1984,19 @@ export class EngineClient {
 
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`);
+  }
+
+  /**
+   * THE WHOLE OPENING, IN ONE READ (#407) — see `SessionBootstrap`.
+   *
+   * Prefer this to `session` + `events` when opening a conversation: those two
+   * cannot be issued in parallel (the second's `after` is the first's answer),
+   * so a client paid two serial round trips for state the engine holds at one
+   * instant. `session` stays for the paging path, which asks for a window it
+   * already knows the cursor of.
+   */
+  sessionBootstrap(sessionId: string, window?: SnapshotWindow): Promise<SessionBootstrap> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`);
   }
 
   events(sessionId: string, after = 0): Promise<{ events: EngineEvent[]; cursor: number; more: boolean }> {
