@@ -13,6 +13,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
 import { EngineStore } from "../src/state";
+import { stubModels } from "./stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -58,7 +59,7 @@ async function eventually(assertion: () => void | Promise<void>, timeoutMs = 15_
 const echo: TurnDriver = { run: async ({ prompt }) => ({ text: `echo:${prompt}` }) };
 
 test("a daemon with an embedded worker executes a turn with no second process", async () => {
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { createDriver: () => echo, pollMs: 25 },
@@ -81,7 +82,7 @@ test("without an embedded worker a lone daemon still refuses turns, and says why
   // The behaviour the embedded worker exists to fix, pinned so the fix cannot
   // silently become the only path — the out-of-process worker deployment
   // depends on this refusal being real.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -94,7 +95,7 @@ test("without an embedded worker a lone daemon still refuses turns, and says why
 });
 
 test("an embedded worker registration is visible through discovery", async () => {
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { workerId: "worker_embedded_one", createDriver: () => echo, pollMs: 25 },
@@ -107,7 +108,7 @@ test("an embedded worker registration is visible through discovery", async () =>
 test("closing the daemon stops the worker BEFORE the server, so no claim outlives it", async () => {
   // A claim that outlives the server it reports to becomes an ambiguous turn
   // on the next start — a human decision the operator never needed to make.
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { createDriver: () => echo, pollMs: 25 },
@@ -121,7 +122,7 @@ test("closing the daemon stops the worker BEFORE the server, so no claim outlive
   });
 
   await daemon.close();
-  const restarted = await startEngine({ engineRoot: daemon.store.paths.root });
+  const restarted = await startEngine({ models: stubModels, engineRoot: daemon.store.paths.root });
   daemons.push(restarted);
   expect(restarted.store.turns("session_one")[0]?.state).toBe("completed");
 });
@@ -131,7 +132,7 @@ test("a stalled daemon preserves its embedded worker and all active turns past t
   let disposed = 0;
   let drivers = 0;
   const releases: Array<() => void> = [];
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     now: () => time,
     workerLeaseMs: 1_000,
@@ -183,7 +184,7 @@ test("a stalled daemon preserves its embedded worker and all active turns past t
 
 test("an external worker with an embedded-looking id still expires", async () => {
   let time = 0;
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(), now: () => time, workerLeaseMs: 1_000,
     workerPruneIntervalMs: 5,
     embeddedWorker: { createDriver: () => echo, pollMs: 20 },
@@ -202,11 +203,11 @@ test("a daemon started WITHOUT an embedded worker never loads the provider SDK",
   // and eagerly importing the driver would drag the Claude SDK into all of
   // them. Asserted by construction — a driver factory that throws is never
   // called.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   expect(daemon.worker).toBeUndefined();
 
-  const exploding = await startEngine({
+  const exploding = await startEngine({ models: stubModels,
     engineRoot: root(),
     embeddedWorker: {
       createDriver: () => {
@@ -248,7 +249,7 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
    * after its process was killed is a PROVIDER question this does not touch.
    */
   const stateRoot = root();
-  const first = await startEngine({
+  const first = await startEngine({ models: stubModels,
     engineRoot: stateRoot,
     workerLeaseMs: 5_000,
     embeddedWorker: { createDriver: () => workingForever, pollMs: 25 },
@@ -267,7 +268,7 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
   // SIGTERM reaches, and the settle has to land before the server closes.
   await first.close();
 
-  const second = await startEngine({
+  const second = await startEngine({ models: stubModels,
     engineRoot: stateRoot,
     workerLeaseMs: 5_000,
     embeddedWorker: { createDriver: () => workingForever, pollMs: 25 },
@@ -296,7 +297,7 @@ test("a real event-loop stall preserves the embedded generation and streamed sna
   let finish!: () => void;
   let aborted = false;
   let runs = 0;
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 150,
     embeddedWorker: { pollMs: 10, createDriver: () => ({
@@ -340,7 +341,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
     throw new Error("HTTP lifecycle transport must not run for embedded execution");
   }));
   try {
-    const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+    const daemon = await startEngine({ models: stubModels, engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
       pollMs: 10,
       createDriver: () => ({ run: async ({ onObservations }) => {
         await onObservations([{ kind: "item.started", item: { id: "i_direct", detail: { type: "assistant_message", text: "" } } }]);
@@ -360,7 +361,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
 
 test("shutdown disposes the selected OpenCode adapter and its session-lived runtime", async () => {
   let disposed = 0;
-  const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
     pollMs: 10, createDriver: () => (kind) => kind === "opencode" ? { run: async () => ({ text: "fixture" }), dispose: () => { disposed++; } } : undefined,
   } });
   daemon.store.registerProject({ id: "project_dispose", name: "Dispose", root: "/tmp" });
@@ -385,7 +386,7 @@ test("shutdown disposes the selected OpenCode adapter and its session-lived runt
 test("an idle embedded worker slows its loop, and a new message still starts at once", async () => {
   const beats = spyOn(EngineStore.prototype, "cancellationsForWorker");
   try {
-    const daemon = await startEngine({
+    const daemon = await startEngine({ models: stubModels,
       engineRoot: root(),
       workerLeaseMs: 60_000,
       embeddedWorker: { createDriver: () => echo, pollMs: 20, idlePollMs: 5_000 },

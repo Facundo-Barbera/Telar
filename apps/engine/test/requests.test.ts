@@ -14,6 +14,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { EngineStateError, EngineStore } from "../src/state";
 import { EngineWorker } from "../src/worker";
 import { normalizeOutcome, type TurnDriver } from "../src/driver";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -182,7 +183,7 @@ test("a resolution is offered to the worker that holds the running claim, and no
 });
 
 test("a driver blocked on a human is unblocked by the heartbeat, end to end", async () => {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 2_000, notifier: () => true });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 2_000, notifier: () => true });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -228,7 +229,7 @@ test("a stop while a human is deciding settles the driver instead of hanging the
   // THE DEADLOCK THIS PREVENTS: canUseTool has no park deadline, so a worker
   // blocked on an answer that never comes would keep the turn running for the
   // life of the process.
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 2_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 2_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

@@ -32,6 +32,7 @@ import { TelarToolSocket } from "../src/telar-socket";
 import { setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import type { PluginToolModule } from "../src/plugins/tool-module";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -127,7 +128,7 @@ async function list(lease: { url: string; token: string }) {
 test("changing the enabled set rebinds: the new credential works and the old bearer is refused", async () => {
   setPluginToolModules([helloToolModule, secondModule]);
   const { driver, sockets } = recordingDriver();
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 5_000,
     embeddedWorker: { createDriver: () => driver, pollMs: 20 },
@@ -173,7 +174,7 @@ test("changing the enabled set rebinds: the new credential works and the old bea
 test("an unchanged enabled set does NOT rebind, so a reused query keeps working", async () => {
   setPluginToolModules([helloToolModule, secondModule]);
   const { driver, sockets } = recordingDriver();
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 5_000,
     embeddedWorker: { createDriver: () => driver, pollMs: 20 },
@@ -224,7 +225,7 @@ test("a REUSED lease serves the current turn's capabilities, not the ones it was
       });
     },
   });
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     workerLeaseMs: 5_000,
     embeddedWorker: { createDriver: () => driver, pollMs: 20 },

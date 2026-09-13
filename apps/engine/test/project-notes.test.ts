@@ -22,6 +22,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createNote, deleteNote, findNote, notesPath, readNotes, sortNotes, updateNote, ProjectNotesError } from "../src/notes";
 import { statePaths } from "../src/state";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -48,7 +49,7 @@ function repo(): string {
 
 async function withProject(): Promise<{ client: EngineClient; projectId: string; engineRoot: string }> {
   const engineRoot = tmp("telar-notes-");
-  const daemon = await startEngine({ engineRoot });
+  const daemon = await startEngine({ models: stubModels, engineRoot });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
