@@ -51,6 +51,7 @@ import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client"
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
 import { CONSULT_TALLY_LABEL, foldHarnessRows, harnessConsult } from "@/lib/harness-paths";
+import { toolInputSummary } from "@/lib/tool-input-summary";
 import { attachmentUrl } from "@/lib/ds";
 import { fileReference } from "@/lib/drag-reference";
 import { MessageMenu, MessageResponse } from "@/components/ui/message";
@@ -109,7 +110,12 @@ function actionLabel(item: JournalItem): string {
 
 /** The salient argument, collapsed to one line and clipped. Never the payload.
  *  Split on CODE POINTS, not UTF-16 units — a plain slice can cut an astral
- *  character in half and render a broken glyph right at the boundary. */
+ *  character in half and render a broken glyph right at the boundary.
+ *
+ *  A TOOL CALL'S ARGUMENT IS ITS INPUT, not its name: falling back to the label
+ *  here is what made a row say "ds_scratch ds_scratch", the tool's name twice
+ *  where its first line of code belonged (#354). Empty is a legitimate answer —
+ *  a call with no readable input is a row that says the tool's name once. */
 function preview(item: JournalItem): string {
   const raw =
     item.detail.type === "command_execution"
@@ -120,7 +126,9 @@ function preview(item: JournalItem): string {
           ? item.detail.change.path
           : item.detail.type === "web_search"
             ? item.detail.query
-            : itemLabel(item);
+            : item.detail.type === "mcp_tool_call" || item.detail.type === "dynamic_tool_call" || item.detail.type === "browser_action"
+              ? toolInputSummary(item.detail.call.input) ?? ""
+              : itemLabel(item);
   const flat = raw.replace(/\s+/g, " ").trim();
   const points = Array.from(flat);
   return points.length > 80 ? `${points.slice(0, 80).join("")}…` : flat;
@@ -234,6 +242,9 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
   // A row about nothing copyable gets no menu at all, rather than an empty
   // popup that opens and offers you the choice of nothing.
   const hasMenu = Boolean(command || body || path);
+  // Nothing readable about the input: the row is the verb, once, rather than
+  // the verb followed by an empty mono slot.
+  const argument = preview(item);
 
   const row = (
     <div className={cn("rounded-md", isError && "bg-destructive/10")}>
@@ -246,13 +257,13 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
       >
         {running(item) ? (
           <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-            {`${label} · ${preview(item)}`}
+            {argument ? `${label} · ${argument}` : label}
           </Shimmer>
         ) : (
           <>
             <RowIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
             <span className={cn("shrink-0", isError && "text-destructive")}>{label}</span>
-            <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{preview(item)}</span>
+            {argument && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{argument}</span>}
           </>
         )}
         {change && (change.linesAdded || change.linesRemoved) ? (
