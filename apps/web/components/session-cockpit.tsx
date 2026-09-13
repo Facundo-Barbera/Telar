@@ -50,7 +50,7 @@ import { Composer } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -2878,6 +2878,11 @@ export function SessionCockpit({
                 </Button>
               </div>
             )}
+            {/* WHERE THIS SESSION'S FILES ARE, so a row can tell the project's
+                own work from the harness reading its bundled skills out of a
+                temp directory (#354). One fact about the session, stated once,
+                rather than a prop on every row that never uses it. */}
+            <TranscriptWorkspace path={session?.workspace.path}>
             {shown.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than
@@ -2908,6 +2913,7 @@ export function SessionCockpit({
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
             ))}
+            </TranscriptWorkspace>
           </ConversationContent>
           <ConversationScrollButton />
         </ConversationViewport>

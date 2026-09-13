@@ -28,8 +28,9 @@
  * unified patches, so we render them.
  */
 
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import {
+  BookOpenIcon,
   BotIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -49,6 +50,8 @@ import {
 import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
+import { CONSULT_TALLY_LABEL, foldHarnessRows, harnessConsult } from "@/lib/harness-paths";
+import { toolInputSummary } from "@/lib/tool-input-summary";
 import { attachmentUrl } from "@/lib/ds";
 import { fileReference } from "@/lib/drag-reference";
 import { MessageMenu, MessageResponse } from "@/components/ui/message";
@@ -107,7 +110,12 @@ function actionLabel(item: JournalItem): string {
 
 /** The salient argument, collapsed to one line and clipped. Never the payload.
  *  Split on CODE POINTS, not UTF-16 units — a plain slice can cut an astral
- *  character in half and render a broken glyph right at the boundary. */
+ *  character in half and render a broken glyph right at the boundary.
+ *
+ *  A TOOL CALL'S ARGUMENT IS ITS INPUT, not its name: falling back to the label
+ *  here is what made a row say "ds_scratch ds_scratch", the tool's name twice
+ *  where its first line of code belonged (#354). Empty is a legitimate answer —
+ *  a call with no readable input is a row that says the tool's name once. */
 function preview(item: JournalItem): string {
   const raw =
     item.detail.type === "command_execution"
@@ -118,7 +126,9 @@ function preview(item: JournalItem): string {
           ? item.detail.change.path
           : item.detail.type === "web_search"
             ? item.detail.query
-            : itemLabel(item);
+            : item.detail.type === "mcp_tool_call" || item.detail.type === "dynamic_tool_call" || item.detail.type === "browser_action"
+              ? toolInputSummary(item.detail.call.input) ?? ""
+              : itemLabel(item);
   const flat = raw.replace(/\s+/g, " ").trim();
   const points = Array.from(flat);
   return points.length > 80 ? `${points.slice(0, 80).join("")}…` : flat;
@@ -148,6 +158,23 @@ export type RowGestures = {
    *  read beside whatever the Editor already holds. */
   onOpenFileInNewTab?: (path: string) => void;
 };
+
+/**
+ * THE SESSION'S OWN CHECKOUT, for the one rule that has to know what is outside
+ * it (see `lib/harness-paths.ts`).
+ *
+ * A CONTEXT RATHER THAN A PROP because it is not the transcript's business and
+ * every row would have to carry it: the path is a fact about the session, the
+ * same for every turn on screen, and threading it through four components to
+ * reach one predicate would put it in the signature of things that never use
+ * it. Unset is a legitimate state — the harness-root test still holds on its
+ * own, it is merely less guarded.
+ */
+const WorkspaceContext = createContext<string | undefined>(undefined);
+
+export function TranscriptWorkspace({ path, children }: { path?: string; children: React.ReactNode }) {
+  return <WorkspaceContext.Provider value={path}>{children}</WorkspaceContext.Provider>;
+}
 
 /** The path a row is ABOUT, when it is about one. */
 function rowPath(item: JournalItem): string | undefined {
@@ -215,6 +242,9 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
   // A row about nothing copyable gets no menu at all, rather than an empty
   // popup that opens and offers you the choice of nothing.
   const hasMenu = Boolean(command || body || path);
+  // Nothing readable about the input: the row is the verb, once, rather than
+  // the verb followed by an empty mono slot.
+  const argument = preview(item);
 
   const row = (
     <div className={cn("rounded-md", isError && "bg-destructive/10")}>
@@ -227,13 +257,13 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
       >
         {running(item) ? (
           <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-            {`${label} · ${preview(item)}`}
+            {argument ? `${label} · ${argument}` : label}
           </Shimmer>
         ) : (
           <>
             <RowIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
             <span className={cn("shrink-0", isError && "text-destructive")}>{label}</span>
-            <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{preview(item)}</span>
+            {argument && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{argument}</span>}
           </>
         )}
         {change && (change.linesAdded || change.linesRemoved) ? (
@@ -739,15 +769,25 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
 }
 
 /** `Ran command ×12 · Read file ×2`, in FIRST-APPEARANCE order — that preserves
- *  the shape of the turn: what the agent reached for first stays first. */
-function tally(items: JournalItem[]): string {
+ *  the shape of the turn: what the agent reached for first stays first.
+ *
+ *  A ROW THE LIST FOLDED IS TALLIED AS WHAT THE FOLD CALLS IT. Otherwise the
+ *  summary re-states the noise the fold just removed — "Read file ×3 · Ran
+ *  command" over a line that says the harness consulted a skill (#354). */
+export function tallyParts(items: readonly JournalItem[], workspace?: string): string[] {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const action = item.detail.type === "reasoning" ? "Thought" : item.detail.type === "task" ? "Ran agent" : actionLabel(item);
+    const action = harnessConsult(item, workspace)
+      ? CONSULT_TALLY_LABEL
+      : item.detail.type === "reasoning"
+        ? "Thought"
+        : item.detail.type === "task"
+          ? "Ran agent"
+          : actionLabel(item);
     const label = /^Reconnecting(?:\.{3}|…)\s*\d+\/\d+$/i.test(action.trim()) ? "Reconnect attempt" : action;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
-  return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label)).join(" · ");
+  return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label));
 }
 
 /**
@@ -1033,6 +1073,59 @@ function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
   );
 }
 
+/**
+ * THE HARNESS CONSULTING ITSELF, as one line (#354).
+ *
+ * Shaped like every other collapsed row — chevron, muted, expandable — because
+ * it is not a different KIND of thing, it is the same rows at a scale that
+ * matches how much they matter. The count rides the line so the fold never
+ * hides how much it is covering, and pressing it gives back the ordinary rows,
+ * paths and all.
+ */
+function HarnessConsultRow({ label, items, tasks, ...gestures }: { label: string; items: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)} className={cn(ROW, "text-muted-foreground hover:bg-muted/60")}>
+        <BookOpenIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+        {items.length > 1 && <span className="shrink-0 text-muted-foreground/60">{items.length} steps</span>}
+        <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+      {open && (
+        <div className="ml-3 flex flex-col gap-0.5 border-l border-border/70 py-1 pl-3">
+          {items.map((item) => (
+            <TranscriptItem key={item.id} item={item} tasks={tasks} {...gestures} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A list of rows, with the harness's own errands folded out of the way.
+ *
+ * THE ONE PLACE ROWS BECOME ELEMENTS in a run, live or settled, so the two
+ * cannot disagree about what a turn contained — a fold that applied only to
+ * history would make a live turn look busier than the same turn a second later.
+ */
+function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+  const workspace = useContext(WorkspaceContext);
+  const segments = useMemo(() => foldHarnessRows(rows, workspace), [rows, workspace]);
+  return (
+    <>
+      {segments.map((segment) =>
+        segment.kind === "consult" ? (
+          <HarnessConsultRow key={segment.items[0]!.id} label={segment.label} items={segment.items} tasks={tasks} {...gestures} />
+        ) : (
+          segment.items.map((item) => <TranscriptItem key={item.id} item={item} tasks={tasks} {...gestures} />)
+        ),
+      )}
+    </>
+  );
+}
+
 function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
   // Only the rows the fold is HIDING can carry a surprise; the one on screen
@@ -1057,38 +1150,42 @@ function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInN
           <FailedCount count={failures} hidden={open} />
         </button>
       )}
-      {shown.map((item) => (
-        <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
-      ))}
+      <TranscriptRows rows={shown} tasks={tasks} {...pass} />
     </div>
   );
 }
 
 function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const [open, setOpen] = useState(false);
+  const workspace = useContext(WorkspaceContext);
   const failures = failedCount(rows, tasks);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <>
+      {/* THE SUMMARY WRAPS RATHER THAN TRUNCATING (#354). At panel width a
+          busy turn ended "· Ran command ×4 · …" with the ellipsis eating the
+          part a reader actually scans for — what the agent DID — while the
+          generic head of the list survived. Two lines is the whole budget: a
+          fold that grows without limit stops being a fold. `items-start` keeps
+          the chevron and the step count on the first line rather than centring
+          them against a two-line block. */}
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((c) => !c)}
-        className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
+        className={cn(ROW, "items-start text-muted-foreground hover:bg-muted/50")}
       >
-        <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <ChevronRightIcon className={cn("mt-0.5 size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
         <span className="shrink-0">
           {rows.length} step{rows.length === 1 ? "" : "s"}
         </span>
         <FailedCount count={failures} hidden={open} />
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="min-w-0 truncate text-muted-foreground/80">{tally(rows)}</span>
+        <span className="line-clamp-2 min-w-0 text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
       </button>
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          {rows.map((item) => (
-            <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
-          ))}
+          <TranscriptRows rows={rows} tasks={tasks} {...pass} />
         </div>
       )}
     </>
