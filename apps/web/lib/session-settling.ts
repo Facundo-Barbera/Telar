@@ -235,11 +235,11 @@ function idleSince(session: SettleableSession): number {
  * snooze and the unread answer, and a caller that wants the clock alone would
  * otherwise re-derive the baseline and get `updatedAt` wrong twice over.
  *
- * The sidebar's tree asks it directly (`leavesRelatedWork`, issue #370): a
- * delegate whose assignment finished a week ago leaves its coordinator even
- * when one of those guards is legitimately keeping the row in the LIST. The
- * two are different questions — "is this off the list" and "is this still
- * somebody's outstanding errand" — and the row stays visible either way.
+ * The sidebar's tree used to ask it directly (`leavesRelatedWork`, #370), to
+ * decide when a delegate stopped being drawn under its coordinator. That tree
+ * is gone (#381) and so is the question; `isSettled` below is the caller that
+ * remains, and this stays named because the two ARE different questions and
+ * merging them is how the baseline gets computed twice.
  *
  * NO WINDOW MEANS NEVER STALE. A reader who turned the clock off asked for
  * nothing to age out, and that answer has to hold everywhere it is asked.

@@ -17,50 +17,6 @@ struct ProjectPlace: Identifiable, Equatable {
     var id: String { "\(hostId.uuidString):\(projectId)" }
 }
 
-/// A CONVERSATION THAT HANGS OFF THE ONE ABOVE IT — an assignment the row above
-/// handed out, a session it started, or one it asked to be woken by.
-struct SidebarChild: Identifiable {
-    let row: HostedSession
-    /// The state that still differs per child: the scope the coordinator named,
-    /// "working", "finished" — or nothing, where the edge is the whole fact.
-    var hint: String? = nil
-    var id: ScopedSessionID { row.id }
-}
-
-/// One row of a band, and the conversations drawn underneath it.
-struct SidebarRow: Identifiable {
-    let row: HostedSession
-    var children: [SidebarChild] = []
-    var id: ScopedSessionID { row.id }
-    /// This row and its children, top to bottom, as they are drawn.
-    var all: [HostedSession] { [row] + children.map(\.row) }
-}
-
-/// A BAND'S ROWS FLATTENED FOR THE LIST — a coordinator, then whatever hangs off
-/// it, as one sequence.
-///
-/// A TREE CANNOT BE A NESTED `ForEach` AND STILL REORDER. `.onMove` addresses
-/// the ELEMENTS of one `ForEach`; a coordinator whose children were a `ForEach`
-/// of its own would be an element rendering several rows, which the List cannot
-/// lift. Flat, with the children marked, is what lets it lift a coordinator and
-/// leave a child where it belongs.
-struct SidebarDrawnRow: Identifiable {
-    let row: HostedSession
-    /// What the row carries when it is somebody's child; nil at the band's own
-    /// level.
-    var child: SidebarChild? = nil
-    var isChild: Bool { child != nil }
-    var id: ScopedSessionID { row.id }
-}
-
-extension Sequence where Element == SidebarRow {
-    var drawn: [SidebarDrawnRow] {
-        flatMap { entry in
-            [SidebarDrawnRow(row: entry.row)] + entry.children.map { SidebarDrawnRow(row: $0.row, child: $0) }
-        }
-    }
-}
-
 struct SidebarProject: Identifiable {
     /// THE GROUP'S IDENTITY ON THIS PHONE — what `collapsed`, `projectFilter`
     /// and a drag all key by. `repo:<host>/<owner>/<repo>` for a group folded on
@@ -82,14 +38,11 @@ struct SidebarProject: Identifiable {
     /// Every Mac this group lives on, in a stable order. One entry ordinarily;
     /// two when a repository is checked out on two of them.
     var places: [ProjectPlace] = []
-    /// The group's rows AS DRAWN — each with whatever hangs off it.
-    var rows: [SidebarRow]
-    /// Every row this group is showing, children included.
-    ///
-    /// THE COUNT IS UNTOUCHED BY THE TREE, deliberately: a nested row is still a
-    /// row this group draws, and subtracting it would make the header disagree
-    /// with what is under it.
-    var sessions: [HostedSession] { rows.flatMap(\.all) }
+    /// EVERY CONVERSATION THIS GROUP HOLDS, at one level — issue #381. These
+    /// used to be `[SidebarRow]`, a coordinator with whatever hung off it, and
+    /// the list had to be flattened again before it could be drawn or reordered.
+    /// A delegated conversation is a conversation; it draws where it lives.
+    var sessions: [HostedSession]
 }
 
 /// The desktop's precedence: attention, pins, projects. Never duplicate a row.
@@ -101,12 +54,9 @@ struct SidebarProject: Identifiable {
 /// default order (#306, part of #285).
 struct SidebarModel {
     var attention: [HostedSession]
-    /// The pinned band AS DRAWN — each row with whatever hangs off it.
-    var pinnedRows: [SidebarRow]
+    /// The pinned band, in the reader's own order.
+    var pinned: [HostedSession]
     var projects: [SidebarProject]
-
-    /// The pinned band flat, children included — what a count or a lookup wants.
-    var pinned: [HostedSession] { pinnedRows.flatMap(\.all) }
 
     init(
         sessions: [HostedSession],
@@ -118,10 +68,6 @@ struct SidebarModel {
         /// What to call each Mac. Only used to give the places a stable reading
         /// order, so a badge list does not re-shuffle itself between polls.
         hostNames: (HostID) -> String? = { _ in nil },
-        /// Who each session is working for, scoped by Mac — see `relatedWork`.
-        assignments: [ScopedSessionID: [SessionAssignment]] = [:],
-        /// Who each PINNED session asked to be woken by, scoped the same way.
-        following: [ScopedSessionID: [Subscription]] = [:],
         layouts: [HostID: SidebarLayout] = [:]
     ) {
         attention = sessions.filter { $0.session.activity == .blocked }
@@ -130,36 +76,16 @@ struct SidebarModel {
         /// the document by bare id, which is what this phone holds for them;
         /// a row belonging to a different Mac is never in this Mac's list, so
         /// looking it up there cannot place it by somebody else's decision.
-        let arrangedPins = SidebarModel.arranged(pins) { row in layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id) }
+        pinned = SidebarModel.arranged(pins) { row in layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id) }
 
-        /// A ROW A PINNED CONVERSATION FOLLOWS IS DRAWN UNDER IT, AND THERE ONLY
-        /// — the desktop's `withholdFollowedRows`. Following is a relationship
-        /// you asked for; a project group is where a row lives anyway, so the
-        /// coordinator wins the copy and the group gives it up rather than the
-        /// rail claiming two conversations where there is one.
-        ///
-        /// FIRST PINNED COORDINATOR WINS A CONTESTED ROW, in pinned order: two
-        /// coordinators can follow one session, and drawing it under both would
-        /// re-create exactly the duplication this removes.
-        var claimed: Set<ScopedSessionID> = []
-        var followed: [ScopedSessionID: [HostedSession]] = [:]
-        for coordinator in arrangedPins {
-            var rows: [HostedSession] = []
-            for subscription in following[coordinator.id] ?? [] {
-                // HOST-QUALIFIED: `targetSessionId` is a bare id, so the
-                // coordinator's own Mac is the frame it is resolved in.
-                let target = ScopedSessionID(hostId: coordinator.hostId, sessionId: subscription.targetSessionId)
-                guard target != coordinator.id, !claimed.contains(target),
-                      let row = sessions.first(where: { $0.id == target }) else { continue }
-                claimed.insert(target)
-                rows.append(row)
-            }
-            if !rows.isEmpty { followed[coordinator.id] = rows }
-        }
-        pinnedRows = SidebarModel.tree(arrangedPins, assignments: assignments, followed: followed)
-
+        /// NOTHING IS WITHHELD FROM A PROJECT GROUP — issue #381. A pinned
+        /// conversation used to claim every row it followed, so those rows were
+        /// drawn under it and nowhere else (the desktop's
+        /// `withholdFollowedRows`). Both halves went with the tree: a delegated
+        /// or followed conversation is a conversation, and the rail draws it in
+        /// the project it belongs to.
         let ordinary = sessions.filter {
-            $0.session.activity != .blocked && $0.session.settledOverride != "active" && !claimed.contains($0.id)
+            $0.session.activity != .blocked && $0.session.settledOverride != "active"
         }
         let groups = Dictionary(grouping: ordinary) { row in
             SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: remotes(row))
@@ -182,14 +108,10 @@ struct SidebarModel {
                 // EACH ROW BY ITS OWN MAC'S LIST, even inside a merged group:
                 // the two documents are two decisions, and reading one Mac's
                 // rank for the other Mac's row would place it by a decision
-                // nobody made about it. The tree is drawn over the ARRANGED
-                // list, so a child follows the coordinator wherever it was put.
-                rows: SidebarModel.tree(
-                    SidebarModel.arranged(rows) { row in
-                        layouts[row.hostId]?.sessionOrder[layoutKey]?.firstIndex(of: row.session.id)
-                    },
-                    assignments: assignments
-                )
+                // nobody made about it.
+                sessions: SidebarModel.arranged(rows) { row in
+                    layouts[row.hostId]?.sessionOrder[layoutKey]?.firstIndex(of: row.session.id)
+                }
             )
         }.sorted { a, b in
             let ar = SidebarModel.rank(a, layouts: layouts)
@@ -268,100 +190,6 @@ struct SidebarModel {
             .min() ?? Int.max
     }
 
-    /// Sessions doing work for one coordinator, and sessions it started — the
-    /// desktop's `relatedWork` (apps/web/lib/session-list.ts).
-    ///
-    /// TWO DIFFERENT RELATIONSHIPS, deliberately not merged. An assignment is
-    /// current work and it ends; provenance is permanent and ends nothing. A
-    /// session that FINISHED a task still belongs here — under `review` — until
-    /// the human settles it, because dropping it the moment its run ended would
-    /// hide the very result the coordinator delegated for.
-    struct RelatedWork {
-        var active: [HostedSession] = []
-        var review: [HostedSession] = []
-        var independent: [HostedSession] = []
-    }
-
-    /// SAME MAC ONLY. An assignment's `fromSessionId` and a `startedFrom` are
-    /// bare ids, meaningful only within one engine — a coordinator on one Mac
-    /// gathering a stranger from another is exactly the mistake two Macs minting
-    /// the same session id makes easy.
-    static func relatedWork(
-        _ rows: [HostedSession],
-        coordinator: HostedSession,
-        assignments: [ScopedSessionID: [SessionAssignment]]
-    ) -> RelatedWork {
-        var found = RelatedWork()
-        for row in rows where row.id != coordinator.id && row.hostId == coordinator.hostId {
-            let mine = (assignments[row.id] ?? []).filter { $0.fromSessionId == coordinator.session.id }
-            if mine.contains(where: { $0.outcome == nil && $0.unresolved != true }) {
-                found.active.append(row)
-            } else if mine.contains(where: { $0.outcome != nil && $0.outcome != "detached" }) {
-                found.review.append(row)
-            } else if row.session.startedFrom?.sessionId == coordinator.session.id {
-                found.independent.append(row)
-            }
-        }
-        return found
-    }
-
-    /// THE TREE A FLAT LIST OF ROWS MAKES — the desktop's `relatedTree`
-    /// (apps/web/components/session/related-work.tsx), and #324's shape: every
-    /// related conversation renders under its coordinator as an indented child,
-    /// with no caption and its state as a trailing hint.
-    ///
-    /// SCOPED TO THE LIST IT IS GIVEN, which the caller makes one band. A child
-    /// here is a row that band would otherwise draw BESIDE its parent; taking a
-    /// row out of the project it belongs to is the pinned band's own bargain
-    /// (`followed`), and drawing a tree in place needs nothing of the sort.
-    ///
-    /// ONE LEVEL, AND FIRST POSITION WINS. A row already drawn — as somebody's
-    /// child or at the top level — is never claimed again, so two coordinators
-    /// delegating to one session is one row under the first of them, and a chain
-    /// of delegations reads as a list under its head rather than a staircase
-    /// down the rail.
-    static func tree(
-        _ rows: [HostedSession],
-        assignments: [ScopedSessionID: [SessionAssignment]] = [:],
-        /// Rows a coordinator FOLLOWS, which may come from outside `rows` — the
-        /// pinned band's own claim, resolved by the caller.
-        followed: [ScopedSessionID: [HostedSession]] = [:]
-    ) -> [SidebarRow] {
-        var nested: Set<ScopedSessionID> = []
-        var drawn: Set<ScopedSessionID> = []
-        var out: [SidebarRow] = []
-        for row in rows where !nested.contains(row.id) {
-            drawn.insert(row.id)
-            var children: [SidebarChild] = []
-            func claim(_ candidates: [HostedSession], hint: (HostedSession) -> String?) {
-                for candidate in candidates where !nested.contains(candidate.id) && !drawn.contains(candidate.id) {
-                    nested.insert(candidate.id)
-                    children.append(SidebarChild(row: candidate, hint: hint(candidate)))
-                }
-            }
-            let related = relatedWork(rows, coordinator: row, assignments: assignments)
-            // THE SCOPE THE COORDINATOR ACTUALLY NAMED BEATS THE BARE STATE: it
-            // says WHICH work, and "working" is then implied by there being any.
-            claim(related.active) { scope(assignments[$0.id], from: row.session.id) ?? "working" }
-            claim(related.review) { _ in "finished" }
-            // PROVENANCE HAS NO STATE TO HINT. "Started from here" is a fact
-            // about the edge, not about the row, and the elbow is now that fact.
-            claim(related.independent) { _ in nil }
-            claim(followed[row.id] ?? []) { _ in nil }
-            out.append(SidebarRow(row: row, children: children))
-        }
-        return out
-    }
-
-    /// The scope of the assignment that is ACTUALLY OUTSTANDING — not the first
-    /// historical one that happened to carry a scope, which would show a row the
-    /// words of a task it finished last week.
-    private static func scope(_ assignments: [SessionAssignment]?, from coordinatorId: EngineID) -> String? {
-        assignments?.first {
-            $0.fromSessionId == coordinatorId && $0.outcome == nil && $0.unresolved != true && $0.scope?.isEmpty == false
-        }?.scope
-    }
-
     /// THE ORDER AFTER THE LIST'S OWN REORDER — `.onMove`'s `(offsets,
     /// destination)` translated into the ids one Mac's document is written with.
     ///
@@ -378,17 +206,16 @@ struct SidebarModel {
     /// promise the cross-Mac refusal made, kept without a refusal — a gesture the
     /// List has already animated cannot honestly be turned down.
     ///
-    /// A CHILD IS NEITHER MOVED NOR A POSITION. It is drawn where its coordinator
-    /// is, so lifting one would offer to take a row out of its own tree; the List
-    /// will not lift it (`.moveDisabled`) and it is dropped from the written
-    /// order here for the same reason. Landing BETWEEN a coordinator and its
-    /// children is therefore no move at all, which is what it looks like.
+    /// EVERY ROW IS LIFTABLE NOW — issue #381. A child used to be neither moved
+    /// nor a position: it was drawn where its coordinator was, so the List
+    /// refused to lift it and it was dropped from the written order here. There
+    /// are no children, so there is nothing to except.
     ///
     /// `nil` when nothing changed, so a gesture that resolved to where the row
     /// already was costs no write.
-    static func reordered(_ drawn: [SidebarDrawnRow], offsets: IndexSet, to destination: Int) -> (host: HostID, ids: [String])? {
-        guard offsets.count == 1, let from = offsets.first, drawn.indices.contains(from), !drawn[from].isChild else { return nil }
-        let host = drawn[from].row.hostId
+    static func reordered(_ drawn: [HostedSession], offsets: IndexSet, to destination: Int) -> (host: HostID, ids: [String])? {
+        guard offsets.count == 1, let from = offsets.first, drawn.indices.contains(from) else { return nil }
+        let host = drawn[from].hostId
         // `move(fromOffsets:toOffset:)`, spelled out: `destination` counts in the
         // list BEFORE the lift, so it shifts down by however many moved rows sat
         // above it.
@@ -396,9 +223,7 @@ struct SidebarModel {
         let at = min(max(destination - offsets.filter { $0 < destination }.count, 0), next.count)
         next.insert(contentsOf: offsets.map { drawn[$0] }, at: at)
 
-        let ids = { (rows: [SidebarDrawnRow]) in
-            rows.filter { !$0.isChild && $0.row.hostId == host }.map(\.row.session.id)
-        }
+        let ids = { (rows: [HostedSession]) in rows.filter { $0.hostId == host }.map(\.session.id) }
         let after = ids(next)
         return after == ids(drawn) ? nil : (host, after)
     }

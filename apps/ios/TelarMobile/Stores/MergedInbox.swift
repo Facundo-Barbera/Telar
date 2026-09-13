@@ -131,18 +131,6 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         return found
     }
 
-    /// Who the pinned conversations have asked to be woken by, scoped the same
-    /// way and for the same reason.
-    var following: [ScopedSessionID: [Subscription]] {
-        var found: [ScopedSessionID: [Subscription]] = [:]
-        for (hostId, store) in stores {
-            for (sessionId, held) in store.following {
-                found[ScopedSessionID(hostId: hostId, sessionId: sessionId)] = held
-            }
-        }
-        return found
-    }
-
     func layout(_ hostId: HostID) -> SidebarLayout {
         stores[hostId]?.layout ?? SidebarLayout()
     }

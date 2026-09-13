@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -14,7 +14,6 @@ import {
 import Link from "next/link";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { OpenerIcon } from "@/components/session/opener-icon";
-import { RelatedWork, relatedTree } from "@/components/session/related-work";
 import { SessionRow } from "@/components/session/session-row";
 import {
   ContextMenu,
@@ -172,8 +171,6 @@ export function ProjectGroupSection({
   activeSessionId,
   renderedAt,
   bandFor,
-  autoSettleAfterHours,
-  settlingWindows,
   onRefresh,
   dragging,
   insert,
@@ -200,17 +197,6 @@ export function ProjectGroupSection({
   /** The rail's own banding — a paired Mac's row is banded by that Mac's
    *  clock, and the group must not re-derive it with this Mac's. */
   bandFor: (session: SidebarSession) => SessionBand;
-  /**
-   * THE SETTLING WINDOW THE TREE IS MEASURED AGAINST — the rail's own, because
-   * the tree asks the same question the bands do (#370: when does a delegate
-   * stop hanging off its coordinator) and two answers to one question is how a
-   * row ends up indented in a group whose shelf already has it. `null` is the
-   * reader turning the clock off, and it means the same here: nothing ages out.
-   */
-  autoSettleAfterHours: number | null;
-  /** Each Mac's own window, for the same reason `bandFor` is passed in rather
-   *  than rebuilt: a paired Mac's row is measured by that Mac's clock. */
-  settlingWindows?: ReadonlyMap<string, number | null>;
   onRefresh: () => void;
   /** This group is the one being carried. */
   dragging: boolean;
@@ -287,42 +273,9 @@ export function ProjectGroupSection({
    * stayed expanded would quietly re-create the duplicate row it exists to
    * replace every time the rail re-mounted.
    */
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   /** Whether the `+`'s which-Mac menu is open — see the trigger below. */
   const [pickingHost, setPickingHost] = useState(false);
-  const withheld = group.withheld ?? [];
-  const withheldCount = withheld.reduce((total, entry) => total + entry.sessions.length, 0);
-  /**
-   * THE GROUP'S OWN TREE — issue #323, the unpinned half of it.
-   *
-   * A pinned coordinator has drawn its delegates underneath itself since #199;
-   * an unpinned one drew them as siblings, with nothing but recency saying whose
-   * they were. `relatedTree` is the same one-level arrangement, so the elbow
-   * means the same thing in both bands and a reader does not have to know a row
-   * is pinned to read an indent.
-   *
-   * THE COUNT IS UNTOUCHED, deliberately: a nested row is still a row this group
-   * is showing, and subtracting it would make the header disagree with the rows
-   * under it. That is the opposite of `withheld`, whose rows this group really
-   * is not drawing.
-   *
-   * A ROW ALSO LEAVES THE TREE — issue #370. A delegate whose errand is over,
-   * and any child the reader has settled, stops being drawn under its
-   * coordinator and falls back to being a row of this group; a settled
-   * coordinator stops claiming children at all. That needs the same clock the
-   * bands use, which is why the window arrives as a prop.
-   *
-   * Memoised on the row list, which `groupSessions` and `withholdFollowedRows`
-   * both hand back unchanged when nothing moved — this walks the group once per
-   * row, and the rail re-renders on every poll.
-   */
-  const tree = useMemo(
-    () => relatedTree(group.sessions, { now: renderedAt, autoSettleAfterHours, ...(settlingWindows ? { windowsByHost: settlingWindows } : {}) }),
-    [group.sessions, renderedAt, autoSettleAfterHours, settlingWindows],
-  );
-  // A COLLAPSED GROUP STILL TELLS THE TRUTH. The chips live in the body, so the
-  // header's own count is the only thing a folded group says about itself.
-  const countLabel = withheldCount ? `${shown} shown, ${withheldCount} under Following` : `${shown} shown`;
+  const countLabel = `${shown} shown`;
   return (
     <SidebarGroup
       className={cn(
@@ -523,87 +476,30 @@ export function ProjectGroupSection({
       {open && (
         <SidebarGroupContent id={`${headingId}-rows`} role="group" aria-labelledby={headingId} className="space-y-0.5 pb-1 pl-2">
           {/*
-            "+N FOLLOWING <COORDINATOR>" — the rows this group is not drawing
-            because a pinned coordinator's Following already lists them (see
-            `withholdFollowedRows`). The count is not decoration: without it the
-            group would silently be short, which is a worse lie than the
-            duplicate it replaces.
+            ONE ROW PER CONVERSATION, ALL AT THIS GROUP'S OWN LEVEL — issue #381.
 
-            ABOVE THE ROWS AND NOT IN THE HEADER ITSELF. The header is one
-            <button> that doubles as the drag handle, and a <button> cannot
-            contain another — so the chip sits at the top of the group's body,
-            which is also where its rows appear when it is opened.
-
-            EXPANDS IN PLACE, under its own chip: two coordinators claiming rows
-            from one project is two chips, and a shared drawer would lose which
-            rows were whose.
+            A delegate used to be drawn as its coordinator's child, behind an
+            elbow (#324), which made a separate conversation read as a sub-agent
+            of the one above it. It is not one: it has its own transcript, its
+            own worktree and its own life after the errand. Who asked whom for
+            what is a fact about the pair, and it is stated where a pair can be
+            described — the panel's Agents surface — rather than in an indent
+            every reader has to interpret.
           */}
-          {withheld.map((entry) => {
-            const open = expanded.has(entry.coordinatorKey);
-            const count = entry.sessions.length;
-            const label = `${count} following ${entry.coordinatorTitle}`;
-            return (
-              <div key={entry.coordinatorKey} className="space-y-0.5">
-                <button
-                  type="button"
-                  aria-expanded={open}
-                  onClick={() =>
-                    setExpanded((current) => {
-                      const next = new Set(current);
-                      if (!next.delete(entry.coordinatorKey)) next.add(entry.coordinatorKey);
-                      return next;
-                    })
-                  }
-                  title={`${open ? "Hide" : "Show"} the ${label} — drawn under that conversation to keep them out of this list twice`}
-                  aria-label={`${open ? "Hide" : "Show"} the ${label}`}
-                  className="flex w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-[0.6875rem] text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground/70"
-                >
-                  <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
-                  <span className="shrink-0 tabular-nums">+{count}</span>
-                  <span className="min-w-0 truncate">following {entry.coordinatorTitle}</span>
-                </button>
-                {open &&
-                  entry.sessions.map((session) => (
-                    <SessionRow
-                      key={sessionKey(session)}
-                      session={session}
-                      active={sessionKey(session) === activeSessionId}
-                      showProject={false}
-                      variant="slim"
-                      band={bandFor(session)}
-                      renderedAt={renderedAt}
-                      onRefresh={onRefresh}
-                    />
-                  ))}
-              </div>
-            );
-          })}
-          {/* One fragment per row: the row, then what it delegated. The DRAG
-              stays on the parent — a child is drawn where its coordinator is,
-              so a handle on it would offer to move a row out of its own tree. */}
-          {tree.rows.map(({ session, related }) => (
-            <div key={sessionKey(session)} className="space-y-0.5">
-              <SessionRow
-                session={session}
-                active={sessionKey(session) === activeSessionId}
-                showProject={false}
-                // Slim: the header already names the project, and a card's
-                // status/branch lines are mostly empty on an idle row.
-                variant="slim"
-                band={bandFor(session)}
-                renderedAt={renderedAt}
-                onRefresh={onRefresh}
-                drag={rowDrag(sessionKey(session))}
-              />
-              {/* No follow controls here: subscriptions are read for the PINNED
-                  coordinators only, and polling one per row would be an IPC
-                  round trip per paint to fill in a control nobody asked for. */}
-              <RelatedWork
-                groups={related}
-                coordinatorId={session.id}
-                {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
-              />
-            </div>
+          {group.sessions.map((session) => (
+            <SessionRow
+              key={sessionKey(session)}
+              session={session}
+              active={sessionKey(session) === activeSessionId}
+              showProject={false}
+              // Slim: the header already names the project, and a card's
+              // status/branch lines are mostly empty on an idle row.
+              variant="slim"
+              band={bandFor(session)}
+              renderedAt={renderedAt}
+              onRefresh={onRefresh}
+              drag={rowDrag(sessionKey(session))}
+            />
           ))}
         </SidebarGroupContent>
       )}
