@@ -59,6 +59,7 @@ export type CommandId =
   | "send"
   | "stop-turn"
   | "reveal-in-finder"
+  | "pin-session"
   | "search-sessions"
   | "add-project"
   | "toggle-rail"

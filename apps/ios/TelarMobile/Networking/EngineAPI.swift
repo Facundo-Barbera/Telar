@@ -71,6 +71,11 @@ protocol EngineAPI: Sendable {
     /// Branches for the draft's base-ref picker.
     func projectGit(_ projectId: EngineID) async throws -> GitOverview
     /// The cockpit's paired-device panel — who may reach the Mac, from here.
+    /// Spend over time, folded from THIS Mac's provider transcripts — see
+    /// `UsageReport`. The window rides through verbatim; the engine owns the
+    /// validation, and re-checking it here would be a second copy of the rule.
+    func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport
+
     func remoteStatus() async throws -> RemoteStatus
     func renameDevice(_ id: String, name: String) async throws -> RemoteDevice
     func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice
@@ -111,6 +116,12 @@ extension EngineAPI {
     /// And "this session follows nobody", which is the ordinary answer rather
     /// than an error — a cockpit too old to serve the route says the same.
     func sessionSubscriptions(_ id: EngineID) async throws -> [Subscription] { [] }
+
+    /// A double that models the transcript has no ledger to read, and says so
+    /// with an empty window rather than by throwing.
+    func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport {
+        UsageReport.empty
+    }
 }
 
 /// A raw read that keeps the content type: the PDF viewer and the image
@@ -514,6 +525,17 @@ struct HTTPEngineAPI: EngineAPI {
         struct Wrapped: Decodable { var git: GitOverview }
         let wrapped: Wrapped = try await get("api/projects/\(escape(projectId))/git")
         return wrapped.git
+    }
+
+    func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport {
+        struct Wrapped: Decodable { var usage: UsageReport }
+        let wrapped: Wrapped = try await get("api/usage", query: [
+            URLQueryItem(name: "since", value: String(sinceMs)),
+            URLQueryItem(name: "until", value: String(untilMs)),
+            URLQueryItem(name: "resolution", value: resolution),
+            URLQueryItem(name: "tz", value: timeZone),
+        ])
+        return wrapped.usage
     }
 
     func remoteStatus() async throws -> RemoteStatus {

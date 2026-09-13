@@ -40,6 +40,12 @@
  *   necessary — a palette row is a thing you find by typing its name, and most
  *   of them do not deserve one of the twenty-six letters a person has left.
  *   Unbound is still rebindable: the pane draws the row either way.
+ * @property {string} [altLabel] - what this command is called when it would
+ *   UNDO itself. Only a toggle has one ("Pin Conversation" / "Unpin
+ *   Conversation"), and `label` remains the command's name everywhere state is
+ *   not known — the settings pane lists one row per command, not one per state,
+ *   and a keybindings page that renamed itself as you worked would be lying
+ *   about what it binds.
  * @property {"file"|"panel"} [menu] - which application menu carries it. Absent
  *   means the command has no menu item at all and is dispatched by the
  *   renderer's own keydown listener, which is where every contextual command
@@ -67,6 +73,13 @@ const COMMANDS = [
   // about a folder on disk, which is what a File menu is for; the handler lives
   // with the bridge, in components/session/open-workspace-button.tsx.
   { id: "reveal-in-finder", label: "Reveal in Finder", group: "Conversation", defaultChord: "CommandOrControl+O", menu: "file" },
+  // Pin or unpin the conversation you are LOOKING AT (#408) — the same verb the
+  // session menu's Pin row performs, from the keyboard. One command with two
+  // names rather than two commands: a person binds "pin this", and which of the
+  // two things that means is the session's state, never a second chord to
+  // learn. `menu: "file"` for the same reason Reveal in Finder is there — it is
+  // about the conversation as a thing you keep, not about the panel.
+  { id: "pin-session", label: "Pin Conversation", altLabel: "Unpin Conversation", group: "Conversation", defaultChord: "CommandOrControl+P", menu: "file" },
 
   // ⌘K IS THE PALETTE NOW (#402), WHICH IS WHY THE LABEL MOVED AND THE ID DID
   // NOT. It used to put the cursor in the rail's search field; it opens one

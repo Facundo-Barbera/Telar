@@ -22,6 +22,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -48,7 +49,7 @@ function repo(): string {
 
 async function engine(options: { engineRoot?: string } = {}): Promise<EngineDaemon> {
   const directory = options.engineRoot ?? tmp("telar-sessions-socket-");
-  const daemon = await startEngine({ engineRoot: directory });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory });
   daemons.push(daemon);
   return daemon;
 }

@@ -80,6 +80,15 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         stores.values.contains { $0.loaded }
     }
 
+    /// IS ANYTHING REGISTERED AT ALL — the question that tells an empty rail
+    /// apart from an empty registry, so the phone can offer the desktop's two
+    /// different sentences rather than one that covers both (#404, `SidebarEmpty`
+    /// in app-sidebar.tsx). Honours the Mac filter: a machine with no projects
+    /// has none while it is the one being shown.
+    var hasProjects: Bool {
+        stores.contains { id, store in (filter == nil || filter == id) && !store.projects.isEmpty }
+    }
+
     func projectName(_ session: HostedSession) -> String? {
         guard let projectId = session.session.projectId else { return nil }
         return stores[session.hostId]?.projectNames[projectId]

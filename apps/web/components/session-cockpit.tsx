@@ -138,6 +138,21 @@ const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, str
   steered: "Sent into the running turn",
 };
 
+/**
+ * WHAT TO WRITE TO FLIP THIS SESSION'S PIN (#408).
+ *
+ * The rail's menu row is handed the answer — it draws "Pin" or "Unpin" and
+ * calls `pin(!pinned)` — but the CHORD has no row to read, so it has to work
+ * the flip out from the record. Extracted rather than inlined because the
+ * asymmetry is the part worth pinning in a test: pinned is an override of
+ * `"active"`, and unpinning CLEARS the override rather than writing a third
+ * state. `"settled"` is somebody's decision to shelve the conversation, and
+ * pressing Pin over it means pin it — not unpin something that was not pinned.
+ */
+export function pinToggleOverride(settledOverride: "settled" | "active" | null | undefined): "active" | null {
+  return settledOverride === "active" ? null : "active";
+}
+
 export function describeTurnState(state: TurnState): { label: string; tone: "active" | "done" | "attention" | "danger" | "muted" } {
   if (state === "queued") return { label: "Queued", tone: "active" };
   if (state === "claimed") return { label: "Claimed", tone: "active" };
@@ -1695,6 +1710,24 @@ export function SessionCockpit({
       "panel-previous-tab": () => stepPanelTab(-1),
       "open-diff": () => showPanelTab("diff"),
       "open-editor": () => showPanelTab("editor"),
+      /**
+       * PIN OR UNPIN THE CONVERSATION YOU ARE LOOKING AT (#408).
+       *
+       * THE SAME VERB AS THE TITLE MENU'S PIN ROW, through the same call:
+       * `patchFromMenu` is declared further down with the rest of the menu's
+       * actions, and a chord that wrote its own patch is exactly how the two
+       * would come to disagree about what "pinned" means on disk. What is
+       * pinned is an override of `"active"`, so unpinning CLEARS it rather
+       * than writing a second state — see `session-action-menu.ts`.
+       *
+       * `session` is read rather than captured: `useCommandHandlers` keeps the
+       * handlers in a ref it refreshes every render, so this closure always
+       * sees the live record without the chord re-registering for it.
+       */
+      "pin-session": () => {
+        if (!sessionId) return;
+        void patchFromMenu({ settledOverride: pinToggleOverride(session?.settledOverride) }, "Could not change the session's pin.");
+      },
       // The two surfaces a project opts into. Bound only while the plugin is on,
       // so ⇧⌘B on a project with no notebooks does nothing rather than opening a
       // tab whose surface is not there — hence the dependency array.
@@ -2723,6 +2756,10 @@ export function SessionCockpit({
             ...(shell?.openWindow ? { openWindow: (href: string) => void shell.openWindow!(href) } : {}),
             newSession: ({ projectId: target, hostId: host, baseRef }) =>
               router.push(canvasHref(target, host, baseRef ? { baseRef } : undefined)),
+            // The row states which way it is going (it drew "Pin" or "Unpin"
+            // from the same record), so it says so rather than re-deriving it;
+            // ⌘P has no row to read and works the flip out with
+            // `pinToggleOverride`. One patch shape, two ways of arriving at it.
             pin: (pinned) =>
               void patchFromMenu({ settledOverride: pinned ? "active" : null }, "Could not change the session's pin."),
             // Un-settling reuses `unsettle` rather than restating its two-step:
@@ -2868,7 +2905,7 @@ export function SessionCockpit({
           being an outline and became a straight hairline down the full height
           of the row, right at the panel's edge. Unpaint it there; the geometry
           stays, so the panel's `-ml-2` still lands on the row's edge. */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
         <SessionMasthead
           projectId={projectId}
           hostId={hostId}

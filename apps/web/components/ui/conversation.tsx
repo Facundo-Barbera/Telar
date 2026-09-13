@@ -239,7 +239,7 @@ export const ConversationScrollButton = ({ className, ...props }: ComponentProps
   return (
     <Button
       className={cn(
-        "absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full shadow-md dark:bg-background dark:hover:bg-muted",
+        "absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full shadow-2 dark:bg-background dark:hover:bg-muted",
         className,
       )}
       onClick={onClick}

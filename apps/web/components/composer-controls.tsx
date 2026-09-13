@@ -707,7 +707,7 @@ export function AgentControl({
               className={cn(
                 "flex size-8 items-center justify-center rounded-lg transition-colors",
                 view === "favorites"
-                  ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                  ? "bg-accent text-foreground shadow-1 ring-1 ring-border"
                   : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
               )}
             >
@@ -733,7 +733,7 @@ export function AgentControl({
                 className={cn(
                   "flex size-8 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
                   option === view
-                    ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                    ? "bg-accent text-foreground shadow-1 ring-1 ring-border"
                     : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                   option !== driver && !onDriverChange && "opacity-40",
                 )}
@@ -1426,7 +1426,7 @@ export function ContextPill({
             the exact numbers are one click away in the card. */}
       </PopoverTrigger>
       <PopoverContent align="end" side="top" sideOffset={8} className="w-auto gap-0 bg-transparent p-0 shadow-none ring-0">
-        <div className="w-[min(19rem,calc(100vw-2rem))] rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-lg">
+        <div className="w-[min(19rem,calc(100vw-2rem))] rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-3">
           <div className="flex items-center justify-between gap-4">
             <span className="whitespace-nowrap text-sm font-medium">Context Window</span>
             <span className="shrink-0 font-mono text-xs text-muted-foreground">{readout}</span>

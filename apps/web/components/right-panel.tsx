@@ -920,7 +920,7 @@ function BrowserScreenshotSurface({ pageId, state, sessionId }: { pageId: string
           <img
             src={snapshot.screenshot}
             alt={`Screenshot of ${browserTabLabel(page)}`}
-            className="w-full rounded-md border border-border shadow-sm"
+            className="w-full rounded-md border border-border shadow-1"
           />
         </div>
       ) : (
@@ -2149,7 +2149,7 @@ export function RightPanel({
         // The gutter is the separation, so the old `border-l` divider goes.
         // NOT `overflow-hidden` here — the resize handle hangs half outside
         // this box, into the gutter; the body below clips its own corners.
-        "relative flex shrink-0 flex-col md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border",
+        "relative flex shrink-0 flex-col md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border",
         // The open/close animation: WIDTH (and opacity) over 200ms, dropped
         // under reduced motion. `overflow-hidden` while collapsing so the body
         // does not spill during the squeeze.
