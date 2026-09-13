@@ -93,6 +93,53 @@ describe("engine route adapters", () => {
     expect(body.layout).toEqual({ projectOrder: ["project_two", "project_one"], sessionOrder: {}, pinnedOrder: ["session_plain"] });
   });
 
+  /**
+   * ISSUE #316. The engine folds every session's assignments onto this list so
+   * the rail learns who is working for whom without a history read per row —
+   * and this adapter dropped the field on the floor. `result.assignments` was
+   * therefore undefined for every LOCAL row, which is not a missing badge but a
+   * silently empty `relatedWork`: nothing was ever `active` or `review`, so the
+   * elbow tree (#324) drew each delegate as a sibling of its coordinator.
+   */
+  test("the live list carries who each session is working for, minus the ones a loom owns", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+    roots.push(home);
+    process.env.TELAR_HOME = home;
+    process.env.TELAR_COCKPIT = "1";
+    // A turn is only claimable once the engine knows which model runs it.
+    fs.mkdirSync(path.join(home, "engine"), { recursive: true });
+    fs.writeFileSync(path.join(home, "engine", "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+    const daemon = await startEngine({ engineRoot: path.join(home, "engine") });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: home });
+    await client.createSession({ id: "session_coord", projectId: "project_one" });
+    await client.createSession({ id: "session_worker", projectId: "project_one" });
+    await client.createSession({ id: "session_owned", projectId: "project_one" });
+
+    // The coordinator has to be MID-TURN to hand work over: `proof` is the
+    // sending turn's own claim, which is what lets the engine stamp the sender
+    // from the queue rather than from anything a model typed.
+    await client.registerWorker("worker_one");
+    await client.submitTurn("session_coord", { runId: "run_coord", input: "Delegate the web fixes" });
+    const claim = (await client.claimTurn("worker_one", 1)).claim!;
+    await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
+    const proof = { sessionId: "session_coord", runId: "run_coord", claimToken: claim.turn.claim!.token };
+    await client.submitAgentTurn("session_worker", { intent: "task", runId: "run_task", input: "Fix #316", proof });
+    // Same coordinator, a session a loom owns: the row is subtracted above, so
+    // its assignment must go with it rather than naming a detached session.
+    await client.submitAgentTurn("session_owned", { intent: "task", runId: "run_owned", input: "Fix #269", proof });
+    saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_one", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
+
+    const body = await (await liveGet()).json();
+    expect(body.assignments.session_worker).toMatchObject([
+      { taskRunId: "run_task", fromSessionId: "session_coord", runId: "run_task" },
+    ]);
+    // Outstanding, which is the whole distinction `relatedWork` draws on.
+    expect(body.assignments.session_worker[0].outcome).toBeUndefined();
+    expect(body.assignments.session_owned).toBeUndefined();
+  });
+
   test("keeps the legacy discard endpoint harmless after boot stops interrupted work", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);
