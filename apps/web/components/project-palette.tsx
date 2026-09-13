@@ -42,7 +42,6 @@ import {
   GitBranchIcon,
   LinkIcon,
   Loader2Icon,
-  MonitorIcon,
   SearchIcon,
   ServerIcon,
   Undo2Icon,
@@ -80,16 +79,34 @@ export type PalettePage = "projects" | "sources";
 export const QUICK_PICK_LIMIT = 9;
 
 /**
- * Narrow by name, by host, or by path — the three things the row shows, so
- * anything a reader can SEE is something they can type. Case-insensitive, and
- * a blank query is every project rather than none.
+ * WHERE THE PROJECT IS, as one line: "Local · /Users/you/code/telar", or the
+ * Mac's own name in place of "Local" when it is on a paired one.
+ *
+ * THE KIND IS SAID OUT LOUD RATHER THAN IMPLIED BY ABSENCE. The row used to
+ * carry the path alone and hang a little monitor chip beside the NAME for a
+ * remote — so "this one is on this Mac" was something you read off the lack of a
+ * chip, two columns away from the path it qualified. T3 puts the word on the
+ * sub-line with the path, and the sentence answers the question in the order it
+ * gets asked: which machine, then where on it.
+ *
+ * A PAIRED MAC'S PROJECT HAS NO PATH HERE, so the line is just the Mac. The
+ * rail's aggregate read does not carry roots for other hosts, and inventing
+ * "somewhere on mini" would be words standing in for a fact.
+ */
+export function targetPlace(target: NewConversationTarget): string {
+  const where = target.hostName ?? "Local";
+  return target.root ? `${where} · ${target.root}` : where;
+}
+
+/**
+ * Narrow by name or by that line, so anything a reader can SEE is something they
+ * can type — including the word "Local", which the row now says. Case-insensitive,
+ * and a blank query is every project rather than none.
  */
 export function matchTargets(targets: readonly NewConversationTarget[], query: string): NewConversationTarget[] {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return [...targets];
-  return targets.filter((target) =>
-    [target.name, target.hostName, target.root].some((field) => field?.toLocaleLowerCase().includes(needle)),
-  );
+  return targets.filter((target) => `${target.name} ${targetPlace(target)}`.toLocaleLowerCase().includes(needle));
 }
 
 /**
@@ -438,6 +455,14 @@ export function ProjectPalette({
             aria-label={page === "sources" ? "Sources" : "Projects"}
             className="max-h-80 overflow-y-auto p-1.5"
           >
+            {/* THE CAPTION NAMES THE LIST, WHICH THE FIELD NO LONGER CAN. The
+                field is the title and it says what you may TYPE ("Search
+                projects"), not what you are looking at — and with two pages
+                behind one field, "which list is this" is a real question a
+                reader can now arrive at from either side. T3 captions both. */}
+            <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">
+              {page === "sources" ? "Sources" : "Projects"}
+            </p>
             {page === "projects" ? (
               <>
                 {matches.length === 0 && (
@@ -462,15 +487,8 @@ export function ProjectPalette({
                       />
                     }
                     title={target.name}
-                    badge={
-                      target.hostName ? (
-                        <span className="flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
-                          <MonitorIcon className="size-3" />
-                          {target.hostName}
-                        </span>
-                      ) : undefined
-                    }
-                    {...(target.root ? { hint: target.root, mono: true } : {})}
+                    hint={targetPlace(target)}
+                    mono
                     {...(row < QUICK_PICK_LIMIT ? { key9: row + 1 } : {})}
                   />
                 ))}

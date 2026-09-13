@@ -8,6 +8,7 @@ import {
   PROJECT_SOURCES,
   QUICK_PICK_LIMIT,
   sourceRows,
+  targetPlace,
   type NewConversationTarget,
 } from "./project-palette";
 
@@ -36,12 +37,25 @@ test("a blank query is every project, not none", () => {
   expect(matchTargets(targets, "   ").length).toBe(3);
 });
 
+test("the row's sub-line names the machine and then the path, in that order", () => {
+  // The kind is SAID rather than implied by the absence of a chip two columns
+  // away from the path it qualified.
+  expect(targetPlace(targets[0])).toBe("Local · /Users/someone/code/telar");
+  // A paired Mac's project has no root in the rail's aggregate read, so the line
+  // is just the Mac — inventing "somewhere on mini" would be words for a fact.
+  expect(targetPlace(targets[2])).toBe("mini");
+  expect(targetPlace({ id: "x", name: "x", hostName: "mini", root: "/code/x" })).toBe("mini · /code/x");
+  expect(targetPlace({ id: "x", name: "x" })).toBe("Local");
+});
+
 test("anything the row shows is something you can type", () => {
-  // The row shows name, host and path — so all three match, which is the rule
-  // that keeps a reader from typing what they can see and getting nothing.
+  // The row shows the name and that line — so both match, which is the rule that
+  // keeps a reader from typing what they can see and getting nothing.
   expect(matchTargets(targets, "notes").map((t) => t.id)).toEqual(["project_b"]);
   expect(matchTargets(targets, "mini").map((t) => t.id)).toEqual(["project_c"]);
   expect(matchTargets(targets, "code/notes").map((t) => t.id)).toEqual(["project_b"]);
+  // Including the word the row now says out loud.
+  expect(matchTargets(targets, "local").map((t) => t.id)).toEqual(["project_a", "project_b"]);
   // Case is not a filter.
   expect(matchTargets(targets, "TELAR").length).toBe(2);
   expect(matchTargets(targets, "nothing like this")).toEqual([]);
@@ -53,6 +67,22 @@ test("a paired Mac's projects are in the same list, told apart by the host", () 
   // Two Macs can register the same project id, so the row's key carries the
   // host — otherwise React reconciles them into one row.
   expect(source).toContain('key={`${target.hostId ?? "local"}:${target.id}`}');
+});
+
+test("every project row is icon · name · place · ⌘digit", () => {
+  const row = source.slice(source.indexOf("{matches.map((target, row) => ("), source.indexOf("{/* THE DOOR TO THE OTHER PAGE"));
+  // The project's real mark, with all four of `ProjectAvatar`'s honesties behind
+  // it — a chosen glyph, the checkout's own icon, a tinted initial, a folder.
+  expect(row).toContain("<ProjectAvatar");
+  expect(row).toContain("title={target.name}");
+  expect(row).toContain("hint={targetPlace(target)}");
+  expect(row).toContain("key9: row + 1");
+  // The monitor chip beside the name is gone; the machine is on the sub-line.
+  expect(source).not.toContain("MonitorIcon");
+});
+
+test("the list is captioned, because the field says what you may type rather than what this is", () => {
+  expect(source).toContain('{page === "sources" ? "Sources" : "Projects"}');
 });
 
 test("⌘1..⌘9 take the first nine rows AS FILTERED", () => {
