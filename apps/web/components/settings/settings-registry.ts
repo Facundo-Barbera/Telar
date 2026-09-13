@@ -45,6 +45,8 @@ import {
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GitBranchIcon,
+  GitPullRequestIcon,
   GlobeIcon,
   ImageIcon,
   InfoIcon,
@@ -459,6 +461,30 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
             keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
             icon: PlugIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "source-control",
+    label: "Source control",
+    icon: GitPullRequestIcon,
+    groups: [
+      {
+        title: "Source control",
+        rows: [
+          {
+            title: "GitHub",
+            hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
+            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge"],
+            icon: GitPullRequestIcon,
+          },
+          {
+            title: "GitLab",
+            hint: "Not supported — Telar reads GitHub through gh and has no GitLab reader.",
+            keywords: ["glab", "forge", "not supported"],
+            icon: GitBranchIcon,
           },
         ],
       },

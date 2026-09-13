@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
+import { SourceControlPage } from "./source-control-page";
 import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
 import { PluginsPage } from "./plugins-page";
@@ -105,6 +106,12 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "integrations", label: "Integrations", icon: PlugZapIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
+   * already signed in on the machine that runs turns, which Telar reads through
+   * rather than holding a token for.
+   */
+  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
    * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
@@ -257,6 +264,8 @@ export function SettingsPage() {
       )}
 
       {active === "providers" && <ProvidersSection />}
+
+      {active === "source-control" && <SourceControlPage />}
 
       {active === "integrations" && <IntegrationsPage />}
 
