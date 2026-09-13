@@ -865,6 +865,16 @@ struct ComposerView: View {
         // transcript — which dismisses the keyboard.
         .contentShape(RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous))
         .onTapGesture { focus.wrappedValue = true }
+        // THE BOX'S OWN MENU — the desktop's `ComposerChromeMenu`. Remove
+        // attachment lives on the chip that has one (see `AttachmentChip`), so
+        // what is left here are the two verbs about the draft itself. Clearing
+        // is the one with no other affordance at all: stashing has the tray.
+        .contextMenu {
+            Button("Clear draft", systemImage: "eraser") { clearDraft() }
+                .disabled(draft.isEmpty)
+            Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
         // DRAG FROM FILES OR PHOTOS, which on an iPad is how a second app
         // hands something over. `.onDrop` rather than `.dropDestination`: a
         // provider carries its own registered types, which is what decides
@@ -1124,6 +1134,16 @@ struct ComposerView: View {
 
     private func stop() {
         Task { await store.stopActiveTurn() }
+    }
+
+    /// The whole box, emptied — the one thing the composer could not do
+    /// without selecting everything and deleting it by hand. ATTACHMENTS ARE
+    /// NOT THE DRAFT: each chip carries its own remove, and clearing the text
+    /// must not quietly take the picture off the message too.
+    private func clearDraft() {
+        guard !draft.isEmpty else { return }
+        draft = ""
+        note = nil
     }
 
     /// TEXT ONLY, on the phone. The web also carries pictures; here an
