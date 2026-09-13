@@ -51,10 +51,15 @@ struct NewSessionView: View {
     @State private var addingProject = false
     /// Which Mac the `+` registers a folder on. Nil until the sheet opens.
     @State private var addHostId: HostID?
+    /// The branch a "New session on `<branch>`" carried in, handed to the
+    /// draft so the worktree is cut from where the session that offered it
+    /// works (#326). Nil for every other way in, which means HEAD.
+    @State private var draftBaseRef: String?
 
     init(settings: AppSettings, draft: MobileDraft? = nil, onCreated: @escaping (ScopedSessionID) -> Void) {
         self.settings = settings
         self.onCreated = onCreated
+        _draftBaseRef = State(initialValue: draft?.baseRef)
         if let draft, let host = settings.host(draft.hostId) {
             _autoTarget = State(initialValue: NewConversationTarget(hostId: host.id, hostName: host.name, project: draft.project))
         }
@@ -176,7 +181,8 @@ struct NewSessionView: View {
         if let api = settings.api(for: target.hostId) {
             NewSessionDraftView(
                 api: api, project: target.project, hostId: target.hostId,
-                hostName: settings.hosts.count > 1 ? target.hostName : nil
+                hostName: settings.hosts.count > 1 ? target.hostName : nil,
+                baseRefSeed: draftBaseRef
             ) { sessionId in
                 onCreated(ScopedSessionID(hostId: target.hostId, sessionId: sessionId))
             }
@@ -312,6 +318,10 @@ struct NewSessionDraftView: View {
     /// is chosen would only invalidate the choice.
     var hostId: HostID
     var hostName: String?
+    /// The branch this draft was opened ON, when it came from a session that
+    /// has one ("New session on `<branch>`"). Seeds `baseRef` once, at appear;
+    /// the workspace chip owns it from there.
+    var baseRefSeed: String?
     let onCreated: (EngineID) -> Void
 
     /// A photo held locally until the session exists — uploads need a
@@ -356,7 +366,7 @@ struct NewSessionDraftView: View {
     @State private var focused = false
 
     private func saveTextDraft() {
-        MobileDrafts.shared.save(MobileDraft(hostId: hostId, project: project, prompt: prompt, title: title, createdSessionId: createdSessionId, submissionRunId: submissionRunId))
+        MobileDrafts.shared.save(MobileDraft(hostId: hostId, project: project, prompt: prompt, title: title, createdSessionId: createdSessionId, submissionRunId: submissionRunId, baseRef: baseRef))
     }
 
     private var canStart: Bool {
@@ -508,10 +518,16 @@ struct NewSessionDraftView: View {
         }
         .background(Theme.sheet)
         .onAppear {
+            // THE SEED LOSES TO THE SAVED DRAFT, which is the ordering every
+            // other field here already has: a branch picked in this draft and
+            // left behind is a decision, and the row that opened it is only a
+            // starting point.
+            baseRef = baseRefSeed
             if let saved = MobileDrafts.shared.draft(host: hostId, project: project.id) {
                 prompt = saved.prompt; title = saved.title
                 createdSessionId = saved.createdSessionId
                 if let runId = saved.submissionRunId { submissionRunId = runId }
+                if let saved = saved.baseRef { baseRef = saved }
             }
         }
         .onChange(of: prompt) { saveTextDraft() }
