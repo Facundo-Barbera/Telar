@@ -73,6 +73,7 @@ import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-toke
 import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
 import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
 import { usePromptStash } from "@/lib/use-prompt-stash";
+import { useCommandHandlers } from "@/lib/use-command-keys";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
@@ -1006,6 +1007,34 @@ export function Composer({
       doRestore,
     ],
   );
+
+  /**
+   * THE THREE COMMANDS THAT ARE THIS BOX'S (#367). Nothing else in the app can
+   * answer them — the caret, the draft and the running turn all live here — so
+   * the composer binds itself while it is mounted and the registry's dispatcher
+   * looks them up. On a route with no composer they resolve to nothing, which is
+   * the right answer rather than a beep.
+   *
+   * THEY ARE THE SAME GUARDS THE KEYS INSIDE THE BOX USE: Send refuses an empty
+   * or not-ready draft exactly as Enter does, and Stop only fires on a live turn
+   * — a chord that submitted whitespace would be a chord you have to check the
+   * screen before pressing.
+   */
+  useCommandHandlers({
+    "focus-composer": () => editor.current?.focus(),
+    send: () => {
+      if (questionActive) {
+        advanceOrSubmitQuestion();
+        return;
+      }
+      if (draft.trim() && ready) onSubmit();
+    },
+    // No arming here, unlike Escape: ⌘. is not a key anybody presses by accident
+    // mid-sentence, which is the whole reason Escape needs two presses.
+    "stop-turn": () => {
+      if (busy) onStop();
+    },
+  });
 
   /**
    * `onAttach` takes THE WHOLE NEW LIST, so removal is a filter and adding is a
