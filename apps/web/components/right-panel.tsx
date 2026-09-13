@@ -44,6 +44,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { KeyHint } from "@/components/ui/key-hint";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import {
   ContextMenu,
@@ -2420,6 +2421,22 @@ export function RightPanel({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
+          {/*
+            THE STRIP'S OWN CHORDS, WHILE ⌘ IS HELD — issue #401.
+
+            ⌘⌥← and ⌘⌥→ step the tabs, and they belong to the STRIP rather than
+            to any one tab: putting a cap on every chip would say "this tab is
+            ⌘⌥→", which is not what the key does. So the pair sits at the bar's
+            trailing end, next to the two controls that DO carry a chord of
+            their own — and only while there is more than one tab to step
+            between, because a lone tab makes both keys a no-op.
+          */}
+          {tabs.length > 1 && (
+            <span className="mr-1 flex items-center gap-0.5">
+              <KeyHint command="panel-previous-tab" />
+              <KeyHint command="panel-next-tab" />
+            </span>
+          )}
           <button
             type="button"
             aria-label={fullscreen ? "Exit fullscreen" : "Fill the window"}
@@ -2438,6 +2455,9 @@ export function RightPanel({
           >
             <PanelRightCloseIcon className="size-4" />
           </button>
+          {/* `toggle-panel` is what this button does from the keyboard — the
+              same verb, so the cap rides the control rather than the strip. */}
+          <KeyHint command="toggle-panel" />
         </div>
       </div>
 

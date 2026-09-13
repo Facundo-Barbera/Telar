@@ -123,12 +123,14 @@ import {
   PINNED_ROW_SCOPE,
   PROJECT_GROUP_MIME,
   SESSION_ROW_MIME,
+  railJumpSlots,
   railRowsForCommandKeys,
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectPalette, type NewConversationTarget, type PalettePage } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
+import { KeyHint } from "@/components/ui/key-hint";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -170,6 +172,11 @@ const APP_SIDEBAR_RESIZABLE = {
 const subscribeNothing = () => () => {};
 const serverNoBridge = () => undefined;
 
+/**
+ * ⌘B ON THE COLLAPSE TRIGGER while ⌘ is held — issue #401. The hint sits beside
+ * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
+ * the Spool's rail and the panel, and only THIS one is what `toggle-rail` binds.
+ */
 function TelarSidebarHeader() {
   return (
     // The inset is measured from the island's edge, never less than the 8px
@@ -180,6 +187,7 @@ function TelarSidebarHeader() {
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(8px,var(--titlebar-inset))] md:h-[var(--titlebar-band-height)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
+        <KeyHint command="toggle-rail" />
         {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
             their routes and data but are not offered from the main rail. */}
         <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
@@ -873,7 +881,24 @@ function SidebarBody() {
    */
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
-  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9), {
+  const jumpRows = grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9);
+  /**
+   * THE SAME ROWS, AS THE NUMBERS THEY WEAR while ⌘ is held — issue #401.
+   *
+   * Derived from `jumpRows` rather than alongside it, which is the only
+   * arrangement in which the hint on a row and the key that fires it cannot
+   * disagree: one array, read twice, so a folded group or a shelf is skipped by
+   * both or by neither.
+   */
+  const jumpSlots = railJumpSlots(jumpRows);
+  const jumpSlotFor = (key: string) => jumpSlots.get(key);
+  /** Spread rather than passed, because most rows have no slot and the prop is
+   *  optional — the same shape every other optional prop in this file takes. */
+  const jumpProp = (key: string) => {
+    const slot = jumpSlots.get(key);
+    return slot === undefined ? {} : { jumpSlot: slot };
+  };
+  useCommandKeys(jumpRows, {
     // ⌘N ASKS RATHER THAN GUESSES — unless there is nothing to ask about. The
     // table's destination for this binding is "/", which resolves a project and
     // opens its canvas; the palette replaced that guess. `newConversation`
@@ -1114,7 +1139,12 @@ function SidebarBody() {
                     <XIcon className="size-3.5" />
                   </button>
                 ) : (
-                  <kbd className="pointer-events-none shrink-0 font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
+                  /* THE ONE HINT THAT IS ALWAYS ON. It was a hardcoded `⌘K`,
+                     which lied the moment somebody rebound the command; #401
+                     makes it read the live keymap like every other hint, and
+                     `always` keeps the affordance a search field has had since
+                     the beginning rather than hiding it behind a held key. */
+                  <KeyHint command="search-sessions" always />
                 )
               }
             />
@@ -1248,6 +1278,7 @@ function SidebarBody() {
                   band={bandFor(session)}
                   renderedAt={renderedAt}
                   onRefresh={() => void loadAll()}
+                  {...jumpProp(sessionKey(session))}
                 />
               ))}
             </SidebarGroupContent>
@@ -1339,6 +1370,7 @@ function SidebarBody() {
                     // here. Only in the banded view — a search flattens the
                     // rail, and a position inside an answer means nothing.
                     {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
+                    {...jumpProp(sessionKey(session))}
                   />
                 ))}
                 {/*
@@ -1418,6 +1450,9 @@ function SidebarBody() {
                     // against this group's own drawn keys — which is what makes
                     // a row from another group a drop this one refuses.
                     rowDrag={rowDrag(group.key, group.sessions.map((session) => sessionKey(session)))}
+                    // Whose row wears which number, worked out once for the
+                    // whole rail — see `jumpSlots`.
+                    jumpSlot={jumpSlotFor}
                     {...(root ? { root } : {})}
                     places={places}
                     // The `+` beside the header, as a menu row: one canvas
@@ -1459,6 +1494,10 @@ function SidebarBody() {
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
                   onRefresh={() => void loadAll()}
+                  // A search flattens the rail and ⌘1..⌘9 count the results, so
+                  // the numbers follow them here rather than staying on rows
+                  // that are no longer where they were.
+                  {...jumpProp(sessionKey(session))}
                 />
               ))
             )}
