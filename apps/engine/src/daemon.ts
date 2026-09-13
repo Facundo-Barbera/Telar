@@ -89,7 +89,7 @@ import type { NotesCapability } from "./notes-tools/tools";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
-import type { AsyncGitRunner } from "./worktree";
+import type { AsyncGitRunner, GitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
 /**
@@ -153,6 +153,10 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   asyncGit?: AsyncGitRunner;
+  /** The MUTATING git, for the same reason `gh` is injected: a route test that
+   *  drives `POST /v2/projects/clone` must never reach somebody's network — or
+   *  write a checkout into a temp directory at the mercy of a remote. */
+  git?: GitRunner;
   /** Test seam: the provider model list, so a suite never spawns a real CLI. */
   models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
   /**
@@ -534,6 +538,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
+    ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,

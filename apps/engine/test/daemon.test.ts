@@ -508,3 +508,77 @@ test("the inbox route carries the delegation grace, and `null` over the wire is 
   // The bound lives beside the schema that states it, not in the route.
   await expect(client.setInboxPolicy({ settleDelegatedAfterHours: 0 })).rejects.toMatchObject({ code: "invalid_request" });
 });
+
+test("POST /v2/projects/clone clones and registers in one request, with git stubbed", async () => {
+  // The Sources palette's "Git URL" and "GitHub repository" rows, on the wire.
+  // ONE request because the cockpit cannot name the path in between: `git clone`
+  // chooses the folder from the URL, so a two-step client would be registering
+  // a directory it never picked.
+  const parent = fs.realpathSync.native(root());
+  /** CLONES ONLY. Registering a project also asks git for a branch, so an
+   *  unfiltered log would count reads this test says nothing about. */
+  const argv: string[][] = [];
+  const clones = () => argv.filter((args) => args[0] === "clone");
+  const daemon = await startEngine({
+    engineRoot: root(),
+    git: (_cwd, args) => {
+      argv.push(args);
+      if (args[0] === "clone") fs.mkdirSync(args[args.length - 1], { recursive: true });
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+
+  const { project } = await client.cloneProject({ url: "https://github.com/owner/repo.git", parent });
+  expect(project).toMatchObject({ name: "repo", root: path.join(parent, "repo") });
+  // Registered, not merely cloned — the half a client doing this itself could
+  // get wrong, and the reason the route answers a Project rather than a path.
+  expect((await client.listProjects()).projects.map((each) => each.id)).toEqual([project.id]);
+  // `--` ends the options, so a URL spelled as one is an operand.
+  expect(clones()[0]).toEqual(["clone", "--", "https://github.com/owner/repo.git", path.join(parent, "repo")]);
+
+  // `owner/repo` is expanded by the engine, so the cockpit holds no opinion
+  // about which forge a bare pair belongs to.
+  await client.cloneProject({ url: "Facundo-Barbera/Telar", parent });
+  expect(clones()[1]?.[2]).toBe("https://github.com/Facundo-Barbera/Telar.git");
+
+  // The same target twice is a conflict rather than a merge into it, and it is
+  // refused BEFORE git runs.
+  const before = clones().length;
+  await expect(client.cloneProject({ url: "https://github.com/owner/repo.git", parent })).rejects.toMatchObject({
+    code: "conflict",
+    status: 409,
+  });
+  expect(clones().length).toBe(before);
+  // And a parent that is not a directory never reaches a subprocess either.
+  await expect(client.cloneProject({ url: "https://x.test/a/b.git", parent: "relative/path" })).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+  });
+  expect(clones().length).toBe(before);
+});
+
+test("the gitignore write has a DELETE that undoes it, and takes back only its own block", async () => {
+  // Adding a project ignores Telar's files WITHOUT asking now — the switch in
+  // the old Register dialog became a default — so the toast's Undo needs a
+  // route, and that route must not reach a rule somebody wrote themselves.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const checkout = root();
+  fs.writeFileSync(path.join(checkout, ".gitignore"), "node_modules/\n");
+  const { project } = await client.registerProject({ name: "Ignorable", root: checkout });
+
+  const { gitignore: added } = await client.projectGitignore(project.id);
+  expect(added.added.length).toBeGreaterThan(0);
+  expect(fs.readFileSync(path.join(checkout, ".gitignore"), "utf8")).toContain(".telar/");
+
+  const { gitignore: removed } = await client.undoProjectGitignore(project.id);
+  expect(removed.removed).toEqual(added.added);
+  // Byte-identical to what was found: the write and its undo cancel exactly.
+  expect(fs.readFileSync(path.join(checkout, ".gitignore"), "utf8")).toBe("node_modules/\n");
+  // Twice is a success with nothing to do, not a failure — the toast can arrive
+  // after somebody has already edited the file by hand.
+  expect((await client.undoProjectGitignore(project.id)).gitignore.removed).toEqual([]);
+});
