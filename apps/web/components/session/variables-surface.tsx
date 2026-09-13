@@ -57,7 +57,12 @@ export function VariablesSurface({ sessionId, active, embedded }: { sessionId?: 
         {...(embedded ? {} : { icon: <BracesIcon /> })}
         label={embedded ? "" : "Variables"}
         className={cn(embedded && "border-b-0 py-1")}
-        count={vars.length}
+        // A COUNT NEEDS A WORD BESIDE IT. Embedded, this header has no label —
+        // the Data tab's sub-strip names the surface — so the count rendered as
+        // a bare `12` in the top-left corner, a number with nothing to be a
+        // count OF (#357). The strip above already says Variables and the list
+        // below is the count; an empty namespace says so in its own words.
+        {...(embedded ? {} : { count: vars.length })}
         actions={
           <span className="flex items-center gap-1.5">
             {!embedded && <KernelPill state={kernel} />}

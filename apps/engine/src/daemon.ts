@@ -3979,6 +3979,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               data: input.data,
               tags: ["plot"],
               producer: input.producer,
+              ...(input.title ? { title: input.title } : {}),
             }).id,
         },
       });

@@ -102,3 +102,66 @@ export function describeOutputs(outputs: CellOutput[], limit = 12_000): string {
   const text = parts.join("\n");
   return text.length > limit ? `${text.slice(0, limit)}\n… [${text.length - limit} chars elided]` : text;
 }
+
+/**
+ * HOW A FIGURE TELLS US ITS OWN NAME.
+ *
+ * A plot arrives as bytes. Nothing in a PNG says what it is of, and the
+ * execution that drew it is called `exec_9` — so the gallery could only caption
+ * a figure with a counter, and could not tell one figure drawn three times from
+ * three different figures (#353). `ds_plot`'s `title:` argument covers the case
+ * where the caller happened to name it; most plots are drawn by code that calls
+ * `plt.title` itself, and that title is the one a person would recognise.
+ *
+ * So the composed plot asks, in the kernel, just before the figure is shown —
+ * after which the inline backend has closed it and there is nothing left to ask.
+ * The answer comes back on stdout behind a marker, in the same idiom the watch
+ * checks already use, and is taken back out of the outputs before anybody sees
+ * them. A kernel with no matplotlib, no figure or no title says nothing and the
+ * plot keeps the name its maker had.
+ */
+export const PLOT_TITLE_MARKER = "__TELAR_PLOT_TITLE__";
+
+/** Run this BEFORE `plt.show()`: after it, the figure is gone. */
+export const PLOT_TITLE_PROBE = [
+  "try:",
+  "    import matplotlib.pyplot as _tplt",
+  "    _tfig = _tplt.gcf()",
+  "    _tsup = getattr(_tfig, '_suptitle', None)",
+  "    _ttitle = (_tsup.get_text() if _tsup is not None else '') or (_tfig.axes[-1].get_title() if _tfig.axes else '')",
+  `    print("${PLOT_TITLE_MARKER}" + (_ttitle or '').strip())`,
+  "except Exception:",
+  "    pass",
+  "",
+].join("\n");
+
+/** The title the probe printed, if it printed one. */
+export function plotTitleFrom(outputs: readonly CellOutput[]): string | undefined {
+  for (const output of outputs) {
+    if (output.kind !== "text") continue;
+    for (const line of output.text.split("\n")) {
+      if (!line.startsWith(PLOT_TITLE_MARKER)) continue;
+      const title = line.slice(PLOT_TITLE_MARKER.length).trim();
+      if (title) return title;
+    }
+  }
+  return undefined;
+}
+
+/** The same outputs with the probe's line taken out — and with any text output
+ *  that was nothing but the probe dropped, rather than left as a blank line. */
+export function withoutPlotTitle(outputs: readonly CellOutput[]): CellOutput[] {
+  const kept: CellOutput[] = [];
+  for (const output of outputs) {
+    if (output.kind !== "text" || !output.text.includes(PLOT_TITLE_MARKER)) {
+      kept.push(output);
+      continue;
+    }
+    const text = output.text
+      .split("\n")
+      .filter((line) => !line.startsWith(PLOT_TITLE_MARKER))
+      .join("\n");
+    if (text.trim()) kept.push({ ...output, text });
+  }
+  return kept;
+}

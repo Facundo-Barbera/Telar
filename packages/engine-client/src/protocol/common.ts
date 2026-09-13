@@ -439,8 +439,21 @@ export const TurnAttachment = z.object({
   /** Free labels: `plot` marks a rendered figure for the gallery, `pinned`
    *  keeps it at the top. Absent on a human upload. */
   tags: z.array(z.string().min(1)).optional(),
-  /** What made it — a cell id, a tool name — for a gallery caption. */
+  /** What made it — a cell id, a tool name — for a gallery caption. STABLE
+   *  across re-runs, which is what lets a gallery stack the four attempts at
+   *  one figure instead of drawing four cards (#353). */
   producer: z.string().optional(),
+  /**
+   * WHAT THE THING IN THE IMAGE CALLS ITSELF — a figure's own title, read off
+   * the plot that was drawn rather than off the execution that drew it.
+   *
+   * `producer` identifies the maker and `title` identifies the made thing, and
+   * a gallery wants the second: "Radius vs. period" is what a person is looking
+   * for and `exec_9` is what the machine happened to call that attempt. Absent
+   * when the figure had no title of its own, which is when the producer is the
+   * best name anybody has.
+   */
+  title: z.string().optional(),
   /** When it was stored. Absent on attachments written before this existed. */
   createdAt: Timestamp.optional(),
 });
