@@ -59,6 +59,23 @@ func fixture(_ name: String) throws -> Data {
         #expect(try decode(#"{"sessions":[],"projects":[],"layout":"b,a"}"#).layout == nil)
     }
 
+    /// WHICH REPOSITORY A PROJECT IS A CHECKOUT OF, and the absence of one.
+    /// The engine derives `remoteUrl` on its metadata refresh and sends it
+    /// already reduced; a Mac too old to derive it, an unversioned directory
+    /// and a checkout with no origin all send nothing, and nothing must stay
+    /// nothing rather than becoming a name to fold two strangers on.
+    @Test func projectRefsCarryTheRepositoryTheyAreACheckoutOf() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        let live = try decode(#"""
+        {"sessions":[],"projects":[
+          {"id":"p1","name":"Telar","icon":"abc","remoteUrl":"github.com/owner/repo"},
+          {"id":"p2","name":"scratch"}
+        ]}
+        """#)
+        #expect(live.projects.first?.remoteUrl == "github.com/owner/repo")
+        #expect(live.projects.last?.remoteUrl == nil)
+    }
+
     @Test func snapshotDecodes() throws {
         let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture("snapshot"))
         #expect(!snapshot.turns.isEmpty)

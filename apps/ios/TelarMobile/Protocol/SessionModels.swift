@@ -156,6 +156,20 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// a Mac new enough to answer at all sends it; optional here because a
     /// phone must render a row from an older one rather than drop it.
     var root: String?
+    /// `Project.remoteUrl` — WHICH REPOSITORY this project is a checkout of,
+    /// already reduced by the engine to `host/owner/repo` (`normalizeRemote`,
+    /// apps/engine/src/git.ts).
+    ///
+    /// THE ONE FACT ABOUT A PROJECT THAT IS TRUE ON MORE THAN ONE MAC. Project
+    /// ids are minted per engine and names are whatever each person typed, so
+    /// this is the only thing two Macs' registrations of the same work can be
+    /// recognised by — see `SidebarModel.groupKey`.
+    ///
+    /// Absent on a project with no origin, on an unversioned directory, on a
+    /// remote the engine could not reduce, and on a Mac too old to derive it.
+    /// Absence is never treated as an answer: those projects keep the old
+    /// per-Mac key rather than folding on their name.
+    var remoteUrl: String?
 }
 
 /// Mirror of `SidebarLayout` in packages/engine-client: where each project

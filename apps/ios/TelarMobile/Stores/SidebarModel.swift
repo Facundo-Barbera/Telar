@@ -1,13 +1,44 @@
 import Foundation
 
+/// ONE MAC'S REGISTRATION OF A PROJECT — the Mac, that Mac's own id for the
+/// project, and the name and icon that Mac gave it.
+///
+/// A group has one of these ordinarily and TWO once the same repository is
+/// checked out on two paired Macs. The ids are minted per engine, so the mini's
+/// copy is `project_9f…` there and `project_2a…` on the laptop, and a New
+/// conversation built from one of them opens nothing on the other — which is
+/// why the header needs the list rather than the group's own pair. Mirrors the
+/// desktop's `ProjectPlace` (apps/web/lib/hosts/project-places.ts).
+struct ProjectPlace: Identifiable, Equatable {
+    let hostId: HostID
+    let projectId: String
+    var name: String
+    var icon: String? = nil
+    var id: String { "\(hostId.uuidString):\(projectId)" }
+}
+
 struct SidebarProject: Identifiable {
+    /// THE GROUP'S IDENTITY ON THIS PHONE — what `collapsed`, `projectFilter`
+    /// and a drag all key by. `repo:<host>/<owner>/<repo>` for a group folded on
+    /// its repository, and this Mac's `hostId:projectId` otherwise; a merged
+    /// group must not be identified by one of its two Macs' pairs.
+    let id: String
+    /// THE KEY A MAC'S OWN LAYOUT DOCUMENT USES for this group, which is NOT
+    /// `id`: a cockpit writes its own projects by bare id (see `SidebarLayout`),
+    /// so a phone-minted host UUID would never match anything in it. `repo:…`
+    /// where the desktop folds on the repository, and the bare project id
+    /// otherwise — the desktop's `projectGroupKey` read from that Mac's side.
+    let layoutKey: String
+    /// The group's default destination: the first of `places`.
     let hostId: HostID
     let projectId: String
     let name: String
     /// `ProjectRef.icon`, when the Mac listed one.
     var icon: String? = nil
+    /// Every Mac this group lives on, in a stable order. One entry ordinarily;
+    /// two when a repository is checked out on two of them.
+    var places: [ProjectPlace] = []
     var sessions: [HostedSession]
-    var id: String { "\(hostId.uuidString):\(projectId)" }
 }
 
 /// The desktop's precedence: attention, pins, projects. Never duplicate a row.
@@ -26,6 +57,12 @@ struct SidebarModel {
         sessions: [HostedSession],
         names: (HostedSession) -> String?,
         icons: (HostedSession) -> String? = { _ in nil },
+        /// `ProjectRef.remoteUrl` for a row's project — the repository two Macs
+        /// fold on. Absent is an ordinary answer; see `groupKey`.
+        remotes: (HostedSession) -> String? = { _ in nil },
+        /// What to call each Mac. Only used to give the places a stable reading
+        /// order, so a badge list does not re-shuffle itself between polls.
+        hostNames: (HostID) -> String? = { _ in nil },
         layouts: [HostID: SidebarLayout] = [:]
     ) {
         attention = sessions.filter { $0.session.activity == .blocked }
@@ -36,29 +73,107 @@ struct SidebarModel {
         /// looking it up there cannot place it by somebody else's decision.
         pinned = SidebarModel.arranged(pins) { row in layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id) }
         let ordinary = sessions.filter { $0.session.activity != .blocked && $0.session.settledOverride != "active" }
-        let groups = Dictionary(grouping: ordinary) { "\($0.hostId):\($0.session.projectId ?? "")" }
-        projects = groups.values.compactMap { rows in
-            guard let first = rows.first else { return nil }
-            let projectId = first.session.projectId ?? ""
-            let order = layouts[first.hostId]?.sessionOrder[projectId]
+        let groups = Dictionary(grouping: ordinary) { row in
+            SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: remotes(row))
+        }
+        projects = groups.compactMap { key, rows -> SidebarProject? in
+            let places = SidebarModel.places(rows, names: names, icons: icons, hostNames: hostNames)
+            guard let first = places.first else { return nil }
+            // A group folded on its repository is keyed that way in every Mac's
+            // document; one that was not is keyed by the bare project id, and
+            // then it has exactly one place to take it from.
+            let layoutKey = key.hasPrefix(SidebarModel.repoPrefix) ? key : first.projectId
             return SidebarProject(
+                id: key,
+                layoutKey: layoutKey,
                 hostId: first.hostId,
-                projectId: projectId,
-                name: names(first) ?? "Other sessions",
-                icon: icons(first),
-                sessions: SidebarModel.arranged(rows) { row in order?.firstIndex(of: row.session.id) }
+                projectId: first.projectId,
+                name: first.name,
+                icon: first.icon,
+                places: places,
+                // EACH ROW BY ITS OWN MAC'S LIST, even inside a merged group:
+                // the two documents are two decisions, and reading one Mac's
+                // rank for the other Mac's row would place it by a decision
+                // nobody made about it.
+                sessions: SidebarModel.arranged(rows) { row in
+                    layouts[row.hostId]?.sessionOrder[layoutKey]?.firstIndex(of: row.session.id)
+                }
             )
         }.sorted { a, b in
-            if a.hostId != b.hostId { return a.hostId.uuidString < b.hostId.uuidString }
-            if a.hostId == b.hostId {
-                let order = layouts[a.hostId]?.projectOrder ?? []
-                let ar = order.firstIndex(of: a.projectId) ?? Int.max
-                let br = order.firstIndex(of: b.projectId) ?? Int.max
-                if ar != br { return ar < br }
-            }
+            let ar = SidebarModel.rank(a, layouts: layouts)
+            let br = SidebarModel.rank(b, layouts: layouts)
+            if ar != br { return ar < br }
             let comparison = a.name.localizedStandardCompare(b.name)
             return comparison == .orderedSame ? a.id < b.id : comparison == .orderedAscending
         }
+    }
+
+    /// A group folded on its repository wears this. Not decoration: a reduced
+    /// remote is `host/owner/repo` and a per-Mac key is `hostId:projectId`, so
+    /// without it a Mac whose id read `github.com` and a project id `owner/repo`
+    /// would collide with the repository of that name.
+    static let repoPrefix = "repo:"
+
+    /// WHICH GROUP A ROW BELONGS TO — the repository it is work on when the row
+    /// can name one, and this Mac's registration of it otherwise. The desktop's
+    /// `projectGroupKey` (apps/web/lib/session-groups.ts), and it has to agree
+    /// with it: the `repo:` half is what makes the phone's fold and the Mac's
+    /// the same fold.
+    ///
+    /// TWO MACS' CHECKOUTS OF ONE REPOSITORY ARE ONE PROJECT, because that is
+    /// what they are to the person looking at them. Keyed by host and project id
+    /// they were two groups with one name, told apart only by a badge, and the
+    /// reader had to remember which Mac they last started something on to find
+    /// the conversation they wanted.
+    ///
+    /// A ROW THAT CANNOT NAME A REPOSITORY KEEPS THE OLD KEY, and that is the
+    /// important half. Folding two originless projects on their NAME would merge
+    /// two unrelated folders both called `scratch`, which is a worse failure than
+    /// the one this fixes — so the absence of an answer is never an answer.
+    static func groupKey(hostId: HostID, projectId: String, remote: String?) -> String {
+        if let remote, !remote.isEmpty { return "\(repoPrefix)\(remote)" }
+        return "\(hostId.uuidString):\(projectId)"
+    }
+
+    /// Every Mac a group's rows came from, this list's own stable order: by the
+    /// Mac's name, then by ids so two Macs with one name still never swap.
+    private static func places(
+        _ rows: [HostedSession],
+        names: (HostedSession) -> String?,
+        icons: (HostedSession) -> String?,
+        hostNames: (HostID) -> String?
+    ) -> [ProjectPlace] {
+        var found: [String: ProjectPlace] = [:]
+        for row in rows {
+            let place = ProjectPlace(
+                hostId: row.hostId,
+                projectId: row.session.projectId ?? "",
+                name: names(row) ?? "Other sessions",
+                icon: icons(row)
+            )
+            if found[place.id] == nil { found[place.id] = place }
+        }
+        return found.values.sorted { a, b in
+            let an = hostNames(a.hostId) ?? "", bn = hostNames(b.hostId) ?? ""
+            if an != bn { return an < bn }
+            if a.hostId != b.hostId { return a.hostId.uuidString < b.hostId.uuidString }
+            return a.projectId < b.projectId
+        }
+    }
+
+    /// WHERE THE READER PUT THIS GROUP — the lowest rank any of its Macs gives
+    /// it, and `Int.max` for one nobody has placed.
+    ///
+    /// THE GROUPS ARE NO LONGER BLOCKED BY MAC, and that is forced rather than
+    /// chosen: a group that lives on two Macs cannot sit inside either one's
+    /// block. So the rail is arranged the way the desktop arranges it
+    /// (`orderProjectGroups`) — placed groups first in that order, the rest
+    /// alphabetically after them — and a Mac's own groups stay together only
+    /// because its document says so.
+    private static func rank(_ group: SidebarProject, layouts: [HostID: SidebarLayout]) -> Int {
+        group.places
+            .compactMap { layouts[$0.hostId]?.projectOrder.firstIndex(of: group.layoutKey) }
+            .min() ?? Int.max
     }
 
     /// The desktop's `orderSessions`, to the letter: the rows somebody placed

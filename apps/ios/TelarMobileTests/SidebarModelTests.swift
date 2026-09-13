@@ -100,6 +100,79 @@ import Testing
         #expect(group.sessions.map(\.session.id) == ["a", "b"])
     }
 
+    /// TWO MACS' CHECKOUTS OF ONE REPOSITORY ARE ONE GROUP (#331), because that
+    /// is what they are to the person looking at them. The ids are minted per
+    /// engine, so the fold is on `Project.remoteUrl` — and the group then has to
+    /// carry BOTH Macs' registrations, since a New conversation built from one
+    /// of them opens nothing on the other.
+    @Test func twoMacsCheckoutsOfOneRepositoryFoldIntoOneGroupCarryingBothPlaces() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "one", project: "project_here"), row(host: b, id: "two", project: "project_there")]
+        let result = SidebarModel(sessions: rows, names: { _ in "Telar" },
+                                  remotes: { _ in "github.com/owner/repo" },
+                                  hostNames: { $0 == a ? "Laptop" : "Mini" })
+        let group = try #require(result.projects.first)
+        #expect(result.projects.count == 1)
+        #expect(group.id == "repo:github.com/owner/repo")
+        #expect(group.sessions.map(\.session.id) == ["one", "two"])
+        // Named order, so a badge list does not re-shuffle itself between polls.
+        #expect(group.places.map(\.hostId) == [a, b])
+        #expect(group.places.map(\.projectId) == ["project_here", "project_there"])
+    }
+
+    /// THE ABSENCE OF A REPOSITORY IS NEVER AN ANSWER. Two originless folders
+    /// both called `scratch` are two projects, and folding them on their name
+    /// would be a worse failure than the one #331 fixes — so a row that cannot
+    /// name a repository keeps the per-Mac key it always had.
+    @Test func projectsWithNoRepositoryStayOneGroupPerMac() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "one", project: "scratch"), row(host: b, id: "two", project: "scratch")]
+        let result = SidebarModel(sessions: rows, names: { _ in "scratch" })
+        #expect(result.projects.count == 2)
+        #expect(Set(result.projects.map(\.id)) == ["\(a.uuidString):scratch", "\(b.uuidString):scratch"])
+    }
+
+    /// A DIFFERENT REPOSITORY IS A DIFFERENT GROUP, even under one name.
+    @Test func twoRepositoriesAreTwoGroupsHoweverTheyAreNamed() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "one", project: "p1"), row(host: host, id: "two", project: "p2")]
+        let remotes = ["p1": "github.com/owner/repo", "p2": "github.com/owner/other"]
+        let result = SidebarModel(sessions: rows, names: { _ in "Telar" }, remotes: { remotes[$0.session.projectId ?? ""] })
+        #expect(result.projects.count == 2)
+    }
+
+    /// A MERGED GROUP IS KEYED `repo:…` IN EVERY MAC'S OWN DOCUMENT, and each
+    /// row is still ranked by ITS OWN Mac's list: the two documents are two
+    /// decisions, and reading one Mac's rank for the other's row would place it
+    /// by a decision nobody made about it.
+    @Test func aMergedGroupReadsEachMacsRowOrderUnderTheRepositoryKey() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "a1", project: "p_here"), row(host: a, id: "a2", project: "p_here"),
+                        row(host: b, id: "b1", project: "p_there")]
+        let key = "repo:github.com/owner/repo"
+        let layouts = [a: SidebarLayout(projectOrder: [key], sessionOrder: [key: ["a2", "a1"]]),
+                       b: SidebarLayout(projectOrder: [key])]
+        let group = try #require(SidebarModel(sessions: rows, names: { _ in "Telar" },
+                                              remotes: { _ in "github.com/owner/repo" },
+                                              layouts: layouts).projects.first)
+        #expect(group.layoutKey == key)
+        // Host a placed its two; host b never named its own, so it falls in after.
+        #expect(group.sessions.map(\.session.id) == ["a2", "a1", "b1"])
+    }
+
+    /// A GROUP NOBODY PLACED FALLS IN AFTER THE PLACED ONES, alphabetically —
+    /// the desktop's `orderProjectGroups`. The rail stopped being a block per
+    /// Mac when a group could span two of them.
+    @Test func placedGroupsComeFirstAndTheRestSortByName() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "one", project: "zulu"), row(host: b, id: "two", project: "alpha"),
+                        row(host: a, id: "three", project: "mike")]
+        let names = ["zulu": "Zulu", "alpha": "Alpha", "mike": "Mike"]
+        let result = SidebarModel(sessions: rows, names: { names[$0.session.projectId ?? ""] },
+                                  layouts: [a: SidebarLayout(projectOrder: ["zulu"])])
+        #expect(result.projects.map(\.name) == ["Zulu", "Alpha", "Mike"])
+    }
+
     @Test func deepLinksRoundTripAndRejectMalformedOrForeignLinks() {
         let ref = ScopedSessionID(hostId: UUID(), sessionId: "session / ? &= ü")
         #expect(ScopedSessionID(url: ref.url) == ref)

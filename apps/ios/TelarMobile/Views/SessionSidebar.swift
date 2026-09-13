@@ -26,11 +26,21 @@ struct SessionSidebar: View {
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
-        SidebarModel(sessions: inbox.sections.active, names: inbox.projectName, icons: { inbox.project($0)?.icon }, layouts: inbox.layouts)
+        SidebarModel(
+            sessions: inbox.sections.active,
+            names: inbox.projectName,
+            icons: { inbox.project($0)?.icon },
+            remotes: { inbox.project($0)?.remoteUrl },
+            hostNames: { settings.host($0)?.name },
+            layouts: inbox.layouts
+        )
     }
     private var all: [HostedSession] { inbox.sections.active + inbox.sections.tail }
     private func matches(_ row: HostedSession) -> Bool {
-        let key = "\(row.hostId.uuidString):\(row.session.projectId ?? "")"
+        // THE FILTER KEYS BY GROUP, NOT BY MAC. Two Macs' checkouts of one
+        // repository are one group, so picking that project has to keep both
+        // Macs' rows — a `hostId:projectId` key would have kept one of them.
+        let key = SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: inbox.project(row)?.remoteUrl)
         guard projectFilter == nil || projectFilter == key else { return false }
         return query.isEmpty || [row.session.title, inbox.projectName(row) ?? "", settings.host(row.hostId)?.name ?? ""]
             .contains { $0.localizedStandardContains(query) }
@@ -122,10 +132,19 @@ struct SessionSidebar: View {
                                 // semibold, near-full strength.
                                 Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
                                     .lineLimit(1).truncationMode(.tail)
-                                if settings.hosts.count > 1 {
-                                    Text(hostName(group.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
-                                        .lineLimit(1).padding(.horizontal, 4)
-                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                // ONE HEADER, EVERY MAC IT LIVES ON — the
+                                // desktop's rule (project-group.tsx). A group on
+                                // one Mac wears a badge only when there is more
+                                // than one Mac to tell apart; the moment a group
+                                // SPANS two, both are named regardless, because
+                                // then which Mac a row is on is the one thing
+                                // the reader cannot infer from the group.
+                                if group.places.count > 1 || settings.hosts.count > 1 {
+                                    ForEach(group.places) { place in
+                                        Text(hostName(place.hostId)).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                            .lineLimit(1).padding(.horizontal, 4)
+                                            .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                    }
                                 }
                                 Spacer(minLength: 4)
                                 // HOW MANY ARE IN HERE, which a collapsed group
@@ -145,11 +164,7 @@ struct SessionSidebar: View {
                             // secondary verbs, so it goes there — the
                             // affordance differs because the input does, the
                             // action is the same one.
-                            Button("New conversation here", systemImage: "square.and.pencil") {
-                                resumeDraft(MobileDraft(hostId: group.hostId,
-                                                        project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
-                                                        prompt: "", title: ""))
-                            }
+                            newConversation(group)
                             Divider()
                             // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
                             // (#327). Tapping the header already collapses the
@@ -169,8 +184,13 @@ struct SessionSidebar: View {
                             Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
                         }
                         .draggable(group.id)
+                        // A GROUP MAY NOW CROSS A MAC, because the rail is one
+                        // arranged list rather than a block per Mac — a merged
+                        // group belongs to two of them and cannot sit inside
+                        // either block. The drop writes each Mac's own document
+                        // from the new drawn order; see `saveOrder`.
                         .dropDestination(for: String.self) { ids, _ in
-                            guard let id = ids.first, let source = model.projects.first(where: { $0.id == id }), source.hostId == group.hostId else { return false }
+                            guard let id = ids.first, let source = model.projects.first(where: { $0.id == id }) else { return false }
                             Task { await place(source, before: group) }
                             return true
                         }
@@ -336,9 +356,36 @@ struct SessionSidebar: View {
     private var projectOptions: [SidebarProject] { SidebarModel(sessions: all.map { row in
         var session = row.session; session.activity = .idle; session.settledOverride = nil
         return HostedSession(hostId: row.hostId, session: session)
-    }, names: inbox.projectName).projects }
+    }, names: inbox.projectName, remotes: { inbox.project($0)?.remoteUrl }, hostNames: { settings.host($0)?.name }).projects }
 
     private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
+
+    /// "HERE" IS A QUESTION ONCE A GROUP SPANS TWO MACS, so it stops being the
+    /// answer and becomes a submenu — the desktop's own control
+    /// (project-group.tsx). With one place the row is exactly what it was.
+    ///
+    /// EACH ENTRY IS BUILT FROM ITS PLACE, never from the group: project ids are
+    /// minted per engine, so a draft carrying the laptop's id opens nothing on
+    /// the mini.
+    @ViewBuilder private func newConversation(_ group: SidebarProject) -> some View {
+        if group.places.count > 1 {
+            Menu("New conversation here", systemImage: "square.and.pencil") {
+                ForEach(group.places) { place in
+                    Button(hostName(place.hostId), systemImage: "desktopcomputer") { startDraft(place) }
+                }
+            }
+        } else {
+            Button("New conversation here", systemImage: "square.and.pencil") {
+                startDraft(group.places.first ?? ProjectPlace(hostId: group.hostId, projectId: group.projectId, name: group.name, icon: group.icon))
+            }
+        }
+    }
+
+    private func startDraft(_ place: ProjectPlace) {
+        resumeDraft(MobileDraft(hostId: place.hostId,
+                                project: ProjectRef(id: place.projectId, name: place.name, icon: place.icon),
+                                prompt: "", title: ""))
+    }
 
     /// HOW MUCH ROOM A ROW HAS EARNED — the desktop's `variant: "card" |
     /// "slim"` (apps/web/components/session/session-row.tsx), ported because
@@ -753,17 +800,37 @@ struct SessionSidebar: View {
         savedCollapsed = collapsed.sorted().joined(separator: "\n")
     }
     private func move(_ group: SidebarProject, offset: Int) async {
-        let peers = model.projects.filter { $0.hostId == group.hostId }
-        guard let index = peers.firstIndex(where: { $0.id == group.id }), peers.indices.contains(index + offset) else { return }
-        var order = peers.map(\.projectId); order.swapAt(index, index + offset)
-        await saveOrder(order, host: group.hostId)
+        var drawn = model.projects
+        guard let index = drawn.firstIndex(where: { $0.id == group.id }), drawn.indices.contains(index + offset) else { return }
+        drawn.swapAt(index, index + offset)
+        await saveOrder(drawn)
     }
     private func place(_ source: SidebarProject, before target: SidebarProject) async {
         guard source.id != target.id else { return }
-        var order = model.projects.filter { $0.hostId == source.hostId }.map(\.projectId)
-        order.removeAll { $0 == source.projectId }
-        order.insert(source.projectId, at: order.firstIndex(of: target.projectId) ?? 0)
-        await saveOrder(order, host: source.hostId)
+        var drawn = model.projects
+        guard let from = drawn.firstIndex(where: { $0.id == source.id }) else { return }
+        let moved = drawn.remove(at: from)
+        drawn.insert(moved, at: drawn.firstIndex(where: { $0.id == target.id }) ?? 0)
+        await saveOrder(drawn)
+    }
+    /// THE WHOLE DRAWN LIST, WRITTEN ONCE PER MAC IT TOUCHES.
+    ///
+    /// A group that lives on two Macs is one row here and an entry in BOTH
+    /// documents, so a drag that moves it has to say so on both — and each Mac
+    /// is told only about the groups it actually holds, in the new relative
+    /// order, keyed the way that Mac keys them (`SidebarProject.layoutKey`).
+    ///
+    /// A MAC WHOSE ORDER DID NOT CHANGE IS NOT WRITTEN. Dragging one group past
+    /// another on the same Mac must not cost a round trip to every other Mac in
+    /// the book.
+    private func saveOrder(_ drawn: [SidebarProject]) async {
+        var byHost: [HostID: [String]] = [:]
+        for group in drawn {
+            for place in group.places { byHost[place.hostId, default: []].append(group.layoutKey) }
+        }
+        for (host, order) in byHost where order != inbox.layout(host).projectOrder.filter(order.contains) {
+            await saveOrder(order, host: host)
+        }
     }
     /**
      RE-READ, THEN WRITE ONE FIELD.
