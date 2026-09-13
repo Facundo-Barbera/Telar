@@ -156,7 +156,8 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
       >
         <Row
           label="Enabled"
-          hint={error ?? (enabled ? "Sessions get the latex_* tools and the LaTeX panel tab." : "Off. You can enable first, then choose or install a toolchain below.")}
+          hint={enabled ? "Sessions get the latex_* tools and the LaTeX panel tab." : "Off. You can enable first, then choose or install a toolchain below."}
+          {...(error ? { error } : {})}
           control={<Switch checked={enabled} disabled={saving} onCheckedChange={setEnabled} aria-label="Enable LaTeX for this project" />}
         />
         <Row

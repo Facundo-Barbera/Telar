@@ -20,12 +20,12 @@
  */
 
 import { useState } from "react";
-import { MAX_AUTO_SETTLE_HOURS, MIN_AUTO_SETTLE_HOURS, DEFAULT_AUTO_SETTLE_HOURS } from "@telar/engine-client";
+import { MAX_AUTO_SETTLE_HOURS, MIN_AUTO_SETTLE_HOURS, DEFAULT_AUTO_SETTLE_HOURS, DEFAULT_INBOX_POLICY } from "@telar/engine-client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 type Unit = "hours" | "days";
 
@@ -110,12 +110,19 @@ function WindowInput({ hours, onCommit }: { hours: number; onCommit: (hours: num
 export function InboxSection() {
   const { policy, loading, save, error } = useInboxPolicy();
   const hours = policy.autoSettleAfterHours;
+  useRestoreDefaults(() => save({ autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours }));
 
   return (
     <SettingsGroup title="Settling" description="A settled session is off your list, not finished.">
       <Row
         label="Settle quiet sessions"
-        hint={error ?? "Off means nothing leaves the list on its own."}
+        hint="Off means nothing leaves the list on its own."
+        {...(error ? { error } : {})}
+        // The engine's answer is the state, so a refused write leaves the
+        // switch showing what is stored — the error says so beneath it.
+        {...((hours === null) === (DEFAULT_INBOX_POLICY.autoSettleAfterHours === null)
+          ? {}
+          : { onRevert: () => void save({ autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours }) })}
         control={
           <Switch
             checked={hours !== null}
@@ -129,6 +136,9 @@ export function InboxSection() {
         <Row
           label="After"
           hint="Time without activity. Pinned sessions and open questions stay put."
+          {...(hours === DEFAULT_AUTO_SETTLE_HOURS
+            ? {}
+            : { onRevert: () => void save({ autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS }) })}
           control={<WindowInput hours={hours} onCommit={(next) => void save({ autoSettleAfterHours: next })} />}
         />
       )}

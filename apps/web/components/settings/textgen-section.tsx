@@ -19,7 +19,7 @@ import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, t
 import { createEngineApi } from "@/lib/engine/client";
 import { useModelCatalogueGeneration } from "@/lib/model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Row, Segmented, SettingsGroup, ToggleRow, useRestoreDefaults } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -88,11 +88,34 @@ export function TextGenSection() {
     }
   }, []);
 
+  /**
+   * IN TWO WRITES, BECAUSE THE DRIVER CLEARS THE MODEL. The engine drops a
+   * pinned model server-side when the harness changes (see this file's header),
+   * so a single patch carrying both would restore the driver and then lose the
+   * model it was sent with. The model goes second, once the driver has landed.
+   */
+  useRestoreDefaults(async () => {
+    await save({
+      driver: DEFAULT_TEXT_GEN_POLICY.driver,
+      titles: DEFAULT_TEXT_GEN_POLICY.titles,
+      renameBranches: DEFAULT_TEXT_GEN_POLICY.renameBranches,
+    });
+    await save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null });
+  });
+
   // A pinned model the catalogue does not list (typed by hand, or the
   // catalogue fell back to the built-in short list) still needs a row, or the
   // select would silently display the wrong answer.
   const pinned = policy.model;
   const listed = pinned !== undefined && models.some((model) => model.id === pinned);
+  /**
+   * WHAT THE TRIGGER READS — the same defect as #318, one pane over. A bare
+   * `<SelectValue />` prints the VALUE, so this trigger showed the sentinel
+   * `__driver-default` rather than "Provider default", and a wire id rather
+   * than the model's own label. Stated here so an unlisted pin still reads as
+   * its id rather than as nothing.
+   */
+  const pinnedLabel = pinned === undefined ? "Provider default" : (models.find((model) => model.id === pinned)?.label ?? pinned);
 
   return (
     <SettingsGroup
@@ -101,7 +124,14 @@ export function TextGenSection() {
     >
       <Row
         label="Written by"
-        hint={error}
+        hint="Which harness writes the title and the branch name."
+        // THE ERROR, NOT THE HINT. It used to BE the hint, so a row whose write
+        // was refused had no sentence saying what the field is for — and the
+        // whole group's error surfaced on this one row whichever field caused it.
+        {...(error ? { error } : {})}
+        {...(policy.driver === DEFAULT_TEXT_GEN_POLICY.driver
+          ? {}
+          : { onRevert: () => void save({ driver: DEFAULT_TEXT_GEN_POLICY.driver }) })}
         control={
           <Segmented<ProviderDriverKind>
             value={policy.driver}
@@ -122,6 +152,9 @@ export function TextGenSection() {
         // case that actually bites: switching harness above drops the pin
         // server-side, so a model chosen here does not survive that change.
         hint="Provider default lets the harness pick. Changing the harness above clears a pinned model."
+        {...(pinned === DEFAULT_TEXT_GEN_POLICY.model
+          ? {}
+          : { onRevert: () => void save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null }) })}
         control={
           <Select
             value={pinned ?? DRIVER_DEFAULT}
@@ -131,7 +164,7 @@ export function TextGenSection() {
             disabled={loading}
           >
             <SelectTrigger size="sm" className="w-44">
-              <SelectValue />
+              <SelectValue>{pinnedLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={DRIVER_DEFAULT}>Provider default</SelectItem>
@@ -150,6 +183,9 @@ export function TextGenSection() {
         hint="Replaces the truncated first message. A title you set yourself is never touched."
         checked={policy.titles}
         onCheckedChange={(next) => void save({ titles: next })}
+        {...(policy.titles === DEFAULT_TEXT_GEN_POLICY.titles
+          ? {}
+          : { onRevert: () => void save({ titles: DEFAULT_TEXT_GEN_POLICY.titles }) })}
       />
       {policy.titles && (
         <ToggleRow
@@ -157,6 +193,9 @@ export function TextGenSection() {
           hint="Only branches the engine cut. Yours keep their names."
           checked={policy.renameBranches}
           onCheckedChange={(next) => void save({ renameBranches: next })}
+          {...(policy.renameBranches === DEFAULT_TEXT_GEN_POLICY.renameBranches
+            ? {}
+            : { onRevert: () => void save({ renameBranches: DEFAULT_TEXT_GEN_POLICY.renameBranches }) })}
         />
       )}
     </SettingsGroup>

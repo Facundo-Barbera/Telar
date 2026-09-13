@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, InfoIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { ArchiveIcon, BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -32,10 +32,13 @@ import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
 import { IntegrationsPage } from "./integrations-page";
+import { KeybindingsPage } from "./keybindings-page";
 import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
+import { SettledPage } from "./settled-page";
+import { SourceControlPage } from "./source-control-page";
 import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
 import { PluginsPage } from "./plugins-page";
@@ -85,6 +88,18 @@ const SECTIONS: SettingsSection[] = [
   { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
   /**
+   * UNDER "COCKPIT": a chord is a decision about this window and the shell
+   * around it — the table is what builds the Mac app's own menu — not about
+   * the machine that runs turns. Read-only today; see keybindings-page.tsx.
+   */
+  { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT": a settled conversation is off THIS rail's list. Nothing
+   * about the machine that runs turns changes when one is shelved, and the
+   * window that shelves it is set two panes up in General ▸ Settling.
+   */
+  { id: "settled", label: "Settled", icon: ArchiveIcon, group: "Cockpit" },
+  /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
    * a fact about the install, not about the machine that runs turns (the
    * engine stays loopback either way).
@@ -98,6 +113,12 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "integrations", label: "Integrations", icon: PlugZapIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
+   * already signed in on the machine that runs turns, which Telar reads through
+   * rather than holding a token for.
+   */
+  { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
   /**
    * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
@@ -238,6 +259,10 @@ export function SettingsPage() {
 
       {active === "projects" && <ProjectsPage />}
 
+      {active === "keybindings" && <KeybindingsPage />}
+
+      {active === "settled" && <SettledPage />}
+
       {active === "plugins" && <PluginsPage />}
 
       {active === "remote" && (
@@ -248,6 +273,8 @@ export function SettingsPage() {
       )}
 
       {active === "providers" && <ProvidersSection />}
+
+      {active === "source-control" && <SourceControlPage />}
 
       {active === "integrations" && <IntegrationsPage />}
 

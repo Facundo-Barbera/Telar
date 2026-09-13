@@ -16,10 +16,12 @@
 import { ExternalLinkIcon } from "lucide-react";
 import { useLinkPolicy } from "@/lib/link-policy";
 import { Switch } from "@/components/ui/switch";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 export function LinksSection() {
   const { openInSessionBrowser, setOpenInSessionBrowser } = useLinkPolicy();
+  // Off is the web's own behaviour, which is what this row defaults to.
+  useRestoreDefaults(() => setOpenInSessionBrowser(false));
 
   return (
     <SettingsGroup title="Links" description="What a link in a conversation does when you click it.">

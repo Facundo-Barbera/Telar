@@ -39,15 +39,19 @@
  */
 
 import {
+  ArchiveIcon,
   BlocksIcon,
   CircleUserRoundIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GitBranchIcon,
+  GitPullRequestIcon,
   GlobeIcon,
   ImageIcon,
   InfoIcon,
+  KeyboardIcon,
   KeyRoundIcon,
   LockIcon,
   MonitorIcon,
@@ -203,12 +207,19 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: FolderKanbanIcon,
     groups: [
       {
-        title: "Scope",
+        /**
+         * THE SCOPE BAR, AND IT IS NAVIGATE-ONLY. Both controls are the pane's
+         * header rather than rows in a group — see `projects-page.tsx` — so
+         * there is no anchor to scroll to. Indexed anyway, and without the
+         * caveat the other navigate-only entries carry: the bar is the first
+         * thing on the pane, so arriving at Projects puts both controls on
+         * screen without a scroll.
+         */
         rows: [
           {
             title: "Mac",
             hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
-            keywords: ["host", "paired", "remote", "other mac"],
+            keywords: ["host", "paired", "remote", "other mac", "machine"],
             icon: MonitorIcon,
           },
           {
@@ -260,6 +271,17 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
+        title: "Elsewhere",
+        rows: [
+          {
+            title: "This project's own page",
+            hint: "MCP servers scoped to it, and each plugin's own editor.",
+            keywords: ["mcp", "plugin editor", "per project", "latex", "notebook"],
+            icon: ExternalLinkIcon,
+          },
+        ],
+      },
+      {
         // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
         // of this file rather than an omission: each row's title is a
         // plugin's own name, arriving from the engine at runtime.
@@ -296,6 +318,53 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The desktop behind a translucent window, and the backdrop under the app.",
             keywords: ["opacity", "wallpaper", "backdrop"],
             icon: MonitorIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * NAVIGATE-ONLY, and by the rule at the top rather than by omission: every
+     * row on this pane is derived from `COMMAND_KEY_BINDINGS`, so its title is
+     * a VALUE (`Rail: Jump to conversation 4`) that would rot the moment a
+     * binding is added or renamed. One entry for the pane, whose title is the
+     * group heading the pane actually draws — and the pane is one card, so
+     * arriving on it puts every binding on screen anyway.
+     */
+    id: "keybindings",
+    label: "Keybindings",
+    icon: KeyboardIcon,
+    groups: [
+      {
+        rows: [
+          {
+            title: "Keyboard shortcuts",
+            hint: "Every chord this app answers to, and what each one does.",
+            keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
+            icon: KeyboardIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * NAVIGATE-ONLY, by the rule at the top: every row here is one settled
+     * conversation, and a conversation's title is a value. What search can
+     * usefully answer is "where did the thing I settled go".
+     */
+    id: "settled",
+    label: "Settled",
+    icon: ArchiveIcon,
+    groups: [
+      {
+        rows: [
+          {
+            title: "Settled sessions",
+            hint: "Conversations off your list, and the way to put one back.",
+            keywords: ["archive", "shelf", "restore", "unsettle", "hidden", "put away", "quiet"],
+            icon: ArchiveIcon,
           },
         ],
       },
@@ -415,6 +484,30 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
             keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
             icon: PlugIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "source-control",
+    label: "Source control",
+    icon: GitPullRequestIcon,
+    groups: [
+      {
+        title: "Source control",
+        rows: [
+          {
+            title: "GitHub",
+            hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
+            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge"],
+            icon: GitPullRequestIcon,
+          },
+          {
+            title: "GitLab",
+            hint: "Not supported — Telar reads GitHub through gh and has no GitLab reader.",
+            keywords: ["glab", "forge", "not supported"],
+            icon: GitBranchIcon,
           },
         ],
       },

@@ -171,7 +171,8 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
       >
         <Row
           label="Enabled"
-          hint={error ?? (enabled ? (current ? "Sessions get notebook and ds_* tools." : "On, but no environment is selected yet. Set one up below or ask the agent.") : current ? "Off. The chosen environment is kept." : "Off. You can turn it on before the environment exists.")}
+          hint={enabled ? (current ? "Sessions get notebook and ds_* tools." : "On, but no environment is selected yet. Set one up below or ask the agent.") : current ? "Off. The chosen environment is kept." : "Off. You can turn it on before the environment exists."}
+          {...(error ? { error } : {})}
           control={
             <Switch
               checked={enabled}
@@ -355,7 +356,8 @@ function ToolchainRows({ toolchain, loading, onJob }: { toolchain?: DataScienceT
       />
       <Row
         label="Python"
-        hint={error ?? (installed.length ? `Installed: ${installed.map((p) => p.version).join(", ")}` : "No Python on this machine yet.")}
+        hint={installed.length ? `Installed: ${installed.map((p) => p.version).join(", ")}` : "No Python on this machine yet."}
+        {...(error ? { error } : {})}
         control={
           toolchain.uv ? (
             <span className="flex items-center gap-1.5">

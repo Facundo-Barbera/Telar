@@ -111,6 +111,36 @@ test("the pane opens on All projects, so nothing is bound before a reader names 
   expect(html).not.toContain("Remove project from Telar");
 });
 
+test("the scope select's trigger reads the label, never the value (#318)", () => {
+  /**
+   * The bug: a bare `<SelectValue />` renders the Select's VALUE when nothing
+   * maps it to a label, so the trigger read `__all-projects` at rest and a
+   * `project_…` id after a pick — while the list beside it showed the right
+   * names the whole time.
+   */
+  const html = renderToStaticMarkup(<ProjectsPage />);
+  // The trigger's own value element, not "the sentinel appears nowhere": base-ui
+  // also renders a hidden form input carrying the real value, which is right.
+  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">All projects<');
+});
+
+test("an id the registry has not answered for yet still reads as words", () => {
+  /**
+   * `?project=` is read on the first paint and a remote Mac's registry is a
+   * request away, so there is a window where the selected id names no project
+   * this pane has. A value-to-label mapping would print the id in exactly that
+   * window — which is the bug — so the trigger states the label itself.
+   */
+  expect(source).toContain('{selected === ALL_PROJECTS ? "All projects" : (project?.name ?? "Select a project")}');
+});
+
+test("the scope is a bar above the first card, machine left and project right", () => {
+  // Both controls on one line, outside any SettingsGroup — the frame that
+  // used to make the picker read as one more setting to configure.
+  expect(source).toContain('<div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">');
+  expect(source).not.toContain('<SettingsGroup title="Scope"');
+});
+
 test("the Mac segmented control appears only when a Mac has been paired", () => {
   // A one-segment control is a button that does nothing, and a cockpit with no
   // paired Mac is the common one.
