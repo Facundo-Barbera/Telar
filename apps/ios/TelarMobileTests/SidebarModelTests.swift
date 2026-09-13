@@ -3,10 +3,17 @@ import Testing
 @testable import TelarMobile
 
 @Suite struct SidebarModelTests {
-    private func row(host: UUID, id: String, project: String, activity: String = "working", pinned: Bool = false) throws -> HostedSession {
-        let object: [String: Any] = ["id": id, "projectId": project, "title": id, "createdAt": 1000, "updatedAt": 1000,
+    private func row(host: UUID, id: String, project: String, activity: String = "working", pinned: Bool = false, startedFrom: String? = nil) throws -> HostedSession {
+        var object: [String: Any] = ["id": id, "projectId": project, "title": id, "createdAt": 1000, "updatedAt": 1000,
             "activity": activity, "settledOverride": pinned ? "active" : NSNull(), "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"]]
+        if let startedFrom { object["startedFrom"] = ["sessionId": startedFrom] }
         return HostedSession(hostId: host, session: try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)))
+    }
+    private func assignment(from: String, scope: String? = nil, outcome: String? = nil) -> SessionAssignment {
+        SessionAssignment(fromSessionId: from, scope: scope, outcome: outcome)
+    }
+    private func subscription(to target: String, from subscriber: String = "coord") -> Subscription {
+        Subscription(id: "sub_\(subscriber)_\(target)", subscriberSessionId: subscriber, targetSessionId: target)
     }
     @Test func attentionOutranksPinsAndRowsAppearExactlyOnce() throws {
         let host = UUID()
@@ -216,6 +223,121 @@ import Testing
         // A group's own drag payload is its key, which is not one of these.
         #expect(SidebarModel.rowDrag("repo:github.com/owner/repo") == nil)
         #expect(SidebarModel.rowDrag("\(host.uuidString):project_1") == nil)
+    }
+
+    /// A COORDINATOR THAT DELEGATED TO TWO SESSIONS DRAWS BOTH UNDER IT (#333),
+    /// and neither is drawn beside it — the whole of #324's shape. The scope the
+    /// coordinator actually named beats the bare state, because it says WHICH
+    /// work and "working" is then implied by there being any.
+    @Test func delegatesAreDrawnUnderTheirCoordinatorWithTheirStateAsAHint() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "coord", project: "p"),
+                        row(host: host, id: "one", project: "p"),
+                        row(host: host, id: "two", project: "p")]
+        let assignments: [ScopedSessionID: [SessionAssignment]] = [
+            ScopedSessionID(hostId: host, sessionId: "one"): [assignment(from: "coord", scope: "the parser")],
+            ScopedSessionID(hostId: host, sessionId: "two"): [assignment(from: "coord")],
+        ]
+        let group = try #require(SidebarModel(sessions: rows, names: { _ in "Project" }, assignments: assignments).projects.first)
+        #expect(group.rows.map(\.row.session.id) == ["coord"])
+        #expect(group.rows.first?.children.map(\.row.session.id) == ["one", "two"])
+        #expect(group.rows.first?.children.map(\.hint) == ["the parser", "working"])
+        // The count is untouched by the tree: a nested row is still a row this
+        // group is showing.
+        #expect(group.sessions.count == 3)
+    }
+
+    /// FINISHED IS NOT GONE. A session that completed a task stays under its
+    /// coordinator until the human settles it — dropping it the moment its run
+    /// ended would hide the result the delegation was for. A `detached` outcome
+    /// ended nothing and is not a finish.
+    @Test func aFinishedDelegateStaysUnderItsCoordinatorAndSaysSo() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "coord", project: "p"),
+                        row(host: host, id: "done", project: "p"),
+                        row(host: host, id: "loose", project: "p")]
+        let assignments: [ScopedSessionID: [SessionAssignment]] = [
+            ScopedSessionID(hostId: host, sessionId: "done"): [assignment(from: "coord", outcome: "completed")],
+            ScopedSessionID(hostId: host, sessionId: "loose"): [assignment(from: "coord", outcome: "detached")],
+        ]
+        let tree = SidebarModel.tree(rows, assignments: assignments)
+        #expect(tree.first?.children.map(\.row.session.id) == ["done"])
+        #expect(tree.first?.children.map(\.hint) == ["finished"])
+        #expect(tree.map(\.row.session.id) == ["coord", "loose"])
+    }
+
+    /// PROVENANCE HANGS TOO, AND HAS NO STATE TO HINT: "started from here" is a
+    /// fact about the edge, and the elbow is now that fact.
+    @Test func aSessionStartedFromAnotherHangsUnderItWithNoHint() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "coord", project: "p"),
+                        row(host: host, id: "child", project: "p", startedFrom: "coord")]
+        let tree = SidebarModel.tree(rows)
+        #expect(tree.map(\.row.session.id) == ["coord"])
+        #expect(tree.first?.children.map(\.row.session.id) == ["child"])
+        #expect(tree.first?.children.first?.hint == nil)
+    }
+
+    /// ONE LEVEL, AND FIRST POSITION WINS. Two coordinators delegating to one
+    /// session is one row under the FIRST of them, and a chain of delegations
+    /// reads as a list under its head rather than a staircase down the rail.
+    @Test func theTreeIsOneLevelDeepAndNeverClaimsARowTwice() throws {
+        let host = UUID()
+        let contested = try [row(host: host, id: "a", project: "p"), row(host: host, id: "b", project: "p"),
+                             row(host: host, id: "shared", project: "p")]
+        let both: [ScopedSessionID: [SessionAssignment]] = [
+            ScopedSessionID(hostId: host, sessionId: "shared"): [assignment(from: "a"), assignment(from: "b")],
+        ]
+        let claimed = SidebarModel.tree(contested, assignments: both)
+        #expect(claimed.map(\.row.session.id) == ["a", "b"])
+        #expect(claimed.first?.children.map(\.row.session.id) == ["shared"])
+        #expect(claimed.last?.children.isEmpty == true)
+
+        // A chain: head → middle → tail. `middle` hangs off `head`, and `tail`
+        // does NOT become a third rung under it — a child is never given a
+        // child of its own, so the deeper row stays at the list's own level.
+        let chain = try [row(host: host, id: "head", project: "p"),
+                         row(host: host, id: "middle", project: "p", startedFrom: "head"),
+                         row(host: host, id: "tail", project: "p", startedFrom: "middle")]
+        let tree = SidebarModel.tree(chain)
+        #expect(tree.map(\.row.session.id) == ["head", "tail"])
+        #expect(tree.first?.children.map(\.row.session.id) == ["middle"])
+        #expect(tree.last?.children.isEmpty == true)
+    }
+
+    /// SAME MAC ONLY. `fromSessionId` and `startedFrom` are bare ids, meaningful
+    /// only inside the engine that stamped them — a coordinator on one Mac must
+    /// never gather a stranger from another that happens to share an id.
+    @Test func aCoordinatorNeverGathersARowFromAnotherMac() throws {
+        let a = UUID(), b = UUID()
+        let rows = try [row(host: a, id: "coord", project: "p"), row(host: b, id: "worker", project: "p")]
+        let assignments: [ScopedSessionID: [SessionAssignment]] = [
+            ScopedSessionID(hostId: b, sessionId: "worker"): [assignment(from: "coord")],
+        ]
+        let tree = SidebarModel.tree(rows, assignments: assignments)
+        #expect(tree.map(\.row.session.id) == ["coord", "worker"])
+        #expect(tree.allSatisfy { $0.children.isEmpty })
+    }
+
+    /// A ROW A PINNED CONVERSATION FOLLOWS IS DRAWN UNDER IT AND NOWHERE ELSE —
+    /// the desktop's `withholdFollowedRows`. Following is a relationship you
+    /// asked for; the project group is where the row lives anyway, so the
+    /// coordinator keeps the copy rather than the rail claiming two
+    /// conversations where there is one.
+    @Test func aFollowedRowIsDrawnUnderItsPinnedCoordinatorAndNotInItsProjectGroup() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "coord", project: "p", pinned: true),
+                        row(host: host, id: "watched", project: "p"),
+                        row(host: host, id: "other", project: "p")]
+        let following: [ScopedSessionID: [Subscription]] = [
+            // Two subscriptions to one target — different events, or a `once`
+            // beside a standing one — are one row, not two.
+            ScopedSessionID(hostId: host, sessionId: "coord"): [subscription(to: "watched"), subscription(to: "watched")],
+        ]
+        let model = SidebarModel(sessions: rows, names: { _ in "Project" }, following: following)
+        #expect(model.pinnedRows.map(\.row.session.id) == ["coord"])
+        #expect(model.pinnedRows.first?.children.map(\.row.session.id) == ["watched"])
+        #expect(model.projects.flatMap(\.sessions).map(\.session.id) == ["other"])
     }
 
     @Test func deepLinksRoundTripAndRejectMalformedOrForeignLinks() {

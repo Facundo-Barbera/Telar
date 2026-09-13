@@ -32,6 +32,8 @@ struct SessionSidebar: View {
             icons: { inbox.project($0)?.icon },
             remotes: { inbox.project($0)?.remoteUrl },
             hostNames: { settings.host($0)?.name },
+            assignments: inbox.assignments,
+            following: inbox.following,
             layouts: inbox.layouts
         )
     }
@@ -99,9 +101,13 @@ struct SessionSidebar: View {
                         .accessibilityLabel("Needs you, \(attention.count)")
                     }
                 }
-                if !model.pinned.filter(matches).isEmpty {
+                let pinnedRows = model.pinnedRows.filter { matches($0.row) }
+                if !pinnedRows.isEmpty {
                     Section {
-                        ForEach(model.pinned.filter(matches)) { row in sessionRow(row, band: .pinned) }
+                        ForEach(pinnedRows) { entry in
+                            sessionRow(entry.row, band: .pinned)
+                            ForEach(entry.children) { child in childRow(child) }
+                        }
                     }
                 }
                 ForEach(model.projects.filter { projectFilter == nil || $0.id == projectFilter }) { group in
@@ -111,7 +117,14 @@ struct SessionSidebar: View {
                             // and a card's status and branch lines are mostly
                             // empty on an idle row — so the card was spending
                             // three lines to restate the header.
-                            ForEach(group.sessions) { row in sessionRow(row, variant: .slim, band: .group(group)) }
+                            // ONE ENTRY PER ROW: the row, then what it delegated.
+                            // THE DRAG STAYS ON THE PARENT — a child is drawn
+                            // where its coordinator is, so a handle on it would
+                            // offer to move a row out of its own tree.
+                            ForEach(group.rows) { entry in
+                                sessionRow(entry.row, variant: .slim, band: .group(group))
+                                ForEach(entry.children) { child in childRow(child) }
+                            }
                         }
                     } header: {
                         Button {
@@ -700,6 +713,48 @@ struct SessionSidebar: View {
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             statusSlot(row.session)
+        }
+    }
+
+    /// A CONVERSATION THAT HANGS OFF THE ONE ABOVE IT — #324's shape, ported.
+    ///
+    /// NO CAPTION, AND THAT IS THE POINT. The four relationships used to carry a
+    /// heading each, and in a band with nothing indented "FOLLOWING" read as a
+    /// header for the row BELOW it rather than as a label on the one above. They
+    /// still differ and they still sort in the same order; what the rail has to
+    /// say about a child row is "this comes from the row above", which an elbow
+    /// says in a glyph's width and a heading could not say at all.
+    ///
+    /// THE ELBOW OCCUPIES THE PARENT'S MARK, WHICH IS WHAT MAKES THE TITLES LINE
+    /// UP. It is drawn at the slim row's own avatar size, before the slim row's
+    /// own gap, so a child's title lands in the same column as the title of the
+    /// conversation it hangs off — one ruler, not two.
+    ///
+    /// THE STATE RIDES A TRAILING HINT, because it is the one thing that still
+    /// differs per child once the captions are gone: the scope the coordinator
+    /// named, or "working", or "finished". Provenance has none — the edge was
+    /// the whole fact, and the elbow is now the edge.
+    @ViewBuilder private func childRow(_ child: SidebarChild) -> some View {
+        NavigationLink(value: child.row.id) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted.opacity(0.7))
+                    .frame(width: 13)
+                    .accessibilityHidden(true)
+                unreadDot(child.row.session)
+                Text(child.row.session.title.isEmpty ? "Untitled session" : child.row.session.title)
+                    .font(Settling.showsUnreadMark(child.row.session) ? Theme.rowTitleSlim.weight(.medium) : Theme.rowTitleSlim)
+                    .foregroundStyle(Settling.showsUnreadMark(child.row.session) ? Theme.text : Theme.text.opacity(0.7))
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 4)
+                if let hint = child.hint {
+                    Text(hint).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
+                        .lineLimit(1).truncationMode(.tail)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(child.hint.map { "\(child.row.session.title), \($0), from the conversation above" }
+                                ?? "\(child.row.session.title), from the conversation above")
         }
     }
 

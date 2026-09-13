@@ -50,6 +50,62 @@ struct SessionWorkspace: Codable, Equatable {
     var baseRef: String?
 }
 
+/// WHICH SESSION STARTED THIS ONE. Permanent, engine-stamped, never cleared —
+/// provenance, not a lifetime, a permission or a cancellation path. `origin`
+/// says an agent asked; this says who, which is the question a person reading a
+/// list of conversations actually has.
+struct SessionProvenance: Codable, Equatable {
+    var sessionId: EngineID
+    var runId: EngineID?
+}
+
+/// WHAT A SESSION IS WORKING ON BEHALF OF — derived by the engine over each
+/// session's whole queue and sent on the live list, so the rail learns who is
+/// working for whom without a history read per row.
+///
+/// Mirror of `SessionAssignment` in packages/engine-client. `outcome` stays a
+/// `String` because it is only ever compared, never rendered: absent is
+/// outstanding, `detached` ended nothing, and anything else is finished.
+struct SessionAssignment: Codable, Equatable {
+    /// Who handed it over — engine-stamped, never from a tool argument. A bare
+    /// id, and so only meaningful within the engine that stamped it.
+    var fromSessionId: EngineID
+    /// What the sender said it covers. Descriptive; confers nothing.
+    var scope: String?
+    var outcome: String?
+    /// The carrying run is outside the records this was folded over, so its
+    /// state is genuinely unknown. NOT outstanding — a paged-out completed
+    /// carrier would otherwise look busy forever.
+    var unresolved: Bool?
+
+    private enum CodingKeys: String, CodingKey { case fromSessionId, scope, outcome, unresolved }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fromSessionId = try c.decode(EngineID.self, forKey: .fromSessionId)
+        scope = try c.decodeIfPresent(String.self, forKey: .scope)
+        outcome = try c.decodeIfPresent(String.self, forKey: .outcome)
+        unresolved = try c.decodeIfPresent(Bool.self, forKey: .unresolved)
+    }
+
+    init(fromSessionId: EngineID, scope: String? = nil, outcome: String? = nil, unresolved: Bool? = nil) {
+        self.fromSessionId = fromSessionId; self.scope = scope
+        self.outcome = outcome; self.unresolved = unresolved
+    }
+}
+
+/// AN EXPLICIT, REVOCABLE, ONE-DIRECTIONAL WISH TO BE WOKEN — not a parent/child
+/// link, and neither session's own record mentions the other. Mirror of
+/// `Subscription` in packages/engine-client.
+///
+/// `targetSessionId` IS A BARE ID, so it only means anything inside the
+/// subscriber's own engine: resolving one against every Mac's rows would pick a
+/// stranger the moment two Macs minted the same session id.
+struct Subscription: Codable, Equatable, Identifiable {
+    var id: EngineID
+    var subscriberSessionId: EngineID
+    var targetSessionId: EngineID
+}
+
 struct Session: Codable, Identifiable, Equatable {
     var id: EngineID
     /// Absent is a positive statement (the Spool's project-less master chat),
@@ -103,11 +159,16 @@ struct Session: Codable, Identifiable, Equatable {
     var snoozedUntil: Timestamp?
     var snoozedAt: Timestamp?
 
+    /// Where this conversation came from — see `SessionProvenance`. The half of
+    /// the rail's tree that never ends: a session started from another hangs
+    /// under it for good, whether or not any work was ever assigned.
+    var startedFrom: SessionProvenance?
+
     private enum CodingKeys: String, CodingKey {
         case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId, resumeCursor
         case workspace, runtimeMode, detached, usage, activity, activityAt
         case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt
-        case snoozedUntil, snoozedAt
+        case snoozedUntil, snoozedAt, startedFrom
         case lastTurnSequence, lastReadTurnSequence, readAt
     }
 
@@ -136,6 +197,7 @@ struct Session: Codable, Identifiable, Equatable {
         settledAt = try c.decodeIfPresent(Timestamp.self, forKey: .settledAt)
         snoozedUntil = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedUntil)
         snoozedAt = try c.decodeIfPresent(Timestamp.self, forKey: .snoozedAt)
+        startedFrom = try? c.decodeIfPresent(SessionProvenance.self, forKey: .startedFrom)
         lastTurnSequence = try c.decodeIfPresent(Int.self, forKey: .lastTurnSequence)
         lastReadTurnSequence = try c.decodeIfPresent(Int.self, forKey: .lastReadTurnSequence)
         readAt = try c.decodeIfPresent(Timestamp.self, forKey: .readAt)
@@ -221,8 +283,16 @@ struct LiveSessions: Decodable {
     /// engine predates the field; the sidebar then falls back to asking for it
     /// directly, once a minute.
     var layout: SidebarLayout?
+    /// WHO EACH SESSION IS WORKING FOR, by session id — folded by the ENGINE
+    /// over each session's whole queue and sent on this same list, so the rail's
+    /// tree costs no extra request and no per-row history read on any poll.
+    ///
+    /// EMPTY IS THE ORDINARY ANSWER, not a failure: most sessions were nobody's
+    /// delegate, and a cockpit too old to forward the field sends none at all.
+    /// The rail then draws exactly the flat list it always did.
+    var assignments: [EngineID: [SessionAssignment]] = [:]
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -231,5 +301,8 @@ struct LiveSessions: Decodable {
         // A layout this build cannot read costs the arrangement, never the
         // list — the same tolerance `Skippable` gives the rows above.
         layout = try? c.decodeIfPresent(SidebarLayout.self, forKey: .layout)
+        // And an assignment map it cannot read costs the tree, never the list.
+        assignments = (try? c.decodeIfPresent([EngineID: [Skippable<SessionAssignment>]].self, forKey: .assignments))?
+            .mapValues { $0.compactMap(\.value) } ?? [:]
     }
 }
