@@ -237,7 +237,7 @@ function LobbyCard({
       onDrop={onRowDrop}
       onClick={() => onEnter(subject.key)}
       className={cn(
-        "flex w-full cursor-grab flex-col gap-1 rounded-lg bg-card px-4 py-3 text-left shadow-sm ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20 active:cursor-grabbing",
+        "flex w-full cursor-grab flex-col gap-1 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20 active:cursor-grabbing",
         insertPosition === "above" && "border-t-2 border-spool/60",
         insertPosition === "below" && "border-b-2 border-spool/60",
       )}
@@ -699,7 +699,7 @@ function SmartTile({ label, count, hint, onClick }: { label: string; count: numb
     <button
       type="button"
       onClick={onClick}
-      className="flex flex-1 flex-col items-start gap-0.5 rounded-lg bg-card px-4 py-3 text-left shadow-sm ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20"
+      className="flex flex-1 flex-col items-start gap-0.5 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20"
     >
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <span className="text-lg font-semibold tabular-nums text-foreground">{count}</span>

@@ -85,6 +85,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Row, Segmented, Tabs, ToggleRow } from "./settings-shell";
+import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { BackdropTool } from "./studio/backdrop-tool";
@@ -623,6 +624,7 @@ export function AppearanceSection() {
                     </div>
                   }
                 />
+                <DepthControl draft={current} onDraft={edit} />
               </PanelBody>
             </Panel>
           )}

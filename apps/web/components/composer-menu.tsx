@@ -72,9 +72,11 @@ export function ComposerMenu({
     <div
       role="listbox"
       aria-label={heading}
-      // Cast in --shadow-tint rather than raw black — see the composer's own
-      // sheet, which this menu sits directly above and has to match.
-      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl"
+      // `shadow-3` — the ladder's overlay rung (globals.css). It used to carry
+      // the composer's own arbitrary value, which made a MENU and the bar it
+      // opens from cast exactly the same shadow: they read as one slab. This
+      // sits directly above that bar and should sit a rung above it too.
+      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-3 backdrop-blur-xl"
     >
       <div className="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</div>
       {completions.length === 0 ? (

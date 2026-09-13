@@ -125,6 +125,10 @@ export function previewLook(look: Look, mode?: PreviewMode): void {
   set("data-accent", look.accent, look.accent === DEFAULT_APPEARANCE.accent);
   set("data-font-sans", look.fontSans, look.fontSans === DEFAULT_APPEARANCE.fontSans);
   set("data-font-mono", look.fontMono, look.fontMono === DEFAULT_APPEARANCE.fontMono);
+  // The elevation ladder's travel. Painted here for the reason the header
+  // gives: a shadow is one of the things a mock could never have shown, and
+  // judging Flat against Deep is judging the real cards on the real canvas.
+  set("data-depth", look.depth, look.depth === DEFAULT_APPEARANCE.depth);
   const family = (property: string, custom: boolean, raw: string, fallback: string) => {
     const list = custom ? cssFontFamilies(raw) : null;
     if (list === null) root.style.removeProperty(property);

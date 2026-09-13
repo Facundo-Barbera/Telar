@@ -54,6 +54,7 @@ function build(recipe: Recipe): Look | undefined {
     fontSize: DEFAULT_APPEARANCE.fontSize,
     fontMonoSize: DEFAULT_APPEARANCE.fontMonoSize,
     translucencyLevel: DEFAULT_APPEARANCE.translucencyLevel,
+    depth: DEFAULT_APPEARANCE.depth,
   };
 }
 

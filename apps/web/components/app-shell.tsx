@@ -55,7 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           // card, the same treatment the primitive's own `inset` variant uses.
           // `--app-island-inset`, NOT `m-2`: the spacing scale is rem, and this
           // gutter is measured against the traffic lights (globals.css).
-          "md:m-[var(--app-island-inset)] md:h-[calc(100dvh-var(--app-island-span))] md:rounded-xl md:shadow-sm",
+          "md:m-[var(--app-island-inset)] md:h-[calc(100dvh-var(--app-island-span))] md:rounded-xl md:shadow-1",
           // A SCREEN MADE OF SEVERAL SURFACES draws its own cards: the cockpit
           // marks its <main data-surfaces> and this inset becomes the ground
           // between them instead of one card around them. Every other route
