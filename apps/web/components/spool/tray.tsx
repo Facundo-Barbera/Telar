@@ -47,6 +47,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CloseCheckbox, DeadlineChip, ProjectChip, SubjectDot } from "@/components/spool/chips";
+import { DEADLINE_KIND_ITEMS, laneItems, laneLabel } from "@/components/spool/lanes";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { SUBJECT_COLORS, subjectColorVar } from "@/components/spool/subject-color";
 import { ConfirmDialog } from "@/components/spool/dialogs";
@@ -558,8 +559,11 @@ function PacketFace({
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <span className="w-16 shrink-0 text-[0.6875rem] text-muted-foreground">Lane</span>
+            {/* `items` so the trigger reads the lane's NAME rather than its
+                stored key — see `lanes.ts` (#352). */}
             <Select
               value={detail.lane ?? ""}
+              items={laneItems(lanes)}
               onValueChange={(next) => {
                 if (next && next !== detail.lane) file({ lane: next });
               }}
@@ -570,8 +574,7 @@ function PacketFace({
               <SelectContent>
                 {lanes.map((l) => (
                   <SelectItem key={l.key} value={l.key}>
-                    {l.label}
-                    {l.window ? ` — ${l.window}` : ""}
+                    {laneLabel(l)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -636,6 +639,7 @@ function PacketFace({
             />
             <Select
               value={item.deadline?.kind ?? deadlineKindDraft}
+              items={DEADLINE_KIND_ITEMS}
               onValueChange={(next) => {
                 const kind = next === "external" ? "external" : "self";
                 setDeadlineKindDraft(kind);

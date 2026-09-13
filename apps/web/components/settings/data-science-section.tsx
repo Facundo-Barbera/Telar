@@ -361,7 +361,13 @@ function ToolchainRows({ toolchain, loading, onJob }: { toolchain?: DataScienceT
         control={
           toolchain.uv ? (
             <span className="flex items-center gap-1.5">
-              <Select value={pick ?? ""} onValueChange={(next) => setPick(next ?? undefined)}>
+              {/* `items` so a picked pre-release keeps its "(pre-release)" in
+                  the trigger instead of dropping to the bare value (#352). */}
+              <Select
+                value={pick ?? ""}
+                items={Object.fromEntries(downloadable.map((p) => [p.version, `${p.version}${p.prerelease ? " (pre-release)" : ""}`]))}
+                onValueChange={(next) => setPick(next ?? undefined)}
+              >
                 <SelectTrigger size="sm" className="w-44" aria-label="Python version to install">
                   <SelectValue placeholder="Install a version…" />
                 </SelectTrigger>
@@ -452,6 +458,10 @@ function NewEnvironmentForm({
     : !toolchain.conda ? "conda is not installed — install Miniforge under Tools." : !name.trim() ? "Name the environment." : undefined;
 
   const chosen = versions.find((v) => v.minor === python);
+  // THE ROW'S OWN WORDS, so the trigger cannot disagree with the list under it
+  // (#352): a bare `Select.Value` renders the VALUE, which here is the bare
+  // minor — "3.12" over a row reading "3.12 · 3.12.7".
+  const versionLabel = (v: (typeof versions)[number]): string => `${v.minor}${v.installed ? ` · ${v.version}` : " · will download"}${v.prerelease ? " (pre-release)" : ""}`;
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/20 p-3">
@@ -491,12 +501,12 @@ function NewEnvironmentForm({
           <span className="font-medium">Python</span>
           <Select value={python} onValueChange={(next) => next && setPython(next)}>
             <SelectTrigger size="sm" className="w-52" aria-label="Python version">
-              <SelectValue />
+              <SelectValue>{chosen ? versionLabel(chosen) : python}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {versions.map((v) => (
                 <SelectItem key={v.minor} value={v.minor}>
-                  {v.minor}{v.installed ? ` · ${v.version}` : " · will download"}{v.prerelease ? " (pre-release)" : ""}
+                  {versionLabel(v)}
                 </SelectItem>
               ))}
             </SelectContent>

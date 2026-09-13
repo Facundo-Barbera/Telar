@@ -25,6 +25,7 @@
 import { useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import type { SpoolLane } from "@telar/engine-client";
+import { DEADLINE_KIND_ITEMS, laneItems, laneLabel } from "@/components/spool/lanes";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -172,15 +173,16 @@ function AddTaskForm({
 
         {lanes.length > 0 && (
           <FieldRow label="Lane" htmlFor="task-lane">
-            <Select value={lane} onValueChange={(next) => setLane(next ?? "")}>
+            {/* `items` so the trigger reads the lane's NAME rather than its
+                stored key — see `lanes.ts` (#352). */}
+            <Select value={lane} items={laneItems(lanes)} onValueChange={(next) => setLane(next ?? "")}>
               <SelectTrigger size="sm" id="task-lane" className="w-full border-none bg-transparent shadow-none">
                 <SelectValue placeholder="Where its work tends to happen" />
               </SelectTrigger>
               <SelectContent>
                 {lanes.map((l) => (
                   <SelectItem key={l.key} value={l.key}>
-                    {l.label}
-                    {l.window ? ` — ${l.window}` : ""}
+                    {laneLabel(l)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -203,6 +205,7 @@ function AddTaskForm({
             />
             <Select
               value={deadlineKind}
+              items={DEADLINE_KIND_ITEMS}
               onValueChange={(next) => setDeadlineKind(next === "external" ? "external" : "self")}
             >
               <SelectTrigger size="sm" id="task-deadline-kind" className="w-auto shrink-0 border-none bg-transparent shadow-none">

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
+import { clearCellOutputs, emptyNotebook, findCell, fromNbOutputs, moveCell, parseNotebook, parseNotebookText, serializeNotebook, toNbOutputs } from "../src/ds/notebook-file";
 import { diffSnapshots } from "../src/ds/store-capability";
 import { namesIn } from "../src/ds/state-files";
 import { parseDelimited, windowCsv } from "../src/ds/table";
@@ -32,6 +32,43 @@ test("a notebook round-trips with every unknown key kept and ids minted for cell
   expect(again.cells.map((c) => c.id)).toEqual(nb.cells.map((c) => c.id));
   expect(again.cells[0]!.source).toBe("# Hello\nworld");
   expect((again as { top_level_vendor?: boolean }).top_level_vendor).toBe(true);
+});
+
+/**
+ * THE ID IS A NAME, SO TWO PARSES MUST AGREE ON IT (#351).
+ *
+ * A random mint made the id the panel rendered a different string from the id
+ * `notebook/run`'s own fresh parse produced, and every Run on a notebook Telar
+ * had not written itself came back "no cell with id …". Most notebooks on disk
+ * are exactly that: nbformat < 4.5, no cell ids at all.
+ */
+test("an id-less notebook parses to the same ids every time, and says it minted them", () => {
+  const text = JSON.stringify(FIXTURE);
+  const once = parseNotebookText(text);
+  const again = parseNotebookText(text);
+  expect(once.mintedIds).toBe(true);
+  expect(again.nb.cells.map((c) => c.id)).toEqual(once.nb.cells.map((c) => c.id));
+  expect(once.nb.cells.every((c) => /^[0-9a-f]{8}$/.test(c.id))).toBe(true);
+  // Distinct cells get distinct ids: position is in the derivation, so even
+  // two cells with identical source cannot collide.
+  const twins = parseNotebookText(JSON.stringify({ nbformat: 4, nbformat_minor: 4, metadata: {}, cells: [{ cell_type: "code", source: "x" }, { cell_type: "code", source: "x" }] }));
+  expect(new Set(twins.nb.cells.map((c) => c.id)).size).toBe(2);
+});
+
+test("a notebook that already carries its ids is not reported as minted", () => {
+  const nb = { nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ id: "abc", cell_type: "code", source: "1", metadata: {}, execution_count: null, outputs: [] }] };
+  const parsed = parseNotebookText(JSON.stringify(nb));
+  expect(parsed.mintedIds).toBe(false);
+  expect(parsed.nb.cells[0]!.id).toBe("abc");
+});
+
+test("duplicate ids in the file are resolved, deterministically, and reported", () => {
+  const text = JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ id: "same", cell_type: "code", source: "a" }, { id: "same", cell_type: "code", source: "b" }] });
+  const once = parseNotebookText(text);
+  expect(once.mintedIds).toBe(true);
+  expect(once.nb.cells[0]!.id).toBe("same");
+  expect(once.nb.cells[1]!.id).not.toBe("same");
+  expect(parseNotebookText(text).nb.cells.map((c) => c.id)).toEqual(once.nb.cells.map((c) => c.id));
 });
 
 test("an unchanged nbformat-4.5 notebook serializes byte-identical", () => {
