@@ -11,6 +11,7 @@ const {
   LEGACY_PARTITION,
   FILE_NAME,
   DEFAULT_PROFILE_LABEL,
+  PROFILE_COLORS,
 } = require("./browser-profiles");
 
 // Synthetic ids, the shape the engine mints (project_ + 32 hex).
@@ -249,5 +250,97 @@ describe("named, reusable profiles", () => {
     expect(store.list().map((profile) => profile.label)).toEqual([DEFAULT_PROFILE_LABEL]);
     expect(store.resolve("none").id).toBe(store.defaultProfileId);
     expect(store.file).toBeNull();
+  });
+});
+
+/**
+ * THE MARKS A PERSON PUTS ON A PROFILE (#366) — a lucide icon id and one of the
+ * eight identity hues, so a list of identities can be told apart at a glance and
+ * the browser panel can show ONE glyph where the name does not fit.
+ *
+ * What is pinned here is that they are ORDINARY OPTIONAL FIELDS: absent by
+ * default, patched independently of each other and of the name, clearable, and
+ * survived across a reopen. And that a bad value is refused at the door but never
+ * at read time — the file has logins in it, and one hand-edited colour may not
+ * be what makes them unreachable.
+ */
+describe("a profile's icon and colour", () => {
+  test("a profile has neither until someone chooses, and choosing is not renaming", () => {
+    const dir = tmp();
+    const store = registry(dir);
+    const work = store.create({ label: "Work" });
+    expect(work.icon).toBeUndefined();
+    expect(work.color).toBeUndefined();
+
+    const marked = store.update(work.id, { icon: "briefcase", color: "amber" });
+    expect(marked).toMatchObject({ label: "Work", icon: "briefcase", color: "amber" });
+
+    // Each mark is its own patch: setting one may not drop the other, and
+    // neither may touch the name. This is the bug a "replace the record" write
+    // would have — a colour click that quietly cleared the icon beside it.
+    expect(store.update(work.id, { color: "sea" })).toMatchObject({ label: "Work", icon: "briefcase", color: "sea" });
+    expect(store.update(work.id, { label: "Work travel" })).toMatchObject({ label: "Work travel", icon: "briefcase", color: "sea" });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("they can be created with, and taken off again", () => {
+    const dir = tmp();
+    const store = registry(dir);
+    const personal = store.create({ label: "Personal", icon: "house", color: "moss" });
+    expect(personal).toMatchObject({ icon: "house", color: "moss" });
+
+    // null is how a person says "none" — an expressible state, not an error and
+    // not a field the caller has to omit forever after.
+    const bare = store.update(personal.id, { icon: null, color: null });
+    expect(bare.icon).toBeUndefined();
+    expect(bare.color).toBeUndefined();
+    expect(bare.label).toBe("Personal");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a colour outside the eight, or an icon that is not an icon id, is refused by name", () => {
+    const store = new ProfileRegistry(null);
+    const profile = store.create({ label: "Work" });
+    expect(() => store.update(profile.id, { color: "chartreuse" })).toThrow(/colour must be one of/);
+    expect(() => store.update(profile.id, { color: "#ff0000" })).toThrow(/colour must be one of/);
+    // Not emoji, not prose, not a URL — the owner asked for icons, and an id is
+    // what the renderer can actually draw in a colour.
+    expect(() => store.update(profile.id, { icon: "🏠" })).toThrow(/lucide icon id/);
+    expect(() => store.update(profile.id, { icon: "a house, please" })).toThrow(/lucide icon id/);
+    expect(() => store.create({ label: "Bad", color: "puce" })).toThrow(/colour must be one of/);
+    // The refusal changed nothing: the profile is still there, still unmarked.
+    expect(store.get(profile.id)).toMatchObject({ label: "Work" });
+    expect(store.get(profile.id).color).toBeUndefined();
+  });
+
+  test("the eight the registry accepts are the eight the app paints with", () => {
+    // This list is restated in this process (Electron main is plain CJS and
+    // cannot import the TS package); the engine-client copy is what the pickers
+    // offer. Pinned in full so a change to one is a visible change to the other.
+    expect(PROFILE_COLORS).toEqual(["plum", "sea", "moss", "amber", "slate", "rose", "sky", "sand"]);
+    const store = new ProfileRegistry(null);
+    const profile = store.create({ label: "Work" });
+    for (const color of PROFILE_COLORS) expect(store.update(profile.id, { color }).color).toBe(color);
+  });
+
+  test("the marks survive a reopen, and a hand-edited one is dropped rather than fatal", () => {
+    const dir = tmp();
+    const store = registry(dir);
+    const work = store.create({ label: "Work", icon: "briefcase", color: "amber" });
+    expect(readProfileRegistry(dir).get(work.id)).toMatchObject({ icon: "briefcase", color: "amber" });
+
+    // Someone edits the file by hand, or a newer build wrote a colour this one
+    // does not know. Opening the registry must still hand back every login in
+    // it — the profile arrives unmarked, and Settings is where it is re-marked.
+    const document = JSON.parse(fs.readFileSync(path.join(dir, FILE_NAME), "utf8"));
+    document.profiles[work.id].color = "chartreuse";
+    document.profiles[work.id].icon = "🏠";
+    fs.writeFileSync(path.join(dir, FILE_NAME), JSON.stringify(document));
+
+    const reopened = readProfileRegistry(dir).get(work.id);
+    expect(reopened).toMatchObject({ label: "Work", partition: work.partition });
+    expect(reopened.color).toBeUndefined();
+    expect(reopened.icon).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

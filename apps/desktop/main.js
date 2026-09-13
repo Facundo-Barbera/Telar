@@ -1263,7 +1263,7 @@ ipcMain.handle("telar:browser:profiles", (event, scopeKey) => {
 });
 ipcMain.handle("telar:browser:create-profile", (event, input) => {
   const manager = requireBrowserManager(event);
-  const profile = manager.profiles.create({ label: input?.label, account: input?.account });
+  const profile = manager.profiles.create({ label: input?.label, account: input?.account, icon: input?.icon, color: input?.color });
   // Creating from a session's panel is nearly always "and use it here".
   if (input?.scopeKey) manager.setScopeProfile(input.scopeKey, profile.id);
   if (input?.scopeKey && input?.assignProject) {
@@ -1277,9 +1277,14 @@ ipcMain.handle("telar:browser:create-profile", (event, input) => {
 });
 ipcMain.handle("telar:browser:update-profile", (event, input) => {
   const manager = requireBrowserManager(event);
+  // Only the keys the caller actually sent — `update` patches, so forwarding an
+  // absent field as undefined would be indistinguishable from "leave it", while
+  // forwarding it as null would clear a mark nobody touched.
   const profile = manager.profiles.update(input?.profileId, {
     ...(input?.label !== undefined ? { label: input.label } : {}),
     ...(input?.account !== undefined ? { account: input.account } : {}),
+    ...(input?.icon !== undefined ? { icon: input.icon } : {}),
+    ...(input?.color !== undefined ? { color: input.color } : {}),
   });
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), active: profile };
