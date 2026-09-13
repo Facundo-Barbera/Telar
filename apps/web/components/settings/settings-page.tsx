@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, InfoIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,7 @@ import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
 import { IntegrationsPage } from "./integrations-page";
+import { KeybindingsPage } from "./keybindings-page";
 import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
@@ -84,6 +85,12 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "projects", label: "Projects", icon: FolderKanbanIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT": a chord is a decision about this window and the shell
+   * around it — the table is what builds the Mac app's own menu — not about
+   * the machine that runs turns. Read-only today; see keybindings-page.tsx.
+   */
+  { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
   /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
    * a fact about the install, not about the machine that runs turns (the
@@ -237,6 +244,8 @@ export function SettingsPage() {
       )}
 
       {active === "projects" && <ProjectsPage />}
+
+      {active === "keybindings" && <KeybindingsPage />}
 
       {active === "plugins" && <PluginsPage />}
 

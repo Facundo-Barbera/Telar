@@ -48,6 +48,7 @@ import {
   GlobeIcon,
   ImageIcon,
   InfoIcon,
+  KeyboardIcon,
   KeyRoundIcon,
   LockIcon,
   MonitorIcon,
@@ -314,6 +315,31 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The desktop behind a translucent window, and the backdrop under the app.",
             keywords: ["opacity", "wallpaper", "backdrop"],
             icon: MonitorIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * NAVIGATE-ONLY, and by the rule at the top rather than by omission: every
+     * row on this pane is derived from `COMMAND_KEY_BINDINGS`, so its title is
+     * a VALUE (`Rail: Jump to conversation 4`) that would rot the moment a
+     * binding is added or renamed. One entry for the pane, whose title is the
+     * group heading the pane actually draws — and the pane is one card, so
+     * arriving on it puts every binding on screen anyway.
+     */
+    id: "keybindings",
+    label: "Keybindings",
+    icon: KeyboardIcon,
+    groups: [
+      {
+        rows: [
+          {
+            title: "Keyboard shortcuts",
+            hint: "Every chord this app answers to, and what each one does.",
+            keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
+            icon: KeyboardIcon,
           },
         ],
       },
