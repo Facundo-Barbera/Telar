@@ -1,28 +1,73 @@
 import SwiftUI
 
-/// A project's mark, in three honesties — the web's `ProjectAvatar`, 1:1:
-/// the icon its checkout actually carries, else a tinted initial from its
-/// name, else the plain folder that says "a directory, and nothing more is
-/// known".
+/// A project's mark, in four honesties — the web's `ProjectAvatar`, 1:1: the
+/// glyph a person CHOSE, else the icon its checkout actually carries, else a
+/// tinted initial from its name, else the plain folder that says "a directory,
+/// and nothing more is known".
 ///
-/// FAILS FORWARD. The icon key is derived when the Mac lists projects and the
-/// file can vanish between the list and the fetch; a fetch that fails draws
-/// the initial, never a broken-image glyph.
+/// THE CHOSEN MARK IS FIRST, and that ordering is the whole point of being able
+/// to choose one (#365): a project whose checkout carries a favicon nobody likes
+/// has no other way to say so. The chosen glyph and the discovered file are
+/// separate fields on the record for the reason `Project.iconName` gives, so
+/// preferring one here costs no branch anywhere else.
+///
+/// `currentColor` ON PURPOSE — a chosen glyph takes the ink of whatever list it
+/// is in (rail row, project header) rather than carrying a colour of its own, so
+/// it reads as part of the row instead of as a sticker on it. That is the web's
+/// rule for the same glyph.
+///
+/// FAILS FORWARD, TWICE OVER. An id this build has no symbol for falls through
+/// to the answers behind it (`telarIconSymbol`), and the checkout's icon key is
+/// derived when the Mac lists projects and the file can vanish between the list
+/// and the fetch — so a fetch that fails draws the initial, never a broken-image
+/// glyph.
 struct ProjectAvatar: View {
     var name: String?
     var projectId: EngineID?
     var hostId: HostID?
     /// `ProjectRef.icon`. Absent means no file was found.
     var icon: String?
+    /// `ProjectRef.iconName` — the glyph a person picked. Outranks `icon`.
+    var iconName: String?
+    /// `ProjectRef.iconEmoji` — a mark typed before the picker existed.
+    /// Outranks `icon`.
+    var iconEmoji: String?
     var api: (any EngineAPI)?
     /// The rendered box, in points. The type stays square at any size.
     var size: CGFloat = 16
+
+    /// The same view, built from a record's whole answer rather than from three
+    /// of its fields — see `ProjectMark`.
+    init(name: String?, projectId: EngineID? = nil, hostId: HostID? = nil, mark: ProjectMark, api: (any EngineAPI)? = nil, size: CGFloat = 16) {
+        self.init(name: name, projectId: projectId, hostId: hostId,
+                  icon: mark.icon, iconName: mark.iconName, iconEmoji: mark.iconEmoji, api: api, size: size)
+    }
+
+    init(name: String? = nil, projectId: EngineID? = nil, hostId: HostID? = nil,
+         icon: String? = nil, iconName: String? = nil, iconEmoji: String? = nil,
+         api: (any EngineAPI)? = nil, size: CGFloat = 16) {
+        self.name = name; self.projectId = projectId; self.hostId = hostId
+        self.icon = icon; self.iconName = iconName; self.iconEmoji = iconEmoji
+        self.api = api; self.size = size
+    }
 
     private var icons: ProjectIconCache { .shared }
 
     var body: some View {
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let icon, let projectId, let hostId, let image = icons.image(host: hostId, projectId: projectId, icon: icon) {
+        if let symbol = telarIconSymbol(iconName) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.82))
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else if let iconEmoji, !iconEmoji.isEmpty {
+            // Sized off the box like the initial below, so a mark and a letter
+            // sit at the same weight wherever the two appear in one list.
+            Text(iconEmoji)
+                .font(.system(size: (size * 0.72).rounded()))
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else if let icon, let projectId, let hostId, let image = icons.image(host: hostId, projectId: projectId, icon: icon) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()

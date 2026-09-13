@@ -1,5 +1,24 @@
 import Foundation
 
+/// WHAT A PROJECT LOOKS LIKE, in the three honesties the record carries — the
+/// web's `ProjectAvatar` props, kept together rather than spread across every
+/// signature that passes a project along.
+///
+/// THE ORDER OF PRECEDENCE LIVES IN THE VIEW, not here: this is the record's
+/// answer, and `ProjectAvatar` decides which part of it wins. A struct rather
+/// than three parallel `String?`s because a group, a place and a row all forward
+/// the same trio, and three parameters is three chances to drop one.
+struct ProjectMark: Equatable {
+    /// `Project.icon` — the content-derived key the engine serves bytes against.
+    var icon: String?
+    /// `Project.iconName` — the glyph a person picked.
+    var iconName: String?
+    /// `Project.iconEmoji` — a mark typed before the picker existed.
+    var iconEmoji: String?
+
+    static let none = ProjectMark()
+}
+
 /// ONE MAC'S REGISTRATION OF A PROJECT — the Mac, that Mac's own id for the
 /// project, and the name and icon that Mac gave it.
 ///
@@ -13,7 +32,7 @@ struct ProjectPlace: Identifiable, Equatable {
     let hostId: HostID
     let projectId: String
     var name: String
-    var icon: String? = nil
+    var mark: ProjectMark = .none
     var id: String { "\(hostId.uuidString):\(projectId)" }
 }
 
@@ -33,8 +52,8 @@ struct SidebarProject: Identifiable {
     let hostId: HostID
     let projectId: String
     let name: String
-    /// `ProjectRef.icon`, when the Mac listed one.
-    var icon: String? = nil
+    /// What this project looks like, as the Mac listed it.
+    var mark: ProjectMark = .none
     /// Every Mac this group lives on, in a stable order. One entry ordinarily;
     /// two when a repository is checked out on two of them.
     var places: [ProjectPlace] = []
@@ -61,7 +80,7 @@ struct SidebarModel {
     init(
         sessions: [HostedSession],
         names: (HostedSession) -> String?,
-        icons: (HostedSession) -> String? = { _ in nil },
+        marks: (HostedSession) -> ProjectMark = { _ in .none },
         /// `ProjectRef.remoteUrl` for a row's project — the repository two Macs
         /// fold on. Absent is an ordinary answer; see `groupKey`.
         remotes: (HostedSession) -> String? = { _ in nil },
@@ -91,7 +110,7 @@ struct SidebarModel {
             SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: remotes(row))
         }
         projects = groups.compactMap { key, rows -> SidebarProject? in
-            let places = SidebarModel.places(rows, names: names, icons: icons, hostNames: hostNames)
+            let places = SidebarModel.places(rows, names: names, marks: marks, hostNames: hostNames)
             guard let first = places.first else { return nil }
             // A group folded on its repository is keyed that way in every Mac's
             // document; one that was not is keyed by the bare project id, and
@@ -103,7 +122,7 @@ struct SidebarModel {
                 hostId: first.hostId,
                 projectId: first.projectId,
                 name: first.name,
-                icon: first.icon,
+                mark: first.mark,
                 places: places,
                 // EACH ROW BY ITS OWN MAC'S LIST, even inside a merged group:
                 // the two documents are two decisions, and reading one Mac's
@@ -154,7 +173,7 @@ struct SidebarModel {
     private static func places(
         _ rows: [HostedSession],
         names: (HostedSession) -> String?,
-        icons: (HostedSession) -> String?,
+        marks: (HostedSession) -> ProjectMark,
         hostNames: (HostID) -> String?
     ) -> [ProjectPlace] {
         var found: [String: ProjectPlace] = [:]
@@ -163,7 +182,7 @@ struct SidebarModel {
                 hostId: row.hostId,
                 projectId: row.session.projectId ?? "",
                 name: names(row) ?? "Other sessions",
-                icon: icons(row)
+                mark: marks(row)
             )
             if found[place.id] == nil { found[place.id] = place }
         }
