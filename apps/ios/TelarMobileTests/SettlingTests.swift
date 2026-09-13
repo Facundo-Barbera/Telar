@@ -64,6 +64,44 @@ import Testing
         #expect(sections.settled.count == 1)
         #expect(sections.snoozed.count == 1)
     }
+
+    /// WHY THE SHELF TOOK IT — issue #378. The Mac shelves a delegate once its
+    /// coordinator has taken delivery, so the phone meets a settled row nobody
+    /// on this device decided about, and it has to be able to say so.
+    @Test func theEngineSettleDecodesAndExplainsItself() {
+        let settled = session(#""settledOverride":"settled","settledBy":{"kind":"delegation","coordinatorSessionId":"session_coord","runId":"run_task","at":900}"#)
+        #expect(settled.settledBy?.kind == "delegation")
+        #expect(settled.settledBy?.coordinatorSessionId == "session_coord")
+        #expect(settled.settledBy?.runId == "run_task")
+        #expect(Settling.settledHint(settled, coordinatorTitle: "Ship the exports fix")
+                == "Settled after its work for Ship the exports fix was delivered")
+        // An archived coordinator is not on the list the rail resolves titles
+        // from. The sentence stands without a name — printing a raw id at
+        // somebody would be worse than naming nobody.
+        #expect(Settling.settledHint(settled, coordinatorTitle: nil)
+                == "Settled after its delegated work was delivered")
+        #expect(Settling.settledHint(settled, coordinatorTitle: "")
+                == "Settled after its delegated work was delivered")
+    }
+
+    @Test func aSettleAPersonMadeHasNothingToExplain() {
+        #expect(Settling.settledHint(session(#""settledOverride":"settled""#), coordinatorTitle: "Anybody") == nil)
+        #expect(Settling.settledHint(session(""), coordinatorTitle: nil) == nil)
+    }
+
+    @Test func aReasonThisBuildHasNeverHeardOF_doesNotDropTheRow() {
+        // `kind` is a String for exactly this: a Mac newer than the phone can
+        // stamp a reason nobody here knows, and losing a hint must not cost the
+        // whole session record.
+        let odd = session(#""settledOverride":"settled","settledBy":{"kind":"something-new","coordinatorSessionId":"session_x"}"#)
+        #expect(odd.title == "T")
+        #expect(odd.settledBy?.kind == "something-new")
+        #expect(odd.settledBy?.runId == nil)
+    }
+
+    @Test func aMacTooOldToSendTheStampIsStillReadable() {
+        #expect(session("").settledBy == nil)
+    }
 }
 
 /// UNREAD, on the same cases the web's session-settling.test.ts pins.

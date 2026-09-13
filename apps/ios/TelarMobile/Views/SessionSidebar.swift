@@ -666,8 +666,35 @@ struct SessionSidebar: View {
                 .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.7))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            statusSlot(row.session)
+            // WHY THE SHELF TOOK IT, WHERE THE AGE WOULD BE — issue #378.
+            //
+            // A settled row's right-hand slot says "8h ago", which on this
+            // shelf is the sort order restated. A row the ENGINE shelved has
+            // something there that the reader cannot work out for themselves,
+            // so it takes the slot; the age is one tap away in the row itself.
+            //
+            // ONLY WHEN THE SLOT HAS NOTHING LOUDER TO SAY. A delegate that is
+            // working again, or asking something, is a claim about the present
+            // and beats a claim about why it was shelved — which is the same
+            // precedence `statusSlot` already reads top to bottom.
+            if let hint = settledHint(row), row.session.activity == .idle, row.session.snoozedUntil == nil {
+                Text(hint).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
+                    .lineLimit(1).truncationMode(.tail)
+                    .layoutPriority(-1)
+            } else {
+                statusSlot(row.session)
+            }
         }
+    }
+
+    /// The sentence, with the coordinator resolved on the row's OWN Mac — an
+    /// assignment's ids are one engine's, so a global lookup could name a
+    /// stranger. See `MergedInbox.title`.
+    private func settledHint(_ row: HostedSession) -> String? {
+        Settling.settledHint(
+            row.session,
+            coordinatorTitle: row.session.settledBy.flatMap { inbox.title($0.coordinatorSessionId, on: row.hostId) }
+        )
     }
 
     /// A CONVERSATION THAT HANGS OFF THE ONE ABOVE IT — #324's shape, ported.
