@@ -1969,9 +1969,9 @@ export class EngineStore {
        * rewritten in the new shape on the next save.
        */
       const days = (stored as { autoSettleAfterDays?: unknown } | undefined)?.autoSettleAfterDays;
-      if (days === null) return { autoSettleAfterHours: null };
+      if (days === null) return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: null };
       if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 90) {
-        return { autoSettleAfterHours: days * 24 };
+        return { ...DEFAULT_INBOX_POLICY, autoSettleAfterHours: days * 24 };
       }
       return { ...DEFAULT_INBOX_POLICY };
     } catch {

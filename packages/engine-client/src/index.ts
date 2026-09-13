@@ -595,7 +595,11 @@ export class EngineClient {
     return this.request("GET", "/v2/inbox");
   }
 
-  setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
+  setInboxPolicy(patch: {
+    autoSettleAfterHours?: number | null;
+    /** The delegation grace — see `InboxPolicy`. `null` turns it off. */
+    settleDelegatedAfterHours?: number | null;
+  }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
   }
 
