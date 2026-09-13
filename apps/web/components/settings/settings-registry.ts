@@ -203,12 +203,19 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: FolderKanbanIcon,
     groups: [
       {
-        title: "Scope",
+        /**
+         * THE SCOPE BAR, AND IT IS NAVIGATE-ONLY. Both controls are the pane's
+         * header rather than rows in a group — see `projects-page.tsx` — so
+         * there is no anchor to scroll to. Indexed anyway, and without the
+         * caveat the other navigate-only entries carry: the bar is the first
+         * thing on the pane, so arriving at Projects puts both controls on
+         * screen without a scroll.
+         */
         rows: [
           {
             title: "Mac",
             hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
-            keywords: ["host", "paired", "remote", "other mac"],
+            keywords: ["host", "paired", "remote", "other mac", "machine"],
             icon: MonitorIcon,
           },
           {
@@ -256,6 +263,17 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The project's own checkout, or a worktree cut from it.",
             keywords: ["worktree", "checkout", "workspace", "branch"],
             icon: FolderGitIcon,
+          },
+        ],
+      },
+      {
+        title: "Elsewhere",
+        rows: [
+          {
+            title: "This project's own page",
+            hint: "MCP servers scoped to it, and each plugin's own editor.",
+            keywords: ["mcp", "plugin editor", "per project", "latex", "notebook"],
+            icon: ExternalLinkIcon,
           },
         ],
       },

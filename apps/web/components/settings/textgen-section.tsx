@@ -108,6 +108,14 @@ export function TextGenSection() {
   // select would silently display the wrong answer.
   const pinned = policy.model;
   const listed = pinned !== undefined && models.some((model) => model.id === pinned);
+  /**
+   * WHAT THE TRIGGER READS — the same defect as #318, one pane over. A bare
+   * `<SelectValue />` prints the VALUE, so this trigger showed the sentinel
+   * `__driver-default` rather than "Provider default", and a wire id rather
+   * than the model's own label. Stated here so an unlisted pin still reads as
+   * its id rather than as nothing.
+   */
+  const pinnedLabel = pinned === undefined ? "Provider default" : (models.find((model) => model.id === pinned)?.label ?? pinned);
 
   return (
     <SettingsGroup
@@ -156,7 +164,7 @@ export function TextGenSection() {
             disabled={loading}
           >
             <SelectTrigger size="sm" className="w-44">
-              <SelectValue />
+              <SelectValue>{pinnedLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={DRIVER_DEFAULT}>Provider default</SelectItem>

@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * EVERY PROJECT THIS COCKPIT KNOWS, ON ONE PANE, WITH A SCOPE AT THE TOP.
+ * EVERY PROJECT THIS COCKPIT KNOWS, ON ONE PANE, WITH A SCOPE BAR AT THE TOP.
  *
- * WHY A SCOPE ROW RATHER THAN A LIST OF PROJECTS. A registry with five entries
+ * WHY A SCOPE BAR RATHER THAN A LIST OF PROJECTS. A registry with five entries
  * rendered as five collapsible blocks is a pane whose length is a property of
  * somebody's disk, and the reader is looking for ONE project's setting. So the
- * pane holds one project's rows at a time and the scope row says which — the
- * Mac, then the project on it. The rows below never move.
+ * pane holds one project's rows at a time and the bar says which — the Mac on
+ * the left, the project on the right, above the first card. The rows below
+ * never move.
+ *
+ * THE BAR IS NOT A CARD, and that is the point of it. It was two rows in a
+ * "Scope" group, which framed the control that decides what the pane is ABOUT
+ * identically to the settings it governs: the first card read as the first
+ * group, and the picker read as one more setting to configure.
  *
  * "ALL PROJECTS" IS A REAL CHOICE, NOT AN EMPTY ONE, and it is where the pane
  * opens. It is what a reader sees before they have named a project, and every
@@ -326,56 +332,95 @@ export function ProjectsPage() {
 
   return (
     <>
-      <SettingsGroup title="Scope" description="Which Mac's registry, and which project the rows below are about.">
+      {/*
+        THE SCOPE IS A BAR, NOT A GROUP OF ROWS.
+
+        It was two `Row`s in a "Scope" card, which put the thing that decides
+        what the whole pane is ABOUT inside the same frame as the settings it
+        governs — the first card read as the first group, and a reader looking
+        for the project picker had to work out that one of these rows was not a
+        setting. The reference puts both controls on their own line above the
+        first card (`docs/design/t3code-survey/08-settings-projects.png`):
+        machine on the left, project on the right, and the rows below bind to
+        whatever they say.
+
+        `justify-between` with no left-hand control still pushes the picker
+        right, which is where it belongs on a cockpit with no paired Mac — so
+        the common case needs no branch of its own.
+      */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         {/* ONLY WHEN THERE IS A CHOICE. A one-segment control is a button that
             does nothing, and a cockpit with no paired Mac is the common one. */}
         {hosts.length > 0 && (
-          <Row
-            label="Mac"
-            icon={MonitorIcon}
-            hint="Projects are registered per Mac. A paired one's registry is read from that Mac."
-            control={
-              <Segmented<string>
-                value={hostId}
-                onChange={(next) => {
-                  setHostId(next);
-                  setSelected(ALL_PROJECTS);
-                }}
-                options={[{ value: LOCAL_HOST_ID, label: "This Mac" }, ...hosts.map((host) => ({ value: host.id, label: host.name }))]}
-              />
-            }
+          <Segmented<string>
+            value={hostId}
+            onChange={(next) => {
+              setHostId(next);
+              setSelected(ALL_PROJECTS);
+            }}
+            options={[
+              { value: LOCAL_HOST_ID, label: "This Mac" },
+              ...hosts.map((host) => ({
+                value: host.id,
+                label: (
+                  <>
+                    <MonitorIcon className="size-3" />
+                    {host.name}
+                  </>
+                ),
+              })),
+            ]}
           />
         )}
-        <Row
-          label="Project"
-          icon={FolderKanbanIcon}
-          hint={
-            unreachable
-              ? "The engine is not answering, so there is nothing to choose from."
-              : "All projects leaves the rows below inert; naming one binds them to it."
-          }
-          control={
-            <Select value={selected} onValueChange={(next) => typeof next === "string" && setSelected(next)}>
-              <SelectTrigger size="sm" className="w-56" aria-label="Project these settings are about">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
-                {projects.map((entry) => (
-                  <SelectItem key={entry.id} value={entry.id}>
-                    {entry.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          }
-        />
-        {/* THE PER-PROJECT PAGE STAYS THE DESTINATION for everything this pane
-            does not hold — MCP servers scoped to the project, and each plugin's
-            bespoke editor. There is no `/hosts/:id/projects/:id/settings`
-            route, so a project on another Mac says so rather than offering a
-            link that would open this Mac's page for a foreign id. */}
-        {project && (
+        <Select value={selected} onValueChange={(next) => typeof next === "string" && setSelected(next)}>
+          <SelectTrigger size="sm" className="ml-auto w-56" aria-label="Project these settings are about">
+            <FolderKanbanIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            {/*
+              THE LABEL, NOT THE VALUE (#318). A bare `<SelectValue />` renders
+              the value string when the Select has no item-to-label mapping,
+              so the trigger read `__all-projects` and then a project id — the
+              list beside it having shown the right names all along.
+
+              Stated as a CHILD rather than passed as `items`, because the id
+              may name a project this Mac's registry has not answered with yet:
+              `?project=` is read on the first paint and a remote Mac's list
+              arrives a request later. A mapping would fall back to printing
+              the id in exactly that window; this says what the rows below say.
+            */}
+            <SelectValue>
+              {selected === ALL_PROJECTS ? "All projects" : (project?.name ?? "Select a project")}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+            {projects.map((entry) => (
+              <SelectItem key={entry.id} value={entry.id}>
+                {entry.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {/* The one thing the picker cannot say for itself: an empty list because
+          nothing answered is not the same as an empty registry. */}
+      {unreachable && (
+        <p className="-mt-4 mb-6 text-xs text-muted-foreground">The engine is not answering, so there is nothing to choose from.</p>
+      )}
+
+      <ProjectIdentityRows {...(project ? { project } : {})} />
+      <ProjectConversationRows {...(project ? { project } : {})} envMode={defaults.envMode} />
+      <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+
+      {/* WHAT IS LEFT ON THE PER-PROJECT PAGE, AND ONLY THAT. It used to be
+          offered as "everything this pane does not hold"; the pane holds the
+          identity, the conversation defaults and the plugin switches now, so
+          the page is the destination for the two things that cannot be rows
+          here — MCP servers scoped to the project, and each plugin's own
+          bespoke editor. There is no `/hosts/:id/projects/:id/settings` route,
+          so a project on another Mac says so rather than offering a link that
+          would open this Mac's page for a foreign id. */}
+      {project && (
+        <SettingsGroup title="Elsewhere">
           <Row
             label="This project's own page"
             icon={ExternalLinkIcon}
@@ -390,14 +435,10 @@ export function ProjectsPage() {
             }
             {...(project.hostId
               ? { unavailable: { reason: "Open it in that Mac's own cockpit — this route names projects on this Mac only." } }
-              : { hint: "MCP servers scoped to it, and every plugin's own editor." })}
+              : { hint: "MCP servers scoped to it, and each plugin's own editor. Everything else about this project is on this pane." })}
           />
-        )}
-      </SettingsGroup>
-
-      <ProjectIdentityRows {...(project ? { project } : {})} />
-      <ProjectConversationRows {...(project ? { project } : {})} envMode={defaults.envMode} />
-      <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+        </SettingsGroup>
+      )}
 
       {/* THE DANGER GROUP IS LAST, AND ONLY FOR A PROJECT ON THIS MAC. Removing
           a registration on another Mac would be a write to its engine; the
