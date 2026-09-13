@@ -408,17 +408,31 @@ export function SettingsShell({
 }
 
 /**
- * A TITLED BLOCK OF FIELDS — and, since this rebuild, NOT A CARD.
+ * A TITLED BLOCK OF FIELDS — ONE RAISED CARD, WITH THE TITLE AS A CAPTION ABOVE IT.
  *
- * It used to wrap its rows in `rounded-xl bg-card ring-1`, which put every
- * setting inside a raised slab. Two costs: on a pane that already frames
- * regions with `Panel` (components/ui/panel.tsx) it was a card inside a card,
- * and on its own it made a list of decisions read as an object to be handled
- * rather than a page to be read. The reference this pane now follows separates
- * fields with SPACE and a hairline, and lets the title carry the structure.
+ * It was hairlines and space with no card, on the reasoning that a card inside
+ * a `Panel` is a card inside a card. That reasoning does not apply here: this
+ * shell is a FULL-PAGE TAKEOVER — it replaces the app rail rather than standing
+ * inside a panelled surface (see `SettingsShell`) — so there is no outer card
+ * for this one to nest in, and the pane the reference draws is the one this
+ * follows now (`docs/design/t3code-survey/03-settings-landing.png`).
+ *
+ * WHY THE CARD EARNS ITS KEEP. Without it a pane of five groups is one column
+ * of hairlines, and the only thing saying where a group ends is a heading a
+ * reader has to scan back up to. The card states the boundary structurally:
+ * every row inside it is governed by the caption above it, and the gap between
+ * cards is the group break. That is the whole reason the reference reads as
+ * grouped and the hairline version read as a list.
+ *
+ * THE CAPTION RECEDES AND THE ROWS LEAD. It was `text-base font-semibold`, one
+ * step LARGER than the row titles beneath it, which made the section name the
+ * loudest thing on a page whose content is the rows. Small, normal weight and
+ * `text-foreground/70` is the reference's own grammar, and it inverts the
+ * emphasis the right way round.
  *
  * `action` is the control that belongs to the whole group rather than to any
- * one field — an "Advanced" switch, a reset.
+ * one field — an "Advanced" switch, a reset. It sits on the caption line,
+ * outside the card, because it acts on the group rather than on any row in it.
  */
 export function SettingsGroup({
   title,
@@ -432,24 +446,25 @@ export function SettingsGroup({
   children: ReactNode;
 }) {
   return (
-    <section className="mb-7 last:mb-0">
+    <section className="mb-6 last:mb-0">
       {(title || description || action) && (
-        <div className="mb-2.5 flex items-start gap-3">
+        // `px-4` matches the card's own row padding, so the caption sits over
+        // the row titles rather than over the card's edge.
+        <div className="mb-2 flex items-start gap-3 px-4">
           <div className="min-w-0 flex-1">
-            {/* A GROUP TITLE READS AS A SECTION, not as a row label: one step
-                larger than the rows beneath it, so a page of several groups
-                scans as several groups rather than one long list. */}
-            {title && <h4 className="font-heading text-base font-semibold tracking-tight text-foreground">{title}</h4>}
+            {title && <h4 className="font-heading text-[0.8125rem] font-normal tracking-tight text-foreground/70">{title}</h4>}
             {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
           </div>
           {action && <div className="shrink-0">{action}</div>}
         </div>
       )}
-      {/* The group owns the tightening at its ends: its own title supplies the
-          space above the first field, and the next group supplies it below the
-          last. A Row cannot know that — it also lives inside Panels, where
-          eating its own padding pressed the text against the border. */}
-      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+      {/* THE ROWS OWN NO HORIZONTAL PADDING OF THEIR OWN — `Row` also lives in
+          a Panel and in the session's narrow column, where the surface supplies
+          it. The card supplies it here, to its direct children, so a caller
+          that puts something other than a Row inside a group still lines up.
+          Vertical padding stays even at both ends: inside a card, an eaten
+          first-row `pt` presses the text against the border. */}
+      <div className="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-sm [&>*]:px-4">
         {/* Only a plain-string title names a group for the rows beneath it. A
             title spliced from a value ("Telar's servers") would put the project
             name into every anchor under it, so those rows fall back to the

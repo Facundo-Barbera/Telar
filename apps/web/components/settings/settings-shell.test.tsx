@@ -75,6 +75,46 @@ test("a toggle row carries status and unavailable through to the Row", () => {
   expect(html).toContain("No provider is configured to name them.");
 });
 
+test("a group draws one card, with its rows hairlined inside it", () => {
+  const html = renderToStaticMarkup(
+    <SettingsGroup title="Organization">
+      <Row label="Project grouping" hint="Combine matching repositories across environments." />
+      <Row label="Auto-settle merged threads" hint="Settle a thread when its pull request merges." />
+    </SettingsGroup>,
+  );
+  // ONE card around BOTH rows, not one per row — the group is the object.
+  // The arbitrary variant arrives HTML-escaped in a server render — matched as
+  // it actually reaches the DOM rather than as it is written in the source.
+  const card = 'class="divide-y divide-border/60 rounded-xl border border-border bg-card shadow-sm [&amp;&gt;*]:px-4"';
+  expect(html).toContain(card);
+  expect(html.split(card).length - 1).toBe(1);
+  expect(html).toContain("Project grouping");
+  expect(html).toContain("Auto-settle merged threads");
+});
+
+test("the group's title is a caption ABOVE the card, and quieter than the rows it governs", () => {
+  const html = renderToStaticMarkup(
+    <SettingsGroup title="Organization">
+      <Row label="Project grouping" />
+    </SettingsGroup>,
+  );
+  // Outside the card: the caption's markup closes before the card opens.
+  expect(html.indexOf("Organization")).toBeLessThan(html.indexOf("rounded-xl border border-border bg-card"));
+  // And recessive — a section header must not outweigh the row titles under it.
+  expect(html).toContain("text-foreground/70");
+  expect(html).not.toContain("text-base font-semibold");
+});
+
+test("a group with no title is still a card, so a captionless group is not a loose list", () => {
+  const html = renderToStaticMarkup(
+    <SettingsGroup>
+      <Row label="Browser profiles" />
+    </SettingsGroup>,
+  );
+  expect(html).toContain("rounded-xl border border-border bg-card");
+  expect(html).not.toContain("<h4");
+});
+
 test("a row inside a group carries the derived anchor and takes focus", () => {
   const html = renderToStaticMarkup(
     <SettingsGroup title="Settling">
