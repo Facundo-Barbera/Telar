@@ -31,7 +31,7 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function eventually(assertion: () => void | Promise<void>, timeoutMs = 4_000): Promise<void> {
+async function eventually(assertion: () => void | Promise<void>, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {

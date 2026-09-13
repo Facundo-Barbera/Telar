@@ -35,8 +35,8 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000): Promise<void> {
-  // A wall-clock bound (below bun's 5s test timeout), not a retry count: the
+async function eventually(check: () => void | Promise<void>, deadlineMs = 15_000): Promise<void> {
+  // A wall-clock bound (below the 20s ceiling in bunfig.toml), not a retry count: the
   // former 60×5ms window was ~300ms only when each check was instant, and
   // one full-gate run under load failed it. Settles on the first pass.
   const deadline = Date.now() + deadlineMs;

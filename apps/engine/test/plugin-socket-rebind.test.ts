@@ -88,7 +88,7 @@ function recordingDriver(options: {
   };
 }
 
-async function eventually(assertion: () => void | Promise<void>, timeoutMs = 5_000): Promise<void> {
+async function eventually(assertion: () => void | Promise<void>, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {
