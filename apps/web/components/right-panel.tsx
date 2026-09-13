@@ -76,6 +76,7 @@ import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/li
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
+import { RelatedConversations } from "@/components/session/related-conversations";
 import { cn } from "@/lib/utils";
 
 /** The panel reads the engine directly for the one thing the journal cannot
@@ -109,7 +110,15 @@ const api = createEngineApi();
  * record itself. A browser PAGE is not one of these — see `PanelTab` below.
  */
 const SURFACES = [
-  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and Warp runs" },
+  /**
+   * "AND THE CONVERSATIONS WORKING FOR THIS ONE" IS NOT PADDING — issue #381.
+   * The rail used to state that relationship by drawing a delegate indented
+   * under its coordinator, which read as a sub-agent of it. It is not one, and
+   * a person looking for where their delegated work went now has one place to
+   * look. The blurb names it because a chooser card is the only thing that
+   * tells a reader a surface holds something before they open it.
+   */
+  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents, Warp runs, and the conversations working for this one" },
   /**
    * BACKGROUND WORK IS NOT A SUB-AGENT. A watch loop and a five-minute build
    * share a surface with nothing: an agent has a transcript and a conclusion, a
@@ -1160,13 +1169,54 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
   );
 }
 
-function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
+/**
+ * THE ROSTER, AND WHO ELSE IS ON IT — issue #381.
+ *
+ * Two kinds of worker share this surface and they are not the same kind of
+ * thing. A SUB-AGENT is a task inside this session's own turn: it has a step
+ * count, a conclusion, and no existence afterwards. A DELEGATED CONVERSATION is
+ * a peer — its own transcript, its own worktree, its own life once the errand
+ * ends. The rail used to blur that by drawing the second as a child row of the
+ * conversation that asked it for something, which is exactly the reading the
+ * owner objected to.
+ *
+ * SO THEY ARE BOTH HERE AND THEY ARE APART. Sub-agents keep the surface's top,
+ * because a fan-out in flight is the thing that moves; the conversations sit
+ * below their own headings, where a row has room to say which errand, how it
+ * went and when (`session/related-conversations.tsx`).
+ */
+function AgentsSurface({
+  tasks,
+  focused,
+  sessionId,
+  hostId,
+  visible = true,
+}: {
+  tasks: readonly JournalTask[];
+  focused?: TaskFocus;
+  sessionId?: string;
+  hostId?: string;
+  visible?: boolean;
+}) {
   const { groups, agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
+  const related = (
+    <RelatedConversations
+      {...(sessionId ? { sessionId } : {})}
+      {...(hostId ? { hostId } : {})}
+      visible={visible}
+    />
+  );
   if (groups.length === 0 && loose.length === 0) {
+    // NO EMPTY STATE OF ITS OWN WHEN SOMETHING IS RELATED. "Sub-agents appear
+    // here as they work" above a list of four conversations that are working
+    // would be the surface contradicting its own contents.
     return (
-      <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
-        Background work lives on the Processes tab.
-      </PanelEmpty>
+      <div className="flex flex-col">
+        <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
+          Background work lives on the Processes tab.
+        </PanelEmpty>
+        {related}
+      </div>
     );
   }
   const live = loose.filter(isLiveTask);
@@ -1202,6 +1252,7 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
       {live.map(row)}
       {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
       {finished.map(row)}
+      {related}
     </div>
   );
 }
@@ -1477,7 +1528,16 @@ export function PanelSurface({
         openNumbers={kind === "issues" ? openIssueNumbers : openPullNumbers}
       />
     );
-  if (kind === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  if (kind === "agents")
+    return (
+      <AgentsSurface
+        tasks={tasks}
+        {...(focusedTask ? { focused: focusedTask } : {})}
+        {...(sessionId ? { sessionId } : {})}
+        {...(hostId ? { hostId } : {})}
+        visible={visible}
+      />
+    );
   if (kind === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
   // Every tab kind is handled above. This used to be the Usage surface's arm;
   // as a fallthrough it would render some OTHER pane for an unknown tab id, so

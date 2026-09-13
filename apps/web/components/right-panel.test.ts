@@ -404,6 +404,44 @@ describe("a browser tab's label comes from the live page when the shell has one"
 });
 
 /**
+ * AGENTS HOLDS THE CONVERSATIONS TOO — issue #381.
+ *
+ * The rail stopped drawing a delegated conversation as a child of the one that
+ * delegated to it, and the relationship moved here. Two things have to be true
+ * for that to be a move rather than a deletion: the surface must actually mount
+ * the section, and the chooser card must say so — a card is the only thing that
+ * tells a reader what a surface holds before they open it.
+ */
+describe("the Agents surface", () => {
+  const dir = fileURLToPath(new URL(".", import.meta.url));
+  const source = fs.readFileSync(path.join(dir, "right-panel.tsx"), "utf8");
+
+  test("its blurb names what the section holds, and no longer stops at sub-agents", () => {
+    const { label, blurb } = describePanelTab("agents");
+    expect(label).toBe("Agents");
+    expect(blurb).toContain("conversations working for this one");
+    expect(blurb).not.toBe("Sub-agents and Warp runs");
+  });
+
+  test("the section is mounted, and it is given the session whose relationships it describes", () => {
+    expect(source).toContain("<RelatedConversations");
+    const mount = source.slice(source.indexOf("<RelatedConversations"), source.indexOf("/>", source.indexOf("<RelatedConversations")));
+    // Without the id there is nothing to ask about; without the host a remote
+    // cockpit would ask the local engine about a remote session.
+    expect(mount).toContain("sessionId");
+    expect(mount).toContain("hostId");
+  });
+
+  test("an empty roster still draws the section — a surface must not contradict its own contents", () => {
+    // "Sub-agents appear here as they work" above four conversations that ARE
+    // working is the empty state arguing with the rows beneath it.
+    const surface = source.slice(source.indexOf("function AgentsSurface"), source.indexOf("function ProcessesSurface"));
+    const empty = surface.slice(surface.indexOf("Sub-agents appear here"));
+    expect(empty.slice(0, empty.indexOf("const live"))).toContain("{related}");
+  });
+});
+
+/**
  * THE TAB STRIP IS A DRAG HANDLE — issue #279, the panel half.
  *
  * ASSERTED AS SOURCE, not as a render: `RightPanel` is the cockpit's whole
