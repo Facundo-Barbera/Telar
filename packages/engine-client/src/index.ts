@@ -34,6 +34,9 @@ import {
   type TextGenPolicy,
   type UsageReport,
   type UsageResolution,
+  type UsageLimits,
+  type UsageLimitSource,
+  type UsageLimitSourceKind,
   type SpoolAperture,
   type SpoolApertureView,
   type SpoolArea,
@@ -670,6 +673,47 @@ export class EngineClient {
     if (input.resolution) query.set("resolution", input.resolution);
     if (input.timeZone) query.set("tz", input.timeZone);
     return this.request("GET", `/v2/usage?${query.toString()}`);
+  }
+
+  /**
+   * The CLIProxyAPI hubs quota is read from — configuration, not quota.
+   *
+   * MANAGEMENT KEYS NEVER COME BACK: every row reads `managementKey: ""`, with
+   * `keyRedacted: true` when one is stored. See `UsageLimitSource`.
+   */
+  usageLimitSources(): Promise<{ sources: UsageLimitSource[] }> {
+    return this.request("GET", "/v2/usage/sources");
+  }
+
+  /** Create or replace one hub. An EMPTY `managementKey` keeps the stored one,
+   *  which is what makes saving a row you read back redacted safe. */
+  saveUsageLimitSource(input: {
+    id: string;
+    kind?: UsageLimitSourceKind;
+    /** `null` clears it; absent leaves it alone. */
+    label?: string | null;
+    url?: string;
+    managementKey?: string;
+    enabled?: boolean;
+  }): Promise<{ source: UsageLimitSource }> {
+    const { id, ...patch } = input;
+    return this.request("PUT", `/v2/usage/sources/${encodeURIComponent(id)}`, patch);
+  }
+
+  /** Forget a hub and its stored key together. */
+  removeUsageLimitSource(id: string): Promise<{ removed: boolean }> {
+    return this.request("DELETE", `/v2/usage/sources/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * What the hubs currently report — pooled account quota, per source.
+   *
+   * SERVED FROM A SHORT-LIVED CACHE. `refresh` waits for a fresh read of every
+   * configured hub; without it a stale snapshot comes back immediately and
+   * refreshes behind the answer.
+   */
+  usageLimits(options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
+    return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */

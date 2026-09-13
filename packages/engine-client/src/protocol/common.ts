@@ -307,6 +307,101 @@ export const UsageReport = z.object({
 export type UsageReport = z.infer<typeof UsageReport>;
 
 /**
+ * USAGE LIMIT SOURCES — quota read from somewhere this machine does not run.
+ *
+ * The report above counts what THIS Mac spent, by reading transcripts it can
+ * see. A pooled subscription is the other half of the same question and no
+ * amount of local scanning can answer it: a CLIProxyAPI hub holds several
+ * Claude/Codex logins and routes turns across them, so the windows that
+ * actually gate work are the hub's, on accounts this machine never logs in as.
+ *
+ * A SOURCE IS CONFIGURATION, A SNAPSHOT IS LIVE STATE. The first is stored and
+ * survives a restart; the second is re-read from the hub and never persisted,
+ * for the same reason a provider probe is not — a quota figure kept across a
+ * restart is a figure that is wrong by exactly as long as the engine was down.
+ */
+export const UsageLimitSourceKind = z.enum(["cliproxy"]);
+export type UsageLimitSourceKind = z.infer<typeof UsageLimitSourceKind>;
+
+/**
+ * One configured hub.
+ *
+ * `managementKey` IS ALWAYS EMPTY ON THE WAY OUT and `keyRedacted` says why —
+ * the same round trip `ProviderInstanceEnvVar.sensitive` makes, and for the
+ * same reason: this row is handed to a settings page over HTTP, so redaction
+ * has to be what the type says rather than what each call site remembers.
+ * Saving the redacted shape back KEEPS the stored key; only a non-empty value
+ * replaces one.
+ */
+export const UsageLimitSource = z.object({
+  id: z.string().min(1).max(64),
+  kind: UsageLimitSourceKind,
+  /** What to call it. Absent means "use the URL's host". */
+  label: z.string().max(120).optional(),
+  url: z.string().min(1).max(2048),
+  /** Always `""` from a read. Send a non-empty value to replace the stored key. */
+  managementKey: z.string().max(4096),
+  /** Present and true when a key is stored and was withheld from this read. */
+  keyRedacted: z.boolean().optional(),
+  enabled: z.boolean(),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type UsageLimitSource = z.infer<typeof UsageLimitSource>;
+
+/**
+ * One quota window on one account.
+ *
+ * `usedPercent` RATHER THAN "remaining": it is the figure both providers
+ * actually report (Claude's `utilization`, Codex's `used_percent`), and
+ * deriving the complement once at the edge is cheaper than storing a number
+ * neither API said.
+ */
+export const UsageLimitWindow = z.object({
+  /** Stable within a driver: `five_hour`, `seven_day`, `primary`, `secondary`,
+   *  or `model:<display name>` for Claude's model-scoped weekly limits. */
+  key: z.string().min(1),
+  label: z.string().min(1),
+  usedPercent: z.number().min(0).max(100),
+  /** When the window rolls over, epoch ms. Absent when the provider gave none. */
+  resetsAt: Timestamp.optional(),
+});
+export type UsageLimitWindow = z.infer<typeof UsageLimitWindow>;
+
+/** One subscription login the hub pools. `error` is per-account on purpose: a
+ *  hub that answers for three accounts and fails on the fourth must show three
+ *  bars and one explanation, not four blanks. */
+export const UsageLimitAccount = z.object({
+  id: z.string().min(1),
+  driver: ProviderDriverKind,
+  email: z.string().optional(),
+  plan: z.string().optional(),
+  windows: z.array(UsageLimitWindow),
+  error: z.string().optional(),
+});
+export type UsageLimitAccount = z.infer<typeof UsageLimitAccount>;
+
+/** What one source answered, when. A source that failed KEEPS ITS ROW with
+ *  `error` set — "configured and unreachable" and "not configured" are
+ *  different facts and a page that drew them the same way would hide a typo in
+ *  a URL behind an empty section. */
+export const UsageLimitSourceSnapshot = z.object({
+  id: z.string().min(1),
+  kind: UsageLimitSourceKind,
+  label: z.string().min(1),
+  checkedAt: Timestamp,
+  accounts: z.array(UsageLimitAccount),
+  error: z.string().optional(),
+});
+export type UsageLimitSourceSnapshot = z.infer<typeof UsageLimitSourceSnapshot>;
+
+export const UsageLimits = z.object({
+  sources: z.array(UsageLimitSourceSnapshot),
+  readAt: Timestamp,
+});
+export type UsageLimits = z.infer<typeof UsageLimits>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization

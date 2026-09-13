@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Segmented } from "@/components/settings/settings-shell";
 import { UsageChart, type ChartSeries } from "@/components/usage/usage-chart";
+import { UsageLimitsSection } from "@/components/usage/usage-limits";
 import {
   DRIVER_LABEL,
   foldUsage,
@@ -180,6 +181,13 @@ export function UsagePage() {
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-5 py-5">
+          {/* CAPACITY BEFORE SPEND. What is left decides whether the next turn
+              runs; what was spent is history. The section draws nothing at all
+              unless a hub is configured, so the page below is unchanged for
+              everybody who has not set one up — and it sits OUTSIDE the
+              `fold && !empty` gate deliberately: a machine that ran nothing
+              locally can still be pooling accounts that are nearly out. */}
+          <UsageLimitsSection />
           {!report && loading && <p role="status" className="text-sm text-muted-foreground">Loading usage history…</p>}
           {empty && <p className="text-sm text-muted-foreground">No activity in this window.</p>}
 

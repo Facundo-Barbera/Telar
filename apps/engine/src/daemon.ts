@@ -34,6 +34,7 @@ import {
   type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
+  type UsageLimits,
   type WorkerClaim,
   type WorkerStatus,
   pluginEnabled,
@@ -70,6 +71,7 @@ import {
   writeTheme,
 } from "./appearance-home";
 import { readUsageReport, warmUsageScanCache } from "./usage";
+import { readUsageLimitSource } from "./usage-limits";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
@@ -287,6 +289,11 @@ async function body(request: http.IncomingMessage): Promise<Record<string, unkno
  *  an in-process caller must not be able to walk past a check that only ever
  *  ran on the socket. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** How long a hub's quota answer is served without going back for another —
+ *  five minutes, t3's provider-health cadence. Windows this gates move on the
+ *  scale of hours; a shorter TTL would spend requests to redraw the same bar. */
+const USAGE_LIMITS_TTL_MS = 5 * 60_000;
 
 /**
  * A backdrop picture's ceiling. Generous next to the 3.5MB the browser store
@@ -561,6 +568,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
+  /**
+   * THE LAST THING THE HUBS SAID, and when.
+   *
+   * IN MEMORY, NEVER ON DISK. A quota figure is true for minutes; one restored
+   * from a file after a restart would be wrong by exactly as long as the engine
+   * was down, and would look identical to a fresh one.
+   *
+   * STALE-WHILE-REVALIDATE RATHER THAN A TIMER. A background sweep would poll
+   * hubs every five minutes for a page nobody has open; this refreshes on the
+   * read that finds the snapshot old, serving the cached answer immediately and
+   * fetching behind it. A cold read waits, `?refresh=1` waits, and a settings
+   * change clears the cache so the next read is a fresh one — which is what
+   * "refreshed on a settings change" has to mean when the alternative is
+   * blocking the PUT on a hub round trip.
+   */
+  const usageLimitsCache: { snapshot?: UsageLimits; inFlight?: Promise<UsageLimits> } = {};
+  const readUsageLimits = async (): Promise<UsageLimits> => {
+    const sources = store.resolveUsageLimitSources();
+    const snapshots = await Promise.all(sources.map((source) => readUsageLimitSource(source)));
+    const snapshot: UsageLimits = { sources: snapshots, readAt: Date.now() };
+    usageLimitsCache.snapshot = snapshot;
+    return snapshot;
+  };
+  /** One read at a time: two page loads a second apart must not become two
+   *  rounds of outbound requests to every configured hub. */
+  const refreshUsageLimits = (): Promise<UsageLimits> => {
+    usageLimitsCache.inFlight ??= readUsageLimits().finally(() => {
+      usageLimitsCache.inFlight = undefined;
+    });
+    return usageLimitsCache.inFlight;
+  };
   const daemonId = crypto.randomUUID();
   /**
    * The kernel host is built much later than the plugin host — it needs the
@@ -1224,6 +1262,59 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json"), scanCachePath: usageScanCachePath },
           ),
         });
+        return;
+      }
+      /**
+       * THE HUBS QUOTA IS READ FROM — configuration, not the quota itself.
+       *
+       * MANAGEMENT KEYS NEVER COME BACK. `listUsageLimitSources` is the
+       * redacting read; the store keeps the only unredacting one and it is not
+       * reachable from here. A key arrives on the PUT and is never echoed.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/usage/sources") {
+        writeJson(response, 200, { sources: store.listUsageLimitSources() });
+        return;
+      }
+      const usageLimitSource = /^\/v2\/usage\/sources\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
+      if (usageLimitSource && (request.method === "PUT" || request.method === "DELETE")) {
+        const id = decodeURIComponent(usageLimitSource[1]!);
+        // Either edit invalidates the snapshot: the next read contacts what is
+        // configured NOW rather than serving a row for a hub just removed.
+        usageLimitsCache.snapshot = undefined;
+        if (request.method === "DELETE") {
+          writeJson(response, 200, { removed: store.removeUsageLimitSource(id) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          source: store.saveUsageLimitSource({
+            id,
+            ...(input.kind === undefined ? {} : { kind: input.kind }),
+            // `null` clears the label, absent leaves it — the three-state rule
+            // the provider-instance PUT above follows, for the same reason.
+            ...(input.label === undefined ? {} : { label: input.label as string | null }),
+            ...(input.url === undefined ? {} : { url: input.url }),
+            // Empty KEEPS the stored key; the store owns that rule so a client
+            // can save a row it read back redacted.
+            ...(input.managementKey === undefined ? {} : { managementKey: input.managementKey }),
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+          }),
+        });
+        return;
+      }
+      /**
+       * WHAT THE HUBS CURRENTLY REPORT. Cached in memory and served stale while
+       * it refreshes behind the answer; `?refresh=1` waits for a fresh read.
+       * A source that failed keeps its row with `error` set — see usage-limits.ts.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/usage/limits") {
+        const cached = usageLimitsCache.snapshot;
+        if (url.searchParams.get("refresh") === "1" || !cached) {
+          writeJson(response, 200, { limits: await refreshUsageLimits() });
+          return;
+        }
+        if (Date.now() - cached.readAt >= USAGE_LIMITS_TTL_MS) void refreshUsageLimits().catch(() => undefined);
+        writeJson(response, 200, { limits: cached });
         return;
       }
       /** Who writes generated titles and branch names — a document of the
