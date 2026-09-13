@@ -49,7 +49,7 @@ import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
 import { createLoginGrantStore } from "./secrets/login-grants";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
@@ -548,10 +548,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * store is built long before the worker is, and the store is what rings it.
    */
   let wakeEmbeddedWorker: (() => void) | undefined;
+  /**
+   * THE OTHER HALF OF THE DOORBELL, and the one a Stop needs (#409). The nudge
+   * above only un-backs-off an idle worker; this hands over the exact claims a
+   * Stop just killed, so the abort happens in the same tick as the request
+   * rather than on whatever heartbeat comes next. Set and retired by the same
+   * generation fence as `wakeEmbeddedWorker`.
+   */
+  let cancelEmbeddedClaims: ((cancellations: StoppedClaim[]) => void) | undefined;
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
     onQueueChanged: () => wakeEmbeddedWorker?.(),
+    onTurnsStopped: (cancellations) => cancelEmbeddedClaims?.(cancellations),
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -4294,6 +4303,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // wrapper below hands it back when this one is retired.
           const wakeThisGeneration = () => worker.wake();
           wakeEmbeddedWorker = wakeThisGeneration;
+          const cancelThisGeneration = (cancellations: StoppedClaim[]) => worker.cancelClaims(cancellations);
+          cancelEmbeddedClaims = cancelThisGeneration;
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
           worker.stop = async (reason) => {
@@ -4303,6 +4314,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // Same fence for the doorbell: a retired generation must not keep
             // receiving nudges, and must not silence its replacement's.
             if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
+            if (cancelEmbeddedClaims === cancelThisGeneration) cancelEmbeddedClaims = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
              * exempt from. That is the FENCE: a late request carrying the dead
