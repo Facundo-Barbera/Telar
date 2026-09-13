@@ -19,7 +19,7 @@ const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { DesktopBrowserManager, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
+const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
@@ -119,10 +119,11 @@ let engineChild = null;
  * LAST, moving one window's pages around inside another.
  *
  * The set is the lookup: a request arriving from a window's own renderer is
- * answered by that window's manager (`requireBrowserManager(event)`). The
- * variable stays as the fallback for callers with no sender to resolve from —
- * the agent-facing control server and the quit hook — and follows focus, so
- * "the app's browser" means the window the human is actually in.
+ * answered by that window's manager (`requireBrowserManager(event)`), and the
+ * agent-facing control server — which has no sender, only a scope — walks the
+ * same set for the window that session's browser lives in (`managerForScope`,
+ * issue #311). The variable stays as the fallback for both, and follows focus,
+ * so "the app's browser" means the window the human is actually in.
  */
 let browserManager = null;
 const browserManagers = new Set();
@@ -2294,7 +2295,10 @@ if (SMOKE) {
         };
         browserControl = await startBrowserControlServer({
           ...browserControlConfig,
-          getBrowserManager: () => browserManager,
+          // BY SCOPE, ACROSS THE WINDOWS (issue #311). An agent has no window
+          // to be recognised by, so the scope it names is what picks the host;
+          // the focused window is the fallback when no window claims it.
+          getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, browserManager),
         });
         let url = OVERRIDE_URL;
         if (!url) {

@@ -17,6 +17,10 @@ struct FilesSurface: View {
     @State private var expanded: Set<String> = []
     @State private var searched = false
     @State private var saving: [String: SaveState] = [:]
+    /// A file "Reveal in file tree" asked for: the tree may only just have
+    /// been shown, so the scroll is done once its rows exist rather than
+    /// inside the menu's action.
+    @State private var revealing: String?
     /// THE PANEL'S OWN WIDTH decides the arrangement, not the window's size
     /// class: inside an inspector column an iPad reports compact, and an
     /// inspector wide enough for both would have been split anyway. 220 for
@@ -98,10 +102,7 @@ struct FilesSurface: View {
                         .contentShape(Rectangle())
                         .onTapGesture { panel.activateFile(file.path) }
                         .onTapGesture(count: 2) { panel.pinFile(file.path) }
-                        .contextMenu {
-                            if !file.pinned { Button("Keep open", systemImage: "pin") { panel.pinFile(file.path) } }
-                            Button("Close", systemImage: "xmark") { panel.closeFile(file.path) }
-                        }
+                        .contextMenu { chipMenu(file) }
                     }
                 }
                 .padding(.horizontal, 4)
@@ -111,6 +112,37 @@ struct FilesSurface: View {
         .frame(height: 34)
         .background(Theme.sheet)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
+    }
+
+    /// The desktop's open-file menu, minus Reveal in Finder — a bridge to a
+    /// machine this app is not running on, so it is ABSENT rather than greyed.
+    @ViewBuilder private func chipMenu(_ file: OpenFile) -> some View {
+        Button("Close", systemImage: "xmark") { panel.closeFile(file.path) }
+        Button("Close others") { panel.closeOtherFiles(file.path) }
+        Button("Close to the right") { panel.closeFilesToTheRight(file.path) }
+        Button("Close all") { panel.closeAllFiles() }
+        Divider()
+        // ONLY WHERE IT WOULD DO SOMETHING: pinning a file that is already
+        // pinned is a row that does nothing, which is worse than a row that
+        // is not there. ONE WORD FOR PINNING, here and in the tree's "Open
+        // pinned" — this strip used to say "Keep open" for the same verb.
+        if !file.pinned { Button("Pin", systemImage: "pin") { panel.pinFile(file.path) } }
+        Button("Reveal in file tree", systemImage: "sidebar.left") { reveal(file.path) }
+        if let absolute = workspaceFilePath(listing?.workspacePath, file.path) {
+            Divider()
+            Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = absolute }
+        }
+    }
+
+    /// The tree, opened to a file and scrolled to it. A search in progress is
+    /// cleared first: a filtered tree does not hold the row unless the query
+    /// happens to match it.
+    private func reveal(_ path: String) {
+        query = ""
+        expanded.formUnion(ancestorsOf([path]))
+        panel.setTreeShown(true)
+        panel.activateFile(path)
+        revealing = path
     }
 
     // MARK: the tree
@@ -135,6 +167,14 @@ struct FilesSurface: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 32)
+            .contentShape(Rectangle())
+            // The desktop puts Refresh and Collapse all on the header and on
+            // the tree's empty space; the header is the part of that a phone
+            // can hit reliably.
+            .contextMenu {
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }
+                Button("Collapse all", systemImage: "arrow.down.right.and.arrow.up.left") { expanded = [] }
+            }
             Divider().overlay(Theme.borderSubtle)
             if let listing {
                 let (matches, dropped) = matchFiles(listing.files, query: query)
@@ -148,11 +188,24 @@ struct FilesSurface: View {
                         description: Text(query.isEmpty ? "git lists no files here." : "No path in this checkout contains \"\(query)\".")
                     )
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(rows) { row in treeRow(row, open: open) }
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(rows) { row in treeRow(row, open: open) }
+                            }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
+                        // A BEAT FOR THE ROWS TO EXIST. The tree may have been
+                        // hidden when "Reveal in file tree" was picked, and
+                        // `scrollTo` a row the lazy stack has not built yet is
+                        // a no-op with nothing to retry it.
+                        .task(id: revealing) {
+                            guard let target = revealing else { return }
+                            try? await Task.sleep(for: .milliseconds(60))
+                            guard !Task.isCancelled else { return }
+                            withAnimation { proxy.scrollTo(target, anchor: .center) }
+                            revealing = nil
+                        }
                     }
                     foot(listing, dropped: dropped)
                 }
@@ -171,16 +224,7 @@ struct FilesSurface: View {
         let status = node.isDirectory ? nil : statuses[node.path]
         let dirty = node.isDirectory && statuses.keys.contains { $0.hasPrefix(node.path + "/") }
         return Button {
-            if node.isDirectory {
-                if query.isEmpty {
-                    if expanded.contains(node.path) { expanded.remove(node.path) } else { expanded.insert(node.path) }
-                }
-            } else {
-                panel.openFile(node.path, pin: false)
-                // Re-tapping the file already open leaves `activePath` alone,
-                // so the watcher above would not fire.
-                if !sideBySide { panel.setTreeShown(false) }
-            }
+            if node.isDirectory { toggle(node.path) } else { openFromTree(node.path, pin: false) }
         } label: {
             HStack(spacing: 5) {
                 if node.isDirectory {
@@ -216,9 +260,46 @@ struct FilesSurface: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if !node.isDirectory {
-                Button("Keep open", systemImage: "pin") { panel.openFile(node.path, pin: true) }
+            if node.isDirectory {
+                Button(isOpen ? "Collapse" : "Expand", systemImage: isOpen ? "chevron.down" : "chevron.right") {
+                    toggle(node.path)
+                }
+                Button("Collapse all", systemImage: "arrow.down.right.and.arrow.up.left") { expanded = [] }
+            } else {
+                Button("Open", systemImage: "doc") { openFromTree(node.path, pin: false) }
+                Button("Open pinned", systemImage: "pin") { openFromTree(node.path, pin: true) }
+                Divider()
+                pathItems(node.path)
             }
+        }
+    }
+
+    /// A directory opens and closes; a search's tree is expanded by the search
+    /// itself, so the toggle has nothing to say while one is running.
+    private func toggle(_ path: String) {
+        guard query.isEmpty else { return }
+        if expanded.contains(path) { expanded.remove(path) } else { expanded.insert(path) }
+    }
+
+    private func openFromTree(_ path: String, pin: Bool) {
+        panel.openFile(path, pin: pin)
+        // Re-tapping the file already open leaves `activePath` alone, so the
+        // watcher on `activePath` would not fire.
+        if !sideBySide { panel.setTreeShown(false) }
+    }
+
+    /// The three rows a file-shaped menu ends with. Reveal in Finder and "Open
+    /// in <app>" are the desktop's bridge to a machine this app is not running
+    /// on: absent here, never greyed — a disabled row is a promise restated on
+    /// every long press that the phone can never keep.
+    @ViewBuilder private func pathItems(_ path: String) -> some View {
+        if let absolute = workspaceFilePath(listing?.workspacePath, path) {
+            Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = absolute }
+        }
+        Button("Copy relative path", systemImage: "doc.on.doc") { UIPasteboard.general.string = path }
+        Divider()
+        Button("Insert as a reference", systemImage: "text.badge.plus") {
+            panel.insertReference(ComposerReference.file(path))
         }
     }
 
@@ -239,13 +320,17 @@ struct FilesSurface: View {
 
     @ViewBuilder private var body_: some View {
         if let file = panel.editor.active {
-            FileBody(api: api, sessionId: sessionId, hostId: hostId, file: file, active: active, onSaveState: { state in saving[file.path] = state })
-                .id("\(hostId?.uuidString ?? "local"):\(sessionId):\(file.path):\(file.view.rawValue)")
+            FileBody(
+                api: api, sessionId: sessionId, hostId: hostId, file: file, active: active,
+                root: listing?.workspacePath,
+                onSaveState: { state in saving[file.path] = state }
+            )
+            .id("\(hostId?.uuidString ?? "local"):\(sessionId):\(file.path):\(file.view.rawValue)")
         } else {
             ContentUnavailableView(
                 "No file open",
                 systemImage: "doc",
-                description: Text(panel.editor.treeShown ? "Tap a file in the tree to look at it; hold to keep it open." : "Show the tree to open a file.")
+                description: Text(panel.editor.treeShown ? "Tap a file in the tree to look at it; press and hold for more." : "Show the tree to open a file.")
             )
         }
     }

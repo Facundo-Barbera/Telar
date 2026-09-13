@@ -91,6 +91,24 @@ struct EditorState: Codable, Equatable {
             activePath = files.indices.contains(index) ? files[index].path : files.last?.path
         }
     }
+
+    /// The strip's other three closes. EACH LANDS ON `close`, one path at a
+    /// time, so the focus rule above stays the only one there is — closing
+    /// everything but a file has to leave that file active, and re-deriving
+    /// that here would be a second rule to keep in step.
+    mutating func closeOthers(_ path: String) {
+        for other in files.map(\.path) where other != path { close(other) }
+    }
+
+    mutating func closeToTheRight(_ path: String) {
+        guard let index = files.firstIndex(where: { $0.path == path }) else { return }
+        for other in files[(index + 1)...].map(\.path) { close(other) }
+    }
+
+    mutating func closeAll() {
+        files = []
+        activePath = nil
+    }
 }
 
 /// The desktop's `panelTabForPath`: a table needs the kernel, so without data
@@ -135,6 +153,12 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
     /// A file the transcript asked for while the panel was closed on a
     /// compact width: the push happens once the view is on screen.
     private(set) var generation = 0
+    /// A REFERENCE ON ITS WAY TO THE COMPOSER. The box lives in `SessionView`
+    /// and the surfaces offering "Insert as a reference" are three views deep
+    /// inside the panel, so the model they already share carries it: set here,
+    /// taken by the session, cleared. NEVER PERSISTED — a draft fragment that
+    /// outlived the app would arrive from nowhere three days later.
+    private(set) var pendingReference: String?
 
     let hostId: HostID?
     let sessionId: EngineID
@@ -252,6 +276,26 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
         editor.close(path)
         persist()
     }
+
+    func closeOtherFiles(_ path: String) {
+        editor.closeOthers(path)
+        persist()
+    }
+
+    func closeFilesToTheRight(_ path: String) {
+        editor.closeToTheRight(path)
+        persist()
+    }
+
+    func closeAllFiles() {
+        editor.closeAll()
+        persist()
+    }
+
+    /// Hand a reference to the composer. The session is watching.
+    func insertReference(_ text: String) { pendingReference = text }
+
+    func clearReference() { pendingReference = nil }
 
     func setTreeShown(_ shown: Bool) {
         editor.treeShown = shown

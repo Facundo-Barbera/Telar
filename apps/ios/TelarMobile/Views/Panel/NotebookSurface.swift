@@ -32,6 +32,9 @@ struct NotebookSurface: View {
     /// selects, tap the selected one edits. Without it every tap landed a
     /// caret, and a notebook you could not scroll without typing in it.
     @State private var selected: String?
+    /// Cells whose outputs are folded away. A VIEW, NOT AN EDIT: the file
+    /// still holds them, and "Clear outputs" below it is the one that writes.
+    @State private var collapsedOutputs: Set<String> = []
     @FocusState private var focusedCell: String?
     /// Set the moment a draft lands, cleared when the last one flushes: the
     /// header's dot and tick.
@@ -124,7 +127,7 @@ struct NotebookSurface: View {
                         Button { Task { await runAndAdvance(cell) } } label: { Image(systemName: "play.circle") }
                             .accessibilityLabel("Run and advance")
                     }
-                    Button { Task { await insert(after: cell.id, type: cell.type == .code ? "code" : "markdown") } } label: {
+                    Button { Task { await insert(after: .string(cell.id), type: cell.type == .code ? "code" : "markdown") } } label: {
                         Image(systemName: "plus")
                     }
                     .accessibilityLabel("Insert below")
@@ -231,11 +234,11 @@ struct NotebookSurface: View {
 
     // MARK: cells
 
-    private func insertBar(after: String?) -> some View {
+    private func insertBar(after: String) -> some View {
         HStack(spacing: 10) {
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
-            Button("+ Code") { Task { await insert(after: after, type: "code") } }
-            Button("+ Text") { Task { await insert(after: after, type: "markdown") } }
+            Button("+ Code") { Task { await insert(after: .string(after), type: "code") } }
+            Button("+ Text") { Task { await insert(after: .string(after), type: "markdown") } }
             Rectangle().fill(Theme.borderSubtle).frame(height: 1)
         }
         .font(.system(size: 11, weight: .medium))
@@ -251,12 +254,12 @@ struct NotebookSurface: View {
     private var addBar: some View {
         HStack(spacing: 10) {
             Button {
-                Task { await insert(after: notebook?.cells.last?.id, type: "code") }
+                Task { await insert(after: notebook?.cells.last.map { JSONValue.string($0.id) }, type: "code") }
             } label: {
                 Label("Code", systemImage: "plus").frame(minHeight: 36)
             }
             Button {
-                Task { await insert(after: notebook?.cells.last?.id, type: "markdown") }
+                Task { await insert(after: notebook?.cells.last.map { JSONValue.string($0.id) }, type: "markdown") }
             } label: {
                 Label("Text", systemImage: "plus").frame(minHeight: 36)
             }
@@ -320,9 +323,10 @@ struct NotebookSurface: View {
                         .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
                         .focused($focusedCell, equals: cell.id)
                 }
-                // Outputs are always shown now: long ones CLAMP with their own
-                // expander rather than being hidden wholesale from a menu.
-                if let outputs = cell.outputs, !outputs.isEmpty {
+                // A long output CLAMPS with its own expander, so outputs are
+                // shown by default; the menu's "Collapse outputs" folds the
+                // whole block away for a cell whose results are in the way.
+                if let outputs = cell.outputs, !outputs.isEmpty, !collapsedOutputs.contains(cell.id) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(outputs.enumerated()), id: \.offset) { _, output in
                             CellOutputView(output: output, api: api, sessionId: sessionId, onOpenImage: { lightbox = $0 })
@@ -362,13 +366,34 @@ struct NotebookSurface: View {
             Button("Run", systemImage: "play.fill") { Task { await run(cell) } }
             Button("Run and advance", systemImage: "play.circle") { Task { await runAndAdvance(cell) } }
         }
-        Button(cell.type == .code ? "Make text" : "Make code", systemImage: "arrow.left.arrow.right") {
+        Button("Run all", systemImage: "forward.end.fill") { Task { await runAll() } }
+            .disabled(runningAll)
+        Divider()
+        // THE DESKTOP'S WORDING, because the two surfaces describe the same
+        // edit and "Make text" was a third name for it.
+        Button(cell.type == .code ? "Change to Markdown" : "Change to Code", systemImage: "arrow.left.arrow.right") {
             Task { await setType(cell, cell.type == .code ? "markdown" : "code") }
         }
-        Button("Insert below", systemImage: "plus") { Task { await insert(after: cell.id, type: cell.type == .code ? "code" : "markdown") } }
+        let type = cell.type == .code ? "code" : "markdown"
+        Button("Insert cell above", systemImage: "plus") { Task { await insert(above: cell, type: type) } }
+        Button("Insert cell below", systemImage: "plus") { Task { await insert(after: .string(cell.id), type: type) } }
         Button("Move up", systemImage: "arrow.up") { Task { await move(cell, by: -1) } }
         Button("Move down", systemImage: "arrow.down") { Task { await move(cell, by: 1) } }
         Button("Delete cell", systemImage: "trash", role: .destructive) { Task { await delete(cell) } }
+        Divider()
+        // WHAT IS ON SCREEN, draft and all: copying a cell you have been
+        // typing in and getting the version on disk is the surprise.
+        Button("Copy source", systemImage: "doc.on.doc") { UIPasteboard.general.string = drafts[cell.id] ?? cell.source }
+        if cell.type == .code, let outputs = cell.outputs, !outputs.isEmpty {
+            Divider()
+            let hidden = collapsedOutputs.contains(cell.id)
+            Button(hidden ? "Expand outputs" : "Collapse outputs", systemImage: hidden ? "chevron.down" : "chevron.up") {
+                if hidden { collapsedOutputs.remove(cell.id) } else { collapsedOutputs.insert(cell.id) }
+            }
+            // CLEARING IS AN EDIT TO THE FILE, collapsing is not — they read
+            // as a pair and only one of them writes.
+            Button("Clear outputs", systemImage: "eraser") { Task { await clearOutputs(cell) } }
+        }
     }
 
     // MARK: selection
@@ -483,11 +508,36 @@ struct NotebookSurface: View {
         for id in drafts.keys { flush(id) }
     }
 
-    private func insert(after: String?, type: String) async {
+    /// `after` is the engine's own anchor: a cell id, or the index `-1` that
+    /// means the very top. Nil appends, which is what the bar at the end does.
+    private func insert(after: JSONValue?, type: String) async {
         var edit: [String: JSONValue] = ["kind": .string("insert"), "source": .string(""), "cellType": .string(type)]
-        if let after { edit["after"] = .string(after) }
+        if let after { edit["after"] = after }
         do {
             notebook = try await api.notebookEdit(sessionId, path: path, edit: .object(edit))
+        } catch {
+            problem = describe(error)
+        }
+    }
+
+    /// ABOVE IS AFTER THE ONE BEFORE IT — and at the very top the engine's own
+    /// sentinel, `after: -1`, which splices at index 0. No cell id can say
+    /// "before everything".
+    private func insert(above cell: NotebookCell, type: String) async {
+        let ids = (notebook?.cells ?? []).map(\.id)
+        guard let index = ids.firstIndex(of: cell.id) else { return }
+        await insert(after: index == 0 ? .number(-1) : .string(ids[index - 1]), type: type)
+    }
+
+    /// The cell's results and its execution count, thrown away; its source
+    /// stays. The engine writes the file, so this is undone only by re-running.
+    private func clearOutputs(_ cell: NotebookCell) async {
+        do {
+            notebook = try await api.notebookEdit(
+                sessionId, path: path,
+                edit: .object(["kind": .string("clearOutputs"), "cellId": .string(cell.id)])
+            )
+            problem = nil
         } catch {
             problem = describe(error)
         }
