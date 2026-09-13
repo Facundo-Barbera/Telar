@@ -628,6 +628,53 @@ test("a wake-up between turns becomes a PROVIDER TURN on the engine, with its to
   expect(events).toEqual(["turn.accepted", "turn.claimed", "turn.started", "request.opened", "request.resolved", "item.started", "item.completed", "turn.completed"]);
 });
 
+test("sessions_send from a turn the CLI started on its own is proven by THAT turn's claim, not the settled one its capability was built in (#297)", async () => {
+  /**
+   * THE BUG IN #297, END TO END. `sessionsCapability` is assembled inside a
+   * turn and then outlives it — the Claude wall reaches it through
+   * `bindings.current.sessions`, which a provider turn does not replace, and
+   * the Codex lease is bound once per session and reused. It used to close
+   * over the runId and claim token of the turn that built it, so the moment
+   * that turn settled every later `sessions_send` came back "turn has already
+   * settled (completed)" while the CLI went on working. An orchestrator lost
+   * every send it made for the rest of its session.
+   *
+   * The capability now reads the claim the worker is running under AT CALL
+   * TIME, so a message sent from a wake-up is sent from the wake-up's turn.
+   */
+  let sessions: Parameters<TurnDriver["run"]>[0]["sessions"] | undefined;
+  let door: Parameters<TurnDriver["run"]>[0]["session"] | undefined;
+  const driver: TurnDriver = {
+    async run(input) {
+      sessions = input.sessions;
+      door = input.session;
+      return { text: "handed out the tasks" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  const peer = (await client.createSession({ id: "session_two", projectId: "project_one" })).session;
+  await client.submitTurn(sessionId, { runId: "run_one", input: "Coordinate" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("completed"));
+  expect(sessions).toBeDefined();
+
+  // BETWEEN TURNS there is nothing live to send from, and the refusal says so
+  // rather than blaming the token — see `requireSenderClaim`.
+  await expect(sessions!.send(peer.id, { runId: "run_orphan", input: "brief" })).rejects.toThrow(/no live turn to send from/);
+
+  // The CLI wakes up and the engine opens a real turn for it.
+  const binding = await door!.onProviderTurn({ input: "Background task completed (green).", reason: { kind: "unknown" } });
+  expect(binding).toBeDefined();
+
+  // The SAME capability object — the one the wall is holding — now sends from
+  // the live turn, attributed to this session and sourced to that run.
+  const { turn } = await sessions!.send(peer.id, { runId: "run_brief", input: "your brief", intent: "task" });
+  expect(turn).toMatchObject({ origin: "session", sender: { sessionId }, agentSourceRunId: binding!.runId });
+  const delivered = (await client.session(peer.id)).turns.find((candidate) => candidate.runId === "run_brief");
+  expect(delivered).toMatchObject({ input: "your brief", agentIntent: "task", sender: { sessionId } });
+  await binding!.close({ text: "done" });
+});
+
 test("a message submitted mid-turn lands in the driver's mailbox and goes steered", async () => {
   // The driver plays a long turn: it waits for a steered message, drains it,
   // and answers with what it heard — proof the text crossed submit → heartbeat
