@@ -180,6 +180,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         // project with no `envMode` follows this Mac's `SessionDefaults`, which
         // is a different sentence from either value it could hold. `name` has
         // no `null` — every project has one.
+        /** One id from `TELAR_ICONS` — see `Project.iconName`. */
+        iconName?: string | null;
+        /** Legacy; nothing writes a value now. `null` clears a stored mark. */
         iconEmoji?: string | null;
         defaultModel?: ModelSelection | null;
         envMode?: EnvMode | null;

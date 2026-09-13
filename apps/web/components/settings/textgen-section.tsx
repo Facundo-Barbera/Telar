@@ -19,7 +19,7 @@ import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, t
 import { createEngineApi } from "@/lib/engine/client";
 import { useModelCatalogueGeneration } from "@/lib/model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, Segmented, SettingsGroup, ToggleRow, useRestoreDefaults } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -133,8 +133,9 @@ export function TextGenSection() {
           ? {}
           : { onRevert: () => void save({ driver: DEFAULT_TEXT_GEN_POLICY.driver }) })}
         control={
-          <Segmented<ProviderDriverKind>
+          <Dropdown<ProviderDriverKind>
             value={policy.driver}
+            label="Written by"
             onChange={(next) => void save({ driver: next })}
             options={[
               { value: "claude", label: "Claude" },

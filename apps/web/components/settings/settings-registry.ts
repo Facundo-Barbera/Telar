@@ -20,11 +20,12 @@
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *
- *   - THE PER-PROJECT ROUTE (`project-settings-page.tsx`). A different shell
- *     with a different nav and a project id in every route; indexing it from
- *     the machine's Settings would offer to jump somewhere this shell cannot
- *     go. The PROJECTS PANE is indexed — it lives on this shell, and its rows
- *     are copy rather than one entry per registered folder.
+ *   - THE PROJECT-SCOPED GROUPS ON THE PROJECTS PANE — its MCP list and every
+ *     plugin's own editor, which arrived there when the standalone per-project
+ *     page was retired (#363). Both are built from data: the MCP group's
+ *     heading is the project's own name and a plugin's is the plugin's, which
+ *     is the rule two bullets down. The pane's STANDING rows are indexed, and
+ *     they are copy rather than one entry per registered folder.
  *   - PLUGIN-CONTRIBUTED SECTIONS. They arrive from the engine at runtime, and
  *     a plugin does not declare searchable rows in its manifest today. The
  *     Plugins pane itself is indexed; what a plugin puts inside it is not.
@@ -39,7 +40,6 @@
  */
 
 import {
-  ArchiveIcon,
   BlocksIcon,
   CircleUserRoundIcon,
   DownloadIcon,
@@ -104,9 +104,16 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Settling",
         rows: [
           {
+            /**
+             * THE SHELF'S VOCABULARY LIVES HERE NOW (#364). The Settled pane
+             * listed the conversations this rail has shelved — a shelf, which
+             * the rail already draws — so what is left to FIND in settings is
+             * the rule that puts them there, and someone typing "archive" or
+             * "where did it go" is owed that row rather than nothing.
+             */
             title: "Settle quiet sessions",
-            hint: "Quiet sessions leave the list on their own, or nothing does.",
-            keywords: ["inbox", "archive", "auto"],
+            hint: "Quiet sessions leave the list on their own, or nothing does. Shelved ones are on the rail, under Settled.",
+            keywords: ["inbox", "archive", "auto", "shelf", "settled", "unsettle", "restore", "hidden", "put away", "quiet"],
             icon: TimerIcon,
           },
           {
@@ -270,17 +277,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
-        title: "Elsewhere",
-        rows: [
-          {
-            title: "This project's own page",
-            hint: "MCP servers scoped to it, and each plugin's own editor.",
-            keywords: ["mcp", "plugin editor", "per project", "latex", "notebook"],
-            icon: ExternalLinkIcon,
-          },
-        ],
-      },
-      {
         // THE PLUGIN TOGGLES ARE NOT INDEXED, and that is the rule at the top
         // of this file rather than an omission: each row's title is a
         // plugin's own name, arriving from the engine at runtime.
@@ -342,28 +338,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Every chord this app answers to, and what each one does.",
             keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
             icon: KeyboardIcon,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    /**
-     * NAVIGATE-ONLY, by the rule at the top: every row here is one settled
-     * conversation, and a conversation's title is a value. What search can
-     * usefully answer is "where did the thing I settled go".
-     */
-    id: "settled",
-    label: "Settled",
-    icon: ArchiveIcon,
-    groups: [
-      {
-        rows: [
-          {
-            title: "Settled sessions",
-            hint: "Conversations off your list, and the way to put one back.",
-            keywords: ["archive", "shelf", "restore", "unsettle", "hidden", "put away", "quiet"],
-            icon: ArchiveIcon,
           },
         ],
       },

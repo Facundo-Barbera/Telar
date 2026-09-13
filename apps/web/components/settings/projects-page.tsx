@@ -41,16 +41,24 @@
  * on the model row, the first segment on the workspace one) and both write
  * `null`, which is what the engine reads as "remove the stored answer".
  *
- * THE PER-PROJECT PAGE IS NOT REPLACED. `/projects/:id/settings` keeps its own
- * shell, its MCP scope and every plugin's bespoke editor; this pane links to it
- * rather than trying to nest a settings shell inside a settings shell.
+ * THIS IS THE ONLY PROJECT PAGE NOW (#363). `/projects/:id/settings` was a
+ * second settings shell with a second nav, holding the two things this pane had
+ * no room for — MCP servers scoped to the project, and each plugin's own editor
+ * — so a reader answering "what is this project set to" had to know which of two
+ * screens held which half. Both halves are groups here, and the old route
+ * redirects rather than 404s (`app/projects/[projectId]/settings/page.tsx`).
+ *
+ * A PLUGIN'S EDITOR APPEARS WHEN THE PLUGIN IS ON. Off, it is one row with a
+ * switch (`PluginSettings`); on, it is the plugin's own pane. That is not
+ * decoration — LaTeX probes for TeX distributions and Data science probes for
+ * interpreters the moment their editors mount, and a project that never asked
+ * for either should not pay for both to open this pane.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BlocksIcon,
   CircleAlertIcon,
-  ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
   ImageIcon,
@@ -67,13 +75,16 @@ import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AgentControl } from "@/components/composer-controls";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DataScienceSection } from "./data-science-section";
+import { LatexSection } from "./latex-section";
+import { McpSection } from "./mcp-section";
+import { PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -110,10 +121,17 @@ function blockedReason(project: ScopedProject | undefined, what: string): string
   return undefined;
 }
 
-/** The Segmented value for "no per-project answer" — a project that follows
- *  this Mac. base-ui and `Segmented` both want a string, and absence is a real
- *  choice here rather than the lack of one. */
-const FOLLOW_MAC = "__follow-mac";
+/**
+ * The dropdown's value for "no per-project answer" — a project that follows the
+ * app's standing one. base-ui wants a string, and absence is a real choice here
+ * rather than the lack of one.
+ *
+ * "APP DEFAULT", NOT "FOLLOW THE MAC" (#363). The option named the hardware
+ * Telar happened to ship on first, which is wrong in two directions: it will run
+ * on Linux, and the answer it follows is this INSTALL's — a cockpit's standing
+ * choice on General ▸ Workspace, not a property of the machine.
+ */
+const FOLLOW_APP = "__follow-app";
 
 /**
  * An input that reports on BLUR, not on every keystroke — the same shape
@@ -161,6 +179,10 @@ export type ScopedProject = Project & { hostId?: string; hostName?: string };
 export function ProjectIdentityRows({ project, writer }: { project?: ScopedProject; writer?: ProjectWriter }) {
   const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
+  // EITHER STORED ANSWER IS A PICK. The glyph is what the picker writes now; a
+  // typed mark is what a registry from before it may still carry, and both mean
+  // the same thing to this row — somebody chose, so Auto-detect is an undo.
+  const picked = Boolean(project?.iconName ?? project?.iconEmoji);
 
   return (
     // NO CAPTION: it listed the two rows under it in prose, and both of them
@@ -170,7 +192,7 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
       <Row
         label="Name"
         icon={FolderKanbanIcon}
-        hint="What the rail, the pickers and every session header call it. The folder on disk is not renamed."
+        hint="Shown in the rail, the pickers and session headers. The folder on disk is not renamed."
         {...(savingFor("name") ? { status: savingFor("name") } : {})}
         {...(errorFor("name") ? { error: errorFor("name") } : {})}
         control={
@@ -192,43 +214,30 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
         /*
           TWO ANSWERS, AND THE ROW SAYS WHICH IT IS SHOWING. A checkout's own
           icon is found rather than chosen (a favicon, an app icon, a
-          `.telar/icon.*`), and a mark typed here OUTRANKS it — which is the
-          point of being able to type one at all. So the sentence changes with
+          `.telar/icon.*`), and a glyph picked here OUTRANKS it — which is the
+          point of being able to pick one at all. So the sentence changes with
           what is actually stored rather than describing both states at once.
         */
         hint={
-          project?.iconEmoji
-            ? "Your mark, which beats whatever icon the checkout carries. Clear it to go back to the file."
-            : "Type a character to mark this project. Left empty, the rail uses an icon found in the checkout — a favicon, an app icon, or .telar/icon.*."
+          picked
+            ? "Your pick, which beats whatever icon the checkout carries. Auto-detect goes back to the file."
+            : "Auto-detect: a favicon, an app icon or .telar/icon.* from the checkout, else the project's initial."
         }
-        {...(savingFor("iconEmoji") ? { status: savingFor("iconEmoji") } : {})}
-        {...(errorFor("iconEmoji") ? { error: errorFor("iconEmoji") } : {})}
-        {...(project?.iconEmoji ? { onRevert: () => writer?.save("iconEmoji", { iconEmoji: null }) } : {})}
+        {...(savingFor("iconName") ? { status: savingFor("iconName") } : {})}
+        {...(errorFor("iconName") ? { error: errorFor("iconName") } : {})}
+        {...(picked ? { onRevert: () => writer?.save("iconName", { iconName: null, iconEmoji: null }) } : {})}
         control={
-          <div className="flex items-center gap-2">
-            {project ? (
-              <ProjectAvatar
-                name={project.name}
-                projectId={project.id}
-                {...(project.icon ? { icon: project.icon } : {})}
-                {...(project.iconEmoji ? { iconEmoji: project.iconEmoji } : {})}
-                size={20}
-              />
-            ) : (
-              <span className="text-xs text-muted-foreground">—</span>
-            )}
-            <BlurInput
-              key={project?.iconEmoji ?? ""}
-              className="h-8 w-16 text-center text-xs"
-              aria-label="Project mark"
-              placeholder="🧵"
-              maxLength={16}
-              value={project?.iconEmoji ?? ""}
-              // An emptied field is a CLEAR, not an empty string: the engine
-              // reads `null` as "remove the stored answer" and would refuse "".
-              onCommit={(next) => writer?.save("iconEmoji", { iconEmoji: next.trim() === "" ? null : next.trim() })}
-            />
-          </div>
+          <ProjectIconPicker
+            {...(project?.name ? { name: project.name } : {})}
+            {...(project?.id ? { projectId: project.id } : {})}
+            {...(project?.icon ? { icon: project.icon } : {})}
+            {...(project?.iconName ? { iconName: project.iconName } : {})}
+            {...(project?.iconEmoji ? { iconEmoji: project.iconEmoji } : {})}
+            // AUTO-DETECT CLEARS BOTH. A registry written before the picker may
+            // carry a typed mark, and clearing only the glyph would leave that
+            // mark answering for a row that now says "Auto-detect".
+            onPick={(next) => writer?.save("iconName", next === null ? { iconName: null, iconEmoji: null } : { iconName: next })}
+          />
         }
         {...(blockedReason(project, "mark it") ? { unavailable: { reason: blockedReason(project, "mark it")! } } : {})}
       />
@@ -248,14 +257,14 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
  * WHAT A CONVERSATION IN THIS PROJECT OPENS ON.
  *
  * BOTH ROWS HAVE THREE STATES, NOT TWO, and the third is the interesting one:
- * a project can store an answer, or store NOTHING and follow this Mac. Absence
- * is what the engine reads as "follow", so neither control may collapse it into
- * a value — the workspace row gives it a segment of its own and the model row
- * gives it the revert arrow, and both write `null` to get back to it.
+ * a project can store an answer, or store NOTHING and follow the app's standing
+ * one. Absence is what the engine reads as "follow", so neither control may
+ * collapse it into a value — the workspace row gives it an option of its own and
+ * the model row gives it the revert arrow, and both write `null` to get back.
  *
- * `envMode` IS THE MACHINE'S STANDING ANSWER, passed in so the inherited state
- * can SAY what it inherits rather than showing an em dash. A reader looking at
- * "This Mac's answer" is owed the value that phrase resolves to.
+ * `envMode` IS THE APP'S STANDING ANSWER, passed in so the inherited state can
+ * SAY what it inherits rather than showing an em dash. A reader looking at "App
+ * default" is owed the value that phrase resolves to.
  */
 export function ProjectConversationRows({
   project,
@@ -342,19 +351,20 @@ export function ProjectConversationRows({
         icon={FolderGitIcon}
         hint={
           project?.envMode === undefined
-            ? `Following this Mac, which says ${envMode === "worktree" ? "each session gets its own checkout" : "sessions share the project's checkout"}. Change that on General ▸ Workspace, or pin an answer here.`
+            ? `Following the app default, which says ${envMode === "worktree" ? "each session gets its own checkout" : "sessions share the project's checkout"}. Change that on General ▸ Workspace, or pin an answer here.`
             : project.envMode === "worktree"
-              ? "Each session here gets its own checkout and branch, whatever this Mac says. A project without git falls back to the checkout."
-              : "Sessions here share the project's checkout, whatever this Mac says. Two at once will collide."
+              ? "Each session here gets its own checkout and branch, whatever the app default says. A project without git falls back to the checkout."
+              : "Sessions here share the project's checkout, whatever the app default says. Two at once will collide."
         }
         {...(savingFor("envMode") ? { status: savingFor("envMode") } : {})}
         {...(errorFor("envMode") ? { error: errorFor("envMode") } : {})}
         control={
-          <Segmented<string>
-            value={project?.envMode ?? FOLLOW_MAC}
-            onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_MAC ? null : (next as EnvMode) })}
+          <Dropdown<string>
+            value={project?.envMode ?? FOLLOW_APP}
+            label="Where new conversations start"
+            onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_APP ? null : (next as EnvMode) })}
             options={[
-              { value: FOLLOW_MAC, label: "Follow the Mac" },
+              { value: FOLLOW_APP, label: "App default" },
               { value: "local", label: "Project checkout" },
               { value: "worktree", label: "Own worktree" },
             ]}
@@ -433,6 +443,49 @@ export function ProjectPluginRows({
       })}
       {error && <Row icon={CircleAlertIcon} label="Could not save" hint={error} control={<Badge variant="outline">Error</Badge>} />}
     </SettingsGroup>
+  );
+}
+
+/**
+ * EVERY PLUGIN'S OWN EDITOR, for a project on this Mac — what the standalone
+ * page used to hold behind a nav of its own (#363).
+ *
+ * ONE PLUGIN, ONE GROUP, and which group depends on whether the plugin is ON.
+ * Off, it is `PluginSettings`: a switch and the reason a failed plugin cannot be
+ * turned on. On, it is the plugin's own pane, which carries that same switch at
+ * the top of its first group — so the enable never appears twice, and the
+ * toolchain probes behind those panes only run for projects that asked for them.
+ *
+ * THE BESPOKE PANES ARE NAMED, NOT INFERRED — `BESPOKE_PLUGIN_PANES` in
+ * lib/plugins/sections.ts says why: silently replacing an environment picker
+ * with a checkbox is a downgrade nobody would notice until they needed it.
+ */
+function ProjectPluginPanes({
+  project,
+  plugins,
+  onChange,
+}: {
+  project: Project;
+  plugins?: PluginStatus[];
+  onChange: (project: Project) => void;
+}) {
+  const entries = useMemo(() => projectPluginSections(plugins), [plugins]);
+  const enabled = readProjectPlugins(project).plugins;
+
+  return (
+    <>
+      {entries.map((entry) =>
+        !pluginEnabled(enabled, entry.pluginId) ? (
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
+        ) : entry.pluginId === "data-science" ? (
+          <DataScienceSection key={entry.key} project={project} onChange={onChange} />
+        ) : entry.pluginId === "latex" ? (
+          <LatexSection key={entry.key} project={project} onChange={onChange} />
+        ) : (
+          <PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />
+        ),
+      )}
+    </>
   );
 }
 
@@ -672,35 +725,24 @@ export function ProjectsPage() {
         {...(instances ? { instances } : {})}
         writer={writer}
       />
-      <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+      {/* THE COMPACT SWITCH LIST IS THE UNBOUND STATE'S ANSWER, and only that.
+          With a project on this Mac named, each plugin gets its own group below
+          — switch included — so showing both would be the enable twice. At All
+          projects, or on a project this Mac cannot write to, those groups would
+          be editors bound to nothing: the switch list stays, visible and inert,
+          so the reader still learns which plugins the setting is about. */}
+      {(!project || project.hostId) && (
+        <ProjectPluginRows {...(project ? { project } : {})} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+      )}
 
-      {/* WHAT IS LEFT ON THE PER-PROJECT PAGE, AND ONLY THAT. It used to be
-          offered as "everything this pane does not hold"; the pane holds the
-          identity, the conversation defaults and the plugin switches now, so
-          the page is the destination for the two things that cannot be rows
-          here — MCP servers scoped to the project, and each plugin's own
-          bespoke editor. There is no `/hosts/:id/projects/:id/settings` route,
-          so a project on another Mac says so rather than offering a link that
-          would open this Mac's page for a foreign id. */}
-      {project && (
-        <SettingsGroup title="Elsewhere">
-          <Row
-            label="This project's own page"
-            icon={ExternalLinkIcon}
-            control={
-              project.hostId ? (
-                <Badge variant="outline">On {project.hostName ?? "another Mac"}</Badge>
-              ) : (
-                <Button variant="outline" size="sm" render={<a href={`/projects/${encodeURIComponent(project.id)}/settings`} />}>
-                  Open
-                </Button>
-              )
-            }
-            {...(project.hostId
-              ? { unavailable: { reason: "Open it in that Mac's own cockpit — this route names projects on this Mac only." } }
-              : { hint: "MCP servers scoped to it, and each plugin's own editor. Everything else about this project is on this pane." })}
-          />
-        </SettingsGroup>
+      {/* WHAT THE STANDALONE PAGE HELD (#363). Only for a project on THIS Mac:
+          every write below goes through this pane's `api`, which is this Mac's,
+          and there is no `/hosts/:id/…` counterpart to send a foreign id to. */}
+      {project && !project.hostId && (
+        <>
+          <McpSection scope={{ projectId: project.id, projectName: project.name }} />
+          <ProjectPluginPanes project={project} {...(plugins ? { plugins } : {})} onChange={replaceProject} />
+        </>
       )}
 
       {/* THE DANGER GROUP IS LAST, AND ONLY FOR A PROJECT ON THIS MAC. Removing

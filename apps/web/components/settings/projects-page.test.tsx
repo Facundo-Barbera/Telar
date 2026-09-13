@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
+import { isTelarIcon, TELAR_ICONS } from "@telar/engine-client";
 import { ProjectConversationRows, ProjectIdentityRows, ProjectPluginRows, ProjectsPage, type ScopedProject } from "./projects-page";
 
 /**
@@ -70,7 +71,7 @@ test("naming a project binds the rows to it and takes the inert reason off", () 
    */
   expect(html).not.toContain("inert");
   expect(html).toContain('aria-label="Project name"');
-  expect(html).toContain('aria-label="Project mark"');
+  expect(html).toContain('aria-label="Project icon"');
 });
 
 test("a project on another Mac keeps every identity row read-only, and says whose", () => {
@@ -86,33 +87,81 @@ test("a project on another Mac keeps every identity row read-only, and says whos
   expect(html).toContain("inert");
 });
 
-test("a chosen mark outranks the checkout's icon, and can be cleared", () => {
-  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
-  // The mark itself, not the engine-served file the derived key points at.
-  expect(marked).toContain("🧵");
+test("a picked glyph outranks the checkout's icon, and can be cleared", () => {
+  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask-conical", icon: "etag_abc" })} />);
+  // The glyph itself, not the engine-served file the derived key points at.
+  expect(marked).toContain("lucide-flask-conical");
   expect(marked).not.toContain("etag_abc");
   // And a revert arrow, which is how the stored answer is removed — `null`,
-  // rather than an empty string the engine would refuse.
+  // rather than a value the row would then have to explain.
   expect(marked).toContain('aria-label="Revert to the default"');
-  // With nothing chosen there is nothing to revert to.
+  // With nothing picked there is nothing to revert to.
   expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).not.toContain('aria-label="Revert to the default"');
 });
 
-test("a project with no workspace answer follows the Mac, and says what it is following", () => {
+test("a mark typed before the picker existed still renders, and Auto-detect is its undo", () => {
+  /**
+   * `iconEmoji` is the field this picker replaced (#364). Dropping it on the
+   * next write would delete somebody's mark for them; rendering it keeps the
+   * registry honest, and the row treats it as a pick — so the revert arrow is
+   * there, and it clears both fields.
+   */
+  const typed = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
+  expect(typed).toContain("🧵");
+  expect(typed).toContain('aria-label="Revert to the default"');
+  expect(typed).toContain("Typed mark");
+});
+
+test("the picker offers the SHARED icon set, not a field that takes anything", () => {
+  /**
+   * The row was a text input that took any grapheme, which made a project's
+   * mark whatever emoji font the reader's OS shipped — a different size, weight
+   * and colour from every other glyph in the list it sits in.
+   *
+   * And the set is `TELAR_ICONS`, the vocabulary browser profiles spend too
+   * (#366): two pickers offering two different forties would be the same choice
+   * made twice with different answers.
+   */
+  expect(source).not.toContain('aria-label="Project mark"');
+  expect(source).toContain("<ProjectIconPicker");
+  const picker = readFileSync(new URL("../projects/project-icon-picker.tsx", import.meta.url), "utf8");
+  expect(picker).toContain('from "@telar/engine-client"');
+  expect(picker).toContain("TELAR_ICONS.map");
+  // Every id the protocol's own shape accepts, so nothing in the grid is a
+  // value the engine would refuse when it is picked.
+  for (const id of TELAR_ICONS) expect(id).toMatch(/^[a-z][a-z0-9-]*$/);
+});
+
+test("a glyph name this build does not know falls through to auto-detect", () => {
+  /**
+   * A record may be written by a build whose set had one more glyph. The shared
+   * renderer draws a quiet ring for an unknown id — right for a browser profile,
+   * whose ring IS its identity, and wrong here: a project has three better
+   * answers behind this one, so `isTelarIcon` guards rather than the fallback.
+   */
+  expect(isTelarIcon("not-a-glyph-in-this-build")).toBe(false);
+  const html = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "not-a-glyph-in-this-build" })} />);
+  expect(html).toContain("Auto-detect");
+});
+
+test("a project with no workspace answer follows the app default, and says what it is following", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  // The first segment is selected — absence is a CHOICE here, not a blank.
-  expect(html).toContain("Follow the Mac");
-  expect(html).toContain("Following this Mac, which says each session gets its own checkout");
+  // The first option is selected — absence is a CHOICE here, not a blank.
+  // "App default", not "Follow the Mac" (#363): the answer it follows is this
+  // install's, and Telar is not a Mac-only app.
+  expect(html).toContain("App default");
+  expect(html).not.toContain("Follow the Mac");
+  expect(html).toContain("Following the app default, which says each session gets its own checkout");
   expect(html).toContain("General ▸ Workspace");
 });
 
-test("a project that pinned an answer states it, whatever the Mac says", () => {
+test("a project that pinned an answer states it, whatever the app default says", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" />);
   // `renderToStaticMarkup` escapes the apostrophe, so the assertion stops
   // short of it rather than pinning the entity.
   expect(html).toContain("Sessions here share the project");
-  expect(html).toContain("checkout, whatever this Mac says");
-  expect(html).not.toContain("Following this Mac");
+  expect(html).toContain("checkout, whatever the app default says");
+  expect(html).not.toContain("Following the app default");
 });
 
 test("the checkout path appears only once a project is named", () => {
@@ -120,13 +169,24 @@ test("the checkout path appears only once a project is named", () => {
   expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).toContain("Checkout");
 });
 
-test("the workspace row offers both per-project answers beside following the Mac", () => {
+test("the workspace row offers both per-project answers beside the app default", () => {
+  // The options live in a portal the list only mounts when it is opened, so
+  // the three answers are pinned against source and the TRIGGER against markup.
+  expect(source).toContain('{ value: "local", label: "Project checkout" }');
+  expect(source).toContain('{ value: "worktree", label: "Own worktree" }');
+  expect(source).toContain('{ value: FOLLOW_APP, label: "App default" }');
+
+  /**
+   * A DROPDOWN, NOT THREE BUTTONS (#364). The control spent the row's whole
+   * width stating the two options nobody chose, and grew the next time one was
+   * added. The trigger states the ANSWER — and states its LABEL, never the
+   * sentinel value, which is the #318 bug a hand-written Select reintroduces.
+   */
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  expect(html).toContain("Project checkout");
-  expect(html).toContain("Own worktree");
-  // Three segments, exactly one of them pressed: a project either follows the
-  // Mac or pins one of the two, and the three are mutually exclusive.
-  expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(1);
+  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">App default<');
+  expect(html).toContain('aria-label="Where new conversations start"');
+  // No segment left: three buttons is what this row stopped being.
+  expect(html).not.toContain('aria-pressed');
 });
 
 test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
@@ -213,8 +273,11 @@ test("clearing a per-project answer writes null, which is what removes it", () =
   // `null` is a VALUE on this route and the only way back to "follow this
   // Mac"; an empty string or an absent key would mean something else.
   expect(source).toContain('writer?.save("defaultModel", { defaultModel: null })');
-  expect(source).toContain("envMode: next === FOLLOW_MAC ? null : (next as EnvMode)");
-  expect(source).toContain('iconEmoji: next.trim() === "" ? null : next.trim()');
+  expect(source).toContain("envMode: next === FOLLOW_APP ? null : (next as EnvMode)");
+  // Auto-detect clears BOTH icon fields: a registry written before the picker
+  // may carry a typed mark, and leaving it would answer for a row that now says
+  // it is auto-detecting.
+  expect(source).toContain('next === null ? { iconName: null, iconEmoji: null } : { iconName: next }');
 });
 
 test("a remote Mac's registry is read when it is asked for, not on mount", () => {
@@ -249,6 +312,42 @@ test("?project= opens the pane on one project, read after the first paint", () =
   // client disagree about the same markup — the reason use-section-from-url.ts
   // defers too.
   expect(source).toContain('new URLSearchParams(window.location.search).get("project")');
+});
+
+test("the standalone per-project page's two halves are groups on this pane (#363)", () => {
+  // MCP servers scoped to the project, and every plugin's own editor — the two
+  // things `/projects/:id/settings` held that this pane had no room for.
+  expect(source).toContain("<McpSection scope={{ projectId: project.id, projectName: project.name }} />");
+  expect(source).toContain("<ProjectPluginPanes project={project}");
+  // On THIS Mac only: every write goes through this pane's `api`, and there is
+  // no `/hosts/:id/…` counterpart to send a foreign project id to.
+  expect(source).toContain("{project && !project.hostId && (");
+});
+
+test("a plugin's editor mounts only once the plugin is on", () => {
+  /**
+   * Not tidiness: LaTeX probes for TeX distributions and Data science probes
+   * for interpreters the moment their editors mount, and a project that asked
+   * for neither would pay for both to open this pane.
+   */
+  expect(source).toContain("!pluginEnabled(enabled, entry.pluginId) ? (");
+  expect(source).toContain("<PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />");
+});
+
+test("the compact switch list is the unbound scope's answer, and only that", () => {
+  // With a project named, each plugin's own group carries the same switch —
+  // rendering both would be the enable twice.
+  expect(source).toContain("{(!project || project.hostId) && (");
+  const html = renderToStaticMarkup(<ProjectsPage />);
+  expect(html).toContain("Plugins");
+});
+
+test("the retired route redirects here rather than 404ing", () => {
+  const route = readFileSync(new URL("../../app/projects/[projectId]/settings/page.tsx", import.meta.url), "utf8");
+  expect(route).toContain("redirect(projectSettingsHref(projectId))");
+  // And the one link helper every gear uses already points at this pane.
+  const link = readFileSync(new URL("../../lib/project-settings-link.ts", import.meta.url), "utf8");
+  expect(link).toContain("`/settings?section=projects&project=${encodeURIComponent(projectId)}`");
 });
 
 test("the pane's rows are findable by search before the pane has ever been opened", () => {

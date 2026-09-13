@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ArchiveIcon, BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -37,7 +37,6 @@ import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
-import { SettledPage } from "./settled-page";
 import { SourceControlPage } from "./source-control-page";
 import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
@@ -94,12 +93,6 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
   /**
-   * UNDER "COCKPIT": a settled conversation is off THIS rail's list. Nothing
-   * about the machine that runs turns changes when one is shelved, and the
-   * window that shelves it is set two panes up in General ▸ Settling.
-   */
-  { id: "settled", label: "Settled", icon: ArchiveIcon, group: "Cockpit" },
-  /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
    * a fact about the install, not about the machine that runs turns (the
    * engine stays loopback either way).
@@ -153,6 +146,14 @@ const SECTION_ALIASES: Record<string, string> = {
   // splitting them meant looking in two places for one question; the id keeps
   // answering so bookmarks and the OAuth redirect do not strand.
   application: "general",
+  /**
+   * SETTLED IS NOT A SETTING, AND THE PANE IS GONE (#364). It listed the
+   * conversations this rail has shelved — a shelf, which the rail already
+   * draws and is where anyone looking for one goes. What IS a setting is the
+   * rule that puts them there, and that is General ▸ Settling, so a bookmark
+   * lands on the one row it could have meant.
+   */
+  settled: "general",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -269,8 +270,6 @@ export function SettingsPage() {
       {active === "projects" && <ProjectsPage />}
 
       {active === "keybindings" && <KeybindingsPage />}
-
-      {active === "settled" && <SettledPage />}
 
       {active === "plugins" && <PluginsPage />}
 

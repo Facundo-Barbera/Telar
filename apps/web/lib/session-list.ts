@@ -87,6 +87,10 @@ export type SidebarSession = {
   /** `Project.icon` — the content-derived key behind the engine's icon route.
    *  Absent when the checkout carries no icon file. */
   projectIcon?: string;
+  /** `Project.iconName` — the glyph somebody PICKED, which outranks the file
+   *  above. Two fields because they are two questions; `ProjectAvatar` is what
+   *  prefers one, so no row here has to know which kind of answer it got. */
+  projectIconName?: string;
   /**
    * `Project.remoteUrl` — which REPOSITORY this row's project is a checkout of,
    * as `host/owner/repo`. The one fact a row carries that is true on more than
@@ -162,6 +166,7 @@ export function toSidebarSession(
   host?: { id: string; name: string },
   assignments?: readonly SessionAssignment[],
   projectRemote?: string,
+  projectIconName?: string,
 ): SidebarSession {
   return {
     id: session.id,
@@ -174,6 +179,7 @@ export function toSidebarSession(
     ...(projectName ? { projectName } : {}),
     ...(projectBranch ? { projectBranch } : {}),
     ...(projectIcon ? { projectIcon } : {}),
+    ...(projectIconName ? { projectIconName } : {}),
     ...(projectRemote ? { projectRemote } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,

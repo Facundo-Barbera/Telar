@@ -32,7 +32,7 @@ export function LinksSection() {
         icon={ExternalLinkIcon}
         hint={
           openInSessionBrowser
-            ? "Issues and pull requests open in the right panel; other links open as tabs in the session's integrated browser, where the agent can see them."
+            ? "Issues and pull requests open in the right panel; other links become tabs the agent can see."
             : "Links open in your system browser."
         }
         {...(openInSessionBrowser ? { onRevert: () => setOpenInSessionBrowser(false) } : {})}

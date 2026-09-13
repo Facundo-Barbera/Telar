@@ -116,6 +116,8 @@ export type ProjectGroup = {
   hostId?: string;
   name: string;
   icon?: string;
+  /** The glyph somebody picked, which outranks `icon` — see `ProjectAvatar`. */
+  iconName?: string;
   hostName?: string;
   sessions: SidebarSession[];
   /**
@@ -426,6 +428,7 @@ export function groupSessions(
       ...(session.hostName ? { hostName: session.hostName } : {}),
       name: session.projectName ?? session.projectId,
       ...(session.projectIcon ? { icon: session.projectIcon } : {}),
+      ...(session.projectIconName ? { iconName: session.projectIconName } : {}),
       sessions: [],
     };
     group.sessions.push(session);

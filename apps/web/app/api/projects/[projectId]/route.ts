@@ -29,7 +29,7 @@ export async function PATCH(request: Request, context: Context) {
     const { projectId } = await context.params;
     const body = await requestObject(request);
     const patch: ProjectPatch = {};
-    for (const field of ["name", "iconEmoji", "defaultModel", "envMode", "dataScience", "latex", "plugins"] as const) {
+    for (const field of ["name", "iconName", "iconEmoji", "defaultModel", "envMode", "dataScience", "latex", "plugins"] as const) {
       if (field in body) (patch as Record<string, unknown>)[field] = body[field];
     }
     return Response.json(await (await engineClient()).updateProject(projectId, patch));

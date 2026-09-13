@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { FolderIcon } from "lucide-react";
+import { isTelarIcon } from "@telar/engine-client";
 import { projectHue, projectIconUrl, projectInitial } from "@/lib/project-avatar";
+import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 
 /**
@@ -12,9 +14,15 @@ import { cn } from "@/lib/utils";
  *
  * THE CHOSEN MARK IS FIRST, and that ordering is the whole point of being able
  * to choose one: a project whose checkout carries a favicon nobody likes has no
- * other way to say so. The two are separate fields on the record rather than one
- * (`Project.iconEmoji` explains why), so preferring one here costs no branch
- * anywhere else.
+ * other way to say so. The chosen mark and the discovered one are separate
+ * fields on the record rather than one (`Project.iconName` explains why), so
+ * preferring one here costs no branch anywhere else.
+ *
+ * A NAME THIS BUILD DOES NOT KNOW IS NOT A MARK. `isTelarIcon` is the guard
+ * rather than `IdentityIcon`'s own fallback: that one draws a quiet ring for an
+ * unknown id, which is right for a browser profile (whose ring IS its identity)
+ * and wrong here — a project has three better answers behind this one, and a
+ * record from a newer build should reach them rather than stop at a circle.
  *
  * The `<img>` FAILS FORWARD: the engine's icon key is derived on list and the
  * file can vanish between the list and the fetch, so a broken image flips to
@@ -24,6 +32,7 @@ export function ProjectAvatar({
   name,
   projectId,
   icon,
+  iconName,
   iconEmoji,
   size = 12,
   className,
@@ -32,7 +41,9 @@ export function ProjectAvatar({
   projectId?: string;
   /** `Project.icon` — the content-derived key. Absent means no file was found. */
   icon?: string;
-  /** `Project.iconEmoji` — the mark a person typed. Outranks `icon`. */
+  /** `Project.iconName` — the glyph a person picked. Outranks `icon`. */
+  iconName?: string;
+  /** `Project.iconEmoji` — a mark typed before the picker existed. Outranks `icon`. */
   iconEmoji?: string;
   /** Rendered box in px. The type stays square at any size. */
   size?: number;
@@ -41,6 +52,16 @@ export function ProjectAvatar({
   const [broken, setBroken] = useState(false);
   const box = { width: size, height: size };
 
+  if (isTelarIcon(iconName)) {
+    // `currentColor` on purpose — no `color` passed: a chosen glyph takes the
+    // ink of whatever list it is in (rail, picker, header), so it reads as part
+    // of the row rather than as a sticker on it.
+    return (
+      <span aria-hidden style={box} className={cn("flex shrink-0 items-center justify-center", className)}>
+        <IdentityIcon icon={iconName} className="size-full" />
+      </span>
+    );
+  }
   if (iconEmoji) {
     return (
       <span

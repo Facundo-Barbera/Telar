@@ -53,6 +53,54 @@ test("both sections import the shared grammar rather than restating it", () => {
   expect(looks).not.toContain("PanelRow");
 });
 
+test("an enumeration setting is a dropdown, and a boolean is still a switch (#364)", () => {
+  /**
+   * The rule the segmented control kept breaking: a row whose control states
+   * every answer it did NOT choose spends the whole row on alternatives and
+   * re-lays out the next time one is added. What is pinned is that the named
+   * rows moved, and that `Segmented` survives only where a form's own choice
+   * steers the fields under it.
+   */
+  const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
+  const workspace = readFileSync(new URL("./workspace-section.tsx", import.meta.url), "utf8");
+  const textgen = readFileSync(new URL("./textgen-section.tsx", import.meta.url), "utf8");
+
+  expect(shell).toContain("export function Dropdown<T extends string>");
+  // The #318 bug, fixed in ONE place rather than at each call site: a bare
+  // `<SelectValue />` renders the value string when nothing maps it to a label.
+  expect(shell).toContain("<SelectValue>{chosen?.text ?? chosen?.label ?? value}</SelectValue>");
+
+  for (const source of [workspace, textgen]) {
+    expect(source).toContain("<Dropdown<");
+    expect(source).not.toContain("<Segmented<");
+  }
+  // Booleans did NOT move: a switch is already the shortest true statement.
+  expect(textgen).toContain("<ToggleRow");
+});
+
+test("a row with nothing specific to say carries no sub-line at all (#364)", () => {
+  /**
+   * The one thing a hint may never be is the control read aloud. Channel's
+   * fallback was "Which stream of builds this install follows" over a select
+   * whose options ARE the streams; what survives is `CHANNEL_HINT`, which says
+   * what the chosen channel MEANS — the thing the options cannot say.
+   */
+  const updates = readFileSync(new URL("./updates-section.tsx", import.meta.url), "utf8");
+  expect(updates).toContain("{...(prefs && CHANNEL_HINT[prefs.channel] ? { hint: CHANNEL_HINT[prefs.channel] } : {})}");
+  expect(updates).not.toContain('"Which stream of builds this install follows."');
+});
+
+test("two plugin panes on one page do not both head a group 'Packages' (#363)", () => {
+  // They were separate screens; folding the per-project page into Projects put
+  // them on one, where a heading that names nothing is also a duplicate anchor.
+  const ds = readFileSync(new URL("./data-science-section.tsx", import.meta.url), "utf8");
+  const latex = readFileSync(new URL("./latex-section.tsx", import.meta.url), "utf8");
+  expect(ds).toContain('title="Python packages"');
+  expect(ds).toContain('title="Python tools"');
+  expect(latex).toContain('title="TeX packages"');
+  for (const source of [ds, latex]) expect(source).not.toContain('title="Packages"');
+});
+
 test("the host-look row keeps Retry live when there is nothing to follow", () => {
   /**
    * The regression this guards: `unavailable` takes the whole control column

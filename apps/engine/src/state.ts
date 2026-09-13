@@ -4489,9 +4489,9 @@ export class EngineStore {
    * `null` REMOVES A STORED ANSWER rather than storing a neutral one — for
    * `dataScience` and `latex` that is how "off" is spelled, so the registry
    * does not grow a `{enabled: false}` for every project that tried a feature
-   * once; for `iconEmoji`, `defaultModel` and `envMode` it is how "go back to
-   * following this Mac" is spelled, which is a different sentence from any
-   * value they could hold.
+   * once; for `iconName`, `iconEmoji`, `defaultModel` and `envMode` it is how
+   * "go back to following this Mac" is spelled, which is a different sentence
+   * from any value they could hold.
    *
    * This method still refuses any key it does not know rather than storing it.
    */
@@ -4499,6 +4499,7 @@ export class EngineStore {
     projectId: string,
     patch: {
       name?: string;
+      iconName?: string | null;
       iconEmoji?: string | null;
       defaultModel?: ModelSelectionValue | null;
       envMode?: EnvMode | null;
@@ -4534,6 +4535,23 @@ export class EngineStore {
       if (name.length > 200) throw new EngineStateError("invalid_request", "project name is too long");
       next.name = name;
     }
+    /**
+     * ONE PICKED ANSWER, NOT TWO. `iconName` and `iconEmoji` answer the same
+     * question — "what did somebody choose for this project" — and a record
+     * carrying both would leave the rail's preference order deciding which of
+     * two deliberate picks wins. So naming either CLEARS the other, which also
+     * makes the picker's Auto-detect one write rather than two.
+     */
+    if (patch.iconName === null) {
+      delete next.iconName;
+    } else if (patch.iconName !== undefined) {
+      const glyph = ProjectSchema.shape.iconName.safeParse(
+        typeof patch.iconName === "string" ? patch.iconName.trim() : patch.iconName,
+      );
+      if (!glyph.success || glyph.data === undefined) throw new EngineStateError("invalid_request", "project icon must be an icon name");
+      next.iconName = glyph.data;
+      delete next.iconEmoji;
+    }
     if (patch.iconEmoji === null) {
       delete next.iconEmoji;
     } else if (patch.iconEmoji !== undefined) {
@@ -4542,6 +4560,7 @@ export class EngineStore {
       );
       if (!mark.success || mark.data === undefined) throw new EngineStateError("invalid_request", "project icon must be a short mark");
       next.iconEmoji = mark.data;
+      delete next.iconName;
     }
     if (patch.defaultModel === null) {
       delete next.defaultModel;

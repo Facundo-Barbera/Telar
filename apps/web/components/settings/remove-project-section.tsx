@@ -150,7 +150,10 @@ export function RemoveProjectSection({
       <SettingsGroup title="Removed from Telar" description="Put away — nothing on disk was touched.">
         <Row
           label="Restore this project"
-          hint="Brings it back with the same id, settings and sessions, which are all still here. Registering its folder again does the same thing."
+          // The caption above already says nothing on disk was touched; what
+          // this row adds is that the RECORD survived too — same id, same
+          // settings, same sessions.
+          hint="Same id, same settings, same sessions. Registering the folder again does this too."
           control={
             <div className="flex items-center gap-2">
               <Badge variant="outline">Removed</Badge>
@@ -185,7 +188,7 @@ export function RemoveProjectSection({
         // project; it is a registry write and nothing else, and saying so here is
         // what lets somebody press the button without opening the dialog to find
         // out whether their repository survives.
-        hint="Telar stops offering it and no new sessions can start on it. Files on disk are not touched, and you can put it back."
+        hint="No new sessions can start on it. Files on disk are not touched, and you can put it back."
         control={
           <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" disabled={!project} onClick={() => handleOpenChange(true)}>
             Remove…

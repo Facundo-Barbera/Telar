@@ -37,7 +37,7 @@ test("the row is drawn before the probe answers", () => {
   const html = renderToStaticMarkup(<SourceControlPage />);
   expect(html).toContain("GitHub");
   // The caption is the group's; the row carries no standing sentence under it.
-  expect(html).toContain("reads through a CLI you signed in to yourself");
+  expect(html).toContain("Read through a CLI you signed in to yourself");
   expect(html).not.toContain("Sessions get the same access you have in a terminal");
 });
 

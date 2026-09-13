@@ -44,6 +44,8 @@ export type NewConversationTarget = {
   id: string;
   name: string;
   icon?: string;
+  /** The glyph somebody picked, which outranks `icon` — see `ProjectAvatar`. */
+  iconName?: string;
   hostId?: string;
   hostName?: string;
   root?: string;
@@ -194,6 +196,7 @@ export function NewConversationDialog({
                   name={target.name}
                   {...(target.hostId ? {} : { projectId: target.id })}
                   {...(target.icon ? { icon: target.icon } : {})}
+                  {...(target.iconName ? { iconName: target.iconName } : {})}
                   size={16}
                 />
                 <span className="min-w-0 flex-1">

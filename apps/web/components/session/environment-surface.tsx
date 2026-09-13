@@ -10,6 +10,7 @@
 import { PackageIcon, SettingsIcon } from "lucide-react";
 import Link from "next/link";
 import type { KernelState } from "@/lib/ds";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PanelEmpty } from "@/components/ui/panel";
 import { PackagesPanel } from "@/components/settings/packages-panel";
 
@@ -22,7 +23,9 @@ export function EnvironmentSurface({ sessionId, projectId, kernel, onRestart }: 
         <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[0.625rem] text-muted-foreground">
           <SettingsIcon className="size-3" />
           <span>Environments, Python versions and conda live in</span>
-          <Link href={`/projects/${encodeURIComponent(projectId)}/settings?section=data-science`} className="underline-offset-2 hover:underline">project settings</Link>
+          {/* The project's own groups on Settings ▸ Projects, which is where the
+              Data science editor moved when the standalone page went (#363). */}
+          <Link href={projectSettingsHref(projectId)} className="underline-offset-2 hover:underline">project settings</Link>
         </div>
       )}
     </div>
