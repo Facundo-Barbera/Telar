@@ -135,10 +135,17 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
+    // ANSWERS WHAT IT DID WITH THE PRESS — `{ status: "restarting" }` for the
+    // press that stages, the SAME for one that arrives while that is still
+    // going (the shell refuses to stage twice, issue #389), `unsupported` for a
+    // build that installs nothing, `error` for a stage that threw. The renderer
+    // does not wait on it for the happy path: the process is quitting, and the
+    // `restarting` broadcast has already arrived.
     install: () => ipcRenderer.invoke("telar:updates:install"),
     onStatus: (listener) => on("telar:updates:status", listener),
     // The last status the shell broadcast — how a renderer that mounted after
-    // `update-downloaded` still learns an install is waiting.
+    // `update-downloaded` (or during the restart) still learns where the
+    // updater got to.
     status: () => ipcRenderer.invoke("telar:updates:status"),
     getPrefs: () => ipcRenderer.invoke("telar:updates:getPrefs"),
     setPrefs: (patch) => ipcRenderer.invoke("telar:updates:setPrefs", patch),
