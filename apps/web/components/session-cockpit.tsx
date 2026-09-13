@@ -24,7 +24,9 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
+import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
@@ -1246,6 +1248,16 @@ export function SessionCockpit({
   const [dataScience, setDataScience] = useState(false);
   /** The project's LaTeX opt-in — same lifecycle. */
   const [latex, setLatex] = useState(false);
+  /**
+   * THE TRANSCRIPT FOLD, WITH A MEMORY (#407).
+   *
+   * One instance per mounted cockpit, held in state so it survives re-renders
+   * and is thrown away with the component. It re-folds only the turns whose own
+   * rows moved, which on a live conversation is one — the whole settled history
+   * above it cannot have changed, and re-deriving it once per streamed chunk was
+   * most of what this component spent its time on. See `createJournalProjector`.
+   */
+  const [projectTranscript] = useState(createJournalProjector);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const syncKey = JSON.stringify([hostId ?? LOCAL_HOST, sessionId]);
@@ -1276,12 +1288,56 @@ export function SessionCockpit({
     staleAt.current = undefined;
     setStale(undefined);
   }, [setStale]);
+  /** What the last recording was made of — identities, not contents, so a tail
+   *  that changed nothing can be recognised and skipped. See `remember`. */
+  const photographed = useRef<{
+    id: string;
+    session: unknown;
+    turns: unknown;
+    items: unknown;
+    tasks: unknown;
+    requests: unknown;
+    events: unknown;
+  }>(undefined);
   /** …and the snapshot the NEXT outage will show. Written from the freshly
    *  fetched values rather than from state, which has not committed yet. */
   const remember = useCallback((id: string, snapshot: SessionSnapshot & { events?: EngineEvent[] }) => {
     live();
     const store = snapshotStore();
     if (!store) return;
+    /**
+     * A PHOTOGRAPH OF WHAT HAS NOT CHANGED IS THE SAME PHOTOGRAPH (#407).
+     *
+     * This runs on every tail — once a second, per open conversation — and the
+     * quiet answer is the SAME row objects, because no companion snapshot was
+     * fetched. Yet the fold below is a full re-projection of the transcript and
+     * `saveSnapshot` is an IndexedDB write, so a conversation nobody was typing
+     * into paid both every second for a recording identical to the one already
+     * stored. Identity is the whole test: these rows come off `JSON.parse`, so
+     * anything genuinely new is genuinely a new object.
+     */
+    const held = photographed.current;
+    if (
+      held &&
+      held.id === id &&
+      held.session === snapshot.session &&
+      held.turns === snapshot.turns &&
+      held.items === snapshot.items &&
+      held.tasks === snapshot.tasks &&
+      held.requests === snapshot.requests &&
+      held.events === snapshot.events
+    ) {
+      return;
+    }
+    photographed.current = {
+      id,
+      session: snapshot.session,
+      turns: snapshot.turns,
+      items: snapshot.items,
+      tasks: snapshot.tasks,
+      requests: snapshot.requests,
+      events: snapshot.events,
+    };
     // KEYED BY THE MAC THIS SCREEN IS ABOUT — two hosts can mint the same
     // session id, and one Mac's recording must never answer for another's.
     // `page` rides along so a cached open can still offer "Load earlier
@@ -2028,21 +2084,55 @@ export function SessionCockpit({
   // read but never wrong.
   useEffect(() => {
     let cancelled = false;
+    /**
+     * THE NAME THE LAST VISIT LEFT, painted while the list is in flight (#407).
+     *
+     * The canvas used to resolve this on the SERVER precisely so the breadcrumb
+     * would not show a raw id and correct itself — which put an engine read in
+     * the path of every "New conversation" press. Remembering is the same
+     * remedy without the wait. LOCAL ONLY: the note is this Mac's registry, and
+     * a remote project that happens to share an id is not the same project.
+     */
+    const local = hostId === LOCAL_HOST_ID;
+    /**
+     * A REMEMBERED NAME NEVER OVERWRITES A READ ONE. The note is a stand-in for
+     * an answer that has not come back; if it already has, the note is stale by
+     * definition and the fetch is the one that knows about a rename.
+     */
+    let answered = false;
+    // Deferred to a task, the same rule every other stored-state restore in
+    // this component follows: a synchronous setState in an effect body is a
+    // cascading render, and this app's lint enforces it. A tick is still an
+    // eternity ahead of the fetch below, which is the whole point.
+    const task = window.setTimeout(() => {
+      if (cancelled || answered || !local) return;
+      const remembered = rememberedProjectName(projectId);
+      if (remembered) setProjectName(remembered);
+    }, 0);
     void api.projects().then(
       (result) => {
         if (cancelled) return;
+        answered = true;
         const found = result.projects.find((project) => project.id === projectId);
         setProjectName(found?.name);
         const plugins = cockpitPlugins(found);
         setDataScience(plugins.dataScience);
         setLatex(plugins.latex);
+        /**
+         * …AND THE NOTE THE NEXT LAUNCH READS. This is the one screen that
+         * knows both halves of the front door's answer — the registry, and
+         * which project a person is actually in — so it is where the note is
+         * written. See `app/front-door.tsx`.
+         */
+        if (local) writeFrontDoorNote(result.projects, projectId);
       },
       () => undefined,
     );
     return () => {
       cancelled = true;
+      window.clearTimeout(task);
     };
-  }, [projectId]);
+  }, [projectId, hostId]);
 
   useEffect(() => {
     // A fresh canvas has nothing to hydrate and nothing to poll — and polling a
@@ -2111,8 +2201,8 @@ export function SessionCockpit({
    * this it painted the whole of it under a fresh greeting.
    */
   const transcript = useMemo(
-    () => (sessionId ? projectJournal(turns, items, events, tasks) : []),
-    [sessionId, turns, items, events, tasks],
+    () => (sessionId ? projectTranscript(turns, items, events, tasks) : []),
+    [sessionId, turns, items, events, tasks, projectTranscript],
   );
   /**
    * THE SUB-AGENT ROSTER, FROM THE SAME FOLD THE TRANSCRIPT READS.
@@ -2766,6 +2856,32 @@ export function SessionCockpit({
    *  than the tail of the last one or a recording of this one. A fresh canvas
    *  has nothing to read, so it is never mid-open. */
   const transcriptLanded = !sessionId || readKey === syncKey;
+
+  /**
+   * WHERE THE TIME GOES WHEN A CONVERSATION OPENS (#407).
+   *
+   * Three stamps, and each answers a different complaint: the route committing
+   * (the press that seemed to do nothing), the transcript landing (the empty
+   * frame), and the first read settling (the screen still assembling itself
+   * under you). `lib/perf-marks.ts` owns the clock and the click that starts it;
+   * this component only says when each thing became true, because it is the only
+   * thing that knows.
+   *
+   * ONE EFFECT, not three beside the state each reads: these are observations
+   * about a render, they must not influence one, and keeping them together is
+   * what stops them drifting into the logic they measure.
+   */
+  useEffect(() => {
+    installNavigationMarks();
+    markNavigation("commit", pathname);
+  }, [pathname]);
+  useEffect(() => {
+    if (transcriptLanded) markNavigation("transcript", pathname);
+  }, [transcriptLanded, pathname]);
+  useEffect(() => {
+    if (!loading) markNavigation("idle", pathname);
+  }, [loading, pathname]);
+
   /**
    * THE ANSWER A READ RECEIPT WOULD BE ABOUT — the newest turn that left a
    * result, read off the RAW turns because only they carry the sequence the
