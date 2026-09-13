@@ -4,7 +4,7 @@ import { TurnObservation, type TurnObservation as Observation } from "@telar/eng
 import { createOpenCodeDriver } from "../src/opencode/driver";
 import type { DriverRun } from "../src/provider-contract";
 
-function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; providerErrorShape?: { name: string; data: Record<string, unknown> }; multiple?: boolean } = {}) {
+function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; providerErrorShape?: { name: string; data: Record<string, unknown> }; multiple?: boolean; mcpAddFails?: boolean } = {}) {
   const calls: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
   let messageID = "";
   let snapshots = 0;
@@ -21,7 +21,7 @@ function fixture(options: { lostAck?: boolean; permission?: boolean; question?: 
       request.signal.addEventListener("abort", () => controller.close(), { once: true });
     } }), { headers: { "content-type": "text/event-stream" } });
     if (pathname === "/session" && request.method === "POST") return json({ id: "ses_test" });
-    if (pathname === "/mcp") return json({});
+    if (pathname === "/mcp") return options.mcpAddFails ? new Response("mcp failed", { status: 500 }) : json({});
     if (pathname.endsWith("/prompt_async")) {
       messageID = body.messageID;
       await options.admission;
@@ -177,6 +177,47 @@ test("a model id with no connection prefix is REFUSED, not silently defaulted", 
   const f = fixture({});
   await expect(f.driver.run({ ...f.input, model: "gpt-6-astra" })).rejects.toThrow("provider/model");
   expect(f.calls.some((call) => call.path.endsWith("/prompt_async"))).toBe(false);
+});
+
+/** Telar's computer-use server, exactly as a claim carries it (see
+ *  computer-use.ts — `mac`, because Claude Code reserves `computer-use`). */
+const macServer = {
+  id: "mac",
+  label: "Computer Use (Mac)",
+  enabled: true,
+  spec: { transport: "stdio" as const, command: "/Users/tester/.local/bin/cua-driver", args: ["mcp"] },
+  createdAt: 0,
+  updatedAt: 0,
+};
+
+test("the computer-use server is registered with the running OpenCode server, not just configured", async () => {
+  // #368: OpenCode takes MCP servers as a RUNTIME registration against the
+  // session's own server, so "the claim carried it" is not the same claim as
+  // "the session has the tools". This is the call that makes it true.
+  const f = fixture();
+  await f.driver.run({ ...f.input, mcpServers: [macServer] });
+  expect(f.calls.find((call) => call.path === "/mcp")?.body).toEqual({
+    name: "mac",
+    config: { type: "local", command: ["/Users/tester/.local/bin/cua-driver", "mcp"] },
+  });
+  f.driver.dispose?.();
+});
+
+test("a server that will not register costs its tools, not the turn", async () => {
+  /**
+   * The reported failure: a session with cua-driver installed could not run at
+   * all on OpenCode. `mcp.add` CONNECTS the server, against OpenCode's own 30s
+   * budget, and this driver waited 10s and threw — so merely HAVING computer
+   * use installed killed every turn. The Claude driver has always let a bad
+   * server cost only its own tools.
+   */
+  const f = fixture({ mcpAddFails: true });
+  expect((await f.driver.run({ ...f.input, mcpServers: [macServer] })).text).toBe("Hello");
+  // Never remembered as connected, so the next turn TRIES AGAIN rather than
+  // skipping it — or, worse, disconnecting a name that never was.
+  await f.driver.run({ ...f.input, runId: "run_two", mcpServers: [macServer] });
+  expect(f.calls.filter((call) => call.path === "/mcp")).toHaveLength(2);
+  f.driver.dispose?.();
 });
 
 test("multiple-choice questions keep their choices and submit independent selections", async () => {
