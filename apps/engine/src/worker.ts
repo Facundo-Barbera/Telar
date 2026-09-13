@@ -1523,6 +1523,10 @@ export class EngineWorker {
         ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
         ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
         ...(claim.tasks?.length ? { tasks: claim.tasks } : {}),
+        // The orientation paragraph, forwarded verbatim. Resolved on the claim
+        // for the same reason the two above are — the worker holds no store
+        // handle, and absence is the honest "the person turned it off".
+        ...(claim.orientation ? { orientation: claim.orientation } : {}),
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH

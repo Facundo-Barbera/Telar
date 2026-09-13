@@ -68,6 +68,54 @@ export function claudeHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude");
 }
 
+/** Codex's own configuration directory, honouring the variable its CLI reads —
+ *  the same resolution `computer-use.ts` and `usage.ts` already make. */
+export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+}
+
+/**
+ * OpenCode's own configuration directory.
+ *
+ * XDG, unlike the two above: OpenCode is the one of the three that follows it,
+ * scanning `<config>/{skill,skills}/**\/SKILL.md` for the machine's own skills.
+ * `OPENCODE_CONFIG` names a config FILE when it is set, so the directory is its
+ * parent.
+ */
+export function openCodeHome(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.OPENCODE_CONFIG?.trim();
+  if (configured) return path.dirname(configured);
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  return path.join(xdg || path.join(os.homedir(), ".config"), "opencode");
+}
+
+/**
+ * WHERE A PROVIDER READS MACHINE-WIDE SKILLS FROM — the directory an engine-
+ * authored `SKILL.md` is installed into (see `orientation.ts`).
+ *
+ * ONE PER DRIVER, AND EACH IS THAT PROVIDER'S OWN CONVENTION rather than a
+ * guess: Claude reads `<claude>/skills/<name>/SKILL.md`, Codex
+ * `<codex>/skills/...`, and OpenCode `<config>/skill/...` (singular — its
+ * scanner accepts `{skill,skills}`, and the singular is the directory its own
+ * docs name beside `agent/` and `command/`).
+ *
+ * SEPARATE FROM THE READING SIDE ABOVE, which lists what a person may TYPE and
+ * deliberately reports nothing for Codex and OpenCode — neither exposes an
+ * inventory a daemon can read. Not being able to enumerate a provider's skills
+ * is a different fact from not knowing where to put one.
+ */
+export function providerSkillRoot(driver: ProviderDriverKind, env: NodeJS.ProcessEnv = process.env): string {
+  if (driver === "codex") return path.join(codexHome(env), "skills");
+  if (driver === "opencode") return path.join(openCodeHome(env), "skill");
+  return path.join(claudeHome(env), "skills");
+}
+
+/** Every provider's install location, deduplicated — what the engine syncs the
+ *  `telar` skill across on start. */
+export function providerSkillRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  return [...new Set((["claude", "codex", "opencode"] as const).map((driver) => providerSkillRoot(driver, env)))];
+}
+
 /* ------------------------------------------------------------------ *
  * Reading one file's front matter.
  * ------------------------------------------------------------------ */

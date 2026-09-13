@@ -282,6 +282,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       browserSocket,
       sessionsSocket,
       telarSocketLease,
+      orientation,
       run,
       onObservations,
       onRequest,
@@ -737,9 +738,22 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                 ...(disableNativeComputerUse ? { features: { computer_use: false } } : {}),
               }
             : undefined;
-        /** One paragraph per surface this session actually has — the same
-         *  gate, and the same reason, as the Claude driver's `briefings`. */
-        const briefings = [...(browserSocket ? [BROWSER_BRIEFING] : []), ...(run ? [RUN_BRIEFING] : [])];
+        /**
+         * One paragraph per surface this session actually has — the same gate,
+         * and the same reason, as the Claude driver's `briefings`.
+         *
+         * THE ORIENTATION LEADS, and it is the one entry gated on the PERSON
+         * rather than on a capability: where the agent is is true of every
+         * session, and the engine resolved whether to say so at claim time.
+         * First because the briefings under it are written in the vocabulary it
+         * teaches. Sent on `thread/start` and `thread/resume` alike, so a
+         * resumed thread is oriented too — once per turn, never twice.
+         */
+        const briefings = [
+          ...(orientation ? [orientation] : []),
+          ...(browserSocket ? [BROWSER_BRIEFING] : []),
+          ...(run ? [RUN_BRIEFING] : []),
+        ];
         const threadParams = {
           cwd,
           ...(briefings.length
