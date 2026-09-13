@@ -28,7 +28,7 @@ import { desktopApp } from "@/lib/desktop-app";
 import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow } from "./settings-shell";
 
 interface RemoteDevice {
   id: string;
@@ -514,9 +514,9 @@ export function RemoteSection() {
           renaming, explained what "view only" means and described what revoking
           does — a paragraph to hold while looking down a list for one device.
           Each of those belongs to a control that is already on the row: the name
-          is a button that says "Rename", the roles are a segmented control whose
-          two options can carry their own tooltips, and the ✕ says what it does
-          and what it leaves alone. */}
+          is a button that says "Rename", the roles are a dropdown whose two
+          options carry their own tooltips, and the ✕ says what it does and what
+          it leaves alone. */}
       {/* THE HOST IS A BADGE ON THE HEADER, NOT A ROW (#357). It used to sit in
           the list wearing the shape of a paired device — "This app · Runs the
           server — always connected, nothing to revoke" — which is a row whose
@@ -541,18 +541,51 @@ export function RemoteSection() {
             }
           : {})}
       >
-        {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
-        {status.devices.map((device) => (
-          <DeviceRow
-            key={device.id}
-            device={device}
-            isSelf={device.id === status.callerDeviceId}
-            busy={busy}
-            onRename={(name) => void patchDevice(device.id, { name })}
-            onRole={(role) => void patchDevice(device.id, { role })}
-            onRevoke={() => void revoke(device.id)}
-          />
-        ))}
+        {status.devices.length === 0 ? (
+          <Row label="None yet" hint="Devices appear here as they pair." control={null} />
+        ) : (
+          /*
+            A TABLE WITH ITS OWN SCROLL, NOT A ROW PER DEVICE (#365).
+
+            Every device was a `Row` with a four-fact sentence under its name, so
+            a pane whose LENGTH was a property of how many phones somebody had
+            ever paired — and the settings below it (Other Macs, the Danger
+            group) moved down the page every time one more did. A person reading
+            a list of devices is comparing them, which is what columns are for,
+            and the box stops growing at ten-ish rows.
+
+            THE HEIGHT IS FIXED IN PIXELS RATHER THAN IN ROWS. A row's height
+            depends on whether its device declared a client and a machine, so
+            `max-h` is the only cap that holds for a list of both kinds.
+          */
+          <div className="-mx-4 max-h-80 overflow-y-auto">
+            <table className="w-full border-collapse text-left text-xs">
+              {/* STICKY, because a scrolled list whose headings have gone is
+                  four columns of values with nothing saying which is which. */}
+              <thead className="sticky top-0 z-10 bg-card">
+                <tr className="border-b border-border/60 text-[0.6875rem] font-normal tracking-wide text-muted-foreground uppercase">
+                  <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">Device</th>
+                  <th scope="col" className="py-1.5 pr-3 font-normal">Kind</th>
+                  <th scope="col" className="py-1.5 pr-3 font-normal">Last seen</th>
+                  <th scope="col" className="py-1.5 pr-4 text-right font-normal">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {status.devices.map((device) => (
+                  <DeviceRow
+                    key={device.id}
+                    device={device}
+                    isSelf={device.id === status.callerDeviceId}
+                    busy={busy}
+                    onRename={(name) => void patchDevice(device.id, { name })}
+                    onRole={(role) => void patchDevice(device.id, { role })}
+                    onRevoke={() => void revoke(device.id)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </SettingsGroup>
 
       {/* DANGER, AT THE FLOOR OF THE PANE. A plain label and no red panel — the
@@ -592,10 +625,20 @@ function DeviceRow({
   // The kind first; the old platform field only for rows written before it.
   const kind = device.identity?.kind ?? (device.platform === "ios" ? "phone" : device.platform);
   const Icon = (kind ? KIND_ICONS[kind] : undefined) ?? CircleHelpIcon;
-  // Suppressed when the name already carries it, so a row does not read
-  // "Chrome · macOS — Chrome · macOS · Last seen …".
+  /**
+   * WHAT IS ACTUALLY CONNECTED, when the name does not already say it. A client
+   * picks its own name at pairing and often picks the machine's — Lintel pairs
+   * as "MINI-FBARBERA" — which left the row naming the box and never the app
+   * running on it. The name is whatever it was called; this is what it IS, and
+   * it has a column of its own now rather than riding in a run-on sentence.
+   */
   const declaredSource = [device.identity?.client, device.identity?.machine].filter(Boolean).join(" · ");
   const source = declaredSource && !device.name.includes(declaredSource) ? declaredSource : undefined;
+  // WHERE IT IS, which is the whole point of the report-back fields: two rows
+  // reading "Chrome" are told apart by the address they came from.
+  const whereabouts = [device.identity?.address, device.identity?.origin ? `via ${device.identity.origin}` : undefined]
+    .filter(Boolean)
+    .join(" · ");
 
   const commit = () => {
     setEditing(false);
@@ -603,10 +646,9 @@ function DeviceRow({
   };
 
   return (
-    <Row
-      icon={Icon}
-      label={
-        editing ? (
+    <tr className="border-b border-border/60 align-middle last:border-0">
+      <td className="py-2 pr-3 pl-4">
+        {editing ? (
           <Input
             autoFocus
             value={draft}
@@ -619,44 +661,42 @@ function DeviceRow({
                 setEditing(false);
               }
             }}
-            className="h-6 w-48 px-1.5 text-sm"
+            className="h-6 w-44 px-1.5 text-xs"
           />
         ) : (
-          <span className="inline-flex items-center gap-2">
-            <button
-              type="button"
-              className="cursor-text hover:underline decoration-dotted underline-offset-2"
-              title="Rename"
-              onClick={() => {
-                setDraft(device.name);
-                setEditing(true);
-              }}
-            >
-              {device.name}
-            </button>
+          <span className="flex items-center gap-2">
+            <Icon className="size-3.5 shrink-0 text-muted-foreground/70" />
+            <span className="min-w-0">
+              <button
+                type="button"
+                className="cursor-text decoration-dotted underline-offset-2 hover:underline"
+                title="Rename"
+                onClick={() => {
+                  setDraft(device.name);
+                  setEditing(true);
+                }}
+              >
+                {device.name}
+              </button>
+              {whereabouts && <span className="block truncate text-[0.6875rem] text-muted-foreground">{whereabouts}</span>}
+            </span>
             {isSelf && <Badge variant="outline">This device</Badge>}
           </span>
-        )
-      }
-      hint={[
-        // WHAT IS ACTUALLY CONNECTED, when the name does not already say it.
-        // A client picks its own name at pairing and often picks the machine's
-        // — Lintel pairs as "MINI-FBARBERA" — which left the row naming the box
-        // and never the app running on it. The name is whatever it was called;
-        // this line is what it is. Renaming a row does not make it lie.
-        source,
-        device.lastSeenAt ? `Last seen ${fmtAgo(device.lastSeenAt)}` : `Paired ${fmtAgo(device.createdAt)}`,
-        // WHERE IT IS, which is the whole point of the report-back fields: two
-        // rows reading "Chrome" are told apart by the address they came from.
-        device.identity?.address,
-        device.identity?.origin ? `via ${device.identity.origin}` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" · ")}
-      control={
-        <div className="flex items-center gap-2">
-          <Segmented
+        )}
+      </td>
+      <td className="py-2 pr-3 text-muted-foreground">{source ?? kind ?? "—"}</td>
+      {/* PAIRED, NOT SEEN, when it has never come back — a column headed "Last
+          seen" showing the pairing date would be a lie by omission. */}
+      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+        {device.lastSeenAt ? fmtAgo(device.lastSeenAt) : `paired ${fmtAgo(device.createdAt)}`}
+      </td>
+      <td className="py-2 pr-4">
+        <div className="flex items-center justify-end gap-1.5">
+          <Dropdown<"full" | "observer">
             value={device.role}
+            className="h-6 w-28"
+            label={`What ${device.name} may do`}
+            disabled={busy}
             onChange={(role) => {
               if (!busy && role !== device.role) onRole(role);
             }}
@@ -664,8 +704,8 @@ function DeviceRow({
             // the same `<span title>` the transport picker uses in
             // mcp-section.tsx, so "view only" is defined where it is chosen.
             options={[
-              { value: "full", label: <span title="Reads and changes everything, like this app">Full</span> },
-              { value: "observer", label: <span title="Reads everything, changes nothing">View only</span> },
+              { value: "full", text: "Full", label: <span title="Reads and changes everything, like this app">Full</span> },
+              { value: "observer", text: "View only", label: <span title="Reads everything, changes nothing">View only</span> },
             ]}
           />
           {/* What revoking does NOT do: nothing on the device itself changes,
@@ -680,8 +720,8 @@ function DeviceRow({
             <XIcon className="size-3.5" />
           </Button>
         </div>
-      }
-    />
+      </td>
+    </tr>
   );
 }
 
