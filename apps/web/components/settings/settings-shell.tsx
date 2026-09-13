@@ -4,16 +4,14 @@
 // components/settings/settings-shell.tsx. A fixed side-nav (never scrolls) and
 // an internally-scrolling content pane with a sticky sub-header. Colors come
 // from theme tokens only; nothing hard-codes a palette.
-import { createContext, useContext, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
 import { SettingsSearchNav } from "./settings-search-nav";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Spinner } from "@/components/ui/spinner";
 import { APP_SIDEBAR_STORAGE_KEY, APP_SIDEBAR_MAIN_MIN_WIDTH, clampSidebarWidth, keepsRoomForMain, setSidebarWidth, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/lib/sidebar-width";
 
 export type SettingsSection = {
@@ -82,6 +80,45 @@ function revealSettingsRow(id: string): boolean {
  *  the anchor may be a few frames or a round-trip away. */
 const REVEAL_TIMEOUT_MS = 2_000;
 
+/**
+ * WHICH PANES HAVE DEFAULTS, WITHOUT THE HEADER BEING TOLD.
+ *
+ * `Restore defaults` is page-scoped, and the page is a set of sections the
+ * shell renders by condition — so the header cannot answer "does this pane
+ * have anything to restore" without a table of pane ids that would have to be
+ * maintained beside every section it names. It would also be wrong the moment
+ * a section's defaults depend on state (Updates has none; Generated text has
+ * four).
+ *
+ * So the sections declare it. A section that knows its defaults calls
+ * `useRestoreDefaults`, which registers while it is MOUNTED — and only the
+ * active pane's sections are mounted, because the panes render conditionally.
+ * The header shows the action when the set is non-empty and runs every
+ * registration when it is pressed. A pane of facts (This build) registers
+ * nothing and gets no button, without saying so anywhere.
+ */
+type RestoreRegistry = { add: (restore: () => void | Promise<void>) => () => void };
+const SettingsRestoreContext = createContext<RestoreRegistry | undefined>(undefined);
+
+/**
+ * Offer this section's defaults to the pane's `Restore defaults`.
+ *
+ * The callback is read through a ref so a section may close over live state
+ * without re-registering on every render — the registration's identity is what
+ * the shell removes on unmount.
+ */
+export function useRestoreDefaults(restore: () => void | Promise<void>): void {
+  const registry = useContext(SettingsRestoreContext);
+  const latest = useRef(restore);
+  useEffect(() => {
+    latest.current = restore;
+  });
+  useEffect(() => {
+    if (!registry) return;
+    return registry.add(() => latest.current());
+  }, [registry]);
+}
+
 export function SettingsShell({
   title,
   subtitle,
@@ -89,9 +126,6 @@ export function SettingsShell({
   active,
   onSelect,
   backHref,
-  dirty,
-  saving,
-  onSave,
   headerActions,
   search,
   wide,
@@ -103,9 +137,6 @@ export function SettingsShell({
   active: string;
   onSelect: (id: string) => void;
   backHref?: string;
-  dirty?: boolean;
-  saving?: boolean;
-  onSave?: () => void;
   headerActions?: ReactNode;
   /**
    * Rows this shell's panes hold, for the search field at the top of the nav.
@@ -127,7 +158,22 @@ export function SettingsShell({
   children: ReactNode;
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
-  const ActiveIcon = activeSection.icon;
+  /**
+   * The mounted sections that know their own defaults — see
+   * `useRestoreDefaults`. Held as an array rather than a Set so the header
+   * re-renders when membership changes, which is what makes the action appear
+   * and disappear with the pane.
+   */
+  const [restorers, setRestorers] = useState<ReadonlyArray<() => void | Promise<void>>>([]);
+  const restoreRegistry = useMemo<RestoreRegistry>(
+    () => ({
+      add: (restore) => {
+        setRestorers((current) => [...current, restore]);
+        return () => setRestorers((current) => current.filter((entry) => entry !== restore));
+      },
+    }),
+    [],
+  );
   /**
    * THE SAME WIDTH AS THE RAIL IT REPLACES. This nav stands where the app
    * sidebar stood (see app-shell.tsx), and a fixed `w-60` beside the rail's
@@ -366,40 +412,53 @@ export function SettingsShell({
             glass with the wash instead of keeping an 80% fill (class-name
             matching died with Phase 2; grounds opt in). */}
         <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[var(--titlebar-band-height)]">
-          <ActiveIcon className="size-4 text-muted-foreground" />
-          <h3 className="font-heading text-sm font-semibold tracking-tight">
-            {activeSection.label}
-          </h3>
+          {/*
+            A CRUMB, NOT A TITLE. The pane's name alone repeated what the
+            selected nav row already said and named no place to go back to;
+            `Settings / Projects` states where this pane sits, which is the one
+            thing the nav cannot say about itself once it has scrolled. The
+            icon is gone with it — it was the third copy of the same glyph, in
+            a bar 16px tall.
+
+            NOT LINKS. Both segments are where the reader already is: the shell
+            IS Settings, and the pane is the one selected. `aria-current` says
+            so rather than offering a crumb that navigates nowhere.
+          */}
+          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 text-sm text-muted-foreground">{title}</span>
+            <span aria-hidden className="shrink-0 text-sm text-muted-foreground/50">
+              /
+            </span>
+            <h3 aria-current="page" className="truncate font-heading text-sm font-semibold tracking-tight">
+              {activeSection.label}
+            </h3>
+          </nav>
           <div className="app-no-drag ml-auto flex items-center gap-2">
             {headerActions}
-            {onSave && (
-              <>
-                {dirty && (
-                  <Badge variant="outline" className="gap-1.5 text-[0.625rem]">
-                    {/* --warning, where the donor reached for a raw Tailwind
-                        ramp. This app holds every state colour on the five-token
-                        vocabulary so a dot and a badge cannot disagree about
-                        what the colour means (see app/globals.test.ts). */}
-                    <span className="size-1.5 rounded-full bg-warning" />
-                    Unsaved
-                  </Badge>
-                )}
-                <Button
-                  size="sm"
-                  variant={dirty ? "default" : "outline"}
-                  disabled={!dirty || saving}
-                  onClick={onSave}
-                >
-                  {saving && <Spinner />}
-                  Save changes
-                </Button>
-              </>
+            {/* PAGE-SCOPED, and present only where a section offered one — see
+                `useRestoreDefaults`. Ghost, because it undoes rather than
+                does: the filled weight belongs to whatever a pane's own
+                primary action is. */}
+            {restorers.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  for (const restore of restorers) void restore();
+                }}
+              >
+                <Undo2Icon className="size-3.5" />
+                Restore defaults
+              </Button>
             )}
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>
-            <SettingsPaneContext.Provider value={activeSection.id}>{children}</SettingsPaneContext.Provider>
+            <SettingsPaneContext.Provider value={activeSection.id}>
+              <SettingsRestoreContext.Provider value={restoreRegistry}>{children}</SettingsRestoreContext.Provider>
+            </SettingsPaneContext.Provider>
           </div>
         </div>
       </div>

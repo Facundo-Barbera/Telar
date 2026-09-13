@@ -19,7 +19,7 @@ import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, t
 import { createEngineApi } from "@/lib/engine/client";
 import { useModelCatalogueGeneration } from "@/lib/model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Row, Segmented, SettingsGroup, ToggleRow, useRestoreDefaults } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -87,6 +87,21 @@ export function TextGenSection() {
       setError(cause instanceof Error ? cause.message : "The engine refused the change.");
     }
   }, []);
+
+  /**
+   * IN TWO WRITES, BECAUSE THE DRIVER CLEARS THE MODEL. The engine drops a
+   * pinned model server-side when the harness changes (see this file's header),
+   * so a single patch carrying both would restore the driver and then lose the
+   * model it was sent with. The model goes second, once the driver has landed.
+   */
+  useRestoreDefaults(async () => {
+    await save({
+      driver: DEFAULT_TEXT_GEN_POLICY.driver,
+      titles: DEFAULT_TEXT_GEN_POLICY.titles,
+      renameBranches: DEFAULT_TEXT_GEN_POLICY.renameBranches,
+    });
+    await save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null });
+  });
 
   // A pinned model the catalogue does not list (typed by hand, or the
   // catalogue fell back to the built-in short list) still needs a row, or the

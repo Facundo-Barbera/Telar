@@ -20,12 +20,12 @@
  */
 
 import { useState } from "react";
-import { MAX_AUTO_SETTLE_HOURS, MIN_AUTO_SETTLE_HOURS, DEFAULT_AUTO_SETTLE_HOURS } from "@telar/engine-client";
+import { MAX_AUTO_SETTLE_HOURS, MIN_AUTO_SETTLE_HOURS, DEFAULT_AUTO_SETTLE_HOURS, DEFAULT_INBOX_POLICY } from "@telar/engine-client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 type Unit = "hours" | "days";
 
@@ -110,6 +110,7 @@ function WindowInput({ hours, onCommit }: { hours: number; onCommit: (hours: num
 export function InboxSection() {
   const { policy, loading, save, error } = useInboxPolicy();
   const hours = policy.autoSettleAfterHours;
+  useRestoreDefaults(() => save({ autoSettleAfterHours: DEFAULT_INBOX_POLICY.autoSettleAfterHours }));
 
   return (
     <SettingsGroup title="Settling" description="A settled session is off your list, not finished.">

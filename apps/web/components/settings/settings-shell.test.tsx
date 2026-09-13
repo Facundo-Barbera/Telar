@@ -1,7 +1,26 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Row, SettingsGroup, ToggleRow } from "./settings-shell";
+import { SlidersHorizontalIcon } from "lucide-react";
+import { Row, SettingsGroup, SettingsShell, ToggleRow } from "./settings-shell";
+
+const source = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
+
+const PANES = [
+  { id: "general", label: "General", icon: SlidersHorizontalIcon },
+  { id: "projects", label: "Projects", icon: SlidersHorizontalIcon },
+];
+
+function shell(active = "general") {
+  return renderToStaticMarkup(
+    <SettingsShell title="Settings" sections={PANES} active={active} onSelect={() => undefined}>
+      <SettingsGroup title="Settling">
+        <Row label="Settle quiet sessions" />
+      </SettingsGroup>
+    </SettingsShell>,
+  );
+}
 
 /**
  * ROW ANATOMY v2, AND THE ANCHOR EVERY SEARCH RESULT AIMS AT.
@@ -73,6 +92,57 @@ test("a toggle row carries status and unavailable through to the Row", () => {
   expect(html).toContain("Beta");
   expect(html).toContain("inert=");
   expect(html).toContain("No provider is configured to name them.");
+});
+
+test("the header is a breadcrumb saying where this pane sits", () => {
+  const html = shell("projects");
+  expect(html).toContain('aria-label="Breadcrumb"');
+  // Both halves, in order — the shell's own name, then the selected pane.
+  expect(html.indexOf(">Settings<")).toBeLessThan(html.indexOf(">Projects<"));
+  // The pane is where the reader already is, so it is marked rather than linked.
+  expect(html).toContain('aria-current="page"');
+});
+
+test("the crumb's first segment is whatever the shell is called, not the word Settings", () => {
+  // Project settings mounts the same shell under the project's own name, and a
+  // hardcoded "Settings /" there would name a place that pane is not in.
+  const html = renderToStaticMarkup(
+    <SettingsShell title="Telar" sections={PANES} active="general" onSelect={() => undefined}>
+      <SettingsGroup title="Identity">
+        <Row label="Name" />
+      </SettingsGroup>
+    </SettingsShell>,
+  );
+  expect(html).toContain(">Telar<");
+});
+
+test("with nothing registered there is no Restore defaults to press", () => {
+  // A pane of facts (This build, Plugins) has no defaults, and an action that
+  // did nothing would be worse than none. Sections opt in — see
+  // `useRestoreDefaults` — and this render has no section that has.
+  expect(shell()).not.toContain("Restore defaults");
+});
+
+test("Restore defaults is offered by the sections, not by a table of pane ids", () => {
+  /**
+   * PINNED AGAINST SOURCE, because the registration happens in an effect and
+   * this app renders tests to static markup. What matters is the shape: the
+   * header reads a live registry rather than a list of pane ids that would rot
+   * beside every section it names, and it runs every registration it holds.
+   */
+  expect(source).toContain("export function useRestoreDefaults");
+  expect(source).toContain("{restorers.length > 0 && (");
+  expect(source).toContain("for (const restore of restorers) void restore();");
+  // Registered while MOUNTED, which is what scopes it to the active pane.
+  expect(source).toContain("return registry.add(() => latest.current());");
+});
+
+test("the save bar is gone — every settings row writes on change", () => {
+  // The Unsaved badge and Save changes button were props no caller passed and
+  // no row honoured; the per-row revert arrow is the affordance now.
+  expect(source).not.toContain("Unsaved");
+  expect(source).not.toContain("Save changes");
+  expect(source).not.toContain("dirty");
 });
 
 test("a group draws one card, with its rows hairlined inside it", () => {

@@ -18,12 +18,13 @@
  */
 
 import { FolderGitIcon } from "lucide-react";
-import type { EnvMode } from "@telar/engine-client";
+import { DEFAULT_SESSION_DEFAULTS, type EnvMode } from "@telar/engine-client";
 import { useSessionDefaults } from "@/lib/session-defaults";
-import { Row, Segmented, SettingsGroup } from "./settings-shell";
+import { Row, Segmented, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 export function WorkspaceSection() {
   const { defaults, loading, save, error } = useSessionDefaults();
+  useRestoreDefaults(() => save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode }));
 
   return (
     <SettingsGroup title="New sessions" description="What a conversation is built with before you change it.">
@@ -38,7 +39,11 @@ export function WorkspaceSection() {
         }
         // Only when it is NOT the default — the revert costs nothing when there
         // is nothing to undo, and saves a reader from remembering what "was".
-        {...(defaults.envMode === "worktree" ? { onRevert: () => void save({ envMode: "local" }) } : {})}
+        // Compared against the shared constant rather than a literal, so the
+        // arrow and `Restore defaults` cannot disagree about what default means.
+        {...(defaults.envMode === DEFAULT_SESSION_DEFAULTS.envMode
+          ? {}
+          : { onRevert: () => void save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode }) })}
         control={
           loading ? null : (
             <Segmented<EnvMode>
