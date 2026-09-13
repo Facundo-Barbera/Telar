@@ -75,6 +75,7 @@ import {
   setPanelTabParams,
   writePanelTabs,
   clearPanelTabs,
+  type PanelTabParams,
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
 import {
@@ -1638,12 +1639,18 @@ export function SessionCockpit({
     [makeRoomForPanel, updatePanel, updateEditor, dataScience],
   );
 
-  /** Another instance of a surface you can have two of — the "+" chooser's verb
-   *  once one is already open. */
+  /**
+   * Another instance of a surface you can have two of — the "+" chooser's verb
+   * once one is already open, and the Diff row's "Open in a new panel tab".
+   *
+   * `params` IS WHAT MAKES IT A DIFFERENT ONE (#335): a second Diff opened from
+   * a row arrives already filtered to that row's path, which is also what names
+   * it in the strip. Absent is the chooser's own press — a blank instance.
+   */
   const showNewPanelTab = useCallback(
-    (tab: PanelTab) => {
+    (tab: PanelTab, params?: PanelTabParams) => {
       makeRoomForPanel();
-      updatePanel((current) => openNewPanelTab(current, tab));
+      updatePanel((current) => openNewPanelTab(current, tab, params));
     },
     [makeRoomForPanel, updatePanel],
   );
@@ -2995,6 +3002,10 @@ export function SessionCockpit({
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
           onCloseTab={(id) => updatePanel((current) => closePanelTab(current, id))}
+          // A surface rewriting its own instance's params — the Diff's filter
+          // (#335). Through the same `updatePanel` every other tab gesture
+          // writes, so the strip's label and the persisted arrangement follow.
+          onTabParams={(id, params) => updatePanel((current) => setPanelTabParams(current, id, params))}
           // Persisted through the same `updatePanel` every other tab gesture
           // writes, so a reordered strip comes back reordered.
           onMoveTab={(id, toIndex) => updatePanel((current) => movePanelTab(current, id, toIndex))}
