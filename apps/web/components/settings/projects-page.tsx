@@ -77,7 +77,7 @@ import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentControl } from "@/components/composer-controls";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DataScienceSection } from "./data-science-section";
 import { LatexSection } from "./latex-section";
@@ -172,6 +172,10 @@ export type ScopedProject = Project & { hostId?: string; hostName?: string };
 export function ProjectIdentityRows({ project, writer }: { project?: ScopedProject; writer?: ProjectWriter }) {
   const errorFor = (field: string) => (writer?.error?.field === field ? writer.error.message : undefined);
   const savingFor = (field: string) => (writer?.busy === field ? <Badge variant="outline">Saving</Badge> : undefined);
+  // EITHER STORED ANSWER IS A PICK. The glyph is what the picker writes now; a
+  // typed mark is what a registry from before it may still carry, and both mean
+  // the same thing to this row — somebody chose, so Auto-detect is an undo.
+  const picked = Boolean(project?.iconName ?? project?.iconEmoji);
 
   return (
     // NO CAPTION: it listed the two rows under it in prose, and both of them
@@ -203,43 +207,30 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
         /*
           TWO ANSWERS, AND THE ROW SAYS WHICH IT IS SHOWING. A checkout's own
           icon is found rather than chosen (a favicon, an app icon, a
-          `.telar/icon.*`), and a mark typed here OUTRANKS it — which is the
-          point of being able to type one at all. So the sentence changes with
+          `.telar/icon.*`), and a glyph picked here OUTRANKS it — which is the
+          point of being able to pick one at all. So the sentence changes with
           what is actually stored rather than describing both states at once.
         */
         hint={
-          project?.iconEmoji
-            ? "Your mark, which beats whatever icon the checkout carries. Clear it to go back to the file."
-            : "Type a character to mark this project. Left empty, the rail uses an icon found in the checkout — a favicon, an app icon, or .telar/icon.*."
+          picked
+            ? "Your pick, which beats whatever icon the checkout carries. Auto-detect goes back to the file."
+            : "Auto-detect: a favicon, an app icon or .telar/icon.* from the checkout, else the project's initial."
         }
-        {...(savingFor("iconEmoji") ? { status: savingFor("iconEmoji") } : {})}
-        {...(errorFor("iconEmoji") ? { error: errorFor("iconEmoji") } : {})}
-        {...(project?.iconEmoji ? { onRevert: () => writer?.save("iconEmoji", { iconEmoji: null }) } : {})}
+        {...(savingFor("iconName") ? { status: savingFor("iconName") } : {})}
+        {...(errorFor("iconName") ? { error: errorFor("iconName") } : {})}
+        {...(picked ? { onRevert: () => writer?.save("iconName", { iconName: null, iconEmoji: null }) } : {})}
         control={
-          <div className="flex items-center gap-2">
-            {project ? (
-              <ProjectAvatar
-                name={project.name}
-                projectId={project.id}
-                {...(project.icon ? { icon: project.icon } : {})}
-                {...(project.iconEmoji ? { iconEmoji: project.iconEmoji } : {})}
-                size={20}
-              />
-            ) : (
-              <span className="text-xs text-muted-foreground">—</span>
-            )}
-            <BlurInput
-              key={project?.iconEmoji ?? ""}
-              className="h-8 w-16 text-center text-xs"
-              aria-label="Project mark"
-              placeholder="🧵"
-              maxLength={16}
-              value={project?.iconEmoji ?? ""}
-              // An emptied field is a CLEAR, not an empty string: the engine
-              // reads `null` as "remove the stored answer" and would refuse "".
-              onCommit={(next) => writer?.save("iconEmoji", { iconEmoji: next.trim() === "" ? null : next.trim() })}
-            />
-          </div>
+          <ProjectIconPicker
+            {...(project?.name ? { name: project.name } : {})}
+            {...(project?.id ? { projectId: project.id } : {})}
+            {...(project?.icon ? { icon: project.icon } : {})}
+            {...(project?.iconName ? { iconName: project.iconName } : {})}
+            {...(project?.iconEmoji ? { iconEmoji: project.iconEmoji } : {})}
+            // AUTO-DETECT CLEARS BOTH. A registry written before the picker may
+            // carry a typed mark, and clearing only the glyph would leave that
+            // mark answering for a row that now says "Auto-detect".
+            onPick={(next) => writer?.save("iconName", next === null ? { iconName: null, iconEmoji: null } : { iconName: next })}
+          />
         }
         {...(blockedReason(project, "mark it") ? { unavailable: { reason: blockedReason(project, "mark it")! } } : {})}
       />

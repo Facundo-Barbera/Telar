@@ -365,7 +365,13 @@ export function ProjectGroupSection({
           <ContextMenu onOpenChange={(next: boolean) => next && folder.load()}>
             <ContextMenuTrigger render={<span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1.5" />}>
               <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
-              <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />
+              <ProjectAvatar
+                name={group.name}
+                projectId={group.projectId}
+                {...(group.icon ? { icon: group.icon } : {})}
+                {...(group.iconName ? { iconName: group.iconName } : {})}
+                size={16}
+              />
               <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>
               {badges.map((place) => {
                 const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");

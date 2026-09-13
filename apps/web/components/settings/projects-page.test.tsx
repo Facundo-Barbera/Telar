@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { searchSettings } from "@/lib/settings-search";
+import { PROJECT_ICONS, projectGlyph } from "@/lib/project-icons";
 import { ProjectConversationRows, ProjectIdentityRows, ProjectPluginRows, ProjectsPage, type ScopedProject } from "./projects-page";
 
 /**
@@ -70,7 +71,7 @@ test("naming a project binds the rows to it and takes the inert reason off", () 
    */
   expect(html).not.toContain("inert");
   expect(html).toContain('aria-label="Project name"');
-  expect(html).toContain('aria-label="Project mark"');
+  expect(html).toContain('aria-label="Project icon"');
 });
 
 test("a project on another Mac keeps every identity row read-only, and says whose", () => {
@@ -86,16 +87,50 @@ test("a project on another Mac keeps every identity row read-only, and says whos
   expect(html).toContain("inert");
 });
 
-test("a chosen mark outranks the checkout's icon, and can be cleared", () => {
-  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
-  // The mark itself, not the engine-served file the derived key points at.
-  expect(marked).toContain("🧵");
+test("a picked glyph outranks the checkout's icon, and can be cleared", () => {
+  const marked = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "flask", icon: "etag_abc" })} />);
+  // The glyph itself, not the engine-served file the derived key points at.
+  expect(marked).toContain("lucide-flask-conical");
   expect(marked).not.toContain("etag_abc");
   // And a revert arrow, which is how the stored answer is removed — `null`,
-  // rather than an empty string the engine would refuse.
+  // rather than a value the row would then have to explain.
   expect(marked).toContain('aria-label="Revert to the default"');
-  // With nothing chosen there is nothing to revert to.
+  // With nothing picked there is nothing to revert to.
   expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).not.toContain('aria-label="Revert to the default"');
+});
+
+test("a mark typed before the picker existed still renders, and Auto-detect is its undo", () => {
+  /**
+   * `iconEmoji` is the field this picker replaced (#364). Dropping it on the
+   * next write would delete somebody's mark for them; rendering it keeps the
+   * registry honest, and the row treats it as a pick — so the revert arrow is
+   * there, and it clears both fields.
+   */
+  const typed = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconEmoji: "🧵", icon: "etag_abc" })} />);
+  expect(typed).toContain("🧵");
+  expect(typed).toContain('aria-label="Revert to the default"');
+  expect(typed).toContain("Typed mark");
+});
+
+test("the picker offers a fixed set of real icons, not a field that takes anything", () => {
+  // The row was a text input that took any grapheme, which made a project's
+  // mark whatever emoji font the reader's OS shipped — a different size, weight
+  // and colour from every other glyph in the list it sits in.
+  expect(source).not.toContain('aria-label="Project mark"');
+  expect(source).toContain("<ProjectIconPicker");
+  expect(PROJECT_ICONS.length).toBeGreaterThanOrEqual(40);
+  // Ids are stored on records, so duplicates would make two glyphs one answer.
+  expect(new Set(PROJECT_ICONS.map((entry) => entry.id)).size).toBe(PROJECT_ICONS.length);
+  // And every id is a name the protocol's own shape accepts.
+  for (const entry of PROJECT_ICONS) expect(entry.id).toMatch(/^[a-z][a-z0-9-]*$/);
+});
+
+test("a glyph name this build does not know falls through to auto-detect", () => {
+  // A record may be written by a newer cockpit with a bigger set; a hole where
+  // the mark should be is a worse answer than the icon the checkout carries.
+  expect(projectGlyph("not-a-glyph-in-this-build")).toBeUndefined();
+  const html = renderToStaticMarkup(<ProjectIdentityRows project={project({ iconName: "not-a-glyph-in-this-build" })} />);
+  expect(html).toContain("Auto-detect");
 });
 
 test("a project with no workspace answer follows the Mac, and says what it is following", () => {
@@ -214,7 +249,10 @@ test("clearing a per-project answer writes null, which is what removes it", () =
   // Mac"; an empty string or an absent key would mean something else.
   expect(source).toContain('writer?.save("defaultModel", { defaultModel: null })');
   expect(source).toContain("envMode: next === FOLLOW_MAC ? null : (next as EnvMode)");
-  expect(source).toContain('iconEmoji: next.trim() === "" ? null : next.trim()');
+  // Auto-detect clears BOTH icon fields: a registry written before the picker
+  // may carry a typed mark, and leaving it would answer for a row that now says
+  // it is auto-detecting.
+  expect(source).toContain('next === null ? { iconName: null, iconEmoji: null } : { iconName: next }');
 });
 
 test("a remote Mac's registry is read when it is asked for, not on mount", () => {

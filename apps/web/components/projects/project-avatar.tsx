@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { FolderIcon } from "lucide-react";
 import { projectHue, projectIconUrl, projectInitial } from "@/lib/project-avatar";
+import { projectGlyph } from "@/lib/project-icons";
 import { cn } from "@/lib/utils";
 
 /**
@@ -12,9 +13,14 @@ import { cn } from "@/lib/utils";
  *
  * THE CHOSEN MARK IS FIRST, and that ordering is the whole point of being able
  * to choose one: a project whose checkout carries a favicon nobody likes has no
- * other way to say so. The two are separate fields on the record rather than one
- * (`Project.iconEmoji` explains why), so preferring one here costs no branch
- * anywhere else.
+ * other way to say so. The chosen mark and the discovered one are separate
+ * fields on the record rather than one (`Project.iconName` explains why), so
+ * preferring one here costs no branch anywhere else.
+ *
+ * A NAME THIS BUILD DOES NOT KNOW IS NOT A MARK. `projectGlyph` answers
+ * `undefined` for an id from a newer cockpit's set, and this falls straight
+ * through to the checkout's own icon rather than drawing a hole where a glyph
+ * should be.
  *
  * The `<img>` FAILS FORWARD: the engine's icon key is derived on list and the
  * file can vanish between the list and the fetch, so a broken image flips to
@@ -24,6 +30,7 @@ export function ProjectAvatar({
   name,
   projectId,
   icon,
+  iconName,
   iconEmoji,
   size = 12,
   className,
@@ -32,7 +39,9 @@ export function ProjectAvatar({
   projectId?: string;
   /** `Project.icon` — the content-derived key. Absent means no file was found. */
   icon?: string;
-  /** `Project.iconEmoji` — the mark a person typed. Outranks `icon`. */
+  /** `Project.iconName` — the glyph a person picked. Outranks `icon`. */
+  iconName?: string;
+  /** `Project.iconEmoji` — a mark typed before the picker existed. Outranks `icon`. */
   iconEmoji?: string;
   /** Rendered box in px. The type stays square at any size. */
   size?: number;
@@ -41,6 +50,13 @@ export function ProjectAvatar({
   const [broken, setBroken] = useState(false);
   const box = { width: size, height: size };
 
+  const picked = projectGlyph(iconName);
+  if (picked) {
+    // `currentColor` on purpose: a chosen glyph takes the ink of whatever list
+    // it is in — rail, picker, header — so it reads as part of the row rather
+    // than as a sticker on it.
+    return <picked.Glyph aria-hidden style={box} className={cn("shrink-0", className)} />;
+  }
   if (iconEmoji) {
     return (
       <span

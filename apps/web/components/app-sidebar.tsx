@@ -335,7 +335,7 @@ function SessionShelf({
 }
 
 /** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
-type RemoteProject = Pick<Project, "id" | "name" | "icon"> & { hostId: string; hostName: string };
+type RemoteProject = Pick<Project, "id" | "name" | "icon" | "iconName"> & { hostId: string; hostName: string };
 
 function SidebarBody() {
   const pathname = usePathname();
@@ -485,6 +485,9 @@ function SidebarBody() {
     // they have no branch of their own. Derived per project by the engine.
     const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
     const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
+    // The glyph somebody PICKED, which outranks the file above — carried
+    // separately for `ProjectAvatar`'s reason: two questions, two fields.
+    const glyphs = new Map(result.projects.map((project) => [project.id, project.iconName]));
     // WHICH REPOSITORY EACH PROJECT IS A CHECKOUT OF — the one fact about a row
     // that is true on more than one Mac, and so the only thing two Macs'
     // registrations of the same work can be recognised by. See `projectGroupKey`.
@@ -505,6 +508,7 @@ function SidebarBody() {
         // history read, on any polling pass.
         result.assignments?.[session.id],
         session.projectId ? remotes.get(session.projectId) : undefined,
+        session.projectId ? glyphs.get(session.projectId) : undefined,
       ),
     );
     return {
@@ -1079,12 +1083,14 @@ function SidebarBody() {
       id: project.id,
       name: project.name,
       ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
       ...(project.root ? { root: project.root } : {}),
     })),
     ...remoteProjects.map((project) => ({
       id: project.id,
       name: project.name,
       ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
       hostId: project.hostId,
       hostName: project.hostName,
     })),
@@ -1247,6 +1253,7 @@ function SidebarBody() {
                     name={selectedProject.name}
                     projectId={selectedProject.id}
                     {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
+                    {...(selectedProject.iconName ? { iconName: selectedProject.iconName } : {})}
                     size={14}
                   />
                 ) : (
@@ -1274,6 +1281,7 @@ function SidebarBody() {
                           name={project.name}
                           projectId={project.id}
                           {...(project.icon ? { icon: project.icon } : {})}
+                          {...(project.iconName ? { iconName: project.iconName } : {})}
                           size={14}
                         />
                         <span className="truncate">{project.name}</span>

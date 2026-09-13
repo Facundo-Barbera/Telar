@@ -357,16 +357,41 @@ export const Project = z.object({
    */
   icon: z.string().min(1).max(64).optional(),
   /**
-   * THE MARK THE READER CHOSE, which outranks the one above.
+   * THE GLYPH THE READER CHOSE, which outranks the one above.
    *
    * `icon` is what the checkout HAPPENS to carry and is discovered; this is
-   * what a person picked on the Projects pane, and it is STORED. A separate
-   * key rather than a second meaning for `icon`, because that one is a cache
-   * key the engine serves bytes against (`GET /v2/projects/:id/icon`) — a
-   * client handed an emoji there would ask the engine for a file that does not
-   * exist. Two fields, two questions, and a surface that prefers this one
-   * answers "what does this project look like" without ever having to know
-   * which kind of answer it got.
+   * what a person picked on the Projects pane, and it is STORED. A separate key
+   * rather than a second meaning for `icon`, because that one is a cache key the
+   * engine serves bytes against (`GET /v2/projects/:id/icon`) — a client handed
+   * a glyph name there would ask the engine for a file that does not exist. Two
+   * fields, two questions, and a surface that prefers this one answers "what
+   * does this project look like" without ever having to know which kind of
+   * answer it got.
+   *
+   * A NAME, NOT A PICTURE. The value is one id out of the fixed set the cockpit
+   * offers (`apps/web/lib/project-icons.ts`) — `flask`, `rocket`, `terminal`.
+   * THE PROTOCOL DELIBERATELY DOES NOT HOLD THAT LIST: which glyphs a cockpit
+   * can draw is a property of the cockpit's icon library, not of the registry,
+   * and an engine that enforced last year's list would refuse a name a newer app
+   * renders perfectly. So the shape is checked here and the MEANING is the
+   * app's, which falls back to the discovered icon for a name it does not know.
+   */
+  iconName: z
+    .string()
+    .min(1)
+    .max(40)
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .optional(),
+  /**
+   * THE TYPED MARK, KEPT FOR WHAT IS ALREADY STORED (#364).
+   *
+   * This was `iconName`'s predecessor — a grapheme somebody typed — and the
+   * picker that wrote it is gone: an emoji is a different size, weight and
+   * colour from every other glyph in the rail, which is what made the row read
+   * as a novelty rather than as a setting. The FIELD stays, because a registry
+   * written by an older cockpit still carries marks, and silently dropping one
+   * on the next write is a worse answer than rendering it. Nothing writes it
+   * now but `null`, which is how the picker's Auto-detect clears one.
    *
    * A GRAPHEME, NOT A SENTENCE. The cap is in UTF-16 code units and is
    * generous on purpose: one emoji can be a ZWJ sequence of five.
