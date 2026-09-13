@@ -8,6 +8,10 @@ import { relatedWork, type SidebarSession } from "@/lib/session-list";
  * The three relationships, rendered — and kept apart, because merging them is
  * the failure this surface exists to prevent: an assignment ENDS, provenance
  * does not, and following is neither.
+ *
+ * THEY ARE KEPT APART IN THE SORT, NOT IN CAPTIONS — issue #323. Every related
+ * session is now one indented child row behind an elbow, so what these tests
+ * read for is the row, its trailing state hint and its order, never a heading.
  */
 const session = (id: string, extra: Partial<SidebarSession> = {}): SidebarSession =>
   ({ id, title: id, projectId: "project_one", ...extra }) as SidebarSession;
@@ -15,7 +19,7 @@ const session = (id: string, extra: Partial<SidebarSession> = {}): SidebarSessio
 const assignment = (from: string, extra: Record<string, unknown> = {}) =>
   ({ taskRunId: `task_${from}`, fromSessionId: from, receivedAt: 1, runId: `task_${from}`, ...extra }) as never;
 
-test("outstanding work is separated from work awaiting review", () => {
+test("outstanding work is separated from work awaiting review — by state, not by caption", () => {
   const sessions = [
     session("worker_a", { assignments: [assignment("coord", { scope: "engine only" })] }),
     session("worker_b", { assignments: [assignment("coord", { outcome: "completed", endedAt: 9 })] }),
@@ -23,10 +27,42 @@ test("outstanding work is separated from work awaiting review", () => {
   const groups = relatedWork(sessions, { id: "coord" });
   const html = renderToStaticMarkup(<RelatedWork groups={groups} coordinatorId="coord" />);
 
-  expect(html).toContain("Working on behalf of");
-  expect(html).toContain("Awaiting review");
-  // The scope the coordinator named rides the active row.
+  // The scope the coordinator named rides the active row, and says "working" by
+  // saying which work; the finished one says so in its own hint.
   expect(html).toContain("engine only");
+  expect(html).toContain("finished");
+  // The headings are gone: they sat between a coordinator and the row it owned.
+  expect(html).not.toContain("Working on behalf of");
+  expect(html).not.toContain("Awaiting review");
+  // Outstanding still sorts above finished — the relationships differ.
+  expect(html.indexOf("worker_a")).toBeLessThan(html.indexOf("worker_b"));
+});
+
+test("an outstanding assignment with NO scope still says what it is doing", () => {
+  const sessions = [session("worker", { assignments: [assignment("coord")] })];
+  const html = renderToStaticMarkup(<RelatedWork groups={relatedWork(sessions, { id: "coord" })} coordinatorId="coord" />);
+  expect(html).toContain("working");
+});
+
+test("EVERY related row wears the elbow, and none wears the bell", () => {
+  // The glyph is the whole message: "this comes from the row above". The bell
+  // was a state icon in the one place where the state could not differ.
+  const sessions = [
+    session("worker", { assignments: [assignment("coord")] }),
+    session("free", { startedFrom: { sessionId: "coord" } }),
+  ];
+  const html = renderToStaticMarkup(
+    <RelatedWork
+      groups={relatedWork(sessions, { id: "coord" })}
+      coordinatorId="coord"
+      following={[{ id: "sub_1", subscriberSessionId: "coord", targetSessionId: "watched", events: ["turn_completed"], createdAt: 1 }]}
+      followed={[session("watched", { title: "Watched" })]}
+    />,
+  );
+  // lucide renders its name as a class, which is the one stable handle a static
+  // render gives us on which glyph was drawn.
+  expect(html.split("lucide-corner-down-right").length - 1).toBe(3);
+  expect(html).not.toContain("lucide-bell ");
 });
 
 test("a FINISHED assignment is still shown — it is waiting to be looked at", () => {
@@ -48,7 +84,12 @@ test("a DETACHED assignment leaves the active group without deleting provenance"
   expect(groups.active).toEqual([]);
   expect(groups.review).toEqual([]);
   expect(groups.independent.map((s) => s.id)).toEqual(["worker"]);
-  expect(renderToStaticMarkup(<RelatedWork groups={groups} coordinatorId="coord" />)).toContain("Started from here");
+  const html = renderToStaticMarkup(<RelatedWork groups={groups} coordinatorId="coord" />);
+  expect(html).toContain("worker");
+  // Provenance is a fact about the edge, which the elbow now carries; the row
+  // has no state to hint and says nothing about one.
+  expect(html).not.toContain("Started from here");
+  expect(html).not.toContain("working");
 });
 
 test("a free continuation has provenance only", () => {
@@ -74,7 +115,10 @@ test("a coordinator never lists itself", () => {
   expect(relatedWork(sessions, { id: "coord" }).active).toEqual([]);
 });
 
-test("FOLLOWING renders as its own group and is not an assignment", () => {
+test("A FOLLOWED SESSION is a child row, and the caption that mislabelled it is gone", () => {
+  // The #323 screenshot: "FOLLOWING" sat between a pinned coordinator and the
+  // row it owned, with nothing indented, so it read as a header for the NEXT
+  // pinned row instead.
   const groups = relatedWork([], { id: "coord" });
   const html = renderToStaticMarkup(
     <RelatedWork
@@ -84,9 +128,11 @@ test("FOLLOWING renders as its own group and is not an assignment", () => {
       followed={[session("watched", { title: "Watched" })]}
     />,
   );
-  expect(html).toContain("Following");
   expect(html).toContain("Watched");
+  expect(html).not.toContain("Following</");
   expect(html).not.toContain("Working on behalf of");
+  // …and the block is still named to a screen reader without them.
+  expect(html).toContain('aria-label="Related work"');
 });
 
 test("nothing related renders nothing at all", () => {

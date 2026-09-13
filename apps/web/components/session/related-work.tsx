@@ -1,70 +1,77 @@
 "use client";
 
 /**
- * RELATED WORK — four relationships, kept apart because they mean different
- * things.
+ * RELATED WORK — the conversations that hang off this one, drawn as its
+ * children.
  *
- *   Working on behalf of   current assignments from this session; they END
- *   Awaiting review        finished, not settled — still here so a delegated
- *                          result is not hidden the moment its run ended
- *   Started from here      permanent provenance; a free continuation has only this
- *   Following              a revocable wish to be woken, and nothing more
+ *   assignments   current work on this session's behalf; they END
+ *   review        finished, not settled — still here so a delegated result is
+ *                 not hidden the moment its run ended
+ *   provenance    started from here; permanent, and ends nothing
+ *   following     a revocable wish to be woken, and nothing more
+ *
+ * FOUR RELATIONSHIPS, ONE SHAPE, NO CAPTIONS — issue #323. Each used to carry a
+ * title of its own, and in the pinned band that put a heading BETWEEN a
+ * coordinator and the row it owned: with nothing indented, "FOLLOWING" read as a
+ * header for the next pinned row instead of as a label on the one above. The
+ * relationships still differ and they still sort in this order, but what the
+ * rail has to say about a child row is "this comes from the row above" — which
+ * an elbow says in a glyph's width, in every group at once, and a heading could
+ * not say at all.
+ *
+ * THE BELL WENT WITH THEM. It was a state icon on rows whose state was the one
+ * thing the block already guaranteed — every row under "Following" was
+ * followed — so the glyph column now carries the elbow and the state that still
+ * differs per row ("working", "finished") rides a small trailing hint.
  *
  * None confers permission and none is a lifetime. Rows link through
  * `sessionHref`, which carries the host prefix — two Macs can mint one id.
  */
 import Link from "next/link";
-import { ArrowUpRightIcon, BellIcon, BellOffIcon, CircleCheckIcon, GitBranchIcon, LoaderIcon } from "lucide-react";
+import { ArrowUpRightIcon, BellIcon, BellOffIcon, CornerDownRightIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
 import { sessionHref, sessionKey, type RelatedWork as RelatedWorkGroups, type SidebarSession } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
 
-/** One row: what the session is called, and how to get to it. */
+/**
+ * ONE CHILD ROW: the elbow, what the session is called, and how to get to it.
+ *
+ * THE ELBOW OCCUPIES THE INDENT, WHICH IS WHAT MAKES THE TITLES LINE UP.
+ * `size-3.5` plus `gap-2` is exactly the slim row's own avatar plus its gap, so
+ * a child's title lands in the same column as the title of the row it hangs off
+ * and the tree reads against one ruler rather than two.
+ *
+ * THE ACTION IS A SIBLING OF THE LINK, NEVER INSIDE IT — a button nested in an
+ * anchor is neither, and this row's whole surface is a link.
+ */
 function Row({
   session,
   hint,
-  icon: Icon,
   action,
 }: {
   session: SidebarSession;
+  /** The state that still differs per row. Absent where the row has none. */
   hint?: string;
-  icon: typeof BellIcon;
   action?: React.ReactNode;
 }) {
   return (
-    <Link
-      href={sessionHref(session)}
-      className="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
-    >
-      <Icon className="size-3.5 shrink-0 opacity-70" aria-hidden />
-      <span className="truncate">{session.title}</span>
-      {session.hostName && (
-        <Badge variant="outline" className="shrink-0 text-[0.625rem]">
-          {session.hostName}
-        </Badge>
-      )}
-      {hint && <span className="ml-auto shrink-0 truncate opacity-60">{hint}</span>}
-      <ArrowUpRightIcon className="size-3 shrink-0 opacity-40" aria-hidden />
-    </Link>
-  );
-}
-
-/** A row plus a control beside it, so the link stays a link. */
-function RowWithAction({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
-  return (
     <div className="group/row flex items-center">
-      <div className="min-w-0 flex-1">{children}</div>
+      <Link
+        href={sessionHref(session)}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+      >
+        <CornerDownRightIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="truncate">{session.title}</span>
+        {session.hostName && (
+          <Badge variant="outline" className="shrink-0 text-[0.625rem]">
+            {session.hostName}
+          </Badge>
+        )}
+        {hint && <span className="ml-auto shrink-0 truncate text-muted-foreground">{hint}</span>}
+        <ArrowUpRightIcon className="size-3 shrink-0 opacity-40" aria-hidden />
+      </Link>
       {action}
     </div>
-  );
-}
-
-function Group({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section aria-label={title} className="flex flex-col gap-0.5">
-      <h3 className="px-2 pt-2 text-[0.6875rem] font-medium uppercase tracking-wide opacity-50">{title}</h3>
-      {children}
-    </section>
   );
 }
 
@@ -109,7 +116,7 @@ function followButton(
 }
 
 /**
- * WHICH ROWS THE "FOLLOWING" GROUP ACTUALLY DRAWS, as `{ session, subscriptionIds }`.
+ * WHICH ROWS THE FOLLOWED CHILDREN ACTUALLY ARE, as `{ session, subscriptionIds }`.
  *
  * HOST-QUALIFIED, AND DEDUPLICATED. A subscription's `targetSessionId` is a
  * bare id, so matching on id alone can select a same-id session from another
@@ -192,69 +199,65 @@ export function RelatedWork({
   if (empty) return null;
 
   return (
-    <div className="flex flex-col gap-1" aria-label="Related work">
-      {groups.active.length > 0 && (
-        <Group title="Working on behalf of">
-          {groups.active.map((session) => (
-            <RowWithAction
-              key={sessionKey(session)}
-              action={followButton(session, followedKeys, onFollow, lockFor?.(sessionKey(session)), unfollowing, followFailed)}
-            >
-              <Row session={session} icon={LoaderIcon} hint={scopeOf(session.assignments, coordinatorId)} />
-            </RowWithAction>
-          ))}
-        </Group>
-      )}
+    /* Labelled and given a role rather than left a bare div: the four headings
+       were what named this block to a screen reader, and dropping them without
+       this would leave the child rows floating among the rail's own. */
+    <div role="group" aria-label="Related work" className="flex flex-col gap-0.5">
+      {groups.active.map((session) => (
+        <Row
+          key={sessionKey(session)}
+          session={session}
+          // The scope the coordinator actually named beats the bare state — it
+          // says which work, and "working" is then implied by there being any.
+          hint={scopeOf(session.assignments, coordinatorId) ?? "working"}
+          action={followButton(session, followedKeys, onFollow, lockFor?.(sessionKey(session)), unfollowing, followFailed)}
+        />
+      ))}
 
-      {groups.review.length > 0 && (
-        <Group title="Awaiting review">
-          {groups.review.map((session) => (
-            <RowWithAction key={sessionKey(session)} action={followButton(session, followedKeys, onFollow, lockFor?.(sessionKey(session)), unfollowing, followFailed)}>
-              <Row session={session} icon={CircleCheckIcon} hint="finished" />
-            </RowWithAction>
-          ))}
-        </Group>
-      )}
+      {groups.review.map((session) => (
+        <Row
+          key={sessionKey(session)}
+          session={session}
+          hint="finished"
+          action={followButton(session, followedKeys, onFollow, lockFor?.(sessionKey(session)), unfollowing, followFailed)}
+        />
+      ))}
 
-      {groups.independent.length > 0 && (
-        <Group title="Started from here">
-          {groups.independent.map((session) => (
-            <Row key={sessionKey(session)} session={session} icon={GitBranchIcon} />
-          ))}
-        </Group>
-      )}
+      {/* PROVENANCE HAS NO STATE TO HINT. "Started from here" was a fact about
+          the edge, not about the row, and the elbow is now that fact. */}
+      {groups.independent.map((session) => (
+        <Row key={sessionKey(session)} session={session} />
+      ))}
 
-      {watched.length > 0 && (
-        <Group title="Following">
-          {watched.map(({ session, subscriptionIds }) => {
-            const key = sessionKey(session);
-            const lock = lockFor?.(key) ?? key;
-            const pending = unfollowing?.has(lock) ?? false;
-            const failed = unfollowFailed?.has(lock) ?? false;
-            return (
-              <div key={key} className="group/follow flex items-center">
-                <div className="min-w-0 flex-1">
-                  <Row session={session} icon={BellIcon} {...(failed ? { hint: "could not unfollow" } : {})} />
-                </div>
-                {onUnfollow && (
-                  <button
-                    type="button"
-                    // The row is still followed until the engine says otherwise,
-                    // so a failed attempt offers a retry rather than vanishing.
-                    aria-label={`${failed ? "Retry stop following" : "Stop following"} ${session.title}`}
-                    title={failed ? "Could not unfollow — try again" : "Stop following"}
-                    disabled={pending}
-                    onClick={() => onUnfollow(key, subscriptionIds)}
-                    className="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted group-hover/follow:opacity-70 disabled:opacity-40"
-                  >
-                    <BellOffIcon className="size-3.5" aria-hidden />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </Group>
-      )}
+      {watched.map(({ session, subscriptionIds }) => {
+        const key = sessionKey(session);
+        const lock = lockFor?.(key) ?? key;
+        const pending = unfollowing?.has(lock) ?? false;
+        const failed = unfollowFailed?.has(lock) ?? false;
+        return (
+          <Row
+            key={key}
+            session={session}
+            {...(failed ? { hint: "could not unfollow" } : {})}
+            action={
+              onUnfollow ? (
+                <button
+                  type="button"
+                  // The row is still followed until the engine says otherwise,
+                  // so a failed attempt offers a retry rather than vanishing.
+                  aria-label={`${failed ? "Retry stop following" : "Stop following"} ${session.title}`}
+                  title={failed ? "Could not unfollow — try again" : "Stop following"}
+                  disabled={pending}
+                  onClick={() => onUnfollow(key, subscriptionIds)}
+                  className="shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-muted group-hover/row:opacity-70 disabled:opacity-40"
+                >
+                  <BellOffIcon className="size-3.5" aria-hidden />
+                </button>
+              ) : null
+            }
+          />
+        );
+      })}
     </div>
   );
 }
