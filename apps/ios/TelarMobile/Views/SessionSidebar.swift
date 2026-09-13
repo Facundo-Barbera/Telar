@@ -138,14 +138,28 @@ struct SessionSidebar: View {
                             // secondary verbs, so it goes there — the
                             // affordance differs because the input does, the
                             // action is the same one.
-                            Button("New conversation", systemImage: "square.and.pencil") {
+                            Button("New conversation here", systemImage: "square.and.pencil") {
                                 resumeDraft(MobileDraft(hostId: group.hostId,
                                                         project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
                                                         prompt: "", title: ""))
                             }
                             Divider()
-                            Button("Move project up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
-                            Button("Move project down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
+                            // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
+                            // (#327). Tapping the header already collapses the
+                            // group, so this row is not new capability — it is
+                            // the one place a reader who long-pressed can find
+                            // out that the gesture exists, and the only way to
+                            // reach "Collapse others" at all.
+                            Button(collapsed.contains(group.id) ? "Expand" : "Collapse",
+                                   systemImage: collapsed.contains(group.id) ? "chevron.down" : "chevron.right") {
+                                setCollapsed(collapsed.symmetricDifference([group.id]))
+                            }
+                            Button("Collapse others", systemImage: "arrow.down.right.and.arrow.up.left") {
+                                setCollapsed(ProjectHeaderMenu.collapseOthers(all: model.projects.map(\.id), keeping: group.id))
+                            }
+                            Divider()
+                            Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
+                            Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
                         }
                         .draggable(group.id)
                         .dropDestination(for: String.self) { ids, _ in
@@ -616,6 +630,14 @@ struct SessionSidebar: View {
     private func patch(_ row: HostedSession, _ patch: SessionPatch) async {
         do { try await settings.api(for: row.hostId)?.patchSession(row.session.id, patch: patch); await inbox.refresh() }
         catch { layoutError = error.localizedDescription }
+    }
+    /// WHICH GROUPS ARE SHUT, and the one place that writes it down. The
+    /// header's own tap toggles a single id; the menu's two rows replace the
+    /// whole set, so they share the persistence rather than each remembering
+    /// to save.
+    private func setCollapsed(_ next: Set<String>) {
+        collapsed = next
+        savedCollapsed = collapsed.sorted().joined(separator: "\n")
     }
     private func move(_ group: SidebarProject, offset: Int) async {
         let peers = model.projects.filter { $0.hostId == group.hostId }
