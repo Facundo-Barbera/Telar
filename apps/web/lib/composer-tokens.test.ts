@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { chipBasename, chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft } from "./composer-tokens";
-import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, noteReference, pageReference, pullReference, taskReference } from "./drag-reference";
+import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, noteReference, pageReference, pullReference, skillReference, taskReference } from "./drag-reference";
 
 describe("what the caret is in the middle of", () => {
   test("an at-sign opens the path menu and carries what follows it", () => {
@@ -43,6 +43,31 @@ describe("what the caret is in the middle of", () => {
 
   test("a caret past the end of the text is clamped rather than read out of bounds", () => {
     expect(detectComposerTrigger("@a", 999)).toEqual({ kind: "path", query: "a", rangeStart: 0, rangeEnd: 2 });
+  });
+
+  test("a dollar opens the skill menu, at the start of a word and nowhere else", () => {
+    expect(detectComposerTrigger("$commit", 7)).toEqual({ kind: "skill", query: "commit", rangeStart: 0, rangeEnd: 7 });
+    expect(detectComposerTrigger("now run $rel", 12)).toEqual({ kind: "skill", query: "rel", rangeStart: 8, rangeEnd: 12 });
+    // Bare, before anything is typed — the same as `@`.
+    expect(detectComposerTrigger("use $", 5)).toEqual({ kind: "skill", query: "", rangeStart: 4, rangeEnd: 5 });
+  });
+
+  test("a dollar after a non-space character is somebody's shell, not a trigger", () => {
+    expect(detectComposerTrigger("PATH=$HOME", 10)).toBeNull();
+    expect(detectComposerTrigger("it costs US$40", 14)).toBeNull();
+    expect(detectComposerTrigger("echo x$y", 8)).toBeNull();
+  });
+
+  test("a substitution is never a trigger, however far into it the caret is", () => {
+    expect(detectComposerTrigger("${TELAR_ROOT", 12)).toBeNull();
+    expect(detectComposerTrigger("run ${HOME}/bin", 11)).toBeNull();
+    // The brace check is about the token, not the caret: `${` on its own is
+    // already the opening of a substitution.
+    expect(detectComposerTrigger("${", 2)).toBeNull();
+  });
+
+  test("whitespace ends a skill token too, so a completed pick is no longer live", () => {
+    expect(detectComposerTrigger("$commit-messages and then", 25)).toBeNull();
   });
 });
 
@@ -97,6 +122,27 @@ describe("which runs of a draft draw as chips", () => {
     expect(segments).toHaveLength(1);
     expect(segments[0]).toMatchObject({ type: "chip", reference: { kind: "pull", label: "PR #82" } });
     expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("a skill chips mid-sentence, and the draft is still exactly what was typed", () => {
+    const draft = `please use ${skillReference({ name: "commit-messages" }).text} for this`;
+    const [before, chip, after] = segmentDraft(draft);
+    expect(before).toEqual({ type: "text", text: "please use " });
+    expect(chip).toMatchObject({ type: "chip", reference: { kind: "skill", label: "commit-messages" } });
+    expect(after).toEqual({ type: "text", text: " for this" });
+    expect(rebuild(draft)).toBe(draft);
+    // A plugin's skill keeps its namespace, which is the only spelling that
+    // resolves at the provider.
+    expect(segmentDraft(skillReference({ name: "vercel:deploy" }).text)[0]).toMatchObject({
+      type: "chip",
+      reference: { kind: "skill", label: "vercel:deploy" },
+    });
+  });
+
+  test("a sentence that merely says the word skill is prose", () => {
+    // The name shape is literal, so only something that COULD be a command name
+    // is read back as one.
+    expect(segmentDraft('the "old way" skill was better')).toEqual([{ type: "text", text: 'the "old way" skill was better' }]);
   });
 
   test("an issue chips, and the URL inside it is not torn out as a page", () => {

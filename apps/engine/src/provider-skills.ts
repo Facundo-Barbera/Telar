@@ -11,8 +11,9 @@
  *
  * FOUR SOURCES, AND THE `source` FIELD IS THE HONEST LABEL FOR EACH:
  *
- *   - `user`     — `~/.claude/skills/*​/SKILL.md` and `~/.claude/commands/**​/*.md`.
- *                  This machine's own, available in every project.
+ *   - `user`     — a `SKILL.md` under `~/.claude/skills/<name>/`, and any `.md`
+ *                  under `~/.claude/commands/`. This machine's own, available
+ *                  in every project.
  *   - `project`  — the same two directories under the session's CHECKOUT, which
  *                  is its worktree when it cut one. A worktree session must see
  *                  what its own copy of the repository holds, not the project
@@ -179,7 +180,8 @@ export async function readSkillDirectory(root: string, source: ProviderSkillSour
 }
 
 /**
- * `<root>/**​/*.md` — one command per file, a subdirectory becoming a `:`.
+ * Every `.md` under `<root>`, at any depth — one command per file, with a
+ * subdirectory becoming a `:`.
  *
  * The namespacing is Claude Code's own: `commands/review/pr.md` is `/review:pr`
  * there, so writing it any other way here would produce a row that does nothing

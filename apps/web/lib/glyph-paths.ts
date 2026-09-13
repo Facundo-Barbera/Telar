@@ -55,7 +55,7 @@ export const FILE_GLYPH_MARKUP: Record<FileGlyph, string> = {
 };
 
 /** The kinds a chip can be that are NOT a file: the panel rows you can drag. */
-export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check" | "note";
+export type ChipGlyph = "directory" | "issue" | "pull" | "page" | "task" | "check" | "note" | "skill";
 
 export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   directory: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
@@ -67,6 +67,11 @@ export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
   // lucide `notebook-pen` — a page with a hand on it, which is what a project
   // note is: something a person wrote down, not a file the repository holds.
   note: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.4 3.6a2.1 2.1 0 0 1 0 3L15 13l-4 1 1-4 6.4-6.4a2.1 2.1 0 0 1 3 0Z"/>',
+  // lucide `wand-sparkles` — the provider being asked to do a thing it already
+  // knows how to do. Deliberately NOT `sparkles`, which the slash menu already
+  // spends on a model row.
+  skill:
+    '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/>',
 };
 
 /**
@@ -93,6 +98,10 @@ export const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
   // colour. Muted: a note is the user's own handwriting, and nothing about it
   // is a state to be alarmed or reassured by.
   note: "text-muted-foreground",
+  // A capability of the harness rather than a thing in the repository — the
+  // same family the model and effort rows wear, so the provider's own
+  // vocabulary reads as one group wherever it appears.
+  skill: "text-tint-purple",
 };
 
 /**

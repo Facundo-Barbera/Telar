@@ -28,7 +28,7 @@
  *  these. Vendor-prefixed and suffixed per RFC 6839. */
 export const REFERENCE_MIME = "application/x-telar-reference+json";
 
-export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check" | "note";
+export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check" | "note" | "skill";
 
 export type TelarReference = {
   kind: ReferenceKind;
@@ -204,6 +204,23 @@ export function noteReference(note: { id: string; title: string; body: string })
   const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((run) => run[0].length));
   const fence = "`".repeat(Math.max(3, longest + 1));
   return { kind: "note", label: note.title, text: `${head}:\n\n${fence}note\n${body}\n${fence}` };
+}
+
+/**
+ * A SKILL THE PROVIDER HAS — what `$` inserts.
+ *
+ * PROSE, NOT `/name`. A slash command is only a command at the start of a
+ * message, and `$` fires at the start of any WORD — so a chip reading
+ * `/commit-messages` in the middle of a sentence would look like an invocation
+ * and be inert text. `the "commit-messages" skill` is what the model acts on,
+ * and it is the same shape `taskReference` and `checkReference` already use for
+ * the things that have no address to fetch.
+ *
+ * THE NAME IS THE PROVIDER'S OWN, namespace included (`vercel:deploy`), because
+ * that is the only spelling the harness resolves.
+ */
+export function skillReference(skill: { name: string }): TelarReference {
+  return { kind: "skill", label: skill.name, text: `the "${safeTitle(skill.name)}" skill` };
 }
 
 export function taskReference(task: { id: string; title?: string; state: string }): TelarReference {
