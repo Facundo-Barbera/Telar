@@ -19,7 +19,7 @@
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, TriangleAlertIcon, UserRoundIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CodeXmlIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, TriangleAlertIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -27,6 +27,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
+import { useCommandHandlers } from "@/lib/use-command-keys";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { IdentityIcon } from "@/lib/telar-icons";
@@ -54,6 +55,10 @@ export type DesktopBrowserTab = {
   /** Remembered (restored from the shell's inventory, or hibernated) with no
    *  live page yet — the first look at it loads the page. */
   sleeping?: boolean;
+  /** Chromium DevTools are open on THIS tab, in their own detached window
+   *  (#423). Owned per tab and closed with it, so the strip is where you find
+   *  out which page a stray DevTools window belongs to. */
+  devtools?: boolean;
   /** The tab's own intrinsic viewport, which preset it is (if any), and
    *  whether it is fixed or follows the panel. */
   viewport?: { width: number; height: number; preset: ViewportPresetKey | null; mode?: ViewportMode };
@@ -919,6 +924,17 @@ export function DesktopBrowserSurface({
   );
 
   /**
+   * ⌥⌘I — Chromium DevTools on the tab you are LOOKING at (#423).
+   *
+   * BOUND ONLY WHILE THERE IS ONE, which is what makes "when no browser tab is
+   * active it does nothing" true rather than merely quiet: an unclaimed command
+   * falls through to the destination table, which has nothing to say about this
+   * one. Same shape the panel uses for "fill the window" — a component owns a
+   * command exactly while it can answer it.
+   */
+  useCommandHandlers(activeTab ? { "toggle-devtools": () => void act({ action: "toggle-devtools" }) } : {}, [Boolean(activeTab)]);
+
+  /**
    * Browser keys, panel-local: Cmd/Ctrl+T new, Cmd/Ctrl+W close, Cmd/Ctrl+1-9
    * select, Ctrl+Tab cycle. Scoped to this container's focus — the app menu
    * owns some of these chords globally (command-keys.js) and wins when focus
@@ -1004,6 +1020,15 @@ export function DesktopBrowserSurface({
             ) : tab.favicon ? (
               // eslint-disable-next-line @next/next/no-img-element -- page-supplied favicon URL; nothing for next/image here
               <img src={tab.favicon} alt="" aria-hidden className="size-3 shrink-0 rounded-[2px]" />
+            ) : null}
+            {/* DevTools are open on this tab, in their own window (#423). The
+                strip is where a stray DevTools window is traced back to the
+                page it belongs to — and it is per tab, so two open at once
+                are two marks. */}
+            {tab.devtools ? (
+              <span title="Developer Tools are open on this tab" className="flex shrink-0">
+                <CodeXmlIcon aria-label="Developer Tools open" className="size-3 text-primary" />
+              </span>
             ) : null}
             {/* A tab from ANOTHER identity, kept where it was when the session
                 switched profiles. Said plainly rather than left to look like

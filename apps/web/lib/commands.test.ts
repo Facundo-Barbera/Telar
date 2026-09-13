@@ -60,6 +60,7 @@ const EXPECTED_IDS: CommandId[] = [
   "open-editor",
   "open-data",
   "open-latex",
+  "toggle-devtools",
   "settings",
   "search-settings",
 ];
