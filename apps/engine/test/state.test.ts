@@ -2489,30 +2489,43 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
   // says how long anything stays in the list at all — and it is on the engine
   // so the desktop shell and a browser tab band the same sessions the same way.
   const { store } = readyStore();
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
+  // The delegation grace rides the same document (#378) and defaults with it.
+  const grace = { settleDelegatedAfterHours: 1 };
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72, ...grace });
 
-  expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14 });
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 14 });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14, ...grace });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 14, ...grace });
 
   // `null` IS THE OFF SWITCH, and it is a value rather than an omission:
   // "never" is an answer, not a very large duration.
-  expect(store.setInboxPolicy({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null, ...grace });
   // An empty patch changes nothing rather than resetting anything.
-  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterHours: null });
+  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterHours: null, ...grace });
 
   for (const bad of [0, 90 * 24 + 1, 3.5, "7", Number.NaN]) {
     expect(() => store.setInboxPolicy({ autoSettleAfterHours: bad })).toThrow(EngineStateError);
   }
   // …and the refusal left the stored answer alone.
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null, ...grace });
 });
 
 test("a days-shaped inbox document from before the hours move still means what it said", () => {
   const { store, root: stateRoot } = readyStore();
+  const grace = { settleDelegatedAfterHours: 1 };
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":2}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 48 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 48, ...grace });
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":null}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null, ...grace });
+});
+
+test("a policy written before the delegation grace keeps its own window — #378", () => {
+  // THE FIELD IS DEFAULTED RATHER THAN REQUIRED FOR EXACTLY THIS. A required
+  // one would fail the schema on every stored document, and a failed parse
+  // here answers with the whole default — silently replacing the window
+  // somebody chose with 72 hours.
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterHours":6}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 6, settleDelegatedAfterHours: 1 });
 });
 
 test("the standing session defaults round-trip, and refuse a mode that is not one", () => {
@@ -2635,10 +2648,11 @@ test("a malformed inbox document costs the preference, never the sidebar", () =>
   // server is a server that must not run. A malformed settling window is a
   // preference, and the worst it can do is band a list wrongly.
   const { store, root: stateRoot } = readyStore();
+  const whole = { autoSettleAfterHours: 72, settleDelegatedAfterHours: 1 };
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":1,"autoSettleAfterDays":"soon"}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
+  expect(store.getInboxPolicy()).toEqual(whole);
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), "not json at all");
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
+  expect(store.getInboxPolicy()).toEqual(whole);
 });
 
 test("deleting a session removes everything it owns, and refuses mid-turn", () => {

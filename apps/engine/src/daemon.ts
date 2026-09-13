@@ -126,6 +126,15 @@ export type EngineDaemonOptions = {
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
   /**
+   * Testable cadence for the delegation-settling sweep — issue #378.
+   *
+   * SLOW ON PURPOSE. The grace is an hour by default and the two turn-completion
+   * points catch every moment the facts change; this only exists for the case
+   * where nothing further happens, so a row lands on the shelf a few minutes
+   * either side of its hour and nobody can tell.
+   */
+  delegationSweepIntervalMs?: number;
+  /**
    * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
    * ending that worker's claims happens on the default path inside
    * `retireWorker` whether or not this is passed, because a deployment that
@@ -693,6 +702,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
   workerPruner.unref();
+  /**
+   * THE GRACE NEEDS SOMETHING THAT TICKS — issue #378.
+   *
+   * A delegate becomes settleable the moment its coordinator takes delivery,
+   * and then an hour has to pass with, typically, nothing happening at all.
+   * There is no engine-side settling clock to ride: the quiet window is folded
+   * by each client. `claimNextTurn` is the only other periodic pass and it
+   * walks the LIVE queue index, which by construction excludes exactly the
+   * finished conversations this is about.
+   *
+   * A THROW HERE MUST NOT TAKE THE DAEMON DOWN. The sweep already skips a
+   * session it cannot read; this is the backstop for anything else.
+   */
+  const delegationSweeper = setInterval(() => {
+    try {
+      store.sweepDelegatedSettling();
+    } catch {
+      /* the next tick tries again */
+    }
+  }, options.delegationSweepIntervalMs ?? 5 * 60_000);
+  delegationSweeper.unref();
 
   // Read once: it names the Mac to another cockpit (`.local` dropped — it is
   // mDNS's suffix, not the name), and a name that flickered per request
@@ -1074,6 +1104,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // truthiness test: `null` and "not mentioned" are different
             // requests and JSON can only tell them apart by the key.
             ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
+            // The delegation grace, by the same present-but-null rule — see
+            // `InboxPolicy`. Its own key because it is its own question: one
+            // window guesses from silence, the other counts from a delivery.
+            ...("settleDelegatedAfterHours" in input ? { settleDelegatedAfterHours: input.settleDelegatedAfterHours } : {}),
           }),
         });
         return;
@@ -4185,6 +4219,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await browser?.close("engine shutting down");
         await closeServer(server);
         clearInterval(workerPruner);
+        clearInterval(delegationSweeper);
         removeOwnDiscovery(store, daemonId);
         store.closeExecutionStore();
         lock.release();
@@ -4192,6 +4227,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     };
   } catch (error) {
     clearInterval(workerPruner);
+    clearInterval(delegationSweeper);
     server.close();
     store.closeExecutionStore();
     lock.release();
