@@ -144,7 +144,6 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -1249,7 +1248,10 @@ function SidebarBody() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-64">
                 <DropdownMenuGroup>
-                  <DropdownMenuLabel>Session scope</DropdownMenuLabel>
+                  {/* NO CAPTION. It read "Session scope" — the internal name
+                      for what this menu does, over a list whose first row is
+                      "All projects" and whose rest are project names. A menu
+                      of verbs and nouns says what it is by being read. */}
                   <DropdownMenuItem onClick={() => selectScope()}>
                     <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
                     All projects
