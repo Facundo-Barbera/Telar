@@ -42,6 +42,7 @@ import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
 import { PluginsPage } from "./plugins-page";
 import { UpdatesSection } from "./updates-section";
+import { UsageProvidersSection } from "./usage-providers-section";
 import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
@@ -280,7 +281,16 @@ export function SettingsPage() {
         </>
       )}
 
-      {active === "providers" && <ProvidersSection />}
+      {/* Usage providers sit UNDER the logins and on the same pane: a login is
+          an account this machine runs turns as, a hub is a service that runs
+          them on accounts it never signs in as, and both answer "where does my
+          capacity come from". */}
+      {active === "providers" && (
+        <>
+          <ProvidersSection />
+          <UsageProvidersSection />
+        </>
+      )}
 
       {active === "source-control" && <SourceControlPage />}
 

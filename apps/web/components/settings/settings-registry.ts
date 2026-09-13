@@ -57,6 +57,7 @@ import {
   PaletteIcon,
   PlugIcon,
   PlugZapIcon,
+  ServerIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
@@ -461,6 +462,24 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Each login is a CLI already on this machine. Telar never signs you in; tokens stay where the CLI put them.",
             keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
             icon: PlugIcon,
+          },
+        ],
+      },
+      {
+        /**
+         * ALSO NAVIGATE-ONLY, and for the same reason as the group above: the
+         * rows under this heading are one per configured hub, which are values
+         * rather than copy. What IS indexed is the verb that adds one, because
+         * "where do I see how much of my plan is left" is a question search
+         * should answer and landing on this pane answers most of it.
+         */
+        title: "Usage providers",
+        rows: [
+          {
+            title: "Add hub",
+            hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
+            keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
+            icon: ServerIcon,
           },
         ],
       },
