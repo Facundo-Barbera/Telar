@@ -57,6 +57,19 @@ test("the renamed pane keeps its route, so a bookmark still lands", () => {
   expect(source).toContain('active === "integrations"');
 });
 
+test("Settled is gone from the nav, and its id lands on the rule that fills it", () => {
+  /**
+   * #364: the pane listed the conversations this rail has shelved, which is a
+   * SHELF — the rail already draws one, and that is where anyone looking for a
+   * settled conversation goes. What is genuinely a setting is the rule that
+   * puts them there, so a bookmark lands on General ▸ Settling rather than on
+   * the default pane.
+   */
+  expect(source).not.toContain('{ id: "settled"');
+  expect(source).not.toContain("<SettledPage");
+  expect(source).toContain('settled: "general"');
+});
+
 test("the OAuth callback's section id is still routable", () => {
   // `section=mcp` is baked into app/api/mcp/oauth/callback/route.ts.
   expect(source).toContain('mcp: "tools"');

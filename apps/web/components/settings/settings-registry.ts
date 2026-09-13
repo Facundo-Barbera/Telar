@@ -40,7 +40,6 @@
  */
 
 import {
-  ArchiveIcon,
   BlocksIcon,
   CircleUserRoundIcon,
   DownloadIcon,
@@ -105,9 +104,16 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         title: "Settling",
         rows: [
           {
+            /**
+             * THE SHELF'S VOCABULARY LIVES HERE NOW (#364). The Settled pane
+             * listed the conversations this rail has shelved — a shelf, which
+             * the rail already draws — so what is left to FIND in settings is
+             * the rule that puts them there, and someone typing "archive" or
+             * "where did it go" is owed that row rather than nothing.
+             */
             title: "Settle quiet sessions",
-            hint: "Quiet sessions leave the list on their own, or nothing does.",
-            keywords: ["inbox", "archive", "auto"],
+            hint: "Quiet sessions leave the list on their own, or nothing does. Shelved ones are on the rail, under Settled.",
+            keywords: ["inbox", "archive", "auto", "shelf", "settled", "unsettle", "restore", "hidden", "put away", "quiet"],
             icon: TimerIcon,
           },
           {
@@ -332,28 +338,6 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Every chord this app answers to, and what each one does.",
             keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
             icon: KeyboardIcon,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    /**
-     * NAVIGATE-ONLY, by the rule at the top: every row here is one settled
-     * conversation, and a conversation's title is a value. What search can
-     * usefully answer is "where did the thing I settled go".
-     */
-    id: "settled",
-    label: "Settled",
-    icon: ArchiveIcon,
-    groups: [
-      {
-        rows: [
-          {
-            title: "Settled sessions",
-            hint: "Conversations off your list, and the way to put one back.",
-            keywords: ["archive", "shelf", "restore", "unsettle", "hidden", "put away", "quiet"],
-            icon: ArchiveIcon,
           },
         ],
       },
