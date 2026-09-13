@@ -150,6 +150,12 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// `GET /api/projects/:id/icon?v=<icon>` and may be cached immutably
     /// against it, because a changed file is a changed key.
     var icon: String?
+    /// THE CHECKOUT'S PATH ON THAT MAC — the second line of a row in the
+    /// new-conversation palette (#332), and the answer to "which of my two
+    /// clones of this repo is that". Required by the contract's `Project`, so
+    /// a Mac new enough to answer at all sends it; optional here because a
+    /// phone must render a row from an older one rather than drop it.
+    var root: String?
 }
 
 /// Mirror of `SidebarLayout` in packages/engine-client: where each project

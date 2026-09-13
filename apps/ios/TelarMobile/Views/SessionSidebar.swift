@@ -16,6 +16,13 @@ struct SessionSidebar: View {
     @State private var layoutError: String?
     /// The row whose snooze sheet is up.
     @State private var snoozing: HostedSession?
+    /// The row being renamed, and the field's text. Two pieces of state
+    /// rather than one because the alert's `TextField` needs a binding that
+    /// outlives the row's identity check.
+    @State private var renaming: HostedSession?
+    @State private var renameDraft = ""
+    /// The row whose deletion is being confirmed.
+    @State private var deleting: HostedSession?
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
 
     private var model: SidebarModel {
@@ -138,14 +145,28 @@ struct SessionSidebar: View {
                             // secondary verbs, so it goes there — the
                             // affordance differs because the input does, the
                             // action is the same one.
-                            Button("New conversation", systemImage: "square.and.pencil") {
+                            Button("New conversation here", systemImage: "square.and.pencil") {
                                 resumeDraft(MobileDraft(hostId: group.hostId,
                                                         project: ProjectRef(id: group.projectId, name: group.name, icon: group.icon),
                                                         prompt: "", title: ""))
                             }
                             Divider()
-                            Button("Move project up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
-                            Button("Move project down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
+                            // THE VERB EXISTS, THE MENU JUST DID NOT OFFER IT
+                            // (#327). Tapping the header already collapses the
+                            // group, so this row is not new capability — it is
+                            // the one place a reader who long-pressed can find
+                            // out that the gesture exists, and the only way to
+                            // reach "Collapse others" at all.
+                            Button(collapsed.contains(group.id) ? "Expand" : "Collapse",
+                                   systemImage: collapsed.contains(group.id) ? "chevron.down" : "chevron.right") {
+                                setCollapsed(collapsed.symmetricDifference([group.id]))
+                            }
+                            Button("Collapse others", systemImage: "arrow.down.right.and.arrow.up.left") {
+                                setCollapsed(ProjectHeaderMenu.collapseOthers(all: model.projects.map(\.id), keeping: group.id))
+                            }
+                            Divider()
+                            Button("Move up", systemImage: "arrow.up") { Task { await move(group, offset: -1) } }
+                            Button("Move down", systemImage: "arrow.down") { Task { await move(group, offset: 1) } }
                         }
                         .draggable(group.id)
                         .dropDestination(for: String.self) { ids, _ in
@@ -272,6 +293,44 @@ struct SessionSidebar: View {
         }
         .onChange(of: inbox.filter) { projectFilter = nil }
         .sheet(item: $snoozing) { row in snoozeSheet(row) }
+        // RENAME IS AN ALERT, NOT A SHEET. One field and two buttons is the
+        // alert's whole shape, and a sheet for it would cost a push and a
+        // dismiss to type a title.
+        .alert("Rename session", isPresented: presenting($renaming)) {
+            TextField("Title", text: $renameDraft)
+            Button("Rename") {
+                guard let row = renaming else { return }
+                let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                renaming = nil
+                guard !title.isEmpty, title != row.session.title else { return }
+                Task { await patch(row, SessionPatch(title: title)) }
+            }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+        // THE CONFIRMATION SAYS WHAT IT TAKES rather than asking "are you
+        // sure": the engine deletes the transcript with the session and there
+        // is no undo, so the sentence is the only place that can be said.
+        .confirmationDialog(
+            deleting.map { "Delete “\($0.session.title.isEmpty ? "Untitled session" : $0.session.title)”?" } ?? "Delete session?",
+            isPresented: presenting($deleting),
+            titleVisibility: .visible
+        ) {
+            Button("Delete session", role: .destructive) {
+                guard let row = deleting else { return }
+                deleting = nil
+                Task { await remove(row) }
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text("The conversation and everything it holds go with it. This cannot be undone.")
+        }
+    }
+
+    /// `isPresented` for a modal whose subject is an optional row — the
+    /// binding SwiftUI's `alert` and `confirmationDialog` take, derived from
+    /// the one piece of state that actually says which row it is about.
+    private func presenting<T>(_ subject: Binding<T?>) -> Binding<Bool> {
+        Binding(get: { subject.wrappedValue != nil }, set: { if !$0 { subject.wrappedValue = nil } })
     }
 
     private var projectOptions: [SidebarProject] { SidebarModel(sessions: all.map { row in
@@ -355,26 +414,81 @@ struct SessionSidebar: View {
             }
         }
         .contextMenu {
-            if row.session.settledOverride == "active" {
-                Button("Unpin", systemImage: "pin.slash") { Task { await patch(row, SessionPatch(clearSettledOverride: true)) } }
-            } else {
-                Button("Pin", systemImage: "pin") { Task { await patch(row, SessionPatch(settledOverride: "active")) } }
-            }
-            if isShelved(row) {
-                Button("Wake now", systemImage: "arrow.uturn.backward") { Task { await patch(row, SessionPatch(settledOverride: "active", clearSnooze: true)) } }
-            } else {
-                Menu("Snooze", systemImage: "moon.zzz") {
-                    ForEach(snoozePresets(now: Date())) { preset in
-                        Button { Task { await patch(row, SessionPatch(snoozedUntil: preset.until)) } } label: {
-                            Text("\(preset.label) · \(preset.when)")
-                        }
+            // THE MAC'S LIST, ITEM FOR ITEM (#326) — built in `SessionRowMenu`
+            // rather than written out here, because the order and the labels
+            // ARE the thing that has to match and a closure cannot be read by
+            // a test. This renders them; it decides nothing.
+            //
+            // ONE LEVEL OF NESTING IS THE WHOLE SHAPE (Snooze, Copy), so the
+            // two cases are written out rather than recursed: a recursive
+            // `@ViewBuilder` has no base case a Swift generic can terminate on.
+            ForEach(menuItems(row)) { item in
+                if let children = item.children {
+                    Menu(item.label, systemImage: item.systemImage) {
+                        ForEach(children) { child in menuButton(child, on: row) }
                     }
+                    .disabled(item.disabled != nil)
+                } else {
+                    menuButton(item, on: row)
                 }
-                Button("Settle", systemImage: "checkmark") { Task { await inbox.setSettled(row.id, true) } }
             }
-            if let base = settings.host(row.hostId)?.baseURL {
-                ShareLink(item: row.session.cockpitURL(base: base)) { Label("Share cockpit link", systemImage: "link") }
-            }
+        }
+    }
+
+    /// The row's menu, resolved against one clock — two items reading their
+    /// own `Date()` would resolve "In 1 hour" and the wake countdown against
+    /// different instants in the same paint.
+    ///
+    /// SETTLED IS FOLDED HERE, not in the model: whether a session is off the
+    /// list is a question about this reader's inbox policy, which the bands
+    /// have already answered.
+    private func menuItems(_ row: HostedSession) -> [SessionMenuItem] {
+        SessionRowMenu.items(
+            session: row.session,
+            projectName: inbox.projectName(row),
+            settled: inbox.sections.settled.contains { $0.id == row.id } || row.session.settledOverride == "settled",
+            cockpitURL: settings.host(row.hostId)?.baseURL.map { row.session.cockpitURL(base: $0) },
+            now: Date()
+        )
+    }
+
+    @ViewBuilder private func menuButton(_ item: SessionMenuItem, on row: HostedSession) -> some View {
+        Button(role: item.destructive ? .destructive : nil) {
+            run(item.verb, on: row)
+        } label: {
+            // The detail COMPLEMENTS the label — "Tomorrow · 9:00 AM" — which
+            // is the one place a menu row here carries two facts.
+            Label(item.detail.map { "\(item.label) · \($0)" } ?? item.label, systemImage: item.systemImage)
+        }
+        .disabled(item.disabled != nil)
+    }
+
+    /// Every verb's side effect, in one place. `SessionRowMenu` says WHAT each
+    /// row does and this says how, using the calls the sidebar already makes.
+    private func run(_ verb: SessionMenuVerb?, on row: HostedSession) {
+        switch verb {
+        case .newSession(let projectId, let baseRef):
+            let project = inbox.project(row)
+                ?? ProjectRef(id: projectId, name: inbox.projectName(row) ?? "Project")
+            resumeDraft(MobileDraft(hostId: row.hostId, project: project, prompt: "", title: "", baseRef: baseRef))
+        case .pin(let pinned):
+            Task { await patch(row, pinned ? SessionPatch(settledOverride: "active") : SessionPatch(clearSettledOverride: true)) }
+        case .settle(let settled):
+            Task { await inbox.setSettled(row.id, settled) }
+        case .snooze(let until):
+            // Waking clears the snooze AND pins the row back to the list, so a
+            // session woken from the shelf does not settle again on the same
+            // poll — the swipe action's rule, reused.
+            Task { await patch(row, until.map { SessionPatch(snoozedUntil: $0) } ?? SessionPatch(settledOverride: "active", clearSnooze: true)) }
+        case .rename:
+            renameDraft = row.session.title
+            renaming = row
+        case .copy(let text):
+            UIPasteboard.general.string = text
+        case .delete:
+            deleting = row
+        case nil:
+            break
         }
     }
 
@@ -616,6 +730,27 @@ struct SessionSidebar: View {
     private func patch(_ row: HostedSession, _ patch: SessionPatch) async {
         do { try await settings.api(for: row.hostId)?.patchSession(row.session.id, patch: patch); await inbox.refresh() }
         catch { layoutError = error.localizedDescription }
+    }
+    /// THE SELECTION GOES FIRST. A detail column still holding a session the
+    /// engine no longer has would spend its next poll discovering that as a
+    /// "not found" error, which is the wrong way to learn about a deletion you
+    /// just asked for.
+    private func remove(_ row: HostedSession) async {
+        do {
+            try await settings.api(for: row.hostId)?.deleteSession(row.session.id)
+            if selection == row.id { selection = nil }
+            await inbox.refresh()
+        } catch {
+            layoutError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+    /// WHICH GROUPS ARE SHUT, and the one place that writes it down. The
+    /// header's own tap toggles a single id; the menu's two rows replace the
+    /// whole set, so they share the persistence rather than each remembering
+    /// to save.
+    private func setCollapsed(_ next: Set<String>) {
+        collapsed = next
+        savedCollapsed = collapsed.sorted().joined(separator: "\n")
     }
     private func move(_ group: SidebarProject, offset: Int) async {
         let peers = model.projects.filter { $0.hostId == group.hostId }

@@ -25,6 +25,12 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
+    /// and the engine refuses while a turn is in flight (`EngineStore
+    /// .deleteSession` throws a conflict on a queued, claimed or running one),
+    /// which is why the row that calls this is disabled there rather than
+    /// offered and then rejected.
+    func deleteSession(_ id: EngineID) async throws
     /// A HUMAN WAS SHOWN THIS TURN'S ANSWER. Moves the engine's
     /// `lastReadTurnSequence` forward and stamps `readAt`, which is what clears
     /// the unread dot on every device — the phone used to send this NEVER, so a
@@ -92,6 +98,11 @@ extension EngineAPI {
     /// A double that models the transcript and not the rail answers "nobody has
     /// arranged anything", which is a real arrangement and not an error.
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
+
+    /// A double that models no registry has nothing to remove, and says so by
+    /// returning rather than throwing: a test standing in for one endpoint
+    /// should not have to implement every other one to compile.
+    func deleteSession(_ id: EngineID) async throws {}
 }
 
 /// A raw read that keeps the content type: the PDF viewer and the image
@@ -401,6 +412,12 @@ struct HTTPEngineAPI: EngineAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
+    }
+
+    func deleteSession(_ id: EngineID) async throws {
+        var request = makeRequest(url("api/sessions/\(escape(id))"))
+        request.httpMethod = "DELETE"
+        let _: IgnoredBody = try await perform(request)
     }
 
     func promoteTurn(_ id: EngineID, runId: String) async throws {

@@ -8,6 +8,12 @@ struct MobileDraft: Codable, Identifiable {
     var title: String
     var createdSessionId: String?
     var submissionRunId: String?
+    /// WHERE THE NEW WORKTREE IS CUT FROM, when the draft was opened from a
+    /// session that has a branch of its own ("New session on `<branch>`",
+    /// #326). The label makes a promise about where the work lands, so the
+    /// answer has to survive the trip through the draft — absent means HEAD,
+    /// which is what every other draft has always meant.
+    var baseRef: String?
     var id: String { "\(hostId):\(project.id)" }
 }
 @MainActor @Observable final class MobileDrafts {
