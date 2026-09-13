@@ -37,7 +37,7 @@ import {
   type SessionAssignment,
   type SessionSettledBy,
 } from "@telar/engine-client";
-import { isSettled, isSnoozed, isStale, type SettlingActivity, type SettlingOptions } from "./session-settling";
+import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
 
 export const SESSION_PAGE_SIZE = 20;
@@ -365,8 +365,16 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
  * current work and ends; provenance is permanent and ends nothing. A session
  * that finished a task still belongs here — under `review` — because dropping
  * it the moment its run ended would hide the result the coordinator delegated
- * for. What it does not get is a tenancy: see `leavesRelatedWork` for when a
- * row stops being anybody's outstanding errand.
+ * for.
+ *
+ * NOT A RAIL ARRANGEMENT ANY MORE — issue #381. This used to decide which rows
+ * the sidebar indented under which, and with it came a rule about when a
+ * delegate stopped being drawn there (`leavesRelatedWork`, #370/#372): a tree
+ * that never let go claimed outstanding work where there was none. The rail
+ * draws every conversation in its own band now, so the fold has one reader
+ * left — the panel's Agents surface, which is a ROSTER. A roster wants the
+ * whole record, including the errand that finished last week and says so, and
+ * there is nothing for a clock to decide.
  *
  * KEYED THROUGH `sessionKey`, because two Macs can mint the same session id and
  * a coordinator on one host must not gather a stranger from another.
@@ -374,106 +382,15 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
 export type RelatedWork = {
   /** Outstanding assignments from this coordinator. */
   active: SidebarSession[];
-  /** Finished, not yet settled — waiting to be looked at. */
+  /** Finished — the result the coordinator delegated for. */
   review: SidebarSession[];
   /** Started from this coordinator, with no current assignment. */
   independent: SidebarSession[];
 };
 
-/**
- * THE CLOCK THE RELATED-WORK RULE IS MEASURED AGAINST — the same three numbers
- * the list itself bands on, so a delegate leaves its coordinator exactly when
- * the rail would agree it has. A paired Mac's row is measured by THAT Mac's
- * window, which is what `windowsByHost` is for.
- */
-export type RelatedWorkOptions = SettlingOptions & {
-  windowsByHost?: ReadonlyMap<string, number | null>;
-};
-
-/**
- * The default for a caller with no clock to offer — this Mac's own, read now.
- *
- * A CALLER THAT FORGETS GETS THE RULE, NOT AN EXEMPTION. The alternative
- * default — "no options, no rule" — would make the lingering row (#370) the
- * behaviour any new caller silently inherits, and the one thing a rule about
- * what leaves a list must not be is optional by accident. The cost of being
- * wrong here is a paired Mac's row measured against the local window, which is
- * a row that leaves an hour early or late rather than one that never leaves.
- */
-export const localSettling = (): RelatedWorkOptions => ({ now: Date.now(), autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS });
-
-/**
- * IS THIS ROW ON THE SETTLED SHELF, on its own Mac's clock?
- *
- * `bandOf` AND NOT `isSettled`, because the question the tree is asking is
- * where the RAIL put this row — and the two answers differ on rows the rail
- * exempts. A draft is the live one: `bandOf` keeps it in the list whatever the
- * clock says, and a tree that re-derived the rule from `isSettled` would decide
- * a row was shelved while the list beside it drew it. One question, one answer.
- */
-export function settledRow(session: SidebarSession, options: RelatedWorkOptions): boolean {
-  return bandOf(session, { now: options.now, autoSettleAfterHours: windowFor(session, options.autoSettleAfterHours, options.windowsByHost) }) === "settled";
-}
-
-/**
- * HAS THIS ROW LEFT ITS COORDINATOR'S TREE? — issue #370.
- *
- * A delegate used to hang off its coordinator forever. An assignment ENDS, and
- * nothing said what happened after that: a session that finished a week ago,
- * and one the reader had explicitly settled, both kept drawing under the row
- * that delegated to them — which is the rail claiming outstanding work where
- * there is none.
- *
- * THE RULE, IN THE ORDER IT IS READ:
- *
- *   1. NOTHING LEAVES WHILE IT IS WORKING OR WAITING ON YOU. The same
- *      precedence the whole settling system is built on (`isSettled`): the
- *      worst outcome of any rule that removes rows is removing the one that
- *      needed you, and putting the blockers first makes that unrepresentable.
- *      An explicit settle does not survive a parked request here either.
- *   2. A SETTLED CHILD NEVER DRAWS UNDER A COORDINATOR — by decision, by
- *      archive, or by the clock. The reader shelved it; a second copy of it
- *      indented under somebody else is the shelf not being believed.
- *   3. A FINISHED ASSIGNMENT LEAVES ONCE ITS WINDOW HAS PASSED, even when the
- *      row itself is still in the list. The `review` band exists so a delegated
- *      result is not hidden the moment its run ended — that is a grace period,
- *      not a tenancy, and the settling window is its length. An unread answer
- *      keeps the row in the LIST (it must), and that is a different question
- *      from whether it is still this coordinator's outstanding errand.
- *
- * PROVENANCE IS NOT SUBJECT TO 3. "Started from here" is permanent and ends
- * nothing, so there is no outcome to age: it leaves when the row settles, and
- * not before.
- *
- * AND SINCE #378 THE ENGINE ANSWERS 3 DIRECTLY, FOR A DELEGATE. `settledBy` is
- * the engine saying "this errand was delivered and the row is off the list" —
- * the exact question the clock below was guessing at, from a fact it does not
- * have. So a stamped row leaves whatever else is keeping it visible: a snooze
- * hides a row without making it somebody's outstanding work, and rule 2 would
- * miss it because `bandOf` calls that row snoozed rather than settled.
- *
- * THE CLOCK STAYS FOR EVERYTHING THE STAMP DOES NOT COVER — a delegate whose
- * assignment failed, one a person un-settled, and every row on a machine with
- * the delegation grace switched off. Removing it would restore #370's lingering
- * row for exactly those cases.
- *
- * NOTHING HERE HIDES A ROW. A child that leaves a coordinator falls back to
- * being a row of its own — in its project group, or on the shelf it was already
- * on. The tree is an arrangement, never a filter.
- */
-export function leavesRelatedWork(session: SidebarSession, finished: boolean, options: RelatedWorkOptions): boolean {
-  const activity = settlingActivity(session);
-  if (activity.working || activity.waitingOnYou) return false;
-  if (session.settledBy) return true;
-  if (settledRow(session, options)) return true;
-  if (!finished) return false;
-  return isStale(session, { now: options.now, autoSettleAfterHours: windowFor(session, options.autoSettleAfterHours, options.windowsByHost) });
-}
-
 export function relatedWork(
   sessions: readonly SidebarSession[],
   coordinator: Pick<SidebarSession, "id" | "hostId">,
-  options: RelatedWorkOptions = localSettling(),
 ): RelatedWork {
   const host = coordinator.hostId;
   const related: RelatedWork = { active: [], review: [], independent: [] };
@@ -484,16 +401,14 @@ export function relatedWork(
     if ((session.hostId ?? undefined) !== (host ?? undefined)) continue;
     const mine = (session.assignments ?? []).filter((assignment) => assignment.fromSessionId === coordinator.id);
     if (mine.some((assignment) => assignment.outcome === undefined && !assignment.unresolved)) {
-      if (!leavesRelatedWork(session, false, options)) related.active.push(session);
+      related.active.push(session);
       continue;
     }
     if (mine.some((assignment) => assignment.outcome !== undefined && assignment.outcome !== "detached")) {
-      if (!leavesRelatedWork(session, true, options)) related.review.push(session);
+      related.review.push(session);
       continue;
     }
-    if (session.startedFrom?.sessionId === coordinator.id && !leavesRelatedWork(session, false, options)) {
-      related.independent.push(session);
-    }
+    if (session.startedFrom?.sessionId === coordinator.id) related.independent.push(session);
   }
   return related;
 }

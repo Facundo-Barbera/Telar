@@ -10,7 +10,6 @@ import {
   orderProjectGroups,
   orderSessions,
   projectGroupKey,
-  withholdFollowedRows,
   type ProjectGroup,
 } from "./session-groups";
 import type { SidebarSession } from "./session-list";
@@ -253,86 +252,6 @@ describe("foldedAfter", () => {
     const current = new Set(["a"]);
     foldedAfter(current, drawn, { kind: "all" });
     expect([...current]).toEqual(["a"]);
-  });
-});
-
-/**
- * THE RULE AGAINST SAYING THE SAME THING TWICE — issue #278, second half.
- *
- * A session under a pinned coordinator's "Following" is not repeated in its
- * project group while that coordinator is pinned; the group carries the count
- * instead. Asserted as set math rather than through a rendered rail, because
- * what is decidable here is WHICH COPY SURVIVES, and that is a fact about the
- * sets and not about the DOM.
- */
-describe("withholdFollowedRows", () => {
-  const coordinator = (key: string, title: string, following: string[]) => ({ key, title, following });
-  const alpha = (...ids: string[]) => group("p1", "alpha", { sessions: ids.map((id) => row(id)) });
-
-  test("a followed row leaves its project group and is carried on the group's chip", () => {
-    // THE BUG: "worker" was drawn under Following AND under alpha, so the rail
-    // claimed two conversations where there was one.
-    const [out] = withholdFollowedRows([alpha("worker", "other")], [coordinator("coord", "Coordinator", ["worker"])]);
-    expect(out?.sessions.map((s) => s.id)).toEqual(["other"]);
-    expect(out?.withheld?.map((w) => [w.coordinatorKey, w.coordinatorTitle, w.sessions.map((s) => s.id)])).toEqual([
-      ["coord", "Coordinator", ["worker"]],
-    ]);
-  });
-
-  test("the FIRST pinned coordinator wins a row two of them follow", () => {
-    // Drawing it under both would re-create exactly the duplication this
-    // removes. Pinned order decides, so the answer is stable between renders.
-    const coordinators = [coordinator("first", "First", ["worker"]), coordinator("second", "Second", ["worker"])];
-    const [out] = withholdFollowedRows([alpha("worker")], coordinators);
-    expect(out?.withheld?.map((w) => w.coordinatorKey)).toEqual(["first"]);
-    expect(out?.sessions).toEqual([]);
-  });
-
-  test("two coordinators claiming DIFFERENT rows of one group are two chips, in pinned order", () => {
-    const coordinators = [coordinator("a", "A", ["w1"]), coordinator("b", "B", ["w2"])];
-    const [out] = withholdFollowedRows([alpha("w1", "w2", "w3")], coordinators);
-    expect(out?.sessions.map((s) => s.id)).toEqual(["w3"]);
-    expect(out?.withheld?.map((w) => [w.coordinatorKey, w.sessions.map((s) => s.id)])).toEqual([
-      ["a", ["w1"]],
-      ["b", ["w2"]],
-    ]);
-  });
-
-  test("a group nobody claimed from comes back IDENTICAL — same object, not a copy", () => {
-    // A rail where nothing is followed must pay nothing and re-render nothing.
-    const untouched = group("p2", "beta", { sessions: [row("x", { projectId: "p2" })] });
-    const [claimed, same] = withholdFollowedRows([alpha("worker"), untouched], [coordinator("coord", "C", ["worker"])]);
-    expect(same).toBe(untouched);
-    expect(claimed).not.toBe(untouched);
-    expect(same?.withheld).toBeUndefined();
-  });
-
-  test("no coordinator follows anything: every group comes back untouched", () => {
-    const groups = [alpha("a", "b")];
-    expect(withholdFollowedRows(groups, [])).toEqual(groups);
-    expect(withholdFollowedRows(groups, [coordinator("coord", "C", [])])[0]).toBe(groups[0]);
-  });
-
-  test("a followed key that is in NO group changes nothing — following is not membership", () => {
-    // The coordinator follows a snoozed row, or one on a shelf. Nothing to take.
-    const [out] = withholdFollowedRows([alpha("a")], [coordinator("coord", "C", ["elsewhere"])]);
-    expect(out?.sessions.map((s) => s.id)).toEqual(["a"]);
-    expect(out?.withheld).toBeUndefined();
-  });
-
-  test("HOST-QUALIFIED: a same-id row from another Mac is a stranger, not the followed one", () => {
-    // `sessionKey` carries the host; two Macs can mint one session id.
-    const mixed = group("p1", "alpha", { sessions: [row("w"), row("w", { hostId: "h1", hostName: "Studio" })] });
-    const [out] = withholdFollowedRows([mixed], [coordinator("coord", "C", ["w"])]);
-    expect(out?.sessions.map((s) => s.hostId)).toEqual(["h1"]);
-    expect(out?.withheld?.[0]?.sessions.map((s) => s.hostId)).toEqual([undefined]);
-  });
-
-  test("pure: the groups handed in are never mutated", () => {
-    const input = alpha("worker", "other");
-    withholdFollowedRows([input], [coordinator("coord", "C", ["worker"])]);
-    expect(input.sessions.map((s) => s.id)).toEqual(["worker", "other"]);
-    expect(input.withheld).toBeUndefined();
   });
 });
 

@@ -76,33 +76,36 @@ describe("pinned scrolls with the rail", () => {
 });
 
 /**
- * THE PINNED BAND'S TREE IS MEASURED AGAINST A CLOCK — issue #370.
+ * EVERY CONVERSATION IS A ROW OF ITS OWN BAND — issue #381.
  *
- * `relatedPool` deliberately reaches into BOTH shelves, because a coordinator
- * has to be able to name a delegate wherever the list put it. Without a window
- * passed alongside, that pool is also how a pinned row drew the conversations
- * the list had already shelved — finished errands and settled rows, indented
- * under live work for good. Pinned as source for this file's own reason: what
- * is being fixed is which arguments a call is made with.
+ * The rail drew a delegated conversation as its coordinator's indented child
+ * (#199 in the pinned band, #324 everywhere else), which made a separate
+ * conversation read as a sub-agent of the one above it. It is not one, so the
+ * tree is gone: no `relatedTree`, no elbow, no rows withheld from a project
+ * group, and no clock deciding when a child stops being drawn (#370/#372).
+ * Who delegated what to whom is stated on the panel's Agents surface instead.
+ *
+ * Scanned as SOURCE for this file's own reason: what is being pinned is that a
+ * call site no longer exists, which a render of a mocked-out rail could only
+ * show indirectly.
  */
-describe("a delegate leaves its pinned coordinator", () => {
-  test("the pool still spans every band — a coordinator names its own rows", () => {
-    expect(code).toContain("const relatedPool = [...list.pinned, ...list.sessions, ...list.snoozed, ...list.settled];");
+describe("the rail draws no tree", () => {
+  test("nothing arranges rows under other rows", () => {
+    for (const gone of ["relatedTree", "RelatedWork", "relatedWork", "withholdFollowedRows", "followedSessions"]) {
+      expect(code, `${gone} is tree machinery and the rail is done with it`).not.toContain(gone);
+    }
   });
 
-  test("`relatedWork` is asked with the rail's own settling clock", () => {
-    expect(code).toContain("relatedWork(relatedPool, session, relatedSettling)");
-    const settling = code.slice(at("const relatedSettling ="), at("const relatedSettling =") + 200);
-    // The same three inputs the bands are derived from, so "has this left" and
-    // "which band is this in" cannot come back with two different answers.
-    expect(settling).toContain("now: renderedAt");
-    expect(settling).toContain("autoSettleAfterHours");
-    expect(settling).toContain("windowsByHost: hostWindows");
+  test("the pinned band maps straight to rows, with nothing nested under one", () => {
+    const band = code.slice(at(PINNED), code.indexOf("</div>", at(PINNED)));
+    expect(band).toContain("<SessionRow");
+    // The wrapper each pinned row used to need so its children could follow it.
+    expect(band).not.toContain('<div key={sessionKey(session)} className="space-y-0.5">');
   });
 
-  test("the project groups are given the same window", () => {
+  test("a project group is handed its rows and no settling window to arrange them by", () => {
     const call = code.slice(at("<ProjectGroupSection"), at("<ProjectGroupSection") + 1200);
-    expect(call).toContain("autoSettleAfterHours={autoSettleAfterHours}");
-    expect(call).toContain("settlingWindows={hostWindows}");
+    expect(call).not.toContain("autoSettleAfterHours=");
+    expect(call).not.toContain("settlingWindows=");
   });
 });

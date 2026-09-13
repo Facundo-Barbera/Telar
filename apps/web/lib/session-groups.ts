@@ -119,29 +119,14 @@ export type ProjectGroup = {
   /** The glyph somebody picked, which outranks `icon` — see `ProjectAvatar`. */
   iconName?: string;
   hostName?: string;
-  sessions: SidebarSession[];
   /**
-   * Rows this group is NOT drawing, because a pinned coordinator's Following
-   * already lists them — one entry per claiming coordinator, in pinned order.
-   * See `withholdFollowedRows`. Absent when nothing was withheld.
+   * EVERY CONVERSATION THIS PROJECT HOLDS, and no row is held back — issue
+   * #381. A pinned coordinator used to claim the rows it followed and this
+   * group gave them up (`withholdFollowedRows`), paying for it with a
+   * "+N following" chip. Both halves are gone with the tree that needed them:
+   * a delegated conversation is a conversation, and it draws where it lives.
    */
-  withheld?: WithheldRows[];
-};
-
-/** One pinned coordinator's claim on a group's rows. */
-export type WithheldRows = {
-  /** `sessionKey` of the coordinator whose Following lists these. */
-  coordinatorKey: string;
-  /** What the chip calls it — the coordinator's own title. */
-  coordinatorTitle: string;
   sessions: SidebarSession[];
-};
-
-/** A pinned coordinator and the rows its Following block draws, as `sessionKey`s. */
-export type FollowingCoordinator = {
-  key: string;
-  title: string;
-  following: readonly string[];
 };
 
 export type GroupedSessions = {
@@ -452,66 +437,6 @@ export function groupSessions(
       sessions: orderSessions(group.sessions, rows.sessions?.[group.key]),
     })),
   };
-}
-
-/**
- * A ROW LISTED UNDER A PINNED COORDINATOR'S "FOLLOWING" IS NOT DRAWN AGAIN IN
- * ITS PROJECT GROUP — the rail's one rule against saying the same thing twice.
- *
- * `related-work.tsx` builds Following from the same pool the project groups are
- * built from, and nothing reconciled them: a followed session appeared under
- * its coordinator AND under its project, so the rail claimed two conversations
- * where there was one. Deduping in the RENDERER would have been the smaller
- * patch and the wrong one — which copy survives is a decision about what the
- * list means, so it is spelled here, once, as set math.
- *
- * THE COORDINATOR WINS, NOT THE PROJECT. Following is a relationship you asked
- * for and the project group is where a row lives anyway; the group keeps the
- * count instead (`withheld`), which is what the header's chip draws, so the
- * rows are still reachable from the place you would look for them.
- *
- * FIRST PINNED COORDINATOR WINS A CONTESTED ROW. Two coordinators can follow
- * one session, and drawing it under both would re-create the duplication this
- * removes — so the claim goes in pinned order and the second coordinator's
- * Following block is simply where that row also appears.
- *
- * PURE, AND UNCHANGED GROUPS COME BACK IDENTICAL: a group nobody claimed from
- * is the same object, not a copy, so a rail where nothing is followed pays
- * nothing and re-renders nothing.
- */
-export function withholdFollowedRows(
-  groups: readonly ProjectGroup[],
-  coordinators: readonly FollowingCoordinator[],
-): ProjectGroup[] {
-  /** Row key → the coordinator that claimed it. First claim wins. */
-  const claim = new Map<string, FollowingCoordinator>();
-  for (const coordinator of coordinators) {
-    for (const key of coordinator.following) if (!claim.has(key)) claim.set(key, coordinator);
-  }
-  if (claim.size === 0) return [...groups];
-
-  return groups.map((group) => {
-    const kept: SidebarSession[] = [];
-    /** Keyed by coordinator so two claims on one group are two chips, not two lists. */
-    const taken = new Map<string, WithheldRows>();
-    for (const session of group.sessions) {
-      const by = claim.get(sessionKey(session));
-      if (!by) {
-        kept.push(session);
-        continue;
-      }
-      const entry = taken.get(by.key) ?? { coordinatorKey: by.key, coordinatorTitle: by.title, sessions: [] };
-      entry.sessions.push(session);
-      taken.set(by.key, entry);
-    }
-    if (taken.size === 0) return group;
-    // In pinned order, which is the order the coordinators themselves are drawn
-    // in — a chip list that re-sorted itself per group would read as arbitrary.
-    const withheld = coordinators
-      .map((coordinator) => taken.get(coordinator.key))
-      .filter((entry): entry is WithheldRows => entry !== undefined);
-    return { ...group, sessions: kept, withheld };
-  });
 }
 
 /**

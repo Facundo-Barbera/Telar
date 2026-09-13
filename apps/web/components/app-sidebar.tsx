@@ -81,7 +81,6 @@ import {
   canvasHref,
   canvasProjectFromPathname,
   deriveSessionList,
-  relatedWork,
   SESSION_PAGE_SIZE,
   SETTLED_PAGE_SIZE,
   sessionHref,
@@ -94,7 +93,6 @@ import {
 import { hostFetcher } from "@/lib/hosts/client";
 import { projectPlaces } from "@/lib/hosts/project-places";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
-import { createFollowingController, emptyFollowing, lockKey, type FollowingController, type FollowingState } from "@/lib/following";
 import type { PublicHost } from "@/lib/hosts/store";
 import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "@/lib/sidebar-cache";
 import { LOCAL_HOST } from "@/lib/snapshot-cache";
@@ -112,7 +110,6 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
-import { followedSessions, RelatedWork } from "@/components/session/related-work";
 import { ProjectGroupSection } from "@/components/session/project-group";
 import {
   dedupeAcrossHosts,
@@ -125,7 +122,6 @@ import {
   SESSION_ROW_MIME,
   railRowsForCommandKeys,
   useCollapsedGroups,
-  withholdFollowedRows,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
@@ -699,152 +695,15 @@ function SidebarBody() {
   // conversation does moves its project.
   const grouped = list.flat ? undefined : groupSessions(list, projectOrder, { sessions: sessionOrder, pinned: pinnedOrder });
   /**
-   * Every row the rail currently holds — the candidate pool `relatedWork`
-   * searches. Built from the bands the list already produced, so finding a
-   * coordinator's delegates costs no request.
-   */
-  const relatedPool = [...list.pinned, ...list.sessions, ...list.snoozed, ...list.settled];
-  /**
-   * THE CLOCK THE TREE IS MEASURED AGAINST, which is the rail's own — #370.
-   * The pool above deliberately reaches into both shelves, so without this a
-   * pinned coordinator drew the rows the list had already shelved: finished
-   * errands and settled conversations, indented under live work forever. Same
-   * `renderedAt` and same per-Mac windows the bands use, because "has this left"
-   * and "which band is this in" must not come back with two different answers.
-   */
-  const relatedSettling = { now: renderedAt, autoSettleAfterHours, windowsByHost: hostWindows };
-
-  /**
-   * WHO EACH PINNED SESSION FOLLOWS, keyed by `sessionKey`.
+   * EVERY GROUP AS IT CAME BACK — issue #381.
    *
-   * READ FOR PINNED SESSIONS ONLY, and only when that set changes — not on
-   * every polling tick and never per row of the list. Pinned is the handful a
-   * person keeps in view, so this is a bounded read rather than an N+1 over
-   * every session the rail holds.
-   *
-   * HOST-PINNED: each read goes to the Mac that session lives on, so viewing a
-   * remote rail never asks the local engine about a remote session.
+   * A pinned coordinator used to claim the rows it followed and this list was
+   * `withholdFollowedRows(grouped.groups, …)` with the claimed rows removed. It
+   * claims nothing now: a delegated conversation is a conversation, it draws in
+   * the project it belongs to, and who asked it for what is described on the
+   * panel's Agents surface instead of implied by where the rail put it.
    */
-  const [followState, setFollowState] = useState<FollowingState>(emptyFollowing);
-  const [unfollowing, setUnfollowing] = useState<ReadonlySet<string>>(() => new Set());
-  const [unfollowFailed, setUnfollowFailed] = useState<ReadonlySet<string>>(() => new Set());
-  /**
-   * Owns generations, locks and the read epoch — outside React.
-   *
-   * A LAZY `useState` INITIALISER, not a ref written during render: it runs once
-   * for the component's life and the value is never reassigned, which is what
-   * makes reading it during render legitimate rather than a rule waived.
-   */
-  const [follow] = useState<FollowingController>(() => createFollowingController(setFollowState));
-  const pinnedForFollow = grouped ? grouped.pinned : list.pinned;
-  const pinnedKeys = pinnedForFollow.map((session) => sessionKey(session)).join("|");
-
-  useEffect(() => {
-    const controller = follow;
-    // The pinned set changed: any read still in flight describes the old one.
-    controller.bump();
-    const sessions = pinnedForFollow.map((session) => ({
-      id: session.id,
-      ...(session.hostId ? { hostId: session.hostId } : {}),
-      key: sessionKey(session),
-    }));
-    const tick = () =>
-      void controller.read(sessions, async (session) => {
-        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
-        return (await hostApi.sessionSubscriptions(session.id)).subscriptions;
-      });
-    tick();
-    // An agent can add, remove or consume a `once` subscription while the same
-    // coordinators stay pinned, which a set-keyed read alone never notices.
-    const timer = window.setInterval(tick, 15_000);
-    return () => {
-      window.clearInterval(timer);
-      controller.bump();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the pinned SET
-  }, [pinnedKeys]);
-
-  /**
-   * THE PROJECT GROUPS WITH THE FOLLOWED ROWS TAKEN OUT — issue #278.
-   *
-   * A pinned coordinator's "Following" block and the project groups were built
-   * from the same pool with nothing reconciling them, so a followed session was
-   * drawn twice. `withholdFollowedRows` is the rule; this is where it is applied,
-   * and `followedSessions` is the SAME resolution the block itself renders from,
-   * so the set that is hidden here is exactly the set that is shown there.
-   *
-   * SEARCH IS UNTOUCHED. A query flattens the rail — there are no groups and no
-   * pinned band — and a result list that quietly dropped a match because
-   * something follows it would break the one promise search makes.
-   */
-  const pinnedFollowing = pinnedForFollow.map((coordinator) => ({
-    key: sessionKey(coordinator),
-    title: coordinator.title,
-    following: followedSessions(
-      followState.byCoordinator.get(sessionKey(coordinator)),
-      relatedPool,
-      coordinator.hostId,
-    ).map(({ session }) => sessionKey(session)),
-  }));
-  const drawnGroups = grouped ? withholdFollowedRows(grouped.groups, pinnedFollowing) : [];
-
-  const [followFailed, setFollowFailed] = useState<ReadonlySet<string>>(() => new Set());
-
-  /** Start following, through the controller: sync lock, visible failure. */
-  const startFollow = useCallback(async (coordinator: SidebarSession, target: SidebarSession) => {
-    const lock = lockKey(coordinator.hostId, coordinator.id, sessionKey(target));
-    if (follow.locked(lock)) return;
-    setUnfollowing((current) => new Set(current).add(lock));
-    const outcome = await follow.follow(
-      { id: coordinator.id, ...(coordinator.hostId ? { hostId: coordinator.hostId } : {}), key: sessionKey(coordinator) },
-      { id: target.id, key: sessionKey(target) },
-      async (session, targetSessionId) => {
-        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
-        await hostApi.follow(session.id, { targetSessionId });
-      },
-      async (session) => {
-        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
-        return (await hostApi.sessionSubscriptions(session.id)).subscriptions;
-      },
-    );
-    setFollowFailed((current) => {
-      const next = new Set(current);
-      if (outcome.failed) next.add(lock);
-      else next.delete(lock);
-      return next;
-    });
-    setUnfollowing((current) => {
-      const next = new Set(current);
-      next.delete(lock);
-      return next;
-    });
-  }, [follow]);
-
-  const unfollow = useCallback(async (coordinator: SidebarSession, targetKey: string, subscriptionIds: readonly string[]) => {
-    const lock = lockKey(coordinator.hostId, coordinator.id, targetKey);
-    if (follow.locked(lock)) return;
-    setUnfollowing((current) => new Set(current).add(lock));
-    const outcome = await follow.unfollow(
-      { id: coordinator.id, ...(coordinator.hostId ? { hostId: coordinator.hostId } : {}), key: sessionKey(coordinator) },
-      targetKey,
-      subscriptionIds,
-      async (session, subscriptionId) => {
-        const hostApi = createEngineApi(hostFetcher(session.hostId ?? LOCAL_HOST_ID));
-        await hostApi.unfollow(subscriptionId, session.id);
-      },
-    );
-    setUnfollowFailed((current) => {
-      const next = new Set(current);
-      if (outcome.failed) next.add(lock);
-      else next.delete(lock);
-      return next;
-    });
-    setUnfollowing((current) => {
-      const next = new Set(current);
-      next.delete(lock);
-      return next;
-    });
-  }, [follow]);
+  const drawnGroups = grouped ? grouped.groups : [];
 
   /**
    * DRAGGING A GROUP TO WHERE IT BELONGS. The header is the handle; a drop on
@@ -957,9 +816,7 @@ function SidebarBody() {
    */
   const drawnGroupKeys = drawnGroups.map((group) => group.key);
   /** The pinned band as drawn — what a drop in it is measured against, exactly
-   *  as `drawnGroupKeys` is for the groups. Nothing is withheld from this band:
-   *  `withholdFollowedRows` takes a followed row out of its GROUP, where it
-   *  would be a second copy of a row the coordinator above already lists. */
+   *  as `drawnGroupKeys` is for the groups. */
   const pinnedRowDrag = rowDrag(PINNED_ROW_SCOPE, grouped ? grouped.pinned.map((session) => sessionKey(session)) : []);
   /** The same write the drag makes, one place at a time. `undefined` at either
    *  end of the list, which is what disables the menu row. */
@@ -1475,40 +1332,28 @@ function SidebarBody() {
             */}
             {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
               <div className="space-y-0.5" role="group" aria-label="Pinned">
-                {/* One fragment per coordinator: its row, then what it delegated.
-                    Two maps would put every related block after every row. */}
+                {/* ONE ROW PER PINNED CONVERSATION, AND NOTHING UNDER IT —
+                    issue #381. This band drew a coordinator's delegates as
+                    indented children from #199 onwards, which is what made a
+                    separate conversation read as a sub-agent of the row above.
+                    The relationship is described on the panel's Agents surface
+                    now; the band is a band of rows again. */}
                 {(grouped ? grouped.pinned : list.pinned).map((session) => (
-                  <div key={sessionKey(session)} className="space-y-0.5">
-                    <SessionRow
-                      session={session}
-                      active={sessionKey(session) === activeSessionId}
-                      showProject={showProject}
-                      variant="card"
-                      band="pinned"
-                      renderedAt={renderedAt}
-                      onRefresh={() => void loadAll()}
-                      // THE BAND IS ITS OWN SCOPE: pinned rows arrange among
-                      // themselves, and unpinning is what takes a row out of
-                      // here. Only in the banded view — a search flattens the
-                      // rail, and a position inside an answer means nothing.
-                      {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
-                    />
-                    <RelatedWork
-                      groups={relatedWork(relatedPool, session, relatedSettling)}
-                      coordinatorId={session.id}
-                      {...(session.hostId ? { coordinatorHostId: session.hostId } : {})}
-                      {...(followState.byCoordinator.get(sessionKey(session))
-                        ? { following: followState.byCoordinator.get(sessionKey(session)) }
-                        : {})}
-                      followed={relatedPool}
-                      onUnfollow={(targetKey, subscriptionIds) => void unfollow(session, targetKey, subscriptionIds)}
-                      onFollow={(target) => void startFollow(session, target)}
-                      followFailed={followFailed}
-                      lockFor={(targetKey) => lockKey(session.hostId, session.id, targetKey)}
-                      unfollowing={unfollowing}
-                      unfollowFailed={unfollowFailed}
-                    />
-                  </div>
+                  <SessionRow
+                    key={sessionKey(session)}
+                    session={session}
+                    active={sessionKey(session) === activeSessionId}
+                    showProject={showProject}
+                    variant="card"
+                    band="pinned"
+                    renderedAt={renderedAt}
+                    onRefresh={() => void loadAll()}
+                    // THE BAND IS ITS OWN SCOPE: pinned rows arrange among
+                    // themselves, and unpinning is what takes a row out of
+                    // here. Only in the banded view — a search flattens the
+                    // rail, and a position inside an answer means nothing.
+                    {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
+                  />
                 ))}
                 {/*
                   THE RULE GOES UNDER THE BAND, NOT OVER IT, AND CARRIES NO WORD.
@@ -1575,8 +1420,6 @@ function SidebarBody() {
                     {...(activeSessionId ? { activeSessionId } : {})}
                     renderedAt={renderedAt}
                     bandFor={bandFor}
-                    autoSettleAfterHours={autoSettleAfterHours}
-                    settlingWindows={hostWindows}
                     onRefresh={() => void loadAll()}
                     dragging={draggingGroup === group.key}
                     insert={groupInsert?.key === group.key ? groupInsert.position : null}
