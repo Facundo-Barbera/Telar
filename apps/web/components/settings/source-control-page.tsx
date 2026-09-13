@@ -30,16 +30,17 @@
  * against the first registered project distinguishes every state it reports,
  * without a route of its own.
  *
- * GITLAB IS LISTED AND SAYS NO. A person whose repositories are on GitLab
- * should learn that from this pane rather than by opening a forge panel that
- * stays empty — the reference's "disabled things stay visible" rule, applied to
- * the thing Telar genuinely does not do.
+ * THE HEALTHY ROW IS THE BADGE ALONE (#357). "Issues, pull requests and checks,
+ * read through the gh CLI" restated the group caption one line below it, and the
+ * GitLab row existed only to say that a thing does not exist — a row whose whole
+ * content is an absence. The sentence survives in exactly one place: the states
+ * where it is an INSTRUCTION rather than a description, which is `FIX` below.
  */
 
 import { useCallback, useEffect, useState } from "react";
 // No brand glyphs: lucide dropped them, and a wordmark drawn by hand would be
 // the one icon in the app nobody could restyle with the rest.
-import { GitBranchIcon, GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
+import { GitPullRequestIcon, RefreshCwIcon } from "lucide-react";
 import type { GitHubUnavailable } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { UNAVAILABLE } from "@/lib/github-forge";
@@ -129,15 +130,14 @@ export function SourceControlPage() {
       <Row
         label="GitHub"
         icon={GitPullRequestIcon}
-        hint={
-          state.status === "unavailable"
-            ? // THE FIX TAKES THE SLOT. A reader looking at "not installed" wants
-              // the command, not a restatement of how the integration works.
-              `${UNAVAILABLE[state.reason].detail} ${FIX[state.reason]}`
-            : state.status === "no_projects"
-              ? "Nothing is registered yet, so there is no checkout to ask gh from. Register a project and this fills in."
-              : "Issues, pull requests and checks, read through the gh CLI. Sessions get the same access you have in a terminal."
-        }
+        // ONLY WHEN THERE IS SOMETHING TO DO. A working integration says so with
+        // its badge; a broken one gets the command that fixes it, in the slot
+        // the reader is already looking at when a control does not answer.
+        {...(state.status === "unavailable"
+          ? { hint: `${UNAVAILABLE[state.reason].detail} ${FIX[state.reason]}` }
+          : state.status === "no_projects"
+            ? { hint: "Register a project and this fills in — there is no checkout to ask gh from yet." }
+            : {})}
         {...(state.status === "ready" && state.repository ? { status: <Badge variant="outline">{state.repository}</Badge> } : {})}
         control={
           <div className="flex items-center gap-2">
@@ -157,15 +157,6 @@ export function SourceControlPage() {
             </Button>
           </div>
         }
-      />
-      <Row
-        label="GitLab"
-        icon={GitBranchIcon}
-        control={<Badge variant="outline">Not supported</Badge>}
-        unavailable={{
-          reason:
-            "Telar reads GitHub through gh and has no GitLab reader. A GitLab project still works everywhere else — sessions, worktrees, branches and diffs are git, not GitHub.",
-        }}
       />
     </SettingsGroup>
   );

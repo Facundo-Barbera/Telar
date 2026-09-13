@@ -46,7 +46,6 @@ import {
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
-  GitBranchIcon,
   GitPullRequestIcon,
   GlobeIcon,
   ImageIcon,
@@ -500,14 +499,8 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           {
             title: "GitHub",
             hint: "Issues, pull requests and checks, read through the gh CLI you signed in to yourself.",
-            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge"],
+            keywords: ["gh", "git", "pull request", "issues", "token", "auth", "sign in", "cli", "forge", "gitlab"],
             icon: GitPullRequestIcon,
-          },
-          {
-            title: "GitLab",
-            hint: "Not supported — Telar reads GitHub through gh and has no GitLab reader.",
-            keywords: ["glab", "forge", "not supported"],
-            icon: GitBranchIcon,
           },
         ],
       },

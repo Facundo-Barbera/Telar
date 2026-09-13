@@ -1,5 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { searchSettings } from "@/lib/settings-search";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
@@ -31,23 +32,29 @@ test("the two machine-level failures are carried through as themselves", () => {
   });
 });
 
-test("the rows are drawn before the probe answers", () => {
-  // A network read can take seconds, and everything here except the status word
-  // is true whatever it says.
+test("the row is drawn before the probe answers", () => {
+  // A network read can take seconds, and the row is true whatever it says.
   const html = renderToStaticMarkup(<SourceControlPage />);
   expect(html).toContain("GitHub");
-  expect(html).toContain("GitLab");
-  expect(html).toContain("read through the gh CLI");
+  // The caption is the group's; the row carries no standing sentence under it.
+  expect(html).toContain("reads through a CLI you signed in to yourself");
+  expect(html).not.toContain("Sessions get the same access you have in a terminal");
 });
 
-test("GitLab is listed and says no, rather than being left out", () => {
+test("no row exists only to say a thing does not exist", () => {
+  // GitLab's whole content was its own absence (#357). Telar still has no GitLab
+  // reader; a row saying so every time the pane opens was not how to say it.
   const html = renderToStaticMarkup(<SourceControlPage />);
-  expect(html).toContain("Not supported");
-  // Inert, not absent: somebody whose repositories are on GitLab learns it here
-  // instead of by opening a forge panel that stays empty.
-  expect(html).toContain("inert=");
-  // And it says what still works, because most of the app is git rather than GitHub.
-  expect(html).toContain("sessions, worktrees, branches and diffs are git, not GitHub");
+  expect(html).not.toContain("GitLab");
+  expect(html).not.toContain("Not supported");
+});
+
+test("the sentence survives where it is an instruction rather than a description", () => {
+  // "gh is not installed" with no command is a diagnosis nobody can act on, so
+  // the FIX copy keeps its slot in exactly the states that have one.
+  const source = readFileSync(new URL("./source-control-page.tsx", import.meta.url), "utf8");
+  expect(source).toContain("brew install gh");
+  expect(source).toContain("gh auth login");
 });
 
 test("search finds the pane by the CLI, not only by its name", () => {
@@ -57,5 +64,4 @@ test("search finds the pane by the CLI, not only by its name", () => {
   expect(first("gh cli")?.pageId).toBe("source-control");
   expect(first("github")?.pageId).toBe("source-control");
   expect(first("source control")?.pageId).toBe("source-control");
-  expect(first("gitlab")?.title).toBe("GitLab");
 });
