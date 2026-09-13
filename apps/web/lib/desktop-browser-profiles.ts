@@ -11,6 +11,7 @@
  * it, why it cannot be deleted — is the part a reader acts on, so it is testable
  * without mounting a shell.
  */
+import type { IdentityColor, TelarIcon } from "@telar/engine-client";
 
 /** One identity. `projects` and `isDefault` are computed by the shell per read. */
 export type BrowserProfile = {
@@ -21,6 +22,18 @@ export type BrowserProfile = {
   /** The account this profile is MEANT to be signed into. Intent, not proof —
    *  nothing anywhere verifies a login against it. */
   account?: string;
+  /**
+   * THE MARKS A PERSON PUT ON IT — a glyph from the app's own closed set and one
+   * of eight identity hues. Both optional: an unmarked profile is an ordinary
+   * profile, drawn with the neutral ring, and nothing here invents one.
+   *
+   * These are what let the browser panel show a profile in the width of one
+   * glyph. They are typed loosely (`string`) because they arrive from the shell's
+   * JSON: a build that knew a fortieth icon this one does not still parses, and
+   * `telarIconGlyph` falls back rather than throwing.
+   */
+  icon?: TelarIcon | string;
+  color?: IdentityColor | string;
   isDefault?: boolean;
   /** Project keys explicitly assigned to this profile. A project browsing here
    *  only because it is the default is deliberately NOT listed: it has no
@@ -36,11 +49,13 @@ export type ProfilesAnswer = {
 
 export type BrowserProfilesBridge = {
   profiles: (scopeKey?: string) => Promise<ProfilesAnswer>;
-  createProfile: (input: { label: string; account?: string; scopeKey?: string; assignProject?: boolean }) => Promise<{
+  createProfile: (input: { label: string; account?: string; icon?: string; color?: string; scopeKey?: string; assignProject?: boolean }) => Promise<{
     profiles: BrowserProfile[];
     active: BrowserProfile;
   }>;
-  updateProfile: (input: { profileId: string; label?: string; account?: string }) => Promise<{ profiles: BrowserProfile[] }>;
+  /** A PATCH: an absent key leaves what is stored alone, and `null` takes a mark
+   *  off — so setting a colour never has to resend the icon to keep it. */
+  updateProfile: (input: { profileId: string; label?: string; account?: string; icon?: string | null; color?: string | null }) => Promise<{ profiles: BrowserProfile[] }>;
   setDefaultProfile: (profileId: string) => Promise<{ profiles: BrowserProfile[] }>;
   /** Optional: an older shell has no delete, and the pane hides the control
    *  rather than offering a button that throws. */

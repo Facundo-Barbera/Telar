@@ -60,6 +60,24 @@ const REGISTRY_VERSION = 2;
 const MAX_LABEL = 64;
 const MAX_ACCOUNT = 160;
 /**
+ * THE MARKS A PERSON PUTS ON A PROFILE — a lucide icon id and one of eight
+ * identity hues, so a list of identities can be told apart at a glance and the
+ * panel can show ONE glyph where the full name does not fit.
+ *
+ * THE COLOURS ARE CLOSED HERE; THE ICONS ARE CHECKED BY SHAPE. The eight token
+ * names are the whole vocabulary (`IDENTITY_COLORS` in
+ * `packages/engine-client/src/icons.ts`, the same `--subject-*` hues the Spool
+ * paints with), so a typo is a refusal rather than a colourless dot. The icon set
+ * lives in that same file and is FORTY names today — restating it in this process
+ * would be a second list to keep in step, and the cost of not restating it is
+ * only that a record could name a glyph this build cannot draw, which every
+ * renderer already handles by falling back. What IS enforced is that the value is
+ * a lucide-shaped id and not prose, an emoji, or a URL.
+ */
+const PROFILE_COLORS = ["plum", "sea", "moss", "amber", "slate", "rose", "sky", "sand"];
+const ICON_ID = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const MAX_ICON = 48;
+/**
  * THE ONLY NAME THIS FILE INVENTS. Every other profile is named by the person who
  * created it — the create form requires a name, and there is no generator behind
  * it. An adopted pre-profile jar is the one exception the data forces
@@ -99,6 +117,29 @@ function cleanLabel(value, { field = "label", max = MAX_LABEL, required = true }
     return undefined;
   }
   return text.slice(0, max);
+}
+
+/**
+ * A mark, cleaned, or undefined for "cleared". `null`/`""` mean the person took
+ * the mark off — an ordinary, expressible state — while a value that is not a
+ * mark at all is a refusal, named, rather than a silently dropped field.
+ */
+function cleanIcon(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const icon = String(value).trim().toLowerCase();
+  if (!ICON_ID.test(icon) || icon.length > MAX_ICON) {
+    throw new Error(`A browser profile icon must be a lucide icon id like "globe" (got ${JSON.stringify(String(value))}).`);
+  }
+  return icon;
+}
+
+function cleanColor(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const color = String(value).trim().toLowerCase();
+  if (!PROFILE_COLORS.includes(color)) {
+    throw new Error(`A browser profile colour must be one of ${PROFILE_COLORS.join(", ")} (got ${JSON.stringify(String(value))}).`);
+  }
+  return color;
 }
 
 /** Where Electron keeps a persistent partition's data. Used ONLY to detect an
@@ -222,7 +263,7 @@ class ProfileRegistry {
    * partition name is derived from the id, so two profiles can never collide
    * and a label change never moves cookies.
    */
-  create({ label, account, partition, internal = false } = {}) {
+  create({ label, account, icon, color, partition, internal = false } = {}) {
     const record = {
       id: this.mintId(),
       label: cleanLabel(label),
@@ -230,6 +271,10 @@ class ProfileRegistry {
     };
     const chosenAccount = cleanLabel(account, { field: "account", max: MAX_ACCOUNT, required: false });
     if (chosenAccount) record.account = chosenAccount;
+    const chosenIcon = cleanIcon(icon);
+    if (chosenIcon) record.icon = chosenIcon;
+    const chosenColor = cleanColor(color);
+    if (chosenColor) record.color = chosenColor;
     // `partition` is internal (migration adopts an existing jar); a caller from
     // the UI never passes one.
     record.partition = partition || `persist:telar-profile-${record.id}`;
@@ -246,8 +291,15 @@ class ProfileRegistry {
     return this.get(record.id);
   }
 
-  /** Rename, or state the account this profile is meant to be signed into.
-   *  THE ACCOUNT IS INTENT, NOT PROOF: nothing here verifies a login. */
+  /**
+   * Rename, state the account this profile is meant to be signed into, or set
+   * the marks it wears. THE ACCOUNT IS INTENT, NOT PROOF: nothing here verifies
+   * a login.
+   *
+   * EVERY FIELD IS PATCHED, NOT REPLACED — an absent key leaves what is stored
+   * alone, and only an explicit `null` (or empty string) takes a mark off. A
+   * caller changing a colour must not have to resend the icon to keep it.
+   */
   update(profileId, patch = {}) {
     const record = this.document.profiles[this.require(profileId).id];
     if (patch.label !== undefined) record.label = cleanLabel(patch.label);
@@ -255,6 +307,16 @@ class ProfileRegistry {
       const account = cleanLabel(patch.account, { field: "account", max: MAX_ACCOUNT, required: false });
       if (account) record.account = account;
       else delete record.account;
+    }
+    if (patch.icon !== undefined) {
+      const icon = cleanIcon(patch.icon);
+      if (icon) record.icon = icon;
+      else delete record.icon;
+    }
+    if (patch.color !== undefined) {
+      const color = cleanColor(patch.color);
+      if (color) record.color = color;
+      else delete record.color;
     }
     this.save();
     return this.get(record.id);
@@ -392,6 +454,16 @@ function normalizeDocument(parsed) {
     if (!label || !partition.startsWith("persist:")) continue;
     const record = { id, label, partition, createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : 0 };
     if (typeof raw.account === "string" && raw.account.trim()) record.account = raw.account.trim().slice(0, MAX_ACCOUNT);
+    /**
+     * A MARK THE FILE CANNOT JUSTIFY IS DROPPED, NOT THROWN. Reading is the one
+     * place a refusal would cost something real — a hand-edited colour would
+     * make the whole registry unopenable, and with it every login in it. A
+     * profile missing its icon is a profile you re-mark in Settings.
+     */
+    const icon = typeof raw.icon === "string" ? raw.icon.trim().toLowerCase() : "";
+    if (icon && ICON_ID.test(icon) && icon.length <= MAX_ICON) record.icon = icon;
+    const color = typeof raw.color === "string" ? raw.color.trim().toLowerCase() : "";
+    if (PROFILE_COLORS.includes(color)) record.color = color;
     document.profiles[id] = record;
   }
   const projects = parsed.projects && typeof parsed.projects === "object" ? parsed.projects : {};
@@ -449,4 +521,5 @@ module.exports = {
   REGISTRY_VERSION,
   FILE_NAME,
   DEFAULT_PROFILE_LABEL,
+  PROFILE_COLORS,
 };

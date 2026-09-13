@@ -29,6 +29,7 @@ import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 
 export type DesktopBrowserTab = {
@@ -72,6 +73,11 @@ export type DesktopBrowserProfile = {
   label: string;
   account?: string;
   partition: string;
+  /** The marks a person put on it — a glyph from the app's closed set and one of
+   *  eight identity hues. What the toolbar draws INSTEAD of the name, because a
+   *  toolbar has room for one glyph and not for "Client review (staging)". */
+  icon?: string;
+  color?: string;
   isDefault?: boolean;
   /** The project keys assigned to this profile — how sharing is made visible. */
   projects?: string[];
@@ -172,7 +178,7 @@ export type DesktopBrowserBridge = {
    * somebody is still signed into.
    */
   createProfile?(input: { label: string; account?: string; scopeKey?: string; assignProject?: boolean }): Promise<{ profiles: DesktopBrowserProfile[]; active: DesktopBrowserProfile }>;
-  updateProfile?(input: { profileId: string; label?: string; account?: string }): Promise<{ profiles: DesktopBrowserProfile[] }>;
+  updateProfile?(input: { profileId: string; label?: string; account?: string; icon?: string | null; color?: string | null }): Promise<{ profiles: DesktopBrowserProfile[] }>;
   setDefaultProfile?(profileId: string): Promise<{ profiles: DesktopBrowserProfile[] }>;
   assignProjectProfile?(input: { scopeKey: string; profileId: string | null }): Promise<{ profiles: DesktopBrowserProfile[] }>;
   setScopeProfile?(scopeKey: string, profileId: string): Promise<{ profileId: string; partition: string }>;
@@ -567,17 +573,24 @@ export function addressValue(url: string | undefined): string {
  * cost more than the row has and the input — the only thing on the row you can
  * TYPE into — collapsed to about 30px, which is the bug (#319).
  *
- * Measured in px off the row's own classes rather than guessed: back, forward
- * and reload are 22 each (`p-1` around a 14px glyph); the viewport and profile
- * controls are 26 icon-only (`px-1.5` around the same glyph); the password
- * control is 44 at its widest, which is the glyph with the warning mark beside
- * it; the row spends six 4px gaps between its seven children. Padding is NOT
- * counted — the observer below reads the content box.
+ * Measured in px off the row's own classes rather than guessed: back, forward,
+ * reload and the profile mark are 22 each (`p-1` around a 14px glyph); the
+ * viewport control is 26 icon-only (`px-1.5` around the same glyph); the
+ * password control is 44 at its widest, which is the glyph with the warning mark
+ * beside it; the row spends six 4px gaps between its seven children. Padding is
+ * NOT counted — the observer below reads the content box.
  */
-const ADDRESS_CONTROLS_COMPACT = 3 * 22 + 2 * 26 + 44 + 6 * 4;
-/** The same row spelling its two labelled controls out: "Fit panel" or a size
- *  (+49) and the profile label at its `max-w-28` cap (+116). */
-const ADDRESS_CONTROLS_LABELLED = ADDRESS_CONTROLS_COMPACT + 49 + 116;
+const ADDRESS_CONTROLS_COMPACT = 4 * 22 + 26 + 44 + 6 * 4;
+/**
+ * The same row spelling its ONE labelled control out: "Fit panel" or a size
+ * (+49).
+ *
+ * THE PROFILE USED TO BE THE OTHER ONE, and its `max-w-28` label was the single
+ * most expensive thing on the row at +116. It is a glyph now (#366) — never
+ * written out, so never a label the row has to buy back — and that is why 510px
+ * keeps the viewport's words where it used to drop them.
+ */
+const ADDRESS_CONTROLS_LABELLED = ADDRESS_CONTROLS_COMPACT + 49;
 /** The row's own `px-2`, which the content box the observer reports excludes. */
 export const ADDRESS_ROW_PADDING = 16;
 /** Under this the address bar is a decoration rather than a place to type a
@@ -1138,12 +1151,16 @@ export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge:
                   type="button"
                   aria-label={`Browser profile: ${state.profile.label}${state.profile.account ? ` (${state.profile.account})` : ""}`}
                   title={`Browser profile ${state.profile.label}${state.profile.account ? ` · expected account ${state.profile.account}` : ""}\nNew tabs open signed in as this profile.`}
-                  className="flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                  className="flex shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
                 >
-                  <UserRoundIcon className="size-3.5 shrink-0" />
-                  {/* Which identity you browse as stays in the accessible name
-                      and the tooltip when the row has no room to write it. */}
-                  {!compactRow && <span className="max-w-28 truncate">{state.profile.label}</span>}
+                  {/* THE MARK, NOT THE NAME (#366). The name was the widest
+                      thing in this row and the first to be truncated, so it
+                      told you least exactly when the row was tightest. A glyph
+                      in the profile's own colour is the same width always, and
+                      the name is one hover away — it stays in `aria-label` and
+                      `title`, which is where it was already doing the work on a
+                      compact row. */}
+                  <IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />
                 </button>
               }
             />
@@ -1158,11 +1175,17 @@ export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge:
             <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Browser profile" className="w-64 gap-0 p-1">
               {profilePane === "menu" ? (
                 <>
-                  <div className="px-2 pt-1 pb-1.5">
-                    <p className="truncate text-[0.75rem] font-medium">{state.profile.label}</p>
-                    <p className="truncate font-mono text-[0.625rem] text-muted-foreground">
-                      {state.profile.account || "No expected account"}
-                    </p>
+                  <div className="flex items-start gap-2 px-2 pt-1 pb-1.5">
+                    {/* The glyph the toolbar shows, next to the name it stands
+                        for — this header is where the two are taught to a
+                        reader who has only seen one of them. */}
+                    <IdentityIcon icon={state.profile.icon} color={state.profile.color} className="mt-0.5 size-3.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="truncate text-[0.75rem] font-medium">{state.profile.label}</p>
+                      <p className="truncate font-mono text-[0.625rem] text-muted-foreground">
+                        {state.profile.account || "No expected account"}
+                      </p>
+                    </div>
                   </div>
                   <div aria-hidden className="my-1 h-px bg-border" />
                   {(state.profiles ?? []).map((profile) => {
@@ -1184,6 +1207,12 @@ export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge:
                         className={cn(menuRow, current && "text-foreground")}
                       >
                         <CheckIcon className={cn("size-3.5 shrink-0", current ? "opacity-100" : "opacity-0")} />
+                        {/* THE LIST KEEPS NAMES. The toolbar shows a glyph
+                            because it has one glyph's worth of room; this menu
+                            is where you choose, and choosing between marks you
+                            set weeks ago is choosing between names. The glyph
+                            rides along so the toolbar's is recognisable here. */}
+                        <IdentityIcon icon={profile.icon} color={profile.color} className="size-3.5 shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{profile.label}</span>
                         {profile.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">default</span>}
                       </button>

@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleUserRoundIcon, MonitorIcon } from "lucide-react";
+import { MonitorIcon } from "lucide-react";
 import {
   desktopBrowserProfiles,
   describeProfileUse,
@@ -29,11 +29,21 @@ import {
   type BrowserProfile,
 } from "@/lib/desktop-browser-profiles";
 import { NewBrowserProfileDialog } from "@/components/browser-profile-prompt";
+import { IdentityIcon } from "@/lib/telar-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { ProfileColorPicker, ProfileIconPicker } from "./browser-profile-marks";
 import { Row, SettingsGroup } from "./settings-shell";
+
+/** `Row` takes a component and a mark is data; this binds the two so the row
+ *  grammar never has to learn what an identity glyph is. */
+function profileGlyph(profile: BrowserProfile) {
+  return function ProfileGlyph({ className }: { className?: string }) {
+    return <IdentityIcon icon={profile.icon} color={profile.color} className={className} />;
+  };
+}
 
 export function BrowserProfilesSection() {
   const [profiles, setProfiles] = useState<BrowserProfile[]>();
@@ -105,7 +115,11 @@ export function BrowserProfilesSection() {
         {profiles?.map((profile) => (
           <Row
             key={profile.id}
-            icon={CircleUserRoundIcon}
+            /* THE ROW'S OWN GLYPH IS THE PROFILE'S. An unmarked profile keeps
+               the neutral ring rather than a generic person icon — the slot has
+               to read as "nothing chosen here", because choosing is what the
+               picker beside it is for. */
+            icon={profileGlyph(profile)}
             label={
               <span className="flex items-center gap-2">
                 <span className="truncate">{profile.label}</span>
@@ -120,6 +134,22 @@ export function BrowserProfilesSection() {
             hint={describeProfileUse(profile)}
             control={
               <div className="flex items-center gap-1">
+                {/* THE MARKS COME FIRST, before the verbs. They are properties
+                    of the profile the way its name is — the buttons beside them
+                    are things you DO to it, and mixing the two orders made the
+                    row read as five equal actions. */}
+                <ProfileIconPicker
+                  profile={profile.label}
+                  {...(profile.icon ? { icon: profile.icon } : {})}
+                  disabled={busy === profile.id}
+                  onPick={(icon) => void act(profile.id, () => bridge.updateProfile({ profileId: profile.id, icon }))}
+                />
+                <ProfileColorPicker
+                  profile={profile.label}
+                  {...(profile.color ? { color: profile.color } : {})}
+                  disabled={busy === profile.id}
+                  onPick={(color) => void act(profile.id, () => bridge.updateProfile({ profileId: profile.id, color }))}
+                />
                 {!profile.isDefault && (
                   <Button
                     size="sm"
