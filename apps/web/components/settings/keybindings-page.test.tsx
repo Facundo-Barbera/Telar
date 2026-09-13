@@ -13,11 +13,34 @@ import { KeybindingsPage, keyCaps, keybindingRows } from "./keybindings-page";
  * accelerator string the Electron menu wants.
  */
 
-test("every binding in the table gets a row, derived rather than listed", () => {
+test("every binding in the table is accounted for, derived rather than listed", () => {
   const rows = keybindingRows("mac");
-  expect(rows).toHaveLength(COMMAND_KEY_BINDINGS.length);
+  const jumps = COMMAND_KEY_BINDINGS.filter((binding) => binding.jump);
+  // The nine jumps fold into one row; everything else is still one row each.
+  expect(rows).toHaveLength(COMMAND_KEY_BINDINGS.length - jumps.length + 1);
   // Ids carried through, so the rows and the table cannot drift apart silently.
-  expect(rows.map((row) => row.id).sort()).toEqual(COMMAND_KEY_BINDINGS.map((binding) => binding.id).sort());
+  const singles = COMMAND_KEY_BINDINGS.filter((binding) => !binding.jump).map((binding) => binding.id);
+  expect(rows.map((row) => row.id).sort()).toEqual([...singles, "jump"].sort());
+});
+
+test("the nine jumps are one row carrying the whole range", () => {
+  // Nine near-identical rows were three quarters of this pane saying one thing.
+  const jump = keybindingRows("mac").find((row) => row.id === "jump");
+  expect(jump?.title).toBe("Rail: Jump to conversation 1–9");
+  expect(jump?.caps).toEqual(["⌘", "1"]);
+  expect(jump?.through).toEqual(["⌘", "9"]);
+});
+
+test("the range is read off the table, not hardcoded", () => {
+  // A tenth slot must widen the row rather than go unlisted, and a table with
+  // one jump has no range to fold.
+  const table: CommandKeyBinding[] = [
+    { id: "jump-1", label: "Jump 1", accelerator: "CommandOrControl+1", key: "1", jump: 1 },
+    { id: "jump-2", label: "Jump 2", accelerator: "CommandOrControl+2", key: "2", jump: 2 },
+  ];
+  expect(keybindingRows("mac", table)[0]?.title).toBe("Rail: Jump to conversation 1–2");
+  const lone: CommandKeyBinding[] = [table[0]!];
+  expect(keybindingRows("mac", lone)).toEqual([{ id: "jump-1", title: "Rail: Jump to conversation 1", caps: ["⌘", "1"] }]);
 });
 
 test("the chord is split into one cap per key, in the platform's own register", () => {
@@ -37,8 +60,7 @@ test("rows read as Namespace: Command, in this app's vocabulary and not the menu
   expect(titles).toContain("Conversation: New");
   expect(titles).toContain("Window: New tab");
   expect(titles).toContain("Application: Settings");
-  expect(titles).toContain("Rail: Jump to conversation 1");
-  expect(titles).toContain("Rail: Jump to conversation 9");
+  expect(titles).toContain("Rail: Jump to conversation 1–9");
   // "File" is the Electron menu's grouping and names nothing in a browser tab.
   expect(titles.some((title) => title.startsWith("File:"))).toBe(false);
 });
@@ -60,12 +82,14 @@ test("the pane draws each chord as key caps and counts what it is showing", () =
   expect(html).not.toContain("CommandOrControl");
 });
 
-test("the pane says the chords are fixed rather than looking rebindable", () => {
+test("the pane shows the chords are fixed rather than apologising for it", () => {
   const html = renderToStaticMarkup(<KeybindingsPage />);
-  expect(html).toContain("Fixed for now");
   // No control to press: a row that looked recordable and was not would be
-  // worse than no pane at all.
+  // worse than no pane at all — and that is the whole lesson, so the note
+  // explaining which shell change rebinding would need is gone (#357).
   expect(html).not.toContain("<button");
+  expect(html).not.toContain("Fixed for now");
+  expect(html).not.toContain("not built yet");
 });
 
 test("search finds the pane before it has ever been opened", () => {
