@@ -280,6 +280,7 @@ function publishedLook(label: string): PublishedAppearance {
       fontSize: 17,
       fontMonoSize: 13,
       translucencyLevel: 50,
+      depth: "soft",
     },
   };
 }

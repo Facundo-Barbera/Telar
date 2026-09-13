@@ -23,9 +23,11 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import {
   ACCENTS,
+  DEPTHS,
   MONO_FONTS,
   SANS_FONTS,
   DEFAULT_ACCENT,
+  DEFAULT_DEPTH,
   DEFAULT_FONT_SIZE,
   DEFAULT_MONO_FONT_SIZE,
   DEFAULT_MONO_FONT,
@@ -38,6 +40,7 @@ import {
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   type Accent,
+  type Depth,
   type MonoFont,
   type SansFont,
 } from "@telar/engine-client";
@@ -52,6 +55,8 @@ import {
  */
 export {
   ACCENTS,
+  DEPTHS,
+  DEFAULT_DEPTH,
   MAX_FONT_SIZE,
   MAX_MONO_FONT_SIZE,
   MAX_TRANSLUCENCY,
@@ -61,6 +66,7 @@ export {
   MONO_FONTS,
   SANS_FONTS,
   type Accent,
+  type Depth,
   type MonoFont,
   type SansFont,
 } from "@telar/engine-client";
@@ -114,6 +120,9 @@ export type Appearance = {
    *  translucencyCss maps it onto the real alpha range before the CSS sees
    *  it, so 100 means "as transparent as stays legible", not alpha zero. */
   translucencyLevel: number;
+  /** How far the elevation ladder travels. Unlike `translucent` and `frost`
+   *  below it, this is TASTE and travels in a Look — see DEPTHS. */
+  depth: Depth;
   /** What the see-through part looks like. "blur" is macOS vibrancy — frosted,
    *  and it BRIGHTENS what it blurs, which buries the wallpaper's colour.
    *  "clear" drops the effect view entirely: the desktop shows crisp through
@@ -152,6 +161,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   fontMonoSize: DEFAULT_MONO_FONT_SIZE,
   translucent: false,
   translucencyLevel: DEFAULT_TRANSLUCENCY_LEVEL,
+  depth: DEFAULT_DEPTH,
   frost: "blur",
 };
 
@@ -163,7 +173,7 @@ const STORAGE_KEY = "telar-appearance";
  * default values are OMITTED rather than written, so the base tokens in
  * globals.css stay the single source of the default look.
  */
-export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};var ms=typeof a.fontMonoSize==='number'&&isFinite(a.fontMonoSize)?Math.min(${MAX_MONO_FONT_SIZE},Math.max(${MIN_MONO_FONT_SIZE},Math.round(a.fontMonoSize))):${DEFAULT_APPEARANCE.fontMonoSize};d.style.setProperty('--app-font-mono-size',ms+'px');d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});set('data-depth',a.depth,${JSON.stringify([...DEPTHS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};var ms=typeof a.fontMonoSize==='number'&&isFinite(a.fontMonoSize)?Math.min(${MAX_MONO_FONT_SIZE},Math.max(${MIN_MONO_FONT_SIZE},Math.round(a.fontMonoSize))):${DEFAULT_APPEARANCE.fontMonoSize};d.style.setProperty('--app-font-mono-size',ms+'px');d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
 
 const listeners = new Set<() => void>();
 
@@ -205,6 +215,7 @@ export function parseAppearance(raw: string | null): Appearance {
         typeof record.translucencyLevel === "number" && record.translucencyLevel >= MIN_TRANSLUCENCY && record.translucencyLevel <= MAX_TRANSLUCENCY
           ? Math.round(record.translucencyLevel)
           : DEFAULT_APPEARANCE.translucencyLevel,
+      depth: oneOf(record.depth, DEPTHS) ?? DEFAULT_APPEARANCE.depth,
       frost: oneOf(record.frost, FROSTS) ?? DEFAULT_APPEARANCE.frost,
     };
   } catch {
@@ -264,6 +275,7 @@ export function applyAppearance(appearance: Appearance): void {
   set("data-accent", appearance.accent, appearance.accent === DEFAULT_APPEARANCE.accent);
   set("data-font-sans", appearance.fontSans, appearance.fontSans === DEFAULT_APPEARANCE.fontSans);
   set("data-font-mono", appearance.fontMono, appearance.fontMono === DEFAULT_APPEARANCE.fontMono);
+  set("data-depth", appearance.depth, appearance.depth === DEFAULT_APPEARANCE.depth);
   // A custom family is written INLINE, which outranks the [data-font-*] blocks
   // in globals.css; removing it hands the choice back to those blocks.
   const family = (property: string, custom: boolean, raw: string, fallback: string) => {
