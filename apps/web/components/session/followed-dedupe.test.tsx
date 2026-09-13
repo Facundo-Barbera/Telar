@@ -44,6 +44,7 @@ const renderGroup = (group: ProjectGroup, open = true) =>
       onNavigate={() => {}}
       renderedAt={0}
       bandFor={() => "active"}
+      autoSettleAfterHours={null}
       onRefresh={() => {}}
       dragging={false}
       insert={null}
@@ -251,10 +252,20 @@ describe("the tree inside a project group", () => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
   test("the group's rows come from `relatedTree`, not from the flat list", () => {
-    expect(code).toContain("relatedTree(group.sessions)");
+    expect(code).toContain("relatedTree(group.sessions,");
     expect(code).toMatch(/\{tree\.rows\.map\(\(\{ session, related \}\) =>/);
     // The flat map is gone: two maps would put every child after every row.
     expect(code).not.toContain("{group.sessions.map((session) => (");
+  });
+
+  test("the tree is measured against THE RAIL'S clock, not one of its own — #370", () => {
+    // A row leaves its coordinator when its errand is over, and "over" is the
+    // same window the bands use. A group that re-derived it here would indent a
+    // row whose own shelf had already taken it.
+    const call = code.slice(code.indexOf("relatedTree(group.sessions,"));
+    expect(call).toContain("now: renderedAt");
+    expect(call).toContain("autoSettleAfterHours");
+    expect(call).toContain("windowsByHost: settlingWindows");
   });
 
   test("a row's children are drawn INSIDE that row's own element", () => {

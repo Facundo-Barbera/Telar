@@ -31,10 +31,13 @@ import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, CornerDownRightIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
 import {
+  localSettling,
   relatedWork,
   sessionHref,
   sessionKey,
+  settledRow,
   type RelatedWork as RelatedWorkGroups,
+  type RelatedWorkOptions,
   type SidebarSession,
 } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
@@ -182,16 +185,27 @@ export type RelatedTree = {
  * or at the top level — is never claimed again, so two coordinators delegating
  * to one session is one row under the first of them, and a chain of delegations
  * reads as a list under its head rather than a staircase down the rail.
+ *
+ * AND A TREE IS SOMETHING ROWS LEAVE — issue #370. `relatedWork` drops a child
+ * whose errand is over (`leavesRelatedWork`); this adds the other half, which
+ * is about the PARENT: a settled coordinator claims nothing at all, so its
+ * children stay rows of their own rather than being indented under a
+ * conversation the reader has finished with. The two together are why an
+ * indent in this rail always means live work.
  */
-export function relatedTree(sessions: readonly SidebarSession[]): RelatedTree {
+export function relatedTree(sessions: readonly SidebarSession[], options: RelatedWorkOptions = localSettling()): RelatedTree {
   const nested = new Set<string>();
   const drawn = new Set<string>();
   const rows: RelatedTree["rows"] = [];
+  const none: RelatedWorkGroups = { active: [], review: [], independent: [] };
   for (const session of sessions) {
     const key = sessionKey(session);
     if (nested.has(key)) continue;
     drawn.add(key);
-    const found = relatedWork(sessions, session);
+    // A SETTLED COORDINATOR IS NOT A PARENT. Nesting a live delegate under a
+    // shelved row would hang current work off a conversation that is over — and
+    // in a group whose settled rows are elsewhere, off a row that is not drawn.
+    const found = settledRow(session, options) ? none : relatedWork(sessions, session, options);
     const claim = (candidates: readonly SidebarSession[]) =>
       candidates.filter((child) => {
         const childKey = sessionKey(child);

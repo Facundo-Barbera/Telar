@@ -74,3 +74,35 @@ describe("pinned scrolls with the rail", () => {
     expect(code.slice(band, at(ATTENTION))).toContain("shrink-0");
   });
 });
+
+/**
+ * THE PINNED BAND'S TREE IS MEASURED AGAINST A CLOCK — issue #370.
+ *
+ * `relatedPool` deliberately reaches into BOTH shelves, because a coordinator
+ * has to be able to name a delegate wherever the list put it. Without a window
+ * passed alongside, that pool is also how a pinned row drew the conversations
+ * the list had already shelved — finished errands and settled rows, indented
+ * under live work for good. Pinned as source for this file's own reason: what
+ * is being fixed is which arguments a call is made with.
+ */
+describe("a delegate leaves its pinned coordinator", () => {
+  test("the pool still spans every band — a coordinator names its own rows", () => {
+    expect(code).toContain("const relatedPool = [...list.pinned, ...list.sessions, ...list.snoozed, ...list.settled];");
+  });
+
+  test("`relatedWork` is asked with the rail's own settling clock", () => {
+    expect(code).toContain("relatedWork(relatedPool, session, relatedSettling)");
+    const settling = code.slice(at("const relatedSettling ="), at("const relatedSettling =") + 200);
+    // The same three inputs the bands are derived from, so "has this left" and
+    // "which band is this in" cannot come back with two different answers.
+    expect(settling).toContain("now: renderedAt");
+    expect(settling).toContain("autoSettleAfterHours");
+    expect(settling).toContain("windowsByHost: hostWindows");
+  });
+
+  test("the project groups are given the same window", () => {
+    const call = code.slice(at("<ProjectGroupSection"), at("<ProjectGroupSection") + 1200);
+    expect(call).toContain("autoSettleAfterHours={autoSettleAfterHours}");
+    expect(call).toContain("settlingWindows={hostWindows}");
+  });
+});

@@ -36,6 +36,7 @@ function renderRail(sessions: SidebarSession[]): string {
         onNavigate={() => {}}
         renderedAt={0}
         bandFor={() => "active"}
+        autoSettleAfterHours={null}
         onRefresh={() => {}}
         dragging={false}
         insert={null}
