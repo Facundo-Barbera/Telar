@@ -97,7 +97,10 @@ export function updateStatusHint(status: UpdateStatus): string {
     case "downloaded":
       return `v${status.version} is ready to install.`;
     case "error":
-      return `Update check failed: ${status.message}`;
+      // "Update failed", not "Update CHECK failed": the shell reports a stalled
+      // or cancelled DOWNLOAD through this same status (issue #317), and the
+      // old prefix told the reader the wrong thing had gone wrong.
+      return `Update failed: ${status.message}`;
     case "unsupported":
       return "This build has no update feed — it was packaged locally rather than published to a channel.";
     default:
