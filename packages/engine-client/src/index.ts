@@ -97,6 +97,7 @@ import {
   type LatexJob,
   type LatexPackagesAnswer,
   type LatexToolchain,
+  type ManagedTectonic,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -559,6 +560,20 @@ export class EngineClient {
 
   latexToolchain(fresh = false): Promise<{ toolchain: LatexToolchain }> {
     return this.request("GET", `/v2/latex/toolchain${fresh ? "?fresh=1" : ""}`);
+  }
+
+  /** Telar's own Tectonic: whether it is here, and whether one is downloading. */
+  managedTectonic(): Promise<{ managed: ManagedTectonic }> {
+    return this.request("GET", "/v2/latex/managed");
+  }
+
+  /**
+   * Fetch it. IDEMPOTENT — an install already running is joined rather than
+   * duplicated, and one already finished returns immediately — so a pane may
+   * call this on every press without guarding.
+   */
+  installManagedTectonic(): Promise<{ managed: ManagedTectonic }> {
+    return this.request("POST", "/v2/latex/managed", {});
   }
 
   /** A latex job's status and the log lines after `after`. */
