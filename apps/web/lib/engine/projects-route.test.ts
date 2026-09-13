@@ -91,6 +91,20 @@ describe("PATCH /api/projects/:projectId", () => {
     expect(stored?.defaultModel).toBeUndefined();
   });
 
+  test("the picked glyph travels too, and Auto-detect clears it (#364)", async () => {
+    // The hole this loop exists to catch: a field the picker writes and this
+    // route drops on the floor works on the engine and silently does nothing
+    // through the cockpit.
+    const client = await ready();
+    expect((await patch({ iconName: "flask-conical" })).status).toBe(200);
+    const stored = (await client.listProjects()).projects.find((project) => project.id === "project_one");
+    expect(stored?.iconName).toBe("flask-conical");
+
+    expect((await patch({ iconName: null, iconEmoji: null })).status).toBe(200);
+    const cleared = (await client.listProjects()).projects.find((project) => project.id === "project_one");
+    expect(cleared?.iconName).toBeUndefined();
+  });
+
   test("the generic plugins arm travels — the hole this route had", async () => {
     const client = await ready();
     const response = await patch({ plugins: { hello: { enabled: true, settings: { greeting: "hola" } } } });

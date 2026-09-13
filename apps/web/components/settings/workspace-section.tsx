@@ -20,7 +20,7 @@
 import { FolderGitIcon } from "lucide-react";
 import { DEFAULT_SESSION_DEFAULTS, type EnvMode } from "@telar/engine-client";
 import { useSessionDefaults } from "@/lib/session-defaults";
-import { Row, Segmented, SettingsGroup, useRestoreDefaults } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup, useRestoreDefaults } from "./settings-shell";
 
 export function WorkspaceSection() {
   const { defaults, loading, save, error } = useSessionDefaults();
@@ -51,8 +51,9 @@ export function WorkspaceSection() {
           : { onRevert: () => void save({ envMode: DEFAULT_SESSION_DEFAULTS.envMode }) })}
         control={
           loading ? null : (
-            <Segmented<EnvMode>
+            <Dropdown<EnvMode>
               value={defaults.envMode}
+              label="Workspace"
               onChange={(next) => void save({ envMode: next })}
               options={[
                 { value: "local", label: "Project checkout" },

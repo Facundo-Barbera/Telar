@@ -2601,6 +2601,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           patch.name = input.name;
         }
+        if ("iconName" in input) {
+          if (input.iconName !== null && typeof input.iconName !== "string") {
+            throw new HttpError(400, "invalid_request", "iconName must be a string or null");
+          }
+          patch.iconName = input.iconName as string | null;
+        }
         if ("iconEmoji" in input) {
           if (input.iconEmoji !== null && typeof input.iconEmoji !== "string") {
             throw new HttpError(400, "invalid_request", "iconEmoji must be a string or null");

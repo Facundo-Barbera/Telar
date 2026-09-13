@@ -106,6 +106,7 @@ import { ConversationContent, ConversationScrollButton, ConversationViewport, ty
 import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
+import { useCommandHandlers } from "@/lib/use-command-keys";
 
 /**
  * How long a mouse-opened title menu waits for a `dblclick` to cancel it.
@@ -1649,6 +1650,57 @@ export function SessionCockpit({
       updatePanel((current) => openNewPanelTab(current, tab, params));
     },
     [makeRoomForPanel, updatePanel],
+  );
+
+  /**
+   * THE PANEL'S COMMANDS (#367), bound while this cockpit is mounted.
+   *
+   * WHY HERE AND NOT IN THE PANEL: the strip is the cockpit's state — the panel
+   * is handed its tabs and reports gestures back — so "open the Diff" and "next
+   * tab" can only be answered from up here. `panel-fullscreen` is the one that
+   * genuinely belongs to the panel, and the panel binds that one itself.
+   *
+   * OPENING A SURFACE OPENS THE PANEL, because a chord that quietly added a tab
+   * behind a closed panel would look like a chord that did nothing. Closing is
+   * the toggle's job alone.
+   *
+   * NEXT/PREVIOUS WRAP, and read the COMMITTED strip (`panelNow`) rather than
+   * `panel`, so this registration does not have to be rebuilt on every tab
+   * change. They no-op on a strip of nothing rather than opening an empty panel.
+   */
+  const stepPanelTab = useCallback(
+    (delta: number) => {
+      const current = panelNow.current;
+      if (current.tabs.length === 0) return;
+      const count = current.tabs.length;
+      const at = Math.max(current.tabs.findIndex((entry) => entry.id === current.activeTab), 0);
+      const next = current.tabs[(at + delta + count) % count];
+      if (next) updatePanel((state) => ({ ...state, activeTab: next.id, open: true }));
+    },
+    [updatePanel],
+  );
+
+  useCommandHandlers(
+    {
+      "toggle-panel": () => {
+        if (panelNow.current.open) {
+          updatePanel((current) => ({ ...current, open: false }));
+          return;
+        }
+        makeRoomForPanel();
+        updatePanel((current) => ({ ...current, open: true }));
+      },
+      "panel-next-tab": () => stepPanelTab(1),
+      "panel-previous-tab": () => stepPanelTab(-1),
+      "open-diff": () => showPanelTab("diff"),
+      "open-editor": () => showPanelTab("editor"),
+      // The two surfaces a project opts into. Bound only while the plugin is on,
+      // so ⇧⌘B on a project with no notebooks does nothing rather than opening a
+      // tab whose surface is not there — hence the dependency array.
+      ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
+      ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
+    },
+    [dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
 
   /**

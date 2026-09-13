@@ -1,24 +1,23 @@
-import { ProjectSettingsPage } from "@/components/settings/project-settings-page";
+import { redirect } from "next/navigation";
+import { projectSettingsHref } from "@/lib/project-settings-link";
 
 /**
- * ONE PROJECT'S SETTINGS.
+ * THE PER-PROJECT PAGE IS GONE; THIS IS THE DOOR CLOSING BEHIND IT (#363).
  *
- * The legacy cockpit had `/projects/[name]/settings` and the rebuild had no
- * equivalent at all, which is why every per-project decision so far has had to
- * pretend to be a machine-wide one. MCP servers are the first thing that
- * genuinely is not — a repo's issue tracker belongs to the repo — so this is
- * where they live.
+ * It was a second settings shell with a second nav, holding MCP servers scoped
+ * to the project and each plugin's own editor — the half of "this project's
+ * settings" that Settings ▸ Projects had no room for. Both halves are groups on
+ * that pane now, so there is one screen and one answer.
+ *
+ * A REDIRECT RATHER THAN A DELETED ROUTE, for `/projects/page.tsx`'s reason: a
+ * bookmark, a reload or a stale history entry would otherwise land on a 404,
+ * which is honest and is still a dead end. `?section=` is dropped deliberately —
+ * the sections it named are groups on one pane now, so there is nothing left to
+ * select.
  */
 export const dynamic = "force-dynamic";
 
-export default async function ProjectSettings({ params }: { params: Promise<{ projectId: string }> }) {
+export default async function RetiredProjectSettings({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  // `h-full`, not `h-dvh`: this renders inside the app shell's inset, which is
-  // already viewport-height, and a second full-viewport box pushes the pane's
-  // own scroll container past the fold.
-  return (
-    <div className="h-full min-h-0">
-      <ProjectSettingsPage projectId={projectId} />
-    </div>
-  );
+  redirect(projectSettingsHref(projectId));
 }

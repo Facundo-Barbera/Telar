@@ -454,6 +454,7 @@ export function SessionRow({
               name={session.projectName}
               {...(session.projectId ? { projectId: session.projectId } : {})}
               {...(session.projectIcon ? { icon: session.projectIcon } : {})}
+              {...(session.projectIconName ? { iconName: session.projectIconName } : {})}
               size={12}
             />
             <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-sidebar-foreground/50">{session.projectName}</span>
@@ -526,6 +527,7 @@ export function SessionRow({
             name={session.projectName}
             {...(session.projectId ? { projectId: session.projectId } : {})}
             {...(session.projectIcon ? { icon: session.projectIcon } : {})}
+            {...(session.projectIconName ? { iconName: session.projectIconName } : {})}
             size={14}
           />
         ) : (

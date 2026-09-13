@@ -253,7 +253,10 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
 
       {enabled && config?.toolchain && (
         <SettingsGroup
-          title="Packages"
+          // "TeX packages", not "Packages": Data science's own packages group is
+          // on this same pane now (#363), and two headings reading Packages is a
+          // heading that names nothing.
+          title="TeX packages"
           description={config.toolchain.kind === "tectonic" ? "Tectonic fetches packages automatically the first time a document uses them." : `What tlmgr manages in ${currentTexlive ? FLAVOUR_LABEL[currentTexlive.flavour] : "the configured TeX Live"}.`}
         >
           {config.toolchain.kind === "texlive" && <TexPackagesPanel projectId={project.id} onJob={setJob} />}

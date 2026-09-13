@@ -335,7 +335,7 @@ function SessionShelf({
 }
 
 /** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
-type RemoteProject = Pick<Project, "id" | "name" | "icon"> & { hostId: string; hostName: string };
+type RemoteProject = Pick<Project, "id" | "name" | "icon" | "iconName"> & { hostId: string; hostName: string };
 
 function SidebarBody() {
   const pathname = usePathname();
@@ -346,7 +346,7 @@ function SidebarBody() {
   const inSpool = pathname.startsWith("/spool");
   const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
@@ -485,6 +485,9 @@ function SidebarBody() {
     // they have no branch of their own. Derived per project by the engine.
     const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
     const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
+    // The glyph somebody PICKED, which outranks the file above — carried
+    // separately for `ProjectAvatar`'s reason: two questions, two fields.
+    const glyphs = new Map(result.projects.map((project) => [project.id, project.iconName]));
     // WHICH REPOSITORY EACH PROJECT IS A CHECKOUT OF — the one fact about a row
     // that is true on more than one Mac, and so the only thing two Macs'
     // registrations of the same work can be recognised by. See `projectGroupKey`.
@@ -505,6 +508,7 @@ function SidebarBody() {
         // history read, on any polling pass.
         result.assignments?.[session.id],
         session.projectId ? remotes.get(session.projectId) : undefined,
+        session.projectId ? glyphs.get(session.projectId) : undefined,
       ),
     );
     return {
@@ -650,16 +654,6 @@ function SidebarBody() {
     const timer = window.setInterval(() => void loadAll(), anyLive ? 3_000 : 10_000);
     return () => window.clearInterval(timer);
   }, [loadAll, anyLive]);
-
-  useEffect(() => {
-    const focusSearch = (event: KeyboardEvent) => {
-      if (event.key.toLocaleLowerCase() !== "k" || (!event.metaKey && !event.ctrlKey)) return;
-      event.preventDefault();
-      searchInput.current?.focus();
-    };
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
-  }, []);
 
   const projectIds = projects.map((project) => project.id);
   const selectedScope = scope && projectIds.includes(scope) ? scope : undefined;
@@ -994,8 +988,10 @@ function SidebarBody() {
   };
 
   /**
-   * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
+   * THE WHOLE COMMAND REGISTRY — mounted HERE because this is the one component
    * alive on every route that already draws the rows the number keys count.
+   * Every other surface (the panel, the composer) binds its own commands through
+   * `bindCommands` and this dispatcher looks them up; see lib/commands.ts.
    *
    * THE KEYS COUNT WHAT IS ON SCREEN, top to bottom: the "Needs you" band,
    * pinned, then each project group in the reader's own order, folded groups
@@ -1014,7 +1010,13 @@ function SidebarBody() {
     // opens its canvas; the palette replaced that guess. `newConversation`
     // below is the one place that decides between palette and canvas, so the
     // key and the button cannot disagree about what New conversation means.
-    "new-session": () => newConversation(),
+    "new-conversation": () => newConversation(),
+    // The rail's own two: its search field and its collapse. Both used to be
+    // hand-rolled window listeners here (⌘K) and inside the sidebar primitive
+    // (⌘B), which is precisely why neither appeared on the keybindings pane and
+    // neither could be changed. One registry, one dispatcher.
+    "search-sessions": () => searchInput.current?.focus(),
+    "toggle-rail": () => toggleSidebar(),
   });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
@@ -1079,12 +1081,14 @@ function SidebarBody() {
       id: project.id,
       name: project.name,
       ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
       ...(project.root ? { root: project.root } : {}),
     })),
     ...remoteProjects.map((project) => ({
       id: project.id,
       name: project.name,
       ...(project.icon ? { icon: project.icon } : {}),
+      ...(project.iconName ? { iconName: project.iconName } : {}),
       hostId: project.hostId,
       hostName: project.hostName,
     })),
@@ -1247,6 +1251,7 @@ function SidebarBody() {
                     name={selectedProject.name}
                     projectId={selectedProject.id}
                     {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
+                    {...(selectedProject.iconName ? { iconName: selectedProject.iconName } : {})}
                     size={14}
                   />
                 ) : (
@@ -1274,6 +1279,7 @@ function SidebarBody() {
                           name={project.name}
                           projectId={project.id}
                           {...(project.icon ? { icon: project.icon } : {})}
+                          {...(project.iconName ? { iconName: project.iconName } : {})}
                           size={14}
                         />
                         <span className="truncate">{project.name}</span>

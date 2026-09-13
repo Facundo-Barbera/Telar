@@ -83,6 +83,33 @@ describe("the store's write path", () => {
     expect(stored.defaultModel).toBeUndefined();
   });
 
+  test("a picked glyph stores by NAME, and its shape is checked here (#364)", () => {
+    const store = readyStore();
+    expect(store.updateProject("project_one", { iconName: "flask-conical" }).iconName).toBe("flask-conical");
+    expect("iconName" in store.updateProject("project_one", { iconName: null })).toBe(false);
+    // WHICH names exist is the cockpit's question, not the registry's — an
+    // engine enforcing last year's set would refuse a glyph a newer app draws.
+    // What the store owns is the SHAPE, so a path or a sentence never lands.
+    expect(store.updateProject("project_one", { iconName: "a-glyph-no-build-has-yet" }).iconName).toBe("a-glyph-no-build-has-yet");
+    for (const bad of ["", "Flask", "../etc/passwd", "9lives", "a b"]) {
+      expect(() => store.updateProject("project_one", { iconName: bad })).toThrow(EngineStateError);
+    }
+  });
+
+  test("naming one icon field clears the other, so a record never holds two picks", () => {
+    // Both answer "what did somebody choose for this project", and a record
+    // carrying both would leave the rail's fallback order deciding which of two
+    // deliberate picks wins.
+    const store = readyStore();
+    store.updateProject("project_one", { iconEmoji: "🧵" });
+    const glyph = store.updateProject("project_one", { iconName: "rocket" });
+    expect(glyph.iconName).toBe("rocket");
+    expect("iconEmoji" in glyph).toBe(false);
+    const mark = store.updateProject("project_one", { iconEmoji: "🧵" });
+    expect(mark.iconEmoji).toBe("🧵");
+    expect("iconName" in mark).toBe(false);
+  });
+
   test("one field moves without disturbing the others, or the plugin map", () => {
     const store = readyStore();
     store.updateProject("project_one", { latex: { enabled: true }, envMode: "worktree", iconEmoji: "🧵" });
@@ -248,6 +275,7 @@ describe("PATCH /v2/projects/:id", () => {
       [{ name: "" }, "name"],
       [{ name: 7 }, "name"],
       [{ iconEmoji: 7 }, "iconEmoji"],
+      [{ iconName: 7 }, "iconName"],
       [{ defaultModel: [] }, "defaultModel"],
       [{ envMode: "elsewhere" }, "envMode"],
     ] as const) {

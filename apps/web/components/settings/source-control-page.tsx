@@ -125,7 +125,7 @@ export function SourceControlPage() {
   return (
     <SettingsGroup
       title="Source control"
-      description="Telar never holds a token of its own — it reads through a CLI you signed in to yourself."
+      description="Read through a CLI you signed in to yourself. Telar holds no token of its own."
     >
       <Row
         label="GitHub"

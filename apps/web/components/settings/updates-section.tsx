@@ -114,7 +114,12 @@ export function UpdatesSection() {
       <Row label="Update status" hint={updateStatusHint(status)} control={control} />
       <Row
         label="Channel"
-        hint={prefs ? (CHANNEL_HINT[prefs.channel] ?? "Which stream of builds this install follows.") : "Which stream of builds this install follows."}
+        /* NO SUB-LINE WHEN THERE IS NOTHING SPECIFIC TO SAY (#364). The fallback
+           was "Which stream of builds this install follows" over a select whose
+           options ARE the streams — the control restating itself, which is the
+           one thing a hint may never be. What survives is `CHANNEL_HINT`: what
+           the CHOSEN channel actually means, which the options cannot say. */
+        {...(prefs && CHANNEL_HINT[prefs.channel] ? { hint: CHANNEL_HINT[prefs.channel] } : {})}
         control={
           <Select
             value={prefs?.channel ?? "beta"}

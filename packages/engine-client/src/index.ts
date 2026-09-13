@@ -462,11 +462,12 @@ export class EngineClient {
    * Move a project's identity and its opt-in switches. `dataScience: null` /
    * `latex: null` turn a feature off.
    *
-   * `iconEmoji`, `defaultModel` and `envMode` take `null` for the same reason
-   * and with the same meaning as the two above: REMOVE the stored answer, which
-   * is not the same as storing a neutral one. A project with no `envMode`
-   * follows this Mac's `SessionDefaults`; a project that stored `"local"`
-   * insists on the checkout however the Mac's answer moves later.
+   * `iconName`, `iconEmoji`, `defaultModel` and `envMode` take `null` for the
+   * same reason and with the same meaning as the two above: REMOVE the stored
+   * answer, which is not the same as storing a neutral one. A project with no
+   * `envMode` follows this Mac's `SessionDefaults`; a project that stored
+   * `"local"` insists on the checkout however the Mac's answer moves later. A
+   * project with neither icon field goes back to the one its checkout carries.
    *
    * `name` HAS NO `null`. Every project has a name — clearing it would leave a
    * row with nothing to render — so it takes a new one or is left alone.
@@ -475,6 +476,9 @@ export class EngineClient {
     projectId: string,
     patch: {
       name?: string;
+      /** One id from `TELAR_ICONS` — see `Project.iconName`. */
+      iconName?: string | null;
+      /** Legacy; nothing writes a value now. `null` clears a stored mark. */
       iconEmoji?: string | null;
       defaultModel?: ModelSelection | null;
       envMode?: EnvMode | null;

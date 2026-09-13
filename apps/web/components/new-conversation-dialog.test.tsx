@@ -104,7 +104,7 @@ test("the rail has one New-conversation control, and ⌘N opens the same thing",
   // Both now go through `newConversation`, which is the single place that
   // decides between the palette and a canvas.
   expect(sidebar).toContain("onClick={newConversation}");
-  expect(sidebar).toContain('"new-session": () => newConversation(),');
+  expect(sidebar).toContain('"new-conversation": () => newConversation(),');
   expect(sidebar).not.toContain('title="New conversation — choose where"');
 });
 

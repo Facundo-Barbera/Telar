@@ -23,7 +23,7 @@ const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, extern
 const { attachHostHeader } = require("./host-header");
 const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
-const { COMMAND_KEY_BINDINGS } = require("./command-keys");
+const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
 const { windowTargetUrl } = require("./window-target");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
@@ -1152,22 +1152,49 @@ function requireLoginOffer() {
 // pattern every other IPC channel here uses. The renderer (lib/use-command-
 // keys.ts) owns the focus rule and what each action actually does — this
 // process has no DOM, so it could not apply either even if it wanted to.
+/** True only while Settings → Keybindings has a row armed — see the menu
+ *  builder below, and `setChordCapture` in apps/web/lib/commands.ts. */
+let chordCapture = false;
+
 function sendCommandKey(browserWindow, id) {
   const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   win?.webContents.send("telar:command-keys:invoke", id);
 }
 
-function buildApplicationMenu() {
-  const toMenuItem = (binding) => ({
-    label: binding.label,
-    accelerator: binding.accelerator,
-    click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, binding.id),
+/**
+ * THE MENU IS BUILT FROM THE KEYMAP, not from the registry's defaults (#367).
+ *
+ * This is the blocker the old settings copy named: a person could not rebind
+ * anything because the accelerators here were frozen into the table. They are
+ * now read out of `keymap` — the merged map, defaults plus whatever the cockpit
+ * has stored — and this function is called again on every change, which is all
+ * "rebuild the accelerators" ever needed to mean. Electron replaces the whole
+ * application menu on `setApplicationMenu`, so there is nothing to diff.
+ *
+ * A COMMAND WITH NO CHORD KEEPS ITS ROW. Clearing a binding is a deliberate
+ * answer ("give me ⌘K back for the browser"), and it should cost the key, not
+ * the command: the menu item stays, reachable with the mouse, wearing no
+ * accelerator. Electron rejects `accelerator: ""`, hence the conditional spread.
+ */
+function buildApplicationMenu(keymap = readKeymap()) {
+  const toMenuItem = (command) => ({
+    label: command.label,
+    // STRIPPED WHILE A SETTINGS ROW IS RECORDING. macOS matches a menu's key
+    // equivalent before the keydown reaches the page, so ⇧⌘D over an armed row
+    // would open the Diff and never be recorded — which would fail the pane on
+    // exactly the chords a person most wants to change. Disabled too, belt and
+    // braces; both are put back the moment recording ends.
+    ...(command.accelerator && !chordCapture ? { accelerator: command.accelerator } : {}),
+    enabled: !chordCapture,
+    click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, command.id),
   });
+  const fileCommands = menuCommands(keymap, "file");
+  const panelCommands = menuCommands(keymap, "panel");
   // jump-1..jump-9 nest under their own submenu so the top-level File menu
-  // reads as four commands, not thirteen — cosmetic only, `id`/`accelerator`
-  // for every one of them still comes straight from the shared table.
-  const jumpBindings = COMMAND_KEY_BINDINGS.filter((binding) => binding.jump);
-  const otherBindings = COMMAND_KEY_BINDINGS.filter((binding) => !binding.jump);
+  // reads as a handful of commands, not a dozen and a half — cosmetic only,
+  // `id`/`accelerator` for every one of them still comes from the same map.
+  const jumpBindings = fileCommands.filter((command) => command.jump);
+  const otherBindings = fileCommands.filter((command) => !command.jump);
   const isMac = process.platform === "darwin";
   const template = [
     // role: "appMenu" (macOS's app-name menu: About/Hide/Quit) and the
@@ -1194,6 +1221,10 @@ function buildApplicationMenu() {
     },
     { role: "editMenu" },
     { role: "viewMenu" },
+    // The right panel's own surfaces. A menu of its own rather than more rows
+    // under File: these are all "what am I looking at beside the conversation",
+    // and a File menu that also opened a LaTeX tab would be a File menu in name.
+    ...(panelCommands.length > 0 ? [{ label: "Panel", submenu: panelCommands.map(toMenuItem) }] : []),
     { role: "windowMenu" },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -1674,6 +1705,49 @@ function writeUiPrefs(prefs) {
 
 function supportsTranslucency() {
   return process.platform === "darwin";
+}
+
+// --- Keybindings (userData, same idiom as the UI prefs above) ----------------
+//
+// THE COCKPIT IS THE WRITER AND THIS IS ITS MIRROR (#367). The chords live in
+// the renderer's own storage — see apps/web/lib/commands.ts — and are pushed
+// here on every change. The shell keeps a copy for exactly one reason: the
+// application menu is built at launch, LONG before the renderer has painted, and
+// a menu that showed the defaults until the page booted would flash the wrong
+// accelerators on every start.
+//
+// SPARSE, and stays sparse: only what differs from the registry's defaults, so a
+// default this app later improves still reaches somebody who opened the pane
+// once. `keymapOverrides(mergeKeymap(...))` is how a hand-edited or stale record
+// is normalised on the way in.
+function keybindingsPath() {
+  return path.join(app.getPath("userData"), "keybindings.json");
+}
+
+function readKeybindingOverrides() {
+  const fs = require("node:fs");
+  try {
+    const raw = JSON.parse(fs.readFileSync(keybindingsPath(), "utf8"));
+    return keymapOverrides(mergeKeymap(raw));
+  } catch {
+    // Missing / corrupt / unreadable — the defaults, never a crash.
+    return {};
+  }
+}
+
+function writeKeybindingOverrides(overrides) {
+  const fs = require("node:fs");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(keybindingsPath(), JSON.stringify(overrides), "utf8");
+  } catch (err) {
+    console.error("[telar-desktop] failed to persist keybindings:", err.message);
+  }
+}
+
+/** The live map every accelerator is read out of. */
+function readKeymap() {
+  return mergeKeymap(readKeybindingOverrides());
 }
 
 /**
@@ -2175,6 +2249,27 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
  */
 ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
   if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
+});
+
+// Settings → Keybindings. `get` is only ever read by a renderer whose own
+// storage is empty (a cleared cache inside a shell that still remembers); the
+// ordinary direction is `set`, and the REBUILD is the whole point of it — the
+// menu's accelerators come from this map, so a chord changed in the cockpit is
+// live in the File menu before the pane has finished animating the row.
+ipcMain.handle("telar:keybindings:get", () => readKeybindingOverrides());
+
+// A row is armed and the next press belongs to it, not to the menu.
+ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
+  chordCapture = Boolean(capturing);
+  buildApplicationMenu();
+  return chordCapture;
+});
+
+ipcMain.handle("telar:keybindings:set", (_event, overrides) => {
+  const stored = keymapOverrides(mergeKeymap(overrides));
+  writeKeybindingOverrides(stored);
+  buildApplicationMenu(mergeKeymap(stored));
+  return stored;
 });
 
 // The window-appearance half of Settings → Appearance. `get` answers whether
