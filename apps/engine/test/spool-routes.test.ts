@@ -15,6 +15,7 @@ import path from "node:path";
 import { EngineClient, EngineClientError } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { GhRunner } from "../src/github";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -22,7 +23,7 @@ const daemons: EngineDaemon[] = [];
 async function spool(options: { gh?: GhRunner } = {}): Promise<EngineClient> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-spool-routes-"));
   roots.push(directory);
-  const daemon = await startEngine({ engineRoot: directory, ...(options.gh ? { gh: options.gh } : {}) });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory, ...(options.gh ? { gh: options.gh } : {}) });
   daemons.push(daemon);
   return new EngineClient(daemon.discovery);
 }

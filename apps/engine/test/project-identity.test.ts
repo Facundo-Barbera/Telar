@@ -20,6 +20,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { EngineStateError, EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -226,7 +227,7 @@ describe("a new conversation honours the project before the Mac", () => {
 describe("PATCH /v2/projects/:id", () => {
   async function daemon(): Promise<{ client: EngineClient; port: number; token: string }> {
     const home = dir("telar-identity-daemon-");
-    const started = await startEngine({ engineRoot: home });
+    const started = await startEngine({ models: stubModels, engineRoot: home });
     daemons.push(started);
     const client = new EngineClient(started.discovery);
     await client.registerProject({ id: "project_one", name: "One", root: dir("telar-identity-daemon-checkout-") });

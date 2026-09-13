@@ -7,6 +7,7 @@ import { BrowserToolSocket } from "../src/browser/socket";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
 import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -35,8 +36,8 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000): Promise<void> {
-  // A wall-clock bound (below bun's 5s test timeout), not a retry count: the
+async function eventually(check: () => void | Promise<void>, deadlineMs = 15_000): Promise<void> {
+  // A wall-clock bound (below the 20s ceiling in bunfig.toml), not a retry count: the
   // former 60×5ms window was ~300ms only when each check was instant, and
   // one full-gate run under load failed it. Settles on the first pass.
   const deadline = Date.now() + deadlineMs;
@@ -94,7 +95,7 @@ async function setup(
   extras: { browserSocket?: BrowserToolSocket; workerLeaseMs?: number } = {},
 ): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
   // Manual ticks need a lease covering the test; expiry is tested separately.
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -218,7 +219,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
       return { text: label };
     },
   });
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -245,7 +246,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
 });
 
 test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -351,7 +352,7 @@ test("turns from DIFFERENT sessions run concurrently up to the cap; one session 
       return { text: `done ${prompt}` };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -812,7 +813,7 @@ test("a project folder that no longer exists fails the turn with the folder name
   // Through the worker: the driver is never invoked; the turn fails with the sentence.
   let invoked = 0;
   const driver: TurnDriver = { run: async () => { invoked += 1; return { text: "" }; } };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const stale = fs.mkdtempSync(path.join(os.tmpdir(), "telar-stale-"));
@@ -906,7 +907,7 @@ test("a turn the PROVIDER opened does not hold an execution slot shut", async ()
     },
   };
 
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -955,7 +956,7 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
       return { text: "should never run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -1096,7 +1097,7 @@ test("a claim already granted when Stop lands never reaches the driver; a new me
       return { text: "must not run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

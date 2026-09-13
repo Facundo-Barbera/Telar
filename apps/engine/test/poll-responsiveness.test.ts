@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import type { GitResult } from "../src/worktree";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 function root() {
@@ -74,7 +75,7 @@ test("HTTP health and sidebar requests respond while review Git remains pending"
   const { startEngine } = await import("../src/daemon");
   let release!: (result: GitResult) => void;
   const stalled = new Promise<GitResult>((resolve) => { release = resolve; });
-  const daemon = await startEngine({ engineRoot: root(), asyncGit: async () => stalled });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), asyncGit: async () => stalled });
   const base = `http://127.0.0.1:${daemon.discovery.port}`;
   const headers = { authorization: `Bearer ${daemon.discovery.token}` };
   daemon.store.registerProject({ id: "project_one", name: "One", root: root() });
