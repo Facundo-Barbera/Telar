@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { ArchiveIcon, BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, InfoIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ import { ProjectsPage } from "./projects-page";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
+import { SettledPage } from "./settled-page";
 import { SourceControlPage } from "./source-control-page";
 import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
@@ -92,6 +93,12 @@ const SECTIONS: SettingsSection[] = [
    * the machine that runs turns. Read-only today; see keybindings-page.tsx.
    */
   { id: "keybindings", label: "Keybindings", icon: KeyboardIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT": a settled conversation is off THIS rail's list. Nothing
+   * about the machine that runs turns changes when one is shelved, and the
+   * window that shelves it is set two panes up in General ▸ Settling.
+   */
+  { id: "settled", label: "Settled", icon: ArchiveIcon, group: "Cockpit" },
   /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
    * a fact about the install, not about the machine that runs turns (the
@@ -253,6 +260,8 @@ export function SettingsPage() {
       {active === "projects" && <ProjectsPage />}
 
       {active === "keybindings" && <KeybindingsPage />}
+
+      {active === "settled" && <SettledPage />}
 
       {active === "plugins" && <PluginsPage />}
 

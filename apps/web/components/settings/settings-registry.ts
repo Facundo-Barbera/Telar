@@ -39,6 +39,7 @@
  */
 
 import {
+  ArchiveIcon,
   BlocksIcon,
   CircleUserRoundIcon,
   DownloadIcon,
@@ -342,6 +343,28 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Every chord this app answers to, and what each one does.",
             keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
             icon: KeyboardIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * NAVIGATE-ONLY, by the rule at the top: every row here is one settled
+     * conversation, and a conversation's title is a value. What search can
+     * usefully answer is "where did the thing I settled go".
+     */
+    id: "settled",
+    label: "Settled",
+    icon: ArchiveIcon,
+    groups: [
+      {
+        rows: [
+          {
+            title: "Settled sessions",
+            hint: "Conversations off your list, and the way to put one back.",
+            keywords: ["archive", "shelf", "restore", "unsettle", "hidden", "put away", "quiet"],
+            icon: ArchiveIcon,
           },
         ],
       },
