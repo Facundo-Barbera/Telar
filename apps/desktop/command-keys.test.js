@@ -43,7 +43,9 @@ describe("the registry", () => {
   });
 
   test("only commands with a menu placement can reach a menu", () => {
-    const placed = new Set([...menuCommands(defaultKeymap(), "file"), ...menuCommands(defaultKeymap(), "panel")].map((c) => c.id));
+    const placed = new Set(
+      ["file", "panel", "view"].flatMap((menu) => menuCommands(defaultKeymap(), menu)).map((c) => c.id),
+    );
     for (const command of COMMANDS) expect(placed.has(command.id)).toBe(Boolean(command.menu));
   });
 });
@@ -84,6 +86,15 @@ describe("the menu is built from the stored map, not the defaults", () => {
     expect(panel.map((command) => command.id)).toContain("open-latex");
     // A File menu that also opened a LaTeX tab would be a File menu in name.
     expect(file.map((command) => command.id)).not.toContain("open-latex");
+  });
+
+  test("Developer Tools is a View menu row on ⌥⌘I, and reaches no other menu", () => {
+    // #423: the chord every browser uses, for the browser panel's active tab.
+    const item = menuCommands(defaultKeymap(), "view").find((command) => command.id === "toggle-devtools");
+    expect(item).toMatchObject({ label: "Developer Tools", accelerator: "CommandOrControl+Alt+I" });
+    for (const menu of ["file", "panel"]) {
+      expect(menuCommands(defaultKeymap(), menu).map((command) => command.id)).not.toContain("toggle-devtools");
+    }
   });
 
   test("Reveal in Finder is a File menu row with ⌘O on it", () => {

@@ -36,7 +36,7 @@
  *   "CommandOrControl+…", never a hardcoded "Cmd" or "Ctrl" — issue #16 asks for
  *   CommandOrControl semantics explicitly so the same table works unmodified on
  *   macOS today and on a Windows/Linux build later.
- * @property {"file"|"panel"} [menu] - which application menu carries it. Absent
+ * @property {"file"|"panel"|"view"} [menu] - which application menu carries it. Absent
  *   means the command has no menu item at all and is dispatched by the
  *   renderer's own keydown listener, which is where every contextual command
  *   (send, stop, focus the composer) belongs: a menu row that is inert on every
@@ -84,6 +84,11 @@ const COMMANDS = [
   { id: "open-editor", label: "Open Editor", group: "Panel", defaultChord: "CommandOrControl+Shift+E", menu: "panel" },
   { id: "open-data", label: "Open Data", group: "Panel", defaultChord: "CommandOrControl+Shift+B", menu: "panel" },
   { id: "open-latex", label: "Open LaTeX", group: "Panel", defaultChord: "CommandOrControl+Shift+X", menu: "panel" },
+  // Chromium's DevTools on the browser panel's ACTIVE tab (#423), on the chord
+  // every browser uses for it. `menu: "view"` because that is where a person
+  // looks for it; the row does nothing when no browser tab is active, which is
+  // exactly what `bindCommands` means by a command nobody has claimed.
+  { id: "toggle-devtools", label: "Developer Tools", group: "Panel", defaultChord: "CommandOrControl+Alt+I", menu: "view" },
 
   { id: "settings", label: "Settings…", group: "Application", defaultChord: "CommandOrControl+,", menu: "file" },
   { id: "search-settings", label: "Search Settings…", group: "Application", defaultChord: "CommandOrControl+Shift+,", menu: "file" },
