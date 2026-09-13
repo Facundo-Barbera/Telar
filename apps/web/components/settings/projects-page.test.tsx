@@ -133,21 +133,24 @@ test("a glyph name this build does not know falls through to auto-detect", () =>
   expect(html).toContain("Auto-detect");
 });
 
-test("a project with no workspace answer follows the Mac, and says what it is following", () => {
+test("a project with no workspace answer follows the app default, and says what it is following", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  // The first segment is selected — absence is a CHOICE here, not a blank.
-  expect(html).toContain("Follow the Mac");
-  expect(html).toContain("Following this Mac, which says each session gets its own checkout");
+  // The first option is selected — absence is a CHOICE here, not a blank.
+  // "App default", not "Follow the Mac" (#363): the answer it follows is this
+  // install's, and Telar is not a Mac-only app.
+  expect(html).toContain("App default");
+  expect(html).not.toContain("Follow the Mac");
+  expect(html).toContain("Following the app default, which says each session gets its own checkout");
   expect(html).toContain("General ▸ Workspace");
 });
 
-test("a project that pinned an answer states it, whatever the Mac says", () => {
+test("a project that pinned an answer states it, whatever the app default says", () => {
   const html = renderToStaticMarkup(<ProjectConversationRows project={project({ envMode: "local" })} envMode="worktree" />);
   // `renderToStaticMarkup` escapes the apostrophe, so the assertion stops
   // short of it rather than pinning the entity.
   expect(html).toContain("Sessions here share the project");
-  expect(html).toContain("checkout, whatever this Mac says");
-  expect(html).not.toContain("Following this Mac");
+  expect(html).toContain("checkout, whatever the app default says");
+  expect(html).not.toContain("Following the app default");
 });
 
 test("the checkout path appears only once a project is named", () => {
@@ -155,13 +158,24 @@ test("the checkout path appears only once a project is named", () => {
   expect(renderToStaticMarkup(<ProjectIdentityRows project={project()} />)).toContain("Checkout");
 });
 
-test("the workspace row offers both per-project answers beside following the Mac", () => {
+test("the workspace row offers both per-project answers beside the app default", () => {
+  // The options live in a portal the list only mounts when it is opened, so
+  // the three answers are pinned against source and the TRIGGER against markup.
+  expect(source).toContain('{ value: "local", label: "Project checkout" }');
+  expect(source).toContain('{ value: "worktree", label: "Own worktree" }');
+  expect(source).toContain('{ value: FOLLOW_APP, label: "App default" }');
+
+  /**
+   * A DROPDOWN, NOT THREE BUTTONS (#364). The control spent the row's whole
+   * width stating the two options nobody chose, and grew the next time one was
+   * added. The trigger states the ANSWER — and states its LABEL, never the
+   * sentinel value, which is the #318 bug a hand-written Select reintroduces.
+   */
   const html = renderToStaticMarkup(<ProjectConversationRows project={project()} envMode="worktree" />);
-  expect(html).toContain("Project checkout");
-  expect(html).toContain("Own worktree");
-  // Three segments, exactly one of them pressed: a project either follows the
-  // Mac or pins one of the two, and the three are mutually exclusive.
-  expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(1);
+  expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">App default<');
+  expect(html).toContain('aria-label="Where new conversations start"');
+  // No segment left: three buttons is what this row stopped being.
+  expect(html).not.toContain('aria-pressed');
 });
 
 test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
@@ -248,7 +262,7 @@ test("clearing a per-project answer writes null, which is what removes it", () =
   // `null` is a VALUE on this route and the only way back to "follow this
   // Mac"; an empty string or an absent key would mean something else.
   expect(source).toContain('writer?.save("defaultModel", { defaultModel: null })');
-  expect(source).toContain("envMode: next === FOLLOW_MAC ? null : (next as EnvMode)");
+  expect(source).toContain("envMode: next === FOLLOW_APP ? null : (next as EnvMode)");
   // Auto-detect clears BOTH icon fields: a registry written before the picker
   // may carry a typed mark, and leaving it would answer for a row that now says
   // it is auto-detecting.

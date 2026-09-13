@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { settingsRowId, type SettingsSearchEntry, type SettingsSearchIndex } from "@/lib/settings-search";
 import { SettingsSearchNav } from "./settings-search-nav";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { APP_SIDEBAR_STORAGE_KEY, APP_SIDEBAR_MAIN_MIN_WIDTH, clampSidebarWidth, keepsRoomForMain, setSidebarWidth, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/lib/sidebar-width";
 
@@ -699,6 +700,59 @@ export function Row({
 }
 
 /**
+ * AN ENUMERATION, AS A DROPDOWN (#364).
+ *
+ * THIS IS WHAT A SETTING WITH THREE OR MORE ANSWERS USES. A segmented control
+ * spends the row's whole width stating every option it did NOT choose, which is
+ * how "Where new conversations start" ended up as three buttons of prose beside
+ * a one-line label — and a row whose control grows with the option list is a row
+ * whose layout moves the next time somebody adds one. A dropdown states the
+ * ANSWER, at a fixed width, and holds the alternatives until they are asked for.
+ * Booleans keep their switch; two-answer enumerations are a judgement call and
+ * the named ones (Workspace, Written by) read better as this too, because
+ * neither is an on/off.
+ *
+ * THE TRIGGER READS THE LABEL, NEVER THE VALUE — #318's bug, which a bare
+ * `<SelectValue />` reintroduces every time somebody writes this by hand: base-ui
+ * renders the raw value string when nothing maps it to a label, so a trigger
+ * shows `__follow-app` while the list beside it says "App default" all along.
+ * Stated here once so no call site can get it wrong.
+ */
+export function Dropdown<T extends string>({
+  value,
+  onChange,
+  options,
+  className,
+  label,
+  disabled,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: ReactNode; text?: string }[];
+  /** Trigger width. Defaults to the width most settings rows use. */
+  className?: string;
+  /** `aria-label`, for a row whose visible label is not the trigger's. */
+  label?: string;
+  disabled?: boolean;
+}) {
+  const chosen = options.find((option) => option.value === value);
+  return (
+    <Select value={value} onValueChange={(next) => typeof next === "string" && onChange(next as T)} disabled={disabled}>
+      <SelectTrigger size="sm" className={cn("w-44", className)} {...(label ? { "aria-label": label } : {})}>
+        <SelectValue>{chosen?.text ?? chosen?.label ?? value}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((option) => (
+          <SelectItem key={option.value} value={option.value}>
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
  * A SEGMENTED CHOICE, WITHOUT THE PILL.
  *
  * It was a filled track with a raised, ringed, shadowed thumb — a control with
@@ -706,6 +760,11 @@ export function Row({
  * as a row of chunky buttons rather than as one field's value. Now it is a
  * hairline group whose selected segment is a quiet fill: the same information,
  * at the weight of the rest of the page.
+ *
+ * WHAT IT IS STILL FOR, AFTER #364: the two-answer picks INSIDE a form, where
+ * the choice steers the fields under it and a reader needs both answers visible
+ * while deciding — the MCP transport picker, the environment manager. A SETTING
+ * whose value is one of several uses `Dropdown` above.
  */
 export function Segmented<T extends string>({
   value,

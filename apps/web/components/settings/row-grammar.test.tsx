@@ -53,6 +53,31 @@ test("both sections import the shared grammar rather than restating it", () => {
   expect(looks).not.toContain("PanelRow");
 });
 
+test("an enumeration setting is a dropdown, and a boolean is still a switch (#364)", () => {
+  /**
+   * The rule the segmented control kept breaking: a row whose control states
+   * every answer it did NOT choose spends the whole row on alternatives and
+   * re-lays out the next time one is added. What is pinned is that the named
+   * rows moved, and that `Segmented` survives only where a form's own choice
+   * steers the fields under it.
+   */
+  const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
+  const workspace = readFileSync(new URL("./workspace-section.tsx", import.meta.url), "utf8");
+  const textgen = readFileSync(new URL("./textgen-section.tsx", import.meta.url), "utf8");
+
+  expect(shell).toContain("export function Dropdown<T extends string>");
+  // The #318 bug, fixed in ONE place rather than at each call site: a bare
+  // `<SelectValue />` renders the value string when nothing maps it to a label.
+  expect(shell).toContain("<SelectValue>{chosen?.text ?? chosen?.label ?? value}</SelectValue>");
+
+  for (const source of [workspace, textgen]) {
+    expect(source).toContain("<Dropdown<");
+    expect(source).not.toContain("<Segmented<");
+  }
+  // Booleans did NOT move: a switch is already the shortest true statement.
+  expect(textgen).toContain("<ToggleRow");
+});
+
 test("the host-look row keeps Retry live when there is nothing to follow", () => {
   /**
    * The regression this guards: `unavailable` takes the whole control column

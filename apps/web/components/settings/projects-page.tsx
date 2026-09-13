@@ -84,7 +84,7 @@ import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
 import { PluginSettings } from "./plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
 const api = createEngineApi();
 
@@ -121,10 +121,17 @@ function blockedReason(project: ScopedProject | undefined, what: string): string
   return undefined;
 }
 
-/** The Segmented value for "no per-project answer" — a project that follows
- *  this Mac. base-ui and `Segmented` both want a string, and absence is a real
- *  choice here rather than the lack of one. */
-const FOLLOW_MAC = "__follow-mac";
+/**
+ * The dropdown's value for "no per-project answer" — a project that follows the
+ * app's standing one. base-ui wants a string, and absence is a real choice here
+ * rather than the lack of one.
+ *
+ * "APP DEFAULT", NOT "FOLLOW THE MAC" (#363). The option named the hardware
+ * Telar happened to ship on first, which is wrong in two directions: it will run
+ * on Linux, and the answer it follows is this INSTALL's — a cockpit's standing
+ * choice on General ▸ Workspace, not a property of the machine.
+ */
+const FOLLOW_APP = "__follow-app";
 
 /**
  * An input that reports on BLUR, not on every keystroke — the same shape
@@ -250,14 +257,14 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
  * WHAT A CONVERSATION IN THIS PROJECT OPENS ON.
  *
  * BOTH ROWS HAVE THREE STATES, NOT TWO, and the third is the interesting one:
- * a project can store an answer, or store NOTHING and follow this Mac. Absence
- * is what the engine reads as "follow", so neither control may collapse it into
- * a value — the workspace row gives it a segment of its own and the model row
- * gives it the revert arrow, and both write `null` to get back to it.
+ * a project can store an answer, or store NOTHING and follow the app's standing
+ * one. Absence is what the engine reads as "follow", so neither control may
+ * collapse it into a value — the workspace row gives it an option of its own and
+ * the model row gives it the revert arrow, and both write `null` to get back.
  *
- * `envMode` IS THE MACHINE'S STANDING ANSWER, passed in so the inherited state
- * can SAY what it inherits rather than showing an em dash. A reader looking at
- * "This Mac's answer" is owed the value that phrase resolves to.
+ * `envMode` IS THE APP'S STANDING ANSWER, passed in so the inherited state can
+ * SAY what it inherits rather than showing an em dash. A reader looking at "App
+ * default" is owed the value that phrase resolves to.
  */
 export function ProjectConversationRows({
   project,
@@ -344,19 +351,20 @@ export function ProjectConversationRows({
         icon={FolderGitIcon}
         hint={
           project?.envMode === undefined
-            ? `Following this Mac, which says ${envMode === "worktree" ? "each session gets its own checkout" : "sessions share the project's checkout"}. Change that on General ▸ Workspace, or pin an answer here.`
+            ? `Following the app default, which says ${envMode === "worktree" ? "each session gets its own checkout" : "sessions share the project's checkout"}. Change that on General ▸ Workspace, or pin an answer here.`
             : project.envMode === "worktree"
-              ? "Each session here gets its own checkout and branch, whatever this Mac says. A project without git falls back to the checkout."
-              : "Sessions here share the project's checkout, whatever this Mac says. Two at once will collide."
+              ? "Each session here gets its own checkout and branch, whatever the app default says. A project without git falls back to the checkout."
+              : "Sessions here share the project's checkout, whatever the app default says. Two at once will collide."
         }
         {...(savingFor("envMode") ? { status: savingFor("envMode") } : {})}
         {...(errorFor("envMode") ? { error: errorFor("envMode") } : {})}
         control={
-          <Segmented<string>
-            value={project?.envMode ?? FOLLOW_MAC}
-            onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_MAC ? null : (next as EnvMode) })}
+          <Dropdown<string>
+            value={project?.envMode ?? FOLLOW_APP}
+            label="Where new conversations start"
+            onChange={(next) => writer?.save("envMode", { envMode: next === FOLLOW_APP ? null : (next as EnvMode) })}
             options={[
-              { value: FOLLOW_MAC, label: "Follow the Mac" },
+              { value: FOLLOW_APP, label: "App default" },
               { value: "local", label: "Project checkout" },
               { value: "worktree", label: "Own worktree" },
             ]}
