@@ -40,6 +40,7 @@ const EXPECTED_IDS: CommandId[] = [
   "focus-composer",
   "send",
   "stop-turn",
+  "reveal-in-finder",
   "search-sessions",
   "toggle-rail",
   "jump-1",
@@ -85,6 +86,15 @@ describe("the registry is the one source of truth", () => {
     // collision; shipping one is a different thing entirely — a command that
     // never fires out of the box, and nothing to tell anybody why.
     expect(keymapConflicts(defaultKeymap())).toEqual({});
+  });
+
+  test("⌘O reveals the session's folder, and it reaches the File menu", () => {
+    // #384: the Open menu's last row from the keyboard. It has to be in the
+    // registry for Settings › Keybindings to draw a row for it at all, and to
+    // carry `menu: "file"` for the shell to build an accelerator.
+    const reveal = COMMANDS.find((command) => command.id === "reveal-in-finder");
+    expect(reveal).toMatchObject({ label: "Reveal in Finder", defaultChord: "CommandOrControl+O", menu: "file" });
+    expect(defaultKeymap()["reveal-in-finder"]).toBe("CommandOrControl+O");
   });
 
   test("only the jump commands carry a jump number, and it matches the id", () => {

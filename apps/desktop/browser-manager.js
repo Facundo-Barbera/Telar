@@ -1350,11 +1350,18 @@ class DesktopBrowserManager {
     };
   }
 
-  emitState(scopeKey) {
+  /**
+   * `extra` rides ONE PUSH and is not part of `state()`, deliberately: it
+   * carries things that HAPPENED rather than things that ARE. `ended` is the
+   * only one — the last tab of a scope closed — and a re-read of the state a
+   * moment later must not still be saying it, or a panel reopened on that
+   * scope would close itself the instant it asked what was there.
+   */
+  emitState(scopeKey, extra) {
     const scope = this.requireScope(scopeKey);
     this.version += 1;
     if (!this.window.isDestroyed()) {
-      this.window.webContents.send("telar:browser:state", this.state(scope));
+      this.window.webContents.send("telar:browser:state", extra ? { ...this.state(scope), ...extra } : this.state(scope));
     }
     // Every emitted change is a change worth remembering; the store coalesces.
     this.persist();
@@ -2241,13 +2248,41 @@ class DesktopBrowserManager {
       const remaining = this.scopeTabs(scope);
       this.activeTabIds.set(scope, remaining[position]?.id ?? remaining[position - 1]?.id ?? null);
     }
-    // Closing the last tab leaves ONE BLANK TAB, never zero: a browser panel
-    // with no tab has no address bar to type into and no page to snapshot.
-    if (!this.scopeTabs(scope).length) {
-      void this.createTab(scope, "about:blank", closedBy).catch(() => {});
-    }
+    // CLOSING THE LAST TAB ENDS THE BROWSER (issue #383), the way it does in
+    // every browser anybody uses. It used to open one blank tab instead, on
+    // the argument that a panel with no tab has no address bar to type into
+    // and no page to snapshot — which is true, and is an argument for the
+    // panel closing rather than for a tab nobody asked for. Closing the last
+    // one is how a person says they are done with this browser, and answering
+    // it with a fresh New Tab made that impossible to say.
+    if (!this.scopeTabs(scope).length) return this.endBrowser(scope);
     this.applyVisibility();
     this.emitState(scope);
+  }
+
+  /**
+   * THE SCOPE'S BROWSER IS OVER — its last tab just closed.
+   *
+   * The native views are already gone (`hibernateTab` closed each one's
+   * WebContents as it was removed); what is left is the pointers into a tab
+   * list that no longer exists, the claim on the window, and telling the panel.
+   *
+   * THE PROFILE BINDING STAYS. `forgetScope` drops it, and an unbound scope is
+   * REFUSED a tab (`partitionOf`) — so forgetting here would mean an agent
+   * whose last tab closed could not open another one. What ends is the
+   * browser, not the session's right to have one.
+   *
+   * `ended` rides the push rather than the state: the panel tab closes on the
+   * EVENT, and a scope with no tabs is otherwise indistinguishable from one
+   * that has not opened its first page yet.
+   */
+  endBrowser(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    this.activeTabIds.delete(scope);
+    this.boundsByScope.delete(scope);
+    if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
+    this.applyVisibility();
+    this.emitState(scope, { ended: true });
   }
 
   /**

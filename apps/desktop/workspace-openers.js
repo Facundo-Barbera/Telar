@@ -45,7 +45,12 @@ const KNOWN_EDITORS = [
   { id: "nova", label: "Nova", bundles: ["Nova.app"] },
   { id: "textmate", label: "TextMate", bundles: ["TextMate.app"] },
   { id: "iterm", label: "iTerm", icon: "iterm", bundles: ["iTerm.app"] },
-  { id: "terminal", label: "Terminal", bundles: ["Utilities/Terminal.app"] },
+  // macOS's own Terminal is deliberately NOT here (issue #384). It ships on
+  // every Mac, so it appeared in every Open menu — and on a machine with one
+  // editor it was half the list, offering to open a folder in a shell to
+  // somebody who asked where to edit. The terminals people install ON PURPOSE
+  // stay: choosing to have iTerm or Ghostty is itself the signal Terminal
+  // cannot give.
   { id: "ghostty", label: "Ghostty", bundles: ["Ghostty.app"] },
 ];
 

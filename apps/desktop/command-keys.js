@@ -53,6 +53,11 @@ const COMMANDS = [
   { id: "focus-composer", label: "Focus Composer", group: "Conversation", defaultChord: "CommandOrControl+L" },
   { id: "send", label: "Send", group: "Conversation", defaultChord: "CommandOrControl+Return" },
   { id: "stop-turn", label: "Stop Turn", group: "Conversation", defaultChord: "CommandOrControl+." },
+  // The session's workspace folder, shown in Finder (#384) — the same verb the
+  // header's Open menu carries, from the keyboard. `menu: "file"` because it is
+  // about a folder on disk, which is what a File menu is for; the handler lives
+  // with the bridge, in components/session/open-workspace-button.tsx.
+  { id: "reveal-in-finder", label: "Reveal in Finder", group: "Conversation", defaultChord: "CommandOrControl+O", menu: "file" },
 
   { id: "search-sessions", label: "Search Conversations", group: "Rail", defaultChord: "CommandOrControl+K" },
   { id: "toggle-rail", label: "Toggle Rail", group: "Rail", defaultChord: "CommandOrControl+B" },

@@ -82,35 +82,34 @@ describe("remembering the app", () => {
 });
 
 describe("what an open teaches the button", () => {
-  test("an app and the system default are remembered; a reveal is not", () => {
-    // The button remembers the last app you OPENED the folder in. A reveal is
-    // a look — you wanted to see where the folder lives — and a primary button
-    // reading "Reveal in Finder" after one glance has drawn the wrong lesson.
-    // The system default IS an open, and is remembered like any app.
+  test("an app is remembered; a reveal is not, even though it is the default", () => {
+    // The button remembers the last app you OPENED the folder in. A reveal is a
+    // look — and being what the half does BEFORE you have chosen anything is a
+    // different claim from being what you chose.
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
     const kindOf = (id: string) => entries.find((entry) => entry.id === id)!;
     expect(remembersOpener(kindOf("zed"))).toBe(true);
-    expect(remembersOpener(kindOf(SYSTEM_OPENER_ID))).toBe(true);
     expect(remembersOpener(kindOf(REVEAL_OPENER_ID))).toBe(false);
     expect(remembersOpener(workspaceOpenerEntries({ openers: [] })[0]!)).toBe(false);
   });
 
-  test("a reveal stored by an earlier build is ignored rather than pinned forever", () => {
-    // The rule is applied on READ too, so nobody is left with a button that
-    // reveals because a previous version remembered a glance.
+  test("a reveal stored by an earlier build hoists and marks nothing", () => {
+    // The rule is applied on READ too. Finder is where the half points anyway
+    // now, but it must get there as the DEFAULT — an unmarked row in the shell's
+    // own order — not as a choice somebody never made.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: REVEAL_OPENER_ID });
-    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", REVEAL_OPENER_ID]);
     expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
-    // It falls through to the ordinary default, so the half opens an editor
-    // rather than ever reaching for Finder.
-    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode", kind: "opener" });
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Visual Studio Code");
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID, kind: "reveal" });
   });
 
-  test("the system default still reaches the left half", () => {
+  test("a 'system' remembered by an earlier build names a row that no longer exists", () => {
+    // #384 removed "System default". Somebody who last used it has that id in
+    // localStorage; the menu must not hoist a phantom row or strand the half.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: SYSTEM_OPENER_ID });
-    expect(entries[0]).toMatchObject({ id: SYSTEM_OPENER_ID, preferred: true });
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in the default app");
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", REVEAL_OPENER_ID]);
+    expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Reveal in Finder");
   });
 });
 
@@ -130,11 +129,11 @@ describe("the store the button reads through", () => {
       // The other Mac is untouched — one cached answer per machine.
       expect(preferredOpenerSnapshot("snapshot_host_b")).toBeUndefined();
 
-      writePreferredOpener("snapshot_host_a", SYSTEM_OPENER_ID, storage);
+      writePreferredOpener("snapshot_host_a", "vscode", storage);
       expect(notified).toBe(2);
       // The cache follows the write; a stale snapshot here would leave the
       // button naming the app you just stopped using.
-      expect(preferredOpenerSnapshot("snapshot_host_a")).toBe(SYSTEM_OPENER_ID);
+      expect(preferredOpenerSnapshot("snapshot_host_a")).toBe("vscode");
     } finally {
       unsubscribe();
     }
@@ -149,24 +148,31 @@ describe("the store the button reads through", () => {
 });
 
 describe("the list", () => {
-  test("first run: the shell's own order, then the two that are not apps", () => {
+  test("first run: the shell's own order, then the one that is not an app", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
-    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", REVEAL_OPENER_ID]);
     expect(entries.every((entry) => !entry.preferred)).toBe(true);
+  });
+
+  test("there is NO system-default row", () => {
+    // It was the same gesture as the reveal below it — on a Mac the OS opens a
+    // folder in Finder — with the one difference that it could not say so.
+    for (const openers of [INSTALLED, []]) {
+      expect(workspaceOpenerEntries({ openers }).some((entry) => entry.id === SYSTEM_OPENER_ID)).toBe(false);
+    }
   });
 
   test("revealing is an entry in the same list, not a control beside it", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
     const reveal = entries.find((entry) => entry.id === REVEAL_OPENER_ID);
-    expect(reveal).toMatchObject({ kind: "reveal", label: "Reveal in Finder" });
-    // ...and it is the one entry that can never BE the left half, so it carries
-    // no label for that half either.
-    expect(reveal?.primaryLabel).toBeUndefined();
+    // ...and it now carries words for the left half, because it IS the left
+    // half until an editor is picked.
+    expect(reveal).toMatchObject({ kind: "reveal", label: "Reveal in Finder", primaryLabel: "Reveal in Finder" });
   });
 
   test("the preferred entry is hoisted to the top and marked", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: "zed" });
-    expect(entries.map((entry) => entry.id)).toEqual(["zed", "vscode", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["zed", "vscode", "textmate", REVEAL_OPENER_ID]);
     expect(entries[0]?.preferred).toBe(true);
     // Hoisted, not duplicated.
     expect(entries.filter((entry) => entry.id === "zed")).toHaveLength(1);
@@ -177,10 +183,10 @@ describe("the list", () => {
     // The failure this prevents: a button that still says "Open in Cursor" and
     // errors when pressed, for an app that is no longer on the machine.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: "cursor" });
-    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", REVEAL_OPENER_ID]);
     expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
-    // The half names something installed instead — never the app that is gone.
-    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode" });
+    // The half goes back to Finder rather than guessing a replacement editor.
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID });
   });
 
   test("an installed app carries its brand mark; one we have no mark for carries none", () => {
@@ -192,20 +198,20 @@ describe("the list", () => {
   test("an app is launched by id, and nothing else is", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
     expect(entries.find((entry) => entry.id === "zed")?.openerId).toBe("zed");
-    expect(entries.find((entry) => entry.id === SYSTEM_OPENER_ID)?.openerId).toBeUndefined();
     expect(entries.find((entry) => entry.id === REVEAL_OPENER_ID)?.openerId).toBeUndefined();
   });
 
-  test("none installed is a row that says so, with the two fallbacks still there", () => {
+  test("none installed is a row that says so, with the reveal still there", () => {
     const entries = workspaceOpenerEntries({ openers: [] });
-    expect(entries.map((entry) => entry.label)).toEqual(["No installed editors found", "System default", "Reveal in Finder"]);
+    expect(entries.map((entry) => entry.label)).toEqual(["No installed editors found", "Reveal in Finder"]);
     expect(entries[0]?.kind).toBe("empty");
   });
 
   test("the inert row can never become the remembered choice", () => {
     const entries = workspaceOpenerEntries({ openers: [], preferred: "none" });
     expect(entries[0]?.preferred).toBeUndefined();
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open");
+    // The half still has something true to say: show me the folder.
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Reveal in Finder");
   });
 });
 
@@ -213,51 +219,47 @@ describe("hairlines", () => {
   const separatorsAbove = (entries: { id: string; separatorBefore?: boolean }[]) =>
     entries.filter((entry) => entry.separatorBefore).map((entry) => entry.id);
 
-  test("first run: one line, where the apps give way to the not-apps", () => {
-    expect(separatorsAbove(workspaceOpenerEntries({ openers: INSTALLED }))).toEqual([SYSTEM_OPENER_ID]);
+  test("first run: one line, where the apps give way to the reveal", () => {
+    expect(separatorsAbove(workspaceOpenerEntries({ openers: INSTALLED }))).toEqual([REVEAL_OPENER_ID]);
   });
 
   test("a hoisted app gets a line under it, and the group line stays", () => {
-    expect(separatorsAbove(workspaceOpenerEntries({ openers: INSTALLED, preferred: "zed" }))).toEqual(["vscode", SYSTEM_OPENER_ID]);
+    expect(separatorsAbove(workspaceOpenerEntries({ openers: INSTALLED, preferred: "zed" }))).toEqual(["vscode", REVEAL_OPENER_ID]);
   });
 
   test("the only installed app, hoisted: the two rules want the same line and draw one", () => {
     const entries = workspaceOpenerEntries({ openers: [INSTALLED[0]!], preferred: "vscode" });
-    expect(entries.map((entry) => entry.id)).toEqual(["vscode", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
-    expect(separatorsAbove(entries)).toEqual([SYSTEM_OPENER_ID]);
-  });
-
-  test("the system default hoisted leaves the reveal alone below the apps", () => {
-    const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: SYSTEM_OPENER_ID });
-    expect(entries.map((entry) => entry.id)).toEqual([SYSTEM_OPENER_ID, "vscode", "zed", "textmate", REVEAL_OPENER_ID]);
-    expect(separatorsAbove(entries)).toEqual(["vscode", REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", REVEAL_OPENER_ID]);
+    expect(separatorsAbove(entries)).toEqual([REVEAL_OPENER_ID]);
   });
 
   test("the first row never carries a line above it", () => {
-    for (const preferred of [undefined, "zed", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]) {
+    for (const preferred of [undefined, "zed", REVEAL_OPENER_ID]) {
       expect(workspaceOpenerEntries({ openers: INSTALLED, preferred })[0]?.separatorBefore).toBeUndefined();
     }
   });
 });
 
 describe("what the left half says", () => {
-  test("nothing remembered: VS Code, because that is the answer most people would have given", () => {
+  test("nothing remembered: Finder, because a guess here launches on one click", () => {
+    // It used to guess VS Code, then the first editor installed. Both are a
+    // coin toss on a machine with two, and the cost of losing is somebody's
+    // folder opening in an application they did not ask for.
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Visual Studio Code");
-    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "vscode", icon: "vscode" });
+    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Reveal in Finder");
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID, icon: REVEAL_OPENER_ID });
   });
 
-  test("no VS Code: the first editor the machine does have, in the shell's order", () => {
+  test("no VS Code, and still no guess: the half reveals rather than reaching for Zed", () => {
     const entries = workspaceOpenerEntries({ openers: INSTALLED.filter((opener) => opener.id !== "vscode") });
-    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: "zed" });
-    expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Zed");
+    expect(workspaceOpenerPrimary(entries)).toMatchObject({ id: REVEAL_OPENER_ID });
   });
 
   test("a default is not a preference: it hoists nothing and is not marked", () => {
     // The list stays in the shell's own order, and no row claims to be the
     // remembered one — the only thing the default decides is the left half.
     const entries = workspaceOpenerEntries({ openers: INSTALLED });
-    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", SYSTEM_OPENER_ID, REVEAL_OPENER_ID]);
+    expect(entries.map((entry) => entry.id)).toEqual(["vscode", "zed", "textmate", REVEAL_OPENER_ID]);
     expect(entries.every((entry) => entry.preferred === undefined)).toBe(true);
   });
 
@@ -267,22 +269,22 @@ describe("what the left half says", () => {
     expect(workspaceOpenerPrimaryLabel(entries)).toBe("Open in Zed");
   });
 
-  test("a preference for something uninstalled falls back to the default, not to 'Open'", () => {
-    // The module re-validates on read; the button should still offer the best
-    // guess it has rather than forgetting how to open anything.
-    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: "emacs" }))).toBe("Open in Visual Studio Code");
+  test("a preference for something uninstalled falls back to Finder, not to 'Open'", () => {
+    // The module re-validates on read; the button should still name something
+    // it can actually do rather than forgetting how to do anything.
+    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: "emacs" }))).toBe("Reveal in Finder");
   });
 
   test("it names the app, so the button says what pressing it will do", () => {
     expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: "vscode" }))).toBe("Open in Visual Studio Code");
-    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: INSTALLED, preferred: SYSTEM_OPENER_ID }))).toBe("Open in the default app");
   });
 
-  test("no editors at all: 'Open', and the menu rather than a guess", () => {
-    // The system default and the reveal are in the list and are deliberately
-    // not guessed into — see workspaceOpenerPrimary.
-    expect(workspaceOpenerPrimary(workspaceOpenerEntries({ openers: [] }))).toBeUndefined();
-    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: [] }))).toBe("Open");
+  test("no editors at all: still Finder, never a half that cannot name what it does", () => {
+    expect(workspaceOpenerPrimary(workspaceOpenerEntries({ openers: [] }))).toMatchObject({ id: REVEAL_OPENER_ID });
+    expect(workspaceOpenerPrimaryLabel(workspaceOpenerEntries({ openers: [] }))).toBe("Reveal in Finder");
+    // An empty list is the shell's answer not having arrived; there the half
+    // reads "Open" and shows the menu.
+    expect(workspaceOpenerPrimary([])).toBeUndefined();
     expect(workspaceOpenerPrimaryLabel([])).toBe("Open");
   });
 });
@@ -294,9 +296,9 @@ describe("the shortcut hint", () => {
     expect(entries.slice(1).every((entry) => entry.shortcut === undefined)).toBe(true);
   });
 
-  test("nothing is bound, so nothing is promised", () => {
-    // Telar binds no chord to opening a workspace today (lib/command-keys.ts),
-    // and a hint for a key that does nothing is worse than no hint.
+  test("nothing is passed, so nothing is promised", () => {
+    // ⌘O reveals in Finder (lib/commands.ts) but the button does not hand that
+    // chord down, and a hint the caller never supplied would be invented.
     const entries = workspaceOpenerEntries({ openers: INSTALLED, preferred: "zed" });
     expect(entries.every((entry) => entry.shortcut === undefined)).toBe(true);
   });

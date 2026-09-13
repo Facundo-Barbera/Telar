@@ -17,6 +17,11 @@
  * but teaches the button nothing, because it is a look rather than an open.
  * `remembersOpener` is the one place that distinction lives.
  *
+ * BEFORE YOU HAVE SAID ANYTHING, IT REVEALS (#384). The half used to guess an
+ * editor — VS Code, else whatever was installed — and a guess is what this
+ * control cannot afford: one click launches it. `workspaceOpenerPrimary` says
+ * why Finder is the answer that can never be the wrong one.
+ *
  * KEYED PER MACHINE. The value is an opener id, and an opener id is only
  * meaningful against the app list of the machine that reported it — this Mac's
  * `zed` is not the Mac mini's anything if Zed is not installed there. One
@@ -32,26 +37,12 @@
  * rather than a browser.
  */
 
-/** The two entries that are not installed apps. Reserved, so a future opener
- *  id colliding with one is a test failure rather than a menu that opens the
- *  wrong thing. */
+/** The one entry that is not an installed app. Reserved, so a future opener id
+ *  colliding with it is a test failure rather than a menu that opens the wrong
+ *  thing. `SYSTEM_OPENER_ID` is kept only to keep that reservation standing —
+ *  the row it named is gone (see `workspaceOpenerEntries`). */
 export const SYSTEM_OPENER_ID = "system";
 export const REVEAL_OPENER_ID = "reveal";
-
-/** WHAT "OPEN" MEANS BEFORE YOU HAVE MEANT ANYTHING BY IT.
- *
- *  A first run used to read "Open" and do nothing but show the menu, which
- *  makes the common case — one editor, opened constantly — cost two clicks
- *  forever until you happen to notice the button learns. It is the same known
- *  answer the module note describes, one step earlier: most people here have
- *  VS Code, so the button offers it and the first pick that disagrees replaces
- *  it for good.
- *
- *  A DEFAULT IS NOT A PREFERENCE, and the two stay separate below: this one is
- *  never written to storage, never hoists its row, and never carries the
- *  shortcut hint — it only decides what the left half does until a real choice
- *  is made. */
-export const DEFAULT_OPENER_ID = "vscode";
 
 /** What the shell reported: an installed app that can open a folder. Structural
  *  rather than imported so this module stays free of the desktop bridge. */
@@ -60,16 +51,14 @@ export type OpenerLike = { id: string; label: string; path?: string; icon?: stri
 export type WorkspaceOpenerEntryKind =
   /** An installed app, launched by id through the shell. */
   | "opener"
-  /** Hand the folder to whatever the OS opens folders with. */
-  | "system"
   /** Show it in the file manager instead of opening it. In T3's list and in
    *  this one, revealing lives in the same menu rather than in a separate
    *  control beside it — it is the same question ("where do I want this
    *  folder?") and splitting it into its own button asks it twice.
    *
-   *  IT IS STILL NOT AN OPEN, and `remembersOpener` is where that matters: a
-   *  reveal is a LOOK, and a primary button that reads "Reveal in Finder"
-   *  because you once glanced at the folder has learned the wrong lesson. */
+   *  IT IS STILL NOT AN OPEN, and `remembersOpener` is where that matters: it
+   *  is the left half until you pick an editor, and picking it back afterwards
+   *  must not un-teach the editor you chose. */
   | "reveal"
   /** Nothing is installed. A row, not a missing row, so the menu explains its
    *  own shortness. */
@@ -80,12 +69,13 @@ export type WorkspaceOpenerEntry = {
   id: string;
   /** The row's own words. */
   label: string;
-  /** The split button's left half when this entry is the preferred one. A verb
+  /** The split button's left half when this entry is what the half does. A verb
    *  phrase, because that half is a button that acts rather than a label.
    *
-   *  ABSENT on an entry that can never BE the left half — see
-   *  `remembersOpener`. One field, so "cannot be remembered" and "has no label
-   *  to remember it by" cannot drift into disagreeing. */
+   *  PRESENT ON THE REVEAL ROW TOO, which is what changed with #384: revealing
+   *  is the left half before an editor has been picked, so it needs words for
+   *  it. That is a separate question from `remembersOpener` — being the default
+   *  is not being remembered. */
   primaryLabel?: string;
   kind: WorkspaceOpenerEntryKind;
   /** Brand mark id from the shell's opener table; absent means the neutral
@@ -130,9 +120,9 @@ export function readPreferredOpener(hostId: string | undefined, storage: Pick<St
   }
 }
 
-/** Remember `id` for `hostId`. Called on every OPEN — the system default very
- *  much included — and never on a reveal; `remembersOpener` holds that line and
- *  says why. Whatever you last opened with is what the button offers next. */
+/** Remember `id` for `hostId`. Called on every OPEN and never on a reveal;
+ *  `remembersOpener` holds that line and says why. Whatever you last opened
+ *  with is what the button offers next. */
 export function writePreferredOpener(
   hostId: string | undefined,
   id: string,
@@ -208,10 +198,16 @@ export function workspaceOpenerEntries(input: {
     ...(opener.path ? { path: opener.path } : {}),
   }));
 
+  /**
+   * NO "SYSTEM DEFAULT" ROW (issue #384). Handing a folder to whatever the OS
+   * happens to associate with it answers a question nobody asked — on a Mac it
+   * is Finder, which the row below names properly and wears the right mark for,
+   * so the two rows were the same gesture with one of them unable to say what
+   * it would do.
+   */
   const natural: WorkspaceOpenerEntry[] = [
     ...(apps.length > 0 ? apps : [{ id: "none", label: "No installed editors found", kind: "empty" as const }]),
-    { id: SYSTEM_OPENER_ID, label: "System default", primaryLabel: "Open in the default app", kind: "system", icon: SYSTEM_OPENER_ID },
-    { id: REVEAL_OPENER_ID, label: "Reveal in Finder", kind: "reveal", icon: REVEAL_OPENER_ID },
+    { id: REVEAL_OPENER_ID, label: "Reveal in Finder", primaryLabel: "Reveal in Finder", kind: "reveal", icon: REVEAL_OPENER_ID },
   ];
 
   // Applied on READ as well as on write, so a "reveal" stored by an earlier
@@ -235,37 +231,37 @@ export function workspaceOpenerEntries(input: {
  *
  * The button remembers the last app you OPENED the folder in. Revealing is not
  * that: it is a look — you wanted to see where the folder lives, not to work in
- * it — and a primary button that reads "Reveal in Finder" because of one glance
- * has drawn the wrong conclusion from the gesture. The system default IS an
- * open, and is remembered like any other app.
+ * it. It is the left half by DEFAULT now (#384), which is a different claim: a
+ * default is what happens before you have said anything, and pressing it says
+ * nothing, so an editor you have already chosen is not undone by one glance.
  *
  * The inert "nothing installed" row is excluded for the plainer reason that it
  * is not a choice at all.
  */
 export function remembersOpener(entry: Pick<WorkspaceOpenerEntry, "kind">): boolean {
-  return entry.kind === "opener" || entry.kind === "system";
+  return entry.kind === "opener";
 }
 
 /**
  * What the split button's left half does, and therefore says.
  *
- * THREE ANSWERS, IN ORDER. What you last opened with; failing that VS Code,
- * because it is the one most people here would have picked anyway
- * (`DEFAULT_OPENER_ID`); failing that whatever editor the machine does have,
- * in the shell's own order. Only a machine with no editor at all falls through
- * to undefined, and there the half goes back to reading "Open" and showing the
- * menu — a button whose label cannot name what it will do should not do it.
+ * TWO ANSWERS: what you last opened with, and failing that Finder.
  *
- * The fallbacks look at `kind === "opener"` only. The system default and the
- * reveal are deliberately not guessed into: handing a folder to whatever the OS
- * happens to associate with it is a fine thing to CHOOSE and a poor thing to be
- * given, and a reveal is not an open at all (`remembersOpener`).
+ * IT USED TO GUESS AN EDITOR — VS Code, then whatever the machine had — and a
+ * guess is the one thing this half cannot afford. It launches on a single
+ * click, so guessing wrong opens a folder in an application somebody did not
+ * ask for, and on a machine with two editors installed the guess is a coin
+ * toss about which one they work in. Finder is the answer that is never wrong
+ * about what it is: it SHOWS you the folder and decides nothing, and the first
+ * pick from the menu replaces it for good (`remembersOpener`).
+ *
+ * Undefined only while the shell's list has not arrived — the reveal entry is
+ * always there once it has, so the half always has something to name.
  */
 export function workspaceOpenerPrimary(entries: readonly WorkspaceOpenerEntry[]): WorkspaceOpenerEntry | undefined {
   const first = entries[0];
   if (first?.preferred) return first;
-  const apps = entries.filter((entry) => entry.kind === "opener");
-  return apps.find((entry) => entry.id === DEFAULT_OPENER_ID) ?? apps[0];
+  return entries.find((entry) => entry.kind === "reveal");
 }
 
 export function workspaceOpenerPrimaryLabel(entries: readonly WorkspaceOpenerEntry[]): string {

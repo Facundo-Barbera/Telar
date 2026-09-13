@@ -7,24 +7,35 @@
  * left half wears the one you use.
  *
  * Inlined rather than depended on, exactly like provider-icon.tsx: ten marks do
- * not justify an icon package, and a path string is the whole asset. Every one
- * is from simple-icons (CC0-1.0, github.com/simple-icons/simple-icons) at the
- * slug and major version noted above it, unmodified, 24x24 and already
+ * not justify an icon package, and a path string is the whole asset. Every app
+ * mark is from simple-icons (CC0-1.0, github.com/simple-icons/simple-icons) at
+ * the slug and major version noted above it, unmodified, 24x24 and already
  * `fill=currentColor` — which is what lets one mark read in both themes. The
  * marks are the trademarks of their owners and appear here to name the app they
  * launch, which is the only thing this menu uses them for.
  *
+ * `finder` IS THE ONE EXCEPTION, and is marked as such above it: simple-icons
+ * carries no Finder mark, and Finder is the row this menu opens by default
+ * (#384), so it is the one entry that most needs to be recognised without
+ * reading. Drawn here as the face's own geometry — the split panel, the two
+ * eyes, the smile — rather than copied from Apple's artwork.
+ *
  * AN APP WITH NO MARK GETS THE NEUTRAL GLYPH, NEVER A NEIGHBOUR'S — the same
- * rule connection-icon.tsx states for model providers. Nova, TextMate, Terminal
- * and Ghostty are in the shell's opener table with no `icon`, because
- * simple-icons carries no CC0 mark for them; borrowing a similar-looking logo
- * would be a small lie told every time the menu opens.
+ * rule connection-icon.tsx states for model providers. Nova, TextMate and
+ * Ghostty are in the shell's opener table with no `icon`, because simple-icons
+ * carries no CC0 mark for them; borrowing a similar-looking logo would be a
+ * small lie told every time the menu opens.
  */
-import { FolderOpenIcon, SearchIcon } from "lucide-react";
+import { FolderOpenIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const MARKS: Record<string, string> = {
+  // Finder — NOT from simple-icons (it carries none); drawn here. The rounded
+  // panel with its hole wound the other way, the divider down the middle, two
+  // eyes and the smile, in that order.
+  reveal:
+    "M6 2.5h12A3.5 3.5 0 0 1 21.5 6v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5zM6.3 4.5a1.8 1.8 0 0 0-1.8 1.8v11.4a1.8 1.8 0 0 0 1.8 1.8h11.4a1.8 1.8 0 0 0 1.8-1.8V6.3a1.8 1.8 0 0 0-1.8-1.8zM11.5 4.5h1v15h-1zM9.65 9.5a1.15 1.15 0 1 1-2.3 0 1.15 1.15 0 0 1 2.3 0zM16.65 9.5a1.15 1.15 0 1 1-2.3 0 1.15 1.15 0 0 1 2.3 0zM15.8 13.4q-3.8 5-7.6 0 3.8 2 7.6 0z",
   // visualstudiocode@11
   vscode: "M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z",
   // cursor@15
@@ -48,12 +59,11 @@ const MARKS: Record<string, string> = {
 };
 
 /**
- * The mark for one opener `icon` id, or the glyph that stands for the entry's
- * job: a folder for "open it", a magnifier for "show me where it is".
+ * The mark for one opener `icon` id, or the neutral folder glyph for an app
+ * this file has no mark for.
  */
 export function OpenerIcon({ icon, className }: { icon?: string | undefined; className?: string }) {
   const shared = cn("size-3.5 shrink-0", className);
-  if (icon === "reveal") return <SearchIcon className={shared} />;
   const mark = icon ? MARKS[icon] : undefined;
   if (!mark) return <FolderOpenIcon className={shared} />;
   return (

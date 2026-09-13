@@ -961,20 +961,106 @@ describe("the shared-browser interaction model — human input wins, agent defer
     manager.noteHumanInputFromWebContents({ unknown: true });
   });
 
-  test("the tab cap refuses the 13th tab with a sentence; closing the last tab leaves one blank", async () => {
+  test("the tab cap refuses the 13th tab with a sentence", async () => {
     const { manager } = harness();
     for (let i = 0; i < 12; i += 1) await manager.createTab("s", "about:blank");
     const overCap = await manager.callTool("s", "browser_tabs", { action: "new" });
     expect(overCap.isError).toBe(true);
     expect(textOf(overCap)).toContain("Tab limit reached");
+  });
 
-    const solo = harness();
-    await solo.manager.createTab("t", "https://example.com");
-    solo.manager.closeTab("t", 0, "human");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    const tabs = solo.manager.state("t").tabs;
-    expect(tabs).toHaveLength(1);
-    expect(tabs[0].url).toBe("about:blank");
+  /**
+   * CLOSING THE LAST TAB ENDS THE BROWSER — issue #383.
+   *
+   * It used to mint one blank tab instead, so "I am done with this browser"
+   * was a sentence the panel could not hear: every attempt to say it came back
+   * as a fresh New Tab. Every gesture that can empty the strip is here, because
+   * they are three different call sites (the × and the menu's Close reach
+   * `action`; Close others loops) and only one of them was ever exercised.
+   */
+  describe("the last tab closing ends the browser", () => {
+    test("no blank tab is minted, the view is torn down, and the push says ended", async () => {
+      const { manager, children, views, messages } = harness();
+      await manager.createTab("t", "https://example.com", "human");
+      const view = views[0];
+      messages.length = 0;
+
+      manager.closeTab("t", 0, "human");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      expect(manager.state("t").tabs).toEqual([]);
+      // The native WebContentsView is off the window and its WebContents is
+      // closed — not merely hidden behind a panel that stopped drawing it.
+      expect(children.has(view)).toBe(false);
+      expect(view.webContents.isDestroyed()).toBe(true);
+
+      const pushes = messages.filter((message) => message.channel === "telar:browser:state");
+      expect(pushes.at(-1).payload).toMatchObject({ scopeKey: "t", ended: true, tabs: [] });
+    });
+
+    test("`ended` is an EVENT, so a later read of the state does not repeat it", async () => {
+      // Otherwise a panel opened on this scope again would close itself the
+      // moment it asked what was there.
+      const { manager } = harness();
+      await manager.createTab("t", "https://example.com", "human");
+      manager.closeTab("t", 0, "human");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(manager.state("t").ended).toBeUndefined();
+    });
+
+    test("opening a browser again starts fresh — the profile binding outlives the browser", async () => {
+      // `forgetScope` would drop it, and an unbound scope is REFUSED a tab. What
+      // ends is the browser, not the session's right to have one.
+      const { manager } = harness();
+      await manager.createTab("t", "https://example.com", "human");
+      manager.closeTab("t", 0, "human");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      await manager.createTab("t", "https://again.example", "human");
+      const tabs = manager.state("t").tabs;
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0]).toMatchObject({ url: "https://again.example/", active: true });
+    });
+
+    test("the tab strip's × and the tab menu's Close both end it", async () => {
+      for (const index of [undefined, 0]) {
+        const { manager } = harness();
+        await manager.createTab("t", "https://example.com", "human");
+        // `action` is the IPC the cockpit's own chrome speaks: the × sends an
+        // index, the menu's Close sends the one it was opened on.
+        await manager.action("t", { action: "close", ...(index === undefined ? {} : { index }) });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(manager.state("t").tabs).toEqual([]);
+      }
+    });
+
+    test("Close others then Close leaves nothing — the strip empties and stays empty", async () => {
+      const { manager } = harness();
+      await manager.createTab("t", "https://one.example", "human");
+      await manager.createTab("t", "https://two.example", "human");
+      // Close others walks DOWN, as the renderer's menu does.
+      await manager.action("t", { action: "close", index: 0 });
+      expect(manager.state("t").tabs).toHaveLength(1);
+      await manager.action("t", { action: "close", index: 0 });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(manager.state("t").tabs).toEqual([]);
+    });
+
+    test("an AGENT closing its last tab ends it too, and is told its tab is gone", async () => {
+      // One rule rather than two: a divided one ("the human's close ends it,
+      // the agent's does not") is the kind a later reader cannot hold true.
+      const { manager } = harness();
+      await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+      await manager.callTool("s", "browser_tabs", { action: "close" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(manager.state("s").tabs).toEqual([]);
+      const orphaned = await manager.callTool("s", "browser_snapshot", {});
+      expect(orphaned.isError).toBe(true);
+      expect(textOf(orphaned)).toContain("was closed");
+      // …and navigating opens a fresh one rather than refusing forever.
+      expect((await manager.callTool("s", "browser_navigate", { url: "https://again.example" })).isError).toBeUndefined();
+      expect(manager.state("s").tabs).toHaveLength(1);
+    });
   });
 
   test("destroying a scope journals idle for its tabs", async () => {

@@ -813,6 +813,7 @@ function BrowserPageSurface({
   sessionId,
   projectId,
   scopeKey,
+  onEnded,
 }: {
   pageId: string;
   state?: BrowserState;
@@ -821,6 +822,9 @@ function BrowserPageSurface({
   /** Which native browser this tab drives — see `browserScopeKey`. Absent on
    *  the screenshot clients, which have no native view to scope. */
   scopeKey?: string;
+  /** The native browser's last tab closed (#383). Nothing for the screenshot
+   *  fallback, which is a view of a browser it does not own. */
+  onEnded?: () => void;
 }) {
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
@@ -837,7 +841,15 @@ function BrowserPageSurface({
     // KEYED BY THE SCOPE, not the session: two Browser tabs in one session are
     // two native browsers, and sharing a key would make React reuse one
     // instance's bounds, tab list and profile binding for the other.
-    return <DesktopBrowserSurface key={scope} bridge={bridge} scopeKey={scope} {...(projectId ? { projectId } : {})} />;
+    return (
+      <DesktopBrowserSurface
+        key={scope}
+        bridge={bridge}
+        scopeKey={scope}
+        {...(projectId ? { projectId } : {})}
+        {...(onEnded ? { onEnded } : {})}
+      />
+    );
   }
   return <BrowserScreenshotSurface pageId={pageId} {...(state ? { state } : {})} {...(sessionId ? { sessionId } : {})} />;
 }
@@ -1256,6 +1268,7 @@ export function PanelSurface({
   onOpenFileInNewTab,
   onInsertReference,
   onTabParams,
+  onCloseSelf,
   active,
   dataScience,
   onOpenImage,
@@ -1325,6 +1338,15 @@ export function PanelSurface({
    * must not be able to name another tab.
    */
   onTabParams?: (params: PanelTabParams) => void;
+  /**
+   * CLOSE THIS INSTANCE'S TAB — bound to its own id by the caller, exactly as
+   * `onTabParams` is, so a surface can end itself and no other.
+   *
+   * One surface asks for it: the live browser, whose last native tab closing
+   * ends the browser the tab exists to show (#383). Absent simply means nobody
+   * can close this tab from inside it.
+   */
+  onCloseSelf?: () => void;
   active?: TurnState;
   /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
   dataScience?: boolean;
@@ -1440,6 +1462,7 @@ export function PanelSurface({
         {...(browser ? { state: browser } : {})}
         {...(sessionId ? { sessionId, scopeKey: browserScopeKey(sessionId, tab.id) } : {})}
         {...(projectId ? { projectId } : {})}
+        {...(onCloseSelf ? { onEnded: onCloseSelf } : {})}
       />
     );
   if (kind === "diff")
@@ -2378,6 +2401,10 @@ export function RightPanel({
               // Bound to THIS instance, exactly as `onEditorChange` below is —
               // a surface changes its own tab's params and no other's.
               {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}
+              // Same binding-to-this-instance rule: the surface ends its OWN
+              // tab. It is the strip's own × callback, so the focus move and
+              // the persistence are the ones every other close already gets.
+              onCloseSelf={() => onCloseTab(activeTab.id)}
               {...(browser ? { browser } : {})}
               events={events}
               {...(sessionId ? { sessionId } : {})}

@@ -85,6 +85,13 @@ describe("the menu is built from the stored map, not the defaults", () => {
     // A File menu that also opened a LaTeX tab would be a File menu in name.
     expect(file.map((command) => command.id)).not.toContain("open-latex");
   });
+
+  test("Reveal in Finder is a File menu row with ⌘O on it", () => {
+    // #384: the Open menu's last row, reachable from the application menu and
+    // from the keyboard. A folder on disk is what a File menu is for.
+    const item = menuCommands(defaultKeymap(), "file").find((command) => command.id === "reveal-in-finder");
+    expect(item).toMatchObject({ label: "Reveal in Finder", accelerator: "CommandOrControl+O" });
+  });
 });
 
 describe("the store round trip", () => {
