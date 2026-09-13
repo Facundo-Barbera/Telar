@@ -249,6 +249,18 @@ export const WorkerClaim = z.object({
    * nothing left to report on.
    */
   tasks: z.array(TaskSeed).optional(),
+  /**
+   * THE ORIENTATION PARAGRAPH, ALREADY RESOLVED — see `AgentOrientation` and
+   * `apps/engine/src/orientation.ts`.
+   *
+   * THE TEXT, NOT THE FLAG, for exactly the reason `mcpServers` carries the
+   * enabled servers rather than the whole registry plus a rule: a worker that
+   * received a boolean and was trusted to look up the words would be a second
+   * place the decision lives. Absent means the person turned it off (or an
+   * older engine sent nothing), and the driver injects nothing — which is what
+   * every session did before this existed.
+   */
+  orientation: z.string().min(1).optional(),
   turn: Turn,
 });
 export type WorkerClaim = z.infer<typeof WorkerClaim>;

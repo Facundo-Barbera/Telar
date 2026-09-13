@@ -1211,6 +1211,7 @@ export function createClaudeDriver(
       providerInstanceId,
       browserSocket,
       telarSocket,
+      orientation,
       run,
       plugins,
       spool,
@@ -2090,7 +2091,28 @@ export function createClaudeDriver(
        * Baked in at query creation, so the fingerprint below carries `run`
        * for the same reason it carries `browser`.
        */
-      const briefings = [...(browserSocket ? [BROWSER_BRIEFING] : []), ...(run ? [RUN_BRIEFING] : [])];
+      /**
+       * THE ORIENTATION GOES FIRST, and it is the one paragraph here that is
+       * not gated on a capability: where the agent is is true of every session,
+       * with a browser or without one. It is gated on the PERSON instead — the
+       * engine resolves `AgentOrientation.preamble` at claim time and sends the
+       * words or nothing (see ./orientation.ts). First because it teaches the
+       * vocabulary the briefings under it are written in: "this session's
+       * integrated browser" lands differently once "the browser" has a
+       * referent.
+       *
+       * ONCE PER TURN, NOT ONCE PER MESSAGE. `briefings` is baked into the
+       * query at creation and carried in the fingerprint below, so a reused
+       * runtime keeps the paragraph it started with rather than accumulating
+       * one per turn — and a session whose orientation was switched off
+       * mid-conversation cold-starts, which is exactly what "off means nothing
+       * Telar-authored is injected" requires.
+       */
+      const briefings = [
+        ...(orientation ? [orientation] : []),
+        ...(browserSocket ? [BROWSER_BRIEFING] : []),
+        ...(run ? [RUN_BRIEFING] : []),
+      ];
 
       /**
        * EVERYTHING THE QUERY BAKES IN AT CREATION. A turn whose fingerprint
@@ -2171,6 +2193,14 @@ export function createClaudeDriver(
          *  `RUN_BRIEFING` is appended at creation, so a project-less session
          *  that gains a project must cold-start to be told about it. */
         run: Boolean(run),
+        /**
+         * Same rule again, and the reason the toggle means anything mid-session:
+         * the orientation is appended at creation, so switching it off must
+         * cold-start rather than leave a live query still carrying the
+         * paragraph. The TEXT, not a boolean — a reworded preamble is a
+         * different system prompt.
+         */
+        orientation: orientation ?? null,
         /**
          * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
          * re-collecting per request keeps dispatch honest server-side, but a
