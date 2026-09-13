@@ -109,6 +109,15 @@ export type DesktopBrowserPanelState = {
   /** The project key this session declared — what "use for this project"
    *  assigns. Null for a session with no project. */
   profileKey?: string | null;
+  /**
+   * THIS BROWSER JUST ENDED — its last tab closed (#383).
+   *
+   * An EVENT, present on exactly one push and never on a `getState` read: a
+   * scope with no tabs is otherwise indistinguishable from one that has not
+   * opened its first page, so a condition here would close a panel that had
+   * only just been opened.
+   */
+  ended?: boolean;
 };
 
 /** The password-manager extension's status (extension-host.js). */
@@ -621,7 +630,25 @@ class StaleScopeError extends Error {}
  * the one every persisted native tab was filed under — and a suffixed key for
  * any other. Every use below was already a scope; only the name was wrong.
  */
-export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge: DesktopBrowserBridge; scopeKey: string; projectId?: string }) {
+export function DesktopBrowserSurface({
+  bridge,
+  scopeKey,
+  projectId,
+  onEnded,
+}: {
+  bridge: DesktopBrowserBridge;
+  scopeKey: string;
+  projectId?: string;
+  /**
+   * THE LAST TAB CLOSED, so this browser is over (#383) — the panel tab that
+   * holds this surface should close with it.
+   *
+   * Owned by the panel rather than decided here: a surface cannot remove its
+   * own tab, and a browser that answered "no tabs" by drawing a start page
+   * would be the panel keeping a tab for a browser the person just shut.
+   */
+  onEnded?: () => void;
+}) {
   const [state, setState] = useState<DesktopBrowserPanelState>();
   const [draft, setDraft] = useState<string>();
   const [extension, setExtension] = useState<DesktopExtensionStatus>();
@@ -749,6 +776,13 @@ export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge:
     partitionRef.current = result?.partition;
   }, [bridge, scope, scopeKey, projectId]);
 
+  /** Read through a ref so the subscription below is not re-registered on every
+   *  render of a parent that passes a fresh closure. */
+  const endedRef = useRef(onEnded);
+  useEffect(() => {
+    endedRef.current = onEnded;
+  });
+
   useEffect(() => {
     // A microtask, not a direct call: refresh sets state, and React's lint is
     // right that a synchronous set inside an effect can cascade renders.
@@ -757,7 +791,12 @@ export function DesktopBrowserSurface({ bridge, scopeKey, projectId }: { bridge:
     // suspender (a push lost during a renderer reload).
     const timer = window.setInterval(() => void refresh(), 2_000);
     const unsubscribe = bridge.onState((next) => {
-      if (next.scopeKey === scopeKey) setState(next);
+      if (next.scopeKey !== scopeKey) return;
+      setState(next);
+      // THE LAST TAB CLOSED: this browser is over, and so is the tab holding
+      // it. Only the push can say so — `refresh` above reads a state where
+      // "no tabs" means "nothing opened yet" just as much as "all closed".
+      if (next.ended) endedRef.current?.();
     });
     return () => {
       window.clearTimeout(first);
