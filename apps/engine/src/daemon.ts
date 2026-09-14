@@ -3881,7 +3881,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             response,
             200,
             await readProviderSkillsCached({
-              sessionId: record.id,
+              cacheKey: record.id,
               driver: record.driver,
               checkout: record.workspace.path,
               ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),

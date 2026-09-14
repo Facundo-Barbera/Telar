@@ -7,6 +7,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import {
   clearProviderSkillsCache,
   fallbackDescription,
+  findScopedClaudeRoots,
   installedPluginRoots,
   parseFrontMatter,
   parseSupportedCommands,
@@ -210,7 +211,7 @@ describe("the cache in front of the read", () => {
     const home = fixtureHome();
     let asked = 0;
     const input = {
-      sessionId: "session_cache",
+      cacheKey: "session_cache",
       driver: "claude" as const,
       checkout,
       env: { CLAUDE_CONFIG_DIR: home },
@@ -234,7 +235,7 @@ describe("the cache in front of the read", () => {
   test("an in-place edit is picked up by the clock, which the directory mtime cannot see", async () => {
     const checkout = fixtureCheckout();
     const input = {
-      sessionId: "session_clock",
+      cacheKey: "session_clock",
       driver: "claude" as const,
       checkout,
       env: { CLAUDE_CONFIG_DIR: fixtureHome() },
@@ -289,5 +290,94 @@ describe("GET /v2/sessions/:id/skills", () => {
       headers: { authorization: `Bearer ${daemon.discovery.token}` },
     });
     expect(response.status).toBe(404);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * #500 — the directory-scoped skills, and the canvas that has no session.
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE THREE PLACES A SKILL CAN BE, in one checkout: the project root, a
+ * subdirectory that scopes its own, and the machine.
+ *
+ * The middle one is what #500 is about. It is written as a real nested
+ * `.claude` rather than mocked for the same reason the fixture above is: the
+ * thing under test IS whether the walk reaches that directory.
+ */
+const fixtureThreePlaces = (): { checkout: string; home: string } => {
+  const checkout = temp("telar-skills-scoped-");
+  const home = fixtureHome();
+  write(path.join(checkout, ".claude", "skills", "root-skill", "SKILL.md"), "---\nname: root-skill\ndescription: At the project root.\n---\n");
+  write(
+    path.join(checkout, "apps", "web", ".claude", "skills", "nested-skill", "SKILL.md"),
+    "---\nname: nested-skill\ndescription: Scoped to apps/web.\n---\n",
+  );
+  write(path.join(home, "skills", "global-skill", "SKILL.md"), "---\nname: global-skill\ndescription: This machine's own.\n---\n");
+  return { checkout, home };
+};
+
+describe("directory-scoped skills (#500)", () => {
+  test("a root skill, a nested directory skill and a global one all appear", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    const answer = await readProviderSkills({
+      driver: "claude",
+      checkout,
+      env: { CLAUDE_CONFIG_DIR: home },
+      // Empty ON PURPOSE: the CLI cannot supply the nested row. Asked in a
+      // checkout root it does not list a directory-scoped skill at all — only
+      // a cwd inside `apps/web` produces it — so the walk is the only route.
+      loadProviderCommands: async () => [],
+    });
+    expect(answer.skills).toEqual([
+      { name: "root-skill", description: "At the project root.", source: "project" },
+      // NAMESPACED BY ITS DIRECTORY, which is how Claude Code addresses one.
+      { name: "apps/web:nested-skill", description: "Scoped to apps/web.", source: "project" },
+      { name: "global-skill", description: "This machine's own.", source: "user" },
+    ]);
+  });
+
+  test("a scoped `commands/` is namespaced the same way", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    write(path.join(checkout, "apps", "web", ".claude", "commands", "deploy.md"), "---\ndescription: Ship the site.\n---\n");
+    const answer = await readProviderSkills({ driver: "claude", checkout, env: { CLAUDE_CONFIG_DIR: home }, loadProviderCommands: async () => [] });
+    expect(answer.commands).toEqual([{ name: "apps/web:deploy", description: "Ship the site.", source: "project" }]);
+  });
+
+  test("node_modules is never walked, however deep its own `.claude` is", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    write(
+      path.join(checkout, "node_modules", "some-package", ".claude", "skills", "theirs", "SKILL.md"),
+      "---\nname: theirs\ndescription: A dependency's.\n---\n",
+    );
+    const answer = await readProviderSkills({ driver: "claude", checkout, env: { CLAUDE_CONFIG_DIR: home }, loadProviderCommands: async () => [] });
+    expect(answer.skills.map((skill) => skill.name)).not.toContain("node_modules/some-package:theirs");
+  });
+
+  test("the walk stops before it is a walk of the whole repository", async () => {
+    const checkout = temp("telar-skills-depth-");
+    write(path.join(checkout, "a", "b", ".claude", "skills", "near", "SKILL.md"), "---\nname: near\ndescription: Within reach.\n---\n");
+    write(path.join(checkout, "a", "b", "c", "d", "e", ".claude", "skills", "far", "SKILL.md"), "---\nname: far\ndescription: Too deep.\n---\n");
+    expect((await findScopedClaudeRoots(checkout)).map((entry) => entry.scope)).toEqual(["a/b"]);
+  });
+
+  test("the cache notices a skill added to a scoped directory it already found", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    const input = {
+      cacheKey: "scoped_cache",
+      driver: "claude" as const,
+      checkout,
+      env: { CLAUDE_CONFIG_DIR: home },
+      loadProviderCommands: async () => [],
+    };
+    expect((await readProviderSkillsCached(input)).skills).toHaveLength(3);
+    // Served from memory — the stamp is over the same directories, which is the
+    // thing that broke when the stamp was taken before the roots were known.
+    expect((await readProviderSkillsCached(input)).skills).toHaveLength(3);
+    write(
+      path.join(checkout, "apps", "web", ".claude", "skills", "another", "SKILL.md"),
+      "---\nname: another\ndescription: Added later.\n---\n",
+    );
+    expect((await readProviderSkillsCached(input)).skills).toHaveLength(4);
   });
 });
