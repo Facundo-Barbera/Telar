@@ -98,8 +98,13 @@ const api = createEngineApi();
 
 /** The contract's own ceiling (`TurnSubmission.attachments`). Enforced here so
  *  the seventeenth file is refused at the point of picking rather than at the
- *  end of a submit that also uploaded the first sixteen. */
-const MAX_ATTACHMENTS = 16;
+ *  end of a submit that also uploaded the first sixteen.
+ *
+ *  EXPORTED because attachments no longer arrive only through this box: the
+ *  browser's camera (#474) hands one straight to the cockpit's list, and a
+ *  second ceiling that disagreed with this one would be a limit enforced in
+ *  two places and true in neither. */
+export const MAX_ATTACHMENTS = 16;
 
 
 /**

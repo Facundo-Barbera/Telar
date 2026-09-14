@@ -7,7 +7,9 @@ import {
   ADDRESS_CONTROLS,
   ADDRESS_INPUT_FLOOR,
   ADDRESS_ROW_PADDING,
+  ADDRESS_TOOLS,
   addressInputRoom,
+  addressRowFitsTools,
   desktopBrowserBridge,
   zoomLabel,
 } from "./browser-live";
@@ -72,6 +74,48 @@ describe("the address row's width budget", () => {
   });
 });
 
+/**
+ * THE CAMERA AND THE PEN FOLD RATHER THAN CRUSH THE INPUT (#474).
+ *
+ * The budget above has FOUR PIXELS of slack at the 420px panel #319 was filed
+ * about, so two more glyphs on the row unconditionally would put the address
+ * bar back under its floor — which is exactly the bug #319 exists to stop, and
+ * a shortcut is not worth it. So the row spends `ADDRESS_TOOLS` only when the
+ * input still clears the floor afterwards, and below that width both gestures
+ * live in the `⋯` menu, where they are listed at every width anyway.
+ */
+describe("the two folding tool glyphs", () => {
+  const row = (panel: number) => panel - ADDRESS_ROW_PADDING;
+
+  test("they cost two glyphs and the two gaps before them", () => {
+    expect(ADDRESS_TOOLS).toBe(2 * 22 + 2 * 4);
+  });
+
+  test("at the panel's default 510px the row carries them and the input still clears the floor", () => {
+    expect(addressRowFitsTools(row(510))).toBe(true);
+    expect(addressInputRoom(row(510), true)).toBeGreaterThanOrEqual(ADDRESS_INPUT_FLOOR);
+  });
+
+  test("at the 420px panel #319 was filed about they fold — the input wins", () => {
+    expect(addressRowFitsTools(row(420))).toBe(false);
+    // Unfolded they would breach the floor, which is the whole reason to fold.
+    expect(addressInputRoom(row(420), true)).toBeLessThan(ADDRESS_INPUT_FLOOR);
+    // Folded, the row is exactly what #473 left it as.
+    expect(addressInputRoom(row(420))).toBe(addressInputRoom(row(420), false));
+  });
+
+  test("the fold is monotone: a row that fits them keeps fitting them as it widens", () => {
+    let seen = false;
+    for (let width = 200; width < 900; width += 1) {
+      const fits = addressRowFitsTools(width);
+      if (fits) seen = true;
+      // Never back to false once true.
+      expect(!seen || fits).toBe(true);
+    }
+    expect(seen).toBe(true);
+  });
+});
+
 describe("the row's markup is the budget's own claim", () => {
   const source = fs.readFileSync(path.join(fileURLToPath(new URL(".", import.meta.url)), "browser-live.tsx"), "utf8");
 
@@ -110,6 +154,20 @@ describe("the row's markup is the budget's own claim", () => {
     expect(source).toContain("export const ADDRESS_CONTROLS = 4 * 22 + 18 + 44 + 22 + 7 * 4;");
     // `p-1` would cost the lock 4 more px, which is the whole of the slack.
     expect(addressInputRoom(420 - ADDRESS_ROW_PADDING) - 4).toBe(ADDRESS_INPUT_FLOOR);
+  });
+
+  /**
+   * The glyphs are gated on the MEASURED row, not on a guess — and the same
+   * two gestures are in the `⋯` menu unconditionally, so folding costs a
+   * shortcut and never a capability.
+   */
+  test("the camera and the pen are drawn only when the measured row can afford them", () => {
+    expect(source).toContain("{rowFitsTools && canCapture ? (");
+    expect(source).toContain("const rowFitsTools = useAddressRowTools(addressRowRef);");
+    // ...and the menu's rows are gated on `canCapture` alone, at every width.
+    expect(source).toContain("{canCapture ? (");
+    expect(source).toContain("Screenshot the full page");
+    expect(source).toContain("Annotate this page");
   });
 
   test("the 1Password warning is a mark with the sentence in its tooltip, not a paragraph in the toolbar", () => {

@@ -128,13 +128,27 @@ async function waitFor(ready: () => boolean) {
   }
 }
 
-async function mount(state: DesktopBrowserPanelState, extra: Partial<DesktopBrowserBridge> = {}) {
+async function mount(
+  state: DesktopBrowserPanelState,
+  extra: Partial<DesktopBrowserBridge> = {},
+  /** Where a capture lands (#474). Absent is a panel with no composer, which
+   *  is what hides the camera rather than offering one that captures into
+   *  nowhere. */
+  onAttach?: (files: readonly File[], caption?: string) => void,
+) {
   const recorded = makeBridge(state, extra);
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => {
-    root.render(<DesktopBrowserSurface bridge={recorded.bridge} scopeKey="session_a" projectId="project_a" />);
+    root.render(
+      <DesktopBrowserSurface
+        bridge={recorded.bridge}
+        scopeKey="session_a"
+        projectId="project_a"
+        {...(onAttach ? { onAttach } : {})}
+      />,
+    );
     await settle();
   });
   // The chrome is drawn from the shell's state, so nothing this file asserts
@@ -386,5 +400,155 @@ describe("a previewed tab", () => {
     const back = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Bring it back")!;
     await mouseClick(back);
     expect(actions.at(-1)).toEqual({ action: "end-preview" });
+  });
+});
+
+/**
+ * THE CAMERA AND THE PEN (#474).
+ *
+ * WHAT IS MOUNTED AND CLICKED HERE is the `⋯` menu's three rows, because they
+ * are the ones that exist at EVERY width: the row's own two glyphs are gated
+ * on a measured `ResizeObserver` width, which a DOM with no layout never
+ * reports. The arithmetic that gates them is pinned in `browser-live.test.ts`
+ * beside this, and the markup's gate is scanned there too — between the three
+ * there is no width at which a capture is unreachable and none at which the
+ * address bar is crushed to reach one.
+ *
+ * A 1×1 PNG stands in for the frame. Nothing here decodes it: what is asserted
+ * is the shape that leaves the panel — a `File` on the composer's list, and a
+ * caption in the draft carrying the address the picture is of.
+ */
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** A shell that can capture, recording what it was asked for. */
+function capturingBridge(patch: Record<string, unknown> = {}) {
+  const asked: Array<{ fullPage?: boolean; elements?: boolean } | undefined> = [];
+  return {
+    asked,
+    capture: async (_scope: string, options?: { fullPage?: boolean; elements?: boolean }) => {
+      asked.push(options);
+      return {
+        data: PNG_1PX,
+        mimeType: "image/png",
+        url: "https://example.com/",
+        title: "Example",
+        width: 1280,
+        height: 800,
+        fullPage: Boolean(options?.fullPage),
+        elements: options?.elements ? [{ role: "button", name: "Save", selector: "#save", x: 4, y: 4, width: 40, height: 20 }] : undefined,
+        ...patch,
+      };
+    },
+  };
+}
+
+describe("the browser's camera", () => {
+  test("a screenshot becomes an attachment, and its caption carries the address and the viewport", async () => {
+    const landed: Array<{ files: readonly File[]; caption?: string }> = [];
+    const shell = capturingBridge();
+    const { host } = await mount(panelState(), { capture: shell.capture }, (files, caption) => landed.push({ files, caption }));
+
+    await mouseClick(optionsTrigger(host));
+    await mouseClick(menuRow("Screenshot the viewport"));
+    await waitFor(() => landed.length > 0);
+
+    expect(shell.asked.at(-1)).toEqual({});
+    const [sent] = landed;
+    expect(sent!.files).toHaveLength(1);
+    expect(sent!.files[0]!.name).toBe("screenshot-example.com.png");
+    expect(sent!.files[0]!.type).toBe("image/png");
+    // A real decode, not the base64 handed back: the composer holds bytes.
+    expect(sent!.files[0]!.size).toBeGreaterThan(0);
+    expect(sent!.caption).toBe("Screenshot of https://example.com/ (1280×800).");
+  });
+
+  test("the full page is the same button's second item, and it says so in the caption", async () => {
+    const landed: Array<{ files: readonly File[]; caption?: string }> = [];
+    const shell = capturingBridge();
+    const { host } = await mount(panelState(), { capture: shell.capture }, (files, caption) => landed.push({ files, caption }));
+
+    await mouseClick(optionsTrigger(host));
+    await mouseClick(menuRow("Screenshot the full page"));
+    await waitFor(() => landed.length > 0);
+
+    expect(shell.asked.at(-1)).toEqual({ fullPage: true });
+    expect(landed[0]!.caption).toBe("Full-page screenshot of https://example.com/ (1280×800).");
+  });
+
+  test("a capture that fails is said out loud, not swallowed", async () => {
+    const landed: File[][] = [];
+    const { host } = await mount(
+      panelState(),
+      { capture: async () => { throw new Error("There is no page loaded in this tab to capture."); } },
+      (files) => landed.push([...files]),
+    );
+
+    await mouseClick(optionsTrigger(host));
+    await mouseClick(menuRow("Screenshot the viewport"));
+    await waitFor(() => Boolean(host.querySelector('[role="alert"]')));
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("no page loaded");
+    expect(landed).toHaveLength(0);
+  });
+
+  test("with nowhere for a capture to land, the rows are not offered at all", async () => {
+    // A shell that CAN capture, but no composer to capture into.
+    const { host } = await mount(panelState(), { capture: capturingBridge().capture });
+    await mouseClick(optionsTrigger(host));
+    expect(menuRows()).not.toContain("Screenshot the viewport");
+    expect(menuRows()).not.toContain("Annotate this page");
+    // ...and the rest of the menu is untouched.
+    expect(menuRows()).toContain("Hard reload");
+  });
+
+  test("an older shell with no capture handler offers nothing rather than a row that throws", async () => {
+    const { host } = await mount(panelState(), {}, () => {});
+    await mouseClick(optionsTrigger(host));
+    expect(menuRows()).not.toContain("Screenshot the viewport");
+    expect(menuRows()).toContain("Hard reload");
+  });
+});
+
+describe("annotate mode", () => {
+  test("it asks for the element boxes in the same call as the frame, and takes the native view down", async () => {
+    const shell = capturingBridge();
+    const { host, visibility } = await mount(panelState(), { capture: shell.capture }, () => {});
+    expect(nativeViewOverlayHidden()).toBe(false);
+
+    await mouseClick(optionsTrigger(host));
+    await mouseClick(menuRow("Annotate this page"));
+    await waitFor(() => Boolean(host.querySelector('[aria-label="Annotate the page"]')));
+
+    // ONE call, carrying both — not a frame and then a snapshot of a page
+    // that has since been hidden.
+    expect(shell.asked.at(-1)).toEqual({ elements: true });
+    // The page is down for as long as the overlay is up.
+    expect(nativeViewOverlayHidden()).toBe(true);
+    expect(visibility.at(-1)).toBe(false);
+    // The frozen frame is what is drawn, at the tab's own viewport.
+    const frame = host.querySelector("img[alt^='Frozen frame']") as HTMLImageElement | null;
+    expect(frame?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_1PX}`);
+    expect(host.textContent).toContain("1280×800");
+  });
+
+  test("every tool the issue named is there, and Done puts the page back", async () => {
+    const shell = capturingBridge();
+    const { host } = await mount(panelState(), { capture: shell.capture }, () => {});
+    await mouseClick(optionsTrigger(host));
+    await mouseClick(menuRow("Annotate this page"));
+    await waitFor(() => Boolean(host.querySelector('[aria-label="Annotate the page"]')));
+
+    const overlay = host.querySelector('[aria-label="Annotate the page"]')!;
+    const tools = [...overlay.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
+    expect(tools).toEqual(expect.arrayContaining(["Rectangle", "Arrow", "Freehand", "Text", "Pick element"]));
+    // Undo and Clear start unpressable: there is nothing on the frame yet.
+    const undo = overlay.querySelector('[aria-label="Undo the last mark"]') as HTMLButtonElement;
+    expect(undo.disabled).toBe(true);
+
+    const done = [...overlay.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Done")!;
+    await mouseClick(done);
+    await waitFor(() => !host.querySelector('[aria-label="Annotate the page"]'));
+    // The page is live again the moment the overlay goes.
+    expect(nativeViewOverlayHidden()).toBe(false);
   });
 });
