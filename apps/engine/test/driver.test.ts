@@ -4208,3 +4208,157 @@ test("a batch of steers keeps one transcript row PER MESSAGE with its own sender
   expect(text.indexOf("[agent message from session session_peer]")).toBeLessThan(text.indexOf("and the diff"));
   expect(text.startsWith("look at this")).toBe(true);
 });
+
+/**
+ * #465, THE TWO HALVES THAT ARE ABOUT BACKGROUND WORK RATHER THAN ABOUT THE
+ * MISSING `result` ITSELF.
+ *
+ * The end-turn grace above is what settles the turn; these pin the two
+ * consequences the issue names for the work the turn leaves behind — that a
+ * running shell must not hold the turn open, and that a shell the process took
+ * with it must be said out loud rather than discovered on the next resume.
+ */
+describe("background work outlives its turn, but not its process (#465)", () => {
+  const settleUntil = async (check: () => boolean, ms = 1_000) => {
+    const until = Date.now() + ms;
+    while (!check() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(check()).toBe(true);
+  };
+
+  /** A session door with a recorder behind each hook — the idle-pump shape,
+   *  re-declared because the one above is scoped to its own describe block. */
+  const door465 = () => {
+    const tasks: TurnObservation[] = [];
+    const turns: Array<{ input: string; reason: unknown; observations: TurnObservation[]; closed?: unknown }> = [];
+    let runSeq = 0;
+    return {
+      tasks,
+      turns,
+      hooks: {
+        onTasks: async (batch: TurnObservation[]) => void tasks.push(...batch),
+        onProviderTurn: async ({ input, reason }: { input: string; reason: unknown }) => {
+          const record = { input, reason, observations: [] as TurnObservation[] } as (typeof turns)[number];
+          turns.push(record);
+          return {
+            runId: `run_465_${(runSeq += 1)}`,
+            onObservations: async (batch: TurnObservation[]) => void record.observations.push(...batch),
+            close: async (result: unknown) => { record.closed = result; },
+          };
+        },
+      },
+    };
+  };
+
+  test("a reply with nothing left but a RUNNING background task settles, and the shell's ending opens a turn of its own", async () => {
+    /**
+     * THE SHAPE THE ISSUE WAS FILED ON: the model answers, a `Monitor` or a
+     * backgrounded `Bash` is still going, and the CLI sends nothing further —
+     * its own auto-continuation is parked on that task. A pending background
+     * task is not an unfinished answer; from the person's side the turn ended
+     * when the reply landed.
+     *
+     * PINNED RATHER THAN IMPLEMENTED SEPARATELY: the end-turn grace already
+     * covers it, because `end_turn` is exactly what the envelope carries in
+     * this case too. This test is what stops that coverage regressing — and
+     * what proves the task is left ALIVE rather than swept, so its ending still
+     * arrives on the idle pump and opens a wake.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        const uuid = first.value!.uuid!;
+        yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: uuid };
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "watch CI", task_type: "local_bash", is_backgrounded: true };
+        yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "bg1", task_type: "local_bash", description: "watch CI" }] };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "Watching CI; I'll report back." }], stop_reason: "end_turn" } };
+        // …and then nothing. No `result` — the measured stall exactly.
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", status: "completed", summary: "CI is green" };
+        yield { type: "user", message: { role: "user", content: "Background task completed (CI is green)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+        yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Green — merging." } } };
+        yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = door465();
+    const { sink, result } = run(driver, { sessionId: "session_465_bg", session: door.hooks, endTurnGraceMs: 20 });
+    // The turn ends on the reply it actually wrote, with the shell still alive.
+    await expect(result).resolves.toMatchObject({ text: "Watching CI; I'll report back." });
+    // NOT swept: background work is what outlives a turn, and closing it here
+    // would kill the very thing the person is waiting on.
+    expect(sink.observations.some((o) => o.kind === "task.completed")).toBe(false);
+
+    releaseWake!();
+    // Its ending arrives on the idle pump and opens a NEW turn, named after the
+    // shell that woke it — the wake path #71/#447 already built.
+    await settleUntil(() => door.turns[0]?.closed !== undefined);
+    expect(door.turns).toHaveLength(1);
+    expect(door.turns[0]!.reason).toEqual({ kind: "task_notification", taskId: "task_toolu_bg" });
+    expect(door.turns[0]!.closed).toEqual({ text: "Green — merging." });
+  });
+
+  test("a process that dies BETWEEN turns with background work inside it says how much was lost, and the rows stop claiming to run", async () => {
+    /**
+     * THE TAIL OF THE SAME BUG, and the half the turn pump cannot see. Once the
+     * turn above settles with its shells alive, the process is idle — so when
+     * it dies there is no turn to fail and nothing that would ever close those
+     * rows. `livenessOf` reads task state, so the session would report itself
+     * as still monitoring for ever.
+     */
+    let releaseDeath: (() => void) | undefined;
+    const died = new Promise<void>((resolve) => { releaseDeath = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        const uuid = first.value!.uuid!;
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "watch CI", task_type: "local_bash", is_backgrounded: true };
+        yield { type: "system", subtype: "task_started", task_id: "bg2", tool_use_id: "toolu_bg2", description: "tail the log", task_type: "monitor", is_backgrounded: true };
+        yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: uuid };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "both running" }] } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", user_message_uuid: uuid };
+        // The turn is over and the process is idle. Then it dies — a crash, a
+        // quit, the owner restarting Telar.
+        await died;
+      },
+    }) as never);
+    const door = door465();
+    await run(driver, { sessionId: "session_465_death", session: door.hooks }).result;
+    releaseDeath!();
+
+    await settleUntil(() => door.tasks.some((o) => o.kind === "runtime.warning"));
+    const warning = door.tasks.find((o) => o.kind === "runtime.warning");
+    expect(warning?.kind === "runtime.warning" && warning.message).toContain("2 background tasks still running");
+    // Both rows are closed, so `livenessOf` stops reading the session as busy.
+    const closed = door.tasks.filter((o) => o.kind === "task.completed");
+    expect(closed.map((o) => (o.kind === "task.completed" ? [o.task.id, o.task.state] : []))).toEqual([
+      ["task_toolu_bg", "stopped"],
+      ["task_toolu_bg2", "stopped"],
+    ]);
+  });
+
+  test("a process that dies DURING a turn reports the same loss on the turn itself", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: first.value!.uuid! };
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "watch CI", task_type: "local_bash", is_backgrounded: true };
+        // The stream ends mid-turn: no result, and the shell dies with it.
+      },
+    }) as never);
+    const { sink, result } = run(driver, { sessionId: "session_465_death_midturn" });
+    // The turn still fails — the process really did go away mid-answer.
+    await expect(result).rejects.toThrow();
+    const warning = sink.observations.find((o) => o.kind === "runtime.warning");
+    expect(warning?.kind === "runtime.warning" && warning.message).toContain("1 background task still running");
+    const closed = sink.observations.find((o) => o.kind === "task.completed");
+    expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "stopped" });
+  });
+});
