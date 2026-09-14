@@ -43,7 +43,9 @@ export type SessionBootstrapStore = {
   turns(sessionId: string): Turn[];
   items(sessionId: string): Item[];
   tasks(sessionId: string): Task[];
-  requests(sessionId: string): EngineRequest[];
+  /** Bounded for the snapshot — every open request, plus a tail of settled
+   *  ones (#245). `requests()` itself stays whole for callers that want it. */
+  snapshotRequests(sessionId: string): EngineRequest[];
   snapshotWindow(
     sessionId: string,
     window: { limit: number; before?: string },
@@ -94,7 +96,7 @@ export function sessionSnapshot(
           // answerable from the FIRST fetch of a cold session, before any event
           // has streamed.
           tasks: store.tasks(sessionId),
-          requests: store.requests(sessionId),
+          requests: store.snapshotRequests(sessionId),
         }
       : store.snapshotWindow(sessionId, { limit: window.turns, ...(window.before === undefined ? {} : { before: window.before }) });
   /**
