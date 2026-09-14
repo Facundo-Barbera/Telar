@@ -994,6 +994,16 @@ const KNOWN_RATE_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opu
 
 /** The collapsed label, derived once by the engine like every other row's. */
 export function titleForProviderWait(detail: ProviderWaitDetail): string {
+  /**
+   * THE ROW THAT SAYS "STILL NOTHING". Its whole content is the elapsed time,
+   * because that is all anyone knows: the request went out, nothing has come
+   * back, and no provider frame explains it. Said as an observation rather than
+   * a verdict — the request may yet answer, and the row closes when it does.
+   */
+  if (detail.kind === "no_response") {
+    const waited = detail.waitedMs === undefined ? "" : ` after ${durationText(detail.waitedMs)}`;
+    return `The model has not answered${waited}`;
+  }
   if (detail.kind === "rate_limit") {
     // `other` names nothing a person can act on, so it earns no parenthetical.
     const limit = detail.limitType && detail.limitType !== "other" ? ` (${detail.limitType.replaceAll("_", " ")})` : "";
@@ -1018,6 +1028,24 @@ export function titleForProviderWait(detail: ProviderWaitDetail): string {
       : `after ${durationText(detail.waitedMs)} with no response`;
   return `Retrying${delay} ${because}${attempt}`;
 }
+
+/**
+ * HOW LONG A REQUEST MAY BE OUT WITH NOTHING BACK before the turn says so.
+ *
+ * The CLI announces `system/status {status:"requesting"}` as each request goes
+ * out and opens the reply with `message_start`. Between them it reports nothing
+ * at all, whatever happens — a request that stalled before its response headers
+ * produced sixty seconds of complete silence in the #261 measurement, unchanged
+ * with the CLI's own byte and stream watchdogs set — so the engine is the only
+ * party that can tell a person the model is unreachable.
+ *
+ * 30s IS A PRODUCT CHOICE, not a measurement. First token at a large context is
+ * routinely slow (the #263 note puts p90 near 15s at 300K), and a row on every
+ * slow first token would be noise that teaches people to ignore the row. Double
+ * that p90 is late enough to mean something and early enough to beat a person's
+ * own "is this thing broken" by a wide margin.
+ */
+const PROVIDER_SILENCE_MS = 30_000;
 
 /** Milliseconds as a person would say them. Sub-second stays in ms; anything
  *  longer reads in seconds to one decimal, because "1085ms" is a measurement
@@ -1165,9 +1193,16 @@ export function createClaudeDriver(
      * answers, which is the failure `cli-resolution.ts` exists to prevent.
      */
     resolveExecutable?: (binaryPath?: string) => string | undefined;
+    /**
+     * How long a request may be out with nothing back before the turn says so
+     * — see `PROVIDER_SILENCE_MS`. Injected only so a test does not have to
+     * sleep for the real threshold.
+     */
+    providerSilenceMs?: number;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
+  const providerSilenceMs = options.providerSilenceMs ?? PROVIDER_SILENCE_MS;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
   /**
@@ -1272,6 +1307,44 @@ export function createClaudeDriver(
         if (!waitItemId) return;
         emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
         waitItemId = undefined;
+      };
+      /**
+       * THE SILENCE WATCH — a request that is out and has not answered (#263).
+       *
+       * A TIMER RATHER THAN A CHECK IN THE LOOP, because the loop is exactly
+       * what a stall stops: the pump is parked on `takeStep` awaiting a frame
+       * that never comes, so nothing inside it runs to notice. `emit` and
+       * `flush` are already called from a timer (see `flushSoon`), so the row
+       * reaches the sink the same way a delta does.
+       *
+       * Armed by `requesting`, disarmed by our own main loop speaking again. If
+       * it fires first it opens the standing wait row, which the same frame
+       * then closes through `closeProviderWait` — one row with a beginning and
+       * an end, never a marker floating in silence.
+       */
+      let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+      const disarmProviderSilence = (): void => {
+        if (silenceTimer === undefined) return;
+        clearTimeout(silenceTimer);
+        silenceTimer = undefined;
+      };
+      const armProviderSilence = (): void => {
+        disarmProviderSilence();
+        const sentAt = Date.now();
+        silenceTimer = setTimeout(() => {
+          silenceTimer = undefined;
+          // A retry or a rejected limit is already holding a row open about
+          // this same silence, and it has the provider's own account of it.
+          // Two rows for one wait would be the engine arguing with the SDK.
+          if (waitItemId) return;
+          const id = itemId();
+          const wait: ProviderWaitDetail = { kind: "no_response", waitedMs: Date.now() - sentAt };
+          const detail: ItemDetail = { type: "provider_wait", wait };
+          emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(wait) } });
+          waitItemId = id;
+          void flush().catch(() => undefined);
+        }, providerSilenceMs);
+        silenceTimer.unref?.();
       };
       /**
        * THE LAST REJECTED LIMIT THAT IS STILL STANDING — the evidence that, if
@@ -2854,11 +2927,14 @@ export function createClaudeDriver(
            * went through. Anything else leaves the row open, and the turn's own
            * end closes it if nothing ever does.
            */
-          if (
-            waitItemId &&
-            ours &&
-            (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")
-          ) {
+          const ourLoopSpoke =
+            ours && (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result");
+          // THE REQUEST LANDED — whether or not the watch ever fired. Disarmed
+          // unconditionally, because the common case is the happy one: a reply
+          // that arrives in two seconds must not leave a timer standing to open
+          // a row about a silence that ended twenty-eight seconds ago.
+          if (ourLoopSpoke) disarmProviderSilence();
+          if (waitItemId && ourLoopSpoke) {
             closeProviderWait();
             /**
              * MODEL OUTPUT CLEARS THE LIMIT; A `result` DOES NOT.
@@ -2877,6 +2953,16 @@ export function createClaudeDriver(
 
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
+            /**
+             * A REQUEST JUST WENT OUT. From here until our own main loop speaks
+             * the CLI reports nothing whatever happens, so this is where the
+             * engine starts counting — see `armProviderSilence` and #263.
+             *
+             * Re-armed on every `requesting`, which is what makes it per
+             * REQUEST rather than per turn: a turn with four tool rounds sends
+             * four, and each gets its own clock.
+             */
+            if (str(item.status) === "requesting") armProviderSilence();
             /**
              * `status: "compacting"` opens the row; a later status carrying
              * `compact_result` closes it. Measured against CLI 2.1.246: a
@@ -3327,8 +3413,11 @@ export function createClaudeDriver(
         // The plan is turn-scoped and has no tool_result to close it.
         if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
         // A wait the stream ended inside is over — the turn is not waiting for
-        // anything any more, whatever the reason it stopped.
+        // anything any more, whatever the reason it stopped. The watch goes
+        // with it: a timer left armed past the turn would open a row on a sink
+        // that has stopped taking.
         closeProviderWait();
+        disarmProviderSilence();
         // A compaction the stream ended inside is over: finished if the CLI
         // said so and only the boundary never came, failed otherwise.
         if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: compactionSucceeded ? "completed" : "failed" });

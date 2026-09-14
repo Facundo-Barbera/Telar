@@ -877,6 +877,96 @@ describe("a provider wait is a row, not silence", () => {
   });
 
   /**
+   * THE SILENCE NOBODY REPORTS — #263.
+   *
+   * A request that stalls before its response headers emits no frame on the SDK
+   * iterator and no line on the CLI's stderr for the whole stall (measured for
+   * #261: sixty seconds of nothing, unchanged with the CLI's byte and stream
+   * watchdog variables set). The engine can still say so, because it sees
+   * `system/status {status:"requesting"}` go out and `message_start` not come
+   * back. The stub below stalls between exactly those two frames.
+   */
+  describe("a request that stalls before its headers is a row, not a quiet turn", () => {
+    test("silence past the threshold opens a row, and the reply closes it", async () => {
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            // The stall: the pump is parked on a frame that is not coming.
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "assistant", message: { content: [{ type: "text", text: "late" }] } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const { sink, result } = run(driver);
+      await expect(result).resolves.toMatchObject({ text: "late" });
+      const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+      expect(started?.kind === "item.started" && started.item.detail.type === "provider_wait" && started.item.detail.wait.kind).toBe("no_response");
+      // The elapsed time is the row's whole content — it is all anyone knows.
+      const waitedMs =
+        started?.kind === "item.started" && started.item.detail.type === "provider_wait" ? started.item.detail.wait.waitedMs : undefined;
+      expect(waitedMs).toBeGreaterThanOrEqual(20);
+      expect(started?.kind === "item.started" && started.item.title).toMatch(/^The model has not answered after /);
+      // Bounded: the response beginning closes it, so the stall has an end.
+      const waitId = started?.kind === "item.started" ? started.item.id : "";
+      expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
+    });
+
+    test("a request that answers under the threshold produces no row at all", async () => {
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "assistant", message: { content: [{ type: "text", text: "prompt" }] } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 40 },
+      );
+      const { sink, result } = run(driver);
+      await result;
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+      // AND THE WATCH IS DISARMED, not merely beaten: a timer left standing
+      // would open a row about a silence that ended long before it fired.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+    });
+
+    test("a retry's own account of the silence wins — the engine does not argue with the SDK", async () => {
+      // `api_retry` carries the provider's measured `waited_ms`. Two rows for
+      // one wait would be the engine second-guessing a better witness.
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            yield {
+              type: "system",
+              subtype: "api_retry",
+              attempt: 1,
+              max_retries: 3,
+              retry_delay_ms: 1_000,
+              error_status: null,
+              no_response: { waited_ms: 120_000 },
+            };
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const { sink, result } = run(driver);
+      await result;
+      const waits = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item.detail.wait] : []));
+      expect(waits).toHaveLength(1);
+      expect(waits[0]?.kind).toBe("api_retry");
+    });
+  });
+
+  /**
    * THE STUB IS THE WHOLE EVIDENCE, AND THAT IS STATED ON PURPOSE.
    *
    * The engine store has NEVER recorded a real `rate_limit` row — zero across
