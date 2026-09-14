@@ -1047,6 +1047,28 @@ export function titleForProviderWait(detail: ProviderWaitDetail): string {
  */
 const PROVIDER_SILENCE_MS = 30_000;
 
+/**
+ * How long a turn waits for the CLI's `result` after the model has already
+ * said `end_turn` before the engine settles the turn itself (#465).
+ *
+ * MEASURED, NOT ASSUMED. On the coordinator session (session_b1d34698…,
+ * 2026-09-14, turns …e52d15 and …7e852d) the main loop's final assistant
+ * envelope arrived with `stop_reason: "end_turn"`, every tool result before it
+ * was answered, and the `result` frame that ends the turn NEVER came — the
+ * CLI's own transcript for the whole two-hour window holds zero `result`
+ * rows. The engine turn sat `running` with no output for 15–25 minutes until
+ * the owner restarted Telar, five times in one evening. A steered session
+ * (peer reports and mid-turn messages injected as steers) is where it shows;
+ * the exact CLI-side cause is not known and this driver cannot fix it there.
+ *
+ * `end_turn` is the model's own statement that it is done; on a healthy
+ * producer the `result` follows within milliseconds. Two seconds is long
+ * enough that a slow result on a loaded machine still wins, and short enough
+ * that a person never reads it as a stall. The turn that settles this way
+ * carries a warning row saying so, so a future stall names its cause.
+ */
+const END_TURN_GRACE_MS = 2_000;
+
 /** Milliseconds as a person would say them. Sub-second stays in ms; anything
  *  longer reads in seconds to one decimal, because "1085ms" is a measurement
  *  and "1.1s" is a duration. */
@@ -1199,10 +1221,14 @@ export function createClaudeDriver(
      * sleep for the real threshold.
      */
     providerSilenceMs?: number;
+    /** How long to wait for a `result` after `end_turn` — see
+     *  `END_TURN_GRACE_MS`. Injected so a test does not sleep for the real one. */
+    endTurnGraceMs?: number;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   const providerSilenceMs = options.providerSilenceMs ?? PROVIDER_SILENCE_MS;
+  const endTurnGraceMs = options.endTurnGraceMs ?? END_TURN_GRACE_MS;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
   /**
@@ -1322,6 +1348,15 @@ export function createClaudeDriver(
        * then closes through `closeProviderWait` — one row with a beginning and
        * an end, never a marker floating in silence.
        */
+      /**
+       * THE END-TURN GRACE (#465): set when our main loop's assistant envelope
+       * says `end_turn` with no top-level tool still open — the model is done
+       * and only the CLI's `result` is owed. Cleared by any later frame of
+       * ours. While it stands, the pump's read is raced against it; if the
+       * grace wins, the turn settles here with a warning row instead of
+       * waiting forever on a `result` that measurably does not always come.
+       */
+      let endTurnSeenAt: number | undefined;
       let silenceTimer: ReturnType<typeof setTimeout> | undefined;
       const disarmProviderSilence = (): void => {
         if (silenceTimer === undefined) return;
@@ -1542,7 +1577,7 @@ export function createClaudeDriver(
         modelUsage?: unknown;
         compact_result?: string;
         compact_metadata?: unknown;
-        message?: { content?: unknown[]; usage?: unknown };
+        message?: { content?: unknown[]; usage?: unknown; stop_reason?: string | null };
         /** The tool's full structured Output — where `structuredPatch` lives. */
         tool_use_result?: unknown;
         /** Set on everything a sub-agent produced: the id of the `Task`
@@ -2774,6 +2809,27 @@ export function createClaudeDriver(
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
 
+      /**
+       * A read raced against the end-turn grace. The read itself is NOT
+       * abandoned on a grace win: `takeStep` leaves it on `pendingStep`, and
+       * the next pump (idle or the next turn) awaits that same promise, so
+       * the frame it eventually yields is read exactly once.
+       */
+      const raceEndTurnGrace = async <S,>(read: Promise<S>): Promise<S | "end-turn-grace"> => {
+        if (endTurnSeenAt === undefined || !persistent) return read;
+        const remaining = Math.max(0, endTurnSeenAt + endTurnGraceMs - Date.now());
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const grace = new Promise<"end-turn-grace">((resolve) => {
+          timer = setTimeout(() => resolve("end-turn-grace"), remaining);
+          timer.unref?.();
+        });
+        try {
+          return await Promise.race([read, grace]);
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      };
+
       try {
         for (;;) {
           /**
@@ -2785,7 +2841,25 @@ export function createClaudeDriver(
            */
           const step = runtime.parked.length > 0
             ? { done: false as const, value: runtime.parked.shift()! }
-            : await ClaudeRuntimeStore.takeStep(runtime);
+            : await raceEndTurnGrace(ClaudeRuntimeStore.takeStep(runtime));
+          if (step === "end-turn-grace") {
+            /**
+             * THE MODEL SAID IT WAS DONE AND THE RESULT NEVER CAME (#465).
+             * Settle as the result would have: the turn completes, the
+             * process stays alive with its pending read parked on
+             * `pendingStep` for the next pump, and the transcript says why.
+             */
+            const id = itemId();
+            emit({
+              kind: "item.started",
+              item: { id, detail: { type: "provider_wait", wait: { kind: "no_response", waitedMs: endTurnGraceMs } }, title: "Settled without the provider's result" },
+            });
+            emit({ kind: "item.completed", itemId: id, status: "completed" });
+            completed = true;
+            await flush();
+            if (persistent) break;
+            continue;
+          }
           if (step.done) {
             streamEnded = true;
             runtime.streamEnded = true;
@@ -2934,6 +3008,10 @@ export function createClaudeDriver(
           // that arrives in two seconds must not leave a timer standing to open
           // a row about a silence that ended twenty-eight seconds ago.
           if (ourLoopSpoke) disarmProviderSilence();
+          // Any frame of ours after `end_turn` means the CLI is still talking
+          // for this turn (the result, a late tool round): the grace no longer
+          // applies. It is re-armed below if the model says `end_turn` again.
+          if (ourLoopSpoke) endTurnSeenAt = undefined;
           if (waitItemId && ourLoopSpoke) {
             closeProviderWait();
             /**
@@ -3356,6 +3434,14 @@ export function createClaudeDriver(
                 emit({ kind: "item.completed", itemId: id, status: "completed" });
               }
             }
+            /**
+             * THE MODEL'S OWN "I AM DONE" (#465). With no top-level tool left
+             * open there is nothing more this turn can wait for except the
+             * CLI's `result`; arm the grace so a missing result cannot hold
+             * the turn forever. A `tool_use` stop reason, or an open tool,
+             * means more is coming and the grace stays down.
+             */
+            if (ours && item.message?.stop_reason === "end_turn" && openTopLevelTools.size === 0) endTurnSeenAt = Date.now();
             await flush();
             continue;
           }

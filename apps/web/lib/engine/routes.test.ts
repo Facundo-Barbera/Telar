@@ -85,7 +85,7 @@ describe("engine route adapters", () => {
     await client.setSidebarLayout({ projectOrder: ["project_two", "project_one"] });
     await client.setSidebarLayout({ pinnedOrder: ["session_plain"] });
 
-    const response = await liveGet();
+    const response = await liveGet(new Request("http://cockpit.test/api/sessions/live"));
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.sessions.map((s: { id: string }) => s.id)).toEqual(["session_plain"]);
@@ -131,7 +131,7 @@ describe("engine route adapters", () => {
     await client.submitAgentTurn("session_owned", { intent: "task", runId: "run_owned", input: "Fix #269", proof });
     saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_one", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
 
-    const body = await (await liveGet()).json();
+    const body = await (await liveGet(new Request("http://cockpit.test/api/sessions/live"))).json();
     expect(body.assignments.session_worker).toMatchObject([
       { taskRunId: "run_task", fromSessionId: "session_coord", runId: "run_task" },
     ]);

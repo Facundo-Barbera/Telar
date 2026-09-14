@@ -124,7 +124,7 @@ function AddHubDialog({
           <label className="block">
             <span className="text-xs font-medium text-foreground">Name</span>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Home hub" className="mt-1.5 h-8 text-xs" />
-            <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+            <span className="mt-1 block text-2xs text-muted-foreground">
               Key: <code className="font-mono">{id}</code> — permanent. Blank uses the hub&apos;s host.
             </span>
           </label>
@@ -154,7 +154,7 @@ function AddHubDialog({
             />
             {/* Said at the moment it is typed, which is the one moment it
                 changes what a person does with it. */}
-            <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+            <span className="mt-1 block text-2xs text-muted-foreground">
               Kept in the engine&apos;s own 0600 file. It is never sent back to this page and never logged.
             </span>
           </label>

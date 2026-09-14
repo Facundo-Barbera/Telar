@@ -23,7 +23,7 @@ export const CODE_GEOMETRY = "font-mono leading-[1.55] tracking-normal";
  * globals.css carries `code, pre, kbd, samp { font-size: var(--app-font-mono-size) }`
  * so the reader's "code a notch smaller" preference reaches every element that
  * actually holds code. That rule is UNLAYERED, and unlayered CSS beats anything
- * in `@layer utilities` — so a `text-[0.6875rem]` class on the `<pre>` loses to
+ * in `@layer utilities` — so a `text-2xs` class on the `<pre>` loses to
  * it while the same class on the `<textarea>` and on the gutter (neither is a
  * `pre`) wins. The layers then disagree: measured in the panel, the coloured
  * text was drawing at 13px/20.15px while the invisible text the caret follows

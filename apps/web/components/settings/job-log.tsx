@@ -96,7 +96,7 @@ export function JobLog({ handle, onDone, onDismiss, className, io = DS_IO }: { h
           <button type="button" aria-label="Dismiss" onClick={onDismiss} className="rounded p-0.5 text-muted-foreground hover:text-foreground"><XIcon className="size-3" /></button>
         )}
       </div>
-      <pre ref={pre} className="m-0 max-h-48 min-h-16 overflow-auto px-3 py-2 font-mono text-[0.625rem] leading-[1.5] whitespace-pre-wrap text-muted-foreground">
+      <pre ref={pre} className="m-0 max-h-48 min-h-16 overflow-auto px-3 py-2 font-mono text-3xs leading-[1.5] whitespace-pre-wrap text-muted-foreground">
         {lines.length ? lines.join("\n") : running ? "Starting…" : ""}
       </pre>
     </div>

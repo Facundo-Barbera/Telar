@@ -81,7 +81,7 @@ export function UsageChart({
     <div className="flex flex-col gap-2">
       <div className="flex gap-2">
         {/* Y labels beside the plot, not inside the distorting viewBox. */}
-        <div className="relative w-12 shrink-0 text-right text-[0.625rem] tabular-nums text-muted-foreground">
+        <div className="relative w-12 shrink-0 text-right text-3xs tabular-nums text-muted-foreground">
           {ticks.map((tick) => (
             <span key={tick} className="absolute right-0 -translate-y-1/2" style={{ top: `${(y(tick) / H) * 100}%` }}>
               {format(tick)}
@@ -138,7 +138,7 @@ export function UsageChart({
           )}
         </div>
       </div>
-      <div className="ml-14 flex justify-between text-[0.625rem] text-muted-foreground">
+      <div className="ml-14 flex justify-between text-3xs text-muted-foreground">
         <span>{labels[0]}</span>
         <span>{labels[Math.floor((count - 1) / 2)]}</span>
         <span>{labels[count - 1]}</span>

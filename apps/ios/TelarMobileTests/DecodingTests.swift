@@ -37,6 +37,93 @@ func fixture(_ name: String) throws -> Data {
         }
     }
 
+    /// THE LIVE LIST SENDS ROWS, NOT WHOLE SESSIONS (#459).
+    ///
+    /// That route is what the phone polls; on the owner's store it was 318 KB a
+    /// read for 267 conversations, most of it fields no row on this phone draws.
+    /// The engine now sends only what a rail renders — no `environmentId`, no
+    /// `providerInstanceId`, no `runtimeMode`, no `detached`, no `resumeCursor`,
+    /// and no `workspace.baseRef`.
+    ///
+    /// EVERY ONE OF THOSE WAS ALREADY OPTIONAL HERE, which is why this build
+    /// needs no change to read the narrower answer — and this test is what says
+    /// so out loud, so a later edit cannot quietly make one of them required and
+    /// blank the phone's list against a current Mac. The fields the rail DOES
+    /// draw are asserted present: losing one of those is a blank row, not a
+    /// blank list, which is the harder bug to see.
+    @Test func theLiveListDecodesWithoutTheFieldsNoRowDraws() throws {
+        let lean = #"""
+        {"sessions":[{"id":"session_one","projectId":"project_one","title":"Lean the live list",
+          "state":"active","createdAt":1700000000000,"updatedAt":1700000001000,"driver":"claude",
+          "envMode":"worktree","model":{"instanceId":"claude","model":"claude-opus-5[1m]"},
+          "workspace":{"mode":"worktree","path":"/tmp/w","branch":"telar/459-lean"},
+          "activity":"working","activityAt":1700000001000,"settledOverride":"active"}],
+         "projects":[{"id":"project_one","name":"Telar"}]}
+        """#
+        let live = try JSONDecoder().decode(LiveSessions.self, from: Data(lean.utf8))
+        let session = try #require(live.sessions.first)
+        #expect(session.id == "session_one")
+        #expect(session.activity == .working)
+        #expect(session.workspace.branch == "telar/459-lean")
+        #expect(session.model?.model == "claude-opus-5[1m]")
+        #expect(session.settledOverride == "active")
+        // Absent, and absent has to keep meaning what it meant: the engine's own
+        // defaults, never "unknown" and never a blank row.
+        #expect(session.providerInstanceId == nil)
+        #expect(session.resumeCursor == nil)
+        #expect(session.workspace.baseRef == nil)
+        #expect(session.runtimeMode == "approval-required")
+        #expect(session.detached == false)
+        // No policy on this payload: an engine that predates the fold, which the
+        // store reads as "ask for it yourself, once a minute" and not as "off".
+        #expect(live.inbox == nil)
+    }
+
+    /// THE SETTLING WINDOW RIDES THE LIST (#459) — one read a pass instead of
+    /// three. Nil is not "no window": it is a Mac too old to stamp one, and the
+    /// store falls back to the rationed request it used to make every time.
+    @Test func theLiveListCarriesTheSettlingWindowAndToleratesItsAbsence() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        #expect(try decode(#"{"sessions":[],"projects":[]}"#).inbox == nil)
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":72}}"#).inbox?.autoSettleAfterHours == 72)
+        // "Off" is a real answer and must survive as one, not become the default.
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":null}}"#).inbox?.autoSettleAfterHours == nil)
+        // And a policy this build cannot read costs the window, never the list.
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":"never"}"#).inbox == nil)
+    }
+
+    /// THE CONDITIONAL READ (#459). A phone that hands back the revision it was
+    /// given gets sixty bytes and no rows when nothing has moved — which is
+    /// every three-second tick of an idle inbox, and most of what "the phone
+    /// crawls" (#457) was made of.
+    ///
+    /// `unchanged` IS NOT "THIS MAC HAS NO CONVERSATIONS", and that distinction
+    /// is the one thing this decoder must not blur: `sessions` is absent on such
+    /// an answer, and it decodes to empty so that ONE type reads both shapes.
+    /// The store checks the flag before it applies anything; these assertions
+    /// are what stop a later edit making the empty list look like an answer.
+    @Test func theLiveListCarriesACursorAndAnUnchangedAnswer() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+
+        let full = try decode(#"{"sessions":[],"projects":[],"revision":1789362240258}"#)
+        #expect(full.revision == 1_789_362_240_258)
+        #expect(full.unchanged == false)
+
+        let quiet = try decode(#"{"unchanged":true,"revision":1789362240259,"daemonId":"d1"}"#)
+        #expect(quiet.unchanged)
+        #expect(quiet.revision == 1_789_362_240_259)
+        // No rows at all — and the store must keep the ones it has rather than
+        // reading this as an empty inbox.
+        #expect(quiet.sessions.isEmpty)
+        #expect(quiet.projects.isEmpty)
+
+        // A Mac too old to count says neither, and the phone then makes full
+        // reads forever — the old behaviour, which is the correct fallback.
+        let old = try decode(#"{"sessions":[],"projects":[]}"#)
+        #expect(old.revision == nil)
+        #expect(old.unchanged == false)
+    }
+
     /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
     /// optional, at both levels. The fixture predates the field, so this pins
     /// the tolerance the wire needs rather than the fixture's content: a Mac
@@ -99,6 +186,26 @@ func fixture(_ name: String) throws -> Data {
         #expect(live.assignments["child"]?.first?.scope == "the parser")
         // Outstanding: no outcome, not unresolved.
         #expect(live.assignments["child"]?.first?.outcome == nil)
+        // AND WHEN — the two stamps the Agents surface dates a row by (#390).
+        // `receivedAt` on an outstanding errand; `endedAt` only once it ends.
+        #expect(live.assignments["child"]?.first?.receivedAt == 1)
+        #expect(live.assignments["child"]?.first?.endedAt == nil)
+        let ended = try decode(#"""
+        {"sessions":[],"projects":[],
+         "assignments":{"child":[{"taskRunId":"run_1","fromSessionId":"coord","runId":"run_1","receivedAt":1739791245123,"scope":"the parser","outcome":"completed","endedAt":1739791309456}]}}
+        """#)
+        #expect(ended.assignments["child"]?.first?.receivedAt == 1739791245123)
+        #expect(ended.assignments["child"]?.first?.endedAt == 1739791309456)
+        #expect(ended.assignments["child"]?.first?.outcome == "completed")
+        // AN ENGINE THAT STAMPED NEITHER STILL HAS ITS ROW. The contract makes
+        // `receivedAt` required, and this build decodes it leniently anyway:
+        // through `Skippable` a missing required field does not cost a
+        // timestamp, it costs the whole relationship.
+        let undated = try decode(#"""
+        {"sessions":[],"projects":[],"assignments":{"child":[{"fromSessionId":"coord"}]}}
+        """#)
+        #expect(undated.assignments["child"]?.count == 1)
+        #expect(undated.assignments["child"]?.first?.receivedAt == nil)
 
         #expect(try decode(#"{"sessions":[],"projects":[]}"#).assignments.isEmpty)
         // A map this build cannot read costs the tree, never the list.

@@ -173,7 +173,7 @@ function LookCard({
             <CheckIcon />
           </span>
         )}
-        {selected && <span className="shrink-0 font-mono text-[0.5625rem] tracking-[0.08em] text-primary uppercase">Open</span>}
+        {selected && <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-primary uppercase">Open</span>}
       </div>
       {(onExport || onRemove) && (
         <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -435,7 +435,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
       description="Whole appearances — palette, scene, accent and type together. Click one to open it as a draft; hover to wear it outright."
       action={
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
+          <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
             {looks.length + STARTER_LOOKS.length}
           </span>
           <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>

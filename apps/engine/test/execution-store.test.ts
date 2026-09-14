@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { ExecutionStore } from "../src/execution-store";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
@@ -225,8 +226,8 @@ test("a session id reused after a delete does not inherit the old queue", () => 
  * A STREAMED DELTA IS WRITTEN ONCE FOR THE WHOLE BATCH, AND READS AS IF IT WERE
  * WRITTEN AT ONCE.
  *
- * `synchronous=FULL` buys one WAL fsync per transaction and the engine runs one
- * per `ingestObservations`, so a delta at a time was an fsync per token-chunk.
+ * A WAL fsync costs one transaction and the engine used to run one per
+ * `ingestObservations`, so a delta at a time was an fsync per token-chunk.
  * The two halves of the fix are inseparable and both are asserted here: the
  * deltas do NOT reach the database as they arrive, and a reader cannot tell —
  * `readEvents` and `eventCursor` answer with the held ones, in order, with the
@@ -315,6 +316,133 @@ test("a failed command does not take already-accepted deltas with it", () => {
   const reopened = new EngineStore(home); stores.push(reopened);
   expect(reopened.readEvents("session_one").filter((event) => event.type === "content.delta")
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
+});
+
+/**
+ * THE DELTA PATH SKIPS THE TRANSACTION AND THE PROJECTION READS (#443) — AND
+ * NOTHING ELSE.
+ *
+ * `ingestObservations` routes a batch of nothing but `content.delta` past
+ * `executeCommand` and past `readItems`/`readTasks`/`readQueue`, because such a
+ * batch writes no document and a delta asks the projection one question. Every
+ * one of these is a way that shortcut could be WRONG, and each is the same
+ * demand: the fast path must refuse, drop and order exactly as the command path
+ * does. What the two paths agree about when nothing is wrong is already pinned
+ * by "deltas arriving in one tick…" above.
+ */
+function streaming(): { store: EngineStore; home: string; runId: string; token: string } {
+  const { store, home } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claimTurn("session_one", "worker_one")!;
+  const token = turn.claim!.token;
+  store.markRunning("session_one", turn.runId, token);
+  store.ingestObservations("session_one", turn.runId, token, [
+    { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  return { store, home, runId: turn.runId, token };
+}
+const deltas = (store: EngineStore): string[] =>
+  store.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
+
+test("a stream cannot outlive its turn, even though the delta path reads a shared queue", () => {
+  const { store, runId, token } = streaming();
+  const delta = (text: string) => () =>
+    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+  // The first one is what puts the queue in the shared cache the fast path
+  // reads; the turn then settles behind it. A cache that outlived the write
+  // would let this stream go on writing into a turn that is over.
+  delta("live ")();
+  store.completeTurn("session_one", runId, token, { text: "done" });
+  expect(delta("late ")).toThrow(/already settled \(completed\)/);
+  expect(deltas(store)).toEqual(["live "]);
+});
+
+test("a delta under a claim that is not the running one is refused and journals nothing", () => {
+  const { store, runId } = streaming();
+  expect(() =>
+    store.ingestObservations("session_one", runId, "not-the-token-at-all", [
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "forged " },
+    ]),
+  ).toThrow(/not running under this worker claim/);
+  expect(deltas(store)).toEqual([]);
+});
+
+test("one malformed delta refuses the whole batch, including the valid ones ahead of it", () => {
+  const { store, runId, token } = streaming();
+  expect(() =>
+    store.ingestObservations("session_one", runId, token, [
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "accepted " },
+      // Empty text is the one thing the schema refuses about a delta.
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "" },
+    ]),
+  ).toThrow(/observations are invalid/);
+  expect(deltas(store)).toEqual([]);
+});
+
+test("a delta for an item that never opened is dropped, and one for an item opened mid-stream is not", () => {
+  const { store, runId, token } = streaming();
+  const say = (itemId: string, text: string) =>
+    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId, stream: "assistant_text", text }]);
+  say("item_one", "one ");
+  // No such item: accepted as a report, journalled as nothing — the same thing
+  // the command path does with it.
+  expect(say("item_two", "nowhere ")).toEqual({ accepted: 1 });
+  expect(deltas(store)).toEqual(["one "]);
+
+  // …and the cached projection must not make that verdict permanent: an item
+  // opened AFTER the stream began has to be visible to the very next delta.
+  store.ingestObservations("session_one", runId, token, [
+    { kind: "item.started", item: { id: "item_two", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  say("item_two", "two ");
+  expect(deltas(store)).toEqual(["one ", "two "]);
+});
+
+/**
+ * THE RECEIPTS NOTHING WILL EVER READ AGAIN (#457).
+ *
+ * A receipt makes a retried command id free instead of repeating it, which
+ * matters for the seconds a client spends retrying a request whose response it
+ * lost — and never again after that. The dogfood store held 299,323 of them in
+ * 723 MB. So: they go after a week, on open and once a day, and the only thing
+ * worth asserting about the table is the behaviour it buys — a receipt that is
+ * still there replays its command, and a receipt that is gone runs it again.
+ */
+test("receipts outlive a retry and not a week; opening the store is itself a sweep", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-receipts-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const day = 24 * 60 * 60 * 1000;
+  let clock = Date.parse("2026-09-01T00:00:00Z");
+  let ran = 0;
+  const count = (store: ExecutionStore, commandId: string) => store.transaction("count", () => (ran += 1), commandId);
+
+  let store = new ExecutionStore(root, { now: () => clock });
+  try {
+    expect(count(store, "command_old")).toBe(1);
+    // The receipt is the whole point: the same id does not run twice.
+    expect(count(store, "command_old")).toBe(1);
+    expect(ran).toBe(1);
+
+    clock += 8 * day;
+    count(store, "command_fresh");
+    expect(ran).toBe(2);
+    // Everything past the week goes — the store's own `import` marker included,
+    // which is why this is not a fixed number — and nothing is left behind it.
+    expect(store.pruneReceipts()).toBeGreaterThan(0);
+    expect(store.pruneReceipts()).toBe(0);
+    count(store, "command_old");
+    expect(ran).toBe(3);
+    count(store, "command_fresh");
+    expect(ran).toBe(3);
+  } finally { store.close(); }
+
+  // What the daemon does on start, with a week of receipts behind it.
+  clock += 8 * day;
+  store = new ExecutionStore(root, { now: () => clock });
+  try {
+    count(store, "command_fresh");
+    expect(ran).toBe(4);
+  } finally { store.close(); }
 });
 
 test("a restart retires the claim on a stopped turn without disturbing the session", () => {

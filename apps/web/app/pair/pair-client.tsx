@@ -136,7 +136,7 @@ export function PairClient() {
             <Button type="submit" size="sm" disabled={!code}>
               Pair
             </Button>
-            <p className="text-center text-[0.6875rem] text-muted-foreground">A whole pairing link pastes here too.</p>
+            <p className="text-center text-2xs text-muted-foreground">A whole pairing link pastes here too.</p>
           </form>
         )}
       </div>

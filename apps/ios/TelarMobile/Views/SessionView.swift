@@ -163,6 +163,12 @@ struct SessionView: View {
         }
     }
 
+    /// Which session speech is about, when this one is asked to read a reply
+    /// aloud. See Speech/Talkback.swift for why it carries the host too.
+    private var spokenSession: SpokenSession {
+        SpokenSession(hostId: hostId, sessionId: sessionId)
+    }
+
     /// What can change the transcript's HEIGHT, and nothing else. Keying the
     /// follow on `lastActivityAt` was the scroll loop: it moves on every
     /// `content.delta` (~once per poll), so each tick started a fresh animated
@@ -702,6 +708,19 @@ struct SessionView: View {
                     }
                     if let base = cockpitBaseURL {
                         ShareLink(item: session.cockpitURL(base: base)) { Label("Continue on your Mac", systemImage: "desktopcomputer") }
+                    }
+                }
+                // READ IT TO ME. The item is here rather than on the message
+                // because a control on the last reply is a control on EVERY
+                // reply, drawn to serve one — and this menu is already where
+                // the session's verbs live.
+                if Talkback.shared.isSpeaking(spokenSession) {
+                    Button("Stop speaking", systemImage: "speaker.slash") {
+                        Talkback.shared.stop()
+                    }
+                } else if let source = lastReplySource(of: visibleTurns) {
+                    Button("Speak the last reply", systemImage: "speaker.wave.2") {
+                        Talkback.shared.speak(speakableText(source), for: spokenSession)
                     }
                 }
                 Button("Panel", systemImage: "sidebar.trailing") {

@@ -150,7 +150,7 @@ export function LoomsBoard() {
 
           {accepted.length > 0 ? (
             <>
-              <h2 className="pt-4 text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground">Accepted</h2>
+              <h2 className="pt-4 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">Accepted</h2>
               <div className="space-y-3 opacity-70">{accepted.map(card)}</div>
             </>
           ) : null}

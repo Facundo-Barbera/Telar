@@ -2,16 +2,24 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// Which surface the panel shows — the desktop's fixed tabs, the four the
+/// Which surface the panel shows — the desktop's fixed tabs, the five the
 /// phone carries. Data and LaTeX exist only when the project opted in.
+///
+/// AGENTS IS NOT ONE OF THOSE TWO — issue #390. Who is working for this
+/// conversation is a fact about the conversation, not about a plugin, so the
+/// tab is always there and says "nobody" when that is the answer. It sits
+/// after the other two unconditional surfaces rather than first (where the
+/// desktop puts it) so that the tabs a reader always has stay together, and
+/// the strip does not reorder itself when a project turns a plugin on.
 enum PanelTab: String, Codable, CaseIterable, Identifiable {
-    case diff, files, data, latex
+    case diff, files, agents, data, latex
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .diff: "Diff"
         case .files: "Files"
+        case .agents: "Agents"
         case .data: "Data"
         case .latex: "LaTeX"
         }
@@ -21,6 +29,7 @@ enum PanelTab: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .diff: "plus.forwardslash.minus"
         case .files: "folder"
+        case .agents: "person.2"
         case .data: "flask"
         case .latex: "function"
         }

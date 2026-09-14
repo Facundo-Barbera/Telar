@@ -148,7 +148,7 @@ export function SettingsSearchNav({
             ) : (
               // The key, shown where the clear button will be, so the chip
               // teaches the shortcut without costing a row of its own.
-              <kbd className="pointer-events-none font-sans text-[0.625rem] text-sidebar-foreground/35">/</kbd>
+              <kbd className="pointer-events-none font-sans text-3xs text-sidebar-foreground/35">/</kbd>
             )
           }
         />
