@@ -72,6 +72,7 @@ export type CommandId =
   | "open-editor"
   | "open-data"
   | "open-latex"
+  | "toggle-devtools"
   | "go-to-file"
   | "search-project-contents"
   | "settings"

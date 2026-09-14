@@ -1197,6 +1197,7 @@ function buildApplicationMenu(keymap = readKeymap()) {
   });
   const fileCommands = menuCommands(keymap, "file");
   const panelCommands = menuCommands(keymap, "panel");
+  const viewCommands = menuCommands(keymap, "view");
   // jump-1..jump-9 nest under their own submenu so the top-level File menu
   // reads as a handful of commands, not a dozen and a half — cosmetic only,
   // `id`/`accelerator` for every one of them still comes from the same map.
@@ -1227,7 +1228,33 @@ function buildApplicationMenu(keymap = readKeymap()) {
       ],
     },
     { role: "editMenu" },
-    { role: "viewMenu" },
+    /**
+     * VIEW IS SPELLED OUT rather than `{ role: "viewMenu" }`, because #423 puts
+     * a row of ours in it and a role menu takes no additions. Every item Electron
+     * would have built is still here, in its order, so nothing native is lost.
+     *
+     * THE ROLE'S OWN DEVTOOLS ROW MOVES OFF ⌥⌘I. That accelerator belongs to the
+     * BROWSER PANEL's tab now — it is the chord every browser uses, and the
+     * reason anybody reaches for it in this app is a page in the panel, not the
+     * cockpit's own React tree. Inspecting the cockpit is still one row away,
+     * relabelled so the two are not a guess, and on ⌥⇧⌘I.
+     */
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        ...viewCommands.map(toMenuItem),
+        { role: "toggleDevTools", label: "Cockpit Developer Tools", accelerator: "CommandOrControl+Alt+Shift+I" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
     // The right panel's own surfaces. A menu of its own rather than more rows
     // under File: these are all "what am I looking at beside the conversation",
     // and a File menu that also opened a LaTeX tab would be a File menu in name.

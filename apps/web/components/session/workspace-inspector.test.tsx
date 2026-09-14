@@ -1,5 +1,5 @@
 /**
- * THE NOTEBOOK, INSIDE THE PINNED SUMMARY.
+ * THE NOTEBOOK, which is all the masthead's clipboard popover holds now.
  *
  * The section rather than the whole popover, because the popover's content is
  * portalled and does not exist until it is opened — there is no markup to
@@ -36,7 +36,7 @@ const note = (extra: Partial<ProjectNote> = {}): ProjectNote =>
 
 const render = (notes: ProjectNote[]) => renderToStaticMarkup(<InspectorNotes projectId="p1" notes={notes} />);
 
-describe("the pinned summary's notebook", () => {
+describe("the notes popover", () => {
   test("the project's notes are rows, titled, with their first line beside them", () => {
     const markup = render([note(), note({ id: "n-2", title: "Reviewers", body: "Ana reads the engine half" })]);
     expect(markup).toContain("Notes");
@@ -66,9 +66,8 @@ describe("the pinned summary's notebook", () => {
     expect(render([note()])).toContain('aria-label="New note"');
   });
 
-  test("a row promises no departure: no chevron, unlike every other row here", () => {
-    // Every other row in this popover opens the panel and closes the popover.
-    // A note opens in place, and a chevron would promise otherwise.
+  test("a row promises no departure: no chevron", () => {
+    // A note opens in place; a chevron would promise a departure.
     expect(render([note()])).not.toContain("lucide-chevron-right");
   });
 });

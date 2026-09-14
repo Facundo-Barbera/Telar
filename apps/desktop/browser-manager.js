@@ -11,6 +11,7 @@ const {
   desktopCaptureSources,
   PERMISSION_KINDS,
 } = require("./site-permissions");
+const { browserContextMenuTemplate } = require("./browser-context-menu");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
@@ -278,9 +279,27 @@ function looksLikeAddress(value) {
   return host === "localhost" || IP_HOST.test(host);
 }
 
+/** What "View Page Source" opens a tab on (#423). Chromium's own scheme, and
+ *  the ONE non-web scheme the tabs render: it wraps a page rather than naming a
+ *  resource of its own. */
+const VIEW_SOURCE_PREFIX = "view-source:";
+
 function normalizeUrl(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed === "about:blank") return "about:blank";
+  /**
+   * `view-source:https://…` — accepted only around an ORDINARY WEB PAGE, and
+   * never around itself. Nesting is what turns one scheme into a ladder
+   * (`view-source:view-source:file:///…`), and reading a local file's source is
+   * a thing the tab would do without the address bar ever admitting to it.
+   */
+  if (trimmed.toLowerCase().startsWith(VIEW_SOURCE_PREFIX)) {
+    const inner = parseUrl(trimmed.slice(VIEW_SOURCE_PREFIX.length));
+    if (!inner || (inner.protocol !== "http:" && inner.protocol !== "https:")) {
+      throw new Error("The integrated browser only views the source of http and https pages.");
+    }
+    return `${VIEW_SOURCE_PREFIX}${inner.href}`;
+  }
   // Words rather than an address: search for them instead of failing.
   if (!looksLikeAddress(trimmed)) return `${SEARCH_URL}${encodeURIComponent(trimmed)}`;
   // A bare local path in the address bar means the file, the way every
@@ -457,6 +476,13 @@ class DesktopBrowserManager {
     this.createView = dependencies.createView || createElectronView;
     this.createId = dependencies.createId || randomUUID;
     this.wait = dependencies.wait || sleep;
+    /**
+     * Electron's own module, reached LAZILY and through one seam — the page
+     * context menu needs `Menu` and `clipboard`, and requiring either at load
+     * time would put Electron in the import graph of every plain-`bun test`
+     * that reads this file. A test hands in its own; nothing else does.
+     */
+    this.electron = dependencies.electron || (() => require("electron"));
     this.tabs = [];
     /**
      * THE TAB THE HUMAN IS LOOKING AT. This drives visibility and the panel's
@@ -1497,6 +1523,11 @@ class DesktopBrowserManager {
         // inventory, or hibernated): the panel shows it as a tab; the first
         // look at it loads the page.
         sleeping: !tab.view,
+        /** DevTools are open on THIS tab — the strip's glyph, and what the
+         *  ⌥⌘I toggle is toggling. Read live from the WebContents rather than
+         *  tracked, so a window the person closed by its own button is not
+         *  still being reported as open. */
+        devtools: this.devToolsOpen(tab),
         viewport: this.viewportInfo(tab),
         canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
         canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
@@ -2002,6 +2033,11 @@ class DesktopBrowserManager {
   hibernateTab(tab) {
     if (!tab.view) return;
     this.cancelDeferredHibernate(tab);
+    // DEVTOOLS ARE THE TAB'S AND GO WITH IT. This is the ONE teardown path —
+    // closing a tab, hibernating it, the live-view budget evicting it, the
+    // window quitting all arrive here — so a detached DevTools window cannot
+    // outlive the page it was inspecting and sit there addressing nothing.
+    this.closeDevTools(tab);
     const view = tab.view;
     { const host = this.hostOfTab(tab); if (host) host.removeTab(view.webContents); }
     tab.url = view.webContents.getURL() || tab.url || "about:blank";
@@ -2290,6 +2326,23 @@ class DesktopBrowserManager {
       this.noteVisited(tab, navigatedUrl || wc.getURL(), httpResponseCode);
     });
     wc.on("did-navigate-in-page", sync);
+    /**
+     * THE PAGE'S OWN RIGHT-CLICK MENU (#423). Chromium fires this with
+     * everything it knows about what was under the pointer; what the rows SAY
+     * is the pure fold in browser-context-menu.js, and what they DO is
+     * `runContextMenuCommand` below. Nothing here decides either.
+     */
+    wc.on("context-menu", (_event, params) => {
+      // A right-click is a person's hand on this tab, before any row is picked
+      // — an agent mutation should already be deferring while the menu is open.
+      this.noteHumanInput(tab.scopeKey, { force: true });
+      this.openContextMenu(tab, params || {});
+    });
+    // DevTools are part of what the strip shows about a tab, so both edges of
+    // the window's life — including the person closing it by its own button —
+    // are a state push.
+    wc.on("devtools-opened", () => this.emitState(tab.scopeKey));
+    wc.on("devtools-closed", () => this.emitState(tab.scopeKey));
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
@@ -2301,6 +2354,195 @@ class DesktopBrowserManager {
       this.applyVisibility();
       this.emitState(tab.scopeKey);
     });
+  }
+
+  // --- DevTools, per tab (#423) ----------------------------------------------
+  //
+  // ALWAYS DETACHED. A docked DevTools splits the WebContents' own viewport,
+  // and this manager has just spent a whole geometry pipeline deciding what
+  // that viewport is — the panel's measured rect, the tab's intrinsic size, the
+  // fit scale an agent's click coordinates are computed against. Docking would
+  // silently move all three. A separate window changes nothing about the page.
+
+  /** The tab's live WebContents, or null for a sleeping/destroyed one. */
+  contentsOf(tab) {
+    const wc = tab?.view?.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  devToolsOpen(tab) {
+    const wc = this.contentsOf(tab);
+    try {
+      return Boolean(wc && wc.isDevToolsOpened && wc.isDevToolsOpened());
+    } catch {
+      // A WebContents torn down between the check and the call: not open.
+      return false;
+    }
+  }
+
+  /** Open (if needed) and optionally aim DevTools at the element under a
+   *  point, in the page's own coordinates — what "Inspect" means. */
+  openDevTools(tab, inspectAt) {
+    const wc = this.contentsOf(tab);
+    if (!wc) return;
+    try {
+      if (!this.devToolsOpen(tab)) wc.openDevTools?.({ mode: "detach" });
+      if (inspectAt) wc.inspectElement?.(Math.round(inspectAt.x || 0), Math.round(inspectAt.y || 0));
+    } catch {
+      // DevTools are a convenience; a refusal must not take the page with it.
+    }
+  }
+
+  closeDevTools(tab) {
+    if (!this.devToolsOpen(tab)) return;
+    try {
+      this.contentsOf(tab)?.closeDevTools?.();
+    } catch {
+      // Same: never block a teardown on this.
+    }
+  }
+
+  /**
+   * ⌥⌘I / View › Developer Tools, for the tab the person is looking at.
+   *
+   * NOTHING HAPPENS WHEN THERE IS NO TAB, deliberately (#423): this chord is
+   * live across the whole cockpit, and a session whose panel has never opened a
+   * page should answer it with silence rather than an error toast. A REMEMBERED
+   * tab is woken first — inspecting it is looking at it, and a sleeping tab has
+   * no WebContents to attach to.
+   */
+  async toggleDevTools(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const activeId = this.activeTabIds.get(scope);
+    const tab = this.scopeTabs(scope).find((candidate) => candidate.id === activeId);
+    if (!tab) return this.state(scope);
+    await this.wakeTab(tab);
+    if (this.devToolsOpen(tab)) this.closeDevTools(tab);
+    else this.openDevTools(tab);
+    this.emitState(scope);
+    return this.state(scope);
+  }
+
+  // --- The page's context menu (#423) ----------------------------------------
+
+  /** Build and pop the native menu for one right-click. The rows are the pure
+   *  fold's; this only binds each to `runContextMenuCommand`. */
+  openContextMenu(tab, params) {
+    const wc = this.contentsOf(tab);
+    if (!wc) return;
+    const template = browserContextMenuTemplate(params, {
+      canGoBack: navigationFlag(wc, "canGoBack"),
+      canGoForward: navigationFlag(wc, "canGoForward"),
+    });
+    const items = template.map((entry) =>
+      entry.type === "separator"
+        ? { type: "separator" }
+        : {
+            label: entry.label,
+            enabled: entry.enabled,
+            click: () => {
+              void Promise.resolve(this.runContextMenuCommand(tab, entry, params)).catch(() => {});
+            },
+          },
+    );
+    try {
+      const { Menu } = this.electron();
+      Menu.buildFromTemplate(items).popup({ window: this.window });
+    } catch {
+      // No display, a window mid-close: a menu that cannot open is not an error
+      // worth propagating into a page event handler.
+    }
+  }
+
+  /**
+   * ONE SWITCH FOR THE WHOLE MENU — every id the fold can emit is answered
+   * here, and browser-context-menu.test.js checks that pairing, because a row
+   * with no case is a menu item that highlights and does nothing.
+   */
+  async runContextMenuCommand(tab, entry, params) {
+    const wc = this.contentsOf(tab);
+    if (!wc) return;
+    const scope = tab.scopeKey;
+    switch (entry.id) {
+      case "open-link-new-tab":
+      case "open-image-new-tab":
+        await this.openMenuTab(tab, normalizePopupUrl(entry.value));
+        break;
+      case "copy-link":
+        this.electron().clipboard.writeText(String(entry.value ?? ""));
+        break;
+      case "copy-image":
+        wc.copyImageAt(Math.round(params?.x || 0), Math.round(params?.y || 0));
+        break;
+      case "save-image-as":
+        // No `will-download` handler is installed, so Electron asks where —
+        // which is exactly what the "…" in the label promises.
+        wc.downloadURL(String(entry.value ?? ""));
+        break;
+      case "replace-misspelling":
+        wc.replaceMisspelling(String(entry.value ?? ""));
+        break;
+      case "cut":
+        wc.cut();
+        break;
+      case "copy":
+        wc.copy();
+        break;
+      case "paste":
+        wc.paste();
+        break;
+      case "select-all":
+        wc.selectAll();
+        break;
+      case "search-web":
+        // ALWAYS a search, never a navigation: the row said "Search the web
+        // for", and a selection that happens to look like a host must not
+        // quietly become an address instead.
+        await this.openMenuTab(tab, `${SEARCH_URL}${encodeURIComponent(String(entry.value ?? ""))}`);
+        break;
+      case "back":
+        await this.goBack(tab);
+        break;
+      case "forward":
+        if (navigationFlag(wc, "canGoForward")) {
+          await this.beforeNavigation(tab);
+          wc.navigationHistory.goForward();
+        }
+        break;
+      case "reload":
+        await this.beforeNavigation(tab);
+        wc.reload();
+        break;
+      case "view-source":
+        await this.openMenuTab(tab, `${VIEW_SOURCE_PREFIX}${entry.value}`);
+        break;
+      case "inspect":
+        this.openDevTools(tab, { x: params?.x, y: params?.y });
+        break;
+      default:
+        // A disabled row (no spelling suggestions) has no click to answer.
+        break;
+    }
+    this.emitState(scope);
+  }
+
+  /**
+   * A new tab from the page's menu — THROUGH THE ORDINARY OPEN-TAB PATH.
+   *
+   * Not a bare `loadURL` on a fresh view: the strip, the inventory, the live-
+   * view budget and #383's "the last tab closing ends the browser" all hang off
+   * `createTab`, and a tab that skipped it would be a tab the panel and the
+   * saved session disagree about. Opened as the HUMAN's, because a context-menu
+   * row is a hand on the mouse by construction — so it takes the screen, the
+   * way clicking + does.
+   *
+   * A url of null (a `javascript:` link, a `data:` image, a protected URL that
+   * `normalizePopupUrl` refused) opens nothing and says nothing: the same
+   * silence the popup path answers those with.
+   */
+  openMenuTab(tab, url) {
+    if (!url) return Promise.resolve(null);
+    return this.trackPopupTab(this.createTab(tab.scopeKey, url, "human")).catch(() => null);
   }
 
   activeTab(scopeKey) {
@@ -2480,6 +2722,13 @@ class DesktopBrowserManager {
       this.noteHumanInput(scope, { force: true });
       return this.state(scope);
     }
+    /**
+     * DEVTOOLS ARE THE HUMAN'S SURFACE ONLY, which is why this sits here and
+     * not in `performAction`: an agent's tool calls share that switch, and
+     * opening a debugger window over the person's screen is not something a
+     * background agent should be able to do.
+     */
+    if (kind === "toggle-devtools") return this.toggleDevTools(scope);
     if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
     if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
     // The toolbar's viewport control: a preset or a custom size for the
