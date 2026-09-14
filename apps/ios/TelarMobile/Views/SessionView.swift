@@ -45,6 +45,13 @@ struct SessionView: View {
     private let api: any EngineAPI
     private let sessionId: EngineID
     private let hostId: HostID?
+    /// WHICH MAC THIS CONVERSATION IS ON, and how many this phone knows —
+    /// issue #244. The two facts rather than the settings store because that is
+    /// all the strip needs, and `HostLabel.header` is what turns them into the
+    /// label (or into nothing). Passed rather than looked up: this view knows
+    /// an API and a session id, and has never held a host book.
+    private let hostName: String?
+    private let hostCount: Int
     private let cockpitBaseURL: URL?
     /// THE READ RECEIPT — see Stores/ReadReceipt.swift for why the phone needs
     /// one at all. Built in `.task` rather than in `init`, because it reaches
@@ -70,12 +77,15 @@ struct SessionView: View {
 
     init(
         api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil,
+        hostName: String? = nil, hostCount: Int = 1,
         cockpitBaseURL: URL? = nil, cache: HostSnapshotCache? = nil,
         onRead: ((Session) -> Void)? = nil
     ) {
         self.api = api
         self.sessionId = sessionId
         self.hostId = hostId
+        self.hostName = hostName
+        self.hostCount = hostCount
         self.cockpitBaseURL = cockpitBaseURL
         self.onRead = onRead
         if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
@@ -89,6 +99,11 @@ struct SessionView: View {
     /// The same API, as the panel sees it — only the HTTP client conforms;
     /// a test double is not a panel.
     private var panelAPI: (any PanelAPI)? { api as? any PanelAPI }
+
+    /// The Mac's name for the strip, or nothing when naming it would say
+    /// nothing. `HostLabel` holds the rule; see it for why one paired Mac is
+    /// silent and why this surface, unlike a rail row, never defers to context.
+    private var hostLabel: String? { HostLabel.header(name: hostName, hostCount: hostCount) }
 
     /// The refresh signal every panel surface keys on: a turn settling.
     private var turnActive: Bool { store.hasActiveTurn }
@@ -215,6 +230,33 @@ struct SessionView: View {
                     ActivityBadge(activity: session.activity)
                     Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
                     Spacer()
+                    // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
+                    // one fact the transcript could never supply. The title
+                    // above it is a name somebody chose, the branch beside it
+                    // is a name somebody chose, and two paired Macs can carry
+                    // the same of either; the machine is what tells them apart.
+                    //
+                    // TRAILING, BESIDE THE BRANCH, because the strip is already
+                    // read as two halves: what this conversation is DOING on the
+                    // leading edge, and WHERE its work lands on the trailing
+                    // one. The Mac is the outermost "where", so it sits just
+                    // outside the branch rather than interrupting the status.
+                    //
+                    // IT CARRIES A GLYPH, unlike the rail's badge. There the
+                    // shape is learned from company — a header's list of them,
+                    // rows above and below wearing the same mark. Here there is
+                    // exactly one, next to a branch name, and a bare rounded
+                    // rectangle would be a second piece of text to decode.
+                    if let hostLabel {
+                        HStack(spacing: 3) {
+                            Image(systemName: "desktopcomputer").font(.system(size: 9))
+                            Text(hostLabel).lineLimit(1).truncationMode(.tail)
+                        }
+                        .padding(.horizontal, 4)
+                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("On \(hostLabel)")
+                    }
                     Text(session.workspace.branch ?? session.driver).lineLimit(1)
                 }
                 .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)

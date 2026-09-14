@@ -69,7 +69,13 @@ struct RootView: View {
                 } detail: {
                     NavigationStack {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
-                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
+                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId,
+                                        // WHICH MAC, for the header strip (#244).
+                                        // The host book lives here, so the two
+                                        // facts are handed down and `HostLabel`
+                                        // decides whether they are worth drawing.
+                                        hostName: settings.host(ref.hostId)?.name, hostCount: settings.hosts.count,
+                                        cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
                                         // The one place both surfaces are in
                                         // scope: a read confirmed in the
                                         // transcript clears the dot on the
