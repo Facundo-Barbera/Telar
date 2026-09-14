@@ -28,8 +28,9 @@ import {
   pruneCompositionImages,
   THEME_CSS_KEY,
   writeComposition,
+  writeDerived,
 } from "./composition";
-import { BACKDROP_CSS_KEY, parseBackdropCss } from "./backdrop";
+import { BACKDROP_CSS_KEY, notifyBackdropCss, parseBackdropCss, subscribeBackdropCss } from "./backdrop";
 import { BACKDROP_PRESETS } from "./backdrop-presets";
 import { splitTopLevel } from "./scene-composer";
 
@@ -220,6 +221,25 @@ describe("the store", () => {
   test("the identity composition writes an empty stylesheet, not the base palette", () => {
     writeComposition(DEFAULT_COMPOSITION, {});
     expect(window.localStorage.getItem(THEME_CSS_KEY)).toBe("");
+  });
+
+  /**
+   * THE MIGRATION RUNS INSIDE A SNAPSHOT READ, so it may not tell a subscriber
+   * anything while it is running — that is a store update during another
+   * component's render, and React says so. The caches still have to be on disk
+   * before the effects that replay them, so the write is quiet and the telling
+   * is queued.
+   */
+  test("writing the derived caches quietly stores them without notifying", () => {
+    const value = patchState(composition(), "light", { layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }] });
+    let told = 0;
+    const stop = subscribeBackdropCss(() => (told += 1));
+    writeDerived(value, {}, true);
+    expect(window.localStorage.getItem(BACKDROP_CSS_KEY)).not.toBeNull();
+    expect(told).toBe(0);
+    notifyBackdropCss();
+    expect(told).toBe(1);
+    stop();
   });
 
   test("a stored composition is read back through the total parser", () => {

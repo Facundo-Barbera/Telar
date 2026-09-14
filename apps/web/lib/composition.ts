@@ -56,7 +56,7 @@ import {
   type ThemeHalf,
   type ThemeToken,
 } from "@telar/engine-client";
-import { setBackdropCss, type BackdropCss } from "./backdrop";
+import { notifyBackdropCss, setBackdropCss, type BackdropCss } from "./backdrop";
 import { halfFor } from "./palette-from-image";
 import { forgetLegacyAppearance, migrateLegacyAppearance } from "./legacy-appearance";
 import { composeState, SCENE_PRESETS } from "./scene-composer";
@@ -257,7 +257,18 @@ function migrateIn(): StoredComposition {
   // it was rescuing.
   if (!persist(legacy.composition, legacy.images)) return DEFAULT_STORED;
   forgetLegacyAppearance();
-  writeDerived(legacy.composition, cache!.value.images);
+  // QUIETLY, THEN LOUDLY. The caches have to be on disk before the effects that
+  // replay them run, so they are written here; the SUBSCRIBERS are told after
+  // the render, because telling them from inside a snapshot read is a store
+  // update during another component's render. Everything reading this store
+  // already gets the migrated value from the return below — the notification is
+  // for the backdrop store, which was read before this one and answered from a
+  // key that did not exist yet.
+  writeDerived(legacy.composition, cache!.value.images, true);
+  queueMicrotask(() => {
+    notifyBackdropCss();
+    notify();
+  });
   return cache!.value;
 }
 
@@ -344,14 +355,15 @@ export function writeComposition(composition: Composition, images: Record<string
 }
 
 /** The two pre-paint caches. Separate from the write above so a caller that
- *  only needs to REcompile — the preset table changed, say — can. */
-export function writeDerived(composition: Composition, images: Record<string, string>): void {
+ *  only needs to REcompile — the preset table changed, say — can. `quiet` is
+ *  the migration's, and only the migration's: see `migrateIn`. */
+export function writeDerived(composition: Composition, images: Record<string, string>, quiet = false): void {
   try {
     window.localStorage.setItem(THEME_CSS_KEY, compileComposition(composition));
   } catch {
     // Derived: one repaint after hydration, never a wrong colour.
   }
-  setBackdropCss(composeComposition(composition, images));
+  setBackdropCss(composeComposition(composition, images), quiet);
 }
 
 export function useComposition(): {

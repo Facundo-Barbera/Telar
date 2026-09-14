@@ -95,7 +95,7 @@ const BACKDROP_VARS: ReadonlyArray<readonly [keyof BackdropCss, string]> = [
 
 const listeners = new Set<() => void>();
 
-function subscribe(onChange: () => void): () => void {
+export function subscribeBackdropCss(onChange: () => void): () => void {
   listeners.add(onChange);
   window.addEventListener("storage", onChange);
   return () => {
@@ -144,9 +144,16 @@ function readBackdropCss(): BackdropCss | null {
   return cache.value;
 }
 
-/** Write the compiled backdrop, or clear it. Called by the composition's apply
- *  and by nothing else — this cache has exactly one author. */
-export function setBackdropCss(css: BackdropCss | null): void {
+/**
+ * Write the compiled backdrop, or clear it. Called by the composition's apply
+ * and by nothing else — this cache has exactly one author.
+ *
+ * `quiet` stores without telling anybody, for the one caller that runs inside a
+ * snapshot READ: the composition's one-shot migration. Notifying from there
+ * would be a store update during another component's render. It queues
+ * `notifyBackdropCss` for after the render instead.
+ */
+export function setBackdropCss(css: BackdropCss | null, quiet = false): void {
   try {
     if (css === null) window.localStorage.removeItem(BACKDROP_CSS_KEY);
     else window.localStorage.setItem(BACKDROP_CSS_KEY, JSON.stringify(css));
@@ -155,11 +162,15 @@ export function setBackdropCss(css: BackdropCss | null): void {
     // next launch simply starts from the composition rather than the cache.
   }
   cache = undefined;
+  if (!quiet) notifyBackdropCss();
+}
+
+export function notifyBackdropCss(): void {
   for (const listener of listeners) listener();
 }
 
 export function useBackdropCss(): { backdrop: BackdropCss | null; setBackdrop: (next: BackdropCss | null) => void } {
-  const backdrop = useSyncExternalStore(subscribe, readBackdropCss, () => null);
+  const backdrop = useSyncExternalStore(subscribeBackdropCss, readBackdropCss, () => null);
   const set = useCallback((next: BackdropCss | null) => setBackdropCss(next), []);
   return useMemo(() => ({ backdrop, setBackdrop: set }), [backdrop, set]);
 }
