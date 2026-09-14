@@ -3035,14 +3035,7 @@ export function SessionCockpit({
           onWatchRun={() => showPanelTab("run")}
           panel={
             <>
-              <WorkspaceInspector
-                projectId={session?.projectId ?? projectId}
-                {...(projectName ? { projectName } : {})}
-                {...(session ? { session } : {})}
-                tasks={roster}
-                {...(browser ? { browser } : {})}
-                onOpenPanel={showPanelTab}
-              />
+              <WorkspaceInspector projectId={session?.projectId ?? projectId} />
               <RailToggle
                 open={panel.open}
                 onToggle={() => {
