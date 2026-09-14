@@ -72,6 +72,83 @@ const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
  */
 const LEGACY_BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * THE SCALARS THE RAIL DECIDES ON, PROMOTED OUT OF `session.json` — issue #493.
+ *
+ * Every field here is one the live fold READS TO DECIDE something: which rows
+ * are on the list (`isShelved`, which wants `state`, `settledOverride`, the
+ * snooze pair, the unread pair, `readAt`, `draft` and the activity), and in what
+ * order (`updatedAt`, then `id`). Nothing here is payload — a title, a
+ * workspace, a usage snapshot are read from the document, and only for the rows
+ * that survive the decision.
+ *
+ * THAT SPLIT IS THE WHOLE POINT. On the owner's store the fold had to parse 291
+ * `session.json` blobs and 291 `queue.json` blobs — 48 MB — to discover that 284
+ * of them were settled and would not be sent. These rows are ~120 bytes each:
+ * the same decision costs 37 KB and no JSON parsing at all.
+ *
+ * `activity` IS DERIVED AND STORED ANYWAY. It is a fold over the queue, the open
+ * requests and the live tasks — three documents — and it is both a decision
+ * input (`settlingActivityOf`) and a field the wire carries. Storing the fold
+ * rather than its three inputs is what lets a shelving decision touch no
+ * document at all; it is recomputed on every write that could move it, in that
+ * write's own transaction, so it cannot drift.
+ */
+export type SessionIndexRow = {
+  id: string;
+  projectId?: string;
+  state: "active" | "archived";
+  updatedAt: number;
+  createdAt: number;
+  /** `state === "archived"`, as the boolean the settling rule reads. Stored
+   *  rather than derived in SQL because it is the leading column of the index
+   *  the ordered read seeks on. */
+  archived: boolean;
+  /** The PRESENCE of a draft record, which is all the rule asks about. */
+  draft: boolean;
+  readAt?: number;
+  settledOverride?: "settled" | "active";
+  settledAt?: number;
+  snoozedUntil?: number;
+  snoozedAt?: number;
+  lastTurnSequence?: number;
+  lastReadTurnSequence?: number;
+  lastTurnEndedAt?: number;
+  lastTurnFailed?: boolean;
+  activity: "idle" | "blocked" | "working" | "queued" | "monitoring";
+  activityAt?: number;
+};
+
+/** A stored row is columns; `undefined` and `null` are the same absence here. */
+type StoredSessionRow = Record<string, unknown>;
+
+function rowFromColumns(columns: StoredSessionRow): SessionIndexRow {
+  const state = String(columns.state) === "archived" ? "archived" : "active";
+  const override = columns.settled_override === null || columns.settled_override === undefined
+    ? undefined
+    : String(columns.settled_override) === "settled" ? "settled" as const : "active" as const;
+  return {
+    id: String(columns.id),
+    ...(columns.project_id === null || columns.project_id === undefined ? {} : { projectId: String(columns.project_id) }),
+    state,
+    updatedAt: Number(columns.updated_at),
+    createdAt: Number(columns.created_at),
+    archived: Number(columns.archived) === 1,
+    draft: Number(columns.draft) === 1,
+    ...(columns.read_at === null || columns.read_at === undefined ? {} : { readAt: Number(columns.read_at) }),
+    ...(override === undefined ? {} : { settledOverride: override }),
+    ...(columns.settled_at === null || columns.settled_at === undefined ? {} : { settledAt: Number(columns.settled_at) }),
+    ...(columns.snoozed_until === null || columns.snoozed_until === undefined ? {} : { snoozedUntil: Number(columns.snoozed_until) }),
+    ...(columns.snoozed_at === null || columns.snoozed_at === undefined ? {} : { snoozedAt: Number(columns.snoozed_at) }),
+    ...(columns.last_turn_sequence === null || columns.last_turn_sequence === undefined ? {} : { lastTurnSequence: Number(columns.last_turn_sequence) }),
+    ...(columns.last_read_turn_sequence === null || columns.last_read_turn_sequence === undefined ? {} : { lastReadTurnSequence: Number(columns.last_read_turn_sequence) }),
+    ...(columns.last_turn_ended_at === null || columns.last_turn_ended_at === undefined ? {} : { lastTurnEndedAt: Number(columns.last_turn_ended_at) }),
+    ...(Number(columns.last_turn_failed) === 1 ? { lastTurnFailed: true } : {}),
+    activity: String(columns.activity) as SessionIndexRow["activity"],
+    ...(columns.activity_at === null || columns.activity_at === undefined ? {} : { activityAt: Number(columns.activity_at) }),
+  };
+}
+
 /** What the housekeeping on open actually removed, so the daemon can say so and
  *  a test can hold it to it. Nothing here is otherwise observable. */
 export type ExecutionHousekeeping = {
@@ -108,6 +185,28 @@ function directorySize(directory: string): { bytes: number; files: number } {
     }
   }
   return { bytes, files };
+}
+
+/**
+ * THE HALF-OPEN RANGE THAT MATCHES A KEY PREFIX — `[prefix, prefix+1)`.
+ *
+ * `documents.key` is the table's PRIMARY KEY, so a comparison against a
+ * constant is an index seek and a `LIKE` is not: SQLite's `LIKE` is
+ * case-insensitive over ASCII by default, which makes it unusable as an index
+ * constraint, and `substr(key,1,?)=?` is a function of the column, which is
+ * worse — it has to compute the left side for every row in the table before it
+ * can compare anything. Measured on the owner's store (#493), both were full
+ * scans of 305 rows holding 48 MB of conversation text, one per call.
+ *
+ * THE UPPER BOUND IS THE PREFIX WITH ITS LAST CHARACTER INCREMENTED, which is
+ * why every caller here passes a prefix ending in `/` (0x2F): the bound is the
+ * same string ending in `0` (0x30), and no key that starts with the prefix can
+ * sort at or above it. Spelled as a function rather than inline so the two call
+ * sites cannot disagree about it.
+ */
+function prefixRange(prefix: string): [string, string] {
+  const last = prefix.charCodeAt(prefix.length - 1);
+  return [prefix, `${prefix.slice(0, -1)}${String.fromCharCode(last + 1)}`];
 }
 
 /** Only a bench or a test sets these; production runs the constants above.
@@ -230,6 +329,44 @@ export class ExecutionStore {
       CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, command TEXT NOT NULL, result TEXT NOT NULL, at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=1;`);
+    /**
+     * THE RAIL'S DECISION COLUMNS — issue #493. See `SessionIndexRow`.
+     *
+     * ADDITIVE, AND `user_version` STAYS AT 1, for the reason the receipts
+     * column below gives: an older binary neither reads nor writes this table,
+     * and a store it has written is one whose rows are stale. That is why
+     * `reconcileSessionRows` runs on EVERY open rather than once — the marker it
+     * would otherwise trust cannot survive a downgrade, and a stale row is a
+     * conversation missing from somebody's sidebar.
+     *
+     * TWO INDEXES, BOTH FOR AN ORDERED READ. `(archived, settled_override,
+     * updated_at)` is the live fold's: it seeks past the archived rows and hands
+     * back the rest already in `updatedAt` order, which is the order the answer
+     * is in. `(project_id, updated_at)` is `listSessions`'s, which is the same
+     * shape one project at a time.
+     */
+    this.db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT,
+        state TEXT NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
+        draft INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        read_at INTEGER,
+        settled_override TEXT,
+        settled_at INTEGER,
+        snoozed_until INTEGER,
+        snoozed_at INTEGER,
+        last_turn_sequence INTEGER,
+        last_read_turn_sequence INTEGER,
+        last_turn_ended_at INTEGER,
+        last_turn_failed INTEGER NOT NULL DEFAULT 0,
+        activity TEXT NOT NULL DEFAULT 'idle',
+        activity_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS sessions_shelf ON sessions(archived, settled_override, updated_at);
+      CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id, updated_at);`);
     /**
      * ADDITIVE, AND `user_version` STAYS AT 1 ON PURPOSE — a column with a
      * default is not a downgrade fence. An older binary names the three columns
@@ -406,17 +543,119 @@ export class ExecutionStore {
     if (this.buffered.length + this.pending.length >= this.flushCount) this.flush();
     else this.arm();
   }
+  /**
+   * SEEKS THE PREFIX, THEN FILTERS THE SUFFIX — see `prefixRange`.
+   *
+   * The range is what makes this an index seek; the `LIKE` that remains only
+   * chooses between the five documents a session directory holds, over rows the
+   * seek has already narrowed to. It reads keys alone and never touches `value`,
+   * so no conversation text is loaded to answer it.
+   */
   sessionIds(): string[] {
-    return this.statement("SELECT key FROM documents WHERE key LIKE 'sessions/%/session.json'").all().map((row) => String(row.key).split("/")[1]!);
+    const [low, high] = prefixRange("sessions/");
+    return this.statement("SELECT key FROM documents WHERE key >= ? AND key < ? AND key LIKE '%/session.json' ORDER BY key")
+      .all(low, high).map((row) => String(row.key).split("/")[1]!);
   }
+  /**
+   * WHICH SESSIONS HAVE A ROW AND WHICH DO NOT — the backfill's own question.
+   *
+   * Keys alone on both sides, so answering it reads no conversation text: the
+   * `documents` side is the covering seek `sessionIds` makes, and the `sessions`
+   * side is the primary key. `missing` is what a first open (or an open after a
+   * downgrade wrote documents this table never saw) has to compute; `orphaned`
+   * is a row whose session was deleted by a binary that did not know to remove
+   * it. Both are returned rather than acted on here, because building a row
+   * means folding four documents and that is the state layer's job.
+   */
+  sessionRowGaps(): { missing: string[]; orphaned: string[] } {
+    const documents = new Set(this.sessionIds());
+    const rows = new Set(this.statement("SELECT id FROM sessions").all().map((row) => String(row.id)));
+    return {
+      missing: [...documents].filter((id) => !rows.has(id)),
+      orphaned: [...rows].filter((id) => !documents.has(id)),
+    };
+  }
+
+  /**
+   * THE LIVE FOLD'S READ: every row that is not archived.
+   *
+   * `archived = 0` is the leading column of `sessions_shelf`, so this is a seek
+   * past the finished conversations rather than a scan over them — and an
+   * archived session is one the live list never carries, so the rows it skips
+   * are rows no caller would have looked at.
+   *
+   * NO `ORDER BY`, DELIBERATELY. The answer is ordered by `newestFirst` over
+   * whole `Session` records anyway — the index cannot serve that order with
+   * `settled_override` sitting between `archived` and `updated_at`, so asking
+   * for it here buys a temp B-tree over every row and a second sort afterwards.
+   */
+  liveSessionRows(): SessionIndexRow[] {
+    return this.statement("SELECT * FROM sessions WHERE archived = 0").all().map(rowFromColumns);
+  }
+
+  /** One row, by primary key — what a writer reads to learn whether the row it
+   *  is about to store changes which list this session is on. */
+  sessionRow(sessionId: string): SessionIndexRow | undefined {
+    const columns = this.statement("SELECT * FROM sessions WHERE id=?").get(sessionId);
+    return columns ? rowFromColumns(columns) : undefined;
+  }
+
+  /** One project's rows, by the index that exists for them. Unordered, for the
+   *  reason above: `readSessions` sorts the records it builds from these. */
+  projectSessionRows(projectId: string): SessionIndexRow[] {
+    return this.statement("SELECT * FROM sessions WHERE project_id=?").all(projectId).map(rowFromColumns);
+  }
+
+  /**
+   * Store one row. Called from inside the transaction that wrote the document
+   * the row describes — never as a pass of its own, because a row committed
+   * without its document (or the other way round) is a sidebar disagreeing with
+   * the conversation it is drawing.
+   */
+  writeSessionRow(row: SessionIndexRow): void {
+    this.statement(`INSERT INTO sessions(
+        id, project_id, state, archived, draft, created_at, updated_at, read_at, settled_override, settled_at,
+        snoozed_until, snoozed_at, last_turn_sequence, last_read_turn_sequence, last_turn_ended_at, last_turn_failed,
+        activity, activity_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id=excluded.project_id, state=excluded.state, archived=excluded.archived, draft=excluded.draft,
+        created_at=excluded.created_at, updated_at=excluded.updated_at, read_at=excluded.read_at,
+        settled_override=excluded.settled_override, settled_at=excluded.settled_at,
+        snoozed_until=excluded.snoozed_until, snoozed_at=excluded.snoozed_at,
+        last_turn_sequence=excluded.last_turn_sequence, last_read_turn_sequence=excluded.last_read_turn_sequence,
+        last_turn_ended_at=excluded.last_turn_ended_at, last_turn_failed=excluded.last_turn_failed,
+        activity=excluded.activity, activity_at=excluded.activity_at`).run(
+      row.id, row.projectId ?? null, row.state, row.archived ? 1 : 0, row.draft ? 1 : 0,
+      row.createdAt, row.updatedAt, row.readAt ?? null, row.settledOverride ?? null, row.settledAt ?? null,
+      row.snoozedUntil ?? null, row.snoozedAt ?? null, row.lastTurnSequence ?? null, row.lastReadTurnSequence ?? null,
+      row.lastTurnEndedAt ?? null, row.lastTurnFailed ? 1 : 0, row.activity, row.activityAt ?? null);
+  }
+
+  deleteSessionRow(sessionId: string): void {
+    this.statement("DELETE FROM sessions WHERE id=?").run(sessionId);
+  }
+
+  /** Run `work` as one transaction, for a caller outside a command that still
+   *  has to write a document and its row together. */
+  atomically(work: () => void): void {
+    this.alone(work);
+  }
+
   deleteSession(sessionId: string): void {
     this.alone(() => {
       // Store the held deltas so the DELETE below is what decides they are gone —
       // and so a rollback brings back a whole session, not a truncated one.
       this.drain(this.depth > 0);
-      const prefix = `sessions/${sessionId}/`;
-      this.statement("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
+      // A RANGE, NOT `substr(key,1,?)=?`: see `prefixRange`. The old spelling
+      // computed a substring of every key in the table to delete five rows.
+      const [low, high] = prefixRange(`sessions/${sessionId}/`);
+      this.statement("DELETE FROM documents WHERE key >= ? AND key < ?").run(low, high);
       this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
+      // In the SAME transaction as the documents, for the reason
+      // `writeSessionRow` gives: a row outliving its conversation is a row on
+      // somebody's rail that cannot be opened.
+      this.deleteSessionRow(sessionId);
       this.cursors.delete(sessionId);
     });
   }
