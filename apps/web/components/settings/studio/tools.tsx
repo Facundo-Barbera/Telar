@@ -153,7 +153,15 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
   const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock>
-      <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2 xl:grid-cols-3">
+      {/* TWO COLUMNS IS THE CEILING NOW (#435). The third tier was keyed to the
+          VIEWPORT, not to this card — so on a wide window the sixteen rows
+          would still split three ways inside the 42rem reading column. A row
+          here spends about 130px on things that cannot shrink (the swatch, the
+          contrast figure, a hex field wide enough to type into), which left
+          each token name under 60px of the 189 a third of the card is: every
+          label truncated to a word and a half. Two columns is the narrowest
+          split that fits all four parts honestly. */}
+      <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
         {THEME_TOKENS.map((token) => {
           const value = draft.theme[mode][token];
           const hex = cssColorToHex(value);
@@ -200,9 +208,18 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
 
 /**
  * ONE TYPEFACE, ONE FIELD: what it governs, the family, the size, and a
- * specimen underneath. Family and size sit on the same row because they are
- * one decision — a face at the wrong size is the wrong face — and the reference
- * this pane follows puts them there for the same reason.
+ * specimen underneath. Family and size stay TOGETHER — they are one decision,
+ * a face at the wrong size being the wrong face — but they sit on their OWN
+ * line, under the caption rather than beside it (#435).
+ *
+ * WHY THEY MOVED DOWN. The two selects claim a fixed 262px whatever happens,
+ * and beside them the caption gets whatever is left. That was ample while this
+ * pane ran the full window; in the 42rem reading column every other pane uses
+ * it leaves roughly 320px of a 600px card — so both hints sit within a few
+ * characters of wrapping, and which of them actually wraps depends on the
+ * interface font the reader has chosen. Stacked, the sentence gets the whole
+ * measure and the pair gets a line of its own, and neither has to negotiate
+ * with the other.
  */
 function TypeField({
   title,
@@ -224,18 +241,21 @@ function TypeField({
     // `ToolBlock`). This is a Row's anatomy with a specimen under it rather than
     // a Row, because the specimen is the point and Row has nowhere to put it.
     <div className="py-3">
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <div className="min-w-40 flex-1">
-          <div className="text-xs font-medium">{title}</div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {family}
-          {size}
-        </div>
+      <div className="min-w-0">
+        <div className="text-xs font-medium">{title}</div>
+        <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>
+      </div>
+      {/* `flex-wrap` is the floor, not the plan: the pair fits the column at
+          every size this shell offers, and wrapping only catches a custom
+          font name widening the row beneath them. */}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {family}
+        {size}
       </div>
       {custom && <div className="mt-2">{custom}</div>}
-      <div className="mt-2.5 flex flex-col gap-2">{children}</div>
+      {/* `min-w-0` so a specimen's own `overflow-x-auto` is what scrolls a long
+          line, rather than the block stretching the card past the measure. */}
+      <div className="mt-2.5 flex min-w-0 flex-col gap-2">{children}</div>
     </div>
   );
 }

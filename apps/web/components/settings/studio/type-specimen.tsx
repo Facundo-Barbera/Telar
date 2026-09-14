@@ -18,6 +18,15 @@
  * The mono blocks use `pre`/`code` deliberately: those are the elements
  * `--app-font-mono-size` lands on in globals.css, so the specimen resizes for
  * exactly the reason the reader's code will.
+ *
+ * AND THEY LIVE IN THE 42REM READING COLUMN (#435), like every other settings
+ * pane. That is a budget, not a suggestion: the card leaves about 600px, and
+ * the mono size is a setting that goes up to 18px — so a sample line much past
+ * forty characters cannot be shown WHOLE at the biggest face somebody can
+ * choose. Past that the block scrolls, and a specimen you have to scroll to
+ * read has stopped answering the question it was put here to answer.
+ * `type-specimen.test.tsx` does the arithmetic from the real constants; keep
+ * new sample lines under the limit it computes rather than widening the pane.
  */
 
 import { cn } from "@/lib/utils";
