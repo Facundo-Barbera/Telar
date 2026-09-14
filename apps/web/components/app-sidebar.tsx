@@ -140,6 +140,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
+import { CAPTION } from "@/lib/idiom";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -244,15 +245,14 @@ function SidebarEmpty({
  * here is a control, so it is unconditionally a <button>.
  *
  * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
- * the two rails' grammar. `warehouse-nav.tsx`'s `CAPTION` (10px, semibold,
- * uppercase, tracking-wider) is the newer of the two section-caption
- * treatments this app has; this label used to sit at 11px, regular weight,
- * sentence case — a difference between two "small grey word beside a rule"
- * treatments with no reason beyond having been written on different days.
- * Everything else about the rule (the rule itself, the chevron, the count)
- * is unchanged — only the label's type scale moved.
+ * the two rails' grammar. `CAPTION` (10px, semibold, uppercase,
+ * tracking-wider) now lives in `lib/idiom.ts` and this label reads it from
+ * there; it used to sit at 11px, regular weight, sentence case — a difference
+ * between two "small grey word beside a rule" treatments with no reason
+ * beyond having been written on different days. Everything else about the
+ * rule (the rule itself, the chevron, the count) is unchanged — only the
+ * label's type scale moved.
  */
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (

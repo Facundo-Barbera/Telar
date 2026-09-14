@@ -35,12 +35,11 @@ import { useSpoolRoom, useSpoolRoomControls } from "@/lib/spool-room";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-/** Shared caption scale — `app-sidebar.tsx`'s own `BandRule` labels match
- *  this exact string (see idiom.test.ts's cross-file scale pin). No caption
- *  renders in this file any more (the Areas group it used to label is gone),
- *  but the constant stays, declared and unused, so the two rails' scale
- *  stays provably identical. */
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+// NO CAPTION HERE ANY MORE. The Areas group it used to label is gone, so the
+// constant was declared and unused — kept only so a cross-file test could
+// prove this rail's scale matched the others'. The scale now lives in
+// `lib/idiom.ts`, which is a stronger guarantee than a copy plus an assertion,
+// and an unused copy is no longer worth carrying.
 
 export function SpoolWarehouseNav() {
   const room = useSpoolRoom();

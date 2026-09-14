@@ -14,9 +14,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronRightIcon, WorkflowIcon } from "lucide-react";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+import { CAPTION } from "@/lib/idiom";
 import { cn } from "@/lib/utils";
-
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 interface NavLoom {
   id: string;
