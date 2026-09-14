@@ -96,6 +96,12 @@ struct PanelView: View {
         switch panel.active {
         case .diff:
             DiffView(api: api, sessionId: sessionId)
+        // NO `panelAPI` GATE HERE, and that is the point of the tab. Who is
+        // working for this conversation is read off the two routes the phone
+        // already talks to any paired Mac with, so the surface is available
+        // wherever the session is.
+        case .agents:
+            AgentsSurface(api: api, sessionId: sessionId, hostId: hostId, active: active)
         case .files:
             if let panelAPI {
                 FilesSurface(api: panelAPI, sessionId: sessionId, hostId: hostId, active: active, panel: panel)

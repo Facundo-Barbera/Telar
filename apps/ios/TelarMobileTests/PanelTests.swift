@@ -140,8 +140,46 @@ import Testing
         let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
         panel.select(.data)
         panel.setPlugins(dataScience: false, latex: true)
-        #expect(panel.tabs == [.diff, .files, .latex])
+        #expect(panel.tabs == [.diff, .files, .agents, .latex])
         #expect(panel.active == .diff)
+    }
+
+    /// AGENTS IS NOT A PLUGIN TAB — issue #390. Who is working for this
+    /// conversation is a fact about the conversation, so the tab is there
+    /// whatever the project turned on, and the fallback that removes a tab the
+    /// project no longer offers must never take it.
+    @Test @MainActor func agentsIsOfferedWhateverThePluginsSay() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
+        #expect(panel.tabs == [.diff, .files, .agents])
+        panel.select(.agents)
+        panel.setPlugins(dataScience: true, latex: true)
+        #expect(panel.tabs == [.diff, .files, .agents, .data, .latex])
+        #expect(panel.active == .agents)
+        panel.setPlugins(dataScience: false, latex: false)
+        #expect(panel.active == .agents)
+    }
+
+    /// THE TAB SURVIVES THE APP. `PanelTab` persists by its raw value, so the
+    /// new case has to round-trip like the other four — a saved "agents" that
+    /// failed to decode would take the whole panel record with it (the open
+    /// files, the arrangement), not just the tab.
+    @Test @MainActor func theAgentsTabIsRestoredWhereItWasLeft() throws {
+        #expect(PanelTab(rawValue: "agents") == .agents)
+        let round = try JSONDecoder().decode(PanelTab.self, from: JSONEncoder().encode(PanelTab.agents))
+        #expect(round == .agents)
+
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let host = UUID()
+        let panel = PanelModel(hostId: host, sessionId: "s", defaults: defaults)
+        panel.open(.agents)
+        #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).active == .agents)
+        // And nothing else was lost on the way out and back.
+        #expect(PanelModel(hostId: host, sessionId: "s", defaults: defaults).isOpen)
     }
 }
 
