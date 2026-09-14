@@ -66,7 +66,7 @@ export function CodeSpecimen() {
     <div className="overflow-hidden rounded-md border border-border">
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
         <code className="text-muted-foreground">lib/looks.ts</code>
-        <span className="ml-auto font-mono text-[0.6875rem] tabular-nums">
+        <span className="ml-auto font-mono text-2xs tabular-nums">
           <span className="text-destructive">−1</span> <span className="text-success">+1</span>
         </span>
       </div>

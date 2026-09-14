@@ -128,7 +128,7 @@ export function PdfSurface({
           {error}
         </PanelEmpty>
       ) : !file || !src ? (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+        <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
           <Spinner className="size-3" /> reading the file…
         </p>
       ) : (

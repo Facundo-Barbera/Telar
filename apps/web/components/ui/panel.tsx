@@ -63,7 +63,7 @@ export function PanelHeader({
   return (
     <div
       className={cn(
-        "flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-2 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase",
+        "flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-2 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase",
         className,
       )}
       {...props}
@@ -138,7 +138,7 @@ export function PanelDivider({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5">
       <span className="h-px flex-1 bg-border" />
-      <span className="font-mono text-[0.5625rem] tracking-[0.08em] text-muted-foreground uppercase">{label}</span>
+      <span className="font-mono text-4xs tracking-[0.08em] text-muted-foreground uppercase">{label}</span>
       <span className="h-px flex-1 bg-border" />
     </div>
   );

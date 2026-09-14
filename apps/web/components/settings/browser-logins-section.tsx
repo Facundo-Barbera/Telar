@@ -103,7 +103,7 @@ export function BrowserLoginsSection() {
             <KeyRoundIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <p className="truncate text-sm font-medium">{grant.itemTitle}</p>
-              <p className="truncate font-mono text-[0.625rem] text-muted-foreground">{grant.origin}</p>
+              <p className="truncate font-mono text-3xs text-muted-foreground">{grant.origin}</p>
               <p className="text-xs text-muted-foreground">
                 {grant.profileLabel ?? grant.profileId} · {describeGrantFields(grant.fields)}
                 {grant.vault && <> · {grant.vault}</>} · {describeLastUsed(grant)}

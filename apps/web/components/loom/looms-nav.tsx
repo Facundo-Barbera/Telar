@@ -77,7 +77,7 @@ export function LoomsNav() {
       >
         <span className={cn("size-2 shrink-0 rounded-full", STATE_DOT[loom.state])} aria-hidden />
         <span className="min-w-0 flex-1 truncate">{loom.title}</span>
-        <span className="shrink-0 font-mono text-[0.625rem] text-sidebar-foreground/40">{loom.threads.length}</span>
+        <span className="shrink-0 font-mono text-3xs text-sidebar-foreground/40">{loom.threads.length}</span>
       </Link>
     );
   };

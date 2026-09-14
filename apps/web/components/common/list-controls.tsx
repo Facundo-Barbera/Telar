@@ -112,7 +112,7 @@ export function GroupHeader({
         <ChevronRightIcon className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
         {Icon && <Icon className={cn("size-4 shrink-0", tint ?? "text-muted-foreground")} />}
         <span className="truncate text-xs font-semibold tracking-wide text-foreground uppercase">{label}</span>
-        <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-[0.625rem] text-muted-foreground">
+        <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-3xs text-muted-foreground">
           {count}
         </Badge>
       </button>

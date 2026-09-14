@@ -156,7 +156,7 @@ function Harness() {
       { className: "rounded-lg border border-border", style: { width, height: 460 } },
       h(FileViewSurface, { key: path, path, sessionId: "session_1" }),
     ),
-    h("div", { id: "verdict", className: "max-w-4xl font-mono text-[0.6875rem] text-muted-foreground" }, verdict),
+    h("div", { id: "verdict", className: "max-w-4xl font-mono text-2xs text-muted-foreground" }, verdict),
   );
 }
 

@@ -246,7 +246,7 @@ export function ProjectIdentityRows({ project, writer }: { project?: ScopedProje
           label="Checkout"
           icon={FolderGitIcon}
           hint="Sessions run here, or in a worktree cut from it."
-          control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem]">{project.root}</code>}
+          control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-2xs">{project.root}</code>}
         />
       )}
     </SettingsGroup>

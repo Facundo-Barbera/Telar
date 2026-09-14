@@ -77,12 +77,12 @@ export function EditorAddressRow({
       {icon ?? <FileKindIcon path={path} className="size-3.5" />}
       {/* THE PATH IS SPLIT, not truncated from the left: the directories go
           quiet and the name stays legible, which is the one part you scan. */}
-      <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
+      <span className="min-w-0 flex-1 truncate font-mono text-2xs">
         {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
         <span className="text-foreground">{path.slice(cut + 1)}</span>
       </span>
       {detail !== undefined && detail !== false && (
-        <span className="flex shrink-0 items-center gap-2 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{detail}</span>
+        <span className="flex shrink-0 items-center gap-2 font-mono text-3xs text-muted-foreground tabular-nums">{detail}</span>
       )}
       {children}
     </div>

@@ -105,7 +105,7 @@ export function ProjectIconPicker({
           />
           <span className="flex-1">
             Auto-detect
-            <span className="block text-[0.6875rem] text-muted-foreground">
+            <span className="block text-2xs text-muted-foreground">
               {icon ? "The icon this checkout carries." : "No icon file found, so the project's initial."}
             </span>
           </span>
