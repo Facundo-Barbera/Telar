@@ -3448,6 +3448,25 @@ export function createClaudeDriver(
              * Read only for OUR main loop: a sub-agent's output is reported on
              * its own task, never against the parent's meter.
              */
+            /**
+             * THE MODEL'S "I AM DONE", WHERE THE REAL SDK ACTUALLY SAYS IT
+             * (#465). Probed on CLI 2.1.270: the `assistant` envelope the SDK
+             * streams carries NO `stop_reason` (its own doc says so — "the
+             * turn's stop reason arrives on the result message"); the on-disk
+             * transcript does, which is what the envelope arm below was written
+             * against, and why nightlies .2 and .3 never armed the grace on a
+             * single real turn. On the wire, `end_turn` rides the closing
+             * `message_delta`'s `delta.stop_reason`. Same conditions as the
+             * envelope arm; both stay so either producer shape arms it.
+             */
+            if (
+              event.type === "message_delta" &&
+              ours &&
+              str(asRecord(event.delta).stop_reason) === "end_turn" &&
+              openTopLevelTools.size === 0
+            ) {
+              endTurnSeenAt = Date.now();
+            }
             if (event.type === "message_delta" && ours && lastEnvelopeUsage) {
               const output = asRecord(event.usage).output_tokens;
               if (typeof output !== "number" || output < 0) continue;

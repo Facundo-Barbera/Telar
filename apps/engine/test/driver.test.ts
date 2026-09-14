@@ -411,7 +411,9 @@ describe("the end-turn grace (#465)", () => {
       async () => ({
         async *query() {
           yield { type: "stream_event", event: { type: "message_start" } };
-          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          // EXACTLY AS THE SDK STREAMS IT (probed on 2.1.270): the envelope has
+          // NO stop_reason; `end_turn` rides the closing message_delta only.
+          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }] } };
           yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" } } };
           yield { type: "stream_event", event: { type: "message_stop" } };
           await new Promise(() => undefined);
