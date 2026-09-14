@@ -914,6 +914,17 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      */
     sessionSkills: (sessionId: string) =>
       request<ProviderSkills>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/skills`),
+    /**
+     * The same, one scope wider — what a CANVAS asks, because the session that
+     * would answer for itself does not exist yet (#500). `driver` is the
+     * canvas's pending choice; absent means the engine's default.
+     */
+    projectSkills: (projectId: string, driver?: ProviderDriverKind) =>
+      request<ProviderSkills>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/skills${driver ? `?${new URLSearchParams({ driver }).toString()}` : ""}`,
+      ),
     projectFile: (projectId: string, path: string) =>
       request<{ file: WorkspaceFile }>(
         fetcher,

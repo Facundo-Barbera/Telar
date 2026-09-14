@@ -17,6 +17,7 @@ import {
   parseForgeQuery,
   RequestOpenInput,
   AgentTurnInput,
+  ProviderDriverKind,
   ProviderTurnOpenInput,
   SessionTaskReport,
   resolveMcpServers,
@@ -31,7 +32,6 @@ import {
   type McpOAuthStatus,
   type McpServer,
   type ModelSelection,
-  type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
   type UsageLimits,
@@ -2742,6 +2742,40 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { listing: await store.projectFilesAsync(projectId) });
         return;
       }
+      /**
+       * WHAT A PROJECT'S PROVIDER CAN BE ASKED TO DO — the same inventory as
+       * `/v2/sessions/:id/skills`, one scope wider, for a canvas whose session
+       * does not exist yet (#500).
+       *
+       * A FRESH SESSION IS THE WHOLE REASON THIS ROUTE EXISTS. `$` used to draw
+       * nothing on a canvas because the only way to ask was per session, and a
+       * session with no runtime has no answer — so the menu stayed empty until
+       * after the first turn. The project's own checkout is the honest thing to
+       * read there: it is what the session about to be created will copy or run
+       * in, and it is where its `.claude` already is.
+       *
+       * THE DRIVER IS THE CANVAS'S PENDING CHOICE, because it has not been
+       * recorded anywhere yet. Claude when unsaid, matching `/v2/models`.
+       */
+      const projectSkills = /^\/v2\/projects\/([^/]+)\/skills$/.exec(url.pathname);
+      if (request.method === "GET" && projectSkills) {
+        const project = store.getProject(decodeURIComponent(projectSkills[1]!));
+        const asked = url.searchParams.get("driver");
+        const driver = ProviderDriverKind.safeParse(asked ?? "claude");
+        if (!driver.success) throw new HttpError(400, "invalid_request", `unknown provider driver ${JSON.stringify(asked)}`);
+        writeJson(
+          response,
+          200,
+          await readProviderSkillsCached({
+            cacheKey: `project:${project.id}:${driver.data}`,
+            driver: driver.data,
+            checkout: project.root,
+            ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
+            ...(options.providerSkills?.loadProviderCommands ? { loadProviderCommands: options.providerSkills.loadProviderCommands } : {}),
+          }),
+        );
+        return;
+      }
       /** One project file's BYTES — the media viewers' read. Same fence as the
        *  text read; the answer is content and a media type instead of JSON. */
       const projectFileRaw = /^\/v2\/projects\/([^/]+)\/files\/raw$/.exec(url.pathname);
@@ -3881,7 +3915,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             response,
             200,
             await readProviderSkillsCached({
-              sessionId: record.id,
+              cacheKey: record.id,
               driver: record.driver,
               checkout: record.workspace.path,
               ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
