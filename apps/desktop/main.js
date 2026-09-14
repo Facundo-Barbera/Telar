@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell, webContents } = require("electron");
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
@@ -35,6 +35,7 @@ const { createSitePermissionStore } = require("./site-permissions");
 const { resolveHelperExec } = require("./helper-exec");
 const devUpdate = require("./dev-update");
 const updateWatchdog = require("./update-watchdog");
+const serviceWorkerWatchdog = require("./service-worker-watchdog");
 const { createInstallGate } = require("./update-install");
 const { wireLoginOffer } = require("./login-offer-window");
 const { discoverOpeners, openWith, openersWithIcons, bundleIcon } = require("./workspace-openers");
@@ -2227,6 +2228,82 @@ function startHeapLog() {
   timer.unref?.();
 }
 
+/**
+ * THE RUNAWAY-RENDERER WATCHDOG — issue #487's consequences. The decisions are
+ * in service-worker-watchdog.js, which is pure; this is the three readings it
+ * needs and the kill.
+ *
+ * WHY A KILL AND NOT A STOP. Electron 43's `session.serviceWorkers` has
+ * getAllRunning, getInfoFromVersionID, getWorkerFromVersionID and
+ * startWorkerForScope — and no stop of any kind. Terminating the renderer
+ * process is the only lever the platform actually gives us, and it is the one
+ * that worked by hand in the incident: Chromium treats it as a crashed
+ * renderer, and an MV3 worker is built to be killed when idle and restarted on
+ * its next event, which is what Chrome itself does after thirty seconds.
+ */
+function startServiceWorkerWatchdog() {
+  const watchdog = serviceWorkerWatchdog.createServiceWorkerWatchdog({
+    readMetrics: () => app.getAppMetrics(),
+    // EVERY OS pid HOSTING A PAGE ANYBODY CAN SEE — the app's own windows, the
+    // tabs, the DevTools views, the extension popups. A renderer that is not
+    // one of these is showing nothing, which is the whole signal: Electron
+    // will not tell us a renderer is a service worker (ProcessMetric.type has
+    // no such value), so "hosts no WebContents" is what stands in for it.
+    readLiveProcessIds: () => {
+      const pids = [];
+      for (const contents of webContents.getAllWebContents()) {
+        if (contents.isDestroyed()) continue;
+        try {
+          const pid = contents.getOSProcessId();
+          if (pid) pids.push(pid);
+        } catch {
+          // A WebContents that will not name its process is one we cannot
+          // exclude by pid; skipping it can only make the watchdog more
+          // cautious, never less.
+        }
+      }
+      return pids;
+    },
+    // Every partition's running workers, each told whether its own origin
+    // still has a tab open in that partition.
+    readWorkers: () => {
+      const workers = [];
+      const partitions = new Set();
+      const liveOrigins = new Map();
+      for (const manager of browserManagers) {
+        for (const partition of manager.activePartitions()) partitions.add(partition);
+        for (const [partition, origins] of manager.liveOriginsByPartition()) {
+          if (!liveOrigins.has(partition)) liveOrigins.set(partition, new Set());
+          for (const origin of origins) liveOrigins.get(partition).add(origin);
+        }
+      }
+      for (const partition of partitions) {
+        let running;
+        try {
+          running = session.fromPartition(partition).serviceWorkers.getAllRunning();
+        } catch {
+          continue; // a partition that will not answer is one poll's worth of blindness
+        }
+        for (const info of Object.values(running || {})) {
+          const origin = serviceWorkerWatchdog.originOfScope(info?.scope);
+          workers.push({
+            partition,
+            scope: info?.scope,
+            scriptUrl: info?.scriptUrl,
+            versionId: info?.versionId,
+            hasLiveTab: Boolean(origin && liveOrigins.get(partition)?.has(origin)),
+          });
+        }
+      }
+      return workers;
+    },
+    terminate: (pid) => process.kill(pid, "SIGKILL"),
+    log: logShell,
+  });
+  watchdog.start();
+  return watchdog;
+}
+
 function updateLogger() {
   const write = (level, message) => {
     const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
@@ -2690,6 +2767,10 @@ if (SMOKE) {
         // And the heap guard with it: #296 died five hours in, so the series
         // has to start at launch, not at the first window.
         startHeapLog();
+        // The same reasoning for #487, which took fifty minutes to become
+        // visible: the poll has to be running before the first tab, not after
+        // somebody notices the fans.
+        startServiceWorkerWatchdog();
         applyDevelopmentAppIcon();
         buildApplicationMenu();
         // Before the first window exists, so no scheme change can be missed.

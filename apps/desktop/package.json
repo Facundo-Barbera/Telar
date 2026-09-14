@@ -61,6 +61,7 @@
       "dev-update-preload.js",
       "dev-update.html",
       "update-watchdog.js",
+      "service-worker-watchdog.js",
       "update-install.js",
       "login-offer.js",
       "login-offer-flow.js",
