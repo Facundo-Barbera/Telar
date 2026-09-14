@@ -29,10 +29,14 @@ test("EVERY VERB THE RAIL PRESSES IS A COMMAND THIS APP HAS", () => {
   const pressed = [...sidebar.matchAll(/run\("([a-z-]+)"\)/g)].map((match) => match[1]!);
   expect(pressed.length).toBeGreaterThan(0);
   for (const id of pressed) expect(ids.has(id)).toBe(true);
-  // The three verbs in the header's pill, by name.
-  for (const verb of ["reveal-in-finder", "add-project", "new-conversation"] as CommandId[]) {
+  // The two verbs in the header's pill, by name. Reveal in Finder was a third
+  // until #470: it pressed a command the rail itself bound to a GUESS at the
+  // project at hand, and the verb now lives only where a folder can be named —
+  // a project group's menu, a session's own Reveal button.
+  for (const verb of ["add-project", "new-conversation"] as CommandId[]) {
     expect(pressed).toContain(verb);
   }
+  expect(pressed).not.toContain("reveal-in-finder");
 });
 
 test("the rail's own bindings name commands that exist too", () => {
