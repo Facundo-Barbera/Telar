@@ -10,23 +10,27 @@
  * At that rate one millisecond per delta is 13.3% of a core, so the per-event
  * cost below IS the CPU share while an agent types.
  *
- * FOUR NUMBERS, because they attribute the cost to different layers:
+ * THE ROWS ATTRIBUTE THE COST TO DIFFERENT LAYERS:
  *
- *   raw append              one INSERT, its own implicit transaction — the sqlite
- *                           floor, one WAL fsync per event at `synchronous=FULL`.
- *   raw append, batched     the same INSERTs inside ONE transaction: what
- *                           amortising the fsync is worth and nothing else.
+ *   append, uncoalesced     one INSERT where it was appended — the behaviour
+ *                           before #246, one WAL fsync per event at
+ *                           `synchronous=FULL`. `flushCount: 1` restores it.
+ *   append, coalesced       the shipping default: deltas held and stored in one
+ *                           transaction. THIS IS THE ISSUE'S TARGET (< 0.010).
+ *   raw append, batched     the same INSERTs inside ONE explicit transaction,
+ *                           for the fsync arithmetic on its own.
  *   ingest, N per call      the REAL path a delta takes — `reportObservations`,
- *                           swept over the batch sizes coalescing produces.
+ *                           swept over the batch sizes a driver might produce.
  *
- * READ THE SWEEP, NOT ONE ROW. A 16 ms coalescing window at 133 deltas/s holds
- * about two chunks, not sixteen, so `2 per call` is what the driver's tick
- * actually buys and `16 per call` is the shape of the ceiling. The gap between
- * "raw append" and "ingest, 1 per call" is everything the store does AROUND the
- * insert — the queue read, the item projection's read and rewrite, the receipt,
- * the commit — and on a session with any history that gap, not the fsync, is
- * the cost. That is why this bench times the public path and not just
- * `ExecutionStore.append`.
+ * READ THE SWEEP, NOT ONE ROW. Coalescing fixes the append; it does not fix the
+ * per-CALL cost, and `ingest, 1 per call` is what a driver reporting one delta
+ * at a time still pays. That gap is everything the store does AROUND the insert
+ * — the queue read, the item projection's read, the BEGIN/COMMIT — and on a
+ * session with any history it is now the larger number of the two. That is why
+ * this bench times the public path and not just `ExecutionStore.append`.
+ *
+ * A terminal `item.completed` closes each timed append run, because that is
+ * what forces a held batch out and a real streamed item always ends with one.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -91,19 +95,38 @@ const projection = fs.statSync(path.join(root, "execution.sqlite")).size;
 console.log(`session seeded with ${items} settled items (${(ITEM_TEXT.length * items / 1e3).toFixed(0)} KB of item text, ${(projection / 1e6).toFixed(1)} MB sqlite)`);
 console.log(`${deltas} deltas of ${DELTA.length} bytes each\n`);
 
-// ── the sqlite floor, on a store of its own so the timings above are untouched ──
-const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-append-raw-"));
-fs.mkdirSync(path.join(rawRoot, "sessions", "session_raw"), { recursive: true });
-const raw = new ExecutionStore(rawRoot);
+// ── the sqlite floor, on stores of their own so the timings above are untouched ──
 const event = (id: number): EngineEvent =>
   ({ id, at: 1, sessionId: "session_raw", runId: "run_raw", type: "content.delta", itemId: "item", stream: "assistant_text", text: DELTA }) as EngineEvent;
+/** What ends a streamed item, and what forces a held batch to the disk. */
+const settled = (id: number): EngineEvent =>
+  ({ id, at: 1, sessionId: "session_raw", runId: "run_raw", type: "item.completed", itemId: "item",
+    item: { id: "item", runId: "run_raw", sessionId: "session_raw", status: "completed", detail: { type: "assistant_message", text: DELTA }, startedAt: 1, completedAt: 1 } }) as EngineEvent;
 
+function rawStore(flushCount?: number): { store: ExecutionStore; drop(): void } {
+  const rawRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-append-raw-"));
+  fs.mkdirSync(path.join(rawRoot, "sessions", "session_raw"), { recursive: true });
+  return { store: new ExecutionStore(rawRoot, flushCount === undefined ? {} : { flushCount }), drop: () => fs.rmSync(rawRoot, { recursive: true, force: true }) };
+}
+
+/** Appends `deltas` of them and the `item.completed` that settles the batch. */
+function timeAppends(label: string, flushCount?: number): void {
+  const { store, drop } = rawStore(flushCount);
+  let id = 0;
+  const started = performance.now();
+  for (let n = 0; n < deltas; n += 1) store.append(event((id += 1)));
+  store.append(settled((id += 1)));
+  report(label, performance.now() - started, deltas);
+  store.close();
+  drop();
+}
+
+timeAppends("append, uncoalesced", 1);
+timeAppends("append, coalesced");
+
+const { store: raw, drop: dropRaw } = rawStore(1);
 let id = 0;
 let started = performance.now();
-for (let n = 0; n < deltas; n += 1) raw.append(event((id += 1)));
-report("raw append", performance.now() - started, deltas);
-
-started = performance.now();
 for (let n = 0; n < deltas; n += batch) {
   raw.transaction("bench", () => {
     for (let k = 0; k < batch && n + k < deltas; k += 1) raw.append(event((id += 1)));
@@ -111,7 +134,7 @@ for (let n = 0; n < deltas; n += batch) {
 }
 report(`raw append, ${batch} per txn`, performance.now() - started, deltas);
 raw.close();
-fs.rmSync(rawRoot, { recursive: true, force: true });
+dropRaw();
 
 // ── the real path, swept over the batch sizes coalescing produces ──────────
 const delta = { kind: "content.delta" as const, itemId, stream: "assistant_text" as const, text: DELTA };

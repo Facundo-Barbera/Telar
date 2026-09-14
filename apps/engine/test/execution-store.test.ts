@@ -221,6 +221,102 @@ test("a session id reused after a delete does not inherit the old queue", () => 
  * every Stop anybody ever pressed kept a session in the set the heartbeat
  * walks, for ever and across every restart.
  */
+/**
+ * A STREAMED DELTA IS WRITTEN ONCE FOR THE WHOLE BATCH, AND READS AS IF IT WERE
+ * WRITTEN AT ONCE.
+ *
+ * `synchronous=FULL` buys one WAL fsync per transaction and the engine runs one
+ * per `ingestObservations`, so a delta at a time was an fsync per token-chunk.
+ * The two halves of the fix are inseparable and both are asserted here: the
+ * deltas do NOT reach the database as they arrive, and a reader cannot tell —
+ * `readEvents` and `eventCursor` answer with the held ones, in order, with the
+ * text intact. A second connection is what separates the two questions, because
+ * it sees only what has actually been committed.
+ */
+function streamed(home: string): Array<Record<string, unknown>> {
+  const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+  const db = new Database(path.join(home, "execution.sqlite"), { readonly: true });
+  try { return db.query("SELECT id,value FROM events WHERE session_id='session_one' ORDER BY id").all() as Array<Record<string, unknown>>; }
+  finally { db.close(); }
+}
+
+test("deltas arriving in one tick are held, read back whole, and stored in a single write", () => {
+  const { store, home } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claimTurn("session_one", "worker_one")!;
+  const token = turn.claim!.token;
+  store.markRunning("session_one", turn.runId, token);
+  store.ingestObservations("session_one", turn.runId, token, [
+    { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  const settledBefore = streamed(home).length;
+  const cursorBefore = store.eventCursor("session_one");
+
+  // Twenty deltas, one call each, all inside this tick — the shape a driver
+  // reporting a chunk at a time produces.
+  const chunks = Array.from({ length: 20 }, (_, n) => `chunk-${n} `);
+  for (const text of chunks) {
+    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+  }
+
+  // NOT ONE OF THEM IS ON DISK YET — that is the whole saving.
+  expect(streamed(home)).toHaveLength(settledBefore);
+  // …and no reader can tell. Every delta, in arrival order, contiguous ids.
+  const read = store.readEvents("session_one", cursorBefore);
+  expect(read.map((event) => (event as { text?: string }).text)).toEqual(chunks);
+  expect(read.map((event) => event.id)).toEqual(chunks.map((_, n) => cursorBefore + 1 + n));
+  expect(store.eventCursor("session_one")).toBe(cursorBefore + chunks.length);
+
+  // The event that settles the item takes the batch to the disk with it, and
+  // nothing may be stored ahead of the deltas it concludes.
+  store.ingestObservations("session_one", turn.runId, token, [
+    { kind: "item.completed", itemId: "item_one", status: "completed", detail: { type: "assistant_message", text: chunks.join("") } },
+  ]);
+  const stored = streamed(home);
+  expect(stored).toHaveLength(settledBefore + chunks.length + 1);
+  expect(stored.map((row) => Number(row.id))).toEqual(stored.map((_, n) => n + 1));
+  const deltas = stored.map((row) => JSON.parse(String(row.value)) as { type: string; text?: string }).filter((event) => event.type === "content.delta");
+  expect(deltas.map((event) => event.text).join("")).toBe(chunks.join(""));
+});
+
+/**
+ * UNFLUSHED DELTAS MAY BE LOST. A SETTLED TURN MAY NOT — and neither may a
+ * delta that some earlier command already committed, just because a later one
+ * failed on top of it.
+ */
+test("a failed command does not take already-accepted deltas with it", () => {
+  const { store, home } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claimTurn("session_one", "worker_one")!;
+  const token = turn.claim!.token;
+  store.markRunning("session_one", turn.runId, token);
+  store.ingestObservations("session_one", turn.runId, token, [
+    { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  for (const text of ["held-one ", "held-two "]) {
+    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+  }
+  const cursor = store.eventCursor("session_one");
+
+  expect(() => store.executeCommand("broken", () => {
+    store.ingestObservations("session_one", turn.runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "rolled-back " }]);
+    throw new Error("injected disk failure");
+  })).toThrow("injected disk failure");
+
+  // The rolled-back delta is gone; the two accepted before it are not.
+  expect(store.eventCursor("session_one")).toBe(cursor);
+  expect(store.readEvents("session_one").filter((event) => event.type === "content.delta")
+    .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
+
+  // And a clean close is what puts them on the disk, ids still contiguous.
+  store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
+  const stored = streamed(home);
+  expect(stored.map((row) => Number(row.id))).toEqual(stored.map((_, n) => n + 1));
+  const reopened = new EngineStore(home); stores.push(reopened);
+  expect(reopened.readEvents("session_one").filter((event) => event.type === "content.delta")
+    .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
+});
+
 test("a restart retires the claim on a stopped turn without disturbing the session", () => {
   const { home, store } = setup();
   store.submitTurn("session_one", { runId: "run_one", input: "hello" });
