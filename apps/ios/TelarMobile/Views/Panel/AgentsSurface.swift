@@ -415,7 +415,7 @@ struct AgentsSurface: View {
                 .foregroundStyle(color(state.tone))
                 .layoutPriority(-1)
             if open != nil {
-                Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                Image(systemName: "arrow.up.right").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted)
                     .padding(.top, 2)
             }
         }
