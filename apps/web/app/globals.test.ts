@@ -98,8 +98,14 @@ describe("the design token palette", () => {
   test("bridges every colour token into @theme, so a utility exists for it", () => {
     // The state vocabulary is the part that regressed historically: --info,
     // --verify, --success and --warning were declared and unreachable.
+    //
+    // `var(--x-wash, var(--x))` counts as bridged: the wash indirection (see
+    // @theme's note on --color-sidebar) is how a token the translucency rules
+    // have to move reaches a utility, and the FALLBACK is still the themed
+    // token. --muted-foreground wears it since #434.
     for (const token of ["info", "verify", "success", "warning", "destructive", "primary", "muted-foreground", "border"]) {
-      expect(theme, `--color-${token} is not bridged in @theme`).toContain(`--color-${token}: var(--${token})`);
+      const bridge = new RegExp(`--color-${token}:\\s*var\\(--${token}\\)|--color-${token}:\\s*var\\(--${token}-wash,\\s*var\\(--${token}\\)\\)`);
+      expect(theme, `--color-${token} is not bridged in @theme`).toMatch(bridge);
     }
   });
 
@@ -190,6 +196,30 @@ describe("the translucency wash", () => {
     const declarations = [...code.matchAll(/^([^\n{]*)\{[^}]*--wash-transparency\s*:/gm)].map(([, selector]) => selector.trim());
     expect(declarations).toHaveLength(1);
     expect(declarations[0]).toContain(":not(.dark)");
+  });
+
+  /**
+   * THE QUIET TOKENS GET A FLOOR UNDER GLASS, IN LIGHT ONLY — issue #434.
+   *
+   * --muted-foreground is tuned to clear 4.5:1 on the quietest OPAQUE surface
+   * it lands on; thinning that surface takes the measurement away with it and
+   * sidebar rows and hints go grey on grey. The scope is the assertion: on the
+   * dark half the floor would only make text heavier for nothing, and on an
+   * opaque window the palette is already correct.
+   */
+  test("light under glass gets a legibility floor, and nothing else does", () => {
+    const floor = code.match(/html:not\(\.dark\)\[data-telar-shell\]\[data-translucent\]\s*\{([^{}]*)\}/);
+    expect(floor, "the light translucent scene must raise its quiet text tokens").not.toBeNull();
+    // Toward the theme's OWN ink — a hardcoded colour here would throw away a
+    // custom theme's hue, which is the mistake the wash contract above records.
+    expect(floor?.[1]).toContain("--muted-foreground-wash: color-mix(in oklab, var(--foreground)");
+    expect(floor?.[1]).toContain("--sidebar-foreground-wash: color-mix(in oklab, var(--foreground)");
+
+    for (const token of ["--muted-foreground-wash", "--sidebar-foreground-wash"]) {
+      const declarations = [...code.matchAll(new RegExp(`([^\\n{]*)\\{[^{}]*${token}\\s*:`, "g"))].map(([, selector]) => selector.trim());
+      expect(declarations, `${token} must be declared exactly once`).toHaveLength(1);
+      expect(declarations[0]).toBe("html:not(.dark)[data-telar-shell][data-translucent]");
+    }
   });
 
   test("body and the rail read the scaled value, not the raw slider", () => {
