@@ -131,7 +131,7 @@ export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>
 ControlTrigger.displayName = "ControlTrigger";
 
 function MenuHeading({ children }: { children: ReactNode }) {
-  return <div className="px-2 pb-1 pt-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+  return <div className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
 /**
@@ -168,7 +168,7 @@ function CompactRow({
       )}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {hint && <span className="shrink-0 text-[0.625rem] text-muted-foreground">{hint}</span>}
+      {hint && <span className="shrink-0 text-3xs text-muted-foreground">{hint}</span>}
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         {selected && <CheckIcon className="size-3.5 text-primary" />}
       </span>
@@ -422,11 +422,11 @@ function FamilyRow({
         </span>
         <span className="min-w-0 flex-1 truncate">{label}</span>
         {route && (
-          <span className="max-w-24 shrink-0 truncate rounded border border-border/60 px-1 py-px text-[0.625rem] leading-4 text-muted-foreground">
+          <span className="max-w-24 shrink-0 truncate rounded border border-border/60 px-1 py-px text-3xs leading-4 text-muted-foreground">
             {connectionLabel(route.connection)}
           </span>
         )}
-        {family.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
+        {family.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
         <span className="flex size-3.5 shrink-0 items-center justify-center">
           {selected && <CheckIcon className="size-3.5 text-primary" />}
         </span>
@@ -766,7 +766,7 @@ export function AgentControl({
                   type="button"
                   aria-label="Clear search"
                   onClick={() => setQuery("")}
-                  className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:text-foreground"
+                  className="shrink-0 rounded px-1 text-3xs text-muted-foreground hover:text-foreground"
                 >
                   clear
                 </button>
@@ -818,7 +818,7 @@ export function AgentControl({
                 className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
               >
                 <span className="min-w-0 flex-1 truncate">Legacy models</span>
-                <span className="shrink-0 text-[0.625rem]">{legacy.length}</span>
+                <span className="shrink-0 text-3xs">{legacy.length}</span>
                 <ChevronRightIcon className="size-3.5 shrink-0" />
               </button>
             )}
@@ -828,23 +828,23 @@ export function AgentControl({
             {view !== "favorites" && !searching && choice.model && models.length > 0 && !selectedFamily && (
               <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
             )}
-            {asking && <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
+            {asking && <p className="px-2 py-1.5 text-2xs text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
             {/* Nothing to show, and the reasons are different questions. */}
             {searching && listed.length === 0 && (
-              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Nothing matches “{query.trim()}” — names, ids and connections are searched.</p>
+              <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">Nothing matches “{query.trim()}” — names, ids and connections are searched.</p>
             )}
             {view === "favorites" && !asking && !searching && listed.length === 0 && (
-              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Star a model to keep it here.</p>
+              <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">Star a model to keep it here.</p>
             )}
             {view !== "favorites" && !searching && catalogue && models.length === 0 && (
-              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+              <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">
                 {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
               </p>
             )}
             </div>
           </div>
         </div>
-        <p className="border-t border-border px-2.5 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+        <p className="border-t border-border px-2.5 py-1.5 text-2xs leading-snug text-muted-foreground">
           {readOnly ? "Chosen when the session starts." : onDriverChange ? "Applies to the first message." : "Takes effect next turn."}
           {/* Whether this list was ASKED FOR or guessed. The distinction matters
               the moment an id here 404s at the provider — and it is read PER ROW
@@ -970,7 +970,7 @@ export function ReasoningControl({
             is the honest floor until the provider answers — and if it could not
             be asked, its own words say why. */}
         {levels.length === 0 && catalogue?.message && (
-          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{catalogue.message}</p>
+          <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{catalogue.message}</p>
         )}
 
         {/**
@@ -1224,7 +1224,7 @@ export function ComposerOverflowMenu({
                 return (
                   <DropdownMenuItem key={option} onClick={() => row && onChange(withModel(choice, row))}>
                     <span className="flex-1">{WINDOW_LABEL[option]}</span>
-                    {row?.defaultWindow && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
+                    {row?.defaultWindow && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
                     {activeWindow === option && <CheckIcon className="size-3.5 text-primary" />}
                   </DropdownMenuItem>
                 );
@@ -1466,7 +1466,7 @@ export function BackgroundPresence({ count, onStop }: { count: number; onStop: (
   if (count === 0) return null;
   return (
     <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
-      <span className="flex items-center gap-2 text-[0.6875rem] font-medium text-muted-foreground">
+      <span className="flex items-center gap-2 text-2xs font-medium text-muted-foreground">
         <span className="relative flex size-2">
           <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
           <span className="relative inline-flex size-2 rounded-full bg-primary" />

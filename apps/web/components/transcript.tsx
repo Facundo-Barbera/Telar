@@ -137,7 +137,7 @@ function preview(item: JournalItem): string {
 const failed = (item: JournalItem) => item.status === "failed";
 const running = (item: JournalItem) => item.status === "inProgress";
 
-const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
+const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * THE GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
@@ -219,7 +219,7 @@ function DiffBody({ diff }: { diff: string }) {
         <button
           type="button"
           aria-expanded={expanded}
-          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-2xs text-muted-foreground outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? "Show less" : `Show all · ${total} lines`}
@@ -263,18 +263,18 @@ function ToolRow({ item, onInsert, onOpenFile, onOpenFileInNewTab }: { item: Jou
           <>
             <RowIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
             <span className={cn("shrink-0", isError && "text-destructive")}>{label}</span>
-            {argument && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{argument}</span>}
+            {argument && <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{argument}</span>}
           </>
         )}
         {change && (change.linesAdded || change.linesRemoved) ? (
-          <span className="shrink-0 font-mono text-[0.625rem]">
+          <span className="shrink-0 font-mono text-3xs">
             {change.linesAdded ? <span className="text-success">+{change.linesAdded}</span> : null}
             {change.linesAdded && change.linesRemoved ? " " : null}
             {change.linesRemoved ? <span className="text-destructive">−{change.linesRemoved}</span> : null}
           </span>
         ) : null}
         {item.status === "declined" && (
-          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[0.5625rem]">
+          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-4xs">
             declined
           </Badge>
         )}
@@ -342,7 +342,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
           <span aria-hidden className="text-xs">
             ✻
           </span>
-          <Shimmer as="span" className="text-[0.6875rem] font-medium">
+          <Shimmer as="span" className="text-2xs font-medium">
             Thinking
           </Shimmer>
         </div>
@@ -364,7 +364,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
         <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
       </button>
       {open && (
-        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-[0.6875rem] whitespace-pre-wrap italic text-muted-foreground">
+        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-2xs whitespace-pre-wrap italic text-muted-foreground">
           {text}
         </p>
       )}
@@ -383,7 +383,7 @@ function PlanRow({ item }: { item: JournalItem }) {
       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <ListTodoIcon className="size-3.5" />
         To-dos
-        <span className="font-mono text-[0.625rem] text-muted-foreground/70">
+        <span className="font-mono text-3xs text-muted-foreground/70">
           {done}/{steps.length}
         </span>
       </div>
@@ -455,7 +455,7 @@ function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: J
       <div className={cn(ROW, "gap-2")}>
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           disabled={!body}
           aria-expanded={body ? open : undefined}
           onClick={() => setOpen((current) => !current)}
@@ -468,14 +468,14 @@ function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: J
           ) : (
             <>
               <span className={cn("shrink-0", isError && "text-destructive")}>{`Ran${role ? ` ${role}` : " agent"}`}</span>
-              <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>
+              <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{label}</span>
             </>
           )}
           {body && (
             <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
           )}
         </button>
-        <span className={cn("shrink-0 font-mono text-[0.625rem] tabular-nums", isError ? "text-destructive" : "text-muted-foreground")}>
+        <span className={cn("shrink-0 font-mono text-3xs tabular-nums", isError ? "text-destructive" : "text-muted-foreground")}>
           {status}
           {tokens ? ` · ${fmtTokens(tokens)}` : ""}
         </span>
@@ -484,7 +484,7 @@ function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: J
             type="button"
             onClick={() => onOpen(taskId)}
             title="Open in the Agents panel"
-            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            className="shrink-0 rounded px-1 text-3xs text-muted-foreground outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             Open ▸
           </button>
@@ -572,8 +572,8 @@ function CompactionRow({ item }: { item: JournalItem }) {
       ) : (
         <span className="min-w-0 flex-1 truncate">{label}</span>
       )}
-      {detail?.reason === "auto" && <span className="shrink-0 text-[0.625rem] opacity-70">automatic</span>}
-      {reclaimed && <span className="shrink-0 font-mono text-[0.625rem] tabular-nums">{reclaimed}</span>}
+      {detail?.reason === "auto" && <span className="shrink-0 text-3xs opacity-70">automatic</span>}
+      {reclaimed && <span className="shrink-0 font-mono text-3xs tabular-nums">{reclaimed}</span>}
     </p>
   );
 }
@@ -604,7 +604,7 @@ function ProviderWaitRow({ item }: { item: JournalItem }) {
       ) : (
         <span className="min-w-0 flex-1 truncate">{itemLabel(item)}</span>
       )}
-      {resets && <span className="shrink-0 text-[0.625rem] opacity-70">resets {resets}</span>}
+      {resets && <span className="shrink-0 text-3xs opacity-70">resets {resets}</span>}
     </p>
   );
 }
@@ -648,14 +648,14 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
     <div className="py-0.5" aria-label="Wake from another session">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
       >
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">{verb}</span>
-        <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${reason.sessionId.slice(-6)}`}</span>
+        <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{`session …${reason.sessionId.slice(-6)}`}</span>
         {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
       </button>
       {open && body && <p className="max-h-96 overflow-auto whitespace-pre-wrap break-words px-1.5 pb-1 text-xs text-muted-foreground">{body}</p>}
@@ -714,7 +714,7 @@ function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: stri
     <figure className="my-1 max-w-md overflow-hidden rounded-md border border-border bg-white">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={attachmentUrl(item.sessionId, attachmentId)} alt={itemLabel(item)} className="block max-h-72 w-full object-contain" loading="lazy" />
-      <figcaption className="border-t border-border bg-background px-2 py-0.5 text-[0.625rem] text-muted-foreground">{itemLabel(item)}</figcaption>
+      <figcaption className="border-t border-border bg-background px-2 py-0.5 text-3xs text-muted-foreground">{itemLabel(item)}</figcaption>
     </figure>
   );
 }
@@ -1209,7 +1209,7 @@ export function Marker({ children, attention }: { children: React.ReactNode; att
       <span className="h-px flex-1 bg-border" />
       <span
         className={cn(
-          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[0.5625rem]",
+          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-4xs",
           attention ? "border-warning/40 text-warning" : "border-border text-muted-foreground",
         )}
       >
@@ -1273,7 +1273,7 @@ export function TurnFailureRow({
           type="button"
           disabled={resuming}
           onClick={onResume}
-          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[0.6875rem] text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-2xs text-foreground transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           {resuming ? "Resuming…" : "Resume now"}
         </button>
@@ -1339,12 +1339,12 @@ export function WorkingIndicator({
   const silent = !delegated && !compacting && quiet >= SILENCE_THRESHOLD;
 
   return (
-    <div className={cn("flex items-center gap-2 text-[0.6875rem] text-muted-foreground/70", silent && "text-warning/80")}>
+    <div className={cn("flex items-center gap-2 text-2xs text-muted-foreground/70", silent && "text-warning/80")}>
       <span
         aria-hidden
         className={cn("size-1.5 shrink-0 rounded-full motion-safe:animate-pulse", silent ? "bg-warning" : "bg-muted-foreground/50")}
       />
-      <Shimmer as="span" className={cn("text-[0.6875rem]", silent && "text-warning/80")}>
+      <Shimmer as="span" className={cn("text-2xs", silent && "text-warning/80")}>
         {label}
       </Shimmer>
       <span className="shrink-0 font-mono tabular-nums">{formatElapsed(elapsed)}</span>

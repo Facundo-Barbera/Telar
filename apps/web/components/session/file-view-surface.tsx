@@ -917,7 +917,7 @@ export function FileViewSurface({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => writeWrapLines(!wrap)}
               className={cn(
-                "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
+                "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-3xs transition-colors",
                 wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
               )}
             >
@@ -984,7 +984,7 @@ export function FileViewSurface({
             as long as it is true. Only a conflict offers the re-read, because it is
             the only one re-reading fixes. */}
         {problem && (
-          <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
+          <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-2xs leading-snug">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
             <span className="min-w-0 flex-1">
               {REFUSAL[problem.reason] ?? problem.reason}
@@ -1053,7 +1053,7 @@ export function FileViewSurface({
               </PanelEmpty>
             )
           ) : (
-            <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+            <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
               <Spinner className="size-3" /> reading the file…
             </p>
           )
@@ -1066,7 +1066,7 @@ export function FileViewSurface({
            * must show what would be saved, not what was loaded.
            */
           <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-            <MessageResponse className="text-[0.8125rem]">{draft}</MessageResponse>
+            <MessageResponse className="text-xs-plus">{draft}</MessageResponse>
           </div>
         ) : (
           <>
@@ -1191,8 +1191,8 @@ export function FileViewSurface({
                 would read as a highlighter that does not work, or an editor that
                 refuses for no reason. */}
             {!editable && file.truncated && (
-              <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
-                <Badge variant="outline" className="mr-1.5 px-1 py-0 text-[0.5625rem] font-normal">
+              <p className="border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
+                <Badge variant="outline" className="mr-1.5 px-1 py-0 text-4xs font-normal">
                   read only
                 </Badge>
                 This is the first part of a {size(file.bytes)} file, so it cannot be saved back — writing a prefix over the whole file would
@@ -1200,7 +1200,7 @@ export function FileViewSurface({
               </p>
             )}
             {kind.lang && draft.length > MAX_HIGHLIGHT_BYTES && (
-              <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+              <p className="border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
                 Too large to highlight — {kind.label} colouring is skipped above {size(MAX_HIGHLIGHT_BYTES)} because tokenising it would block
                 the window for longer than reading it takes.
               </p>

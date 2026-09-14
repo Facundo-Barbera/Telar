@@ -491,7 +491,7 @@ export function RemoteSection() {
                 {matrix ? (
                   <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />
                 ) : (
-                  <div className="flex size-44 items-center justify-center rounded-md border border-dashed border-border/60 p-4 text-center text-[0.6875rem] leading-snug text-muted-foreground/70">
+                  <div className="flex size-44 items-center justify-center rounded-md border border-dashed border-border/60 p-4 text-center text-2xs leading-snug text-muted-foreground/70">
                     Nothing to scan — a phone dialling this machine&apos;s address would reach itself.
                   </div>
                 )}
@@ -563,7 +563,7 @@ export function RemoteSection() {
               {/* STICKY, because a scrolled list whose headings have gone is
                   four columns of values with nothing saying which is which. */}
               <thead className="sticky top-0 z-10 bg-card">
-                <tr className="border-b border-border/60 text-[0.6875rem] font-normal tracking-wide text-muted-foreground uppercase">
+                <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
                   <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">Device</th>
                   <th scope="col" className="py-1.5 pr-3 font-normal">Kind</th>
                   <th scope="col" className="py-1.5 pr-3 font-normal">Last seen</th>
@@ -678,7 +678,7 @@ function DeviceRow({
               >
                 {device.name}
               </button>
-              {whereabouts && <span className="block truncate text-[0.6875rem] text-muted-foreground">{whereabouts}</span>}
+              {whereabouts && <span className="block truncate text-2xs text-muted-foreground">{whereabouts}</span>}
             </span>
             {isSelf && <Badge variant="outline">This device</Badge>}
           </span>

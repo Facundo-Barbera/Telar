@@ -159,7 +159,7 @@ export function reviewUnderFilter(review: SessionReview, filter?: string): Sessi
  *  should extract it. */
 function Patch({ patch }: { patch: string }) {
   return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[0.625rem] leading-relaxed">
+    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-3xs leading-relaxed">
       {patch.split("\n").map((line, index) => {
         const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("diff ");
         return (
@@ -270,8 +270,8 @@ function ReviewFileRow({
         >
           {/* Git's own letter, so anyone who has run `git status` needs no
               legend. */}
-          <span className="w-3 shrink-0 font-mono text-[0.625rem] text-muted-foreground">{REVIEW_STATUS_LETTER[file.status]}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
+          <span className="w-3 shrink-0 font-mono text-3xs text-muted-foreground">{REVIEW_STATUS_LETTER[file.status]}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-2xs">
             {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
             <span className="text-foreground">{file.path.slice(cut + 1)}</span>
           </span>
@@ -279,14 +279,14 @@ function ReviewFileRow({
               never in the transcript. Telar's own ignore rules are in neither,
               and get their author's name rather than the session's. */}
           {!reported && !registration && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal text-warning">
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal text-warning">
               unreported
             </Badge>
           )}
           {registration && (
             <Badge
               variant="outline"
-              className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal"
+              className="shrink-0 px-1 py-0 text-4xs font-normal"
               title="Telar’s own ignore rules — telar.yaml and .telar/ — added when this project was registered, not by this session"
             >
               setup
@@ -295,16 +295,16 @@ function ReviewFileRow({
           {/* Rewritten more than once on the way here. Git shows the net result
               and cannot say this; the transcript can. */}
           {edits !== undefined && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal" title={`The session wrote this ${edits} times`}>
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal" title={`The session wrote this ${edits} times`}>
               ×{edits}
             </Badge>
           )}
           {file.binary && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal">
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-4xs font-normal">
               bin
             </Badge>
           )}
-          <span className="shrink-0 font-mono text-[0.625rem] tabular-nums">
+          <span className="shrink-0 font-mono text-3xs tabular-nums">
             {file.linesAdded ? <span className="text-success">+{file.linesAdded}</span> : null}
             {file.linesAdded && file.linesRemoved ? " " : null}
             {/* U+2212, same width as the plus — the reason the column lines up. */}
@@ -327,17 +327,17 @@ function ReviewFileRow({
       </ContextMenu>
       {open &&
         (failed ? (
-          <p className="px-4 pb-2 text-[0.6875rem] text-muted-foreground">git could not produce a patch for this path.</p>
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">git could not produce a patch for this path.</p>
         ) : patch === undefined ? (
-          <p className="flex items-center gap-2 px-4 pb-2 text-[0.6875rem] text-muted-foreground">
+          <p className="flex items-center gap-2 px-4 pb-2 text-2xs text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
           </p>
         ) : patch === "" ? (
-          <p className="px-4 pb-2 text-[0.6875rem] text-muted-foreground">Binary file — no textual diff.</p>
+          <p className="px-4 pb-2 text-2xs text-muted-foreground">Binary file — no textual diff.</p>
         ) : (
           <Patch patch={patch} />
         ))}
-      {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-[0.6875rem] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
+      {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-2xs text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
   );
 }
@@ -352,7 +352,7 @@ function ReviewFileRow({
 function ReconciliationBand({ review }: { review: SessionReview }) {
   if (review.unreported.length === 0 && review.settled.length === 0) return null;
   return (
-    <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-[0.6875rem] leading-relaxed">
+    <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-2xs leading-relaxed">
       {review.unreported.length > 0 && (
         <p className="flex gap-1.5 text-foreground">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
@@ -383,7 +383,7 @@ function CommitList({ commits }: { commits: SessionDiff["commits"] }) {
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-4 py-2 text-left text-[0.6875rem] hover:bg-muted/40"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-2xs hover:bg-muted/40"
       >
         <GitCommitHorizontalIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="font-medium">
@@ -394,7 +394,7 @@ function CommitList({ commits }: { commits: SessionDiff["commits"] }) {
       {open && (
         <ul className="pb-1">
           {commits.map((commit) => (
-            <li key={commit.sha} className="flex items-baseline gap-2 px-4 py-1 text-[0.6875rem]">
+            <li key={commit.sha} className="flex items-baseline gap-2 px-4 py-1 text-2xs">
               <span className="shrink-0 font-mono text-muted-foreground">{commit.shortSha}</span>
               <span className="min-w-0 flex-1 truncate" title={commit.subject}>
                 {commit.subject || "(no subject)"}
@@ -465,7 +465,7 @@ function CommitBox({
   return (
     <div className="border-t border-border p-3">
       {result && (
-        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-[0.6875rem] leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
+        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-2xs leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
           {result.text}
         </p>
       )}
@@ -508,7 +508,7 @@ function CommitBox({
       {/* WHAT THIS SURFACE WILL NOT DO, said once, at the point somebody would
           go looking for it. A cockpit that half-implements staging and branch
           switching is worse than one that names the tool that does them well. */}
-      <p className="mt-2 text-[0.6875rem] leading-snug text-muted-foreground">
+      <p className="mt-2 text-2xs leading-snug text-muted-foreground">
         Staging, branch switching and discarding are absent — irreversible next to a running agent. Use a terminal in{" "}
         <span className="break-all font-mono">{workspacePath}</span>.
       </p>
@@ -647,7 +647,7 @@ export function DiffSurface({
   }
   if (!diff || !review || !shown) {
     return (
-      <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+      <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
         <Spinner className="size-3" /> reading the repository…
       </p>
     );
@@ -665,7 +665,7 @@ export function DiffSurface({
       {/* THE HEADLINE ANSWERS THE QUESTION IN ONE LINE: how far back the
           comparison reaches, and how big the answer is. */}
       <div className="border-b border-border px-4 py-2.5">
-        <div className="flex items-baseline gap-2 text-[0.6875rem]">
+        <div className="flex items-baseline gap-2 text-2xs">
           <span className="text-muted-foreground">since</span>
           <span className="font-mono text-foreground">{diff.base ? diff.base.slice(0, 8) : "the last commit"}</span>
           {diff.branch && (
@@ -689,7 +689,7 @@ export function DiffSurface({
           </button>
         </div>
         <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(shown)}</p>
-        <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
+        <p className="mt-0.5 text-2xs leading-snug text-muted-foreground">
           {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
               difference between an honest figure and a wrong one: a session
               that committed its work would otherwise review as having done
@@ -723,7 +723,7 @@ export function DiffSurface({
               aria-label="Filter this review by path"
               spellCheck={false}
               autoComplete="off"
-              className="min-w-0 flex-1 bg-transparent font-mono text-[0.6875rem] outline-none placeholder:font-sans placeholder:text-muted-foreground"
+              className="min-w-0 flex-1 bg-transparent font-mono text-2xs outline-none placeholder:font-sans placeholder:text-muted-foreground"
             />
             {filter && (
               <button
@@ -747,7 +747,7 @@ export function DiffSurface({
       <CommitList commits={diff.commits} />
 
       {shown.rows.length === 0 ? (
-        <div className="px-4 py-6 text-center text-[0.6875rem] text-muted-foreground">
+        <div className="px-4 py-6 text-center text-2xs text-muted-foreground">
           {/* A FILTER THAT MATCHES NOTHING IS NOT AN EMPTY REVIEW, and saying
               "nothing differs" over a tree with forty changed files would send
               somebody looking for a bug in git. */}
@@ -813,7 +813,7 @@ export function DiffSurface({
           /* No session, no commit. Committing a project's existing uncommitted
              work from a canvas would be snapshotting somebody else's work under
              a conversation that has not started. */
-          <p className="border-t border-border p-3 text-[0.6875rem] leading-snug text-muted-foreground">
+          <p className="border-t border-border p-3 text-2xs leading-snug text-muted-foreground">
             The project&rsquo;s own uncommitted work, before this conversation starts.
           </p>
         )}
