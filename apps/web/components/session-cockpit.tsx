@@ -674,7 +674,7 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
         >
           <Icon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="shrink-0">{verb}</span>
-          {label && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>}
+          {label && <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{label}</span>}
           {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
         </button>
         {onOpen && task && (
@@ -682,7 +682,7 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
             type="button"
             onClick={() => onOpen(task.id)}
             title={task.kind === "background" ? "Open in the Processes panel" : "Open in the Agents panel"}
-            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            className="shrink-0 rounded px-1 text-3xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
           >
             Open ▸
           </button>
@@ -970,7 +970,7 @@ function SessionTurnBody({
             />
           )}
           {!folded && turn.usage && !live && (
-            <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
+            <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
           )}
@@ -983,7 +983,7 @@ function SessionTurnBody({
                 type="button"
                 aria-expanded={workShown}
                 onClick={() => setWorkShown((v) => !v)}
-                className="mt-1 inline-flex items-center gap-1 rounded-md text-[0.6875rem] text-muted-foreground/70 transition-colors hover:text-foreground"
+                className="mt-1 inline-flex items-center gap-1 rounded-md text-2xs text-muted-foreground/70 transition-colors hover:text-foreground"
               >
                 {workShown ? "hide the work" : "how it did this"}
               </button>
@@ -991,7 +991,7 @@ function SessionTurnBody({
                 <div className="mt-2 space-y-2">
                   <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...rowGestures} />
                   {turn.usage && (
-                    <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
+                    <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
                       {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
                     </p>
                   )}

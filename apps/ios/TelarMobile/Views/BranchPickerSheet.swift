@@ -58,7 +58,7 @@ struct BranchPickerSheet: View {
                 if !browsing && visible.isEmpty {
                     Text("No matching branches.")
                         .font(.system(size: 13))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .listRowBackground(Color.clear)
                 }
             }
@@ -86,7 +86,7 @@ struct BranchPickerSheet: View {
             } header: {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
             }
         }
     }
@@ -99,7 +99,7 @@ struct BranchPickerSheet: View {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 12))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                 Text(label)
                     .font(mono ? .system(size: 14, design: .monospaced) : .system(size: 14))
                     .foregroundStyle(Theme.text)
@@ -109,7 +109,7 @@ struct BranchPickerSheet: View {
                 if let badge {
                     Text(badge)
                         .font(.system(size: 10))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textMuted)
                 }
                 if selected == value {
                     Image(systemName: "checkmark")

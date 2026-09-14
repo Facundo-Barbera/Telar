@@ -7,7 +7,8 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "test": "NODE_ENV=test bun test",
+    "//test": "--timeout IS THE ONLY WAY TO MOVE THE CEILING. `[test] timeout` is not a bunfig.toml key — bun ignores unknown keys silently, so apps/engine/bunfig.toml's `timeout = 20000` (#414) never did anything and this suite sat on the 5 s default. 20 s here because the compile-time proofs RUN tsc over a generated fixture (workspace-store, session-lease, session-profile, event-bus spawn it a dozen times between them) and the AC9 loop alone measures ~4.85 s idle — a 3% margin that vanishes when the CI Mac mini shares 8 cores with the installed Telar, a dozen worker sessions and the coordinator (#458). A genuine hang still fails, twenty seconds later instead of five.",
+    "test": "NODE_ENV=test bun test --timeout 20000",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

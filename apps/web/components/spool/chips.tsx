@@ -166,7 +166,7 @@ export function SelectHotspot({
 /** A tool-use pill, the way agent surfaces render calls elsewhere in the app. */
 export function ToolPill({ call }: { call: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/30 px-2.5 py-1 font-mono text-[0.625rem] text-muted-foreground">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/30 px-2.5 py-1 font-mono text-3xs text-muted-foreground">
       <WrenchIcon className="size-3" />
       {call}
       <CheckIcon className="size-3 text-muted-foreground/60" />
@@ -178,7 +178,7 @@ export function ToolPill({ call }: { call: string }) {
  *  how the thing got in. Plain text, no icon set, nothing to switch on. */
 export function ProvenanceTag({ label }: { label: string }) {
   return (
-    <span className="inline-flex shrink-0 items-center rounded-md border border-border/70 px-1 py-0.5 font-mono text-[0.625rem] text-muted-foreground/60">
+    <span className="inline-flex shrink-0 items-center rounded-md border border-border/70 px-1 py-0.5 font-mono text-3xs text-muted-foreground/60">
       {label}
     </span>
   );
@@ -198,7 +198,7 @@ export function DeadlineChip({ deadline }: { deadline: SpoolDeadline }) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground",
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-3xs text-muted-foreground",
         self ? "border-dashed border-border" : "border-border bg-muted/40",
       )}
     >
@@ -221,7 +221,7 @@ export function DeadlineChip({ deadline }: { deadline: SpoolDeadline }) {
  */
 export function PinChip({ pinned }: { pinned: SpoolPin }) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
       <PinIcon className="size-2.5 text-muted-foreground/60" />
       {formatDay(pinned.day)}
     </span>
@@ -233,13 +233,13 @@ export function PinChip({ pinned }: { pinned: SpoolPin }) {
 export function ProjectChip({ name, mirrored }: { name?: string; mirrored?: string }) {
   if (!name) {
     return (
-      <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground/70">
+      <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground/70">
         floating
       </span>
     );
   }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground">
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
       {name}
       {mirrored && (
         <span className="flex items-center gap-0.5 text-muted-foreground/60">

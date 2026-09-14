@@ -63,7 +63,7 @@ struct InboxView: View {
                         } label: {
                             Label("Settle", systemImage: "checkmark")
                         }
-                        .tint(Theme.textTertiary)
+                        .tint(Theme.textMuted)
                     }
             }
 
@@ -84,7 +84,7 @@ struct InboxView: View {
                             } label: {
                                 Label("Un-settle", systemImage: "arrow.uturn.backward")
                             }
-                            .tint(Theme.textTertiary)
+                            .tint(Theme.textMuted)
                         }
                 }
                 if inbox.sections.tail.count > settledLimit {
@@ -93,7 +93,7 @@ struct InboxView: View {
                     } label: {
                         Text("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
                             .overlay(
@@ -185,7 +185,7 @@ struct SettledDivider: View {
         HStack(spacing: 10) {
             Text("Settled")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
             Rectangle().fill(Theme.border).frame(height: 1)
         }
         .padding(.horizontal, 20)
@@ -221,15 +221,15 @@ struct ThreadCardRow: View {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                 Text(projectName ?? "No project")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
                 if let hostLabel {
                     Text(hostLabel)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textMuted)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(Theme.subtle))
@@ -248,7 +248,7 @@ struct ThreadCardRow: View {
                 } else {
                     Text(relativeTime(session.activityAt ?? session.updatedAt))
                         .font(.system(size: 13))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textMuted)
                         .tabularNumbers()
                 }
             }
@@ -259,12 +259,12 @@ struct ThreadCardRow: View {
             HStack(spacing: 8) {
                 Text(session.workspace.branch ?? session.workspace.mode)
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
-                Text("·").foregroundStyle(Theme.textTertiary)
+                Text("·").foregroundStyle(Theme.textMuted)
                 Text(session.driver)
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
                 Spacer(minLength: 0)
             }
         }
@@ -284,16 +284,16 @@ struct SlimThreadRow: View {
         HStack(spacing: 10) {
             Image(systemName: snoozed ? "clock" : "folder")
                 .font(.system(size: 12))
-                .foregroundStyle(Theme.textMuted2)
+                .foregroundStyle(Theme.textMuted)
                 .opacity(0.4)
             Text(session.title)
                 .font(.system(size: 16))
-                .foregroundStyle(Theme.textMuted2)
+                .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text(relativeTime(session.updatedAt))
                 .font(.system(size: 14, design: .monospaced))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
                 .tabularNumbers()
         }
         .padding(.horizontal, 20)

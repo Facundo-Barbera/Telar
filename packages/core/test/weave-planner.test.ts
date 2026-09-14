@@ -30,7 +30,13 @@ function makeProject(name: string) {
   return createProject(root, { name, devCommand: "bun run dev" });
 }
 
-async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
+// 15 s, the bound the engine suite's `eventually`/`until` helpers carry, under
+// the 20 s ceiling the `test` script now sets. Every call site below waits for a
+// condition it expects to hold and asserts on it afterwards, so a healthy run
+// leaves on the first passing poll and only a loaded runner spends the budget —
+// except the one marked at its call site, which never resolves and is pinned to
+// its historical 3 s rather than widened.
+async function waitFor(pred: () => boolean, ms = 15_000): Promise<void> {
   const start = Date.now();
   while (!pred() && Date.now() - start < ms) {
     await new Promise((r) => setTimeout(r, 5));
@@ -240,7 +246,16 @@ describe("startLoomFromBundle — per-Thread contract degradation", () => {
       planWeaveFn: (async () => cannedTwoNodeMixedCharter()) as any,
       runLoomFn: fakeRunChild as any,
     });
-    await waitFor(() => getLoom(loom.id)?.state === "ready");
+    // PINNED AT 3 s, DELIBERATELY NOT THE HELPER'S 15 s. This predicate never
+    // comes true — a root whose children both degrade does not reach `ready` —
+    // so this call has always run its budget out in full and the assertions
+    // below have always passed on their own. It is a fixed settling delay
+    // wearing a wait's clothes. Widening it with the others would have added
+    // twelve dead seconds to every packages/core run (measured: 3.40 s → 15.39 s
+    // for this file alone). Left at its historical budget because the
+    // assertions below may depend on the elapsed time; making it an honest wait,
+    // or deleting it, is a behavioural change #458 is not the place for.
+    await waitFor(() => getLoom(loom.id)?.state === "ready", 3000);
 
     const children = listChildLooms(loom.id);
     const w1 = children.find((c) => c.subGoalId === "W1")!;

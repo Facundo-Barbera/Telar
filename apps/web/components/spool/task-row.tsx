@@ -155,7 +155,7 @@ export function RowDisclosure({
           e.stopPropagation();
           setOpen((o) => !o);
         }}
-        className="rounded-sm p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+        className="rounded-sm p-0.5 text-muted-foreground/50 transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <ChevronRightIcon className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden />
       </button>
@@ -191,7 +191,7 @@ export function RowDisclosure({
                 <button
                   type="button"
                   onClick={() => onPin(null)}
-                  className="shrink-0 text-xs text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+                  className="shrink-0 rounded-sm text-xs text-muted-foreground/70 underline decoration-dotted transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   clear
                 </button>
@@ -210,6 +210,7 @@ export function RowDisclosure({
                     type="button"
                     onClick={() => onTags(tags.filter((t) => t !== tag))}
                     aria-label={`Remove tag ${tag}`}
+                    className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <XIcon className="size-2.5" />
                   </button>

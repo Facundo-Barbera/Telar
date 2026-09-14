@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "NODE_ENV=test bun test",
+    "//test": "--timeout IS THE ONLY WAY TO MOVE THE CEILING. `[test] timeout` is not a bunfig.toml key — bun ignores unknown keys silently, so putting it in bunfig.toml next to this workspace's preload would read as configured and do nothing (#414 shipped exactly that for apps/engine). 20 s matches the other suites: nothing here spawns a daemon, but a render test that mounts React and polls for a toast is still wall-clock work, and on the shared CI Mac mini that is enough to push a 3 s test past 5 s for a reason that has nothing to do with the code (#458).",
+    "test": "NODE_ENV=test bun test --timeout 20000",
     "bench:journal": "bun run bench/journal-fold.ts",
     "typecheck": "bunx --bun tsc --noEmit",
     "lint": "eslint"

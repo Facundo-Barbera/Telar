@@ -280,11 +280,11 @@ function FileTreeRow({
               ) : (
                 <FileKindIcon path={row.node.path} className="size-3.5" />
               )}
-              <span className={cn("min-w-0 flex-1 truncate font-mono text-[0.6875rem]", directory ? "text-foreground" : "text-muted-foreground")}>
+              <span className={cn("min-w-0 flex-1 truncate font-mono text-2xs", directory ? "text-foreground" : "text-muted-foreground")}>
                 {row.node.name}
               </span>
               {/* Git's own letter, same as the Diff rows — no legend needed. */}
-              {status && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">{REVIEW_STATUS_LETTER[status]}</span>}
+              {status && <span className="shrink-0 font-mono text-3xs text-muted-foreground">{REVIEW_STATUS_LETTER[status]}</span>}
               {/* A collapsed directory says something inside it moved. Without this
                   the tint is invisible until you have already found the file. */}
               {!status && dirtyInside && !expanded && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-warning/70" />}
@@ -660,7 +660,7 @@ export function FilesSurface({
             them live in here, so the header above stays put. */}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {!listing ? (
-            <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+            <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
               <Spinner className="size-3" /> reading the checkout…
             </p>
           ) : rows.length === 0 ? (
@@ -708,7 +708,7 @@ export function FilesSurface({
             It sits below the scroller rather than at the end of it, so a long tree
             cannot scroll the count away. */}
         {listing && (
-          <p className="shrink-0 border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+          <p className="shrink-0 border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
             {searching
               ? `${searched.matches.toLocaleString("en-US")} of ${listing.files.length.toLocaleString("en-US")} paths match${
                   searched.truncated ? `, showing the first ${searched.files.length}` : ""

@@ -81,7 +81,7 @@ export function PermitsChip({
               size="sm"
               disabled={busy}
               title={`What may happen on ${subject} unattended`}
-              className="h-5 gap-1 rounded-sm border border-border px-1.5 text-[0.625rem] font-normal text-muted-foreground hover:text-foreground"
+              className="h-5 gap-1 rounded-sm border border-border px-1.5 text-3xs font-normal text-muted-foreground hover:text-foreground"
             />
           }
         >
@@ -96,13 +96,13 @@ export function PermitsChip({
                 <span className={level.value === permits ? "font-medium text-foreground" : undefined}>
                   {level.label}
                 </span>
-                <span className="text-[0.625rem] leading-relaxed text-muted-foreground">{level.blurb}</span>
+                <span className="text-3xs leading-relaxed text-muted-foreground">{level.blurb}</span>
               </span>
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
-      {error && <span className="text-[0.625rem] text-destructive">{error}</span>}
+      {error && <span className="text-3xs text-destructive">{error}</span>}
     </span>
   );
 }
