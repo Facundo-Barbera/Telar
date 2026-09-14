@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { describeViewport, fitViewport, parseViewportInput, presetFor, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL } from "./browser-viewport";
+import { describeViewport, fitViewport, parseViewportInput, presetFor, resizeByDrag, resizeByKey, sizeFromFields, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL } from "./browser-viewport";
 
 describe("the browser viewport vocabulary", () => {
   test("presets are named from their size, and a custom size is just its numbers", () => {
@@ -61,5 +61,35 @@ describe("the resize rails' math", () => {
     expect(resizeByKey({ width: 1280, height: 800 }, "ArrowDown", false, "southeast")).toEqual({ width: 1280, height: 810 });
     expect(resizeByKey({ width: 200, height: 800 }, "ArrowLeft", false, "east")).toBeUndefined();
     expect(resizeByKey({ width: 1280, height: 800 }, "Enter", false, "east")).toBeUndefined();
+  });
+});
+
+/**
+ * THE DEVICE TOOLBAR'S TWO FIELDS (#473). They commit on submit and on blur,
+ * so the rule that matters is which drafts are a size at all: a page relaid
+ * out at 1px on the way to 1024 is a page that reflowed for nothing.
+ */
+describe("the device toolbar's size fields", () => {
+  test("two whole numbers are a size, clamped like every other way in", () => {
+    expect(sizeFromFields("1024", "768")).toEqual({ width: 1024, height: 768 });
+    expect(sizeFromFields("  390 ", "844")).toEqual({ width: 390, height: 844 });
+    // The host's own limits, so the toolbar cannot ask for what it refuses.
+    expect(sizeFromFields("10", "10")).toEqual({ width: 200, height: 200 });
+    expect(sizeFromFields("99999", "99999")).toEqual({ width: 5000, height: 5000 });
+  });
+
+  test("a field still being typed into is not a size — it commits nothing", () => {
+    expect(sizeFromFields("", "768")).toBeUndefined();
+    expect(sizeFromFields("1024", "")).toBeUndefined();
+    expect(sizeFromFields("   ", "   ")).toBeUndefined();
+  });
+
+  test("and neither is anything that is not digits", () => {
+    // `Number` would take every one of these; a size somebody typed is digits.
+    expect(sizeFromFields("1e3", "768")).toBeUndefined();
+    expect(sizeFromFields("0x10", "768")).toBeUndefined();
+    expect(sizeFromFields("-100", "768")).toBeUndefined();
+    expect(sizeFromFields("102.4", "768")).toBeUndefined();
+    expect(sizeFromFields("wide", "768")).toBeUndefined();
   });
 });
