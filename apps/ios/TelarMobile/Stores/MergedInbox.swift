@@ -177,7 +177,18 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
 
     /// Reconcile the store set with the host book. Unchanged hosts keep
     /// their store (no poll churn, no flash of empty).
-    func sync(hosts: [Host], settings: AppSettings) {
+    ///
+    /// `active` IS THE SCENE PHASE, AND A NEW STORE ONLY POLLS WHEN IT IS TRUE
+    /// (#499). This used to start every store it built, whatever the app was
+    /// doing — and it is called on the host book changing, which a backgrounded
+    /// phone does all by itself: a token refresh, a Mac renamed from the
+    /// cockpit. The poll that began then had nothing to stop it, because
+    /// `onChange(of: scenePhase)` fires on a CHANGE and the phase was already
+    /// where it was going to stay. It is passed in rather than remembered here
+    /// for the mirror-image reason: the phase the app LAUNCHED in never arrives
+    /// as a change either, so a flag this class kept for itself would be wrong
+    /// exactly once, at the only moment that matters.
+    func sync(hosts: [Host], settings: AppSettings, active: Bool) {
         order = hosts.map(\.id)
         var next: [HostID: InboxStore] = [:]
         for host in hosts {
@@ -187,7 +198,7 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
             } else if let api = settings.api(for: host.id) {
                 stores[host.id]?.stop()
                 let store = InboxStore(api: api, hostId: host.id, cache: settings.snapshotCache(for: host.id))
-                store.start()
+                if active { store.start() }
                 next[host.id] = store
             }
             fingerprints[host.id] = fingerprint
