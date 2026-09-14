@@ -1845,6 +1845,20 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
   }
 
+  /**
+   * The same inventory for a PROJECT, which is what a canvas can ask before its
+   * session exists.
+   *
+   * `driver` is the canvas's pending choice rather than a recorded one — there
+   * is no session yet to have made it — and defaults to Claude at the engine.
+   * Read from the project's own checkout, which is where the `.claude` the new
+   * session will run against already is.
+   */
+  projectSkills(projectId: string, driver?: ProviderDriverKind): Promise<ProviderSkills> {
+    const query = driver ? `?${new URLSearchParams({ driver }).toString()}` : "";
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/skills${query}`);
+  }
+
   /** One file's text, as it is on disk. Fenced inside the checkout by the
    *  engine — see `readFenced` there for why the check is not at the route. */
   projectFile(projectId: string, path: string): Promise<{ file: WorkspaceFile }> {

@@ -381,3 +381,52 @@ describe("directory-scoped skills (#500)", () => {
     expect((await readProviderSkillsCached(input)).skills).toHaveLength(4);
   });
 });
+
+describe("GET /v2/projects/:id/skills (#500)", () => {
+  const engineFor = async (home: string) => {
+    const engineRoot = temp("telar-skills-project-engine-");
+    fs.writeFileSync(path.join(engineRoot, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+    const daemon = await startEngine({
+      models: stubModels,
+      engineRoot,
+      providerSkills: {
+        env: { CLAUDE_CONFIG_DIR: home },
+        loadProviderCommands: async () => [{ name: "compact", description: "Squeeze the context.", source: "provider" }],
+      },
+    });
+    daemons.push(daemon);
+    return daemon;
+  };
+
+  test("a canvas with no session gets the project's own inventory", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    const daemon = await engineFor(home);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_canvas", name: "Canvas", root: checkout });
+
+    // NO SESSION IS CREATED. That is the whole point of #500: `$` on a canvas
+    // had nothing to ask, and now it asks the project.
+    const answer = await client.projectSkills("project_canvas");
+    expect(answer.skills.map((skill) => skill.name)).toEqual(["root-skill", "apps/web:nested-skill", "global-skill"]);
+    expect(answer.commands).toEqual([{ name: "compact", description: "Squeeze the context.", source: "provider" }]);
+  });
+
+  test("a provider with no inventory answers empty rather than the project's files", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    const daemon = await engineFor(home);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_codex", name: "Codex", root: checkout });
+    expect(await client.projectSkills("project_codex", "codex")).toEqual({ skills: [], commands: [] });
+  });
+
+  test("an unknown driver is a 400, and an unknown project a 404", async () => {
+    const { checkout, home } = fixtureThreePlaces();
+    const daemon = await engineFor(home);
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_bad", name: "Bad", root: checkout });
+    const headers = { authorization: `Bearer ${daemon.discovery.token}` };
+    const base = `http://127.0.0.1:${daemon.discovery.port}/v2/projects`;
+    expect((await fetch(`${base}/project_bad/skills?driver=gemini`, { headers })).status).toBe(400);
+    expect((await fetch(`${base}/project_missing/skills`, { headers })).status).toBe(404);
+  });
+});
