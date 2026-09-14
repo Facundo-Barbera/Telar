@@ -16,7 +16,7 @@ const TONE: Record<KernelState, string> = {
 
 export function KernelPill({ state }: { state: KernelState }) {
   return (
-    <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[0.5625rem] font-medium uppercase tracking-wide", TONE[state])} title={`kernel ${state}`}>
+    <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-4xs font-medium uppercase tracking-wide", TONE[state])} title={`kernel ${state}`}>
       {state === "none" ? "no kernel" : state}
     </span>
   );

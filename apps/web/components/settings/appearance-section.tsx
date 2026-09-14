@@ -471,7 +471,7 @@ export function AppearanceSection() {
           onChange={(event) => current && edit(setDraftLabel(current, event.target.value))}
         />
         {dirty ? (
-          <span className="flex min-w-0 shrink items-center gap-2 font-mono text-[0.625rem] tracking-[0.08em] uppercase">
+          <span className="flex min-w-0 shrink items-center gap-2 font-mono text-3xs tracking-[0.08em] uppercase">
             <span className="flex shrink-0 items-center gap-1.5 text-warning">
               <span className="size-1.5 rounded-full bg-warning" />
               Previewing
@@ -486,7 +486,7 @@ export function AppearanceSection() {
             )}
           </span>
         ) : (
-          <span className="shrink-0 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
+          <span className="shrink-0 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
         )}
         <div className="ml-auto flex items-center gap-2">
           <ThemeControl />

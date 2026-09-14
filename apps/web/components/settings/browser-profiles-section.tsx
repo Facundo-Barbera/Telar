@@ -158,7 +158,7 @@ export function BrowserProfilesSection() {
                     beside it rather than adding a fact. A profile the user
                     named something else still needs the mark. */}
                 {profile.isDefault && profile.label.trim().toLowerCase() !== "default" && <Badge variant="secondary">Default</Badge>}
-                {profile.account && <span className="truncate font-mono text-[0.625rem] text-muted-foreground">{profile.account}</span>}
+                {profile.account && <span className="truncate font-mono text-3xs text-muted-foreground">{profile.account}</span>}
               </span>
             }
             hint={describeProfileUse(profile)}

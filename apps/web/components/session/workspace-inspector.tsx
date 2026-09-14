@@ -55,7 +55,7 @@ function CappedRows({ rows, noun }: { rows: React.ReactNode[]; noun: string }) {
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          className="w-full rounded-md px-2 py-1 text-left text-[0.6875rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="w-full rounded-md px-2 py-1 text-left text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           {expanded ? `Show fewer ${noun}` : `${hidden} more ${noun}`}
         </button>

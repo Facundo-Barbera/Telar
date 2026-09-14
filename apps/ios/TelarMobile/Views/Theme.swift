@@ -2,7 +2,10 @@ import SwiftUI
 import UIKit
 
 /// sRGB conversions of the default roles in apps/web/app/globals.css.
-/// Neutral surfaces, blue human actions, and the same five work states.
+/// Neutral surfaces, blue human actions, and the work states this app paints:
+/// amber (warning), sky (info), emerald (success), red (destructive). The
+/// web's fifth state, `--verify`, has no site on the phone yet, so it is not
+/// converted here — a state token is added when a view reaches for it.
 enum Theme {
     static let canvas = adaptive(light: 0xFCFCFC, dark: 0x0A0A0A)
     static let surface = adaptive(light: 0xFFFFFF, dark: 0x161616)
@@ -13,9 +16,7 @@ enum Theme {
     static let textMuted = adaptive(light: 0x696973, dark: 0xA1A1A1)
     static let accent = adaptive(light: 0x2F58B9, dark: 0x6594FA)
     static let statusAmber = adaptive(light: 0x8E5B01, dark: 0xF2A635)
-    static let statusIndigo = adaptive(light: 0x8E5B01, dark: 0xF2A635)
     static let statusSky = adaptive(light: 0x007386, dark: 0x22BEDC)
-    static let statusViolet = adaptive(light: 0x794ED7, dark: 0xA486FD)
     static let statusEmerald = adaptive(light: 0x02744E, dark: 0x2AC48A)
     static let statusRed = adaptive(light: 0xB71822, dark: 0xFF645E)
     static let sheet = adaptive(light: 0xF6F6F6, dark: 0x101010)

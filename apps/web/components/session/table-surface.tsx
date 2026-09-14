@@ -185,10 +185,10 @@ export function TableSurface({ path, sessionId, active }: { path: string; sessio
       {error ? (
         <PanelEmpty icon={<TableIcon />} title="Could not read this table">{error}</PanelEmpty>
       ) : !meta ? (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground"><Spinner className="size-3" /> reading…</p>
+        <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground"><Spinner className="size-3" /> reading…</p>
       ) : (
         <div ref={scroller} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} className="min-h-0 flex-1 overflow-auto">
-          <table className="w-max min-w-full border-collapse font-mono text-[0.6875rem] tabular-nums">
+          <table className="w-max min-w-full border-collapse font-mono text-2xs tabular-nums">
             <thead className="sticky top-0 z-10 bg-background">
               <tr>
                 <th className="w-12 border-b border-r border-border bg-muted/60 px-2 text-right text-muted-foreground/60">#</th>

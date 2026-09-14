@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 export const CODE_SURFACE_LINES = 24;
 
 export const CODE_SURFACE_FRAME = "rounded-md border border-border/70 bg-muted/40";
-export const CODE_SURFACE_TEXT = "font-mono text-[0.6875rem] leading-relaxed";
+export const CODE_SURFACE_TEXT = "font-mono text-2xs leading-relaxed";
 
 /** The first `limit` lines, and how many were held back. Split on `\n` only
  *  so a CRLF output keeps its bytes; the count is what the fold names. */
@@ -120,7 +120,7 @@ export function CodeSurface({
         <button
           type="button"
           aria-expanded={expanded}
-          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-2xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? "Show less" : `Show all · ${folded.total} lines`}

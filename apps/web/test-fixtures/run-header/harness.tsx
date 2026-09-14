@@ -70,7 +70,7 @@ function Harness() {
       h(
         "div",
         { key: width, className: "flex flex-col gap-1" },
-        h("p", { className: "font-mono text-[0.625rem] text-muted-foreground" }, `${width}px`),
+        h("p", { className: "font-mono text-3xs text-muted-foreground" }, `${width}px`),
         h(
           "div",
           {

@@ -20,7 +20,7 @@ export function EnvironmentSurface({ sessionId, projectId, kernel, onRestart }: 
     <div className="flex h-full min-h-0 flex-col">
       <PackagesPanel scope={{ sessionId }} kernelLive={kernel !== "none" && kernel !== "dead"} onRestartKernel={onRestart} dense />
       {projectId && (
-        <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[0.625rem] text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-3xs text-muted-foreground">
           <SettingsIcon className="size-3" />
           <span>Environments, Python versions and conda live in</span>
           {/* The project's own groups on Settings ▸ Projects, which is where the

@@ -235,7 +235,7 @@ function PlotCard({
         draggable
         onDragStart={(event) => event.dataTransfer.setData("text/plain", `[plot ${plot.id}]`)}
       />
-      <figcaption className="flex items-center gap-1.5 border-t border-border bg-background px-2 py-1 text-[0.625rem] text-muted-foreground">
+      <figcaption className="flex items-center gap-1.5 border-t border-border bg-background px-2 py-1 text-3xs text-muted-foreground">
         <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
         {/* The attempts behind this one. A button rather than a badge because
             the whole point is that you can go and look at them. */}
