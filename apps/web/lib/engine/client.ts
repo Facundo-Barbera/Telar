@@ -152,6 +152,8 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
   if (!id || id === LOCAL_HOST_ID) return undefined;
   const name = response?.headers.get(HOST_NAME_HEADER) ?? hostName(id);
   return name ? { id, name } : { id };
+}
+
 /**
  * THE CONNECTION BUDGET (#82).
  *
