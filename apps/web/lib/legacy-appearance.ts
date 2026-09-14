@@ -169,7 +169,10 @@ export function migrateLegacyAppearance(): LegacyAppearance | undefined {
 
   // The layers, and only the layers, come from the backdrop — which the old
   // model shared between both halves, so both states get the same stack.
-  const fromBackdrop = compositionFromV1({ light: TELAR_LIGHT, dark: TELAR_DARK }, backdrop);
+  // SCENE_PRESETS is what turns the old gradient PRESET id into the two specs
+  // the two states need; without it every migrated gradient would be the plain
+  // default, which is a colour change nobody asked for.
+  const fromBackdrop = compositionFromV1({ light: TELAR_LIGHT, dark: TELAR_DARK }, backdrop, SCENE_PRESETS);
 
   const halfFor = (mode: "light" | "dark") => {
     const builtIn = builtInComposition(active[mode]);

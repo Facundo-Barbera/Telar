@@ -16,7 +16,7 @@
  * "move up" in the UI is `index - 1` in both worlds.
  *
  * EVERYTHING IS A LAYER — GRADIENTS INCLUDED. A stack entry is either an
- * IMAGE (positioned, scaled, tiled) or a GRADIENT (a preset id, painted
+ * IMAGE (positioned, scaled, tiled) or a GRADIENT (an authored spec, painted
  * full-bleed). There is no separate mandatory base any more: what used to be
  * `baseId` is just the bottom-most gradient layer, and a stack with no
  * gradient at the bottom ends in TRANSPARENT — which, inside a translucent
@@ -26,12 +26,12 @@
  *
  * WHY THE LISTS ARE BUILT PER-PROPERTY. `background-size/position/repeat`
  * accept one comma entry per image, and CSS CYCLES a short list against a
- * longer image list. That cycling is a trap here: a preset's `light` is
- * itself four comma-separated gradients, so emitting ONE entry for a gradient
- * layer would let an image layer's `60% auto` wrap around onto a gradient and
- * paint it in a corner. So a gradient layer contributes as many
- * `cover`/`center`/`no-repeat` entries as it has top-level gradients;
- * splitTopLevel does the counting.
+ * longer image list. That cycling is a trap here: an authored spec composes to
+ * one gradient today but a stored value from the mesh era could be four
+ * comma-separated ones, so emitting ONE entry for a gradient layer would let an
+ * image layer's `60% auto` wrap around onto a gradient and paint it in a
+ * corner. So a gradient layer contributes as many `cover`/`center`/`no-repeat`
+ * entries as it has top-level gradients; splitTopLevel does the counting.
  *
  * ONE STACK PER STATE, AND THAT IS WHY THE PADDING IS GONE (#471). The two
  * colour schemes used to share one set of lists, so the shorter half had to be
@@ -71,8 +71,9 @@
  */
 
 import {
+  composeGradient,
+  DEFAULT_GRADIENT_SPECS,
   DEFAULT_LAYER,
-  isGradientValue,
   isSceneValue,
   MAX_SCENE_GRADIENT_LAYERS,
   MAX_SCENE_LAYERS,
@@ -80,12 +81,12 @@ import {
   parseSceneImages,
   parseSceneLayer as parseSceneLayerValue,
   SCENE_LIMITS,
+  type CustomGradientSpec,
   type Scene,
-  type SceneGradientLayer,
   type SceneLayer,
   type ScenePresets,
 } from "@telar/engine-client";
-import { backdropPresetById, BACKDROP_PRESETS, type BackdropPreset } from "./backdrop-presets";
+import { GRADIENT_STARTERS, gradientStarterById } from "./gradient-starters";
 import { compressImageFile, dataUrlBytes, fitWithin, ImageBackdropError, stepDown, type CompressionStep } from "./image-backdrop";
 
 /* -------------------------------------------------------------- the model */
@@ -103,6 +104,7 @@ export {
   MAX_SCENE_LAYERS,
   parseSceneImages,
   SCENE_LIMITS,
+  type CustomGradientSpec,
   type Scene,
   type SceneGradientLayer,
   type SceneImageLayer,
@@ -119,21 +121,23 @@ export const SCENE_IMAGES_KEY = "telar-backdrop-scene-images";
 export const SCENE_LAYER_EDGE = 1024;
 export const MAX_SCENE_IMAGE_BYTES = 700 * 1024;
 
-export const DEFAULT_SCENE_BASE: string = BACKDROP_PRESETS[0]?.id ?? "aurora";
+export const DEFAULT_SCENE_BASE: string = GRADIENT_STARTERS[0]?.id ?? "aurora";
 
 /**
- * THE PRESET TABLE, HANDED TO THE SHARED PARSER. The moved parsers are
- * deliberately ignorant of which gradients exist (see `ScenePresets` there);
- * this is where that knowledge is supplied, so a scene naming a preset this
- * build dropped still degrades to the default base exactly as it always did.
- * Every parse in the cockpit goes through the two wrappers below, so the
- * cockpit's forgiveness is stated once.
+ * THE STARTER TABLE, HANDED TO THE SHARED PARSER. The moved parsers are
+ * deliberately ignorant of which gradients this build ships (see `ScenePresets`
+ * there); this is where that knowledge is supplied, so a layer stored by an
+ * older build — which named a preset rather than carrying its stops — still
+ * opens in the colours it named. Every parse in the cockpit goes through the
+ * two wrappers below, so the cockpit's forgiveness is stated once.
  */
-export const SCENE_PRESETS: ScenePresets = { known: (id) => backdropPresetById(id) !== undefined, fallback: DEFAULT_SCENE_BASE };
+export const SCENE_PRESETS: ScenePresets = { expand: (id, mode) => gradientStarterById(id)?.[mode], fallback: DEFAULT_SCENE_BASE };
 
 /** A fresh scene is one gradient and nothing over it — the picture the old
  *  `baseId`-only model started from. */
-export const DEFAULT_SCENE: Scene = { layers: [{ type: "gradient", presetId: DEFAULT_SCENE_BASE, opacity: 100 }] };
+export const DEFAULT_SCENE: Scene = {
+  layers: [{ type: "gradient", spec: gradientStarterById(DEFAULT_SCENE_BASE)?.light ?? DEFAULT_GRADIENT_SPECS.light, opacity: 100 }],
+};
 
 let idCounter = 0;
 
@@ -149,12 +153,12 @@ function clampTo(value: unknown, range: { min: number; max: number }, fallback: 
 
 /* ------------------------------------------------------------ total parsing */
 
-export function parseSceneLayer(value: unknown): SceneLayer | undefined {
-  return parseSceneLayerValue(value, SCENE_PRESETS);
+export function parseSceneLayer(value: unknown, mode: "light" | "dark" = "light"): SceneLayer | undefined {
+  return parseSceneLayerValue(value, SCENE_PRESETS, mode);
 }
 
-export function parseScene(raw: string | null): Scene {
-  return parseSceneJson(raw, SCENE_PRESETS);
+export function parseScene(raw: string | null, mode: "light" | "dark" = "light"): Scene {
+  return parseSceneJson(raw, SCENE_PRESETS, mode);
 }
 
 /* ----------------------------------------------------------- pure editing */
@@ -180,34 +184,18 @@ export function addSceneLayer(scene: Scene, id: string): Scene {
 
 /** A gradient lands on top too, at full opacity: you can always fade it, but
  *  a new layer you cannot see reads as a broken button. */
-export function addSceneGradientLayer(scene: Scene, presetId: string): Scene {
-  if (countSceneGradients(scene) >= MAX_SCENE_GRADIENT_LAYERS || !backdropPresetById(presetId)) return scene;
-  return { layers: [{ type: "gradient", presetId, opacity: SCENE_LIMITS.opacity.max }, ...scene.layers] };
+export function addSceneGradientLayer(scene: Scene, spec: CustomGradientSpec): Scene {
+  if (countSceneGradients(scene) >= MAX_SCENE_GRADIENT_LAYERS) return scene;
+  return { layers: [{ type: "gradient", spec, opacity: SCENE_LIMITS.opacity.max }, ...scene.layers] };
 }
 
-/** A gradient somebody BUILT rather than picked. It carries its resolved CSS
- *  rather than the stops, for the reason the layer type states: the value has
- *  to paint on a build that never had this app's editor. Refused rather than
- *  added blank when the value is not a gradient. */
-export function addSceneCustomGradientLayer(scene: Scene, css: string): Scene {
-  if (countSceneGradients(scene) >= MAX_SCENE_GRADIENT_LAYERS || !isGradientValue(css)) return scene;
-  return { layers: [{ type: "custom-gradient", css, opacity: SCENE_LIMITS.opacity.max }, ...scene.layers] };
-}
-
-/** Rewrite a custom gradient's CSS in place — what the stop editor commits.
- *  A patch against any other kind of layer is a no-op rather than a coercion. */
-export function setCustomGradientCss(scene: Scene, index: number, css: string): Scene {
+/** Rewrite a gradient layer's stops in place — what the editor commits on every
+ *  change, and what a "start from" chip does when a row is already open. A
+ *  patch against an image layer is a no-op rather than a coercion. */
+export function setGradientSpec(scene: Scene, index: number, spec: CustomGradientSpec): Scene {
   const layer = scene.layers[index];
-  if (!layer || layer.type !== "custom-gradient" || !isGradientValue(css)) return scene;
-  return { layers: scene.layers.map((entry, at) => (at === index ? { ...layer, css } : entry)) };
-}
-
-/** Swap which preset a gradient layer names — the grid's pick when a gradient
- *  row is already open, rather than adding a second one beside it. */
-export function setGradientPreset(scene: Scene, index: number, presetId: string): Scene {
-  const layer = scene.layers[index];
-  if (!layer || layer.type !== "gradient" || !backdropPresetById(presetId)) return scene;
-  return { layers: scene.layers.map((entry, at) => (at === index ? ({ ...layer, presetId } as SceneGradientLayer) : entry)) };
+  if (!layer || layer.type !== "gradient") return scene;
+  return { layers: scene.layers.map((entry, at) => (at === index ? { ...layer, spec } : entry)) };
 }
 
 /* --- editing by position, because gradient layers carry no id ------------- */
@@ -411,17 +399,19 @@ export type SceneLists = { image: string; size: string; position: string; repeat
  *
  * An image layer whose image is missing — cleared storage, a failed write — is
  * SKIPPED rather than left as a gap: the lists are positional, and a gap would
- * shift every entry after it onto the wrong picture. Returns null when a
- * gradient layer names a preset this build does not have, when the stack
- * composes to nothing at all, or when the result somehow fails the store's gate
- * — so a caller never writes something that silently paints nothing.
+ * shift every entry after it onto the wrong picture. Returns null when the
+ * stack composes to nothing at all, or when the result somehow fails the
+ * store's gate — so a caller never writes something that silently paints
+ * nothing.
+ *
+ * NO TABLE, AND NO MODE (#471). A gradient layer used to name a PRESET with two
+ * halves, so this had to be handed the preset table, told which half to take,
+ * and allowed to fail on an id it did not recognise. A layer carries its own
+ * stops now and a stack belongs to one state already — so which state it is
+ * stopped being a question this function has any use for, and a parameter that
+ * decides nothing is a parameter that misleads its next reader.
  */
-export function composeState(
-  layers: readonly SceneLayer[],
-  images: Record<string, string>,
-  mode: "light" | "dark",
-  presetLookup: (id: string) => BackdropPreset | undefined = backdropPresetById,
-): SceneLists | null {
+export function composeState(layers: readonly SceneLayer[], images: Record<string, string>): SceneLists | null {
   const entries: string[] = [];
   const size: string[] = [];
   const position: string[] = [];
@@ -439,17 +429,11 @@ export function composeState(
       repeat.push(layer.tiled ? "repeat" : "no-repeat");
       continue;
     }
-    const fade = (value: string) => (layer.opacity >= SCENE_LIMITS.opacity.max ? value : withGradientAlpha(value, layer.opacity));
-    // A custom gradient carries its own resolved CSS and has no halves to
-    // choose between — that is what made it a layer rather than a mode.
-    let css: string;
-    if (layer.type === "custom-gradient") {
-      css = fade(layer.css);
-    } else {
-      const preset = presetLookup(layer.presetId);
-      if (!preset) return null;
-      css = fade(preset[mode]);
-    }
+    // The layer's own fade MULTIPLIES into whatever its stops already say, so a
+    // stop at 40% inside a layer at 50% ends up at 20% — which is what stacking
+    // two translucent things means everywhere else.
+    const composed = composeGradient(layer.spec);
+    const css = layer.opacity >= SCENE_LIMITS.opacity.max ? composed : withGradientAlpha(composed, layer.opacity);
     // A gradient layer contributes one entry per gradient it holds, so an
     // image layer's `60% auto` can never cycle around onto one of them.
     const parts = splitTopLevel(css);

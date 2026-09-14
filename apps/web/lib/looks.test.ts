@@ -20,9 +20,12 @@ import { parseLookBackdrop as parseLookBackdropValue, type Composition } from "@
 import { DEFAULT_APPEARANCE, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./appearance";
 import { currentComposition, DEFAULT_COMPOSITION, writeComposition } from "./composition";
 import { DEFAULT_SCENE, SCENE_PRESETS } from "./scene-composer";
+import { gradientStarterById } from "./gradient-starters";
 import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
 
 const GRADIENT = "linear-gradient(180deg, oklch(0.95 0.02 250) 0%, oklch(0.9 0.03 260) 100%)";
+/** The starter every legacy `aurora` layer reads forward into. */
+const AURORA = gradientStarterById("aurora")!;
 const DATA_URL = "data:image/webp;base64,AAAA";
 const SCENE_VALUE = `url("data:image/webp\\00003Bbase64,AAAA"), ${GRADIENT}`;
 
@@ -237,8 +240,10 @@ describe("parseLook", () => {
     // Every token pinned: the base only starts deciding once one is cleared.
     expect(old?.composition.light.overrides.background).toBe("#fefefe");
     expect(Object.keys(old?.composition.dark.overrides ?? {}).sort()).toEqual([...THEME_TOKENS].sort());
-    expect(old?.composition.light.layers).toEqual([{ type: "gradient", presetId: "aurora", opacity: 100 }]);
-    expect(old?.composition.dark.layers).toEqual([{ type: "gradient", presetId: "aurora", opacity: 100 }]);
+    // A preset id expands into the STARTER it named, per state — a preset had
+    // two halves, and giving dark the light one would retint somebody's night.
+    expect(old?.composition.light.layers).toEqual([{ type: "gradient", spec: AURORA.light, opacity: 100 }]);
+    expect(old?.composition.dark.layers).toEqual([{ type: "gradient", spec: AURORA.dark, opacity: 100 }]);
   });
 });
 
@@ -269,7 +274,7 @@ describe("the shareable file", () => {
   test("export then import round-trips every member but the id", () => {
     const original = look({
       composition: composition({
-        light: { base: "#123456", layers: [{ type: "gradient", presetId: "aurora", opacity: 60 }], overrides: { card: "#ffffff" } },
+        light: { base: "#123456", layers: [{ type: "gradient", spec: AURORA.light, opacity: 60 }], overrides: { card: "#ffffff" } },
       }),
       fontSans: "custom",
       fontSansCustom: "SF Pro Text, Helvetica",
@@ -352,7 +357,7 @@ describe("wearing", () => {
    *  live one and the only side effect is the window changing colour. */
   test("a look's composition becomes the live one, images and all", () => {
     const worn = look({
-      composition: composition({ light: { base: "#123456", layers: [{ type: "gradient", presetId: "aurora", opacity: 100 }], overrides: {} } }),
+      composition: composition({ light: { base: "#123456", layers: [{ type: "gradient", spec: AURORA.light, opacity: 100 }], overrides: {} } }),
     });
     const patches: unknown[] = [];
     expect(applyLook(worn, (patch) => void patches.push(patch))).toBeUndefined();
@@ -382,7 +387,7 @@ describe("sameComposition", () => {
   });
 
   test("a difference in only one state is still a difference", () => {
-    const tweaked = composition({ dark: { base: "#252525", layers: [{ type: "gradient", presetId: "aurora", opacity: 100 }], overrides: {} } });
+    const tweaked = composition({ dark: { base: "#252525", layers: [{ type: "gradient", spec: AURORA.dark, opacity: 100 }], overrides: {} } });
     expect(sameComposition(composition(), tweaked)).toBe(false);
   });
 });

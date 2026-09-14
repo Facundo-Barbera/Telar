@@ -17,6 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { THEME_TOKENS } from "@telar/engine-client";
 import { BUILT_IN_LOOKS, BUILT_IN_PREFIX } from "./built-in-looks";
+import { DEFAULT_GRADIENT_SPECS, gradientStarterById, parseGradientCss } from "./gradient-starters";
 import { forgetLegacyAppearance, migrateLegacyAppearance, parseActivePair, parseCustomThemes, readLegacyBackdrop } from "./legacy-appearance";
 import { halfFor } from "./palette-from-image";
 import { TELAR_DARK, TELAR_LIGHT } from "./theme-palettes";
@@ -184,31 +185,46 @@ describe("migrateLegacyAppearance", () => {
     expect(migrated?.composition.dark.base).toBe(TELAR_DARK.background);
   });
 
-  /** The old model had ONE backdrop for both halves, so splitting it per state
-   *  would be inventing a difference nobody asked for. */
-  test("the old backdrop becomes the same stack in both states", () => {
+  /** The old backdrop was ONE choice for both halves — but a gradient PRESET
+   *  carried two of them, so each state expands the half it needs (#471).
+   *  Reading light into both would have retinted somebody's night. */
+  test("the old gradient backdrop expands per state, into the starter it named", () => {
+    const dusk = gradientStarterById("dusk")!;
     seed({
       "telar-theme-active": JSON.stringify({ light: "tide", dark: "tide" }),
       "telar-backdrop": JSON.stringify({ kind: "gradient", id: "dusk" }),
       "telar-backdrop-css": JSON.stringify({ light: GRADIENT, dark: GRADIENT }),
     });
     const migrated = migrateLegacyAppearance();
-    const layers = [{ type: "gradient", presetId: "dusk", opacity: 100 }];
-    expect(migrated?.composition.light.layers).toEqual(layers);
-    expect(migrated?.composition.dark.layers).toEqual(layers);
+    expect(migrated?.composition.light.layers).toEqual([{ type: "gradient", spec: dusk.light, opacity: 100 }]);
+    expect(migrated?.composition.dark.layers).toEqual([{ type: "gradient", spec: dusk.dark, opacity: 100 }]);
   });
 
   /** A custom gradient was the one place the old model held two VALUES where the
-   *  new one holds two stacks, so each state takes its own. */
+   *  new one holds two stacks, so each state takes its own — read back into the
+   *  stops that made it, since a gradient is authored rather than resolved now. */
   test("a custom gradient's two halves become the two states' own layers", () => {
+    const light = "linear-gradient(180deg, #f0f4ff 0%, #e0e8ff 100%)";
     const dark = "linear-gradient(180deg, #000000 0%, #101020 100%)";
     seed({
-      "telar-backdrop": JSON.stringify({ kind: "custom-gradient", light: GRADIENT, dark }),
-      "telar-backdrop-css": JSON.stringify({ light: GRADIENT, dark }),
+      "telar-backdrop": JSON.stringify({ kind: "custom-gradient", light, dark }),
+      "telar-backdrop-css": JSON.stringify({ light, dark }),
     });
     const migrated = migrateLegacyAppearance();
-    expect(migrated?.composition.light.layers).toEqual([{ type: "custom-gradient", css: GRADIENT, opacity: 100 }]);
-    expect(migrated?.composition.dark.layers).toEqual([{ type: "custom-gradient", css: dark, opacity: 100 }]);
+    expect(migrated?.composition.light.layers).toEqual([{ type: "gradient", spec: parseGradientCss(light), opacity: 100 }]);
+    expect(migrated?.composition.dark.layers).toEqual([{ type: "gradient", spec: parseGradientCss(dark), opacity: 100 }]);
+  });
+
+  /** An oklch gradient is one this build cannot take apart — the layer keeps
+   *  its place and opens on the default rather than vanishing. */
+  test("a custom gradient this build cannot parse keeps its layer and loses its stops", () => {
+    seed({
+      "telar-backdrop": JSON.stringify({ kind: "custom-gradient", light: GRADIENT, dark: GRADIENT }),
+      "telar-backdrop-css": JSON.stringify({ light: GRADIENT, dark: GRADIENT }),
+    });
+    const migrated = migrateLegacyAppearance();
+    expect(migrated?.composition.light.layers).toEqual([{ type: "gradient", spec: DEFAULT_GRADIENT_SPECS.light, opacity: 100 }]);
+    expect(migrated?.composition.dark.layers).toEqual([{ type: "gradient", spec: DEFAULT_GRADIENT_SPECS.dark, opacity: 100 }]);
   });
 
   test("an image backdrop survives as a full-bleed layer with its pixels", () => {

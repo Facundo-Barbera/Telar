@@ -1,9 +1,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { isGradientValue, isSceneValue } from "./backdrop";
-import { BACKDROP_PRESETS, composeGradient, DEFAULT_CUSTOM_GRADIENT, type BackdropPreset } from "./backdrop-presets";
+import { composeGradient, DEFAULT_GRADIENT_SPECS, GRADIENT_STARTERS, type CustomGradientSpec, type GradientStarter } from "./gradient-starters";
 import {
-  addSceneCustomGradientLayer,
   addSceneGradientLayer,
   addSceneLayer,
   composeState,
@@ -26,8 +25,7 @@ import {
   removeSceneLayerAt,
   sceneImageUrl,
   SCENE_LIMITS,
-  setCustomGradientCss,
-  setGradientPreset,
+  setGradientSpec,
   splitTopLevel,
   updateSceneLayer,
   updateSceneLayerAt,
@@ -37,39 +35,33 @@ import {
   type SceneImageLayer,
   type SceneLayer,
 } from "./scene-composer";
-import type { SceneCustomGradientLayer } from "@telar/engine-client";
 
 /** A one-pixel WebP, shaped exactly like what the canvas encoder emits — the
  *  `;base64` in here is the whole reason sceneImageUrl exists. */
 const PIXEL = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
 
-const base: BackdropPreset = BACKDROP_PRESETS[0];
-const lookup = (id: string) => BACKDROP_PRESETS.find((preset) => preset.id === id);
+const base: GradientStarter = GRADIENT_STARTERS[0];
 
 function layer(id: string, overrides: Partial<Omit<SceneImageLayer, "type">> = {}): SceneImageLayer {
   return { id, ...DEFAULT_LAYER, ...overrides };
 }
 
-function gradient(presetId: string, opacity = 100): SceneGradientLayer {
-  return { type: "gradient", presetId, opacity };
-}
-
-function custom(css: string, opacity = 100): SceneCustomGradientLayer {
-  return { type: "custom-gradient", css, opacity };
+function gradient(spec: CustomGradientSpec, opacity = 100): SceneGradientLayer {
+  return { type: "gradient", spec, opacity };
 }
 
 /** A stack with a full-bleed gradient at the bottom — the picture most of these
  *  tests describe, and what the old mandatory "base" turned into. */
-function scene(layers: SceneLayer[], baseId: string | null = base.id): Scene {
-  return { layers: baseId === null ? layers : [...layers, gradient(baseId)] };
+function scene(layers: SceneLayer[], bottom: CustomGradientSpec | null = base.light): Scene {
+  return { layers: bottom === null ? layers : [...layers, gradient(bottom)] };
 }
 
-/** The bottom-most layer's preset, or null — what `sceneBasePresetId` used to
+/** The bottom-most layer's stops, or null — what `sceneBasePresetId` used to
  *  answer before the composition's BASE became a colour and this became an
  *  ordinary layer like any other. */
-const bottomPreset = (value: Scene): string | null => {
+const bottomSpec = (value: Scene): CustomGradientSpec | null => {
   const bottom = value.layers[value.layers.length - 1];
-  return bottom !== undefined && bottom.type === "gradient" ? bottom.presetId : null;
+  return bottom !== undefined && bottom.type === "gradient" ? bottom.spec : null;
 };
 
 describe("parseScene", () => {
@@ -83,13 +75,24 @@ describe("parseScene", () => {
    *  the bottom-most gradient layer at full opacity. */
   test("an old scene's baseId becomes a bottom gradient layer", () => {
     const migrated = parseScene(JSON.stringify({ baseId: base.id, layers: [{ id: "a" }] }));
-    expect(migrated.layers).toEqual([layer("a"), gradient(base.id)]);
-    expect(bottomPreset(migrated)).toBe(base.id);
+    expect(migrated.layers).toEqual([layer("a"), gradient(base.light)]);
+    expect(bottomSpec(migrated)).toEqual(base.light);
+  });
+
+  /** THE STATE DECIDES WHICH HALF a named starter expands to — the same stored
+   *  scene read for dark is a different set of stops, which is the whole reason
+   *  the parser takes a mode. */
+  test("a named base expands into the half the state needs", () => {
+    const starter = GRADIENT_STARTERS[1];
+    const raw = JSON.stringify({ baseId: starter.id, layers: [] });
+    expect(bottomSpec(parseScene(raw, "light"))).toEqual(starter.light);
+    expect(bottomSpec(parseScene(raw, "dark"))).toEqual(starter.dark);
   });
 
   test("an unknown base falls back rather than painting nothing", () => {
-    expect(bottomPreset(parseScene(JSON.stringify({ baseId: "no-such-preset", layers: [] })))).toBe(DEFAULT_SCENE_BASE);
-    expect(bottomPreset(parseScene(JSON.stringify({ baseId: base.id, layers: [] })))).toBe(base.id);
+    const fallback = GRADIENT_STARTERS.find((entry) => entry.id === DEFAULT_SCENE_BASE)!;
+    expect(bottomSpec(parseScene(JSON.stringify({ baseId: "no-such-preset", layers: [] })))).toEqual(fallback.light);
+    expect(bottomSpec(parseScene(JSON.stringify({ baseId: base.id, layers: [] })))).toEqual(base.light);
   });
 
   /** A stack without a `baseId` is saying "nothing underneath" — no base may be
@@ -97,7 +100,7 @@ describe("parseScene", () => {
   test("a scene with layers and no baseId keeps its transparent bottom", () => {
     const parsed = parseScene(JSON.stringify({ layers: [{ type: "image", id: "a" }] }));
     expect(parsed.layers).toEqual([layer("a")]);
-    expect(bottomPreset(parsed)).toBeNull();
+    expect(bottomSpec(parsed)).toBeNull();
     expect(parseScene(JSON.stringify({ layers: [] })).layers).toEqual([]);
   });
 
@@ -105,20 +108,45 @@ describe("parseScene", () => {
     expect(parseSceneLayer({ id: "a", x: 10 })).toEqual({ id: "a", ...DEFAULT_LAYER, x: 10 });
   });
 
-  test("gradient layers carry a known preset and a clamped opacity", () => {
-    expect(parseSceneLayer({ type: "gradient", presetId: base.id, opacity: 40 })).toEqual(gradient(base.id, 40));
-    expect(parseSceneLayer({ type: "gradient", presetId: base.id })).toEqual(gradient(base.id, 100));
-    expect(parseSceneLayer({ type: "gradient", presetId: "no-such-preset", opacity: 999 })).toEqual(gradient(DEFAULT_SCENE_BASE, 100));
-    expect(parseSceneLayer({ type: "gradient", opacity: 1 })).toEqual(gradient(DEFAULT_SCENE_BASE, SCENE_LIMITS.opacity.min));
+  /** A gradient layer carries its own stops now. An OLDER one named a preset,
+   *  and reading it forward is what the starter table is consulted for. */
+  test("gradient layers carry their stops, and an older one's preset expands", () => {
+    const spec: CustomGradientSpec = { type: "radial", angle: 0, centerX: 10, centerY: 90, stops: [{ color: "#010203", position: 0, opacity: 100 }, { color: "#040506", position: 100, opacity: 50 }] };
+    expect(parseSceneLayer({ type: "gradient", spec, opacity: 40 })).toEqual(gradient(spec, 40));
+    expect(parseSceneLayer({ type: "gradient", presetId: base.id, opacity: 40 })).toEqual(gradient(base.light, 40));
+    expect(parseSceneLayer({ type: "gradient", presetId: base.id }, "dark")).toEqual(gradient(base.dark, 100));
+    // An id this build dropped, and no id at all, both land on the fallback
+    // starter rather than becoming a gap in a positional list.
+    const fallback = GRADIENT_STARTERS.find((entry) => entry.id === DEFAULT_SCENE_BASE)!;
+    expect(parseSceneLayer({ type: "gradient", presetId: "no-such-preset", opacity: 999 })).toEqual(gradient(fallback.light, 100));
+    expect(parseSceneLayer({ type: "gradient", opacity: 1 })).toEqual(gradient(fallback.light, SCENE_LIMITS.opacity.min));
   });
 
-  /** A custom gradient is a LAYER now rather than a backdrop kind with two
-   *  halves, and it carries its RESOLVED css — so a value that is not a
-   *  gradient is fatal for that layer, there being no "the one they meant". */
-  test("a custom gradient layer keeps its css, or is dropped outright", () => {
-    const css = "linear-gradient(160deg, #eef2ff 0%, #fce7f3 100%)";
-    expect(parseSceneLayer({ type: "custom-gradient", css, opacity: 40 })).toEqual(custom(css, 40));
-    expect(parseSceneLayer({ type: "custom-gradient", css })).toEqual(custom(css, 100));
+  /** The PRE-COMPOSER layer: resolved CSS, read back into the stops that made
+   *  it. A value that is not a gradient at all is fatal for that layer, there
+   *  being no "the one they meant". */
+  test("a custom-gradient layer becomes an authored one, or is dropped outright", () => {
+    const css = "linear-gradient(30deg, #112233 0%, #445566 60%, #778899 100%)";
+    expect(parseSceneLayer({ type: "custom-gradient", css, opacity: 40 })).toEqual(
+      gradient(
+        {
+          type: "linear",
+          angle: 30,
+          centerX: 50,
+          centerY: 50,
+          stops: [
+            { color: "#112233", position: 0, opacity: 100 },
+            { color: "#445566", position: 60, opacity: 100 },
+            { color: "#778899", position: 100, opacity: 100 },
+          ],
+        },
+        40,
+      ),
+    );
+    // A gradient this build cannot take apart keeps its place and opens on the
+    // default: the layer survives, its stops do not.
+    expect(parseSceneLayer({ type: "custom-gradient", css: "linear-gradient(1deg, red, blue)" })).toEqual(gradient(DEFAULT_GRADIENT_SPECS.light, 100));
+    expect(parseSceneLayer({ type: "custom-gradient", css: "linear-gradient(1deg, red, blue)" }, "dark")).toEqual(gradient(DEFAULT_GRADIENT_SPECS.dark, 100));
     for (const bad of [{ type: "custom-gradient" }, { type: "custom-gradient", css: "red" }, { type: "custom-gradient", css: "linear-gradient(red);}" }]) {
       expect(parseSceneLayer(bad)).toBeUndefined();
     }
@@ -141,7 +169,7 @@ describe("parseScene", () => {
 
   test("duplicate ids collapse and each kind is capped on its own", () => {
     const layers = [{ id: "a" }, { id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }, { id: "f" }, { id: "g" }, { id: "h" }];
-    const gradients = Array.from({ length: MAX_SCENE_GRADIENT_LAYERS + 3 }, () => ({ type: "gradient", presetId: base.id }));
+    const gradients = Array.from({ length: MAX_SCENE_GRADIENT_LAYERS + 3 }, () => ({ type: "gradient", spec: base.light }));
     const parsed = parseScene(JSON.stringify({ layers: [...layers, ...gradients] }));
     expect(countSceneImages(parsed)).toBe(MAX_SCENE_LAYERS);
     expect(countSceneGradients(parsed)).toBe(MAX_SCENE_GRADIENT_LAYERS);
@@ -149,12 +177,12 @@ describe("parseScene", () => {
   });
 
   test("a migrated base does not push the gradient cap over", () => {
-    const gradients = Array.from({ length: MAX_SCENE_GRADIENT_LAYERS }, () => ({ type: "gradient", presetId: base.id }));
+    const gradients = Array.from({ length: MAX_SCENE_GRADIENT_LAYERS }, () => ({ type: "gradient", spec: base.light }));
     expect(countSceneGradients(parseScene(JSON.stringify({ baseId: base.id, layers: gradients })))).toBe(MAX_SCENE_GRADIENT_LAYERS);
   });
 
   test("a scene round-trips through its own JSON", () => {
-    const original = scene([layer("a", { x: 10, y: 90, scale: 130, opacity: 45, tiled: true }), gradient(base.id, 30), layer("b")]);
+    const original = scene([layer("a", { x: 10, y: 90, scale: 130, opacity: 45, tiled: true }), gradient(base.dark, 30), layer("b")]);
     expect(parseScene(JSON.stringify(original))).toEqual(original);
   });
 });
@@ -172,12 +200,16 @@ describe("parseSceneImages", () => {
   });
 });
 
-const ids = (value: Scene) => value.layers.map((l) => (l.type === "image" ? l.id : l.type === "gradient" ? `~${l.presetId}` : "~custom"));
+/** Layer identity for an assertion: an image is its id, a gradient is the CSS
+ *  it composes to — which is the only thing a gradient layer IS now. */
+const ids = (value: Scene) => value.layers.map((l) => (l.type === "image" ? l.id : `~${composeGradient(l.spec)}`));
 
 describe("editing", () => {
+  const BASE_CSS = `~${composeGradient(base.light)}`;
+
   test("a new layer lands on top with centred defaults", () => {
     const next = addSceneLayer(scene([layer("a")]), "b");
-    expect(ids(next)).toEqual(["b", "a", `~${base.id}`]);
+    expect(ids(next)).toEqual(["b", "a", BASE_CSS]);
     expect(next.layers[0]).toEqual({ id: "b", ...DEFAULT_LAYER });
   });
 
@@ -188,42 +220,21 @@ describe("editing", () => {
   });
 
   test("a gradient layer lands on top too, and is capped on its own", () => {
-    const next = addSceneGradientLayer(scene([layer("a")]), BACKDROP_PRESETS[1].id);
-    expect(ids(next)).toEqual([`~${BACKDROP_PRESETS[1].id}`, "a", `~${base.id}`]);
-    expect(next.layers[0]).toEqual(gradient(BACKDROP_PRESETS[1].id, 100));
-    const full = scene(Array.from({ length: MAX_SCENE_GRADIENT_LAYERS }, () => gradient(base.id)), null);
-    expect(addSceneGradientLayer(full, base.id)).toBe(full);
-    expect(addSceneGradientLayer(DEFAULT_SCENE, "no-such-preset")).toBe(DEFAULT_SCENE);
+    const other = GRADIENT_STARTERS[1].light;
+    const next = addSceneGradientLayer(scene([layer("a")]), other);
+    expect(ids(next)).toEqual([`~${composeGradient(other)}`, "a", BASE_CSS]);
+    expect(next.layers[0]).toEqual(gradient(other, 100));
+    const full = scene(Array.from({ length: MAX_SCENE_GRADIENT_LAYERS }, () => gradient(base.light)), null);
+    expect(addSceneGradientLayer(full, other)).toBe(full);
   });
 
-  test("a custom gradient is added as a layer, gated on actually being one", () => {
-    const css = composeGradient(DEFAULT_CUSTOM_GRADIENT.light);
-    const next = addSceneCustomGradientLayer(scene([layer("a")]), css);
-    expect(ids(next)).toEqual(["~custom", "a", `~${base.id}`]);
-    expect(next.layers[0]).toEqual(custom(css, 100));
-    // It shares the gradient cap: both kinds are string layers with the same
-    // legibility cost, and neither is the "real" one.
-    const full = scene(Array.from({ length: MAX_SCENE_GRADIENT_LAYERS }, () => gradient(base.id)), null);
-    expect(addSceneCustomGradientLayer(full, css)).toBe(full);
-    expect(addSceneCustomGradientLayer(DEFAULT_SCENE, "red")).toBe(DEFAULT_SCENE);
-  });
-
-  test("a custom gradient's css is rewritten in place, and only on its own kind", () => {
-    const first = composeGradient(DEFAULT_CUSTOM_GRADIENT.light);
-    const second = composeGradient({ ...DEFAULT_CUSTOM_GRADIENT.light, angle: 42 });
-    const stack: Scene = { layers: [custom(first, 60), gradient(base.id)] };
-    expect(setCustomGradientCss(stack, 0, second).layers[0]).toEqual(custom(second, 60));
-    // Not a gradient, not that kind of layer, not there at all: all no-ops.
-    expect(setCustomGradientCss(stack, 0, "red")).toBe(stack);
-    expect(setCustomGradientCss(stack, 1, second)).toBe(stack);
-    expect(setCustomGradientCss(stack, 9, second)).toBe(stack);
-  });
-
-  test("a gradient layer's preset is swapped in place, keeping its fade", () => {
-    const stack: Scene = { layers: [gradient(base.id, 60), layer("a")] };
-    expect(setGradientPreset(stack, 0, BACKDROP_PRESETS[1].id).layers[0]).toEqual(gradient(BACKDROP_PRESETS[1].id, 60));
-    expect(setGradientPreset(stack, 0, "no-such-preset")).toBe(stack);
-    expect(setGradientPreset(stack, 1, BACKDROP_PRESETS[1].id)).toBe(stack);
+  test("a gradient layer's stops are rewritten in place, keeping its fade", () => {
+    const second: CustomGradientSpec = { ...DEFAULT_GRADIENT_SPECS.light, angle: 42 };
+    const stack: Scene = { layers: [gradient(DEFAULT_GRADIENT_SPECS.light, 60), layer("a")] };
+    expect(setGradientSpec(stack, 0, second).layers[0]).toEqual(gradient(second, 60));
+    // An image layer, and a row that is not there at all: both no-ops.
+    expect(setGradientSpec(stack, 1, second)).toBe(stack);
+    expect(setGradientSpec(stack, 9, second)).toBe(stack);
   });
 
   test("moving is clamped to the ends, never wrapped", () => {
@@ -236,8 +247,8 @@ describe("editing", () => {
   });
 
   test("gradient layers reorder and remove by position, having no id", () => {
-    const mixed: Scene = { layers: [layer("a"), gradient(base.id, 40), layer("b")] };
-    expect(ids(moveSceneLayerAt(mixed, 1, -1))).toEqual([`~${base.id}`, "a", "b"]);
+    const mixed: Scene = { layers: [layer("a"), gradient(base.light, 40), layer("b")] };
+    expect(ids(moveSceneLayerAt(mixed, 1, -1))).toEqual([BASE_CSS, "a", "b"]);
     expect(ids(removeSceneLayerAt(mixed, 1))).toEqual(["a", "b"]);
     expect(removeSceneLayerAt(mixed, 9)).toBe(mixed);
     expect(moveSceneLayerAt(mixed, 0, -1)).toBe(mixed);
@@ -250,12 +261,10 @@ describe("editing", () => {
     expect(next.layers[1]).toEqual(two.layers[1]);
   });
 
-  test("either gradient kind takes only opacity from a patch", () => {
-    const css = composeGradient(DEFAULT_CUSTOM_GRADIENT.light);
-    const one: Scene = { layers: [gradient(base.id, 100), custom(css, 100)] };
-    expect(updateSceneLayerAt(one, 0, { opacity: 35, x: 10, scale: 200, tiled: true }).layers[0]).toEqual(gradient(base.id, 35));
-    expect(updateSceneLayerAt(one, 1, { opacity: 35, x: 10, scale: 200, tiled: true }).layers[1]).toEqual(custom(css, 35));
-    expect(updateSceneLayerAt(one, 0, { opacity: 0 }).layers[0]).toEqual(gradient(base.id, SCENE_LIMITS.opacity.min));
+  test("a gradient layer takes only opacity from a patch", () => {
+    const one: Scene = { layers: [gradient(base.light, 100), layer("a")] };
+    expect(updateSceneLayerAt(one, 0, { opacity: 35, x: 10, scale: 200, tiled: true }).layers[0]).toEqual(gradient(base.light, 35));
+    expect(updateSceneLayerAt(one, 0, { opacity: 0 }).layers[0]).toEqual(gradient(base.light, SCENE_LIMITS.opacity.min));
   });
 
   test("removal and image cleanup take the original with them", () => {
@@ -289,7 +298,10 @@ describe("sceneImageUrl", () => {
 
 describe("splitTopLevel", () => {
   test("splits between gradients, not between their stops", () => {
-    expect(splitTopLevel(base.light).length).toBe(4);
+    // An authored spec composes to ONE gradient with five stops in it, which is
+    // exactly the value that would be shredded by a naive comma split.
+    expect(splitTopLevel(composeGradient(base.light)).length).toBe(1);
+    expect(splitTopLevel("radial-gradient(at 1% 2%, a, b), linear-gradient(0deg, c, d)").length).toBe(2);
     expect(splitTopLevel("linear-gradient(0deg, a, b)")).toEqual(["linear-gradient(0deg, a, b)"]);
     expect(splitTopLevel("a, b")).toEqual(["a", "b"]);
     expect(splitTopLevel("")).toEqual([]);
@@ -298,31 +310,23 @@ describe("splitTopLevel", () => {
 
 describe("composeState", () => {
   const images = { a: PIXEL, b: PIXEL };
-  const compose = (layers: SceneLayer[], mode: "light" | "dark" = "light", map: Record<string, string> = images) =>
-    composeState(layers, map, mode, lookup);
-
-  test("an unknown gradient preset composes to nothing at all", () => {
-    expect(compose([gradient("no-such-preset")])).toBeNull();
-  });
+  const compose = (layers: SceneLayer[], map: Record<string, string> = images) => composeState(layers, map);
+  const BASE_LIGHT = composeGradient(base.light);
 
   /** The empty stack is a state the editor can be in — it just is not a value
    *  anything can paint, so it refuses rather than writing an empty rule. */
   test("an empty stack composes to nothing, and so does one with only dead images", () => {
-    expect(compose([], "light", {})).toBeNull();
-    expect(compose([layer("gone")], "light", {})).toBeNull();
+    expect(compose([], {})).toBeNull();
+    expect(compose([layer("gone")], {})).toBeNull();
   });
 
-  /** THE WHOLE POINT OF PER-STATE COMPILATION: each state takes its own half of
-   *  a preset, and nothing is padded to keep two halves in step. */
-  test("each state takes its own half of a gradient preset", () => {
-    expect(compose([gradient(base.id)], "light")?.image).toBe(base.light);
-    expect(compose([gradient(base.id)], "dark")?.image).toBe(base.dark);
-  });
-
-  test("a custom gradient has no halves to choose between — it is the same in both", () => {
-    const css = composeGradient(DEFAULT_CUSTOM_GRADIENT.light);
-    expect(compose([custom(css)], "light")?.image).toBe(css);
-    expect(compose([custom(css)], "dark")?.image).toBe(css);
+  /** A LAYER CARRIES ITS OWN STOPS (#471), so there is no half to choose and no
+   *  table to miss: what a stack composes to is a function of the stack alone.
+   *  The two states differ because their STACKS differ, which is what a
+   *  composition has meant since the model changed. */
+  test("a gradient layer composes to exactly the gradient its spec makes", () => {
+    expect(compose([gradient(base.light)], {})?.image).toBe(BASE_LIGHT);
+    expect(compose([gradient(base.dark)], {})?.image).toBe(composeGradient(base.dark));
   });
 
   /** "Nothing underneath": no trailing entries at all, so whatever is behind the
@@ -335,63 +339,62 @@ describe("composeState", () => {
   });
 
   test("a gradient layer paints full-bleed wherever it sits in the stack", () => {
-    const composed = compose([gradient(base.id), layer("a")]);
+    const composed = compose([gradient(base.light), layer("a")]);
     const url = sceneImageUrl(PIXEL) as string;
-    const count = splitTopLevel(base.light).length;
-    expect(composed?.image).toBe(`${base.light}, ${url}`);
-    expect(composed?.size.split(", ")).toEqual([...Array(count).fill("cover"), `${DEFAULT_LAYER.scale}% auto`]);
-    expect(composed?.position.split(", ")).toEqual([...Array(count).fill("center"), "50% 50%"]);
+    expect(composed?.image).toBe(`${BASE_LIGHT}, ${url}`);
+    expect(composed?.size.split(", ")).toEqual(["cover", `${DEFAULT_LAYER.scale}% auto`]);
+    expect(composed?.position.split(", ")).toEqual(["center", "50% 50%"]);
   });
 
+  /** The layer's fade MULTIPLIES into whatever the stops already say, which is
+   *  what stacking two translucent things means everywhere else. */
   test("a faded gradient layer is the same gradient with alpha in its colours", () => {
-    const composed = compose([gradient(base.id, 50)], "light", {});
-    expect(composed?.image).toBe(withGradientAlpha(base.light, 50));
-    expect(composed?.image).not.toBe(base.light);
-    expect(splitTopLevel(composed?.image ?? "").length).toBe(splitTopLevel(base.light).length);
+    const composed = compose([gradient(base.light, 50)], {});
+    expect(composed?.image).toBe(withGradientAlpha(BASE_LIGHT, 50));
+    expect(composed?.image).not.toBe(BASE_LIGHT);
+    expect(splitTopLevel(composed?.image ?? "").length).toBe(1);
     expect(isSceneValue(composed?.image)).toBe(true);
   });
 
-  test("a faded custom gradient fades the same way", () => {
-    const css = composeGradient(DEFAULT_CUSTOM_GRADIENT.light);
-    expect(compose([custom(css, 50)], "light", {})?.image).toBe(withGradientAlpha(css, 50));
+  test("a stop's own alpha and the layer's fade compound", () => {
+    const half: CustomGradientSpec = { ...DEFAULT_GRADIENT_SPECS.light, stops: DEFAULT_GRADIENT_SPECS.light.stops.map((stop) => ({ ...stop, opacity: 50 })) };
+    // 50% in the stop, 50% on the layer: a quarter, in eight-digit hex.
+    expect(compose([gradient(half, 50)], {})?.image).toContain("40");
+    expect(isSceneValue(compose([gradient(half, 50)], {})?.image)).toBe(true);
   });
 
   test("layers paint over the bottom gradient, first layer on top", () => {
-    const composed = compose([layer("a"), layer("b"), gradient(base.id)]);
+    const composed = compose([layer("a"), layer("b"), gradient(base.light)]);
     const url = sceneImageUrl(PIXEL) as string;
     expect(composed?.image.startsWith(`${url}, ${url}, `)).toBe(true);
-    expect(composed?.image.endsWith(base.light)).toBe(true);
+    expect(composed?.image.endsWith(BASE_LIGHT)).toBe(true);
   });
 
   test("each layer contributes one size, position and repeat entry", () => {
     const composed = compose([
       layer("a", { x: 10, y: 20, scale: 150, tiled: true }),
       layer("b", { x: 0, y: 100, scale: 30 }),
-      gradient(base.id),
+      gradient(base.light),
     ]);
-    const baseCount = splitTopLevel(base.light).length;
-    expect(composed?.size.split(", ").slice(0, 2)).toEqual(["150% auto", "30% auto"]);
-    expect(composed?.position.split(", ").slice(0, 2)).toEqual(["10% 20%", "0% 100%"]);
-    expect(composed?.repeat.split(", ").slice(0, 2)).toEqual(["repeat", "no-repeat"]);
-    expect(composed?.size.split(", ").slice(2)).toEqual(Array(baseCount).fill("cover"));
-    expect(composed?.position.split(", ").slice(2)).toEqual(Array(baseCount).fill("center"));
-    expect(composed?.repeat.split(", ").slice(2)).toEqual(Array(baseCount).fill("no-repeat"));
+    expect(composed?.size.split(", ")).toEqual(["150% auto", "30% auto", "cover"]);
+    expect(composed?.position.split(", ")).toEqual(["10% 20%", "0% 100%", "center"]);
+    expect(composed?.repeat.split(", ")).toEqual(["repeat", "no-repeat", "no-repeat"]);
   });
 
   /** The lists are POSITIONAL: if their lengths ever drift from the image
    *  list's, CSS cycles them and every layer paints with someone else's size.
-   *  This is the invariant that catches that — and it now has to hold for each
-   *  state on its own, where before the two were padded into agreement. */
-  test("every list has exactly one entry per background-image entry, in both states", () => {
-    for (const preset of BACKDROP_PRESETS) {
+   *  This is the invariant that catches that, over every starter's two halves
+   *  since those are what the chips and the built-ins actually put in a stack. */
+  test("every list has exactly one entry per background-image entry, for every starter", () => {
+    for (const starter of GRADIENT_STARTERS) {
       for (const mode of ["light", "dark"] as const) {
         for (const opacity of [10, 50, 100]) {
-          const composed = compose([layer("a"), layer("b"), gradient(preset.id, opacity)], mode);
-          expect(composed, `${preset.id} ${mode} ${opacity}`).not.toBeNull();
+          const composed = compose([layer("a"), layer("b"), gradient(starter[mode], opacity)]);
+          expect(composed, `${starter.id} ${mode} ${opacity}`).not.toBeNull();
           expect(isSceneValue(composed?.image)).toBe(true);
           const count = splitTopLevel(composed?.image ?? "").length;
           for (const list of [composed?.size, composed?.position, composed?.repeat]) {
-            expect((list ?? "").split(", ").length, `${preset.id} ${mode}`).toBe(count);
+            expect((list ?? "").split(", ").length, `${starter.id} ${mode}`).toBe(count);
           }
         }
       }
@@ -399,40 +402,41 @@ describe("composeState", () => {
   });
 
   test("a layer with no image is skipped, not left as a gap", () => {
-    const composed = compose([layer("a"), layer("gone"), layer("b", { scale: 30 }), gradient(base.id)]);
-    const baseCount = splitTopLevel(base.light).length;
-    expect(splitTopLevel(composed?.image ?? "").length).toBe(2 + baseCount);
+    const composed = compose([layer("a"), layer("gone"), layer("b", { scale: 30 }), gradient(base.light)]);
+    expect(splitTopLevel(composed?.image ?? "").length).toBe(3);
     // The second entry is b's size, not the missing layer's — the whole point.
     expect(composed?.size.split(", ")[1]).toBe("30% auto");
   });
 
   test("a malformed stored image is skipped like a missing one", () => {
-    expect(compose([layer("a"), gradient(base.id)], "light", { a: 'data:image/png,a"b' })?.image).toBe(base.light);
+    expect(compose([layer("a"), gradient(base.light)], { a: 'data:image/png,a"b' })?.image).toBe(BASE_LIGHT);
   });
 
   /** The store's gate is silent — a value that fails it paints nothing at all
    *  — so every composition this function can produce is checked against it. */
-  test("both states pass the store's gate, for every preset and a full stack", () => {
+  test("a full stack passes the store's gate, for every starter and both halves", () => {
     const full = ["a", "b", "c", "d", "e", "f"].map((id, index) => layer(id, { x: index * 20, scale: 10 + index * 30, tiled: index % 2 === 0 }));
     const stacked = Object.fromEntries(full.map((l) => [l.id, PIXEL]));
-    for (const preset of BACKDROP_PRESETS) {
+    for (const starter of GRADIENT_STARTERS) {
       for (const mode of ["light", "dark"] as const) {
-        const composed = composeState([...full, gradient(preset.id)], stacked, mode, lookup);
-        expect(composed, `${preset.id} ${mode}`).not.toBeNull();
+        const composed = composeState([...full, gradient(starter[mode])], stacked);
+        expect(composed, `${starter.id} ${mode}`).not.toBeNull();
         expect(isSceneValue(composed?.image)).toBe(true);
       }
     }
   });
 
-  test("the default lookup finds the shipped presets", () => {
-    expect(composeState(DEFAULT_SCENE.layers, {}, "light")).not.toBeNull();
+  test("the default scene composes", () => {
+    expect(composeState(DEFAULT_SCENE.layers, {})).not.toBeNull();
   });
 });
 
 describe("withGradientAlpha", () => {
+  const BASE_LIGHT = composeGradient(base.light);
+
   test("full opacity is the string untouched", () => {
-    expect(withGradientAlpha(base.light, 100)).toBe(base.light);
-    expect(withGradientAlpha(base.light, 250)).toBe(base.light);
+    expect(withGradientAlpha(BASE_LIGHT, 100)).toBe(BASE_LIGHT);
+    expect(withGradientAlpha(BASE_LIGHT, 250)).toBe(BASE_LIGHT);
   });
 
   test("every oklch stop gains an alpha", () => {
@@ -468,10 +472,10 @@ describe("withGradientAlpha", () => {
   });
 
   /** The whole point of doing this as string surgery: the result is still a
-   *  value the store will accept — for every preset, both halves, every fade. */
+   *  value the store will accept — for every starter, both halves, every fade. */
   test("the result still passes the store's gates", () => {
-    for (const preset of BACKDROP_PRESETS) {
-      for (const half of [preset.light, preset.dark]) {
+    for (const starter of GRADIENT_STARTERS) {
+      for (const half of [composeGradient(starter.light), composeGradient(starter.dark)]) {
         for (const opacity of [10, 25, 50, 75, 99]) {
           const faded = withGradientAlpha(half, opacity);
           expect(isGradientValue(faded)).toBe(true);

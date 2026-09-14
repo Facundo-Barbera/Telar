@@ -123,8 +123,8 @@ export function compileComposition(composition: Composition): string {
  * falls through to that state's own base colour where a list is absent.
  */
 export function composeComposition(composition: Composition, images: Record<string, string>): BackdropCss | null {
-  const light = composeState(composition.light.layers, images, "light");
-  const dark = composeState(composition.dark.layers, images, "dark");
+  const light = composeState(composition.light.layers, images);
+  const dark = composeState(composition.dark.layers, images);
   if (!light && !dark) return null;
   return {
     light: light?.image ?? "none",

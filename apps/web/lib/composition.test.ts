@@ -31,7 +31,7 @@ import {
   writeDerived,
 } from "./composition";
 import { BACKDROP_CSS_KEY, notifyBackdropCss, parseBackdropCss, subscribeBackdropCss } from "./backdrop";
-import { BACKDROP_PRESETS } from "./backdrop-presets";
+import { composeGradient, GRADIENT_STARTERS } from "./gradient-starters";
 import { splitTopLevel } from "./scene-composer";
 
 beforeAll(() => {
@@ -42,7 +42,10 @@ afterAll(async () => {
 });
 
 const PIXEL = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
-const preset = BACKDROP_PRESETS[0]!;
+const starter = GRADIENT_STARTERS[0]!;
+/** What a stack holding that starter paints, per state — a gradient layer
+ *  carries its own stops now, so there is no id to resolve at paint time. */
+const preset = { id: starter.id, light: composeGradient(starter.light), dark: composeGradient(starter.dark) };
 
 function composition(overrides: Partial<Composition> = {}): Composition {
   return { ...structuredClone(DEFAULT_COMPOSITION), ...overrides };
@@ -100,7 +103,7 @@ describe("composeComposition", () => {
     const value = composeComposition(
       {
         light: { base: "#f8f8f9", layers: [{ type: "image", id: "a", x: 10, y: 20, scale: 40, opacity: 100, tiled: false }], overrides: {} },
-        dark: { base: "#252525", layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }], overrides: {} },
+        dark: { base: "#252525", layers: [{ type: "gradient", spec: starter.dark, opacity: 100 }], overrides: {} },
       },
       { a: PIXEL },
     );
@@ -113,18 +116,18 @@ describe("composeComposition", () => {
   /** A state with nothing over its base contributes an empty list rather than
    *  failing the pair — and no lists at all, so the CSS falls through. */
   test("one state may carry a scene while the other is bare", () => {
-    const value = composeComposition(patchState(composition(), "light", { layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }] }), {});
+    const value = composeComposition(patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 100 }] }), {});
     expect(value?.light).toBe(preset.light);
     expect(value?.dark).toBe("none");
     expect(value?.sizeDark).toBeUndefined();
   });
 
   test("every list has one entry per background-image entry, in both states", () => {
-    for (const entry of BACKDROP_PRESETS) {
+    for (const entry of GRADIENT_STARTERS) {
       const value = composeComposition(
         {
-          light: { base: "#f8f8f9", layers: [{ type: "image", id: "a", x: 0, y: 0, scale: 50, opacity: 100, tiled: false }, { type: "gradient", presetId: entry.id, opacity: 70 }], overrides: {} },
-          dark: { base: "#252525", layers: [{ type: "gradient", presetId: entry.id, opacity: 100 }], overrides: {} },
+          light: { base: "#f8f8f9", layers: [{ type: "image", id: "a", x: 0, y: 0, scale: 50, opacity: 100, tiled: false }, { type: "gradient", spec: entry.light, opacity: 70 }], overrides: {} },
+          dark: { base: "#252525", layers: [{ type: "gradient", spec: entry.dark, opacity: 100 }], overrides: {} },
         },
         { a: PIXEL },
       );
@@ -161,7 +164,7 @@ describe("editing a composition", () => {
   /** The layers copy across; the BASE does not — it is the one thing the two
    *  states are never the same about. */
   test("copying layers across leaves the other base alone", () => {
-    const light = patchState(composition(), "light", { layers: [{ type: "gradient", presetId: preset.id, opacity: 60 }] });
+    const light = patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 60 }] });
     const copied = copyLayersAcross(light, "light");
     expect(copied.dark.layers).toEqual(light.light.layers);
     expect(copied.dark.base).toBe(DEFAULT_COMPOSITION.dark.base);
@@ -204,7 +207,7 @@ describe("the store", () => {
    *  never disagree with the composition they cache. */
   test("both pre-paint caches are written by the same call", () => {
     const value = patchState(patchState(composition(), "light", { base: "#4999b6" }), "light", {
-      layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }],
+      layers: [{ type: "gradient", spec: starter.light, opacity: 100 }],
     });
     writeComposition(value, {});
     expect(window.localStorage.getItem(THEME_CSS_KEY)).toBe(compileComposition(value));
@@ -212,7 +215,7 @@ describe("the store", () => {
   });
 
   test("a composition with no layers clears the backdrop cache rather than storing an empty one", () => {
-    writeComposition(patchState(composition(), "light", { layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }] }), {});
+    writeComposition(patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 100 }] }), {});
     expect(window.localStorage.getItem(BACKDROP_CSS_KEY)).not.toBeNull();
     writeComposition(DEFAULT_COMPOSITION, {});
     expect(window.localStorage.getItem(BACKDROP_CSS_KEY)).toBeNull();
@@ -231,7 +234,7 @@ describe("the store", () => {
    * is queued.
    */
   test("writing the derived caches quietly stores them without notifying", () => {
-    const value = patchState(composition(), "light", { layers: [{ type: "gradient", presetId: preset.id, opacity: 100 }] });
+    const value = patchState(composition(), "light", { layers: [{ type: "gradient", spec: starter.light, opacity: 100 }] });
     let told = 0;
     const stop = subscribeBackdropCss(() => (told += 1));
     writeDerived(value, {}, true);

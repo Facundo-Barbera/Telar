@@ -16,11 +16,11 @@
  * ordinary swatches, so the colour you see in the composer's base control is the
  * colour the app takes.
  *
- * THEY ARE NOT STORED. Built here from the same gradient presets the composer
- * offers, so they cost no quota, cannot be deleted into a state where the
- * gallery is bare, and stay in step with the presets they name. Wearing one
- * copies its composition into the live store; SAVING mints a card of your own,
- * which is the moment a default stops being a default.
+ * THEY ARE NOT STORED. Built here from the same gradient starters the composer
+ * offers as chips, so they cost no quota, cannot be deleted into a state where
+ * the gallery is bare, and stay in step with the starters they name. Wearing
+ * one copies its composition into the live store; SAVING mints a card of your
+ * own, which is the moment a default stops being a default.
  */
 
 import {
@@ -34,14 +34,14 @@ import {
   type SceneLayer,
 } from "@telar/engine-client";
 import { DEFAULT_APPEARANCE } from "./appearance";
-import { backdropPresetById } from "./backdrop-presets";
+import { gradientStarterById } from "./gradient-starters";
 
 export const BUILT_IN_PREFIX = "built-in-";
 
 /**
- * One default: a base per state, optionally one gradient preset over both, and
- * the accent that agrees with them. Nothing else varies — a default is a
- * starting point, not a demonstration of every control.
+ * One default: a base per state, optionally one gradient over both, and the
+ * accent that agrees with them. Nothing else varies — a default is a starting
+ * point, not a demonstration of every control.
  */
 type Recipe = {
   id: string;
@@ -50,7 +50,10 @@ type Recipe = {
   note: string;
   light: string;
   dark: string;
-  preset?: string;
+  /** A gradient STARTER's id, resolved to its two specs at build time. The
+   *  built-ins name one rather than carrying stops of their own so that the
+   *  chip a reader picks and the gradient a default wears stay the same thing. */
+  starter?: string;
   accent: Accent;
 };
 
@@ -65,11 +68,11 @@ const RECIPES: readonly Recipe[] = [
   { id: "grove", label: "Grove", note: "Green, flat", light: "#49b668", dark: "#49b677", accent: "moss" },
   { id: "tide", label: "Tide", note: "Cool blue, flat", light: "#4999b6", dark: "#24a1db", accent: "sky" },
   { id: "iris", label: "Iris", note: "Violet, flat", light: "#7749b6", dark: "#6f37c8", accent: "violet" },
-  { id: "dusk", label: "Dusk", note: "Tide, under a dusk gradient", light: "#4999b6", dark: "#24a1db", preset: "dusk", accent: "violet" },
-  { id: "deep-sea", label: "Deep Sea", note: "Tide, under deep water", light: "#4999b6", dark: "#24a1db", preset: "deep-sea", accent: "sea" },
-  { id: "meadow", label: "Meadow", note: "Grove, under a meadow", light: "#49b668", dark: "#49b677", preset: "meadow", accent: "moss" },
-  { id: "orchid", label: "Orchid", note: "Iris, under an orchid wash", light: "#7749b6", dark: "#6f37c8", preset: "orchid", accent: "plum" },
-  { id: "emberglow", label: "Emberglow", note: "Ember, under a burning sky", light: "#c88337", dark: "#b67649", preset: "ember", accent: "amber" },
+  { id: "dusk", label: "Dusk", note: "Tide, under a dusk gradient", light: "#4999b6", dark: "#24a1db", starter: "dusk", accent: "violet" },
+  { id: "deep-sea", label: "Deep Sea", note: "Tide, under deep water", light: "#4999b6", dark: "#24a1db", starter: "deep-sea", accent: "sea" },
+  { id: "meadow", label: "Meadow", note: "Grove, under a meadow", light: "#49b668", dark: "#49b677", starter: "meadow", accent: "moss" },
+  { id: "orchid", label: "Orchid", note: "Iris, under an orchid wash", light: "#7749b6", dark: "#6f37c8", starter: "orchid", accent: "plum" },
+  { id: "emberglow", label: "Emberglow", note: "Ember, under a burning sky", light: "#c88337", dark: "#b67649", starter: "ember", accent: "amber" },
 ];
 
 /** What a recipe's note says, so the gallery does not have to rebuild it. */
@@ -78,18 +81,20 @@ export const BUILT_IN_NOTES: Readonly<Record<string, string>> = Object.fromEntri
 );
 
 function build(recipe: Recipe): Look | undefined {
-  // A recipe naming a preset this build dropped is skipped rather than shipped
+  // A recipe naming a starter this build dropped is skipped rather than shipped
   // with a layer that composes to nothing.
-  if (recipe.preset !== undefined && !backdropPresetById(recipe.preset)) return undefined;
-  const layers: SceneLayer[] = recipe.preset
-    ? [{ type: "gradient", presetId: recipe.preset, opacity: SCENE_LIMITS.opacity.max }]
-    : [];
-  // BOTH STATES CARRY THE SAME STACK. A gradient preset already has a light and
-  // a dark half of its own (the compiler takes the one the state needs), so
-  // giving the two states different stacks here would be inventing a difference
-  // the preset already expresses.
-  const state = (base: string): CompositionState => ({ base, layers: layers.map((layer) => ({ ...layer })), overrides: {} });
-  const composition: Composition = { light: state(recipe.light), dark: state(recipe.dark) };
+  const starter = recipe.starter === undefined ? undefined : gradientStarterById(recipe.starter);
+  if (recipe.starter !== undefined && !starter) return undefined;
+  // THE TWO STATES CARRY DIFFERENT STOPS NOW (#471). A gradient layer used to
+  // name a preset and the compiler took the half the state needed; a layer
+  // carries its own stops, so the difference the starter expresses has to be
+  // written into each state's stack here rather than resolved at paint time.
+  const state = (base: string, mode: "light" | "dark"): CompositionState => ({
+    base,
+    layers: starter ? [{ type: "gradient", spec: starter[mode], opacity: SCENE_LIMITS.opacity.max } satisfies SceneLayer] : [],
+    overrides: {},
+  });
+  const composition: Composition = { light: state(recipe.light, "light"), dark: state(recipe.dark, "dark") };
   return {
     version: 2,
     id: `${BUILT_IN_PREFIX}${recipe.id}`,

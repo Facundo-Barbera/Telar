@@ -35,7 +35,7 @@ function Half({
   className?: string;
 }) {
   const half = useMemo(() => compositionHalf(look.composition, mode), [look.composition, mode]);
-  const scene = useMemo(() => composeState(look.composition[mode].layers, look.images, mode), [look.composition, look.images, mode]);
+  const scene = useMemo(() => composeState(look.composition[mode].layers, look.images), [look.composition, look.images, mode]);
   return (
     <span className={cn("absolute inset-y-0 overflow-hidden", className)} style={{ background: half.background }}>
       {scene && (

@@ -15,9 +15,9 @@
  * IT EDITS ONE STATE, AND THE PANE'S LIGHT/DARK SWITCH SAYS WHICH. The two
  * states have genuinely separate stacks — that is what a composition is — so
  * there is no pair to keep in step here and no second half picker. A gradient
- * PRESET still carries its own two halves, and the compiler takes the one this
- * state needs; a custom gradient carries one resolved value, which is exactly
- * why it stopped being a backdrop kind with two halves and became a layer.
+ * layer carries the stops it was built from (#471), which belong to this state
+ * and no other; `mode` survives only so a starter chip fills from the half that
+ * suits the state you are looking at.
  *
  * NOTHING IS HELD LOCALLY BUT THE EXPENSIVE ONE. Every edit writes the
  * composition, which repaints the window — there is no draft and nothing to
@@ -33,14 +33,13 @@
  */
 
 import { useCallback, useRef, useState } from "react";
-import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, PaintbrushIcon, PencilIcon, PlusIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, PaintbrushIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { backdropPresetById, BACKDROP_PRESETS, composeGradient, parseGradient, DEFAULT_CUSTOM_GRADIENT } from "@/lib/backdrop-presets";
+import { composeGradient, DEFAULT_GRADIENT_SPECS } from "@/lib/gradient-starters";
 import type { CompositionMode } from "@/lib/composition";
 import { ImageBackdropError } from "@/lib/image-backdrop";
 import {
-  addSceneCustomGradientLayer,
   addSceneGradientLayer,
   addSceneLayer,
   bakeLayerOpacity,
@@ -54,12 +53,11 @@ import {
   prepareSceneImage,
   removeSceneLayerAt,
   SCENE_LIMITS,
-  setCustomGradientCss,
-  setGradientPreset,
+  setGradientSpec,
   updateSceneLayerAt,
   type SceneLayerPatch,
 } from "@/lib/scene-composer";
-import type { SceneCustomGradientLayer, SceneGradientLayer, SceneImageLayer, SceneLayer } from "@telar/engine-client";
+import type { SceneGradientLayer, SceneImageLayer, SceneLayer } from "@telar/engine-client";
 import { GradientStops } from "./gradient-stops";
 
 function messageFor(error: unknown): string {
@@ -124,34 +122,6 @@ function GradientSwatch({ css }: { css: string | undefined }) {
   );
 }
 
-/** The preset chooser. No None tile: adding a layer of nothing is what NOT
- *  adding a layer already is, and "nothing under the stack" is the base
- *  colour's job now. */
-function PresetGrid({ value, mode, onPick }: { value: string | null; mode: CompositionMode; onPick: (presetId: string) => void }) {
-  return (
-    <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6">
-      {BACKDROP_PRESETS.map((preset) => (
-        <button
-          key={preset.id}
-          type="button"
-          title={preset.label}
-          aria-pressed={value === preset.id}
-          onClick={() => onPick(preset.id)}
-          className={cn(
-            "flex flex-col gap-1 rounded-lg p-1 text-left ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
-            value === preset.id && "ring-2 ring-primary",
-          )}
-        >
-          <span className="block aspect-video w-full">
-            <GradientSwatch css={preset[mode]} />
-          </span>
-          <span className="truncate px-0.5 text-3xs font-medium">{preset.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /** Reorder and remove, identical for every kind of row — position in the
  *  stack is the one thing every layer has. */
 function StackControls({ index, count, onMove, onRemove }: { index: number; count: number; onMove: (delta: number) => void; onRemove: () => void }) {
@@ -172,10 +142,11 @@ function StackControls({ index, count, onMove, onRemove }: { index: number; coun
 
 /** A gradient row is an image row with everything that needs pixels taken
  *  out: it is full-bleed by definition, so there is no X, Y, size or tile —
- *  only how much of it you want to see. */
+ *  only how much of it you want to see. The name says what the gradient IS
+ *  (#471) rather than which preset it came from, because it no longer came
+ *  from one: its stops are its own. */
 function GradientCard({
   layer,
-  mode,
   index,
   count,
   onPatch,
@@ -184,33 +155,34 @@ function GradientCard({
   onOpen,
   open,
 }: {
-  layer: SceneGradientLayer | SceneCustomGradientLayer;
-  mode: CompositionMode;
+  layer: SceneGradientLayer;
   index: number;
   count: number;
   onPatch: (patch: SceneLayerPatch) => void;
   onMove: (delta: number) => void;
   onRemove: () => void;
-  /** Open the editor this kind of gradient has — a preset grid, or the stops. */
   onOpen: () => void;
   open: boolean;
 }) {
-  const custom = layer.type === "custom-gradient";
-  const css = custom ? layer.css : backdropPresetById(layer.presetId)?.[mode];
-  const name = custom ? "Your gradient" : (backdropPresetById(layer.presetId)?.label ?? "Gradient");
+  const stops = layer.spec.stops.length;
   return (
     <div className="flex gap-3 rounded-lg border border-border p-2.5">
       <span className="block size-14 shrink-0 self-start">
-        <GradientSwatch css={css} />
+        <GradientSwatch css={composeGradient(layer.spec)} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
-        <span className="truncate text-2xs font-medium">{name}</span>
+        <span className="truncate text-2xs font-medium">
+          {layer.spec.type === "radial" ? "Radial" : "Linear"} gradient
+          <span className="ml-1.5 font-normal text-muted-foreground">
+            {stops} stops{layer.spec.type === "linear" ? ` · ${layer.spec.angle}°` : ""}
+          </span>
+        </span>
         <LayerSlider label="Fade" value={layer.opacity} min={SCENE_LIMITS.opacity.min} max={SCENE_LIMITS.opacity.max} suffix="%" onChange={(opacity) => onPatch({ opacity })} />
         <span className="text-3xs text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <StackControls index={index} count={count} onMove={onMove} onRemove={onRemove} />
-        <Button size="sm" variant={open ? "secondary" : "ghost"} aria-expanded={open} className="text-2xs" title={custom ? "Edit the stops" : "Choose another gradient"} onClick={onOpen}>
+        <Button size="sm" variant={open ? "secondary" : "ghost"} aria-expanded={open} className="text-2xs" title="Edit the stops" onClick={onOpen}>
           <PencilIcon /> Edit
         </Button>
       </div>
@@ -283,9 +255,10 @@ function LayerCard({
   );
 }
 
-/** Which editor is open under the toolbar, or under a row. `add` is the
- *  gradient grid for a NEW layer; a number is the row that opened one. */
-type OpenEditor = { kind: "add" } | { kind: "row"; index: number } | null;
+/** Which row has its stop editor open, if any. There is no longer an "adding"
+ *  state: adding a gradient IS adding a layer and opening its editor, because
+ *  there is nothing to choose between first. */
+type OpenEditor = { kind: "row"; index: number } | null;
 
 export function LayerStack({
   layers,
@@ -387,30 +360,30 @@ export function LayerStack({
           <span className="text-muted-foreground/60 tabular-nums">{count}</span>
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            size="sm"
-            variant={open?.kind === "add" ? "secondary" : "outline"}
-            aria-expanded={open?.kind === "add"}
-            title={`Up to ${MAX_SCENE_GRADIENT_LAYERS} gradients — ${gradientCount} used`}
-            disabled={busy || gradientCount >= MAX_SCENE_GRADIENT_LAYERS}
-            onClick={() => setOpen((current) => (current?.kind === "add" ? null : { kind: "add" }))}
-          >
-            <PaintbrushIcon /> Gradient
-          </Button>
+          {/* ONE BUTTON, NOT TWO (#471). There used to be "Gradient" (open a
+              grid of eleven, pick one) beside "Custom" (build your own) —
+              which asked a reader to decide, before they had seen anything,
+              whether they were the sort of person who edits gradients. Adding
+              one now adds a layer and opens its stops; the presets are chips
+              inside that editor. */}
           <Button
             size="sm"
             variant="outline"
-            title="Build a gradient of your own"
+            title={`Up to ${MAX_SCENE_GRADIENT_LAYERS} gradients — ${gradientCount} used`}
             disabled={busy || gradientCount >= MAX_SCENE_GRADIENT_LAYERS}
             onClick={() => {
-              const css = composeGradient(DEFAULT_CUSTOM_GRADIENT[mode]);
-              const next = addSceneCustomGradientLayer(scene, css);
-              if (next.layers.length === count) return;
+              const next = addSceneGradientLayer(scene, DEFAULT_GRADIENT_SPECS[mode]);
+              if (next.layers.length === count) {
+                setError(`A state holds ${MAX_SCENE_GRADIENT_LAYERS} gradients — remove one to add another.`);
+                return;
+              }
               write(next.layers);
+              // It landed on top, so its row is index 0 — and it opens, because
+              // a gradient nobody has authored yet is the default one.
               setOpen({ kind: "row", index: 0 });
             }}
           >
-            <PlusIcon /> Custom
+            <PaintbrushIcon /> Gradient
           </Button>
           <Button
             size="sm"
@@ -424,20 +397,6 @@ export function LayerStack({
         </div>
       </div>
       {(error || busy) && <p className={cn("pt-2 text-xs", error ? "text-warning" : "text-muted-foreground")}>{error || "Working…"}</p>}
-      {open?.kind === "add" && (
-        <div className="pb-1">
-          <PresetGrid
-            value={null}
-            mode={mode}
-            onPick={(presetId) => {
-              setOpen(null);
-              const next = addSceneGradientLayer(scene, presetId);
-              if (next.layers.length === count) setError(`A state holds ${MAX_SCENE_GRADIENT_LAYERS} gradients — remove one to add another.`);
-              else write(next.layers);
-            }}
-          />
-        </div>
-      )}
       <div className="flex flex-col gap-2 p-3">
         <input
           ref={fileInput}
@@ -480,13 +439,10 @@ export function LayerStack({
             );
           }
           return (
-            // Gradient layers have no id, so position is the key — and what it
-            // names is in it so swapping one re-mounts rather than animating a
-            // slider from someone else's value.
-            <div key={`gradient-${index}-${layer.type === "gradient" ? layer.presetId : "custom"}`} className="flex flex-col gap-1.5">
+            // Gradient layers have no id, so position is the key.
+            <div key={`gradient-${index}`} className="flex flex-col gap-1.5">
               <GradientCard
                 layer={layer}
-                mode={mode}
                 {...controls}
                 open={rowOpen}
                 onOpen={() => setOpen(rowOpen ? null : { kind: "row", index })}
@@ -496,13 +452,11 @@ export function LayerStack({
                   write(removeSceneLayerAt(scene, index).layers);
                 }}
               />
-              {rowOpen && layer.type === "gradient" && (
-                <PresetGrid value={layer.presetId} mode={mode} onPick={(presetId) => write(setGradientPreset(scene, index, presetId).layers)} />
-              )}
-              {rowOpen && layer.type === "custom-gradient" && (
+              {rowOpen && (
                 <GradientStops
-                  spec={parseGradient(layer.css) ?? DEFAULT_CUSTOM_GRADIENT[mode]}
-                  onChange={(spec) => write(setCustomGradientCss(scene, index, composeGradient(spec)).layers)}
+                  spec={layer.spec}
+                  mode={mode}
+                  onChange={(spec) => write(setGradientSpec(scene, index, spec).layers)}
                   onClose={() => setOpen(null)}
                 />
               )}
