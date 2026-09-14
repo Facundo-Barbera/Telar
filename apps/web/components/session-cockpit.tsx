@@ -678,27 +678,23 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-/** Passive deliveries have no model response. Actual work and its completion
- * stay visible, regardless of who initiated it. */
-export function SessionTurn(props: Parameters<typeof SessionTurnBody>[0]) {
-  const [open, setOpen] = useState(false);
-  const { turn } = props;
-  const hasHumanMessage = turn.items.some((item) => item.detail.type === "user_message" && !item.detail.sender && !item.detail.wakeReason);
-  if (turn.origin !== "session" || turn.agentDelivery !== "passive" || hasHumanMessage || props.requests.length > 0) return <SessionTurnBody {...props} />;
-  const source = turn.sender?.sessionId ?? turn.wakeReason?.sessionId;
-  return (
-    <div className="mx-auto w-full min-w-0 max-w-[50rem]" aria-label="Session coordination">
-      <button type="button" className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="shrink-0">Session activity</span>
-        {source && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${source.slice(-6)}`}</span>}
-        <span className="text-muted-foreground">{turn.agentDelivery === "passive" ? "report received" : props.live ? "working" : describeTurnState(turn.state).label.toLowerCase()}</span>
-        <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-      </button>
-      {open && <div className="pt-2"><SessionTurnBody {...props} /></div>}
-    </div>
-  );
-}
+/**
+ * ONE FOLD PER PASSIVE REPORT (#239).
+ *
+ * A routine peer report used to be wrapped in a SECOND disclosure here — a
+ * "Session activity · report received" row whose only child was the turn body,
+ * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
+ * peer's message to its notice. A passive turn never runs (the engine completes
+ * it on arrival with no items and no result — see `state.ts`, `passive`), so
+ * that wrapper added nothing but a second chevron: the reader had to open two
+ * folds, one nested inside the other, to reach one report.
+ *
+ * The bubble is the fold, and it is the SAME one a peer's message gets when it
+ * lands mid-turn as a steered row — which is the point. A report should not look
+ * like a different kind of thing for having arrived between turns rather than
+ * during one.
+ */
+export { SessionTurnBody as SessionTurn };
 
 function SessionTurnBody({
   turn,
@@ -3103,7 +3099,7 @@ export function SessionCockpit({
                  mistaken for having seen the answer above it, and vice versa.
                  See components/session/read-receipt.tsx. */
               <Fragment key={turn.runId}>
-              <SessionTurn
+              <SessionTurnBody
                 key={turn.runId}
                 turn={turn}
                 roster={roster}

@@ -9,12 +9,37 @@ import type { JournalTurn } from "@/lib/engine/journal";
 const machine: JournalTurn = { runId: "run_peer", origin: "session", sender: { sessionId: "session_worker" }, prompt: "Internal checkpoint", state: "completed", resultText: "Internal acknowledgement", items: [], tasks: [] };
 const render = (turn: JournalTurn) => renderToStaticMarkup(<SessionTurn turn={turn} requests={[]} sending={false} live={false} now={1} onDecide={() => {}} onRetry={() => {}} />);
 
+/** Every disclosure a turn draws, counted — the claim in #239 is about HOW MANY
+ *  there are, which no `toContain` can state. */
+const folds = (html: string) => html.split('aria-expanded="false"').length - 1;
+
 test("a passive report keeps its payload out of the default chat view", () => {
   const html = render({ ...machine, agentDelivery: "passive", resultText: "" });
   expect(html).toContain('aria-expanded="false"');
-  expect(html).toContain("Session activity");
+  expect(html).toContain("Agent message");
   expect(html).not.toContain("Internal checkpoint");
   expect(html).not.toContain("Internal acknowledgement");
+});
+
+test("a passive report is ONE fold, not a fold inside a fold", () => {
+  // #239: the report was wrapped in a "Session activity" disclosure whose only
+  // child was the `AgentMessageBubble` — itself already a disclosure over the
+  // same message. Two chevrons, one report, and two taps to read it.
+  const html = render({ ...machine, agentDelivery: "passive", agentNotice: NOTICE, prompt: "Capacity report\n\nbody nobody needs up front", resultText: "" });
+  expect(folds(html)).toBe(1);
+  expect(html).not.toContain("Session activity");
+  // The one fold left is the peer-message row, labelled by the notice.
+  expect(html).toContain("run run_peer, 2,400 chars");
+  expect(html).not.toContain("body nobody needs up front");
+});
+
+test("a passive report and its mid-turn twin draw the same single row", () => {
+  // A report is not a different KIND of thing for having arrived between turns
+  // rather than during one, so neither shape may grow a fold the other lacks.
+  const between = render({ ...machine, agentDelivery: "passive", agentNotice: NOTICE, prompt: "Capacity report", resultText: "" });
+  const during = renderToStaticMarkup(<AgentMessageBubble text="Capacity report" notice={NOTICE} sender={{ sessionId: "session_worker" }} />);
+  expect(folds(between)).toBe(folds(during));
+  expect(between).toContain('aria-label="Message from another agent"');
 });
 
 test("legacy agent assignments retain visible completion messages", () => {
