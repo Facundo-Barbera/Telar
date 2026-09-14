@@ -8,8 +8,8 @@ export type CardTone = "default" | "warning"
 /**
  * THE CARD SHAPE, IN ONE PLACE — radius, fill and hairline, nothing else.
  *
- * Telar drew four cards at three radii: this primitive (2 importers), the
- * approval card, the Spool's tally strip and a sidebar row. Three of them were
+ * Telar drew four cards at three radii: this primitive, the approval card, a
+ * tally strip (since decommissioned) and a sidebar row. Three of them were
  * hand-rolled restatements of the same box, which is how they came to disagree
  * about how round a card is. `rounded-xl` is 14px here (--radius-xl, i.e.
  * --radius × 1.4) and it is also iOS `Theme.radiusCard` — practice on both

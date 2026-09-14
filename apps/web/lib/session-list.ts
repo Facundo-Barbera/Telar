@@ -81,8 +81,8 @@ export type SidebarSession = {
   /**
    * OPTIONAL, and the rail never receives one without it today.
    *
-   * A session with no project is the Spool's master chat, and the sidebar is a
-   * PROJECT-SCOPED list — the engine's project reads exclude it by construction,
+   * The sidebar is a PROJECT-SCOPED list and a session with no project is not a
+   * row in it — the engine's project reads exclude it by construction,
    * so it never reaches this shape. The field is optional anyway because the
    * engine's `Session.projectId` is, and a type that disagreed with the protocol
    * would push a cast into whichever caller met one first.
@@ -525,11 +525,11 @@ export function deriveSessionList({
 /** The route a session's own row links to — spelled once so every caller
  *  resolves to the exact same URL a click on the row would. */
 export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "hostId">): string {
-  // A SESSION WITH NO PROJECT IS THE SPOOL'S MASTER CHAT, and its address is the
-  // Spool itself — there is no `/projects/<id>/...` URL to build for it, and
+  // A SESSION WITH NO PROJECT HAS NO PROJECT-SCOPED ADDRESS, so it gets the
+  // front door: there is no `/projects/<id>/...` URL to build for it, and
   // composing one with `undefined` in the path would 404 in a way that looks
-  // like a routing bug rather than a session that lives somewhere else.
-  if (!session.projectId) return "/spool";
+  // like a routing bug rather than a session that lives nowhere in this list.
+  if (!session.projectId) return "/";
   return `${hostPrefix(session.hostId)}/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 

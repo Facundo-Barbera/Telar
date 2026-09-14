@@ -45,20 +45,15 @@
 // while you scroll past it is a third behaviour nobody asked for.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
-// Overview, Projects, Looms, Workspace. Three never arrived, and a
-// glyph that navigates nowhere is worse than a header without one. The Unread
-// chip is gone because `readAt` is unmodelled, and a chip with an unbackable
-// count is a lie with a number on it.
+// Overview, Projects, Looms, Workspace. None of the four arrived, and a glyph
+// that navigates nowhere is worse than a header without one. The Unread chip is
+// gone because `readAt` is unmodelled, and a chip with an unbackable count is a
+// lie with a number on it.
 //
-// THE FOURTH ARRIVED, AND THEN MOVED AGAIN. The donor's Workspace is this
-// app's Spool. It first got a footer button beside Settings, because it read
-// as a place rather than a filter over the list — but a place lived beside
-// the wordmark all along without anyone naming it: "telar" WAS a place, the
-// one this rail already showed. `docs/spool-loops.md` §11 names the two
-// places and turns the wordmark into the switcher between them (see
-// `PlaceSwitcher`), so the footer button retires — the switcher is chrome,
-// not routing, and it occupies the switcher's OWN slot rather than adding a
-// second door beside the one it replaces.
+// SESSIONS ARE THE ONLY PLACE THIS RAIL SHOWS, so the wordmark is a wordmark
+// rather than a switcher between places. Two other places did exist and were
+// decommissioned (#501); nothing replaced them here, because the list this rail
+// already drew was what people opened Telar for.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -73,7 +68,6 @@ import {
   XIcon,
 } from "lucide-react";
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
-import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
@@ -180,7 +174,7 @@ const APP_SIDEBAR_RESIZABLE = {
 /**
  * ⌘B ON THE COLLAPSE TRIGGER while ⌘ is held — issue #401. The hint sits beside
  * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
- * the Spool's rail and the panel, and only THIS one is what `toggle-rail` binds.
+ * the panel, and only THIS one is what `toggle-rail` binds.
  */
 function TelarSidebarHeader() {
   return (
@@ -193,8 +187,8 @@ function TelarSidebarHeader() {
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         <KeyHint command="toggle-rail" />
-        {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
-            their routes and data but are not offered from the main rail. */}
+        {/* A WORDMARK, NOT A SWITCHER. Sessions are the product and the only
+            place this rail shows, so there is nothing to switch between. */}
         <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
       </div>
     </SidebarHeader>
@@ -247,8 +241,8 @@ function SidebarEmpty({
  * "Pinned" named a state the rows can wear themselves. Both went; what is left
  * here is a control, so it is unconditionally a <button>.
  *
- * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
- * the two rails' grammar. `CAPTION` (10px, semibold, uppercase,
+ * THE LABEL'S SCALE IS THE SHARED SECTION CAPTION — the web pass that gave
+ * every rail one grammar. `CAPTION` (10px, semibold, uppercase,
  * tracking-wider) now lives in `lib/idiom.ts` and this label reads it from
  * there; it used to sit at 11px, regular weight, sentence case — a difference
  * between two "small grey word beside a rule" treatments with no reason
@@ -362,10 +356,6 @@ type HostPage = {
 
 function SidebarBody() {
   const pathname = usePathname();
-  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
-  // Telar's own session list everywhere else. The header above it (trigger,
-  // switcher) is common to both; only what is below it changes.
-  const inSpool = pathname.startsWith("/spool");
   const router = useRouter();
   // `open` is here for the palette's Quick settings row, which reports which
   // way Toggle Rail would go — the rail is what knows, so the rail says.
@@ -665,10 +655,9 @@ function SidebarBody() {
     // and the hint says what happened without naming it.
     const titles = new Map(result.sessions.map((session) => [session.id, session.title]));
     const sessions = result.sessions.map((session) =>
-      // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
-      // project-scoped list and the Spool's master chat is a destination, not a
-      // conversation in it — the aggregate route already excludes it, and this
-      // keeps that true if one ever arrives by another path.
+      // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a project-scoped
+      // list — the aggregate route already excludes one, and this keeps that
+      // true if one ever arrives by another path.
       toSidebarSession(
         session,
         session.projectId ? names.get(session.projectId) : undefined,
@@ -1353,21 +1342,10 @@ function SidebarBody() {
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}
       <SidebarContent>
-        {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
-            §11's warehouse nav is what the rail shows on `/spool` — search,
-            apertures, the Areas tree, lanes, tags — instead of the sessions
-            list, which is Telar's own inbox and has no meaning inside the
-            Spool's place. The header (trigger, switcher) stays common. */}
-        {inSpool ? (
-          <SpoolWarehouseNav />
-        ) : (
-        <>
-        {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
-            `sidebar-search-field.tsx`. This inset (px-2, matching the p-2
-            every `SidebarGroup` below already carries) used to be px-3, one
-            step wider than everything under it for no reason beyond the two
-            areas having been built separately; the web pass that shared the
-            search chrome brought the inset in line too. */}
+        {/* THE SEARCH FIELD'S INSET IS px-2, matching the p-2 every
+            `SidebarGroup` below already carries. It used to be px-3, one step
+            wider than everything under it for no reason beyond this rail and
+            the one that shared its chrome having been built separately. */}
         <div className="px-2 pb-2 pt-3">
           <div className="flex items-center gap-1.5">
             <SidebarSearchField
@@ -1901,8 +1879,6 @@ function SidebarBody() {
             />
           </>
         )}
-        </>
-        )}
       </SidebarContent>
 
       <SidebarFooter>
@@ -1914,13 +1890,6 @@ function SidebarBody() {
     </>
   );
 }
-
-// `SpoolButton` RETIRED — §11. It lived here, in the footer beside Settings,
-// because the Spool read as a place rather than a filter over the list. It
-// still is one; the place just moved into `PlaceSwitcher`, at the top of the
-// rail, where "telar" already was. See that component's docblock for why
-// the switcher is where this button's job — and its "no count on it" law —
-// went.
 
 // `UsageButton` / `SettingsButton` moved into app-sidebar-footer.tsx as icon
 // buttons (the words live on in tooltips and aria-labels), joined on the

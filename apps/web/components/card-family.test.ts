@@ -2,9 +2,10 @@
  * ONE CARD, ONE RADIUS, AND A TINT THAT IS NOT A FOURTH CARD.
  *
  * Telar shipped four card shapes at three radii: `ui/card.tsx`, the approval
- * card (`rounded-xl border-warning/40 bg-warning/5`), the Spool's tally strip
+ * card (`rounded-xl border-warning/40 bg-warning/5`), a tally strip
  * (`rounded-xl bg-card shadow-sm ring-1` — a letter-perfect restatement of
- * the primitive), and a sidebar row
+ * the primitive, since decommissioned with the surface that drew it), and a
+ * sidebar row
  * at `rounded-md`. Nothing was wrong on its own; together they were four
  * treatments of "a raised box with a hairline", differing only in having been
  * written on different days. Issue #250 item 10 settled it: one shape, at 14px,
@@ -29,7 +30,6 @@ import { cardSurface } from "@/components/ui/card";
 const globals = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 const cardPrimitive = readFileSync(new URL("./ui/card.tsx", import.meta.url), "utf8");
 const approval = readFileSync(new URL("./approval-card.tsx", import.meta.url), "utf8");
-const tray = readFileSync(new URL("./spool/tray.tsx", import.meta.url), "utf8");
 
 describe("the card shape", () => {
   test("a neutral card is the fill and the hairline, at the card radius", () => {
@@ -68,7 +68,7 @@ describe("the card radius is the ladder's, and the ladder agrees with iOS", () =
   });
 });
 
-describe("the two hand-rolled cards now reach for the shape", () => {
+describe("the hand-rolled card now reaches for the shape", () => {
   test("the approval card imports it and tints with it", () => {
     expect(approval).toContain('from "@/components/ui/card"');
     expect(approval).toContain('cardSurface("warning")');
@@ -77,14 +77,5 @@ describe("the two hand-rolled cards now reach for the shape", () => {
   test("the approval card keeps no private radius, fill or hairline", () => {
     expect(approval).not.toContain("border-warning/40");
     expect(approval).not.toContain("bg-warning/5 p-3");
-  });
-
-  test("the Spool's tally strip imports it and wears the neutral shape", () => {
-    expect(tray).toContain('from "@/components/ui/card"');
-    expect(tray).toContain("${cardSurface()}");
-  });
-
-  test("the tally strip keeps no private radius or hairline", () => {
-    expect(tray).not.toContain("rounded-xl bg-card p-3");
   });
 });

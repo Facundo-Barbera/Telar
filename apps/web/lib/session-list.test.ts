@@ -441,7 +441,7 @@ describe("canvasProjectFromPathname", () => {
     // row is somewhere else, and none of them is current.
     expect(canvasProjectFromPathname("/projects/project_a/sessions/s1")).toBeUndefined();
     expect(canvasProjectFromPathname("/projects/project_a/sessions/new/extra")).toBeUndefined();
-    expect(canvasProjectFromPathname("/spool")).toBeUndefined();
+    expect(canvasProjectFromPathname("/settings")).toBeUndefined();
     expect(canvasProjectFromPathname("/")).toBeUndefined();
   });
 

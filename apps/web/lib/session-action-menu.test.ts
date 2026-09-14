@@ -147,14 +147,14 @@ describe("getting to it: one href, three items", () => {
     ]);
   });
 
-  test("the Spool's master chat addresses the Spool, rather than a /projects/undefined link", () => {
+  test("a project-less session addresses the front door, rather than a /projects/undefined link", () => {
     const { calls, handlers } = spies();
     const items = build({ session: target({ projectId: undefined }) }, handlers);
     byId(items, "open").run!();
     byId(byId(items, "copy").children!, "copy-link").run!();
     expect(calls).toEqual([
-      ["open", "/spool"],
-      ["copyLink", "/spool"],
+      ["open", "/"],
+      ["copyLink", "/"],
     ]);
   });
 
@@ -376,7 +376,7 @@ describe("gating: disabled with a reason beats failing later", () => {
     const items = build({ session: target({ projectId: undefined }) });
     expect(byId(items, "new-session").disabled).toBe("This session belongs to no project.");
     expect(byId(items, "project-settings").disabled).toBe("This session belongs to no project.");
-    // It can still be opened: the Spool is a real address.
+    // It can still be opened: the front door is a real address.
     expect(byId(items, "open").disabled).toBeFalsy();
   });
 
