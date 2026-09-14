@@ -1,10 +1,29 @@
 "use client";
 
 import type { ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
-import { AppSidebar } from "./app-sidebar";
+
+/**
+ * THE RAIL IS A SEPARATE CHUNK, because this file is in the ROOT LAYOUT and the
+ * rail is the largest thing in the app (#492).
+ *
+ * A static import here put `app-sidebar.tsx` — and the command palette and the
+ * project palette it pulls in behind it — into the one bundle every route in the
+ * cockpit loads, INCLUDING the routes three lines below that decide not to draw
+ * it. Settings paid for a rail it renders `false` for; so did `/pair`, and the
+ * not-found page. That is the "even an empty page takes a long time" in #490,
+ * measured: `scripts/route-bytes.mjs` reads it off a build.
+ *
+ * SERVER RENDERING IS KEPT (no `ssr: false`). The rail is real chrome, not a
+ * widget behind a click: a settings route never asks for this chunk at all, and
+ * a cockpit route asks for it in the same payload that renders it, so the split
+ * costs that route nothing it can see. `ssr: false` would have bought a little
+ * more and paid for it with a frame of missing rail on every conversation.
+ */
+const AppSidebar = dynamic(() => import("./app-sidebar").then((mod) => mod.AppSidebar));
 
 /**
  * SETTINGS SCREENS CARRY NO APP RAIL. They bring a full-height side-nav of
