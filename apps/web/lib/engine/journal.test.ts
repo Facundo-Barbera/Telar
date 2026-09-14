@@ -358,6 +358,55 @@ describe("turn state", () => {
     expect(projected!.usage?.costUsd).toBe(0.01);
   });
 
+  /**
+   * #71: A WAKE-UP IS VISIBLE FROM THE MOMENT THE REQUEST GOES OUT, not from
+   * its first token.
+   *
+   * The cockpit draws its working indicator on ONE thing — the session's live
+   * turn (`isActiveTurn`, and the executing turn is what `session-cockpit`
+   * passes `live`) — so what the fold makes of the wake-up's opening triple IS
+   * whether anything appears on screen. A background task ending, the model
+   * generating, and a blank screen for the whole gap between them was read
+   * twice as "the task didn't wake you up".
+   *
+   * The engine now opens the turn on the provider's own `requesting`
+   * announcement (see the idle pump in apps/engine/src/driver.ts), so the
+   * triple arrives with NO items behind it — which is exactly the state
+   * asserted here: live, running, started, and nothing to show yet.
+   */
+  test("a wake-up with nothing on it yet is still a live turn (#71)", () => {
+    const woken: Turn = {
+      runId: "run_wake",
+      sessionId: "s1",
+      sequence: 2,
+      // Opened before the CLI echoed its injected notification, so there is no
+      // prompt to draw — the wake row names the task instead.
+      input: "",
+      origin: "provider",
+      providerReason: { kind: "task_notification", taskId: "task_bg" },
+      state: "running",
+      acceptedAt: 10,
+      startedAt: 10,
+      updatedAt: 10,
+    };
+    const wake = { at: 10, sessionId: "s1", runId: "run_wake" } as const;
+    const [projected] = projectJournal([], [], [
+      { ...wake, id: 1, type: "turn.accepted", turn: woken, replayed: false },
+      { ...wake, id: 2, type: "turn.claimed", workerId: "worker_1" },
+      { ...wake, id: 3, type: "turn.started" },
+    ]);
+    expect(projected!.items).toEqual([]);
+    expect(projected!.state).toBe("running");
+    expect(isActiveTurn(projected!.state)).toBe(true);
+    // The indicator's elapsed clock has a start, and its quiet clock a floor —
+    // without these it would read 0s forever, or claim silence since the epoch.
+    expect(projected!.startedAt).toBe(10);
+    expect(projected!.lastActivityAt).toBe(10);
+    // And it is drawn as a wake, not as a person's message.
+    expect(projected!.origin).toBe("provider");
+    expect(projected!.wokenBy).toBe("task_bg");
+  });
+
   test("an event for an unknown run does not invent a turn", () => {
     const projected = projectJournal([turn], [], [
       { ...envelope, id: 1, runId: "run_other", type: "turn.started" },

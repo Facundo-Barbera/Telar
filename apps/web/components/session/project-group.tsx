@@ -348,13 +348,13 @@ export function ProjectGroupSection({
                 {...(group.iconName ? { iconName: group.iconName } : {})}
                 size={16}
               />
-              <span className="min-w-0 truncate text-[0.8125rem] font-semibold text-sidebar-foreground/90">{group.name}</span>
+              <span className="min-w-0 truncate text-xs-plus font-semibold text-sidebar-foreground/90">{group.name}</span>
               {badges.map((place) => {
                 const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");
                 return (
                   <span
                     key={`${place.hostId ?? "local"}:${place.projectId}`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] text-sidebar-foreground/60"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs text-sidebar-foreground/60"
                     title={`On ${label}`}
                   >
                     <MonitorIcon className="size-2.5" />
@@ -362,7 +362,7 @@ export function ProjectGroupSection({
                   </span>
                 );
               })}
-              <span className="ml-auto shrink-0 tabular-nums text-[0.6875rem] text-sidebar-foreground/45" title={countLabel} aria-label={countLabel}>
+              <span className="ml-auto shrink-0 tabular-nums text-2xs text-sidebar-foreground/45" title={countLabel} aria-label={countLabel}>
                 {shown}
               </span>
             </ContextMenuTrigger>

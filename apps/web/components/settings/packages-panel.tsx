@@ -167,7 +167,7 @@ export function PackagesPanel({
               packages && <span className="text-xs text-muted-foreground tabular-nums">{packages.length} packages</span>
             }
           >
-            <code className="mt-0.5 block min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{environment.root}</code>
+            <code className="mt-0.5 block min-w-0 truncate font-mono text-2xs text-muted-foreground">{environment.root}</code>
           </Row>
         )}
 
@@ -186,7 +186,7 @@ export function PackagesPanel({
                 onChange={(event) => setSpecs(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") install(); }}
                 placeholder="seaborn  polars>=1.0  scikit-learn"
-                className="h-8 w-56 font-mono text-[0.6875rem]"
+                className="h-8 w-56 font-mono text-2xs"
                 aria-label="Packages to install"
                 disabled={busy || !environment}
               />
@@ -206,7 +206,7 @@ export function PackagesPanel({
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {installable.map((source) => (
                   <Button key={source} variant="outline" size="xs" disabled={busy} onClick={() => void change(`Installing from ${source}`, { requirements: source })}>
-                    <code className="font-mono text-[0.625rem]">{source}</code>
+                    <code className="font-mono text-3xs">{source}</code>
                   </Button>
                 ))}
               </div>
@@ -230,7 +230,7 @@ export function PackagesPanel({
             <button type="button" aria-label="Dismiss" onClick={() => setSessionLog(undefined)} className="text-muted-foreground hover:text-foreground">×</button>
           </div>
           {sessionLog.lines.length > 0 && (
-            <pre className="m-0 mt-1 max-h-32 overflow-auto font-mono text-[0.625rem] leading-[1.5] whitespace-pre-wrap text-muted-foreground">{sessionLog.lines.slice(-30).join("\n")}</pre>
+            <pre className="m-0 mt-1 max-h-32 overflow-auto font-mono text-3xs leading-[1.5] whitespace-pre-wrap text-muted-foreground">{sessionLog.lines.slice(-30).join("\n")}</pre>
           )}
         </div>
       )}
@@ -257,12 +257,12 @@ export function PackagesPanel({
           </div>
         ) : (
           <>
-            {manifested && direct.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-[0.625rem] font-medium text-muted-foreground">Declared by the project ({direct.length})</div>}
+            {manifested && direct.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-3xs font-medium text-muted-foreground">Declared by the project ({direct.length})</div>}
             {direct.map((pkg) => (
               <div key={pkg.name} className="group flex items-center gap-2 border-b border-border/60 px-3 py-1 last:border-b-0 hover:bg-muted/40">
-                <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{pkg.name}</span>
-                <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{pkg.version}</span>
-                {pkg.channel && !dense && <span className="shrink-0 text-[0.5625rem] text-muted-foreground/70">{pkg.channel}</span>}
+                <span className="min-w-0 flex-1 truncate font-mono text-2xs">{pkg.name}</span>
+                <span className="shrink-0 font-mono text-3xs text-muted-foreground tabular-nums">{pkg.version}</span>
+                {pkg.channel && !dense && <span className="shrink-0 text-4xs text-muted-foreground/70">{pkg.channel}</span>}
                 {confirmRemove === pkg.name ? (
                   <span className="flex shrink-0 items-center gap-1">
                     <Button variant="destructive" size="xs" disabled={busy} onClick={() => { setConfirmRemove(undefined); void change(`Removing ${pkg.name}`, { remove: [pkg.name] }); }}>Remove</Button>
@@ -275,12 +275,12 @@ export function PackagesPanel({
                 )}
               </div>
             ))}
-            {manifested && transitive.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-[0.625rem] font-medium text-muted-foreground">Installed with them ({transitive.length})</div>}
+            {manifested && transitive.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-3xs font-medium text-muted-foreground">Installed with them ({transitive.length})</div>}
             {transitive.map((pkg) => (
               <div key={pkg.name} className="flex items-center gap-2 border-b border-border/60 px-3 py-1 last:border-b-0 hover:bg-muted/40">
-                <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-muted-foreground">{pkg.name}</span>
-                <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{pkg.version}</span>
-                {pkg.channel && !dense && <span className="shrink-0 text-[0.5625rem] text-muted-foreground/70">{pkg.channel}</span>}
+                <span className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground">{pkg.name}</span>
+                <span className="shrink-0 font-mono text-3xs text-muted-foreground tabular-nums">{pkg.version}</span>
+                {pkg.channel && !dense && <span className="shrink-0 text-4xs text-muted-foreground/70">{pkg.channel}</span>}
               </div>
             ))}
           </>

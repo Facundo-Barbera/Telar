@@ -1,8 +1,17 @@
-[test]
-# 20 s, not bun's default 5 s. The engine suite starts a real daemon, a worker
-# and child processes per test; on the shared CI Mac mini two Verify runs plus
-# a nightly build routinely push a 3 s test past 5 s. The `eventually`/`until`
-# helpers in test/*.test.ts carry the matching wall-clock bound (15 s) so a
-# wait can outlast a loaded runner without outlasting this ceiling. A genuine
-# hang still fails, twenty seconds later instead of five.
-timeout = 20000
+# THERE IS NO `timeout` KEY HERE, AND THERE CANNOT BE ONE. This file used to
+# carry `[test] timeout = 20000` (#414) and it never once applied: `timeout` is
+# not part of bunfig.toml's `[test]` table, and bun ignores keys it does not
+# recognise without a word. So the engine suite — a real daemon, a worker and
+# child processes per test — ran on bun's 5 s default for every day #414 was
+# believed to have fixed it, which is why #266 and #458 kept collecting engine
+# timeouts afterwards.
+#
+# The ceiling now lives where bun actually reads it, as `--timeout 20000` on the
+# `test` script in package.json; that script's `//test` comment carries the
+# rationale. The per-test `eventually`/`until` helpers in test/*.test.ts hold the
+# matching 15 s wall-clock bound, so a wait can outlast a loaded runner without
+# outlasting the ceiling, and a genuine hang still fails — twenty seconds later
+# instead of five.
+#
+# Verified against bun 1.3.11: a test that sleeps 7 s dies at exactly 5000 ms
+# with this file present, and passes under `bun test --timeout 20000`.

@@ -82,8 +82,8 @@ function TickingDuration({ startedAt }: { startedAt: number }) {
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate text-right text-[0.6875rem] tabular-nums">{value}</span>
+      <span className="shrink-0 text-2xs text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-right text-2xs tabular-nums">{value}</span>
     </div>
   );
 }
@@ -95,7 +95,7 @@ function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-center gap-0.5 bg-popover py-2">
       <span className="text-xs font-semibold tabular-nums">{value}</span>
-      <span className="text-[0.5625rem] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className="text-4xs uppercase tracking-wider text-muted-foreground">{label}</span>
     </div>
   );
 }
@@ -150,7 +150,7 @@ export function SessionDetails({ session, renderedAt }: { session: SidebarSessio
         </span>
         <span className="min-w-0 flex-1">
           <span className="line-clamp-2 text-xs font-semibold leading-snug">{session.title || "Untitled session"}</span>
-          <span className="mt-0.5 flex items-center gap-1 text-[0.625rem]">
+          <span className="mt-0.5 flex items-center gap-1 text-3xs">
             {session.archived ? (
               <span className="flex items-center gap-0.5 text-muted-foreground">
                 <CircleCheckIcon className="size-2.5" />
@@ -393,14 +393,14 @@ export function SessionRow({
    * and it takes the timestamp's place rather than sitting beside it.
    */
   const statusSlot = session.draft ? (
-    <span className={`shrink-0 text-[0.6875rem] text-sidebar-foreground/45 ${yieldOnHover}`}>Draft</span>
+    <span className={`shrink-0 text-2xs text-sidebar-foreground/45 ${yieldOnHover}`}>Draft</span>
   ) : snoozing && session.snoozedUntil !== undefined ? (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
       <AlarmClockIcon className="size-3" />
       {wakeLabel(session.snoozedUntil, renderedAt)}
     </span>
   ) : badge ? (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 text-2xs font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
       {/* A SPINNER FOR "STILL GOING", A DOT FOR "STOPPED AND WAITING". The
           motion is the fastest read in the list — you see that something is
           alive before you read which row it is — and a request that has parked
@@ -416,7 +416,7 @@ export function SessionRow({
       {badge.ticking && session.activityAt !== undefined ? <TickingDuration startedAt={session.activityAt} /> : null}
     </span>
   ) : (
-    <span className={`shrink-0 text-[0.6875rem] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
+    <span className={`shrink-0 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
   );
 
   /**
@@ -459,7 +459,7 @@ export function SessionRow({
    * card" failure the third line already learned from.
    */
   const hostMark = session.hostName ? (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] leading-4 text-sidebar-foreground/60" title={`On ${session.hostName}`}>
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs leading-4 text-sidebar-foreground/60" title={`On ${session.hostName}`}>
       <MonitorIcon className="size-2.5" />
       <span className="max-w-24 truncate">{session.hostName}</span>
     </span>
@@ -487,7 +487,7 @@ export function SessionRow({
               {...(session.projectIconName ? { iconName: session.projectIconName } : {})}
               size={12}
             />
-            <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-sidebar-foreground/50">{session.projectName}</span>
+            <span className="min-w-0 flex-1 truncate text-2xs text-sidebar-foreground/50">{session.projectName}</span>
           </>
         ) : (
           <span className="flex-1" />
@@ -525,7 +525,7 @@ export function SessionRow({
         space. Nothing else does, and a card with nothing to add is two lines.
       */}
       {subtitle && (
-        <span className="flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-sidebar-foreground/45">
+        <span className="flex min-w-0 items-center gap-1.5 text-2xs text-sidebar-foreground/45">
           {subtitle.kind === "branch" ? <GitBranchIcon className="size-3 shrink-0" /> : null}
           <span className="min-w-0 flex-1 truncate">{subtitle.text}</span>
           <span className="shrink-0 opacity-60">
@@ -564,7 +564,7 @@ export function SessionRow({
           <ProviderIcon provider={session.driver} size={13} />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-left text-[0.8125rem] text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground">
+      <span className="min-w-0 flex-1 truncate text-left text-xs-plus text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground">
         {session.title || "Untitled session"}
       </span>
       {trailingSlot}
@@ -854,7 +854,7 @@ export function SessionRow({
                       onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: preset.until }), onRefresh)}
                     >
                       <span className="flex-1">{preset.label}</span>
-                      <span className="font-mono text-[0.625rem] tabular-nums text-muted-foreground/60">{preset.when}</span>
+                      <span className="font-mono text-3xs tabular-nums text-muted-foreground/60">{preset.when}</span>
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>

@@ -113,7 +113,7 @@ struct TextFileView: View {
                     HStack(alignment: .top, spacing: 0) {
                         Text("\(index + 1)")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Theme.textTertiary)
+                            .foregroundStyle(Theme.textMuted)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 8)
                             // Opaque, FULL ROW HEIGHT, and above the line beside

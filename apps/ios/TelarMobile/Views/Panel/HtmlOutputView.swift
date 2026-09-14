@@ -59,7 +59,7 @@ struct HtmlOutputView: View {
                 .buttonStyle(.plain)
             }
             if truncated {
-                Text("truncated").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                Text("truncated").font(.system(size: 10)).foregroundStyle(Theme.textMuted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -101,7 +101,7 @@ export function SitePermissionPrompt({
           {/* THE PROFILE IS PART OF THE QUESTION, not a footnote: an answer is
               remembered in the cookie jar this session browses in, and the same
               site in another profile will ask again. */}
-          <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
+          <p className="mt-0.5 text-2xs text-muted-foreground">
             Remembered for this browser profile. “Allow once” is not.
           </p>
         </div>
@@ -167,7 +167,7 @@ function ScreenSharePicker({
                 <ScreenShareIcon className="size-4 text-muted-foreground" />
               </span>
             )}
-            <span className="truncate text-[0.625rem] text-muted-foreground">{source.name}</span>
+            <span className="truncate text-3xs text-muted-foreground">{source.name}</span>
           </button>
         ))}
       </div>
@@ -212,7 +212,7 @@ export function SitePermissionsPopover({
     return (
       <div className="flex flex-col gap-1">
         <p className="text-xs font-medium text-foreground">No site open</p>
-        <p className="text-[0.6875rem] text-muted-foreground">Permissions belong to a page’s address; a blank tab has none.</p>
+        <p className="text-2xs text-muted-foreground">Permissions belong to a page’s address; a blank tab has none.</p>
       </div>
     );
   }
@@ -221,8 +221,8 @@ export function SitePermissionsPopover({
       <div className="flex items-start gap-2">
         <SiteSecurityIcon origin={origin} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-[0.6875rem] text-foreground">{siteLabel(origin)}</p>
-          <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">{describeSiteStanding(origin, records)}</p>
+          <p className="truncate font-mono text-2xs text-foreground">{siteLabel(origin)}</p>
+          <p className="mt-0.5 text-2xs text-muted-foreground">{describeSiteStanding(origin, records)}</p>
         </div>
       </div>
       {records.length > 0 && (
@@ -230,13 +230,13 @@ export function SitePermissionsPopover({
           {records.map((record) => (
             <li key={record.kind} className="flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-muted/60">
               <PermissionKindIcon kind={record.kind} className={record.decision === "allow" ? "text-foreground" : "text-muted-foreground"} />
-              <span className="min-w-0 flex-1 truncate text-[0.6875rem]">{describeSitePermission(record)}</span>
+              <span className="min-w-0 flex-1 truncate text-2xs">{describeSitePermission(record)}</span>
               <button
                 type="button"
                 disabled={busy}
                 aria-label={`Forget ${PERMISSION_KIND_TITLES[record.kind]} for ${siteLabel(origin)}`}
                 title="Forget this answer. The site asks again next time."
-                className="shrink-0 rounded px-1 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                className="shrink-0 rounded px-1 py-0.5 text-3xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
                 onClick={() => onForget(record.kind)}
               >
                 Forget

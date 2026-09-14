@@ -28,6 +28,33 @@
      instead of to whatever the browser picks. */
   --font-sans: var(--app-font-sans);
   --font-mono: var(--app-font-mono);
+  /* THE SUB-12px RAMP, WHICH THIS APP HAS ALWAYS HAD AND NEVER NAMED.
+     528 `text-[…]` utilities sat on exactly four steps below Tailwind's
+     `text-xs`, so the scale was real, consistently applied, and invisible to
+     anyone reading globals.css looking for it.
+
+     Rem, not px, because `lib/appearance.ts` sets `html { font-size }` between
+     13 and 18px and the whole app is meant to follow the reader's slider.
+     Values are the ones already in the tree, so nothing moves at the 16px
+     default.
+
+     NAMED `{n}xs` AND NOT `xxs`, AND THAT IS NOT A STYLE PREFERENCE:
+     tailwind-merge sorts `text-*` into its font-size group only when the
+     suffix passes its t-shirt-size test, and `4xs`/`3xs`/`2xs` pass where
+     `xxs` does not. A `text-xxs` would land in the TEXT-COLOUR group instead,
+     so `cn("text-xxs", "text-muted-foreground")` would silently drop the size
+     and the caption would render at 16px. `xs-plus` has the same problem and
+     is registered explicitly in lib/utils.ts, which is the only reason it is
+     safe to write.
+
+     No `--text-*--line-height` on any of them ON PURPOSE. The arbitrary
+     utilities these replace set font-size alone and inherited their leading;
+     giving the tokens a line-height here would re-space 528 call sites in a
+     rename. */
+  --text-4xs: 0.5625rem; /* 9px  */
+  --text-3xs: 0.625rem;  /* 10px */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-xs-plus: 0.8125rem; /* 13px — between text-xs and text-sm */
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -100,8 +127,6 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-  /* Outside the proportional scale on purpose — see --control-radius below. */
-  --radius-control: var(--control-radius);
 }
 
 :root {
@@ -367,15 +392,25 @@
   --chart-4: oklch(0.56 0.13 120);
   --chart-5: oklch(0.56 0.095 192);
 
+  /* THE ONE AUTHORED RADIUS; every step in the @theme block above derives
+     from it.
+
+     There was a second — `--control-radius: 0.5rem`, bridged as
+     `--radius-control` — carrying a seven-line argument that a button, a chip
+     or a field has to hold 8px even if the containers are later rounded
+     harder. It shipped with ZERO call sites: `rounded-control` was never
+     written anywhere, and `rounded-md` happens to compute to the same 8px,
+     which is why nobody noticed for as long as it existed.
+
+     It is gone rather than adopted. Adopting it would have moved every
+     <Button> from 10px to 8px and every <Badge> from 16px to 8px — a visible
+     change to every control in the app, made to enforce a hierarchy the
+     shipped app already contradicts elsewhere (cards are drawn at 14px and
+     documented at 18px; see docs/investigations/design-system-2026-09-11.md
+     §(a)). Which way the radius doctrine should move is a taste call worth
+     seeing before committing, and shipping half of it inside a dead-token
+     cleanup would have pre-empted it. Deleting the name changes no pixel. */
   --radius: 0.625rem;
-  /* Two radii, because a button and a dialog are not the same object. --radius
-     is the container value the whole scale derives from. --control-radius is
-     authored rather than derived: on something the size of a button, a chip or
-     a field, 10px of corner starts eating the label, and the value has to hold
-     at 8px even if someone later rounds the containers harder. The hierarchy
-     this lands: 8px controls, 10px fields and popovers, 18px cards and
-     dialogs. */
-  --control-radius: 0.5rem;
 
   /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
      because there is no room above white, and lifts in dark because there is no

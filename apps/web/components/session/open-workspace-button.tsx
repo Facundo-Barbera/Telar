@@ -210,16 +210,16 @@ export function OpenWorkspaceButton({
       )}
       <PopoverContent align="end" side="bottom" sideOffset={6} className="max-h-[min(24rem,70vh)] w-72 flex-col gap-0 overflow-y-auto rounded-xl p-1">
         {blocker ? (
-          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{blocker}</p>
+          <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{blocker}</p>
         ) : answer === undefined ? (
-          <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Looking for installed apps…</p>
+          <p className="px-2 py-1.5 text-2xs text-muted-foreground">Looking for installed apps…</p>
         ) : (
           <>
             {entries.map((entry) => (
               <Fragment key={entry.id}>
                 {entry.separatorBefore && <div className="my-1 h-px bg-border" />}
                 {entry.kind === "empty" ? (
-                  <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{entry.label}</p>
+                  <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{entry.label}</p>
                 ) : (
                   <button type="button" title={entry.path} onClick={() => act(entry)} className={row}>
                     <OpenerIcon icon={entry.icon} iconDataUrl={entry.iconDataUrl} />
@@ -227,7 +227,7 @@ export function OpenWorkspaceButton({
                     {/* Only the PREFERRED row can carry one, and the chord this
                         control has (⌘O, on the reveal row) is not that row — so
                         nothing is handed down and this renders nothing. */}
-                    {entry.shortcut && <span className="shrink-0 text-[0.6875rem] tracking-widest text-muted-foreground">{entry.shortcut}</span>}
+                    {entry.shortcut && <span className="shrink-0 text-2xs tracking-widest text-muted-foreground">{entry.shortcut}</span>}
                     {/* ⌘O WHERE ⌘O ACTUALLY GOES — issue #401. The chord is
                         bound above, on this control, and it reveals: so the cap
                         rides the REVEAL row while ⌘ is held rather than the Open
@@ -241,10 +241,10 @@ export function OpenWorkspaceButton({
                 )}
               </Fragment>
             ))}
-            <p className="px-2 py-1 font-mono text-[0.625rem] leading-snug break-all text-muted-foreground/80">{path}</p>
+            <p className="px-2 py-1 font-mono text-3xs leading-snug break-all text-muted-foreground/80">{path}</p>
           </>
         )}
-        {error && <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-destructive">{error}</p>}
+        {error && <p className="px-2 py-1.5 text-2xs leading-snug text-destructive">{error}</p>}
       </PopoverContent>
     </Popover>
   );

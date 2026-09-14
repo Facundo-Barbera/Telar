@@ -113,7 +113,7 @@ export function DataSurface({
             aria-selected={sub === tab.id}
             onClick={() => choose(tab.id)}
             className={cn(
-              "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
+              "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring",
               sub === tab.id ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
             )}
           >
@@ -124,12 +124,12 @@ export function DataSurface({
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <KernelPill state={kernel} />
           {live && (
-            <button type="button" title="Interrupt the running cell" aria-label="Interrupt kernel" disabled={acting !== undefined} onClick={() => void act("interrupt")} className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50">
+            <button type="button" title="Interrupt the running cell" aria-label="Interrupt kernel" disabled={acting !== undefined} onClick={() => void act("interrupt")} className="rounded p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
               <SquareIcon className="size-3" />
             </button>
           )}
           {kernel !== "none" && (
-            <button type="button" title="Restart the kernel — clears every variable" aria-label="Restart kernel" disabled={acting !== undefined} onClick={() => void act("restart")} className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50">
+            <button type="button" title="Restart the kernel — clears every variable" aria-label="Restart kernel" disabled={acting !== undefined} onClick={() => void act("restart")} className="rounded p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
               <RotateCwIcon className={cn("size-3", acting === "restart" && "animate-spin")} />
             </button>
           )}

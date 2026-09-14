@@ -288,7 +288,7 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
         </select>
         <button
           type="button"
-          className="rounded-md border border-border px-2 py-1.5 text-xs hover:bg-muted"
+          className="rounded-md border border-border px-2 py-1.5 text-xs outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setEditing({})}
         >
           New
@@ -296,7 +296,7 @@ export function RunPanel({ sessionId, hostId, visible = true, api: injected }: P
         {selectedConfig ? (
           <button
             type="button"
-            className="rounded-md border border-border px-2 py-1.5 text-xs hover:bg-muted"
+            className="rounded-md border border-border px-2 py-1.5 text-xs outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => setEditing({ config: selectedConfig })}
           >
             Edit

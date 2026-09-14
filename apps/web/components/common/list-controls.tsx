@@ -59,7 +59,7 @@ export function Chip({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
           ? "border-primary bg-primary text-primary-foreground"
           : "border-border bg-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
@@ -108,7 +108,7 @@ export function GroupHeader({
        instead of banding across it. Its blur is what keeps the label legible —
        the same trade the cockpit masthead makes. */
     <div className="app-ground sticky top-0 z-10 -mx-px flex items-center gap-2 border-b border-border bg-background/95 px-3 py-1.5 text-foreground backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <button type="button" onClick={onToggle} className="flex min-w-0 shrink-0 items-center gap-2 text-left">
+      <button type="button" onClick={onToggle} className="flex min-w-0 shrink-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <ChevronRightIcon className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
         {Icon && <Icon className={cn("size-4 shrink-0", tint ?? "text-muted-foreground")} />}
         <span className="truncate text-xs font-semibold tracking-wide text-foreground uppercase">{label}</span>

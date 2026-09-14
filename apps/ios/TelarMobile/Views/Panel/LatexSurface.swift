@@ -143,14 +143,14 @@ struct LatexSurface: View {
                                 if let file = diagnostic.file {
                                     Text(diagnostic.line.map { "\(file):\($0)" } ?? file).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                                 }
-                                if let code = diagnostic.code { Text(code).font(.system(size: 10)).foregroundStyle(Theme.textTertiary) }
+                                if let code = diagnostic.code { Text(code).font(.system(size: 10)).foregroundStyle(Theme.textMuted) }
                             }
                             if let suggestion = diagnostic.suggestion {
                                 Text(suggestion).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
                             }
                         }
                         Spacer(minLength: 0)
-                        if diagnostic.file != nil { Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(Theme.textTertiary) }
+                        if diagnostic.file != nil { Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(Theme.textMuted) }
                     }
                     .padding(8)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
@@ -175,7 +175,7 @@ struct LatexSurface: View {
                 }
             }
             Text("\(errors.count) error\(errors.count == 1 ? "" : "s") · \(warnings.count) warning\(warnings.count == 1 ? "" : "s")")
-                .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
         }
     }
 

@@ -194,12 +194,12 @@ function Caps({ caps, through }: { caps: readonly string[]; through?: readonly s
   const box = (cap: string, at: number) => (
     <kbd
       key={`${cap}-${at}`}
-      className="inline-flex min-w-5 items-center justify-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] leading-none text-muted-foreground"
+      className="inline-flex min-w-5 items-center justify-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-2xs leading-none text-muted-foreground"
     >
       {cap}
     </kbd>
   );
-  if (caps.length === 0) return <span className="text-[0.6875rem] text-muted-foreground/60">Unbound</span>;
+  if (caps.length === 0) return <span className="text-2xs text-muted-foreground/60">Unbound</span>;
   return (
     <span className="flex items-center gap-1">
       {caps.map(box)}
@@ -207,7 +207,7 @@ function Caps({ caps, through }: { caps: readonly string[]; through?: readonly s
         <>
           {/* An en dash rather than a third cap: the range is between the two
               chords, not a key you press. */}
-          <span className="px-0.5 text-[0.6875rem] text-muted-foreground/70">–</span>
+          <span className="px-0.5 text-2xs text-muted-foreground/70">–</span>
           {through.map(box)}
         </>
       )}
@@ -259,8 +259,8 @@ function ChordButton({
       aria-label={recording ? `Press the new chord for ${row.title}` : `Change the chord for ${row.title}`}
       className={
         recording
-          ? "rounded-md border border-dashed border-primary/60 bg-primary/5 px-2 py-1 text-[0.6875rem] text-primary"
-          : "rounded-md border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/60"
+          ? "rounded-md border border-dashed border-primary/60 bg-primary/5 px-2 py-1 text-2xs text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          : "rounded-md border border-transparent px-2 py-1 transition-colors outline-none hover:border-border hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
       }
     >
       {recording ? "Press a chord…" : <Caps caps={row.caps} {...(row.through ? { through: row.through } : {})} />}
@@ -334,7 +334,7 @@ export function KeybindingsPage() {
           Two sentences over four cards, rather than a hint repeated on
           twenty-odd rows. */}
       <div className="mb-6 px-4">
-        <h4 className="font-heading text-[0.8125rem] font-normal tracking-tight text-foreground/70">Keyboard shortcuts</h4>
+        <h4 className="font-heading text-xs-plus font-normal tracking-tight text-foreground/70">Keyboard shortcuts</h4>
         <p className="mt-1 text-xs text-muted-foreground">
           Click a chord and press the new one. Backspace clears it, Escape leaves it alone, and Restore defaults puts every one of them
           back.

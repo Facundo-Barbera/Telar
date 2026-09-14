@@ -626,7 +626,7 @@ export function ProjectPalettePages({
                 aria-label={backsTo === "projects" ? "Back to projects" : "Back"}
                 title={backsTo === "projects" ? "Back to projects" : "Back"}
                 onClick={goBack}
-                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ArrowLeftIcon className="size-4" />
               </button>
@@ -668,7 +668,7 @@ export function ProjectPalettePages({
                 projects"), not what you are looking at — and with two pages
                 behind one field, "which list is this" is a real question a
                 reader can now arrive at from either side. T3 captions both. */}
-            <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">
+            <p aria-hidden className="px-2 pt-1 pb-1.5 text-2xs font-medium text-muted-foreground">
               {page === "sources" ? "Sources" : "Projects"}
             </p>
             {page === "projects" ? (
@@ -734,7 +734,7 @@ export function ProjectPalettePages({
                     mono={source.hint.startsWith("Clone ")}
                     badge={
                       source.setupRequired ? (
-                        <span className="shrink-0 rounded border px-1.5 py-0.5 text-[0.625rem] text-muted-foreground">Setup Required</span>
+                        <span className="shrink-0 rounded border px-1.5 py-0.5 text-3xs text-muted-foreground">Setup Required</span>
                       ) : undefined
                     }
                   />
@@ -744,7 +744,7 @@ export function ProjectPalettePages({
           </div>
 
           {notice && (
-            <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+            <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
               {notice}
             </p>
           )}
@@ -754,7 +754,7 @@ export function ProjectPalettePages({
               once something says the whole keyboard works here. Backspace joins
               it only on the page that HAS a back — a legend that names a key
               which does nothing is worse than a shorter legend. */}
-          <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+          <div className="flex items-center gap-4 border-t px-3 py-2 text-2xs text-muted-foreground">
             <span>
               <kbd className="font-sans">↑↓</kbd> Navigate
             </span>
@@ -814,7 +814,7 @@ function CloneUrlPage({
           aria-label="Back to sources"
           title="Back to sources"
           onClick={onBack}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeftIcon className="size-4" />
         </button>
@@ -843,12 +843,12 @@ function CloneUrlPage({
       </p>
 
       {notice && (
-        <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+        <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
           {notice}
         </p>
       )}
 
-      <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+      <div className="flex items-center gap-4 border-t px-3 py-2 text-2xs text-muted-foreground">
         <span>
           <kbd className="font-sans">Enter</kbd> Continue
         </span>
@@ -908,7 +908,7 @@ export function PaletteRow({
       // the arrows never disagree about what is selected.
       onMouseMove={onHover}
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
         on ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
         dim && "opacity-60",
       )}
@@ -920,10 +920,10 @@ export function PaletteRow({
           {badge}
         </span>
         {hint && (
-          <span className={cn("block truncate text-[0.6875rem] text-muted-foreground", mono && "font-mono")}>{hint}</span>
+          <span className={cn("block truncate text-2xs text-muted-foreground", mono && "font-mono")}>{hint}</span>
         )}
       </span>
-      {key9 !== undefined && <kbd className="shrink-0 font-sans text-[0.625rem] text-muted-foreground/60">⌘{key9}</kbd>}
+      {key9 !== undefined && <kbd className="shrink-0 font-sans text-3xs text-muted-foreground/60">⌘{key9}</kbd>}
       {trailing}
     </button>
   );
@@ -1003,7 +1003,7 @@ export function RegisteredToast({
         <button
           type="button"
           onClick={undo}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs font-medium hover:bg-accent"
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs font-medium outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Undo2Icon className="size-3.5" />
           Undo
@@ -1013,7 +1013,7 @@ export function RegisteredToast({
         type="button"
         aria-label="Dismiss"
         onClick={onDismiss}
-        className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+        className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <XIcon className="size-3.5" />
       </button>

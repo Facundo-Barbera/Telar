@@ -146,7 +146,7 @@ function AddInstanceDialog({
             />
             {/* The permanent key, shown as it is derived rather than asked for.
                 It is what every session stores and it never changes. */}
-            <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+            <span className="mt-1 block text-2xs text-muted-foreground">
               Routing key: <code className="font-mono">{id}</code> — permanent.
             </span>
           </label>
@@ -163,7 +163,7 @@ function AddInstanceDialog({
               spellCheck={false}
               autoComplete="off"
             />
-            <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+            <span className="mt-1 block text-2xs text-muted-foreground">
               Sign in there first —{" "}
               <code className="font-mono">
                 {signInCommand({ driver, ...(configDir.trim() ? { configDir: configDir.trim() } : {}) })}
@@ -376,11 +376,11 @@ export function ProvidersSection() {
               {updateReport.label} — {updateReport.error ?? updateReport.run?.message}
             </span>
           </div>
-          {updateReport.run && <code className="block truncate font-mono text-[0.6875rem] text-muted-foreground">{updateReport.run.command}</code>}
+          {updateReport.run && <code className="block truncate font-mono text-2xs text-muted-foreground">{updateReport.run.command}</code>}
           {updateReport.run?.output && (
-            <details className="text-[0.6875rem] text-muted-foreground">
+            <details className="text-2xs text-muted-foreground">
               <summary className="cursor-pointer select-none text-muted-foreground/80 hover:text-foreground">Installer output</summary>
-              <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[0.625rem] leading-snug">
+              <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-3xs leading-snug">
                 {updateReport.run.output}
               </pre>
             </details>

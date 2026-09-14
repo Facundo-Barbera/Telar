@@ -166,7 +166,11 @@ describe("a --dev package is a separate app that cannot collide with the install
    * fixed name Telar.app and the dev build would land on the installed one.
    */
   test("--dev --install is refused before anything is built", () => {
-    const result = spawnSync("bash", [script, "--dev", "--install"], { encoding: "utf8", timeout: 10_000 });
+    // 15 s, the bound the engine suite's wait helpers carry, under the 20 s
+    // bunfig ceiling. The refusal is immediate on a healthy machine; the budget
+    // only bites when the CI Mac mini is loaded, and killing the script then
+    // reads as a failed assertion about argument handling (#458).
+    const result = spawnSync("bash", [script, "--dev", "--install"], { encoding: "utf8", timeout: 15_000 });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("--dev cannot be combined with --install");
     expect(result.stdout).not.toContain("==> build standalone web app");

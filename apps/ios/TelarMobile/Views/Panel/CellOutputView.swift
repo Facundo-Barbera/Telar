@@ -52,7 +52,7 @@ struct CellOutputView: View {
         case .clear:
             EmptyView()
         case .unknown(let kind):
-            Text("[\(kind)]").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+            Text("[\(kind)]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
         }
     }
 }
@@ -120,7 +120,7 @@ private struct OutputImage: View {
             } else if attachmentId != nil || dataB64 != nil {
                 ProgressView().frame(height: 60)
             } else {
-                Text("[image]").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                Text("[image]").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
             }
         }
         .task(id: attachmentId ?? dataB64?.prefix(32).description ?? "") {
@@ -148,7 +148,7 @@ private struct DataframeGrid: View {
                         ForEach(Array(columns.enumerated()), id: \.offset) { i, column in
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(column).font(.system(size: 10, weight: .semibold)).lineLimit(1)
-                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(size: 8)).foregroundStyle(Theme.textTertiary) }
+                                if let dtype = dtypes[safe: i] { Text(dtype).font(.system(size: 8)).foregroundStyle(Theme.textMuted) }
                             }
                             .padding(.horizontal, 6).frame(width: 96, height: 30, alignment: .leading)
                         }
@@ -159,7 +159,7 @@ private struct DataframeGrid: View {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 Text(cellString(cell))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(cell == .null ? Theme.textTertiary : Theme.text)
+                                    .foregroundStyle(cell == .null ? Theme.textMuted : Theme.text)
                                     .lineLimit(1)
                                     .padding(.horizontal, 6).frame(width: 96, height: 22, alignment: .leading)
                             }
@@ -170,7 +170,7 @@ private struct DataframeGrid: View {
             }
             .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: 6))
             Text("\(shape.first ?? rows.count) × \(shape.last ?? columns.count)\(truncated ? " · preview" : "")")
-                .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                .font(.system(size: 10)).foregroundStyle(Theme.textMuted)
         }
     }
 
