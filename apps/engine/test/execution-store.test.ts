@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { ExecutionStore } from "../src/execution-store";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
@@ -395,6 +396,53 @@ test("a delta for an item that never opened is dropped, and one for an item open
   ]);
   say("item_two", "two ");
   expect(deltas(store)).toEqual(["one ", "two "]);
+});
+
+/**
+ * THE RECEIPTS NOTHING WILL EVER READ AGAIN (#457).
+ *
+ * A receipt makes a retried command id free instead of repeating it, which
+ * matters for the seconds a client spends retrying a request whose response it
+ * lost — and never again after that. The dogfood store held 299,323 of them in
+ * 723 MB. So: they go after a week, on open and once a day, and the only thing
+ * worth asserting about the table is the behaviour it buys — a receipt that is
+ * still there replays its command, and a receipt that is gone runs it again.
+ */
+test("receipts outlive a retry and not a week; opening the store is itself a sweep", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-receipts-")); homes.push(root);
+  fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
+  const day = 24 * 60 * 60 * 1000;
+  let clock = Date.parse("2026-09-01T00:00:00Z");
+  let ran = 0;
+  const count = (store: ExecutionStore, commandId: string) => store.transaction("count", () => (ran += 1), commandId);
+
+  let store = new ExecutionStore(root, { now: () => clock });
+  try {
+    expect(count(store, "command_old")).toBe(1);
+    // The receipt is the whole point: the same id does not run twice.
+    expect(count(store, "command_old")).toBe(1);
+    expect(ran).toBe(1);
+
+    clock += 8 * day;
+    count(store, "command_fresh");
+    expect(ran).toBe(2);
+    // Everything past the week goes — the store's own `import` marker included,
+    // which is why this is not a fixed number — and nothing is left behind it.
+    expect(store.pruneReceipts()).toBeGreaterThan(0);
+    expect(store.pruneReceipts()).toBe(0);
+    count(store, "command_old");
+    expect(ran).toBe(3);
+    count(store, "command_fresh");
+    expect(ran).toBe(3);
+  } finally { store.close(); }
+
+  // What the daemon does on start, with a week of receipts behind it.
+  clock += 8 * day;
+  store = new ExecutionStore(root, { now: () => clock });
+  try {
+    count(store, "command_fresh");
+    expect(ran).toBe(4);
+  } finally { store.close(); }
 });
 
 test("a restart retires the claim on a stopped turn without disturbing the session", () => {
