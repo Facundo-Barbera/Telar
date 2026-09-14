@@ -79,31 +79,36 @@ import { cn } from "@/lib/utils";
  * browser, loaded in full to open a conversation whose panel is shut. The panel
  * even starts CLOSED, so on the common path none of it was drawn at all.
  *
- * `ssr: false` HERE, unlike the settings panes. Which tab is open comes out of
- * localStorage (`useSidebarPrefs`), so the server cannot know which of these to
- * render and renders none of them; asking it to prerender a surface it will not
- * show is work spent on markup that is thrown away at hydration.
+ * NO `ssr: false`, THOUGH IT WOULD READ AS THE OBVIOUS CHOICE — which tab is
+ * open comes out of localStorage, so the server renders none of these anyway,
+ * and dropping SSR would save nothing it does not already save. It would cost
+ * something real: `next/dynamic({ ssr: false })` renders permanently NOTHING
+ * under this suite's environment (bun + happy-dom, outside a Next build), so a
+ * surface declared that way is a surface no test can ever mount. Two annotate
+ * tests proved it by going red on exactly that. The client chunk splits either
+ * way — `ssr` decides where the component may render, not whether it is bundled
+ * separately — so the testable spelling is simply the better one.
  *
  * THE BROWSER IS THE ONE THAT NEEDED MORE THAN THIS. Its module was reachable
  * by a second road — `desktopBrowserBridge()`, a `typeof window` check three
  * modules make — so the import above had to move to `lib/desktop-browser-bridge.ts`
  * before `dynamic` here could shift anything.
  */
-const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface), { ssr: false });
-const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface), { ssr: false });
-const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface), { ssr: false });
-const FileViewSurface = dynamic(() => import("@/components/session/file-view-surface").then((mod) => mod.FileViewSurface), { ssr: false });
-const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface), { ssr: false });
-const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface), { ssr: false });
-const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface), { ssr: false });
-const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface), { ssr: false });
-const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface), { ssr: false });
-const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel), { ssr: false });
-const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface), { ssr: false });
-const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface), { ssr: false });
+const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
+const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
+const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
+const FileViewSurface = dynamic(() => import("@/components/session/file-view-surface").then((mod) => mod.FileViewSurface));
+const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
+const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
+const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
+const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
+const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
+const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
+const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface));
+const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
 /** Not a tab: an overlay over the whole panel, and only once an attachment is
  *  pressed — so it is never on screen on arrival either. */
-const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox), { ssr: false });
+const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
 
 /** The panel reads the engine directly for the one thing the journal cannot
  *  carry: the browser's current pixels. Everything else on this surface is a

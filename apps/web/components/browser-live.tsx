@@ -42,7 +42,8 @@ import {
   UserRoundIcon,
   XIcon,
 } from "lucide-react";
-import { BrowserAnnotateOverlay, type AnnotateCapture } from "@/components/browser-annotate";
+import dynamic from "next/dynamic";
+import type { AnnotateCapture } from "@/components/browser-annotate";
 import { captionFor, captureFileName, type ElementBox } from "@/lib/browser-annotation";
 import { BrowserPrivacyBanner, type DesktopPrivacyState } from "@/components/browser-privacy-banner";
 import { BrowserStartPage } from "@/components/browser-start-page";
@@ -69,9 +70,22 @@ import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { makeScopeGuard } from "@/lib/scope-guard";
-import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
+
+/**
+ * ANNOTATE MODE IS A CHUNK OF ITS OWN (#492).
+ *
+ * 21 kB of canvas, a mark model and an editor, mounted only once somebody has
+ * taken a screenshot and pressed the pencil — a deliberate detour off a surface
+ * that is itself a detour. Nothing about browsing needs it loaded, and the
+ * gesture that does have a round trip in it already.
+ *
+ * `ssr: false` because it never exists on a first render: it is keyed off
+ * `annotating`, which starts undefined and is only ever set from a capture the
+ * shell performed.
+ */
+const BrowserAnnotateOverlay = dynamic(() => import("@/components/browser-annotate").then((mod) => mod.BrowserAnnotateOverlay));
 
 export type DesktopBrowserTab = {
   index: number;

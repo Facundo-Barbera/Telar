@@ -52,11 +52,34 @@ test("⌘K opens the palette and closes it again, carrying the rail's field in",
   // bigger question, and a search half-typed into one should not have to be
   // retyped into the other.
   expect(sidebar).toContain('"search-sessions": () =>');
-  expect(sidebar).toContain('setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query }))');
+  // `asked` rides along with `open` on every path that can open the palette —
+  // it is the latch that keeps 68 kB of dialog out of the rail's own bundle
+  // until somebody asks for it (#492), so a path that opened without setting it
+  // would render a palette that never loads.
+  expect(sidebar).toContain('setPalette((current) => (current.open ? { ...current, open: false } : { open: true, asked: true, page: "root", query }))');
   // And the field is still just a filter — no palette in its keydown.
   const field = sidebar.slice(sidebar.indexOf("const handleSearchKeyDown"), sidebar.indexOf("return (", sidebar.indexOf("const handleSearchKeyDown")));
   expect(field).not.toContain("openPalette");
   expect(field).not.toContain("setPalette");
+});
+
+/**
+ * THE LATCH IS AN INVARIANT, NOT A LINE (#492).
+ *
+ * The palette is `next/dynamic` now and the rail renders it only once
+ * `palette.asked` is true, so a new way to open it that sets `open` alone is a
+ * ⌘K that does nothing at all — no type error, because both fields are on the
+ * same object and `open: true` is a complete expression by itself. The failure
+ * would be invisible in review and total at runtime, which is exactly the shape
+ * worth spending a test on.
+ */
+test("every path that opens the palette also latches it into existence", () => {
+  const opens = [...sidebar.matchAll(/open: true[^}]*/g)].map((match) => match[0]);
+  expect(opens.length).toBeGreaterThan(0);
+  for (const open of opens) expect(open).toContain("asked: true");
+  // ...and the one path that can only be told `open` from outside carries the
+  // latch forward rather than dropping it on close.
+  expect(sidebar).toContain("asked: current.asked || open");
 });
 
 test("the registry is the source of the Actions list, not a second list beside it", () => {

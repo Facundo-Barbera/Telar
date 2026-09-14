@@ -61,7 +61,24 @@
 // second door beside the one it replaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
+
+/**
+ * THE PALETTE IS A CHUNK, AND THE PROJECT PALETTE COMES WITH IT (#492).
+ *
+ * `command-palette.tsx` imports `project-palette.tsx`, so a static import here
+ * put 68 kB of two dialogs into the rail — which is mounted on every route in
+ * the cockpit — for a surface that opens on ⌘K and nothing else. See the
+ * palette state's `asked` field below: the split only pays if the rail also
+ * stops mounting it on sight.
+ *
+ * NO `ssr: false`: the latch below already keeps this out of every server
+ * render, and `dynamic({ ssr: false })` renders permanently nothing under this
+ * suite's environment — a spelling that buys nothing here and costs any future
+ * test of the palette.
+ */
+const CommandPalette = dynamic(() => import("@/components/command-palette").then((mod) => mod.CommandPalette));
 import {
   ChevronRightIcon,
   FolderPlusIcon,
@@ -141,7 +158,7 @@ import {
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
-import { CommandPalette, type CommandPalettePage } from "@/components/command-palette";
+import type { CommandPalettePage } from "@/components/command-palette";
 import type { NewConversationTarget } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
 import { KeyHint } from "@/components/ui/key-hint";
@@ -478,12 +495,32 @@ function SidebarBody() {
    * a search that turned out to be a bigger question than the rail can answer
    * does not have to be typed twice.
    */
-  const [palette, setPalette] = useState<{ open: boolean; page: CommandPalettePage; query: string }>({
+  /**
+   * `asked` IS THE LATCH THAT KEEPS THE PALETTE OUT OF THE RAIL'S BUNDLE (#492).
+   *
+   * The palette used to render unconditionally, closed, on every route — 26 kB
+   * of it plus the 42 kB project palette behind it, in a rail that is mounted
+   * everywhere, for a dialog most sessions never open. It is a chunk of its own
+   * now (see the `dynamic` call at the top of this file), and that only pays if
+   * the rail also stops mounting it on sight.
+   *
+   * ONCE TRUE IT STAYS TRUE, rather than rendering on `open`: the dialog
+   * animates on close, and a component that vanishes the instant `open` goes
+   * false has nothing left to animate with. So the chunk is fetched once, by
+   * whoever first presses ⌘K, and never again for the life of the tab.
+   *
+   * IN THE STATE ITSELF, not a ref read during render and not an effect. Both
+   * of those are lint errors here and both deserve to be — one reads mutable
+   * state mid-render, the other spends a whole extra render on a value the
+   * updater already knew. Every path that can open the palette sets it.
+   */
+  const [palette, setPalette] = useState<{ open: boolean; asked: boolean; page: CommandPalettePage; query: string }>({
     open: false,
+    asked: false,
     page: "root",
     query: "",
   });
-  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });
+  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, asked: true, page, query: seed });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
@@ -1150,7 +1187,7 @@ function SidebarBody() {
      * Escape after.
      */
     "search-sessions": () =>
-      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query })),
+      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, asked: true, page: "root", query })),
     // The rail's own collapse. It used to be a hand-rolled listener inside the
     // sidebar primitive, which is precisely why it appeared on no keybindings
     // pane and could not be changed. One registry, one dispatcher.
@@ -1336,11 +1373,11 @@ function SidebarBody() {
           THE RAIL IS WHAT FEEDS IT. The projects and the conversations it
           searches are the ones already in hand — so the palette costs no read of
           its own, and can never offer a row the rail does not have. */}
-      <CommandPalette
+      {palette.asked && <CommandPalette
         open={palette.open}
         page={palette.page}
         query={palette.query}
-        onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
+        onOpenChange={(open) => setPalette((current) => ({ ...current, open, asked: current.asked || open }))}
         targets={pickerTargets}
         sessions={sessions}
         railOpen={railOpen}
@@ -1351,7 +1388,7 @@ function SidebarBody() {
           router.push(sessionHref(session));
         }}
         onRegistered={() => void loadAll()}
-      />
+      />}
       <TelarSidebarHeader />
       {/* The "Settings session" entry was removed from the product UI: it did
           not work reliably and duplicated the real Settings (in the footer). */}
