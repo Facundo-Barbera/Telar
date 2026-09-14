@@ -674,6 +674,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     if (parts.length > 0) process.stdout.write(`Telar engine: removed ${parts.join(" and ")}\n`);
   }
   /**
+   * THE SESSION INDEX, WHEN IT HAD TO BE BUILT — issue #493.
+   *
+   * ONE LINE, AND ONLY WHEN THERE WAS WORK, on the same argument as the sweep
+   * above: this is silent on every open after the first, and a daemon that said
+   * "indexed 0 sessions" each time would train its reader past the one start
+   * where the number is large and the open is visibly slower for it.
+   */
+  const indexed = store.sessionIndexBackfill;
+  if (indexed && (indexed.built > 0 || indexed.removed > 0)) {
+    const built = indexed.built > 0 ? `indexed ${indexed.built.toLocaleString("en-US")} sessions` : "";
+    const removed = indexed.removed > 0 ? `dropped ${indexed.removed.toLocaleString("en-US")} orphaned rows` : "";
+    process.stdout.write(`Telar engine: ${[built, removed].filter(Boolean).join(" and ")}\n`);
+  }
+  /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
    *
@@ -3600,7 +3614,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          * BEFORE THE CURSOR, because it is the cheaper of the two and because a
          * client sending both means both.
          */
-        const etag = liveSessionsETag(store.sessionsRevision(), all);
+        /**
+         * THE CURSOR IS PER SHAPE OF ANSWER NOW (#493). A write to a session on
+         * the shelf moves the wide answer and not the default one, so the two
+         * ask for different numbers — see `sessionsRevision`. The tag already
+         * carried the mode for the same reason; the number behind it now does
+         * too, which is what stops a settled conversation's background task from
+         * invalidating every rail on the machine.
+         */
+        const etag = liveSessionsETag(store.sessionsRevision({ all }), all);
         if (matchesETag(request.headers["if-none-match"], etag)) {
           response.writeHead(304, { etag, "cache-control": "no-store" });
           response.end();
@@ -3636,6 +3658,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         const since = Number(url.searchParams.get("since"));
         if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+          // The default shape, which is the only one this cursor serves.
           writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
           return;
         }

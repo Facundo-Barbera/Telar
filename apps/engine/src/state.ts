@@ -3,7 +3,7 @@
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
-import { ExecutionStore, type ExecutionHousekeeping } from "./execution-store";
+import { ExecutionStore, type ExecutionHousekeeping, type SessionIndexRow } from "./execution-store";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1133,6 +1133,54 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
+/**
+ * The same session, narrowed to the scalars the rail DECIDES on — issue #493.
+ *
+ * The input is a session with its activity already folded (`withActivityFrom`),
+ * because `activity` is three documents' worth of question and the whole point
+ * of the row is that asking it again costs nothing. See `SessionIndexRow` for
+ * the argument about which fields belong here and which stay in the document.
+ *
+ * SPELLED AS A PICK, like `liveRow` and for the same reason: a field added to
+ * `Session` tomorrow does not silently join the index, and one the settling rule
+ * starts reading has to be added here deliberately — with a backfill, because
+ * every stored row predates it.
+ */
+const indexRow = (session: Session): SessionIndexRow => ({
+  id: session.id,
+  ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+  state: session.state,
+  updatedAt: session.updatedAt,
+  createdAt: session.createdAt,
+  archived: session.state === "archived",
+  draft: session.draft !== undefined,
+  ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
+  ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
+  ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+  ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+  ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+  ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+  ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+  ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
+  ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
+  activity: session.activity ?? "idle",
+  ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+});
+
+/**
+ * IS THIS ROW ON THE SHELF? — the same call `liveSessionRows` makes on a whole
+ * `Session`, made on the row instead.
+ *
+ * ONE FUNCTION, TAKING THE FIELDS BOTH SHAPES HAVE. `SettleableSession` was
+ * written to name the fields the rule reads rather than any caller's shape
+ * (see its comment), and the index row was chosen to carry exactly those — so
+ * this is a call, not a second fold. A row and a record must never disagree
+ * here: that is a conversation the engine drops from the list.
+ */
+function rowIsShelved(row: SessionIndexRow, at: { now: number; autoSettleAfterHours: number | null }): boolean {
+  return isShelved({ ...row, archived: row.archived, draft: row.draft }, settlingActivityOf(row), at);
+}
+
 /** Copied out, never handed out: the caller gets the arrangement, not a
  *  reference into the document this store will write to next. */
 const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
@@ -1672,11 +1720,158 @@ export class EngineStore {
     return this.executionStore?.owns(file) ? this.executionStore.read(file) : readJson(file);
   }
   private writeDocument(file: string, value: unknown, mode?: number): void {
-    if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
-    else atomicWrite(file, value, mode);
+    const owner = this.indexedSessionOf(file);
+    this.inRowTransaction(owner, () => {
+      if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
+      else atomicWrite(file, value, mode);
+    });
     // See `sessionsRevision`. After the write, so a revision a reader observes
     // is never newer than the state it would read.
-    if (path.basename(file) !== "items.json") this.liveRevision += 1;
+    this.bumpRevisionFor(file, owner);
+  }
+
+  /**
+   * WHOSE INDEX ROW DOES THIS DOCUMENT DECIDE? — issue #493, and the whole of
+   * the "written in the same transaction" rule.
+   *
+   * Four documents per session feed the row: the metadata itself, and the three
+   * the activity fold reads. `items.json` is deliberately not one of them — it
+   * is rewritten as an assistant streams, and nothing the rail decides on is
+   * derived from it, which is the same carve-out `liveRevision` makes one line
+   * above and for the same reason.
+   *
+   * MATCHED ON THE PATH, not on the caller, because there are sixteen call
+   * sites that write `session.json` and adding a seventeenth must not be able to
+   * forget this.
+   */
+  private indexedSessionOf(file: string): { id: string; movesActivity: boolean } | undefined {
+    if (!this.executionStore) return undefined;
+    const name = path.basename(file);
+    if (name !== "session.json" && name !== "queue.json" && name !== "requests.json" && name !== "tasks.json") return undefined;
+    const relative = path.relative(this.paths.sessions, path.dirname(file));
+    if (!relative || relative.startsWith("..") || !ID.test(relative)) return undefined;
+    /**
+     * WHICH HALF OF THE ROW THIS WRITE CAN MOVE.
+     *
+     * `activity`, `activityAt` and the three last-turn fields are a fold over
+     * the queue, the open requests and the live tasks — and `storedSession`
+     * strips all five from the metadata document precisely because the queue is
+     * where they live. So a write to `session.json` ALONE cannot have moved any
+     * of them, and the row can be rebuilt by carrying them over from the row
+     * already on file.
+     *
+     * THAT SAVES THE EXPENSIVE READ. Folding the activity costs a whole
+     * `queue.json` parse, which on a long conversation is megabytes; commands
+     * that only touch the metadata — a read receipt, a rename, a settle, a
+     * snooze — are common, and making each of them parse a history they did not
+     * change would be a write-path regression paid to recompute an answer that
+     * cannot have changed.
+     */
+    return { id: relative, movesActivity: name !== "session.json" };
+  }
+
+  /**
+   * Write the document, and make sure its row goes with it.
+   *
+   * INSIDE A COMMAND, THE ROW IS DEFERRED TO THE END OF IT — see
+   * `flushSessionRows`. One command rewrites several of a session's documents
+   * (a completed turn moves the queue, the tasks and the metadata), and the row
+   * is a fold over all of them; recomputing it after each would be three folds
+   * to store the third one's answer. The deferral is still INSIDE the
+   * transaction, which is the part that matters.
+   *
+   * OUTSIDE ONE, THE PAIR IS ITS OWN TRANSACTION. A handful of writes — boot
+   * sweeps, the odd direct update — do not run under `executeCommand`, and a row
+   * that reached the disk without its document (or the other way round) is a
+   * sidebar that disagrees with the conversation behind it.
+   */
+  private inRowTransaction(owner: { id: string; movesActivity: boolean } | undefined, write: () => void): void {
+    if (owner === undefined || !this.executionStore) return write();
+    if (this.commandDepth > 0) {
+      write();
+      // OR, never overwrite: a command that moved the queue and then the
+      // metadata owes the full fold, whichever of the two it wrote last.
+      this.dirtySessionRows.set(owner.id, (this.dirtySessionRows.get(owner.id) ?? false) || owner.movesActivity);
+      return;
+    }
+    this.executionStore.atomically(() => {
+      write();
+      this.storeSessionRow(owner.id, owner.movesActivity);
+    });
+  }
+
+  /**
+   * THE ROWS THIS COMMAND MADE STALE, still owed to the transaction it is in.
+   *
+   * Emptied by `flushSessionRows` before the commit, and by `executeCommand`'s
+   * rollback path — a row owed on behalf of a write that did not happen is a row
+   * that would describe a document sqlite no longer has.
+   */
+  private dirtySessionRows = new Map<string, boolean>();
+
+  /** Fold one session's four documents into its row and store it. The read is
+   *  the same one the live fold used to make per session per poll; it is made
+   *  here instead, once per command that could have moved the answer. */
+  private storeSessionRow(sessionId: string, movesActivity = true, at = this.settlingClock()): void {
+    if (!this.executionStore) return;
+    const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
+    const before = this.executionStore.sessionRow(sessionId);
+    // The metadata is gone: the session was deleted inside this command, and
+    // `deleteSession` has already taken the row with it. A row that leaves is a
+    // change of membership, so every reader is told.
+    if (stored === undefined) {
+      this.executionStore.deleteSessionRow(sessionId);
+      if (before) this.listRevision = this.nextRevision();
+      return;
+    }
+    let record: Session;
+    try {
+      record = parseSession(stored);
+    } catch {
+      // Unreadable is SKIPPED, not thrown, exactly as in the fold this feeds:
+      // one corrupt directory must not fail every command that touches it.
+      return;
+    }
+    /**
+     * THE QUEUE IS ONLY READ WHEN THIS WRITE COULD HAVE MOVED IT — see
+     * `indexedSessionOf`. Carrying the five folded fields over from the row on
+     * file is not a cache: they are a function of three documents this command
+     * did not touch, so the stored answer IS the current answer.
+     *
+     * Without a row on file there is nothing to carry, so the fold runs — which
+     * is what the backfill and a session's first write both take.
+     */
+    const folded = movesActivity || before === undefined
+      ? this.withActivityFrom(record, this.readQueue(sessionId).turns)
+      : {
+          ...record,
+          activity: before.activity,
+          ...(before.activityAt === undefined ? {} : { activityAt: before.activityAt }),
+          ...(before.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: before.lastTurnEndedAt }),
+          ...(before.lastTurnFailed === undefined ? {} : { lastTurnFailed: before.lastTurnFailed }),
+          ...(before.lastTurnSequence === undefined ? {} : { lastTurnSequence: before.lastTurnSequence }),
+        };
+    const row = indexRow(folded);
+    this.executionStore.writeSessionRow(row);
+    this.noteSessionRevision(before, row, at);
+  }
+
+  /** The clock and the window every shelving question in one pass is asked
+   *  against — the STORE'S clock, never a wall clock; see `liveSessionRows`. */
+  private settlingClock(): { now: number; autoSettleAfterHours: number | null } {
+    return { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
+  }
+
+  /** Store every row this command owes, inside the command's own transaction.
+   *  ONE CLOCK AND ONE POLICY READ FOR THE WHOLE FLUSH: the rows are being
+   *  compared against each other's `before`, and a window that moved between
+   *  two of them would attribute a write to the wrong counter. */
+  private flushSessionRows(): void {
+    if (this.dirtySessionRows.size === 0) return;
+    const owed = [...this.dirtySessionRows];
+    this.dirtySessionRows.clear();
+    const at = this.settlingClock();
+    for (const [sessionId, movesActivity] of owed) this.storeSessionRow(sessionId, movesActivity, at);
   }
 
   /**
@@ -1696,23 +1891,118 @@ export class EngineStore {
    * forever. An ETag by another name, spelled in the body because two proxy hops
    * sit between this and a browser and neither forwards conditional headers.
    *
-   * BUMPED ON EVERY DOCUMENT WRITE BUT ONE, which is deliberately the
-   * safe-by-default direction: over-bumping costs a re-read nobody needed, and
-   * under-bumping costs a rail that quietly stops moving. The exception is
-   * `items.json`, the one hot write — it is rewritten as an assistant streams,
-   * and nothing on this list is derived from it. An allowlist of the four
-   * documents the fold actually reads would be tighter and would be wrong the
-   * first time somebody adds a fifth.
-   *
    * IN MEMORY, AND SEEDED FROM THE CLOCK. One writer, in this process, the same
    * ground `queueCache` stands on. A restart starts from a new, larger number,
    * so a client holding a cursor from the last daemon is told "changed" rather
    * than being handed a false "unchanged" — the one failure mode that would show
    * as a frozen rail.
+   *
+   * ══ AND IT IS THREE NUMBERS NOW, NOT ONE — issue #493 ══
+   *
+   * It used to be bumped by EVERY document write but `items.json`, on the
+   * argument that over-bumping costs a re-read nobody needed. On the owner's
+   * machine that turned out to cost rather more than that: an OAuth poll, a
+   * usage-limit refresh, a provider secret, an attachment index — none of which
+   * appear anywhere in this answer — each made every connected rail re-read all
+   * 291 sessions. The audit caught the #462 cursor hitting once in five attempts
+   * while the owner worked.
+   *
+   * So the bump is now per SESSION, and the number a reader is given is the
+   * newest one among the things that reader's answer is actually made of:
+   *
+   *   - `listRevision` — the three documents the answer reads beside the rows
+   *     (the project registry, the sidebar arrangement, the settling policy),
+   *     AND every change of MEMBERSHIP: a session created, deleted, archived, or
+   *     crossing between the list and the shelf. `settledCount` moves with this.
+   *   - `unshelvedRevision` — a write to a session that is on the list.
+   *   - `shelvedRevision` — a write to a session that is on the shelf. It is in
+   *     the `?all=1` answer and not in the default one, which is the whole point
+   *     of keeping it apart.
+   *
+   * WHY THREE COUNTERS AND NOT A MAP KEYED BY SESSION. The conditional read has
+   * to answer BEFORE the fold — that is what makes it cheap — so the revision
+   * must be available without reading anything. Three numbers maintained at
+   * write time are O(1) to serve; a max over a map would be O(sessions) on every
+   * idle tick, several times a second, forever.
+   *
+   * WHAT THIS STILL DOES NOT CATCH, unchanged from before: a row that crosses
+   * onto the shelf because TIME PASSED and nothing was written. No counter can
+   * move on an event that does not happen. A rail polls anyway, and the next
+   * write anywhere in the answer corrects it.
    */
-  private liveRevision = Date.now();
-  sessionsRevision(): number {
-    return this.liveRevision;
+  private revisionClock = Date.now();
+  private listRevision = this.revisionClock;
+  private unshelvedRevision = this.revisionClock;
+  private shelvedRevision = this.revisionClock;
+  private nextRevision(): number {
+    this.revisionClock += 1;
+    return this.revisionClock;
+  }
+
+  /**
+   * The cursor for one shape of the answer — see the counters above.
+   *
+   * `all` IS PART OF THE QUESTION. The wide answer carries the shelved rows, so
+   * a write to one of them changes it; the default answer does not carry them,
+   * so the same write changes nothing a rail would draw. Handing both readers
+   * one number would mean either lying to the shelf or re-reading the list.
+   */
+  sessionsRevision(options: { all?: boolean } = {}): number {
+    const base = Math.max(this.listRevision, this.unshelvedRevision);
+    return options.all === true ? Math.max(base, this.shelvedRevision) : base;
+  }
+
+  /**
+   * MOVE THE COUNTER THIS WRITE BELONGS TO, and only that one.
+   *
+   * A document that is neither a session's nor one of the three the answer
+   * reads moves NOTHING. That is the narrowing this exists for, and it is the
+   * one direction that can be wrong — an answer built from a document not on
+   * this list would go stale silently — so the list is spelled out here beside
+   * the reader that consumes it rather than inferred from a path shape.
+   *
+   * A SESSION'S WRITE IS ATTRIBUTED BY ITS ROW, in `noteSessionRevision`: which
+   * of the two session counters moves depends on which list the session is on,
+   * which is not known until the row has been folded.
+   */
+  private bumpRevisionFor(file: string, owner: { id: string } | undefined): void {
+    if (owner !== undefined) return;
+    /**
+     * NO INDEX, NO NARROWING. A store on the JSON backend has no `sessions`
+     * table, so no write can be attributed to a session and the allowlist below
+     * would silently stop the rail: every conversation's documents would move
+     * nothing. That store keeps the behaviour it has always had — bump on every
+     * write but the hot one — which is the safe direction and the one the
+     * narrowing above is measured against.
+     */
+    if (!this.executionStore) {
+      if (path.basename(file) !== "items.json") this.listRevision = this.nextRevision();
+      return;
+    }
+    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox) {
+      this.listRevision = this.nextRevision();
+    }
+  }
+
+  /**
+   * Attribute one session's write, now that its row says which list it is on.
+   *
+   * MEMBERSHIP OUTRANKS CONTENT. A session that crossed between the list and the
+   * shelf — or was created, or archived — changes WHICH rows the default answer
+   * holds and the `settledCount` beside them, so it moves `listRevision` and
+   * every reader is told. A session that merely changed while staying where it
+   * was moves its own side's counter, and the reader who cannot see it is not
+   * woken for it.
+   */
+  private noteSessionRevision(before: SessionIndexRow | undefined, after: SessionIndexRow, at: { now: number; autoSettleAfterHours: number | null }): void {
+    const shelved = after.state !== "active" || rowIsShelved(after, at);
+    const wasShelved = before === undefined ? undefined : before.state !== "active" || rowIsShelved(before, at);
+    if (before === undefined || wasShelved !== shelved) {
+      this.listRevision = this.nextRevision();
+      return;
+    }
+    if (shelved) this.shelvedRevision = this.nextRevision();
+    else this.unshelvedRevision = this.nextRevision();
   }
 
   /**
@@ -1754,8 +2044,12 @@ export class EngineStore {
   private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>): void {
     const sqlite = this.executionStore?.owns(file);
     const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
-    if (sqlite) this.executionStore!.writeText(file, text);
-    else atomicWriteText(file, text);
+    // The queue is one of the four the row folds over, so it takes the same
+    // route `writeDocument` does — document and row, one transaction.
+    this.inRowTransaction(this.indexedSessionOf(file), () => {
+      if (sqlite) this.executionStore!.writeText(file, text);
+      else atomicWriteText(file, text);
+    });
     const bytes = Buffer.from(text, "utf8");
     const ranges = arrayElementRanges(bytes, property);
     const index: DocumentIndex = ranges && ranges.length === rows.length
@@ -1826,13 +2120,31 @@ export class EngineStore {
     if (!this.executionStore) return action();
     this.commandDepth += 1;
     let result: T;
-    try { result = this.executionStore.transaction(command, action, commandId); }
+    try {
+      result = this.executionStore.transaction(command, () => {
+        const value = action();
+        /**
+         * THE INDEX ROWS, INSIDE THE TRANSACTION THAT EARNED THEM — issue #493.
+         *
+         * At the END of the outermost command rather than after each document,
+         * because the row is a fold over four of them and one command commonly
+         * moves three; and INSIDE it rather than in `afterCommit`, because a row
+         * that commits separately from its document is a rail that can disagree
+         * with the conversation behind it. A command that throws never gets
+         * here, and its owed rows are dropped below with everything else the
+         * rollback took.
+         */
+        if (this.commandDepth === 1) this.flushSessionRows();
+        return value;
+      }, commandId);
+    }
     catch (error) {
       this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
       // Rolled back under this store's feet: anything read or written inside
       // the transaction describes a queue sqlite no longer has.
       this.queueCache.clear(); this.itemsCache.clear(); this.queueChangeAnnounced = false;
       this.pendingStopTasks.clear(); this.afterCommit = [];
+      this.dirtySessionRows.clear();
       throw error;
     } finally { this.commandDepth -= 1; }
     if (this.commandDepth === 0) {
@@ -4871,7 +5183,56 @@ export class EngineStore {
         Object.defineProperty(this, name, { value: (...args: unknown[]) =>
           this.executeCommand(name, () => Reflect.apply(operation, this, args)) });
       }
+      // AFTER the commands are wrapped, so the backfill's own writes go through
+      // one transaction rather than one per row.
+      this.sessionIndexBackfill = this.backfillSessionRows();
     }
+  }
+
+  /**
+   * WHAT THE INDEX BACKFILL BUILT ON OPEN — issue #493. See `backfillSessionRows`.
+   *
+   * Surfaced so the daemon can say it, on the same argument the housekeeping
+   * sweep makes one screen up: a first open after this shipped folds every
+   * session on the machine, and a person watching a slow start deserves to know
+   * what it was doing. Absent on a store with no execution database; zero on
+   * every open after the first, which the daemon says nothing about.
+   */
+  readonly sessionIndexBackfill?: { built: number; removed: number };
+
+  /**
+   * EVERY SESSION HAS A ROW BY THE TIME THIS RETURNS — the one-time backfill,
+   * which is idempotent and therefore runs on every open.
+   *
+   * IT RECONCILES RATHER THAN REBUILDS. `sessionRowGaps` compares two sets of
+   * keys — no document text on either side — and the answer is empty on every
+   * open but the first, so the ordinary cost is one covering seek and one
+   * primary-key scan. A store that has only ever been written by a binary with
+   * this change never has a gap at all.
+   *
+   * WHY NOT A `metadata` MARKER, LIKE THE IMPORT'S. The table is additive and
+   * `user_version` stays at 1 (see the schema), so an older binary can open this
+   * store, write documents it does not know to index, and hand it back. A marker
+   * would say "done" over rows that had gone stale underneath it. Keys are cheap
+   * enough that asking honestly beats trusting a flag that a downgrade
+   * invalidates.
+   *
+   * IT DOES NOT CATCH A STALE ROW — only a missing or an orphaned one. A row
+   * whose document was rewritten by a binary that did not maintain it stays
+   * wrong until that session is next written to. That is the trade the additive
+   * schema buys, and it is bounded: the rows a downgrade can touch are the
+   * sessions it was used to work in, and working in one writes it again.
+   */
+  private backfillSessionRows(): { built: number; removed: number } {
+    const store = this.executionStore;
+    if (!store) return { built: 0, removed: 0 };
+    const { missing, orphaned } = store.sessionRowGaps();
+    if (missing.length === 0 && orphaned.length === 0) return { built: 0, removed: 0 };
+    this.executeCommand("backfillSessionIndex", () => {
+      for (const id of orphaned) store.deleteSessionRow(id);
+      for (const id of missing) this.storeSessionRow(id);
+    });
+    return { built: missing.length, removed: orphaned.length };
   }
 
   /**
@@ -7108,8 +7469,8 @@ export class EngineStore {
    * blank a sidebar; that is the same tolerance the spool store's reader takes
    * for the same reason.
    */
-  private readSessions(): Session[] {
-    return this.storedSessionIds()
+  private readSessions(only?: Set<string>): Session[] {
+    return (only ? [...only] : this.storedSessionIds())
       .flatMap((id) => {
         try {
           return [this.getSession(id)];
@@ -7159,11 +7520,18 @@ export class EngineStore {
    *
    * AN UNREADABLE SESSION IS SKIPPED, NOT THROWN, exactly as in `readSessions`:
    * one corrupt directory must not blank a sidebar.
+   *
+   * AND `only` NARROWS IT TO THE ROWS THE ANSWER WILL CONTAIN — issue #493. The
+   * caller that has an index to decide from (`liveSessionRows`) knows which
+   * sessions survive shelving before it reads a single document, so it names
+   * them and this pays for those alone. On the owner's store that is seven of
+   * 291. Absent, this is the pass over everything it has always been, which is
+   * what the in-process `liveSessions` toolkit still wants.
    */
-  private foldLiveSessions(): { sessions: Session[]; assignments: Record<string, SessionAssignment[]> } {
+  private foldLiveSessions(only?: Set<string>): { sessions: Session[]; assignments: Record<string, SessionAssignment[]> } {
     const sessions: Session[] = [];
     const assignments: Record<string, SessionAssignment[]> = {};
-    for (const id of this.storedSessionIds()) {
+    for (const id of only ?? this.storedSessionIds()) {
       const stored = this.readDocument(sessionMetadataFile(this.paths, id));
       if (stored === undefined) continue;
       let record: Session;
@@ -7185,8 +7553,54 @@ export class EngineStore {
     return { sessions, assignments };
   }
 
+  /**
+   * WHICH ROWS THE RAIL WOULD DRAW, DECIDED WITHOUT READING A CONVERSATION —
+   * issue #493.
+   *
+   * `undefined` when there is no index to decide from: a store on the JSON
+   * backend has no `sessions` table, and the caller falls back to the fold over
+   * everything that this replaces. That fallback is not dead code — it is the
+   * reference the indexed path is measured against, and every test that
+   * constructs a store without `executionStorage: "sqlite"` runs it.
+   *
+   * THE RULE IS THE SAME CALL, ON A NARROWER SHAPE. `rowIsShelved` hands the row
+   * to `isShelved` — the clients' own function, imported — exactly as the
+   * document path hands it a `Session`. If those two could disagree, the
+   * disagreement would be a conversation that is on one device's list and on
+   * another's shelf; they cannot, because there is one function and the row
+   * carries the fields it reads.
+   */
+  private shelfFromIndex(inbox: InboxPolicy, all: boolean): { chosen: Set<string>; settledCount: number } | undefined {
+    if (!this.executionStore) return undefined;
+    // ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — see the document
+    // path below for why a test's counting clock must not meet a wall clock here.
+    const at = { now: this.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
+    const chosen = new Set<string>();
+    let settledCount = 0;
+    // `liveSessions` carries the ACTIVE sessions and nothing else, so the read
+    // seeks past the archived rows rather than folding and dropping them.
+    for (const row of this.executionStore.liveSessionRows()) {
+      if (rowIsShelved(row, at)) {
+        settledCount += 1;
+        if (!all) continue;
+      }
+      chosen.add(row.id);
+    }
+    return { chosen, settledCount };
+  }
+
   listSessions(projectId: string): Session[] {
     this.getProject(projectId);
+    /**
+     * THE PROJECT'S OWN ROWS, BY THE INDEX THAT EXISTS FOR THEM — issue #493.
+     *
+     * This used to read EVERY session on the engine and throw away the ones
+     * belonging to other projects: on the owner's store, 291 documents parsed to
+     * answer a question about a handful. `(project_id, updated_at)` names them
+     * without touching a document, and `readSessions` then pays for those alone.
+     */
+    const rows = this.executionStore?.projectSessionRows(projectId);
+    if (rows) return this.readSessions(new Set(rows.map((row) => row.id)));
     return this.readSessions().filter((session) => session.projectId === projectId);
   }
 
@@ -7215,7 +7629,7 @@ export class EngineStore {
    * costs no request, no timer and no connection anywhere, and every device
    * converges within one polling pass. See `SidebarLayout`.
    */
-  liveSessions(): {
+  liveSessions(only?: Set<string>): {
     sessions: Session[];
     projects: Array<{ id: string; name: string }>;
     assignments: Record<string, SessionAssignment[]>;
@@ -7234,7 +7648,7 @@ export class EngineStore {
      * AND IT IS ONE PASS NOW, rather than one for the activity and a second for
      * the assignments over the same documents (#464). See `foldLiveSessions`.
      */
-    const { sessions, assignments } = this.foldLiveSessions();
+    const { sessions, assignments } = this.foldLiveSessions(only);
     return {
       sessions,
       projects: projects.map((project) => ({ id: project.id, name: project.name })),
@@ -7305,9 +7719,38 @@ export class EngineStore {
      * state this answer does not contain, and the client would hold a cursor
      * that says it is up to date with rows it never received.
      */
-    const revision = this.sessionsRevision();
-    const full = this.liveSessions();
+    const revision = this.sessionsRevision({ all: options.all === true });
     const inbox = this.getInboxPolicy();
+    const indexed = this.shelfFromIndex(inbox, options.all === true);
+    if (indexed) {
+      /**
+       * ══ THE INDEXED PATH — issue #493 ══
+       *
+       * The partition was decided above off `sessions` rows, so this reads
+       * documents for the rows that SURVIVED it and for nothing else. On the
+       * owner's store that is seven sessions rather than 291, and the 284 it
+       * skips are the ones whose whole contribution to the old answer was
+       * `settledCount += 1`.
+       *
+       * WHICH DOCUMENTS A SURVIVING ROW STILL COSTS: `session.json`, for the
+       * payload the row deliberately does not carry (title, driver, model,
+       * workspace, usage, `startedFrom`), and `queue.json`, for the assignments
+       * — plus `requests.json` and `tasks.json`, which `withActivityFrom` reads
+       * to re-derive the activity. The row's own activity is not trusted to
+       * serve the wire: it is what the DECISION is made on, and a row a
+       * downgrade left stale must not be able to put a wrong pill on a rail. It
+       * can only put a row on the list that the fold then describes correctly.
+       */
+      const full = this.liveSessions(indexed.chosen);
+      return {
+        ...full,
+        sessions: full.sessions.map(liveRow),
+        inbox,
+        revision,
+        settledCount: indexed.settledCount,
+      };
+    }
+    const full = this.liveSessions();
     /**
      * ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — `this.now()`, the
      * same clock that stamped every `updatedAt` this compares against. A test
@@ -9280,6 +9723,12 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "session.archived" });
     this.executionStore?.deleteSession(sessionId);
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
+    // A row that left is a change of MEMBERSHIP — the list is shorter, or the
+    // shelf's count is — so every reader is told rather than only the side this
+    // session happened to be on. See `sessionsRevision`. Also drop whatever this
+    // command owed for it: there is no document left to fold.
+    this.dirtySessionRows.delete(sessionId);
+    this.listRevision = this.nextRevision();
     // The queue went with the directory, so no `writeQueue` will ever retire
     // this id from the live index. Drop it here or a worker keeps asking about
     // a session that no longer exists.
