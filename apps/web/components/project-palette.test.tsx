@@ -350,7 +350,10 @@ test("the register dialog is gone, and every way in is the palette's Sources pag
   // form open behind a project picker. One piece of state still, now that the
   // command palette's own list is a third page of the same surface.
   expect(sidebar).not.toContain("RegisterProjectDialog");
-  expect(sidebar).toContain('const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });');
+  // `asked` joins `open` on every path in — see command-palette.test.tsx: the
+  // palette is a chunk of its own now, and the rail only mounts it once one of
+  // these has fired (#492).
+  expect(sidebar).toContain('const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, asked: true, page, query: seed });');
   expect(sidebar).toContain('onClick={() => openPalette("sources")}');
   expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
 });

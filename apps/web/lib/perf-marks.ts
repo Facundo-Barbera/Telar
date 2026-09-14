@@ -26,6 +26,23 @@
  * `window.telarNavTimings()` reads the ring out of a packaged build, which is
  * the route a nightly can be measured through without this file gaining a
  * network call of its own.
+ *
+ * WHO INSTALLS IT, AND WHY IT MOVED (#492). The reader used to be fitted by the
+ * front door and the cockpit, which are the two components that do not exist on
+ * the screens this ring most needed to describe: open a packaged build straight
+ * onto `/settings` and `window.telarNavTimings` was simply undefined, so the
+ * one page whose whole cost is arriving could not be measured at all. It is
+ * fitted from the app shell now — the client component every route in the
+ * cockpit renders — and the cockpit keeps its own `installNavigationMarks()`
+ * because the call is idempotent and a measurement should not depend on which
+ * of two files somebody edits next.
+ *
+ * A COLD LOAD IS A NAVIGATION TOO. `startNavigation` was only ever called by a
+ * press or by the front door's redirect, so a window opening directly on a
+ * route recorded nothing: the shell starts one for its own first pathname,
+ * which is where "opening Telar on this screen" finally has a number. The call
+ * is idempotent per destination, so a press that started the clock earlier
+ * keeps its own — earlier — start stamp.
  */
 
 /** The four stamps, in the order they happen. */
@@ -62,9 +79,30 @@ let listening = false;
 const now = (): number => (typeof performance === "undefined" ? Date.now() : performance.now());
 
 /** Session and canvas addresses, with or without a `/hosts/:id` prefix — the
- *  two navigations #407 is about, and nothing else. */
+ *  two navigations #407 is about. */
 function isConversationHref(pathname: string): boolean {
   return /^(?:\/hosts\/[^/]+)?\/projects\/[^/]+\/sessions\/(?:new|[^/]+)\/?$/.test(pathname);
+}
+
+/**
+ * The settings screens, cockpit-wide and per-project.
+ *
+ * WHY THEY ARE MEASURED NOW (#492). #490's complaint is "even an empty page
+ * takes a long time", and settings IS that empty page: nothing on it is a fold
+ * over a live conversation, so whatever it spends is spent on arriving. Until
+ * this, the ring watched conversation routes only — so the one screen whose
+ * slowness was pure overhead was the one screen with no number on it, and a fix
+ * for it could not be told from a good mood.
+ */
+function isSettingsHref(pathname: string): boolean {
+  return pathname === "/settings" || /^\/projects\/[^/]+\/settings(?:\/|$)/.test(pathname);
+}
+
+/** Every address this ring keeps time on. Deliberately short: a measurement of
+ *  everything is a measurement of nothing, and these are the two openings
+ *  anybody has complained about. */
+export function isMeasuredHref(pathname: string): boolean {
+  return isConversationHref(pathname) || isSettingsHref(pathname);
 }
 
 function mark(name: string): void {
@@ -149,7 +187,7 @@ export function installNavigationMarks(): void {
       } catch {
         return;
       }
-      if (!isConversationHref(pathname) || pathname === window.location.pathname) return;
+      if (!isMeasuredHref(pathname) || pathname === window.location.pathname) return;
       startNavigation(pathname, "click");
     },
     true,

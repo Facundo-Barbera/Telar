@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import dynamic from "next/dynamic";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -36,7 +37,7 @@ import type {
   TurnState,
 } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
-import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import type { JournalTask } from "@/lib/engine/journal";
 import { browserPageReference, startReferenceDrag, taskReference, type TelarReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
@@ -61,24 +62,53 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
-import { DiffSurface } from "@/components/session/diff-surface";
-import { EditorSurface } from "@/components/session/editor-surface";
-import { FileViewSurface } from "@/components/session/file-view-surface";
-import { NotebookSurface } from "@/components/session/notebook-surface";
-import { PdfSurface } from "@/components/session/pdf-surface";
-import { TableSurface } from "@/components/session/table-surface";
-import { DataSurface } from "@/components/session/data-surface";
-import { LatexSurface } from "@/components/session/latex-surface";
-import { RunPanel } from "@/components/run/run-panel";
-import { ImageLightbox } from "@/components/session/image-lightbox";
+import { RelatedConversations } from "@/components/session/related-conversations";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { PANEL_TAB_MIME, type PanelTabInstance, type PanelTabParams } from "@/lib/right-panel-tabs";
 import { useCommandHandlers } from "@/lib/use-command-keys";
-import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
-import { GitHubSurface } from "@/components/session/github-surface";
-import { RelatedConversations } from "@/components/session/related-conversations";
 import { cn } from "@/lib/utils";
+
+/**
+ * ONE TAB IS OPEN; THE OTHER TWELVE SURFACES ARE NOT (#492).
+ *
+ * `PanelSurface` below is a ladder of `if`s over `tab.kind`, and exactly one arm
+ * ever returns. Statically imported, every arm's module was in the chunk the
+ * CONVERSATION route's first paint waited on — a Jupyter notebook renderer, a
+ * LaTeX previewer, a PDF viewer, a data grid, a code editor and the desktop
+ * browser, loaded in full to open a conversation whose panel is shut. The panel
+ * even starts CLOSED, so on the common path none of it was drawn at all.
+ *
+ * NO `ssr: false`, THOUGH IT WOULD READ AS THE OBVIOUS CHOICE — which tab is
+ * open comes out of localStorage, so the server renders none of these anyway,
+ * and dropping SSR would save nothing it does not already save. It would cost
+ * something real: `next/dynamic({ ssr: false })` renders permanently NOTHING
+ * under this suite's environment (bun + happy-dom, outside a Next build), so a
+ * surface declared that way is a surface no test can ever mount. Two annotate
+ * tests proved it by going red on exactly that. The client chunk splits either
+ * way — `ssr` decides where the component may render, not whether it is bundled
+ * separately — so the testable spelling is simply the better one.
+ *
+ * THE BROWSER IS THE ONE THAT NEEDED MORE THAN THIS. Its module was reachable
+ * by a second road — `desktopBrowserBridge()`, a `typeof window` check three
+ * modules make — so the import above had to move to `lib/desktop-browser-bridge.ts`
+ * before `dynamic` here could shift anything.
+ */
+const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
+const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
+const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
+const FileViewSurface = dynamic(() => import("@/components/session/file-view-surface").then((mod) => mod.FileViewSurface));
+const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
+const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
+const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
+const DataSurface = dynamic(() => import("@/components/session/data-surface").then((mod) => mod.DataSurface));
+const LatexSurface = dynamic(() => import("@/components/session/latex-surface").then((mod) => mod.LatexSurface));
+const RunPanel = dynamic(() => import("@/components/run/run-panel").then((mod) => mod.RunPanel));
+const ForgeDetailSurface = dynamic(() => import("@/components/session/github-detail-surface").then((mod) => mod.ForgeDetailSurface));
+const GitHubSurface = dynamic(() => import("@/components/session/github-surface").then((mod) => mod.GitHubSurface));
+/** Not a tab: an overlay over the whole panel, and only once an attachment is
+ *  pressed — so it is never on screen on arrival either. */
+const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
 
 /** The panel reads the engine directly for the one thing the journal cannot
  *  carry: the browser's current pixels. Everything else on this surface is a

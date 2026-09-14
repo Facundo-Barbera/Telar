@@ -23,31 +23,57 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
-import { AppearanceSection } from "./appearance-section";
-import { InboxSection } from "./inbox-section";
-import { LinksSection } from "./links-section";
-import { McpSection } from "./mcp-section";
-import { OrientationSection } from "./orientation-section";
-import { IntegrationsPage } from "./integrations-page";
-import { KeybindingsPage } from "./keybindings-page";
-import { ProjectsPage } from "./projects-page";
-import { PermissionsSection } from "./permissions-section";
-import { ProvidersSection } from "./providers-section";
-import { RemoteSection } from "./remote-section";
-import { SourceControlPage } from "./source-control-page";
-import { OtherMacsSection } from "./other-macs-section";
-import { TextGenSection } from "./textgen-section";
-import { PluginsPage } from "./plugins-page";
-import { UpdatesSection } from "./updates-section";
-import { UsageProvidersSection } from "./usage-providers-section";
-import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 import { useSectionFromUrl } from "./use-section-from-url";
+
+/**
+ * ONE PANE AT A TIME, AND ONLY THE ONE BEING READ (#492).
+ *
+ * Every arm of the render below is guarded by `active === …`, so at most one of
+ * these is on screen and the rest are code the reader will probably never ask
+ * for — somebody opens Settings to change a model or a shortcut, not to load a
+ * LaTeX toolchain manager, a theme editor and a package browser. Statically
+ * imported, all eighteen were in the chunk the FIRST pane's paint waited on:
+ * roughly a third of `/settings`, none of it drawn.
+ *
+ * SERVER RENDERING IS KEPT (no `ssr: false`). `useSectionFromUrl` deliberately
+ * reports the fallback pane on the server and corrects in an effect, so General
+ * is what the first HTML contains — that is a paint, and dropping it would trade
+ * the split for a blank frame on the one pane that opens by default.
+ *
+ * NO `loading`, because these swap on a click within one app: the chunk comes
+ * off the same origin the page came from, and a spinner that resolves in the
+ * same frame is a flash, not feedback.
+ *
+ * WHY EIGHTEEN LINES RATHER THAN A MAP over ids: `import()` must take a literal
+ * path for the bundler to see it at all (next/dist/docs/01-app/02-guides/
+ * lazy-loading.md). A table keyed by section id would compile and split nothing.
+ */
+const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
+const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
+const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
+const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
+const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
+const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
+const KeybindingsPage = dynamic(() => import("./keybindings-page").then((mod) => mod.KeybindingsPage));
+const ProjectsPage = dynamic(() => import("./projects-page").then((mod) => mod.ProjectsPage));
+const PermissionsSection = dynamic(() => import("./permissions-section").then((mod) => mod.PermissionsSection));
+const ProvidersSection = dynamic(() => import("./providers-section").then((mod) => mod.ProvidersSection));
+const RemoteSection = dynamic(() => import("./remote-section").then((mod) => mod.RemoteSection));
+const SourceControlPage = dynamic(() => import("./source-control-page").then((mod) => mod.SourceControlPage));
+const OtherMacsSection = dynamic(() => import("./other-macs-section").then((mod) => mod.OtherMacsSection));
+const TextGenSection = dynamic(() => import("./textgen-section").then((mod) => mod.TextGenSection));
+const PluginsPage = dynamic(() => import("./plugins-page").then((mod) => mod.PluginsPage));
+const UpdatesSection = dynamic(() => import("./updates-section").then((mod) => mod.UpdatesSection));
+const UsageProvidersSection = dynamic(() => import("./usage-providers-section").then((mod) => mod.UsageProvidersSection));
+const WorkspaceSection = dynamic(() => import("./workspace-section").then((mod) => mod.WorkspaceSection));
 
 const api = createEngineApi();
 
@@ -236,8 +262,25 @@ export function SettingsPage() {
     }
   }, []);
 
+  /**
+   * ...AND WHEN IT STOPPED ASSEMBLING ITSELF (#492).
+   *
+   * The app shell stamps `commit` — the route rendering at all — and this
+   * stamps `idle`, the two of them bracketing what "opening Settings" costs.
+   * There is no `transcript` phase: that stamp means a conversation's own rows
+   * landed, and this page has none, so it stays absent rather than being given
+   * a meaning it does not have.
+   *
+   * ON `load()` RESOLVING, NOT ON A PIECE OF STATE ARRIVING. `about` is set
+   * only when the engine answers, so an idle keyed to it would never fire on a
+   * machine whose daemon is down — the slowest arrival there is would be the
+   * one missing from the numbers. `load` settles either way, which is the
+   * honest reading of "this screen has what it is going to have".
+   */
   useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
+    const task = window.setTimeout(() => {
+      void load().then(() => markNavigation("idle", window.location.pathname));
+    }, 0);
     return () => window.clearTimeout(task);
   }, [load]);
 
