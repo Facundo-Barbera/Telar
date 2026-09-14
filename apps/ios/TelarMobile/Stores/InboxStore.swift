@@ -207,8 +207,14 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     func refresh() async {
         do {
             let live = try await api.liveSessions()
-            if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
-               let policy = try? await api.inboxPolicy() {
+            // THE WINDOW RIDES THE LIST NOW (#459), so the ask below is only for
+            // a Mac whose engine predates the field — the same shape, and the
+            // same reason, as the arrangement's fallback just after it.
+            if let policy = live.inbox {
+                autoSettleAfterHours = policy.autoSettleAfterHours
+                policyReadAt = .now
+            } else if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+                      let policy = try? await api.inboxPolicy() {
                 autoSettleAfterHours = policy.autoSettleAfterHours
                 policyReadAt = .now
             }

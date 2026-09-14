@@ -6888,18 +6888,26 @@ export class EngineStore {
    * un-settle ledger several times a second to clients that render none of them.
    * See `LiveSessionRow` for the field-by-field argument.
    *
-   * THE PROJECTION IS THE ONLY DIFFERENCE. Same filter, same ordering, same
-   * assignments, same layout — a caller that wants the old rows asks the route
-   * with `?full=1` and gets `liveSessions()` verbatim.
+   * THE PROJECTION IS THE ONLY DIFFERENCE to the rows. Same filter, same
+   * ordering, same assignments, same layout — a caller that wants the old rows
+   * asks the route with `?full=1` and gets `liveSessions()` verbatim.
+   *
+   * AND THE SETTLING WINDOW RIDES ALONG, for the reason `layout` does. A rail
+   * bands every row by the policy of the engine those rows live on, so it was
+   * fetching `/v2/inbox` beside this on every pass — a second request, per host,
+   * per tick, for one number that changes when somebody opens Settings. It is
+   * the same argument the arrangement makes: this is the read a rail is already
+   * making, so anything the rail needs on every pass belongs on it.
    */
   liveSessionRows(): {
     sessions: LiveSessionRow[];
     projects: Array<{ id: string; name: string }>;
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
+    inbox: InboxPolicy;
   } {
     const full = this.liveSessions();
-    return { ...full, sessions: full.sessions.map(liveRow) };
+    return { ...full, sessions: full.sessions.map(liveRow), inbox: this.getInboxPolicy() };
   }
 
   turns(sessionId: string): Turn[] {

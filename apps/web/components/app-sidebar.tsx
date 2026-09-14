@@ -483,20 +483,29 @@ function SidebarBody() {
      * host being loaded rather than of the page being looked at.
      */
     const hostApi = createEngineApi(hostFetcher(host?.id ?? LOCAL_HOST_ID));
-    // The engine's identity rides beside its rows, so two reads that reached
-    // ONE engine (a Mac paired with itself, or under two addresses) can be
-    // folded into one — see `dedupeAcrossHosts`. Best-effort: a health that
-    // fails leaves the rows undeduplicated rather than dropped.
-    //
-    // ITS SETTLING WINDOW COMES WITH IT. A row is banded by the clock of the
-    // engine it lives on — the inbox policy is that engine's document — so a
-    // paired Mac's "72 hours" cannot shelve a row this Mac's "off" would keep,
-    // which is how a conversation read as settled here and live over there.
-    const [result, daemonId, policy] = await Promise.all([
-      hostApi.liveSessions(),
-      hostApi.health().then((health) => health.daemonId, () => undefined),
-      hostApi.inbox().then((answer) => answer.inbox, () => undefined),
-    ]);
+    /**
+     * ONE READ PER HOST PER PASS (#459) — and it used to be three.
+     *
+     * The engine's identity rides beside its rows, so two reads that reached ONE
+     * engine (a Mac paired with itself, or under two addresses) can be folded
+     * into one; see `dedupeAcrossHosts`. Its settling window comes with it, so a
+     * row is banded by the clock of the engine it lives on and a paired Mac's
+     * "72 hours" cannot shelve what this Mac's "off" would keep.
+     *
+     * BOTH USED TO BE THEIR OWN REQUEST, issued concurrently with the list. That
+     * is three sockets per host per tick — six with one paired Mac, against a
+     * browser's six-connection cap (#82) — to learn two fields that change when
+     * somebody opens Settings. The engine now stamps them on the list, which is
+     * the one read this rail was making anyway.
+     *
+     * STILL BEST-EFFORT, and it has to be: an engine older than the fields sends
+     * neither, and absent must read as "no answer" rather than an answer. No
+     * daemon id leaves that host's rows undeduplicated; no policy falls back to
+     * the default window. Neither costs a row.
+     */
+    const result = await hostApi.liveSessions();
+    const daemonId = result.daemonId;
+    const policy = result.inbox;
     const names = new Map(result.projects.map((project) => [project.id, project.name]));
     // The checkout's current branch, for the local sessions that share it —
     // they have no branch of their own. Derived per project by the engine.

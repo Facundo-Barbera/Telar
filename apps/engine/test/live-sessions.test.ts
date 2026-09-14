@@ -150,9 +150,17 @@ test("`?full=1` serves the old shape over the wire, for one release", async () =
     await client.createSession({ id: "session_one", projectId: "project_one" });
 
     // The default is the row: this is what every cockpit now receives.
-    const rows = (await client.liveSessions()).sessions;
-    expect(rows[0]).not.toHaveProperty("runtimeMode");
-    expect(rows[0]).not.toHaveProperty("environmentId");
+    const live = await client.liveSessions();
+    expect(live.sessions[0]).not.toHaveProperty("runtimeMode");
+    expect(live.sessions[0]).not.toHaveProperty("environmentId");
+    /**
+     * AND THE RAIL'S WHOLE PASS IS THIS ONE ANSWER. `daemonId` and the settling
+     * window used to be a `/v2/health` and a `/v2/inbox` issued concurrently
+     * with this — three reads per host per tick for two fields that move when
+     * somebody opens Settings.
+     */
+    expect(live.daemonId).toBe(daemon.discovery.daemonId);
+    expect(live.inbox).toEqual(await client.inboxPolicy().then((answer) => answer.inbox));
 
     // And a client built against the old shape still has one to ask for — a
     // paired Mac on last week's nightly, or a script.

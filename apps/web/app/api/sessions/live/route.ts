@@ -22,7 +22,7 @@ function ownedRemoved(
 export async function GET() {
   try {
     const client = await engineClient();
-    const [{ sessions, assignments, layout }, { projects }] = await Promise.all([
+    const [{ sessions, assignments, layout, daemonId, inbox }, { projects }] = await Promise.all([
       client.liveSessions(),
       client.listProjects(),
     ]);
@@ -50,6 +50,13 @@ export async function GET() {
       // is how a drag on the phone or another window reaches this one, on the
       // poll the rail was making anyway. Omitted by an engine that predates it.
       ...(layout ? { layout } : {}),
+      // WHICH ENGINE ANSWERED, AND HOW IT BANDS (#459) — forwarded for the same
+      // reason, and this is the half that removes two requests rather than
+      // saving bytes: the rail used to issue a `health()` and an `inbox()`
+      // concurrently with this one, per host, per tick. Omitted by an engine
+      // that predates them, which a rail reads as "no answer" and not as one.
+      ...(daemonId ? { daemonId } : {}),
+      ...(inbox ? { inbox } : {}),
     });
   } catch (error) {
     return engineErrorResponse(error);

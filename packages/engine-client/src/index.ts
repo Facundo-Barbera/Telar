@@ -1907,6 +1907,11 @@ export class EngineClient {
    * assignable to one, so a caller holding either keeps working; a client that
    * genuinely needs the old shape asks the route with `?full=1`, for one release.
    *
+   * AND IT IS THE WHOLE OF WHAT A RAIL ASKS PER PASS. `daemonId` and the inbox
+   * policy ride here for the same reason the arrangement does — this is the read
+   * every rail already makes, and fetching either beside it meant three
+   * concurrent requests per host per tick for two fields that almost never move.
+   *
    * AND SO DOES THE ARRANGEMENT. `layout` is the engine's whole
    * `sidebar-layout.json`, carried here because this is the one route every
    * rail already polls — which is what lets a drag on one device reach the
@@ -1919,6 +1924,13 @@ export class EngineClient {
     projects: Array<{ id: string; name: string }>;
     assignments?: Record<string, SessionAssignment[]>;
     layout?: SidebarLayout;
+    /** This engine's identity, so two reads that reached ONE engine fold into
+     *  one row set. Absent from an engine too old to stamp it; a rail then
+     *  leaves its hosts undeduplicated rather than dropping any. */
+    daemonId?: string;
+    /** The settling window these rows band by — the engine's own, because a
+     *  paired Mac's "72 hours" must not shelve what this Mac's "off" keeps. */
+    inbox?: InboxPolicy;
   }> {
     return this.request("GET", "/v2/sessions/live");
   }

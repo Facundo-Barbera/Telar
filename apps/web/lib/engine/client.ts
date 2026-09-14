@@ -484,6 +484,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * sessions, several times a second, most of it engine bookkeeping no rail
      * has ever read. A full `Session` is assignable to a row, so anything here
      * that was handed one keeps working.
+     *
+     * AND IT IS NOW THE RAIL'S WHOLE PASS. `daemonId` and `inbox` used to be a
+     * `health()` and an `inbox()` issued beside this one, three concurrent reads
+     * per host per tick; both answer one field that moves when somebody opens
+     * Settings. They ride here for the same reason `layout` does.
      */
     liveSessions: () =>
       request<{
@@ -491,6 +496,13 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         projects: Project[];
         assignments?: Record<string, SessionAssignment[]>;
         layout?: SidebarLayout;
+        /** Which engine answered — what folds two reads that reached ONE Mac.
+         *  Absent from an engine too old to stamp it; the rail then leaves its
+         *  hosts undeduplicated rather than dropping rows. */
+        daemonId?: string;
+        /** The settling window these rows band by, this engine's own. Absent
+         *  from an older engine; the rail falls back to its default. */
+        inbox?: InboxPolicy;
       }>(fetcher, "GET", "/api/sessions/live"),
     createSession: (
       projectId: string,

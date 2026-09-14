@@ -346,11 +346,20 @@ struct LiveSessions: Decodable {
     /// delegate, and a cockpit too old to forward the field sends none at all.
     /// The rail then draws exactly the flat list it always did.
     var assignments: [EngineID: [SessionAssignment]] = [:]
+    /// THE SETTLING WINDOW THESE ROWS BAND BY — that Mac's own, riding the read
+    /// the phone already makes (#459). It used to be a second request, rationed
+    /// to once a minute because against a slow Mac an extra call per poll is
+    /// what keeps the list a poll behind; now it costs nothing and is never
+    /// stale. Nil from a Mac whose engine predates the field, and the store then
+    /// falls back to asking for it directly, on the same ration as before.
+    var inbox: InboxPolicy?
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // A policy this build cannot read costs the window, never the list.
+        inbox = try? c.decodeIfPresent(InboxPolicy.self, forKey: .inbox)
         sessions = try c.decode([Skippable<Session>].self, forKey: .sessions).compactMap(\.value)
         projects = try c.decode([Skippable<ProjectRef>].self, forKey: .projects).compactMap(\.value)
         // A layout this build cannot read costs the arrangement, never the

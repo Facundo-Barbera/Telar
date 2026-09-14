@@ -3455,12 +3455,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * sat at 70% CPU with two devices attached. `liveSessionRows` serializes
        * only what a row draws; `LiveSessionRow` argues it field by field.
        *
+       * IT IS ALSO THE WHOLE OF WHAT A RAIL ASKS PER PASS. The sidebar used to
+       * fan out three ways here — this list, `/v2/health` for the engine's id
+       * and `/v2/inbox` for the settling window — three concurrent reads, per
+       * paired host, per tick, of which two answered one field each and changed
+       * only when somebody opened Settings. `daemonId` is stamped on here rather
+       * than in the store because it belongs to the running daemon, not to the
+       * documents: two reads that reached ONE engine (a Mac paired with itself,
+       * or under two addresses) are folded on it.
+       *
        * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
        * the old shape — a paired Mac on last week's nightly, a script. It is not
        * a mode anything of ours asks for, and it is meant to be deleted.
        */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
-        writeJson(response, 200, url.searchParams.get("full") === "1" ? store.liveSessions() : store.liveSessionRows());
+        if (url.searchParams.get("full") === "1") {
+          writeJson(response, 200, store.liveSessions());
+          return;
+        }
+        writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
         return;
       }
       /**

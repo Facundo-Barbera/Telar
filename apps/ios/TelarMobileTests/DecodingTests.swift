@@ -74,6 +74,22 @@ func fixture(_ name: String) throws -> Data {
         #expect(session.workspace.baseRef == nil)
         #expect(session.runtimeMode == "approval-required")
         #expect(session.detached == false)
+        // No policy on this payload: an engine that predates the fold, which the
+        // store reads as "ask for it yourself, once a minute" and not as "off".
+        #expect(live.inbox == nil)
+    }
+
+    /// THE SETTLING WINDOW RIDES THE LIST (#459) — one read a pass instead of
+    /// three. Nil is not "no window": it is a Mac too old to stamp one, and the
+    /// store falls back to the rationed request it used to make every time.
+    @Test func theLiveListCarriesTheSettlingWindowAndToleratesItsAbsence() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+        #expect(try decode(#"{"sessions":[],"projects":[]}"#).inbox == nil)
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":72}}"#).inbox?.autoSettleAfterHours == 72)
+        // "Off" is a real answer and must survive as one, not become the default.
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":{"autoSettleAfterHours":null}}"#).inbox?.autoSettleAfterHours == nil)
+        // And a policy this build cannot read costs the window, never the list.
+        #expect(try decode(#"{"sessions":[],"projects":[],"inbox":"never"}"#).inbox == nil)
     }
 
     /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
