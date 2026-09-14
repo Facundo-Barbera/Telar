@@ -225,8 +225,8 @@ test("a session id reused after a delete does not inherit the old queue", () => 
  * A STREAMED DELTA IS WRITTEN ONCE FOR THE WHOLE BATCH, AND READS AS IF IT WERE
  * WRITTEN AT ONCE.
  *
- * `synchronous=FULL` buys one WAL fsync per transaction and the engine runs one
- * per `ingestObservations`, so a delta at a time was an fsync per token-chunk.
+ * A WAL fsync costs one transaction and the engine used to run one per
+ * `ingestObservations`, so a delta at a time was an fsync per token-chunk.
  * The two halves of the fix are inseparable and both are asserted here: the
  * deltas do NOT reach the database as they arrive, and a reader cannot tell —
  * `readEvents` and `eventCursor` answer with the held ones, in order, with the

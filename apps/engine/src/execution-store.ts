@@ -12,11 +12,11 @@ const FILES = new Set(["session.json", "queue.json", "items.json", "requests.jso
 /**
  * HOW LONG A STREAMED DELTA MAY SIT IN MEMORY, and how many may sit there.
  *
- * `synchronous=FULL` means one WAL fsync per transaction, and the engine runs
- * one transaction per `ingestObservations` call — so a driver reporting one
- * delta at a time buys one fsync per token-chunk. Measured on the dogfood Mac:
- * 0.116 ms for a single append, 0.025 ms each at sixteen per transaction. The
- * fsync is the whole cost and the batch size is the only lever on it.
+ * A WAL fsync costs one transaction, and the engine used to run one transaction
+ * per `ingestObservations` call — so a driver reporting one delta at a time
+ * bought one fsync per token-chunk. Measured on the dogfood Mac: 0.116 ms for a
+ * single append, 0.025 ms each at sixteen per transaction. The fsync is the
+ * whole cost and the batch size is the only lever on it.
  *
  * THE COUNT IS THE LEVER; THE AGE IS THE BOUND. A streaming turn peaks at 133
  * deltas/s (docs/investigations/performance-2026-09-11.md), so a 16 ms window
@@ -104,7 +104,23 @@ export class ExecutionStore {
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
     try {
     fs.chmodSync(file, 0o600);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
+    /**
+     * `synchronous=NORMAL`, NOT `FULL` — WAL IS WHAT MAKES THAT SAFE.
+     *
+     * In WAL mode NORMAL still writes every committed transaction to the WAL; it
+     * only stops fsyncing the WAL at each commit. A PROCESS crash — the engine
+     * throwing, being killed, the daemon restarting — loses nothing at all,
+     * because the committed bytes are already in the file and recovery replays
+     * them. What NORMAL gives up is the POWER-LOSS case: an OS crash or a pulled
+     * plug may lose the last transaction or two that the kernel had not yet
+     * flushed. FULL bought that one guarantee at one fsync per transaction, and
+     * fsync was the engine's largest single cost while an agent typed (#443).
+     *
+     * The trade is the same one the delta buffer above already makes, one layer
+     * down: the tail of a conversation may not survive the machine losing power.
+     * A checkpoint still fsyncs, so the database file itself is never at risk.
+     */
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     this.db.exec(`CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
