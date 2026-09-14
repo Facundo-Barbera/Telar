@@ -51,6 +51,14 @@ test("Browser is a pane of its own, under Cockpit, and holds both groups", () =>
   expect(tools.slice(0, 300)).not.toContain("<BrowserLoginsSection");
 });
 
+test("the Browser pane wears a browser's glyph, not the plug it had as Integrations", () => {
+  // #430: the label was fixed in #357 and the icon was not, so the nav kept
+  // saying "things Telar connects to" in the one place a label cannot. The
+  // right panel already draws the browser as a globe — same subject, same glyph.
+  expect(source).toContain('{ id: "integrations", label: "Browser", icon: GlobeIcon');
+  expect(source).not.toContain("PlugZapIcon");
+});
+
 test("the renamed pane keeps its route, so a bookmark still lands", () => {
   // The label is nav copy; the id is a contract. Renaming one is not a reason
   // to strand the other.

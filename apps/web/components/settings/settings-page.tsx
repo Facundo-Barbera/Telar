@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, KeyboardIcon, PaletteIcon, PlugIcon, PlugZapIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -112,8 +112,13 @@ const SECTIONS: SettingsSection[] = [
    * the drawer of things it connects to, so it named a category rather than this
    * pane. THE ID STAYS `integrations`: it is a route, bookmarks point at it, and
    * renaming a nav label is not a reason to strand one.
+   *
+   * THE GLYPH IS A BROWSER'S (#430). It kept the plug the pane wore while it
+   * was called "Integrations", so the nav still said "things Telar connects
+   * to" in the one place a label cannot. `GlobeIcon` is what the right panel
+   * already draws for the browser — the same subject, so the same glyph.
    */
-  { id: "integrations", label: "Browser", icon: PlugZapIcon, group: "Cockpit" },
+  { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
