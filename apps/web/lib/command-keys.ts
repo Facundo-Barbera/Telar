@@ -97,6 +97,20 @@ export function commandDestination(id: CommandId, recentSessionHrefs: readonly (
   if (id === "new-tab") return { kind: "open-tab", href: "/" };
   if (id === "new-window") return { kind: "open-window", href: "/" };
   if (id === "settings" || id === "search-settings") return { kind: "navigate", href: "/settings" };
+  /**
+   * THE PANES THE PALETTE NAMES (#402). Pure navigation, so they belong here
+   * rather than being bound by a component: no surface has to be mounted for
+   * "take me to Appearance" to mean something, and a person who pressed it on
+   * the projects list means the same thing they mean anywhere else.
+   *
+   * `check-for-updates` lands on General, where the Updates group lives — the
+   * pane is the smallest honest destination, since scrolling to a row is the
+   * settings search's own machinery and not a command's to borrow.
+   */
+  if (id === "appearance") return { kind: "navigate", href: "/settings?section=appearance" };
+  if (id === "open-plugins") return { kind: "navigate", href: "/settings?section=plugins" };
+  if (id === "check-for-updates") return { kind: "navigate", href: "/settings?section=general" };
+  if (id === "open-usage") return { kind: "navigate", href: "/usage" };
   const n = jumpSlot(id);
   if (!n) return { kind: "noop" };
   const href = recentSessionHrefs[n - 1];

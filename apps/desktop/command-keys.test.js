@@ -35,11 +35,23 @@ describe("the registry", () => {
       expect(typeof command.id).toBe("string");
       expect(command.label.length).toBeGreaterThan(0);
       expect(command.group.length).toBeGreaterThan(0);
-      expect(command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
+      // "" is the other legal answer: a command that SHIPS UNBOUND, which the
+      // command palette (#402) made ordinary — a row you reach by typing its
+      // name does not need one of the letters a person has left.
+      expect(command.defaultChord === "" || command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
       // Every default must survive the normaliser unchanged, or the map the menu
       // is built from would differ from the table a reader is looking at.
       expect(normalizeChord(command.defaultChord)).toBe(command.defaultChord);
     }
+  });
+
+  test("an unbound command reaches no menu with an accelerator of nothing", () => {
+    // Electron rejects an empty accelerator, and main.js spreads it
+    // conditionally — but a command that ships unbound should not be reaching a
+    // menu at all yet, which is the cheaper guarantee.
+    const unbound = COMMANDS.filter((command) => command.defaultChord === "");
+    expect(unbound.length).toBeGreaterThan(0);
+    for (const command of unbound) expect(command.menu).toBeUndefined();
   });
 
   test("only commands with a menu placement can reach a menu", () => {

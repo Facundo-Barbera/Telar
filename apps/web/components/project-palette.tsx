@@ -61,6 +61,7 @@ import { DirectoryBrowser } from "@/components/directory-browser";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { chooseDirectory } from "@/lib/choose-directory";
+import { paletteBack, type PaletteSubPage } from "@/lib/command-palette";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { announceProjectsChanged } from "@/lib/projects";
 import { cn } from "@/lib/utils";
@@ -250,11 +251,23 @@ export function folderName(root: string): string {
 }
 
 /** What the toast says, and what its Undo would take back. */
-type Registered = { projectId: string; name: string; ignored: boolean };
+export type Registered = { projectId: string; name: string; ignored: boolean };
 
+/**
+ * THE DIALOG AROUND THE PAGES, and nothing else.
+ *
+ * The pages themselves are `ProjectPalettePages` below, which the COMMAND
+ * PALETTE (#402) embeds in its own dialog as its "New conversation in…" and
+ * "Add project" sub-pages. Two dialogs drawing the same two lists was the
+ * alternative, and it is the arrangement this file already argued against once.
+ *
+ * THE TOAST IS OUT HERE ON PURPOSE, as it always was: registering closes the
+ * palette, and a notice rendered inside a dialog that just closed is a notice
+ * nobody sees.
+ */
 export function ProjectPalette({
   open,
-  page: openOn = "projects",
+  page = "projects",
   onOpenChange,
   targets,
   onChoose,
@@ -269,6 +282,63 @@ export function ProjectPalette({
   onChoose: (target: NewConversationTarget) => void;
   /** A project just joined the registry — re-read whatever list you draw. */
   onRegistered: () => void;
+}) {
+  const [toast, setToast] = useState<Registered>();
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent showCloseButton={false} className="top-[18%] max-w-lg translate-y-0 gap-0 p-0 sm:max-w-lg">
+          <ProjectPalettePages
+            open={open}
+            page={page}
+            targets={targets}
+            onChoose={onChoose}
+            onClose={() => onOpenChange(false)}
+            onRegistered={(registered) => {
+              setToast(registered);
+              onRegistered();
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <RegisteredToast toast={toast} onDismiss={() => setToast(undefined)} onChanged={onRegistered} />
+    </>
+  );
+}
+
+/**
+ * THE PAGES, WITHOUT A DIALOG OF THEIR OWN — so the command palette can put
+ * them inside the dialog a reader is already in.
+ *
+ * `onBack` IS WHAT MAKES THEM A SUB-PAGE. Given one, the first page grows a back
+ * arrow and Backspace on an empty field leaves the pages altogether — which is
+ * the palette's root list. Without one, this is the standalone palette it always
+ * was: Sources goes back to Projects, and Projects is the floor.
+ */
+export function ProjectPalettePages({
+  open = true,
+  page: openOn,
+  onClose,
+  targets,
+  onChoose,
+  onRegistered,
+  onBack,
+}: {
+  /** Whether the dialog around these pages is open. A flip to `true` is what
+   *  resets them; the command palette mounts them fresh instead and leaves this
+   *  at its default. */
+  open?: boolean;
+  page: PalettePage;
+  /** Close the whole dialog — what choosing a row, or finishing, does. */
+  onClose: () => void;
+  targets: readonly NewConversationTarget[];
+  onChoose: (target: NewConversationTarget) => void;
+  /** A project joined the registry; here is what to say about it. */
+  onRegistered: (registered: Registered) => void;
+  /** Leave these pages for whatever is behind them. Absent when nothing is. */
+  onBack?: () => void;
 }) {
   const [page, setPage] = useState<Page>(openOn);
   const [query, setQuery] = useState("");
@@ -287,7 +357,6 @@ export function ProjectPalette({
   /** One line under the list. The palette has no other place to put a sentence,
    *  and swallowing the engine's refusal would leave a dead Enter key. */
   const [notice, setNotice] = useState<string>();
-  const [toast, setToast] = useState<Registered>();
 
   const matches = useMemo(() => matchTargets(targets, query), [targets, query]);
   const rows = useMemo(() => sourceRows(query), [query]);
@@ -323,9 +392,24 @@ export function ProjectPalette({
     setNotice(undefined);
   };
 
+  /**
+   * THE PAGE BACKSPACE BOTTOMS OUT ON. With nowhere further to go — the
+   * standalone palette — Projects IS the floor, because both doors converge
+   * there and it is a legitimate place to arrive at from either.
+   */
+  const backRoot: PalettePage = onBack ? openOn : "projects";
+  /** Which of the two lists is up, for the shared back rule. The pages below
+   *  this one never ask: they own their own keys. */
+  const list: PaletteSubPage = page === "sources" ? "sources" : "projects";
+  const backsTo = paletteBack(list, "", backRoot);
+  const goBack = () => {
+    if (backsTo === "projects") go("projects");
+    else onBack?.();
+  };
+
   const choose = (target: NewConversationTarget | undefined) => {
     if (!target) return;
-    onOpenChange(false);
+    onClose();
     onChoose(target);
   };
 
@@ -352,9 +436,8 @@ export function ProjectPalette({
     } catch {
       ignored = false;
     }
-    onOpenChange(false);
-    setToast({ projectId: project.id, name: project.name, ignored });
-    onRegistered();
+    onClose();
+    onRegistered({ projectId: project.id, name: project.name, ignored });
   };
 
   const failed = (cause: unknown) => setNotice(cause instanceof EngineApiError ? cause.message : String(cause));
@@ -469,10 +552,11 @@ export function ProjectPalette({
       take(Number(event.key) - 1);
       return;
     }
-    // ONLY ON AN EMPTY FIELD — see the note at the top of this file.
-    if (event.key === "Backspace" && page === "sources" && query === "") {
+    // ONLY ON AN EMPTY FIELD — see `paletteBack`, which is where that rule
+    // lives now that the command palette leans on it too.
+    if (event.key === "Backspace" && paletteBack(list, query, backRoot)) {
       event.preventDefault();
-      go("projects");
+      goBack();
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -491,20 +575,19 @@ export function ProjectPalette({
   const at = count === 0 ? -1 : Math.min(index, count - 1);
 
   return (
-    <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent
-          showCloseButton={false}
-          onKeyDown={onKeyDown}
-          className="top-[18%] max-w-lg translate-y-0 gap-0 p-0 sm:max-w-lg"
-          aria-label={PAGE_TITLES[page]}
-        >
-          {/* The title and the sentence are for a screen reader; the palette's
-              own chrome is the field and the list. */}
-          <DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>
-          <DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>
+    /* `contents`, SO THE DIALOG'S OWN LAYOUT IS UNCHANGED by there being a
+       component here at all: the pages are the popup's children as they always
+       were, and this box exists only to catch the keys — which bubble to it from
+       the field regardless of how it lays out. */
+    <div className="contents" onKeyDown={onKeyDown}>
+      {/* The title and the sentence are for a screen reader; the palette's own
+          chrome is the field and the list. They name the PAGE, which is why they
+          live here rather than on the dialog: the dialog outlives the page, and
+          on the command palette it is not even ours. */}
+      <DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>
+      <DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>
 
-          {page === "local" || page === "clone-parent" ? (
+      {page === "local" || page === "clone-parent" ? (
             /* THE FOLDER BROWSER, in place of the field and the list — T3's
                shape, and what replaces the Finder sheet this flow used to
                open. The clone button says "Clone here" because the folder it
@@ -534,12 +617,15 @@ export function ProjectPalette({
           {/* THE FIELD IS THE TITLE, with the back arrow in front of it — T3's
               shape, and the reason the pages need no heading of their own. */}
           <div className="flex items-center gap-2 border-b px-3 py-2.5">
-            {page === "sources" ? (
+            {/* A BACK ARROW WHENEVER THERE IS SOMEWHERE TO GO. Sources always
+                has one; Projects grows one only as a sub-page of the command
+                palette, where what is behind it is that palette's own list. */}
+            {page === "sources" || onBack ? (
               <button
                 type="button"
-                aria-label="Back to projects"
-                title="Back to projects"
-                onClick={() => go("projects")}
+                aria-label={backsTo === "projects" ? "Back to projects" : "Back"}
+                title={backsTo === "projects" ? "Back to projects" : "Back"}
+                onClick={goBack}
                 className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
               >
                 <ArrowLeftIcon className="size-4" />
@@ -675,7 +761,7 @@ export function ProjectPalette({
             <span>
               <kbd className="font-sans">Enter</kbd> Select
             </span>
-            {page === "sources" && (
+            {(page === "sources" || onBack) && (
               <span>
                 <kbd className="font-sans">Backspace</kbd> Back
               </span>
@@ -686,11 +772,7 @@ export function ProjectPalette({
           </div>
             </>
           )}
-        </DialogContent>
-      </Dialog>
-
-      <RegisteredToast toast={toast} onDismiss={() => setToast(undefined)} onChanged={onRegistered} />
-    </>
+    </div>
   );
 }
 
@@ -779,13 +861,15 @@ function CloneUrlPage({
 }
 
 /**
- * ONE ROW ANATOMY FOR BOTH PAGES — glyph, title, sub-line, a badge, a ⌘digit.
+ * ONE ROW ANATOMY FOR EVERY PAGE — glyph, title, sub-line, a badge, and one
+ * trailing mark (a ⌘digit here, a command's chord in the command palette).
  *
- * Written once because the two pages differ in what fills those slots and in
+ * Written once because the pages differ in what fills those slots and in
  * nothing else; two copies would be where the highlight, the hover rule and the
- * aria wiring quietly drift apart.
+ * aria wiring quietly drift apart. EXPORTED for the command palette (#402) for
+ * exactly that reason: its rows are these rows.
  */
-function PaletteRow({
+export function PaletteRow({
   id,
   on,
   dim,
@@ -797,6 +881,7 @@ function PaletteRow({
   mono,
   badge,
   key9,
+  trailing,
 }: {
   id: string;
   on: boolean;
@@ -809,6 +894,8 @@ function PaletteRow({
   mono?: boolean;
   badge?: React.ReactNode;
   key9?: number;
+  /** The row's right-hand end, when it is not a ⌘digit. */
+  trailing?: React.ReactNode;
 }) {
   return (
     <button
@@ -837,6 +924,7 @@ function PaletteRow({
         )}
       </span>
       {key9 !== undefined && <kbd className="shrink-0 font-sans text-[0.625rem] text-muted-foreground/60">⌘{key9}</kbd>}
+      {trailing}
     </button>
   );
 }
@@ -856,8 +944,11 @@ function PaletteRow({
  *
  * IT GOES AWAY ON ITS OWN, because an undo nobody takes should not become
  * furniture — and it carries a ✕ because a timer is not a promise.
+ *
+ * EXPORTED for the command palette, which embeds the pages above in its own
+ * dialog and therefore inherits the job of saying what just happened.
  */
-function RegisteredToast({
+export function RegisteredToast({
   toast,
   onDismiss,
   onChanged,

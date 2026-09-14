@@ -1,0 +1,391 @@
+"use client";
+
+/**
+ * ONE ⌘K SURFACE OVER COMMANDS, PROJECTS AND CONVERSATIONS — issue #402, T3
+ * Code's palette.
+ *
+ * WHAT IT REPLACED. ⌘K used to put the cursor in the rail's search field, which
+ * could find one kind of thing (a conversation) and only while the rail was
+ * open. Everything else this app can do was reachable by knowing where it lived:
+ * a button in the rail's header, a pane behind Settings' nav, a chord you had
+ * either memorised or not. A palette is the answer to "I know what I want and
+ * not where it is", and it is the one surface that can say what the chord for it
+ * would have been.
+ *
+ * THE REGISTRY IS THE SOURCE, NOT A LIST BESIDE IT. Every Actions row is a
+ * `Command` from `apps/desktop/command-keys.js` — the same table the Electron
+ * menu builds accelerators from and the keybindings pane rebinds — so a command
+ * added there appears here, at whatever chord the person has it on, without
+ * anybody remembering to. `paletteActions` is what drops the ones nothing can
+ * run: a palette full of rows that do nothing when pressed is worse than a
+ * shorter palette.
+ *
+ * THE FIELD AND THE PALETTE ARE DIFFERENT THINGS, DELIBERATELY. The rail's
+ * search field stays a filter over the rows in front of you — type in it and the
+ * list narrows, exactly as before — and ⌘K opens this. The one bridge between
+ * them is that ⌘K carries whatever the field holds into the palette's query, so
+ * a search that turned out to be a bigger question than the rail can answer
+ * walks in here without being retyped.
+ *
+ * THE SUB-PAGES ARE THE PROJECT PALETTE'S OWN PAGES (#395/#413), embedded rather
+ * than re-implemented: "New conversation in…" is its Projects page and "Add
+ * project" its Sources page, folder browser and clone flow and all. Backspace on
+ * an empty field walks back out of them to this list — `paletteBack` is that
+ * rule, shared with the palette it came from.
+ *
+ * NO ⌘1..⌘9 HERE, unlike the project palette. Those digits are the rail's jump
+ * commands, the window dispatcher answers them wherever focus is, and a palette
+ * that quietly meant something else by them would be a palette that navigates
+ * out from under you.
+ */
+
+import { useState } from "react";
+import {
+  CommandIcon,
+  MessageSquareIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "lucide-react";
+import { ProjectAvatar } from "@/components/projects/project-avatar";
+import {
+  PaletteRow as Row,
+  ProjectPalettePages,
+  RegisteredToast,
+  targetPlace,
+  type NewConversationTarget,
+  type PalettePage,
+  type Registered,
+} from "@/components/project-palette";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { KeyHint } from "@/components/ui/key-hint";
+import {
+  paletteActions,
+  paletteRows,
+  paletteSections,
+  type PaletteSubPage,
+} from "@/lib/command-palette";
+import { commandDestination } from "@/lib/command-keys";
+import { COMMANDS, commandHandler, type CommandGroup, type CommandId } from "@/lib/commands";
+import { useKeymap } from "@/lib/use-command-keys";
+import type { SidebarSession } from "@/lib/session-list";
+
+/**
+ * WHICH PAGE THE PALETTE IS SHOWING. "root" is the list; the other two are the
+ * project palette's, and are `PalettePage` values — the annotation is what keeps
+ * the two files' idea of "a page" from drifting.
+ */
+export type CommandPalettePage = "root" | PalettePage;
+
+/** An identity map that exists to FAIL TO COMPILE if the fold's idea of a
+ *  sub-page and the project palette's idea of a page ever drift apart. The lib
+ *  names the two without importing the component; this is where that claim is
+ *  checked. */
+const SUB_PAGE: Record<PaletteSubPage, PalettePage> = { projects: "projects", sources: "sources" };
+
+/**
+ * A GLYPH PER GROUP, NOT PER COMMAND.
+ *
+ * An icon beside every row is what makes a long list scannable, and the honest
+ * unit here is the group: "this is about the conversation", "this is about the
+ * rail". A hand-picked glyph per command would be twenty-odd small decisions,
+ * several of them arbitrary, and every command added later would either pick one
+ * or look broken beside the ones that had.
+ */
+const GROUP_ICONS: Record<CommandGroup, typeof CommandIcon> = {
+  Conversation: MessageSquareIcon,
+  Rail: PanelLeftIcon,
+  Panel: PanelRightIcon,
+  Application: SettingsIcon,
+};
+
+export function CommandPalette({
+  open,
+  page: openOn = "root",
+  query: seed = "",
+  onOpenChange,
+  targets,
+  sessions,
+  onRun,
+  onChooseProject,
+  onOpenSession,
+  onRegistered,
+}: {
+  open: boolean;
+  /** The page this opening starts on. The rail's Add-project verb says
+   *  "sources"; ⌘K says nothing and gets the list. */
+  page?: CommandPalettePage;
+  /** What the rail's search field held when ⌘K was pressed. */
+  query?: string;
+  onOpenChange: (open: boolean) => void;
+  targets: readonly NewConversationTarget[];
+  /** The rail's own rows — so the palette can never offer a conversation the
+   *  rail does not have, and costs no read of its own. */
+  sessions: readonly SidebarSession[];
+  /** Run a command the way a chord would. The rail owns the dispatcher. */
+  onRun: (id: CommandId) => void;
+  onChooseProject: (target: NewConversationTarget) => void;
+  onOpenSession: (session: SidebarSession) => void;
+  /** A project joined the registry — re-read whatever list you draw. */
+  onRegistered: () => void;
+}) {
+  const keymap = useKeymap();
+  const [page, setPage] = useState<CommandPalettePage>(openOn);
+  const [query, setQuery] = useState(seed);
+  const [index, setIndex] = useState(0);
+  const [toast, setToast] = useState<Registered>();
+
+  /**
+   * A FRESH PALETTE EVERY TIME, seeded with whatever the rail's field held —
+   * the project palette's own rule and, as there, adjusted during render rather
+   * than in an effect, which is React's answer for state derived from a prop
+   * change and what this app's lint rule insists on.
+   *
+   * AND A PAGE ASKED FOR WHILE IT IS ALREADY UP IS STILL A PAGE ASKED FOR. The
+   * New-conversation row closes the palette and runs the command, and on a
+   * cockpit with several projects that command opens the palette again on
+   * Projects — both writes land in one render, so `open` never actually flips
+   * and the page would otherwise have been ignored: a row that visibly did
+   * nothing. `wasPage` mirrors the PROP, so walking between pages from inside
+   * the palette is untouched by this.
+   */
+  const [wasOpen, setWasOpen] = useState(open);
+  const [wasPage, setWasPage] = useState(openOn);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setPage(openOn);
+      setWasPage(openOn);
+      setQuery(seed);
+      setIndex(0);
+    }
+  } else if (open && openOn !== wasPage) {
+    setWasPage(openOn);
+    setPage(openOn);
+    setQuery("");
+    setIndex(0);
+  }
+
+  /**
+   * WHAT CAN ACTUALLY RUN, asked at the moment the list is built — which is the
+   * only moment the answer is knowable. A command is runnable when a mounted
+   * component has claimed it (`commandHandler`) or when it is pure navigation
+   * with a destination. The empty list is what a jump would resolve against, and
+   * the jumps are not actions here anyway.
+   */
+  const actions = paletteActions(
+    COMMANDS,
+    keymap,
+    (id) => Boolean(commandHandler(id)) || commandDestination(id, []).kind !== "noop",
+    // The command that opened this dialog is not a row in it.
+    ["search-sessions"],
+  );
+  const sections = paletteSections({ actions, targets, sessions, query });
+  const rows = paletteRows(sections);
+  const at = rows.length === 0 ? -1 : Math.min(index, rows.length - 1);
+  /** Where each section starts in that flat list — because the highlight is one
+   *  number over the whole palette, not one per section. */
+  const offsets = sections.map((_, section) => sections.slice(0, section).reduce((total, before) => total + before.rows.length, 0));
+
+  const take = (row: (typeof rows)[number] | undefined) => {
+    if (!row) return;
+    if (row.kind === "project") {
+      onOpenChange(false);
+      onChooseProject(row.target);
+      return;
+    }
+    if (row.kind === "session") {
+      onOpenChange(false);
+      onOpenSession(row.session);
+      return;
+    }
+    // A door walks; everything else runs and the dialog is done.
+    if (row.page) {
+      setPage(SUB_PAGE[row.page]);
+      setQuery("");
+      setIndex(0);
+      return;
+    }
+    onOpenChange(false);
+    onRun(row.id);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    // An IME's own Enter commits a candidate; it is not a selection.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (rows.length === 0) return;
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      // FROM THE ROW THAT IS HIGHLIGHTED, not from the counter — they differ
+      // whenever the list has shrunk under a counter nobody has touched since
+      // (the rail polls, a conversation lands), and moving from the invisible
+      // one is how an arrow key appears to skip a row or do nothing at all.
+      setIndex(((at < 0 ? 0 : at) + delta + rows.length) % rows.length);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      take(rows[at]);
+    }
+  };
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent showCloseButton={false} className="top-[18%] max-w-lg translate-y-0 gap-0 p-0 sm:max-w-lg">
+          {page === "root" ? (
+            <div className="contents" onKeyDown={onKeyDown}>
+              <DialogTitle className="sr-only">Command palette</DialogTitle>
+              <DialogDescription className="sr-only">
+                Search this app&apos;s commands, its projects, and the conversations you were last in.
+              </DialogDescription>
+
+              {/* THE FIELD IS THE TITLE, as on every page of the palette this
+                  one borrows its sub-pages from. */}
+              <div className="flex items-center gap-2 border-b px-3 py-2.5">
+                <SearchIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setIndex(0);
+                  }}
+                  placeholder="Search commands, projects and conversations"
+                  aria-label="Search commands, projects and conversations"
+                  role="combobox"
+                  aria-expanded={rows.length > 0}
+                  aria-controls="command-palette-results"
+                  aria-activedescendant={at >= 0 ? `command-palette-${at}` : undefined}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                />
+              </div>
+
+              <div id="command-palette-results" role="listbox" aria-label="Commands, projects and conversations" className="max-h-80 overflow-y-auto p-1.5">
+                {rows.length === 0 && <p className="px-2 py-6 text-center text-xs text-muted-foreground">Nothing matches that.</p>}
+                {sections.map((section, sectionAt) => (
+                  <div key={section.id} role="group" aria-label={section.title}>
+                    {/* THE CAPTION NAMES THE SECTION, which the field cannot:
+                        it says what you may TYPE, and three kinds of answer come
+                        back under it. */}
+                    <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">{section.title}</p>
+                    {section.rows.map((row, rowAt) => {
+                      const position = (offsets[sectionAt] ?? 0) + rowAt;
+                      const on = position === at;
+                      const id = `command-palette-${position}`;
+                      const onHover = () => setIndex(position);
+                      if (row.kind === "action") {
+                        const Glyph = GROUP_ICONS[commandGroup(row.id)];
+                        return (
+                          <Row
+                            key={row.key}
+                            id={id}
+                            on={on}
+                            onPick={() => take(row)}
+                            onHover={onHover}
+                            glyph={<Glyph className="size-4 text-muted-foreground" />}
+                            title={row.label}
+                            // THE CHORD AT THE ROW'S RIGHT, from the live keymap
+                            // — `KeyHint` reads the same store `paletteActions`
+                            // took `chord` from, so the row and the key it
+                            // promises cannot disagree. `always`, because a
+                            // palette that only showed its chords while ⌘ was
+                            // held would be teaching nobody.
+                            trailing={<KeyHint command={row.id} always />}
+                          />
+                        );
+                      }
+                      if (row.kind === "project") {
+                        return (
+                          <Row
+                            key={row.key}
+                            id={id}
+                            on={on}
+                            onPick={() => take(row)}
+                            onHover={onHover}
+                            glyph={
+                              <ProjectAvatar
+                                name={row.target.name}
+                                {...(row.target.hostId ? {} : { projectId: row.target.id })}
+                                {...(row.target.icon ? { icon: row.target.icon } : {})}
+                                {...(row.target.iconName ? { iconName: row.target.iconName } : {})}
+                                size={16}
+                              />
+                            }
+                            title={row.target.name}
+                            hint={targetPlace(row.target)}
+                            mono
+                          />
+                        );
+                      }
+                      return (
+                        <Row
+                          key={row.key}
+                          id={id}
+                          on={on}
+                          onPick={() => take(row)}
+                          onHover={onHover}
+                          glyph={<MessageSquareIcon className="size-4 text-muted-foreground" />}
+                          title={row.session.title}
+                          hint={[row.session.projectName, row.session.hostName].filter(Boolean).join(" · ")}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              {/* THE LEGEND, as T3 draws it: a palette whose keys are
+                  undiscoverable is a list people click. */}
+              <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+                <span>
+                  <kbd className="font-sans">↑↓</kbd> Navigate
+                </span>
+                <span>
+                  <kbd className="font-sans">Enter</kbd> Select
+                </span>
+                <span>
+                  <kbd className="font-sans">Esc</kbd> Close
+                </span>
+              </div>
+            </div>
+          ) : (
+            /* THE SUB-PAGE, WHICH IS THE PROJECT PALETTE'S OWN. Mounted fresh
+               on arrival — that is what resets its query and its page — and
+               `onBack` is what turns its first page's Backspace into the way
+               back to the list above. */
+            <ProjectPalettePages
+              page={page}
+              targets={targets}
+              onChoose={(target) => {
+                onOpenChange(false);
+                onChooseProject(target);
+              }}
+              onClose={() => onOpenChange(false)}
+              onBack={() => {
+                setPage("root");
+                setQuery("");
+                setIndex(0);
+              }}
+              onRegistered={(registered) => {
+                setToast(registered);
+                onRegistered();
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <RegisteredToast toast={toast} onDismiss={() => setToast(undefined)} onChanged={onRegistered} />
+    </>
+  );
+}
+
+/** The group a command is filed under, for its glyph. The registry is the
+ *  answer; an id it does not know cannot reach a row here, and "Application" is
+ *  the least wrong default for one that somehow did. */
+function commandGroup(id: CommandId): CommandGroup {
+  return COMMANDS.find((command) => command.id === id)?.group ?? "Application";
+}

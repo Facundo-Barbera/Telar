@@ -334,6 +334,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
      * binding is added or renamed. One entry for the pane, whose title is the
      * group heading the pane actually draws — and the pane is one card, so
      * arriving on it puts every binding on screen anyway.
+     *
+     * THE COMMAND PALETTE IS FOUND HERE TOO (#402), and by keyword rather than
+     * by a row of its own: every one of its actions IS a binding this pane
+     * already draws, ⌘K included, so a row called "Command palette" would be a
+     * second name for the card underneath it. The words are what somebody types
+     * when they want to change ⌘K, or to find out what it is now bound to.
      */
     id: "keybindings",
     label: "Keybindings",
@@ -343,8 +349,22 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Keyboard shortcuts",
-            hint: "Every chord this app answers to, and what each one does.",
-            keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
+            hint: "Every chord this app answers to, and what each one does — the same list the command palette runs.",
+            keywords: [
+              "shortcut",
+              "hotkey",
+              "chord",
+              "accelerator",
+              "binding",
+              "cmd",
+              "command key",
+              "keyboard",
+              "command palette",
+              "palette",
+              "cmd k",
+              "go to file",
+              "quick open",
+            ],
             icon: KeyboardIcon,
           },
         ],

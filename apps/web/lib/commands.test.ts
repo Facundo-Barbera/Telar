@@ -35,6 +35,7 @@ import { commandDestination, isEditableTarget, resolveWebCommandKeyAction } from
 
 const EXPECTED_IDS: CommandId[] = [
   "new-conversation",
+  "new-conversation-in",
   "new-tab",
   "new-window",
   "focus-composer",
@@ -43,6 +44,7 @@ const EXPECTED_IDS: CommandId[] = [
   "reveal-in-finder",
   "pin-session",
   "search-sessions",
+  "add-project",
   "toggle-rail",
   "jump-1",
   "jump-2",
@@ -61,8 +63,15 @@ const EXPECTED_IDS: CommandId[] = [
   "open-editor",
   "open-data",
   "open-latex",
+  "go-to-file",
+  "search-project-contents",
   "settings",
   "search-settings",
+  "appearance",
+  "project-settings",
+  "open-usage",
+  "open-plugins",
+  "check-for-updates",
 ];
 
 describe("the registry is the one source of truth", () => {
@@ -74,8 +83,42 @@ describe("the registry is the one source of truth", () => {
   });
 
   test("every default chord uses CommandOrControl, never a hardcoded Cmd or Ctrl", () => {
-    // The same table has to work unmodified on a Windows or Linux build.
-    for (const command of COMMANDS) expect(command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
+    // The same table has to work unmodified on a Windows or Linux build. "" is
+    // the other legal answer: a command that SHIPS UNBOUND, which is most of
+    // what the palette added — a row you find by typing its name does not need
+    // one of the letters a person has left.
+    for (const command of COMMANDS) {
+      expect(command.defaultChord === "" || command.defaultChord.startsWith("CommandOrControl+")).toBe(true);
+    }
+  });
+
+  test("the commands that ship unbound are unbound, not half-bound", () => {
+    // An unbound row is "" all the way through — the keymap, the overrides and
+    // the conflict check all read it as the deliberate no-chord rather than as
+    // a value that failed to parse.
+    const keymap = defaultKeymap();
+    for (const id of ["new-conversation-in", "add-project", "appearance", "open-usage"] as CommandId[]) {
+      expect(keymap[id]).toBe("");
+    }
+    // And nothing a person has not touched is stored.
+    expect(keymapOverrides(keymap)).toEqual({});
+  });
+
+  test("the palette's two panel chords are the shifted ones, because ⌘P is pinning", () => {
+    // #408 took ⌘P for `pin-session`, and "go to file" is the shifted key in
+    // every editor that has both.
+    const keymap = defaultKeymap();
+    expect(keymap["go-to-file"]).toBe("CommandOrControl+Shift+P");
+    expect(keymap["search-project-contents"]).toBe("CommandOrControl+Shift+F");
+  });
+
+  test("⌘K names the palette it opens, and keeps the id anybody's override is stored under", () => {
+    // The label moved because the key did; the id did not, because renaming it
+    // would throw away every rebinding of ⌘K that exists on disk.
+    expect(COMMANDS.find((command) => command.id === "search-sessions")).toMatchObject({
+      label: "Command Palette",
+      defaultChord: "CommandOrControl+K",
+    });
   });
 
   test("every command is filed under a group the pane actually draws", () => {
@@ -262,6 +305,15 @@ describe("what a command means here", () => {
     expect(commandDestination("new-tab", [])).toEqual({ kind: "open-tab", href: "/" });
     expect(commandDestination("new-window", [])).toEqual({ kind: "open-window", href: "/" });
     expect(commandDestination("settings", [])).toEqual({ kind: "navigate", href: "/settings" });
+    // The panes the palette names. Pure navigation: no surface has to be
+    // mounted for "take me to Appearance" to mean something.
+    expect(commandDestination("appearance", [])).toEqual({ kind: "navigate", href: "/settings?section=appearance" });
+    expect(commandDestination("open-plugins", [])).toEqual({ kind: "navigate", href: "/settings?section=plugins" });
+    expect(commandDestination("check-for-updates", [])).toEqual({ kind: "navigate", href: "/settings?section=general" });
+    expect(commandDestination("open-usage", [])).toEqual({ kind: "navigate", href: "/usage" });
+    // The project one is the RAIL's to answer — it is the only thing that knows
+    // which project you are in — so the table says nothing about it.
+    expect(commandDestination("project-settings", [])).toEqual({ kind: "noop" });
     // The panel and the composer are components' own state; a destination table
     // could not name them, so they answer `noop` and bind themselves instead.
     expect(commandDestination("panel-fullscreen", [])).toEqual({ kind: "noop" });

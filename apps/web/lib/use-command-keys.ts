@@ -70,24 +70,29 @@ export function useCommandHandlers(handlers: CommandHandlers, deps: readonly unk
 }
 
 /**
- * FOCUS THE SETTINGS SEARCH FIELD, once the pane it lives on has arrived.
+ * FOCUS A FIELD BY THE NAME A SCREEN READER KNOWS IT BY, once whatever holds it
+ * has arrived.
  *
- * The field is owned by `settings-search-nav.tsx` and focuses itself on a bare
- * "/" — this command is the same gesture from anywhere else in the app, so it
- * navigates and then reaches for the field by its accessible name rather than
- * teaching a second component about it. A few frames of retry because the push
- * is asynchronous; it gives up rather than spinning, and the reader is on the
- * settings pane either way, which is most of what they asked for.
+ * TWO COMMANDS END IN A CURSOR SOMEWHERE ELSE'S FIELD. `search-settings`
+ * navigates to the pane and then reaches for the field `settings-search-nav.tsx`
+ * owns — the same field that focuses itself on a bare "/" — and `go-to-file`
+ * opens the Editor and reaches for the filter above its tree. Neither component
+ * needs to learn about a command for that, and the accessible name is a contract
+ * they already keep.
+ *
+ * A FEW FRAMES OF RETRY, because the navigation or the tab opening is
+ * asynchronous. It gives up rather than spinning: the reader is on the right
+ * surface either way, which is most of what they asked for.
  */
-function focusSettingsSearch(attempt = 0) {
-  const field = document.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+function focusFieldNamed(label: string, attempt = 0) {
+  const field = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
   if (field) {
     field.focus();
     field.select();
     return;
   }
   if (attempt >= 20) return;
-  window.requestAnimationFrame(() => focusSettingsSearch(attempt + 1));
+  window.requestAnimationFrame(() => focusFieldNamed(label, attempt + 1));
 }
 
 /**
@@ -125,6 +130,12 @@ function focusSettingsSearch(attempt = 0) {
  * Chrome and Safari on macOS do not deliver those keydowns to the page at all.
  * The listener attaches anyway — it is harmless where the browser wins, and the
  * desktop shell (where this app actually runs) routes them through the menu.
+ *
+ * IT HANDS THE DISPATCHER BACK, which is what makes a BUTTON a command (#402).
+ * The rail's three verbs and every row of the command palette press the same
+ * `run` a chord does, so "Add project" cannot come to mean one thing from the
+ * keyboard and another from the pill — there is one answer and three ways to
+ * ask for it.
  */
 export function useCommandKeys(
   rows: readonly SidebarSession[],
@@ -138,7 +149,7 @@ export function useCommandKeys(
    * change in behaviour.
    */
   overrides?: CommandHandlers,
-) {
+): (id: CommandId) => void {
   const router = useRouter();
   const keymap = useKeymap();
   const recentHrefs = useRef<string[]>([]);
@@ -164,6 +175,18 @@ export function useCommandKeys(
         return;
       }
       if (runCommand(id)) return;
+      /**
+       * GO TO FILE IS TWO THINGS THIS APP ALREADY HAS. Nothing owns it by name,
+       * and nothing should: it is "open the Editor" — which the cockpit owns and
+       * answers as `open-editor` — followed by the cursor landing in that
+       * surface's own file filter. Spelling it as the pair rather than binding a
+       * third handler means a session with no panel simply does nothing, and the
+       * day the cockpit claims this id by name, its own binding wins above.
+       */
+      if (id === "go-to-file") {
+        if (runCommand("open-editor")) focusFieldNamed("Search files");
+        return;
+      }
       const destination = commandDestination(id, recentHrefs.current);
       if (destination.kind === "noop") return;
       if (destination.kind === "open-window") {
@@ -182,7 +205,7 @@ export function useCommandKeys(
       router.push(destination.href);
       // The settings pane owns its own search field; this is the same "/" the
       // pane already answers to, asked from wherever you happened to be.
-      if (id === "search-settings") focusSettingsSearch();
+      if (id === "search-settings") focusFieldNamed("Search settings");
     },
     [router],
   );
@@ -205,4 +228,6 @@ export function useCommandKeys(
       offInvoke?.();
     };
   }, [run]);
+
+  return run;
 }

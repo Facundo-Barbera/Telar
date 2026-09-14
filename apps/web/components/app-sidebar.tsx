@@ -74,7 +74,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
-import { useCommandKeys } from "@/lib/use-command-keys";
+import { useCommandHandlers, useCommandKeys } from "@/lib/use-command-keys";
 import { workspaceOpener } from "@/lib/workspace-open";
 import { DraftRow } from "@/components/session/draft-row";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
@@ -128,7 +128,8 @@ import {
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
-import { ProjectPalette, type NewConversationTarget, type PalettePage } from "@/components/project-palette";
+import { CommandPalette, type CommandPalettePage } from "@/components/command-palette";
+import type { NewConversationTarget } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
 import { KeyHint } from "@/components/ui/key-hint";
 import {
@@ -430,23 +431,31 @@ function SidebarBody() {
    */
   const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
   /**
-   * THE PROJECT PALETTE, and which of its two pages is up.
+   * THE COMMAND PALETTE, which page of it is up, and what it opens looking for.
    *
-   * ONE PIECE OF STATE FOR BOTH, because they are one surface: New conversation
-   * (the button, ⌘N) opens the Projects page, Add project (the header's pill, the
-   * empty-space menu) opens Sources, and the palette itself walks between them.
-   * They were two dialogs with two flags, which is how the rail ended up able to
-   * have a register form open behind a project picker.
+   * ONE PIECE OF STATE FOR ALL THREE PAGES, because they are one surface (#402):
+   * ⌘K opens the list, New conversation walks to Projects, Add project walks to
+   * Sources, and the palette walks between them. They were two dialogs with two
+   * flags once, which is how the rail ended up able to have a register form open
+   * behind a project picker.
+   *
+   * `query` IS THE HANDOFF FROM THE RAIL'S FIELD. The field stays a filter over
+   * the rows in front of you; ⌘K carries whatever is in it into the palette, so
+   * a search that turned out to be a bigger question than the rail can answer
+   * does not have to be typed twice.
    */
-  const [palette, setPalette] = useState<{ open: boolean; page: PalettePage }>({ open: false, page: "projects" });
-  const openPalette = (page: PalettePage) => setPalette({ open: true, page });
+  const [palette, setPalette] = useState<{ open: boolean; page: CommandPalettePage; query: string }>({
+    open: false,
+    page: "root",
+    query: "",
+  });
+  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
   /** An away Mac's remembered rows, dimmed under its retry line. Filled by
    *  `loadAll` from the sidebar cache; empty for a host never read. */
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
-  const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
 
@@ -898,18 +907,32 @@ function SidebarBody() {
     const slot = jumpSlots.get(key);
     return slot === undefined ? {} : { jumpSlot: slot };
   };
-  useCommandKeys(jumpRows, {
+  const run = useCommandKeys(jumpRows, {
     // ⌘N ASKS RATHER THAN GUESSES — unless there is nothing to ask about. The
     // table's destination for this binding is "/", which resolves a project and
     // opens its canvas; the palette replaced that guess. `newConversation`
     // below is the one place that decides between palette and canvas, so the
     // key and the button cannot disagree about what New conversation means.
     "new-conversation": () => newConversation(),
-    // The rail's own two: its search field and its collapse. Both used to be
-    // hand-rolled window listeners here (⌘K) and inside the sidebar primitive
-    // (⌘B), which is precisely why neither appeared on the keybindings pane and
-    // neither could be changed. One registry, one dispatcher.
-    "search-sessions": () => searchInput.current?.focus(),
+    // The same verb with the guess taken out: always the list. It is the
+    // palette's "New conversation in…" row, and the row and the command are one
+    // thing because the row IS the command.
+    "new-conversation-in": () => openPalette("projects"),
+    "add-project": () => openPalette("sources"),
+    /**
+     * ⌘K IS THE PALETTE NOW (#402), AND IT TOGGLES. It used to put the cursor
+     * in the field beside it, which could find a conversation and nothing else;
+     * the field keeps doing exactly that on its own, and this opens the surface
+     * that can also find a command or a project — carrying the field's text in
+     * so a half-typed search is not lost. Pressing it again closes what it
+     * opened, because a key that only opens is a key you have to reach for
+     * Escape after.
+     */
+    "search-sessions": () =>
+      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query })),
+    // The rail's own collapse. It used to be a hand-rolled listener inside the
+    // sidebar primitive, which is precisely why it appeared on no keybindings
+    // pane and could not be changed. One registry, one dispatcher.
     "toggle-rail": () => toggleSidebar(),
   });
 
@@ -1026,6 +1049,39 @@ function SidebarBody() {
   })();
 
   /**
+   * THE RAIL'S ANSWER TO TWO COMMANDS ABOUT "THE PROJECT YOU ARE IN" — and it
+   * is deliberately the BOTTOM of the stack rather than an override.
+   *
+   * `bindCommands` keeps a stack per command and the newest binder wins, so a
+   * session's own Reveal button (session/open-workspace-button.tsx) outranks
+   * this one while that session is open and this is what answers everywhere
+   * else. Passed as overrides, the rail would have shadowed it — and ⌘O inside
+   * a conversation would have opened the rail's guess instead of the workspace
+   * you were looking at.
+   *
+   * NEITHER IS BOUND WHEN THERE IS NOTHING TO OPEN, which is what keeps the
+   * palette honest: it lists a command only when something can run it, so
+   * "Reveal in Finder" is absent from a browser tab rather than present and
+   * inert.
+   */
+  const reveal = revealBridge && revealProject ? () => void revealBridge.reveal(revealProject.root) : undefined;
+  const localProjectId = composerTarget && !composerTarget.hostId ? composerTarget.projectId : undefined;
+  useCommandHandlers(
+    {
+      ...(reveal ? { "reveal-in-finder": reveal } : {}),
+      ...(localProjectId
+        ? {
+            "project-settings": () => {
+              onNavigate();
+              router.push(projectSettingsHref(localProjectId));
+            },
+          }
+        : {}),
+    },
+    [Boolean(reveal), localProjectId],
+  );
+
+  /**
    * NO PROJECT-SCOPE CHIP — issue #400.
    *
    * #395 folded the old "All projects ▾" row into the search field as a chip,
@@ -1068,16 +1124,27 @@ function SidebarBody() {
 
   return (
     <>
-      {/* MOUNTED WITH THE RAIL, not inside the button: ⌘N opens it from
+      {/* MOUNTED WITH THE RAIL, not inside the button: ⌘K and ⌘N open it from
           anywhere in the cockpit, and the rail is the one component alive on
           every route. It renders into a portal, so its place here is about
-          lifetime rather than layout. */}
-      <ProjectPalette
+          lifetime rather than layout.
+
+          THE RAIL IS WHAT FEEDS IT. The projects and the conversations it
+          searches are the ones already in hand — so the palette costs no read of
+          its own, and can never offer a row the rail does not have. */}
+      <CommandPalette
         open={palette.open}
         page={palette.page}
+        query={palette.query}
         onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
         targets={pickerTargets}
-        onChoose={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        sessions={sessions}
+        onRun={run}
+        onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        onOpenSession={(session) => {
+          onNavigate();
+          router.push(sessionHref(session));
+        }}
         onRegistered={() => void loadAll()}
       />
       <TelarSidebarHeader />
@@ -1104,7 +1171,6 @@ function SidebarBody() {
         <div className="px-2 pb-2 pt-3">
           <div className="flex items-center gap-1.5">
             <SidebarSearchField
-              ref={searchInput}
               className="min-w-0 flex-1"
               value={query}
               onChange={(event) => {
@@ -1139,10 +1205,15 @@ function SidebarBody() {
                     <XIcon className="size-3.5" />
                   </button>
                 ) : (
-                  /* THE ONE HINT THAT IS ALWAYS ON. It was a hardcoded `⌘K`,
-                     which lied the moment somebody rebound the command; #401
-                     makes it read the live keymap like every other hint, and
-                     `always` keeps the affordance a search field has had since
+                  /* THE ONE HINT THAT IS ALWAYS ON — and it now promises the
+                     PALETTE rather than this field (#402). The field filters
+                     what is in front of you as you type; ⌘K opens the surface
+                     that also searches commands and projects, carrying whatever
+                     is in here with it. Same key, a bigger question.
+
+                     It was a hardcoded `⌘K`, which lied the moment somebody
+                     rebound the command; #401 makes it read the live keymap like
+                     every other hint, and `always` keeps the affordance since
                      the beginning rather than hiding it behind a held key. */
                   <KeyHint command="search-sessions" always />
                 )
@@ -1164,6 +1235,11 @@ function SidebarBody() {
               loose glyphs, because they are one cluster of verbs about the rail
               and the space beside the field is not theirs to float in.
             */}
+            {/* EACH VERB IS A COMMAND, PRESSED (#402). The buttons used to do
+                the work themselves — reach for the bridge, set the palette's
+                state — which is how a button and its chord come to mean two
+                slightly different things. They ask the dispatcher now, exactly
+                as the keyboard and the palette's own rows do. */}
             <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5">
               {/* HIDDEN IN A BROWSER TAB, never disabled: `workspaceOpenBlocker`
                   is the one place that decides whether a folder can be opened
@@ -1177,7 +1253,7 @@ function SidebarBody() {
                   disabled={!revealProject}
                   aria-label="Reveal in Finder"
                   title={revealProject ? `Reveal ${revealProject.name} in Finder` : "Reveal in Finder — choose a project first"}
-                  onClick={() => revealProject && void revealBridge.reveal(revealProject.root)}
+                  onClick={() => run("reveal-in-finder")}
                 >
                   <FolderOpenIcon />
                 </Button>
@@ -1187,7 +1263,7 @@ function SidebarBody() {
                 size="icon-sm"
                 aria-label="Add project"
                 title="Add project"
-                onClick={() => openPalette("sources")}
+                onClick={() => run("add-project")}
               >
                 <FolderPlusIcon />
               </Button>
@@ -1203,7 +1279,7 @@ function SidebarBody() {
                 size="icon-sm"
                 aria-label="New conversation"
                 title={soleTarget ? `New conversation in ${soleTarget.name}` : "New conversation — choose the project"}
-                onClick={newConversation}
+                onClick={() => run("new-conversation")}
               >
                 <MessageSquarePlusIcon />
               </Button>
