@@ -1306,6 +1306,7 @@ export function WorkingIndicator({
   startedAt,
   lastActivityAt,
   delegated,
+  compacting,
   now,
 }: {
   label: string;
@@ -1315,6 +1316,9 @@ export function WorkingIndicator({
   /** Sub-agents are carrying this turn. A quiet main loop is then the CORRECT
    *  state rather than a stalled one. */
   delegated?: boolean;
+  /** The provider is squeezing its context. Silence is what a compaction IS —
+   *  see `isCompacting`. */
+  compacting?: boolean;
   now: number;
 }) {
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
@@ -1327,8 +1331,12 @@ export function WorkingIndicator({
    */
   const quiet = lastActivityAt ? Math.max(0, Math.floor((now - lastActivityAt) / 1000)) : elapsed;
   // A fan-out mid-flight is the loudest thing in the session; the main loop is
-  // silent because it is waiting on purpose, which is not a warning.
-  const silent = !delegated && quiet >= SILENCE_THRESHOLD;
+  // silent because it is waiting on purpose, which is not a warning. A
+  // compaction is the same case with nothing to show at all: it emits no items
+  // by construction and routinely runs past thirty seconds, so warning on it
+  // would mean warning on every compaction — the readout would be noise exactly
+  // where it is supposed to mean "stuck".
+  const silent = !delegated && !compacting && quiet >= SILENCE_THRESHOLD;
 
   return (
     <div className={cn("flex items-center gap-2 text-[0.6875rem] text-muted-foreground/70", silent && "text-warning/80")}>
