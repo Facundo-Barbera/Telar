@@ -47,7 +47,8 @@
  */
 
 import { useEffect } from "react";
-import type { Accent, MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
+import type { MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
+import { ACCENT_COLOURS, LIGHT_PRIMARY_FOREGROUND } from "@/lib/accent-colours";
 import { useAppearance } from "@/lib/appearance";
 import { useComposition } from "@/lib/composition";
 import { createEngineApi } from "@/lib/engine/client";
@@ -71,35 +72,6 @@ const PUBLISH_DEBOUNCE_MS = 2_000;
  * remembered as done.
  */
 let published: string | undefined;
-
-/**
- * THE ACCENT HUES, RESOLVED — the one restatement of app/globals.css's
- * `[data-accent="…"]` blocks.
- *
- * They cannot be READ from the stylesheet: `getComputedStyle` would only ever
- * report the accent this window is wearing, and the published look has to name
- * both schemes of the chosen one. And they cannot be REFERENCED: a client that
- * never loaded globals.css has no `--primary` to look up. So they are copied,
- * once, here — beside the publisher that is their only consumer.
- *
- * KEEP IN STEP WITH globals.css §ACCENTS. The `light` half is that file's
- * `[data-accent=x]` rule and the `dark` half its `.dark[data-accent=x]` rule.
- * Light needs no `--primary-foreground` of its own (the base token is already
- * correct against every accent at L 0.488), so light's foreground is the base
- * palette's value, restated once below.
- */
-const LIGHT_PRIMARY_FOREGROUND = "oklch(1 0 0)";
-
-const ACCENT_COLOURS: Record<Accent, { light: string; dark: { primary: string; primaryForeground: string } }> = {
-  indigo: { light: "oklch(0.488 0.16 264)", dark: { primary: "oklch(0.68 0.16 264)", primaryForeground: "oklch(0.17 0.04 264)" } },
-  sky: { light: "oklch(0.488 0.15 240)", dark: { primary: "oklch(0.68 0.15 240)", primaryForeground: "oklch(0.17 0.04 240)" } },
-  sea: { light: "oklch(0.488 0.1 205)", dark: { primary: "oklch(0.68 0.11 205)", primaryForeground: "oklch(0.17 0.04 205)" } },
-  moss: { light: "oklch(0.488 0.11 140)", dark: { primary: "oklch(0.68 0.13 140)", primaryForeground: "oklch(0.17 0.04 140)" } },
-  amber: { light: "oklch(0.488 0.12 70)", dark: { primary: "oklch(0.68 0.14 70)", primaryForeground: "oklch(0.17 0.04 70)" } },
-  rose: { light: "oklch(0.488 0.17 15)", dark: { primary: "oklch(0.68 0.17 15)", primaryForeground: "oklch(0.17 0.04 15)" } },
-  plum: { light: "oklch(0.488 0.16 325)", dark: { primary: "oklch(0.68 0.15 325)", primaryForeground: "oklch(0.17 0.04 325)" } },
-  violet: { light: "oklch(0.488 0.17 293)", dark: { primary: "oklch(0.68 0.16 293)", primaryForeground: "oklch(0.17 0.04 293)" } },
-};
 
 /**
  * THE TYPEFACE STACKS, RESOLVED — globals.css §TYPEFACES, with the build-time
