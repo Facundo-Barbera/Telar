@@ -58,6 +58,30 @@ function resolveViewport(input) {
   return { width: w, height: h };
 }
 
+/**
+ * THE ZOOM LADDER — Chromium's own steps, so − and + land where a person who
+ * has used a browser expects them to. The manager owns the ladder rather than
+ * the panel: a factor is a page-level fact, and two surfaces stepping it with
+ * two ladders would drift.
+ */
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+
+/** The next rung in `direction` from `factor`, clamped at both ends. `reset`
+ *  is 1 whatever the current factor is. */
+function zoomStep(factor, direction) {
+  if (direction === "reset") return 1;
+  const current = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  if (direction === "in") return ZOOM_STEPS.find((step) => step > current + 1e-6) ?? ZOOM_STEPS.at(-1);
+  if (direction === "out") return [...ZOOM_STEPS].reverse().find((step) => step < current - 1e-6) ?? ZOOM_STEPS[0];
+  throw new Error(`Unknown zoom direction ${JSON.stringify(direction)}. Use in, out or reset.`);
+}
+
+/** The colour scheme a tab is emulating, normalized. "system" is no override. */
+function resolveColorScheme(value) {
+  if (value === "light" || value === "dark" || value === "system") return value;
+  throw new Error(`Unknown appearance ${JSON.stringify(value)}. Use light, dark or system.`);
+}
+
 /** Which preset (if any) a size is — the toolbar shows a name over numbers. */
 function presetOf(viewport) {
   for (const [key, preset] of Object.entries(VIEWPORT_PRESETS)) {
@@ -1564,6 +1588,13 @@ class DesktopBrowserManager {
          *  still being reported as open. */
         devtools: this.devToolsOpen(tab),
         viewport: this.viewportInfo(tab),
+        /** The page zoom the options menu reads back (#473). */
+        zoom: tab.zoom || 1,
+        /** What this tab emulates for `prefers-color-scheme`. */
+        colorScheme: tab.colorScheme || "system",
+        /** This tab is in a window of its own right now, so the panel draws
+         *  no page for it — see `openPreview`. */
+        preview: this.previewing(tab),
         canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
         canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
       })),
@@ -1737,6 +1768,13 @@ class DesktopBrowserManager {
     if (!view || view.webContents.isDestroyed?.()) return;
     const place = () => {
       if (tab.view !== view || view.webContents.isDestroyed?.()) return;
+      // PREVIEWED: the view fills its own window and the panel's visibility
+      // rules do not apply to it (#473).
+      if (this.previewing(tab)) {
+        view.setVisible(true);
+        view.setBounds(this.previewRect(tab));
+        return;
+      }
       // Shown = the visible scope's active tab, bounds or not (a panel that
       // has not published bounds yet still owns the view); the fit SCALE is
       // what waits for real bounds (isTabVisible, in viewportTarget).
@@ -1760,6 +1798,10 @@ class DesktopBrowserManager {
     const debug = await this.ensureDebuggerOnly(tab);
     if (tab.view !== view) return;
     await this.syncViewport(tab, debug);
+    // Zoom and appearance ride the same pipeline (#473): both are page-level
+    // facts a new document forgets, and dom-ready runs this.
+    this.applyZoom(tab);
+    if (this.needsColorScheme(tab)) await this.applyColorScheme(tab, debug);
     // The state may have moved while the emulation was in flight; the
     // coalesced follow-up run handles that. This re-assert covers the case
     // where nothing else changed but the view's bounds were written before
@@ -1770,6 +1812,12 @@ class DesktopBrowserManager {
   applyVisibility() {
     for (const tab of this.tabs) {
       if (!tab.view) continue;
+      // A previewed tab is its own window's; the pipeline still re-places it
+      // there, but nothing here may hide it (#473).
+      if (this.previewing(tab)) {
+        this.applyGeometry(tab).catch(() => {});
+        continue;
+      }
       const active = tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
       // Hide immediately (a switched-away tab must not linger a frame);
       // the shown one is placed by the pipeline with its emulation.
@@ -1892,6 +1940,7 @@ class DesktopBrowserManager {
     tab.debuggerListenersBound = false;
     // A new WebContents has no emulation: forget what the old one was told.
     tab.viewportOverride = undefined;
+    tab.colorSchemeApplied = undefined;
     this.bindTab(tab);
     // THE INTRINSIC VIEWPORT APPLIES TO EVERY VIEW, NOT ONLY AGENT-INSPECTED
     // ONES. The emulation rides the debugger, and the debugger used to attach
@@ -2068,6 +2117,10 @@ class DesktopBrowserManager {
   hibernateTab(tab) {
     if (!tab.view) return;
     this.cancelDeferredHibernate(tab);
+    // A PREVIEW WINDOW IS THE TAB'S TOO, and this is the one teardown path —
+    // so a window showing a page that is about to stop existing is closed
+    // here, and its view handed back before anything detaches it (#473).
+    this.endPreview(tab);
     // DEVTOOLS ARE THE TAB'S AND GO WITH IT. This is the ONE teardown path —
     // closing a tab, hibernating it, the live-view budget evicting it, the
     // window quitting all arrive here — so a detached DevTools window cannot
@@ -2259,6 +2312,20 @@ class DesktopBrowserManager {
        *  browser, and keeps the last seen size while hidden) or "fixed" (an
        *  explicit preset / custom size / drag — opt-in). */
       viewportMode: "fit",
+      /** The page zoom the options menu's − / + walk (#473). A page-level
+       *  factor, not a presentation scale: it changes what the page lays out
+       *  as, so the agent sees what the human set. */
+      zoom: 1,
+      /** What `prefers-color-scheme` answers in this tab — "system" is no
+       *  override at all, which is the default a page would see anyway. */
+      colorScheme: "system",
+      /** The scheme currently pushed to this WebContents, so a resync does not
+       *  re-send it. Cleared with the view, like `viewportOverride`. */
+      colorSchemeApplied: undefined,
+      /** This tab's own window while it is previewed out of the panel (#473).
+       *  The view lives in that window's `contentView` meanwhile; the cockpit
+       *  neither places nor hides it — see `previewing`. */
+      previewWindow: null,
       /** The serialized geometry pipeline — see applyGeometry. */
       geometry: null,
       /** Restored from the inventory and not yet woken in this process. */
@@ -2456,6 +2523,122 @@ class DesktopBrowserManager {
     else this.openDevTools(tab);
     this.emitState(scope);
     return this.state(scope);
+  }
+
+  // --- The options menu's own verbs (#473) -----------------------------------
+
+  /**
+   * THE TAB, IN A WINDOW OF ITS OWN — not a second page at the same address.
+   *
+   * The live `WebContentsView` is MOVED: out of the cockpit's `contentView`
+   * and into the new window's. A copy would be a different page — its own
+   * scroll, its own form state, its own login step half-finished — and
+   * "preview this tab" would then be a control that shows you something else.
+   * Moving it is also why there is nothing to reconcile when it comes back.
+   *
+   * THE PANEL IS LEFT EMPTY ON PURPOSE while the tab is away, and says so
+   * (`preview` in the tab's state). A page cannot be composited in two places,
+   * and a panel that silently showed a different tab would lose the person's
+   * place in this one.
+   *
+   * Sized to the tab's intrinsic viewport, because that is the size the page
+   * is laid out for — a previewed tab is not "shown" in the panel
+   * (`isTabShown`), so it keeps its own viewport rather than adopting a stage
+   * it has left.
+   */
+  async openPreview(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    await this.wakeTab(tab);
+    if (this.previewing(tab)) {
+      try { tab.previewWindow.focus(); } catch { /* a window mid-close */ }
+      return this.state(scope);
+    }
+    const { BrowserWindow } = this.electron();
+    if (!BrowserWindow) throw new Error("This build cannot open a separate window for a tab.");
+    const viewport = this.viewportOf(tab);
+    const win = new BrowserWindow({
+      width: viewport.width,
+      height: viewport.height,
+      useContentSize: true,
+      title: tab.title || "Preview",
+      backgroundColor: "#00000000",
+      show: true,
+    });
+    try {
+      this.window.contentView.removeChildView(tab.view);
+      win.contentView.addChildView(tab.view);
+    } catch (error) {
+      // The move failed halfway: put the view back where it belongs rather
+      // than leaving it parented to nothing.
+      try { this.window.contentView.addChildView(tab.view); } catch { /* already there */ }
+      try { win.destroy(); } catch { /* never opened */ }
+      throw new Error(`Could not open a separate window for this tab: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    tab.previewWindow = win;
+    win.on?.("resize", () => { this.applyGeometry(tab).catch(() => {}); });
+    // CLOSING THE WINDOW IS HOW THE TAB COMES BACK. `closed` fires after the
+    // window is gone, so `endPreview` finds `isDestroyed()` true and only
+    // re-parents — which is exactly what is left to do.
+    win.on?.("closed", () => {
+      if (!tab.previewWindow) return;
+      tab.previewWindow = null;
+      this.reclaimView(tab);
+      this.applyVisibility();
+      try { this.emitState(tab.scopeKey); } catch { /* the scope went with it */ }
+    });
+    this.applyVisibility();
+    this.emitState(scope);
+    return this.state(scope);
+  }
+
+  /** Bring a previewed tab back into the panel and shut its window. Safe on a
+   *  tab that is not previewed, and on one whose window is already gone. */
+  endPreview(tab) {
+    const win = tab?.previewWindow;
+    if (!win) return;
+    tab.previewWindow = null;
+    this.reclaimView(tab);
+    try { if (!win.isDestroyed?.()) win.destroy(); } catch { /* already gone */ }
+  }
+
+  /** Re-parent a returning preview's view to the cockpit window. */
+  reclaimView(tab) {
+    if (!tab.view) return;
+    try { this.window.contentView.addChildView(tab.view); } catch { /* the cockpit went first */ }
+  }
+
+  /** The human's "bring it back", from the panel rather than the window. */
+  closePreview(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    this.endPreview(tab);
+    this.applyVisibility();
+    this.emitState(scope);
+    return this.state(scope);
+  }
+
+  /**
+   * CLEAR COOKIES / CACHE, FOR THE PROFILE THIS TAB BROWSES IN.
+   *
+   * THE SCOPE IS THE PARTITION, NOT THE SITE, and the panel's confirm says so
+   * in those words: a Chromium session is cleared whole, and offering a row
+   * that read "clear cookies for example.com" while signing the profile out of
+   * everything would be this menu lying about what it does. The site is named
+   * beside it because it is the page in front of the person — what they are
+   * about to be signed out of, not the limit of what is.
+   */
+  async clearBrowsingData(scopeKey, kind) {
+    const scope = this.requireScope(scopeKey);
+    const tabs = this.scopeTabs(scope);
+    if (!tabs.length) throw new Error("There is no tab here to clear anything for.");
+    const tab = this.activeTab(scope);
+    const ses = this.sessionFor(tab.partition);
+    if (!ses) throw new Error("This browser profile has no Chromium session to clear.");
+    if (kind === "cookies") await ses.clearStorageData({ storages: ["cookies"] });
+    else if (kind === "cache") await ses.clearCache();
+    else throw new Error(`Unknown browsing data ${JSON.stringify(kind)}. Use cookies or cache.`);
+    return { ok: true, kind, partition: tab.partition, profile: this.profiles.get(tab.profileId)?.label ?? null };
   }
 
   // --- The page's context menu (#423) ----------------------------------------
@@ -2764,6 +2947,37 @@ class DesktopBrowserManager {
      * background agent should be able to do.
      */
     if (kind === "toggle-devtools") return this.toggleDevTools(scope);
+    /**
+     * THE OPTIONS MENU'S VERBS (#473) SIT HERE FOR THE SAME REASON DEVTOOLS
+     * DOES: they are the cockpit's own chrome. Zoom and appearance change what
+     * the page lays out as, which an agent's snapshot then describes — the
+     * human sets those, and `performAction` is the switch agents share.
+     */
+    if (kind === "hard-reload") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      this.noteHumanInput(scope, { force: true });
+      await this.beforeNavigation(tab);
+      // The whole point of the row: the HTTP cache is bypassed, so a rebuilt
+      // asset is fetched rather than re-read.
+      tab.view.webContents.reloadIgnoringCache();
+      return this.state(scope);
+    }
+    if (kind === "zoom") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      tab.zoom = zoomStep(tab.zoom, action.direction);
+      this.applyZoom(tab);
+      this.emitState(scope);
+      return this.state(scope);
+    }
+    if (kind === "appearance") {
+      const tab = await this.wakeTab(action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index));
+      tab.colorScheme = resolveColorScheme(action.scheme);
+      await this.applyGeometry(tab);
+      this.emitState(scope);
+      return this.state(scope);
+    }
+    if (kind === "preview") return this.openPreview(scope, action.index);
+    if (kind === "end-preview") return this.closePreview(scope, action.index);
     if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
     if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
     // The toolbar's viewport control: a preset or a custom size for the
@@ -2944,6 +3158,44 @@ class DesktopBrowserManager {
       ...(target.scale === 1 ? {} : { scale: target.scale }),
     });
     tab.viewportOverride = wanted;
+  }
+
+  /** The tab's zoom, pushed to its live WebContents. A no-op for a sleeping
+   *  tab — waking it runs the pipeline, which lands here again. */
+  applyZoom(tab) {
+    const wc = this.contentsOf(tab);
+    if (!wc?.setZoomFactor) return;
+    try { wc.setZoomFactor(tab.zoom || 1); } catch { /* a page mid-teardown */ }
+  }
+
+  /**
+   * IS THERE ANY APPEARANCE TO SEND? Asked separately so the geometry pipeline
+   * can skip the `await` entirely in the ordinary case — an await on a settled
+   * no-op still costs that run a microtask, and how far the run gets before
+   * the next one is queued is observable (the debugger binds inside it).
+   *
+   * `undefined` = a fresh WebContents emulating nothing, which IS "system":
+   * clearing it would be a round trip to assert the status quo on every tab.
+   */
+  needsColorScheme(tab) {
+    const wanted = tab.colorScheme || "system";
+    if (tab.colorSchemeApplied === wanted) return false;
+    return !(wanted === "system" && tab.colorSchemeApplied === undefined);
+  }
+
+  /**
+   * WHAT `prefers-color-scheme` ANSWERS IN THIS TAB. "system" clears the
+   * override rather than asserting the host's own scheme — a page then reads
+   * whatever it would have read with nobody emulating anything, which is what
+   * "system" means. Recorded only once the command lands, like the viewport
+   * override, so a refusal is not remembered as applied.
+   */
+  async applyColorScheme(tab, debug) {
+    const wanted = tab.colorScheme || "system";
+    await debug.sendCommand("Emulation.setEmulatedMedia", {
+      features: wanted === "system" ? [] : [{ name: "prefers-color-scheme", value: wanted }],
+    });
+    tab.colorSchemeApplied = wanted;
   }
 
   /** What the emulation for this tab should be right now. */
@@ -3295,8 +3547,32 @@ class DesktopBrowserManager {
     return (!url || url === "about:blank") && !tab.loading && tab.navigationPending === 0;
   }
 
-  /** The visible scope's active tab — what the native view shows. */
+  /**
+   * THE TAB IS IN A WINDOW OF ITS OWN (#473), so the cockpit's panel is not
+   * where it is drawn. Every place that places, sizes or hides a view asks
+   * this first: the view is a child of the preview window's `contentView`
+   * while this is true, and a `setVisible(false)` meant for the panel would
+   * blank the window a person is looking at.
+   */
+  previewing(tab) {
+    return Boolean(tab?.previewWindow && !tab.previewWindow.isDestroyed?.());
+  }
+
+  /** The rect the previewed view fills inside its own window. */
+  previewRect(tab) {
+    const [width, height] = tab.previewWindow?.getContentSize?.() || [];
+    const viewport = this.viewportOf(tab);
+    return { x: 0, y: 0, width: Math.max(1, Math.round(width || viewport.width)), height: Math.max(1, Math.round(height || viewport.height)) };
+  }
+
+  /**
+   * The visible scope's active tab — what the native view shows. A PREVIEWED
+   * tab is shown in its own window instead, so it is not this panel's: it
+   * keeps its intrinsic viewport (no fit adoption, no presentation scale)
+   * rather than following a panel it has left.
+   */
   isTabShown(tab) {
+    if (this.previewing(tab)) return false;
     return tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
   }
 
@@ -3829,4 +4105,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };
+module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS };

@@ -1440,6 +1440,22 @@ ipcMain.handle("telar:browser:open-external", (event, input) => {
   openInSystemBrowser(target);
   return { ok: true };
 });
+/**
+ * "CLEAR COOKIES" / "CLEAR CACHE", from the browser's options menu (#473).
+ *
+ * THE COCKPIT'S OWN TOP FRAME ONLY, the same guard "open in system browser"
+ * wears and for a stronger reason: this signs a whole profile out. A browser
+ * tab's preload, a subframe, or anything an agent can reach must not be able
+ * to wipe the identity the human is browsing as.
+ */
+ipcMain.handle("telar:browser:clear-data", (event, input) => {
+  const manager = requireBrowserManager(event);
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may clear this browser's cookies or cache.");
+  }
+  return manager.clearBrowsingData(input?.scopeKey, input?.kind);
+});
 ipcMain.handle("telar:browser:tool", (event, input) =>
   requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );
