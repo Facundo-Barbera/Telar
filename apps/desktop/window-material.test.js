@@ -26,6 +26,8 @@ describe("vibrancyMaterial", () => {
     // of #399. If it ever becomes the light answer again this fails.
     expect(DARK_MATERIAL).toBe("hud");
     expect(LIGHT_MATERIAL).not.toBe("hud");
+    // "sidebar" was the first pick and read near-solid beside dark (2026-09-13 nightly pass).
+    expect(LIGHT_MATERIAL).not.toBe("sidebar");
   });
 
   test("no vibrancy layer at all when translucency is off", () => {

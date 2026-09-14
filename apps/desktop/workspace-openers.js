@@ -17,10 +17,18 @@
  * AND EACH ROW CARRIES ITS REAL ICON (issue #398). The renderer used to draw a
  * vendored silhouette of each app's logo, which at 14px turned Xcode into
  * noise and made Finder a drawing of a logo rather than the logo. macOS already
- * holds the artwork — `app.getFileIcon` on the `.app` bundle is the same bitmap
- * the Dock and Finder show — so the shell reads it once per bundle and hands
- * the renderer a PNG data URL. The vector marks stay as the fallback for the
+ * holds the artwork, so the shell reads it once per bundle and hands the
+ * renderer a PNG data URL. The vector marks stay as the fallback for the
  * surfaces the shell cannot reach (a browser tab, a remote Mac).
+ *
+ * THE ARTWORK IS THE BUNDLE'S OWN .icns, NOT `app.getFileIcon`. The first cut
+ * asked Electron's `getFileIcon` for the bundle and shipped a blank grey
+ * square: on macOS that call answers a 32px GENERIC application glyph for
+ * every `.app`, byte-identical for VS Code, Xcode and Finder (1181 bytes each,
+ * measured on 2026-09-13). The real icon is the file `CFBundleIconFile` names
+ * under Contents/Resources. `nativeImage.createFromPath` cannot decode `.icns`
+ * (it answers an empty image, also measured), so the file goes through
+ * `/usr/bin/sips`, which converts and downsizes it to a PNG in ~25 ms.
  */
 "use strict";
 const { execFile } = require("node:child_process");
@@ -124,6 +132,9 @@ function openerIconDataUrl({ bundlePath, getFileIcon, cache = iconCache }) {
   const pending = Promise.resolve()
     .then(() => getFileIcon(bundlePath, { size: "normal" }))
     .then((image) => {
+      // A NativeImage that decoded nothing reports `isEmpty()`; treat it as a
+      // miss so the renderer keeps its vector mark rather than a blank box.
+      if (image && typeof image.isEmpty === "function" && image.isEmpty()) return undefined;
       // NativeImage, duck-typed: the shape this needs is `toPNG()`, and an
       // empty buffer is what an icon-less path answers with rather than a throw.
       const png = typeof image?.toPNG === "function" ? image.toPNG() : undefined;
@@ -174,4 +185,60 @@ function openWith({ target, appPath, run = execFile }) {
   });
 }
 
-module.exports = { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS };
+/**
+ * The `.icns` a bundle names as its icon, or undefined.
+ *
+ * `CFBundleIconFile` is read with `plutil` through execFile and an argv array
+ * (Info.plist is usually binary, and there is no plist parser in this process
+ * worth adding for one key). The value may or may not carry the extension —
+ * Xcode writes "Xcode", VS Code writes "Code.icns" — so both spellings are
+ * tried. A bundle that names no icon file, or whose file is missing, answers
+ * undefined, which the caller turns into "no bitmap".
+ */
+function bundleIconFile(bundlePath, { run = execFile, exists = fs.existsSync } = {}) {
+  const plist = path.join(bundlePath, "Contents", "Info.plist");
+  if (!exists(plist)) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    run("/usr/bin/plutil", ["-extract", "CFBundleIconFile", "raw", "-o", "-", plist], { timeout: 3000 }, (error, stdout) => {
+      const name = error ? "" : String(stdout).trim();
+      if (!name) return resolve(undefined);
+      const base = name.endsWith(".icns") ? name.slice(0, -".icns".length) : name;
+      const candidate = path.join(bundlePath, "Contents", "Resources", `${base}.icns`);
+      resolve(exists(candidate) ? candidate : undefined);
+    });
+  });
+}
+
+/**
+ * The shell's reader: the bundle's own `.icns`, converted to a PNG at the size
+ * the rows draw. 64px because the rows draw at 14–20 CSS px on a 2x display
+ * and a 32px source would be upscaled there.
+ *
+ * `sips` DOES THE DECODING. Electron's `nativeImage.createFromPath` returns an
+ * empty image for every `.icns` (measured on the three bundles above), and
+ * there is no icns decoder in this process worth adding. `sips` is on every
+ * Mac, is called through execFile with an argv array, writes to a temp file
+ * that is removed whether or not it succeeded, and is bounded by a timeout so
+ * a hung conversion costs one row its bitmap rather than the menu.
+ *
+ * Returns the duck-typed shape `openerIconDataUrl` reads: `toPNG()` and
+ * `isEmpty()`. `run` and the resolver are injected so this stays testable
+ * without a shell or a Mac.
+ */
+function bundleIcon(bundlePath, { run = execFile, iconFile = bundleIconFile, size = 64, readFile = fs.promises.readFile, unlink = fs.promises.unlink, tmpDir = os.tmpdir } = {}) {
+  return iconFile(bundlePath).then((icns) => {
+    if (!icns) return undefined;
+    const out = path.join(tmpDir(), `telar-icon-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+    return new Promise((resolve) => {
+      run("/usr/bin/sips", ["-s", "format", "png", "-Z", String(size), icns, "--out", out], { timeout: 5000 }, (error) => {
+        if (error) return resolve(undefined);
+        readFile(out).then(
+          (png) => resolve({ isEmpty: () => png.length === 0, toPNG: () => png }),
+          () => resolve(undefined),
+        );
+      });
+    }).finally(() => unlink(out).catch(() => undefined));
+  });
+}
+
+module.exports = { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, bundleIconFile, bundleIcon, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS };

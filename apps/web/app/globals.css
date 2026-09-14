@@ -766,11 +766,14 @@ code, pre, kbd, samp {
    is not. So the identical ratio that reads as glass at 45% dark read as fog at
    45% light: the slider was honest and the result was not.
 
-   0.6, AND IT IS A TUNING, NOT A DERIVATION. It is the factor at which the
-   default 45% lands the light canvas at the same legibility the dark one has
-   there (73% opaque against 55%). Anyone re-tuning it moves both rules at once,
-   which is the reason the number is a variable rather than two hand-mixed
-   ratios that could drift apart.
+   0.85, AND IT IS A TUNING, NOT A DERIVATION. The first cut was 0.6, chosen
+   on paper; on the nightly, side by side with dark at the same slider and under
+   the light material the shell now uses, 0.6 stacked with that material into a
+   near-solid pane — the owner's screenshot on 2026-09-13 showed dark as glass
+   and light as a sheet. 0.85 keeps light slightly more opaque than dark (the
+   contrast argument above still holds) without reading as a different feature.
+   Anyone re-tuning it moves both rules at once, which is the reason the number
+   is a variable rather than two hand-mixed ratios that could drift apart.
 
    ONLY THE LIGHT HALF DECLARES ANYTHING. The two rules below read the slider
    THROUGH `--wash-transparency`, falling back to the slider itself — so the
@@ -780,7 +783,7 @@ code, pre, kbd, samp {
    (theme-provider.tsx), which is the same element both attributes are written
    on, so `:not(.dark)` is the light half of exactly this scene. */
 html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --wash-transparency: calc(var(--translucency, 45%) * 0.6);
+  --wash-transparency: calc(var(--translucency, 45%) * 0.85);
 }
 :is([data-telar-shell][data-translucent], [data-backdrop]) body {
   background-color: color-mix(in oklab, var(--background) calc(100% - var(--wash-transparency, var(--translucency, 45%))), transparent);
