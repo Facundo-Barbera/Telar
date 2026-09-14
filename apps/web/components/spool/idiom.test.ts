@@ -2503,16 +2503,12 @@ describe("the sidebar's search field is one component, shared, not two copies of
     expect(search).toContain("onFocus={() => setOpen(true)}");
   });
 
-  test("the Spool's section caption and Telar's now share one scale — CAPTION, not two type ramps", () => {
-    // `warehouse-nav.tsx`'s CAPTION was the newer standard named in the
-    // brief; `app-sidebar.tsx`'s BandRule now renders its label at the same
-    // scale, rather than the sentence-case 11px it used before this pass.
-    const nav = read("warehouse-nav.tsx");
-    const app = read("../app-sidebar.tsx");
-    const captionScale = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
-    expect(nav).toContain(`const CAPTION = "${captionScale}"`);
-    expect(app).toContain(`const CAPTION = "${captionScale}"`);
-  });
+  // GONE: the caption-scale pin. It asserted that `warehouse-nav.tsx` and
+  // `app-sidebar.tsx` each declared the same `CAPTION` string, which held the
+  // duplication in place instead of removing it — it could only fail after a
+  // rail had already drifted, and the repair it asked for was a third copy.
+  // The string is now exported once from `lib/idiom.ts`; there is nothing left
+  // for two files to disagree about.
 });
 
 describe("a subject is filed by dropping it — the rail's own drag, §Part 2 of the shared-chrome pass", () => {

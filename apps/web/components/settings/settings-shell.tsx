@@ -252,7 +252,7 @@ export function SettingsShell({
       {groups.map(({ group, items }) => (
         <div key={group} className="flex flex-col gap-0.5">
           {group && (
-            <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">{group}</div>
+            <div className="px-2 pb-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground/60">{group}</div>
           )}
           {items.map((s) => {
             const Icon = s.icon;
@@ -269,7 +269,7 @@ export function SettingsShell({
               >
                 <Icon className={cn("size-4 shrink-0", on ? "text-foreground" : "text-muted-foreground/70")} />
                 <span className="flex-1 truncate">{s.label}</span>
-                {s.count != null && <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">{s.count}</span>}
+                {s.count != null && <span className="text-2xs tabular-nums text-muted-foreground/60">{s.count}</span>}
               </button>
             );
           })}
@@ -509,7 +509,7 @@ export function SettingsGroup({
         // the row titles rather than over the card's edge.
         <div className="mb-2 flex items-start gap-3 px-4">
           <div className="min-w-0 flex-1">
-            {title && <h4 className="font-heading text-[0.8125rem] font-normal tracking-tight text-foreground/70">{title}</h4>}
+            {title && <h4 className="font-heading text-xs-plus font-normal tracking-tight text-foreground/70">{title}</h4>}
             {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
           </div>
           {action && <div className="shrink-0">{action}</div>}

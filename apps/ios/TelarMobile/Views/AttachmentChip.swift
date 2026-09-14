@@ -34,10 +34,10 @@ struct AttachmentChip: View {
                     VStack(spacing: 6) {
                         Image(systemName: glyph)
                             .font(.system(size: 20))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                         Text(name)
                             .font(.system(size: 10))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                             .lineLimit(1)
                             .padding(.horizontal, 4)
                     }

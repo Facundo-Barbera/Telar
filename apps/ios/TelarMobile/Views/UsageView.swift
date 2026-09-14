@@ -129,14 +129,14 @@ struct UsageView: View {
                     .foregroundStyle(Theme.text)
                 Text("\(formatTokens(fold.total.processed)) tokens · \(fold.sessions) session\(fold.sessions == 1 ? "" : "s") · API estimate")
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                 // A FLOOR IS STILL WORTH SHOWING, and saying it is a floor is
                 // the desktop's own sentence: a model with no known rate counts
                 // its tokens and not its money.
                 if !fold.total.priced {
                     Text("Some models have no known rate; their cost is not counted.")
                         .font(.system(size: 12))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -160,7 +160,7 @@ struct UsageView: View {
                         Spacer(minLength: 8)
                         Text(formatShare(provider.share))
                             .font(.system(size: 13)).monospacedDigit()
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                         // THE DASH IS "NO COST KNOWN AT ALL", never "$0.00" —
                         // Codex reports none, and a zero would read as free.
                         Text(provider.totals.costUsd > 0 ? formatUsd(provider.totals.costUsd) : "—")
@@ -198,7 +198,7 @@ struct UsageView: View {
 
     private func totalRow(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).font(.system(size: 15)).foregroundStyle(Theme.textMuted2)
+            Text(label).font(.system(size: 15)).foregroundStyle(Theme.textMuted)
             Spacer(minLength: 8)
             Text(value).font(.system(size: 15, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text)
         }

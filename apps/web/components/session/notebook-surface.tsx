@@ -327,7 +327,7 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
       </EditorAddressRow>
 
       {problem && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
+        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-2xs leading-snug">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           <span className="min-w-0 flex-1">{problem}</span>
           {/conflict|changed on disk/i.test(problem) && (
@@ -345,7 +345,7 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
         "no such file".
       */}
       {failure && nb && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
+        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-2xs leading-snug">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           <span className="min-w-0 flex-1">
             {failure.kind === "missing" ? "This notebook is no longer in the workspace." : failure.message}
@@ -403,7 +403,7 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
           </Button>
         </PanelEmpty>
       ) : (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+        <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
           <Spinner className="size-3" /> {read ? "reading…" : "opening…"}
         </p>
       )}
@@ -414,8 +414,8 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
 function InsertBar({ onInsert }: { onInsert: (type: "code" | "markdown") => void }) {
   return (
     <div className="group flex h-3 items-center justify-center gap-2 opacity-0 transition-opacity hover:opacity-100">
-      <button type="button" onClick={() => onInsert("code")} className="rounded border border-border bg-background px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground">+ code</button>
-      <button type="button" onClick={() => onInsert("markdown")} className="rounded border border-border bg-background px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground">+ markdown</button>
+      <button type="button" onClick={() => onInsert("code")} className="rounded border border-border bg-background px-1.5 text-3xs text-muted-foreground hover:text-foreground">+ code</button>
+      <button type="button" onClick={() => onInsert("markdown")} className="rounded border border-border bg-background px-1.5 text-3xs text-muted-foreground hover:text-foreground">+ markdown</button>
     </div>
   );
 }
@@ -569,7 +569,7 @@ function Cell({
               <button type="button" onClick={onRun} disabled={running} title="Run (⇧⏎)" className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-40">
                 {running ? <Spinner className="size-3" /> : <PlayIcon className="size-3" />}
               </button>
-              <span className="font-mono text-[0.5625rem] text-muted-foreground tabular-nums">[{cell.executionCount ?? " "}]</span>
+              <span className="font-mono text-4xs text-muted-foreground tabular-nums">[{cell.executionCount ?? " "}]</span>
             </>
           ) : (
             <button type="button" onClick={() => setEditingMarkdown((v) => !v)} title="Edit markdown" className="rounded p-0.5 text-muted-foreground hover:text-foreground">
@@ -595,7 +595,7 @@ function Cell({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 pr-1 pt-1 opacity-0 transition-opacity group-hover/cell:opacity-100">
-          <button type="button" title={cell.type === "code" ? "Make markdown" : "Make code"} onClick={() => onType(cell.type === "code" ? "markdown" : "code")} className="rounded px-1 text-[0.5625rem] text-muted-foreground hover:text-foreground">
+          <button type="button" title={cell.type === "code" ? "Make markdown" : "Make code"} onClick={() => onType(cell.type === "code" ? "markdown" : "code")} className="rounded px-1 text-4xs text-muted-foreground hover:text-foreground">
             {cell.type === "code" ? "md" : "py"}
           </button>
           <button type="button" title="Delete cell" onClick={onDelete} className="rounded p-0.5 text-muted-foreground hover:text-destructive">
@@ -605,7 +605,7 @@ function Cell({
       </div>
       {cell.type === "code" && outputs.length > 0 && (
         <div className="border-t border-border/60">
-          <button type="button" onClick={() => setCollapsed((v) => !v)} className="flex w-full items-center gap-1 px-2 py-0.5 text-[0.5625rem] uppercase tracking-wide text-muted-foreground hover:text-foreground">
+          <button type="button" onClick={() => setCollapsed((v) => !v)} className="flex w-full items-center gap-1 px-2 py-0.5 text-4xs uppercase tracking-wide text-muted-foreground hover:text-foreground">
             {collapsed ? <ChevronRightIcon className="size-2.5" /> : <ChevronDownIcon className="size-2.5" />}
             {outputs.length} output{outputs.length === 1 ? "" : "s"}
           </button>

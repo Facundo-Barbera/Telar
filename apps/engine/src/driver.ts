@@ -3565,9 +3565,45 @@ export function createClaudeDriver(
               const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
 
               if (!wake) {
+                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
+                /**
+                 * THE REQUEST GOING OUT OPENS THE TURN — not the first token
+                 * that comes back (#71).
+                 *
+                 * A turn is what makes the cockpit say anything at all: the
+                 * working indicator and the sidebar's liveness dot read the
+                 * session's live turn and nothing else. So for as long as the
+                 * wake-up had no turn, a background task's ending was followed
+                 * by complete silence on screen — measured twice, and read both
+                 * times as "the task didn't wake you up" while a full response
+                 * was being generated. The gap is the request itself: the CLI
+                 * announces `system/status {requesting}` as it goes out and then
+                 * reports NOTHING until the reply opens (#263 puts p90 near 15s
+                 * at a large context, and measured a stall at sixty), so opening
+                 * on `message_start` meant opening after the whole silence.
+                 *
+                 * ONLY WHEN A TASK HAS JUST SPOKEN, which is what makes this a
+                 * wake-up rather than a guess. `lastWokenTaskId` is set by the
+                 * notification (or a monitor's tick) and cleared the moment a
+                 * turn opens, so exactly one request can be read this way — and
+                 * a request the CLI sends between turns for its own reasons,
+                 * which may never produce a main-loop `result` to close a turn
+                 * with, cannot mint one. A wake that announced no task still
+                 * opens the old way, on the reply.
+                 *
+                 * THE INPUT IS THE COST. The CLI echoes the notification it
+                 * injected as a `user` frame, and whichever of the two comes
+                 * first is the one that opens the turn — so a turn opened here
+                 * has no `input` to carry (the echo that follows is not a row:
+                 * `pumpFrame` reads tool results out of a user frame and
+                 * nothing else). A wake row with no expandable text is a
+                 * smaller loss than a wake nobody can see.
+                 */
+                const requesting =
+                  item.type === "system" && item.subtype === "status" && str(item.status) === "requesting" && !parentToolUseId && wokenTask !== undefined;
                 // Anything the main loop says with no turn open is the CLI
                 // starting one of its own. Open a real turn for it.
-                const opens = (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
+                const opens = requesting || (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
                 if (!opens && !ownerTaskId) continue;
                 if (ownerTaskId) {
                   // Sub-agent output with no turn: stays visible on its task.
@@ -3575,7 +3611,6 @@ export function createClaudeDriver(
                   if (await pumpFrame(item, ownerTaskId, undefined)) await flush();
                   continue;
                 }
-                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
                 const text = item.type === "user" ? userText(item.message?.content) : undefined;
                 const binding = await hooks.onProviderTurn({
                   input: text ?? "",
@@ -3606,6 +3641,9 @@ export function createClaudeDriver(
                 };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
+                // The announcement said a request went out, and the turn just
+                // opened above IS that. Nothing is left of it to render.
+                if (requesting) continue;
                 // The CLI's injected notification message is the turn's input
                 // — already on the turn; not a row.
                 if (item.type === "user" && !parentToolUseId && text !== undefined) continue;

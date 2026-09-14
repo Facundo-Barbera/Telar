@@ -11,6 +11,7 @@ import {
   needsSessionSnapshot,
   tailSession,
 } from "./session-sync";
+import { itemText, projectJournal } from "./journal";
 
 const session: Session = {
   id: "session_1",
@@ -363,6 +364,127 @@ describe("opening in one read", () => {
     const result = await hydrateSession(api, session.id);
     expect(calls).toEqual(["session", "events:1"]);
     expect(result.events).toEqual([started]);
+  });
+});
+
+/**
+ * #214 (1): LEAVING A CONVERSATION MID-REPLY AND COMING BACK.
+ *
+ * The two halves of the fix are tested apart — the engine folds an open item's
+ * streamed text into the snapshot at the same watermark it stamps the cursor,
+ * and the client's fold seeds `streamedText` from it (journal.test.ts). Neither
+ * test exercises the JOIN, which is where a remount actually lives: the prefix
+ * comes from one read and the deltas from another, and the only thing keeping
+ * them from overlapping or from leaving a hole is that the cursor hydration
+ * tails from is the watermark the prefix runs through.
+ *
+ * So this drives the real sequence — hydrate, fold — against a journal, with
+ * the snapshot DERIVED from that journal exactly as the engine derives it. A
+ * hand-typed prefix would agree with a hand-typed cursor whatever either of
+ * them said; deriving both means an off-by-one in either direction shows up as
+ * a duplicated or missing chunk.
+ */
+describe("a remount mid-stream", () => {
+  const open: Item = {
+    id: "i1",
+    runId: "run_1",
+    sessionId: "session_1",
+    status: "inProgress",
+    startedAt: 1,
+    // Empty until it closes: the engine does not rewrite the whole document per
+    // token, so mid-flight the stored detail is deliberately stale.
+    detail: { type: "assistant_message", text: "" },
+  };
+  const journal: EngineEvent[] = [
+    { ...envelope, id: 1, type: "turn.accepted", turn, replayed: false },
+    { ...envelope, id: 2, type: "turn.started" },
+    { ...envelope, id: 3, type: "item.started", item: open },
+    { ...envelope, id: 4, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " },
+    { ...envelope, id: 5, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time, " },
+    { ...envelope, id: 6, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "there was" },
+  ];
+  const live: Turn = { ...turn, state: "running" };
+
+  /** What the engine's `openItemPrefix` builds: the deltas written for an open
+   *  item THROUGH a cursor, and the id of the last one that counted. */
+  const snapshotAt = (cursor: number) => {
+    const deltas = journal.filter((event) => event.id <= cursor && event.type === "content.delta" && event.itemId === "i1");
+    const last = deltas.at(-1);
+    return {
+      cursor,
+      session,
+      turns: [live],
+      items: [
+        {
+          ...open,
+          ...(last
+            ? { streamed: deltas.map((event) => (event.type === "content.delta" ? event.text : "")).join(""), streamedThrough: last.id }
+            : {}),
+        },
+      ],
+      requests: [],
+      tasks: [],
+    };
+  };
+  const tailFrom = (after: number) => ({ events: journal.filter((event) => event.id > after) });
+  const textOf = (turns: ReturnType<typeof projectJournal>) => itemText(turns[0]!.items[0]!);
+
+  // Never left: one fold over the whole journal, which is what the reader saw
+  // before they switched away and what they must see when they come back.
+  const uninterrupted = textOf(projectJournal([live], [], journal));
+
+  test("the snapshot's prefix and the deltas since reproduce the reply exactly, in one read or two", async () => {
+    expect(uninterrupted).toBe("Once upon a time, there was");
+
+    for (const cursor of [3, 4, 5, 6]) {
+      const snapshot = snapshotAt(cursor);
+      const two = await hydrateSession(
+        { events: async (_id: string, after: number) => tailFrom(after), session: async () => snapshot },
+        session.id,
+      );
+      expect(textOf(projectJournal(two.turns, two.items, two.events))).toBe(uninterrupted);
+
+      // …and through the one-read opening, which is the path a switch takes.
+      const one = await hydrateSession(
+        {
+          events: async (_id: string, after: number) => tailFrom(after),
+          session: async () => snapshot,
+          sessionBootstrap: async () => ({ ...snapshot, ...tailFrom(snapshot.cursor), subscriptions: [] }),
+        },
+        session.id,
+      );
+      expect(textOf(projectJournal(one.turns, one.items, one.events))).toBe(uninterrupted);
+    }
+  });
+
+  test("a tail that re-delivers what the prefix already holds does not double it", async () => {
+    /**
+     * THE OVERLAP IS EXPECTED, NOT A BUG: the snapshot and the journal are
+     * separate reads, and the engine stamps the cursor BEFORE the snapshot so
+     * the tail overlaps rather than gaps. Here the tail is asked from a point
+     * BELOW the prefix's watermark — a conservative client, or an engine whose
+     * stamp lagged — and the watermark is the only thing that tells a delta
+     * already inside the prefix from a new one.
+     */
+    const snapshot = snapshotAt(5);
+    const hydrated = await hydrateSession(
+      { events: async () => tailFrom(2), session: async () => snapshot },
+      session.id,
+    );
+    expect(textOf(projectJournal(hydrated.turns, hydrated.items, hydrated.events))).toBe(uninterrupted);
+  });
+
+  test("switching back twice during the same reply is the same answer each time", async () => {
+    // Each return is its own hydrate against a further-along snapshot; none of
+    // them may rewind, duplicate, or restart the text.
+    const api = (cursor: number) => ({
+      events: async (_id: string, after: number) => tailFrom(after),
+      session: async () => snapshotAt(cursor),
+    });
+    const first = await hydrateSession(api(4), session.id);
+    expect(textOf(projectJournal(first.turns, first.items, first.events))).toBe(uninterrupted);
+    const second = await hydrateSession(api(6), session.id);
+    expect(textOf(projectJournal(second.turns, second.items, second.events))).toBe(uninterrupted);
   });
 });
 
