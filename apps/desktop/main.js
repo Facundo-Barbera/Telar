@@ -25,7 +25,7 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
-const { vibrancyMaterial, vibrancyWindowOptions } = require("./window-material");
+const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
@@ -889,36 +889,19 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
 function createWindow(url) {
   const title = windowTitle();
   const icon = developmentIconPath();
-  // Vibrancy at construction when the preference asks for it — see the
-  // appearance-preference block above. `followWindow` keeps the blur honest
-  // when the app is in the background instead of freezing a stale frame.
   lastWindowUrl = url;
-  const uiPrefs = readUiPrefs();
-  const translucent = supportsTranslucency() && uiPrefs.translucent;
+  // EVERY WINDOW IS BORN TRANSLUCENT-CAPABLE (#243). The preference picks the
+  // TINT — a vibrancy material or a solid colour — and nothing else about the
+  // window, which is what lets the Settings toggle retint a live window instead
+  // of tearing it down and losing the page's scroll position. The two values
+  // that move, and the price of always being non-opaque, are in
+  // ./window-material.js; `nativeTheme.shouldUseDarkColors` is the resolved
+  // scheme — the cockpit pushes its own into `themeSource` through
+  // `telar:appearance:setTheme`, so this is Telar's half, not the OS's.
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: translucent ? "#00000000" : "#0a0a0a",
-    // `transparent: true` is what actually marks the NSWindow non-opaque. An
-    // alpha backgroundColor alone leaves the window server believing the layer
-    // is opaque, so it skips clearing it — and every resize or navigation
-    // leaves the previous frame composited under the new one.
-    //
-    // `hasShadow: false` because ACTIVATION REGENERATES THE SHADOW — key and
-    // inactive windows wear different ones — and recomputing a shadow from a
-    // transparent window's alpha is the one native repaint that visibly
-    // blinks on every alt-tab back in. A CDP screencast proved the renderer
-    // paints nothing during the flicker, so it had to be a native layer, and
-    // the shadow is the only one that changes with key status. Translucent
-    // windows barely show a shadow anyway.
-    ...(translucent ? { transparent: true, hasShadow: false } : {}),
-    // THE MATERIAL FOLLOWS THE SCHEME — see ./window-material.js for which one
-    // and why. "hud" is the clearest material macOS offers, and it is also a
-    // DARK one: wearing it under a light canvas is what made translucent light
-    // read muddy (#399). `nativeTheme.shouldUseDarkColors` is the resolved
-    // answer — the cockpit pushes its own scheme into `themeSource` through
-    // `telar:appearance:setTheme`, so this is Telar's half, not the OS's.
-    ...vibrancyWindowOptions({ translucent, frost: uiPrefs.frost, dark: nativeTheme.shouldUseDarkColors }),
+    ...backdropWindowOptions({ ...readUiPrefs(), dark: nativeTheme.shouldUseDarkColors, supported: supportsTranslucency() }),
     show: false,
     title,
     ...macWindowChrome(),
@@ -932,19 +915,16 @@ function createWindow(url) {
       // viewer counts as a plugin, and without this the frame stays blank.
       plugins: true,
       // The renderer half of the anti-flicker pair (see Main): a throttled
-      // renderer hands the compositor nothing to show at refocus.
-      ...(translucent ? { backgroundThrottling: false } : {}),
+      // renderer hands the compositor nothing to show at refocus. UNCONDITIONAL
+      // like the transparency it pairs with — a window that can be turned to
+      // glass without a rebuild is non-opaque the whole time, so the throttle
+      // would be waiting to bite the first time somebody flipped the toggle.
+      backgroundThrottling: false,
     },
   });
-  // Whether THIS window's compositor can blend alpha — decided above, at
-  // construction, which is why applyTranslucency has a rebuild path at all.
-  win.telarTranslucentCapable = translucent;
-  // Captured, not read from the global at close time: during a translucency
-  // rebuild the OLD window closes after the NEW one exists, and destroying
-  // whatever the global points to then would kill the replacement's manager.
   // NAMED BROWSER PROFILES (browser-profiles.js): the registry is read once
   // from userData; a bad file is a startup error, not a silent fallback to the
-  // shared jar. Reused across a translucency rebuild through the manager.
+  // shared jar.
   const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
@@ -959,10 +939,10 @@ function createWindow(url) {
     // A project whose pre-profile cookie jar was adopted keeps its recent
     // sites: the entries move to the new key, nothing on disk is touched.
     onProfileMigrated: (from, to) => requireBrowserSuggestions().adopt(from, to),
-    // Each session's open pages, order and active tab survive a reload, a
-    // window rebuild and a restart (browser-tab-store.js). A rebuilt window's
-    // manager reads what the old one wrote in destroy(); the smoke run keeps
-    // its temp userData so nothing leaks between runs.
+    // Each session's open pages, order and active tab survive a reload and a
+    // restart (browser-tab-store.js): a new manager reads what the last one
+    // wrote in destroy(). The smoke run keeps its temp userData so nothing
+    // leaks between runs.
     tabStore: createTabStore(app.getPath("userData")),
     // WHAT EACH SITE MAY DO, PER PROFILE (#422). Beside the profile registry
     // and the tab inventory, keyed by the partition the answer was given in —
@@ -1754,12 +1734,13 @@ function writeUpdatePrefs(prefs) {
 
 // --- Window appearance preference (userData, same idiom as updates) ----------
 //
-// TRANSLUCENCY IS A WINDOW-CREATION FACT. The renderer owns the look —
-// globals.css keys alpha surfaces off `data-translucent`, and the settings
-// pane owns the toggle — but a vibrancy layer has to exist UNDER the page for
-// that alpha to reveal anything, and Electron attaches it most reliably at
-// construction. So the preference is persisted here, read when the window is
-// built, and applied live to open windows when it changes.
+// TRANSLUCENT-CAPABLE IS A WINDOW-CREATION FACT; THE TINT IS NOT. The renderer
+// owns the look — globals.css keys alpha surfaces off `data-translucent`, and
+// the settings pane owns the toggle — but a vibrancy layer has to exist UNDER
+// the page for that alpha to reveal anything, and a window can only be marked
+// non-opaque at construction. So every window is built able to wear glass
+// (./window-material.js) and the preference, persisted here, decides only which
+// backdrop it is wearing — at construction and live, by the same two setters.
 //
 // macOS only: vibrancy is NSVisualEffectView. Everywhere else `supported` is
 // false and the cockpit hides the control.
@@ -1840,33 +1821,35 @@ function readKeymap() {
 }
 
 /**
- * TRANSPARENCY IS A CREATION-TIME FACT IN CHROMIUM. `setBackgroundColor
- * ("#00000000")` on a window born opaque does not re-plumb the compositor: the
- * page starts painting alpha into a buffer that is never cleared, and every
- * previously-shown frame ghosts through — navigate Settings → session and the
- * settings pane stays visible behind the transcript. So turning translucency ON
- * over an opaque window REBUILDS the window (same URL, same bounds; the new one
- * is shown before the old is destroyed, or `window-all-closed` would quit the
- * app in the gap). Turning it OFF is safe live — an opaque page repaints every
- * pixel — and a window BUILT translucent can toggle both ways live.
+ * THE TOGGLE IS A RETINT, NEVER A REBUILD (#243).
+ *
+ * Transparency IS a creation-time fact in Chromium — `setBackgroundColor
+ * ("#00000000")` on a window born opaque does not re-plumb the compositor, so
+ * the page paints alpha into a buffer nothing clears and every previously-shown
+ * frame ghosts through (navigate Settings → session and the settings pane stays
+ * visible behind the transcript). This used to be answered by REBUILDING the
+ * window when the preference was turned on, which cost the cockpit a flash and
+ * its scroll position, and stranded a per-partition extension host on every
+ * flip.
+ *
+ * So the fact is settled at creation for every window instead: all of them are
+ * born `transparent: true` (./window-material.js), and the preference only ever
+ * chooses between a vibrancy material and a solid background colour. Both of
+ * those have live setters, in both directions.
  */
 function applyTranslucency(on, frost) {
-  const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
-  if (on && wins.some((win) => !win.telarTranslucentCapable)) {
-    recreateWindowTranslucent(wins[0]);
-    return;
-  }
-  const material = vibrancyMaterial({ translucent: on, frost, dark: nativeTheme.shouldUseDarkColors });
-  for (const win of wins) {
+  const dark = nativeTheme.shouldUseDarkColors;
+  // The material is the scheme's (./window-material.js); `null` removes the
+  // effect view, which is what both "off" and "clear" want.
+  const material = vibrancyMaterial({ translucent: on, frost, dark });
+  // The opaque colour is the scheme's own canvas, the same one createWindow
+  // paints — a window turned opaque again must not flash the other scheme.
+  const backgroundColor = windowBackgroundColor({ translucent: on, dark });
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
     try {
-      // Frost changes are safe live in BOTH directions — attaching or removing
-      // the effect view does not re-plumb the compositor the way opacity does.
-      // The material is the scheme's (./window-material.js); `null` removes the
-      // effect view, which is what both "off" and "clear" want.
       win.setVibrancy(material);
-      // The opaque colour is the app's darkest canvas, matching createWindow's
-      // — a translucent window turned opaque again must not flash white first.
-      win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
+      win.setBackgroundColor(backgroundColor);
     } catch (err) {
       console.error("[telar-desktop] failed to retint a window:", err.message);
     }
@@ -1880,24 +1863,15 @@ function applyTranslucency(on, frost) {
  * Light in the cockpit left the window on the dark "hud" frost until the next
  * launch, which is the muddy half of #399 arriving by a second route.
  *
- * RETINT ONLY, NEVER REBUILD. `applyTranslucency` recreates a window that was
- * born opaque, because transparency is a creation-time fact; a colour scheme is
- * not, and rebuilding the window on every evening's system switch would throw
- * the page away for a repaint it does not need. A window that cannot do glass
- * is skipped: it has no effect view to retint.
+ * AND THE OPAQUE HALF MOVES WITH IT, which is why this is the same retint the
+ * toggle does rather than a vibrancy-only one: with translucency off the window
+ * wears the scheme's canvas colour, so an evening switch that left the dark
+ * hex on a light cockpit would flash the wrong scheme on the next resize.
  */
 function reapplyVibrancy() {
   if (!supportsTranslucency()) return;
   const { translucent, frost } = readUiPrefs();
-  const material = vibrancyMaterial({ translucent, frost, dark: nativeTheme.shouldUseDarkColors });
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || !win.telarTranslucentCapable) continue;
-    try {
-      win.setVibrancy(material);
-    } catch (err) {
-      console.error("[telar-desktop] failed to retint a window for the new scheme:", err.message);
-    }
-  }
+  applyTranslucency(translucent, frost);
 }
 
 /**
@@ -1913,22 +1887,11 @@ function watchSchemeForVibrancy() {
   nativeTheme.on("updated", reapplyVibrancy);
 }
 
-function recreateWindowTranslucent(old) {
-  const target = old?.webContents.getURL() || lastWindowUrl;
-  if (!target) return;
-  const bounds = old?.getBounds();
-  // createWindow reads the just-written pref, so the replacement is BORN
-  // translucent — the one thing the live path cannot do.
-  const win = createWindow(target);
-  if (bounds) win.setBounds(bounds);
-  updaterWindow = win;
-  win.once("ready-to-show", () => {
-    if (old && !old.isDestroyed()) old.destroy();
-  });
-}
-
-// So a rebuilt window knows where to point itself if the old one's webContents
-// is already gone.
+// THE APP'S OWN URL, as last handed to createWindow. Kept because two things
+// need to name the cockpit when no window can be asked: the network-service
+// cookie re-seat (`wireShellDiagnostics`, whose whole point is that a child
+// process just died) and `telar:app:open-window`, when the asking renderer's
+// webContents is already gone.
 let lastWindowUrl = null;
 
 let updaterWindow = null;
@@ -2626,8 +2589,14 @@ async function runSmoke() {
  * a bad frame first — the activation flicker. What survives of that era is
  * the occlusion switch: Chromium stops drawing a fully-covered window and
  * evicts its frame, and a transparent window shows the eviction on refocus.
+ *
+ * NOT GATED ON THE PREFERENCE ANY MORE (#243). Every window is now born
+ * transparent so the toggle need not rebuild it — and a switch can only be
+ * appended before `ready`, so reading the pref here would have left anyone who
+ * turned translucency on mid-session with the eviction flicker until their next
+ * launch. The platform is the only condition left.
  */
-if (supportsTranslucency() && readUiPrefs().translucent) {
+if (supportsTranslucency()) {
   app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 }
 
