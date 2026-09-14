@@ -64,17 +64,54 @@ test("the registry is the source of the Actions list, not a second list beside i
   // A command is listed only when something can run it: a mounted component has
   // claimed it, or it is pure navigation with a destination.
   expect(source).toContain('Boolean(commandHandler(id)) || commandDestination(id, []).kind !== "noop"');
-  expect(source).toContain('["search-sessions"],');
+  // The palette that opened this dialog is never a row in it, and neither is a
+  // command whose row moved down into Quick settings (#479).
+  expect(source).toContain('["search-sessions", ...PALETTE_QUICK_COMMANDS],');
 });
 
 test("a glyph per command, resolved through the one map (#479)", () => {
-  // This drew one glyph per GROUP, which made the list scannable by section and
-  // not by row — the wrong unit for a surface whose job is finding one verb
-  // among twenty-odd.
+  // The palette used to draw one glyph per GROUP, which made the list scannable
+  // by section and not by row — the wrong unit for a surface whose whole job is
+  // finding one verb among twenty-odd.
   expect(source).toContain("const Glyph = commandIcon(row.id);");
-  expect(source).toContain('import { commandIcon } from "@/lib/command-icons";');
+  expect(source).toContain('import { commandIcon, iconByName } from "@/lib/command-icons";');
   // And the group map is gone from this file: the fallback lives with the map.
   expect(source).not.toContain("GROUP_ICONS");
+});
+
+test("every settings write goes through the one adapter, so #471 rebases one file", () => {
+  // The palette must not reach into the theme store, the appearance store or
+  // the Looks shelf itself — lib/quick-settings.ts is the only door, and that
+  // is what keeps the Appearance rework a single-file rebase.
+  expect(source).toContain('import { ACCENTS, ACCENT_LABELS, useQuickSettings } from "@/lib/quick-settings";');
+  for (const store of ["@/lib/appearance", "@/lib/looks", "@/lib/theme-palettes", "@/components/theme-provider"]) {
+    expect(source).not.toContain(store);
+  }
+});
+
+test("a quick row applies and LEAVES THE PALETTE OPEN", () => {
+  // The one place these rows behave unlike every other: they are knobs, not
+  // verbs. Stepping the text size twice is ordinary, and a dialog that shut
+  // after each step would make the second press a whole ⌘K again.
+  const take = source.slice(source.indexOf("const take ="), source.indexOf("const onKeyDown ="));
+  const quick = take.slice(take.indexOf('if (row.kind === "quick")'), take.indexOf("// A door walks"));
+  expect(quick).toContain("setNotice(quick.apply(row.id));");
+  expect(quick).not.toContain("onOpenChange(false)");
+  // Its readout sits where a command's chord would — a verb promises a key, a
+  // knob reports a state.
+  expect(source).toContain('<span className="shrink-0 text-2xs text-muted-foreground">{row.value}</span>');
+});
+
+test("the Looks and Accent pages are pages of THIS dialog, not a second one", () => {
+  // #479 asked for the palette's existing sub-page mechanism rather than a new
+  // dialog — so these are `page` values on the same DialogContent.
+  expect(source).toContain('page === "looks" ?');
+  expect(source).toContain('page === "accent" ?');
+  expect(source).not.toContain("<Dialog open={true}");
+  // One page component serves both lists: same chrome, different data.
+  expect(source).toContain("function QuickPage({");
+  // Backspace on an EMPTY field is the way back, as everywhere else here.
+  expect(source).toContain('if (event.key === "Backspace" && query === "") {');
 });
 
 test("the chord sits at the row's right, from the live keymap", () => {
@@ -127,14 +164,17 @@ test("the sub-pages are the project palette's own, embedded rather than rebuilt"
   expect(source).toContain("<ProjectPalettePages");
   expect(source).toContain("page={page}");
   // Backspace on an empty field walks back out of them to this palette's list.
-  expect(source).toContain("onBack={() => {");
-  expect(source).toContain('setPage("root");');
+  // `walk` is that one move — the page, a cleared query, the highlight home —
+  // named once now that four pages use it rather than spelled out at each.
+  expect(source).toContain('onBack={() => walk("root")}');
+  expect(source).toContain("const walk = (to: CommandPalettePage) => {");
+  expect(source).toContain('setPage(to);');
 });
 
 test("a row that walks does not also close the dialog", () => {
   const take = source.slice(source.indexOf("const take ="), source.indexOf("const onKeyDown ="));
   expect(take).toContain("if (row.page) {");
-  expect(take).toContain("setPage(SUB_PAGE[row.page]);");
+  expect(take).toContain("walk(SUB_PAGE[row.page]);");
   // Everything else closes first and then acts, so a navigation never happens
   // behind a dialog that is still up.
   expect(take).toContain("onOpenChange(false);\n    onRun(row.id);");
