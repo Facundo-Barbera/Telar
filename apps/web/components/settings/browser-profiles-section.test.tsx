@@ -9,13 +9,18 @@
  * reason is ON SCREEN, and that a refusal from the shell lands on the row it
  * was about rather than scrolling off the top of an eight-row list.
  *
+ * AND WHAT THE ROW REFUSES IS NOW ONLY THE DEFAULT (#476). A profile projects
+ * are assigned to is deletable, and they fall back to the default with it — so
+ * the claim that moved here is the confirm's, which is the one place that
+ * consequence is stated before it happens.
+ *
  * A DOM, because both claims are about what a reader sees after a press. The
  * registrar is handed back in `afterAll` the way `browser-profile-marks.test.tsx`
  * does it — this suite shares a process with tests written for a world that has
  * no `window`.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -27,6 +32,13 @@ GlobalRegistrator.register({ url: "http://localhost/" });
 
 afterAll(async () => {
   await GlobalRegistrator.unregister();
+});
+
+/** Every Delete goes through a browser dialog, and happy-dom has no person to
+ *  answer it. "Yes" is the default so each test says only what it is about; the
+ *  test that is ABOUT the question replaces this to read it. */
+beforeEach(() => {
+  window.confirm = () => true;
 });
 
 afterEach(() => {
@@ -92,27 +104,51 @@ async function press(button: HTMLElement) {
 }
 
 describe("browser profiles — deleting one", () => {
-  test("a profile that cannot be deleted says why ON THE ROW, not only in a tooltip", async () => {
+  test("the default is the only row that cannot be deleted, and it says why ON THE ROW", async () => {
     stubBridge();
     const view = await mount();
 
-    const assigned = view.row("Work");
-    const button = deleteButton(assigned);
-    expect(button.disabled).toBe(true);
     // The sentence the tooltip used to keep to itself, in the row's own text —
     // including the half that says what to do about it.
-    expect(assigned.textContent).toContain("Point that project at another profile first.");
-    expect(button.getAttribute("aria-describedby")).toBe("profile-undeletable-bp_work");
-    expect(assigned.querySelector("#profile-undeletable-bp_work")).toBeTruthy();
+    const fallback = view.row("Default");
+    const refused = deleteButton(fallback);
+    expect(refused.disabled).toBe(true);
+    expect(fallback.textContent).toContain("Make another profile the default first.");
+    expect(refused.getAttribute("aria-describedby")).toBe("profile-undeletable-bp_default");
+    expect(fallback.querySelector("#profile-undeletable-bp_default")).toBeTruthy();
 
-    // The default's reason is its own, and it is on screen too.
-    expect(view.row("Default").textContent).toContain("Make another profile the default first.");
+    // A profile a project is assigned to is deletable now (#476): its projects
+    // fall back to the default, so the row has nothing left to warn about.
+    const assigned = view.row("Work");
+    expect(deleteButton(assigned).disabled).toBe(false);
+    expect(deleteButton(assigned).getAttribute("aria-describedby")).toBeNull();
+    expect(assigned.textContent).not.toContain("another profile first");
 
     // A profile nothing points at offers a live button and says nothing extra.
     const spare = view.row("Spare");
     expect(deleteButton(spare).disabled).toBe(false);
     expect(deleteButton(spare).getAttribute("aria-describedby")).toBeNull();
     expect(spare.textContent).not.toContain("cannot be deleted");
+    view.unmount();
+  });
+
+  test("the confirm names how many projects move and where they move to", async () => {
+    stubBridge();
+    const view = await mount();
+    const asked: string[] = [];
+    window.confirm = (message?: string) => {
+      asked.push(String(message));
+      return false;
+    };
+
+    // Refused at the dialog: nothing is asked of the shell, and the row stays.
+    await press(deleteButton(view.row("Work")));
+    expect(asked).toEqual(['Delete "Work"? 1 project will use "Default" instead. Its cookies stay on disk.']);
+    expect(view.row("Work")).toBeTruthy();
+
+    // A profile nothing is assigned to has no move to report, only the jar.
+    await press(deleteButton(view.row("Spare")));
+    expect(asked[1]).toBe('Delete "Spare"? Its cookies stay on disk.');
     view.unmount();
   });
 
