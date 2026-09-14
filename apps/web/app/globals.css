@@ -651,9 +651,34 @@
   --depth-lift: 0;
   --depth-ink: 0;
 }
+
+/* DEEP HAS TO BE A DIFFERENT PLACE ON THE LADDER, NOT A NUDGE ALONG IT (#471).
+
+   It was 1.5 / 1.6, and the setting read as doing nothing: on a `shadow-1` card
+   — which is most of the app — that moved the ambient layer from 2px/6px/-4px
+   to 3px/9px/-6px and its ink from 26% to 42% in the light half. A one-pixel
+   offset and a blur that grows by three is under the threshold of noticing on a
+   single card, and there is nothing to compare it against, because the whole
+   app moves at once.
+
+   2.5 / 2.2 puts a `shadow-1` card at 5px/15px/-10px: a shadow you can see the
+   shape of, sitting clearly off the page rather than pressed onto it, and the
+   gap between the rungs grows with it (`shadow-3` reaches 45px/120px/-65px, a
+   dialog that is plainly floating over the thing behind it).
+
+   BOTH HALVES, AND THEY DO NOT MOVE THE SAME DISTANCE. The multipliers ride the
+   half's own dials, which is the whole reason they are multipliers: light is
+   ambient-led (lift 1, ink 26%) so deep lands at 2.5× travel and 57% ink, while
+   dark is ring-led (lift 0.5, ink 9%) so the same stops land at 1.25× travel
+   and 20% ink. That is the authored balance kept, not a shortfall — a dark
+   theme with a light theme's ambient shadow is a smear, and dark's separation
+   comes from the contact ring, which Depth deliberately leaves alone: a deeper
+   surface is one that has travelled further from the page, not one with a
+   heavier edge. Both halves' ink stays well inside 100%, so the complement in
+   --shadow-ambient never goes negative. */
 [data-depth="deep"] {
-  --depth-lift: 1.5;
-  --depth-ink: 1.6;
+  --depth-lift: 2.5;
+  --depth-ink: 2.2;
 }
 
 @theme {

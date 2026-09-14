@@ -101,4 +101,36 @@ describe("the ladder the call sites are reaching for", () => {
     expect(flat).toContain("--depth-lift: 0");
     expect(flat).toContain("--depth-ink: 0");
   });
+
+  /**
+   * DEEP HAS TO BE FAR ENOUGH TO SEE — issue #471.
+   *
+   * It shipped at 1.5 / 1.6, which on the `shadow-1` card most of the app is
+   * built from moved the ambient layer by one pixel and its blur by three. The
+   * setting read as doing nothing, and "nothing" is indistinguishable from a
+   * bug. No test can judge a shadow, but it can hold the multipliers above the
+   * value that was demonstrably too small — a future tidy-up that halves them
+   * is the regression this guards.
+   */
+  test("deep travels far enough from soft to be a different stop", () => {
+    const deep = /\[data-depth="deep"\]\s*\{([^}]*)\}/.exec(GLOBALS)?.[1] ?? "";
+    const dial = (name: string) => Number(new RegExp(`--depth-${name}:\\s*([\\d.]+)`).exec(deep)?.[1] ?? "0");
+    expect(dial("lift")).toBeGreaterThanOrEqual(2);
+    expect(dial("ink")).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * AND IT MUST NOT OVERFLOW EITHER HALF'S INK. --shadow-ambient mixes
+   * `transparent calc(100% - var(--shadow-ink) * var(--depth-ink))`, so a
+   * multiplier that pushes a half's ink past 100% makes that complement
+   * negative — an invalid percentage, and the layer silently stops painting in
+   * the one mode it was raised for.
+   */
+  test("the deep multiplier keeps both halves' ink inside 100%", () => {
+    const deepInk = Number(/\[data-depth="deep"\]\s*\{[^}]*--depth-ink:\s*([\d.]+)/.exec(GLOBALS)?.[1] ?? "0");
+    const inks = [...GLOBALS.matchAll(/--shadow-ink:\s*([\d.]+)%/g)].map((match) => Number(match[1]));
+    // One in :root and one in .dark — the same pair the dials test counts.
+    expect(inks.length).toBe(2);
+    for (const ink of inks) expect(ink * deepInk).toBeLessThan(100);
+  });
 });
