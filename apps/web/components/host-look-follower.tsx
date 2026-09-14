@@ -28,7 +28,6 @@ import { useAppearance } from "@/lib/appearance";
 import { decideFollow, readAppliedStamp, useFollowHost, writeAppliedStamp } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
 import { applyLook } from "@/lib/looks";
-import { useThemeLibrary } from "@/lib/theme-palettes";
 import { useTheme } from "@/components/theme-provider";
 
 const api = createEngineApi();
@@ -38,7 +37,6 @@ const POLL_MS = 10_000;
 export function HostLookFollower(): null {
   const { mode } = useFollowHost();
   const { setAppearance } = useAppearance();
-  const { saveCustom, setActive, themes } = useThemeLibrary();
   const { setTheme } = useTheme();
 
   useEffect(() => {
@@ -59,7 +57,7 @@ export function HostLookFollower(): null {
         // The quota message is swallowed: a look worth wearing is worth
         // wearing without its wallpaper, and a remote window has nobody to
         // tell. Everything else applied.
-        applyLook(published.look, { saveCustom, setActive, themes }, setAppearance);
+        applyLook(published.look, setAppearance);
         setTheme(published.scheme);
         writeAppliedStamp(answer.updatedAt);
       } catch {
@@ -81,11 +79,9 @@ export function HostLookFollower(): null {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-    // `themes` is deliberately NOT a dependency: applyLook may add a theme to
-    // the library, and re-arming the loop on its own write would ask twice
-    // for nothing. The library is read fresh on each apply through the
-    // closure's latest render anyway — the effect re-runs only when following
-    // starts or stops.
+    // The effect re-arms only when following starts or stops: `applyLook`
+    // writes the composition store directly rather than through anything this
+    // component renders, so there is nothing else here that could go stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 

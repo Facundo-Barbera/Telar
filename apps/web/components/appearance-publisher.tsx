@@ -49,11 +49,10 @@
 import { useEffect } from "react";
 import type { Accent, MonoFont, PublishedAppearance, SansFont } from "@telar/engine-client";
 import { useAppearance } from "@/lib/appearance";
-import { useBackdrop } from "@/lib/backdrop";
+import { useComposition } from "@/lib/composition";
 import { createEngineApi } from "@/lib/engine/client";
 import { isHostWindow } from "@/lib/host-window";
 import { captureLook } from "@/lib/looks";
-import { useThemeLibrary } from "@/lib/theme-palettes";
 import { readTheme, useTheme } from "@/components/theme-provider";
 
 const api = createEngineApi();
@@ -178,8 +177,7 @@ function stack(choice: string, typed: string, fallbacks: string): string {
 
 export function AppearancePublisher(): null {
   const { appearance } = useAppearance();
-  const { backdrop } = useBackdrop();
-  const { active, themes } = useThemeLibrary();
+  const { composition, images } = useComposition();
   // Subscribed rather than read once: changing the scheme is a publishable
   // change, and `readTheme` inside the effect is what actually reads it.
   const { theme } = useTheme();
@@ -233,7 +231,7 @@ export function AppearancePublisher(): null {
         });
     }, PUBLISH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [appearance, backdrop, active, themes, theme]);
+  }, [appearance, composition, images, theme]);
 
   return null;
 }
