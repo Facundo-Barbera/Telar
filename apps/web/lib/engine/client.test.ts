@@ -1,7 +1,29 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { Turn } from "@telar/engine-client";
-import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "./client";
+import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError, READ_BUDGET } from "./client";
+import { SessionConnection } from "./session-connection";
+
+/**
+ * A wire that counts how many requests are on it AT ONCE — the only number the
+ * browser's six-per-origin cap is about. Each call takes a macrotask, so an
+ * over-budget caller is genuinely made to wait rather than merely interleaved.
+ */
+function countingWire(answer: (pathname: string) => unknown = () => ({})) {
+  let live = 0;
+  let peak = 0;
+  const urls: string[] = [];
+  const fetcher = (async (url: string | URL | Request) => {
+    const pathname = String(url);
+    urls.push(pathname);
+    live += 1;
+    peak = Math.max(peak, live);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    live -= 1;
+    return Response.json(answer(pathname) as Record<string, unknown>);
+  }) as unknown as typeof fetch;
+  return { fetcher, urls, get peak() { return peak; } };
+}
 
 describe("engine browser adapter", () => {
   test("uses only standalone /api routes and preserves generated run ids", async () => {
@@ -117,6 +139,89 @@ describe("engine browser adapter", () => {
       { runId: "run_done", state: "completed", input: "hello" },
     )).rejects.toMatchObject({ code: "conflict" });
     expect(calls).toEqual([]);
+  });
+
+  test("background reads never spend more than the connection budget (#82)", async () => {
+    const wire = countingWire();
+    const api = createEngineApi(wire.fetcher);
+    // Six reads asked for at one instant — the shape of a rail pass landing
+    // across an open cockpit's tail, and exactly the cap it used to fill.
+    await Promise.all([api.health(), api.projects(), api.inbox(), api.hosts(), api.orientation(), api.sidebarLayout()]);
+    expect(wire.peak).toBe(READ_BUDGET);
+    // Every one of them still happened; the budget delays, it never drops.
+    expect(wire.urls).toHaveLength(6);
+  });
+
+  test("the budget queues in order and a failed read gives its slot back", async () => {
+    let live = 0;
+    let peak = 0;
+    const order: string[] = [];
+    const api = createEngineApi((async (url: string) => {
+      live += 1;
+      peak = Math.max(peak, live);
+      order.push(String(url));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      live -= 1;
+      // THE FIRST TWO THROW while holding the only two slots. A gate that let
+      // go of a slot only on success would deadlock every read behind them —
+      // the cockpit would go quiet under exactly the engine outage it is
+      // supposed to survive.
+      if (String(url) === "/api/health") throw new Error("socket died");
+      return Response.json({});
+    }) as unknown as typeof fetch);
+    const results = await Promise.allSettled([api.health(), api.health(), api.projects(), api.inbox(), api.hosts()]);
+    expect(peak).toBe(READ_BUDGET);
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected", "fulfilled", "fulfilled", "fulfilled"]);
+    // FIFO: the two that were asked for first went out first, and the rest
+    // followed in the order their callers queued.
+    expect(order).toEqual(["/api/health", "/api/health", "/api/projects", "/api/inbox", "/api/hosts"]);
+  });
+
+  test("a mutation never waits behind background reads", async () => {
+    const wire = countingWire(() => ({ turn: { runId: "run_x" }, replayed: false }));
+    const api = createEngineApi(wire.fetcher);
+    // Two reads fill the budget; the click must go out anyway, not third.
+    const sent = Promise.all([api.health(), api.projects(), api.submitTurn("session_a", { runId: "run_1", input: "hello" })]);
+    await sent;
+    expect(wire.urls.slice(0, 3)).toContain("/api/sessions/session_a/turns");
+    expect(wire.peak).toBe(READ_BUDGET + 1);
+  });
+
+  test("one open cockpit leaves four connections free for navigation (#82)", async () => {
+    /**
+     * THE FIXTURE THE BUDGET IS FOR. A cockpit sitting on a working session
+     * holds its own tail once a second while the rail fans out around it; the
+     * measured freeze was that burst reaching six. Counted here over a full
+     * second's worth of work: the opening read, three tail ticks, and a rail
+     * pass landing across them.
+     */
+    const wire = countingWire((pathname) => {
+      if (pathname.includes("/bootstrap")) {
+        return { session: { id: "session_1" }, turns: [], items: [], tasks: [], requests: [], cursor: 3, events: [], subscriptions: [] };
+      }
+      // A quiet tick: the tail asks the journal and is told nothing happened,
+      // so no companion snapshot is fetched and the tick costs ONE request.
+      return pathname.includes("/events") ? { events: [] } : {};
+    });
+    const api = createEngineApi(wire.fetcher);
+    const cockpit = new SessionConnection(api, "session_1", { turns: 10 });
+    await cockpit.read();
+    await Promise.all([
+      cockpit.read(),
+      cockpit.read(),
+      cockpit.read(),
+      // The rail's own pass, which is where the concurrency actually came from.
+      api.liveSessions(),
+      api.health(),
+      api.inbox(),
+    ]);
+    expect(wire.peak).toBeLessThanOrEqual(READ_BUDGET);
+    // The number the issue is written in: six per origin, minus what the
+    // cockpit spends, is what an App Router navigation has left to fetch with.
+    expect(6 - wire.peak).toBeGreaterThanOrEqual(4);
+    // And the tail itself is ONE read a tick — the three concurrent reads above
+    // coalesce onto the single in-flight hydration, as they always have.
+    expect(wire.urls.filter((url) => url.includes("session_1")).length).toBeLessThanOrEqual(2);
   });
 
   test("discard is an engine-only adapter command and does not submit work", async () => {

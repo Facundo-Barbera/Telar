@@ -120,7 +120,96 @@ export class EngineApiError extends Error {
 
 type Fetcher = typeof fetch;
 
+/**
+ * THE CONNECTION BUDGET (#82).
+ *
+ * A browser opens at most six connections per origin over HTTP/1.1, and EVERY
+ * App Router navigation needs a free one for its RSC fetch. Reach the cap and
+ * navigation does not degrade — it queues, behind whatever is holding the
+ * sockets, and the cockpit stops responding to clicks until something finishes.
+ * That was measured live: exactly six established connections to the packaged
+ * server while a session worked, and no way to switch conversations.
+ *
+ * WHAT HOLDS THEM NOW IS NOT WHAT THE ISSUE DESCRIBED. The stacked SSE tails it
+ * was filed against are gone — this cockpit opens no EventSource, no WebSocket
+ * and no streaming fetch, and the engine serves no `text/event-stream` route to
+ * it. Liveness is polling: the session tail once a second, the rail every three.
+ * A poll RETURNS its socket to the keep-alive pool, where a navigation can take
+ * it, so nothing is held indefinitely any more.
+ *
+ * What is left is the BURST. A single rail pass fans out — the live list, the
+ * health probe and the inbox policy go out together, per host — and a poll tick
+ * that lands across an open cockpit's own tail can put five or six reads on the
+ * wire at one instant. The cap does not care that each is short-lived; a
+ * navigation arriving during that instant still waits.
+ *
+ * So the ceiling is enforced HERE, at the one chokepoint every call already
+ * passes through, rather than at each of the twenty-eight call sites that would
+ * otherwise have to agree. Two concurrent reads leaves four connections free,
+ * which is the budget the issue asks for and four more than navigation needs.
+ *
+ * NOTHING IS DROPPED OR DEBOUNCED: over-budget reads queue in FIFO order and go
+ * out as slots free. A caller sees latency under contention, never a failure,
+ * and the ordering it would have got from the browser's own socket queue.
+ *
+ * ONE GATE FOR EVERY HOST, deliberately. A remote Mac's reads are proxied
+ * through THIS origin (`/api/hosts/:id/…` — see lib/hosts/client.ts), so they
+ * spend the same six connections a local read does. A per-host gate would count
+ * the wrong thing and let two hosts reach the cap between them.
+ */
+export const READ_BUDGET = 2;
+
+let reading = 0;
+const queued: Array<() => void> = [];
+
+/** Take a slot, waiting in line when the budget is spent. */
+async function acquireRead(): Promise<void> {
+  if (reading < READ_BUDGET) {
+    reading += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => queued.push(resolve));
+}
+
+/**
+ * Hand the slot to whoever is next in line, or give it back.
+ *
+ * The waiter is resumed WITHOUT touching `reading` — the slot is transferred,
+ * not released and re-taken, so a third caller arriving in the same tick cannot
+ * slip past the queue into the gap that a decrement would open.
+ */
+function releaseRead(): void {
+  const next = queued.shift();
+  if (next) {
+    next();
+    return;
+  }
+  reading -= 1;
+}
+
 async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  /**
+   * READS ARE BUDGETED; EVERYTHING ELSE GOES STRAIGHT OUT.
+   *
+   * The traffic that stacks is background reads — polls, on timers nobody
+   * pressed. A mutation is somebody's click, it is rare next to a poll, and
+   * making a send wait behind two rail reads would trade the freeze this fixes
+   * for a slower Send button.
+   *
+   * A request carrying a signal is exempt for the opposite reason: it is the
+   * long, cancellable kind (`/api/textgen/complete` waits on a model), and one
+   * of those parked in a slot would starve the tail for as long as it ran.
+   */
+  const budgeted = method === "GET" && signal === undefined;
+  if (budgeted) await acquireRead();
+  try {
+    return await send<T>(fetcher, method, pathname, body, signal);
+  } finally {
+    if (budgeted) releaseRead();
+  }
+}
+
+async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetcher(pathname, {
