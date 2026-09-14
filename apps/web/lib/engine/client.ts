@@ -74,6 +74,7 @@ import type {
   EngineRequest,
   RequestDecision,
   RuntimeMode,
+  LiveSessionRow,
   Session,
   SessionBootstrap,
   SessionSnapshot,
@@ -237,6 +238,32 @@ async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?
   }
   return payload as T;
 }
+
+/**
+ * ONE PASS OF THE RAIL, in the two shapes it can come back in.
+ *
+ * A UNION, SO `sessions` CANNOT BE READ WITHOUT CHECKING `unchanged` FIRST. That
+ * flag means "keep what you have" — not "there is nothing" — and a rail that
+ * redrew from the absent rows would blank itself once a tick. The type is what
+ * makes that a compile error rather than a thing to remember.
+ */
+export type LiveSessionsPage = {
+  sessions: LiveSessionRow[];
+  projects: Project[];
+  assignments?: Record<string, SessionAssignment[]>;
+  layout?: SidebarLayout;
+  /** Which engine answered — what folds two reads that reached ONE Mac.
+   *  Absent from an engine too old to stamp it; the rail then leaves its
+   *  hosts undeduplicated rather than dropping rows. */
+  daemonId?: string;
+  /** The settling window these rows band by, this engine's own. Absent
+   *  from an older engine; the rail falls back to its default. */
+  inbox?: InboxPolicy;
+  /** What to pass as `since` next time. Absent from an engine too old to
+   *  count, which keeps every read a full one. */
+  revision?: number;
+  unchanged?: false;
+};
 
 /**
  * THE DEFAULT FETCHER FOLLOWS THE ADDRESS BAR (lib/hosts/client.ts): a screen
@@ -566,14 +593,44 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * one, without a second request or a connection of its own. Optional — an
      * engine older than the field simply says nothing about the arrangement,
      * and the rail keeps the copy it fetched when it mounted.
+     *
+     * ROWS, NOT WHOLE SESSIONS (#459). `LiveSessionRow` is every field a row
+     * renders and none it does not — the route was answering 318 KB for 267
+     * sessions, several times a second, most of it engine bookkeeping no rail
+     * has ever read. A full `Session` is assignable to a row, so anything here
+     * that was handed one keeps working.
+     *
+     * AND IT IS NOW THE RAIL'S WHOLE PASS. `daemonId` and `inbox` used to be a
+     * `health()` and an `inbox()` issued beside this one, three concurrent reads
+     * per host per tick; both answer one field that moves when somebody opens
+     * Settings. They ride here for the same reason `layout` does.
+     *
+     * `since` MAKES THE PASS CONDITIONAL (#459). Hand back the `revision` from
+     * last time and an engine with nothing to say answers `unchanged` — sixty
+     * bytes and no fold — instead of every row the caller already has. Check
+     * `unchanged` before reading `sessions`: it means "keep what you have", and
+     * a rail that redrew from it would blank itself once a tick.
      */
-    liveSessions: () =>
-      request<{
-        sessions: Session[];
-        projects: Project[];
-        assignments?: Record<string, SessionAssignment[]>;
-        layout?: SidebarLayout;
-      }>(fetcher, "GET", "/api/sessions/live"),
+    liveSessions: () => request<LiveSessionsPage>(fetcher, "GET", "/api/sessions/live"),
+    /**
+     * THE SAME PASS, CONDITIONALLY — the read a RAIL should make (#459).
+     *
+     * Hand back the `revision` from last time and an engine with nothing to say
+     * answers `{ revision, unchanged: true }`: sixty bytes, no fold over 267
+     * sessions' queues, and no `listProjects()` behind it either. Everything
+     * else here calls `liveSessions()` above, because a surface that reads the
+     * list once has no cursor and wants the rows.
+     *
+     * THE UNION IS THE SAFETY. `unchanged` means "keep what you have", never
+     * "there is nothing", and narrowing on it is what stops a rail redrawing
+     * itself empty once a tick.
+     */
+    liveSessionsSince: (since: number) =>
+      request<LiveSessionsPage | { unchanged: true; revision: number; daemonId?: string }>(
+        fetcher,
+        "GET",
+        `/api/sessions/live?since=${encodeURIComponent(String(since))}`,
+      ),
     createSession: (
       projectId: string,
       input: {

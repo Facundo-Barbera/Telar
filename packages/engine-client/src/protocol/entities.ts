@@ -850,6 +850,50 @@ export const Session = z.object({
 export type Session = z.infer<typeof Session>;
 
 /**
+ * WHAT A RAIL DRAWS, AND NOTHING ELSE — the row shape `GET /v2/sessions/live`
+ * answers with (issue #459).
+ *
+ * WHY A NARROWER RECORD RATHER THAN THE WHOLE ONE. That route is the read every
+ * cockpit makes on a timer, on every paired host, forever: on the owner's store
+ * it was 318 KB and 200 ms for 267 sessions, three times a second between a Mac
+ * and a phone, and the engine sat at 70% CPU for hours. A list is not a session;
+ * it is a list OF sessions, and the fields below are the ones a row actually
+ * renders. Everything no reader of this list reads — the environment, the
+ * provider instance, the resume cursor, the runtime and interaction modes,
+ * `detached`, the rate-limit and message latches, and the un-settle ledger — is
+ * engine bookkeeping that belongs to `GET /v2/sessions/:id`, where a reader who
+ * opened one conversation pays for one conversation.
+ *
+ * `envMode` STAYS, though no rail draws it: the `sessions` toolkit reads this
+ * same route out-of-process and reports it on every row it lists, so dropping it
+ * would move the cost to a per-session read rather than remove it.
+ *
+ * IT IS A STRICT SUBSET OF `Session`'S KEYS, deliberately: every full record is
+ * assignable to this, so a caller that already had one keeps working and a
+ * client's projection (`toSidebarSession`, `InboxStore`) needs no second shape.
+ * The narrowing is what the wire drops, never a renaming.
+ *
+ * `workspace.baseRef` GOES WITH THEM. It is the commit a checkout was cut from —
+ * a review surface's question, asked once per session opened, and 40 bytes on
+ * every row of every poll otherwise.
+ */
+export const LiveSessionRow = Session.omit({
+  environmentId: true,
+  origin: true,
+  providerInstanceId: true,
+  runtimeMode: true,
+  interactionMode: true,
+  detached: true,
+  resumeCursor: true,
+  resumeAfterRateLimit: true,
+  agentMessagesBlocked: true,
+  paused: true,
+  unsettledAssignments: true,
+});
+export type LiveSessionRow = z.infer<typeof LiveSessionRow>;
+
+
+/**
  * HOURS, NOT DAYS — the window moved to hour granularity when a reader with
  * twenty quiet-but-recent conversations had no number that would take them:
  * a day was the old minimum, and "settle after a few hours" is the ordinary
