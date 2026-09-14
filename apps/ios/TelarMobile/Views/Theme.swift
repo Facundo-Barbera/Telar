@@ -67,6 +67,34 @@ enum Theme {
     static let metaSmall = Font.system(.caption2)
     static let mono = Font.system(.caption, design: .monospaced)
     static let monoSmall = Font.system(.caption2, design: .monospaced)
+    /// THE SUB-BODY RAMP, NAMED. The app writes its small type as a hard point
+    /// size — `.system(size: 11)` — on a four-step ramp between 9 and 15 that
+    /// nothing here ever named. A hard size is absolute: it does not move when
+    /// the reader turns their text up, so every one of those sites silently
+    /// ignores Dynamic Type, which is the one accessibility setting a phone
+    /// user is most likely to have changed.
+    ///
+    /// These four are `Font.TextStyle`, not `Font`, so a call site keeps the
+    /// weight and design it already had and changes only the size:
+    ///
+    ///     .font(.system(size: 13, weight: .medium))   // before
+    ///     .font(.system(Theme.footnote, weight: .medium))  // after
+    ///
+    /// The ramp does not map onto the system styles one-for-one — iOS has no
+    /// 9, 10 or 14pt style — so each token is the nearest style that scales,
+    /// and two neighbouring literals collapse onto one token. That collapse is
+    /// the point: a 10 and an 11 on the same row were never a deliberate two
+    /// points apart, they were two people picking a small number.
+    ///
+    /// ONE KIND OF SITE KEEPS ITS ABSOLUTE SIZE: a glyph locked inside a fixed
+    /// hit target — the composer's 44pt circles, the jump-to-bottom button.
+    /// The frame cannot grow with the reader's text, and it clips, so a glyph
+    /// that scaled inside it would only outgrow its own circle. Those need a
+    /// `@ScaledMetric` frame, which is a layout change rather than a swap.
+    static let captionTiny: Font.TextStyle = .caption2   // was 9
+    static let caption: Font.TextStyle = .caption        // was 10, 11
+    static let footnote: Font.TextStyle = .footnote      // was 12, 13
+    static let subhead: Font.TextStyle = .subheadline    // was 14, 15
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { UIColor(rgb: $0.userInterfaceStyle == .dark ? dark : light) })
     }

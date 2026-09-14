@@ -99,9 +99,9 @@ struct TurnView: View {
                 if compactions.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.right.and.arrow.up.left")
-                            .font(.system(size: 11))
+                            .font(.system(Theme.caption))
                         Text(turn.state.isActive ? "Compacting context…" : turn.state == .failed ? "Compaction failed" : "Context compaction requested")
-                            .font(.system(size: 13))
+                            .font(.system(Theme.footnote))
                     }
                     .foregroundStyle(turn.state == .failed ? Theme.statusRed : Theme.textMuted)
                 } else {
@@ -529,14 +529,14 @@ struct ActivityRunView: View {
 
     private var chevron: some View {
         Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(Theme.caption, weight: .semibold))
             .foregroundStyle(Theme.textMuted.opacity(0.6))
             .rotationEffect(.degrees(expanded ? 90 : 0))
     }
 
     private var failureGlyph: some View {
         Image(systemName: "exclamationmark.triangle")
-            .font(.system(size: 10, weight: .medium))
+            .font(.system(Theme.caption, weight: .medium))
             .foregroundStyle(Theme.statusRed)
     }
 
@@ -628,7 +628,7 @@ struct AgentNoticeRow: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                     Text(intent.map { $0.capitalized } ?? "Agent message")
                         .font(Theme.meta).foregroundStyle(Theme.textMuted)
                     Text(summary)
@@ -639,7 +639,7 @@ struct AgentNoticeRow: View {
                         Text(scope).font(Theme.metaSmall).foregroundStyle(Theme.textMuted).lineLimit(1)
                     }
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(Theme.caption, weight: .semibold))
                         .foregroundStyle(Theme.textMuted.opacity(0.6))
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
@@ -719,7 +719,7 @@ struct WakeRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "bell").font(.system(size: 11))
+            Image(systemName: "bell").font(.system(Theme.caption))
             Text(line)
                 .font(Theme.meta)
                 .lineLimit(2)
@@ -858,7 +858,7 @@ struct ItemRowView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: step.status == .completed ? "checkmark.circle.fill"
                                   : step.status == .inProgress ? "circle.dotted.circle" : "circle")
-                                .font(.system(size: 12))
+                                .font(.system(Theme.footnote))
                                 .foregroundStyle(step.status == .completed ? Theme.statusEmerald : Theme.textMuted)
                             Text(step.step)
                                 .font(Theme.meta)
@@ -972,7 +972,7 @@ struct ToolChipLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
                 .opacity(0.7)
                 .frame(width: 24, height: 24)
@@ -993,9 +993,9 @@ struct ToolChipLabel: View {
         case .inProgress:
             SteppedPulseDot(color: Theme.statusSky)
         case .failed:
-            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.statusRed)
+            Image(systemName: "xmark").font(.system(Theme.caption, weight: .semibold)).foregroundStyle(Theme.statusRed)
         case .declined:
-            Image(systemName: "hand.raised").font(.system(size: 10)).foregroundStyle(Theme.statusAmber)
+            Image(systemName: "hand.raised").font(.system(Theme.caption)).foregroundStyle(Theme.statusAmber)
         default:
             EmptyView()
         }
@@ -1032,7 +1032,7 @@ struct TaskRowView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "person.2")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(Theme.footnote, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
                     .opacity(0.7)
                     .frame(width: 24, height: 24)
@@ -1043,14 +1043,14 @@ struct TaskRowView: View {
                 if task.task.state.isLive {
                     SteppedPulseDot(color: Theme.statusSky)
                 } else if task.task.state == .failed {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.statusRed)
+                    Image(systemName: "xmark").font(.system(Theme.caption, weight: .semibold)).foregroundStyle(Theme.statusRed)
                 }
                 Text("\(task.items.count) step\(task.items.count == 1 ? "" : "s")")
                     .font(Theme.metaSmall)
                     .foregroundStyle(Theme.textMuted.opacity(0.7))
                     .tabularNumbers()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(Theme.captionTiny, weight: .semibold))
                     .foregroundStyle(Theme.textMuted.opacity(0.5))
                 Spacer(minLength: 0)
             }
@@ -1082,10 +1082,10 @@ struct AgentDetailSheet: View {
                                 .font(Theme.meta)
                                 .foregroundStyle(Theme.statusSky)
                         } else if task.task.state == .failed {
-                            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.statusRed)
+                            Image(systemName: "xmark").font(.system(Theme.caption, weight: .semibold)).foregroundStyle(Theme.statusRed)
                             Text("Failed").font(Theme.meta).foregroundStyle(Theme.statusRed)
                         } else {
-                            Image(systemName: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.statusEmerald)
+                            Image(systemName: "checkmark").font(.system(Theme.caption, weight: .medium)).foregroundStyle(Theme.statusEmerald)
                             Text("Done").font(Theme.meta).foregroundStyle(Theme.textMuted)
                         }
                         Spacer(minLength: 0)

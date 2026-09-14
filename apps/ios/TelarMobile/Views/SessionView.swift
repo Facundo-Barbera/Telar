@@ -249,7 +249,7 @@ struct SessionView: View {
                     // rectangle would be a second piece of text to decode.
                     if let hostLabel {
                         HStack(spacing: 3) {
-                            Image(systemName: "desktopcomputer").font(.system(size: 9))
+                            Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
                             Text(hostLabel).lineLimit(1).truncationMode(.tail)
                         }
                         .padding(.horizontal, 4)
@@ -579,7 +579,7 @@ struct SessionView: View {
             Task { await store.sync.loadOlderTurns() }
         } label: {
             Text(store.sync.loadingOlder ? "Loading earlier turns…" : "Load earlier turns")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 14)
                 .frame(height: 32)
@@ -622,12 +622,12 @@ struct SessionView: View {
             if case .retrying(let message) = store.sync.connection {
                 StatusCard(tint: Theme.statusAmber) {
                     HStack(spacing: 6) {
-                        Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
+                        Image(systemName: "wifi.exclamationmark").font(.system(Theme.caption))
                         // WHAT IS ON SCREEN, when it is the phone's own copy:
                         // the transcript stays, and the card says how old it
                         // is instead of pretending it is the Mac's answer.
                         Text(store.sync.recordedAt.map { "Showing what was recorded at \(recordedAtLabel($0)) — reconnecting…" } ?? message)
-                            .font(.system(size: 13)).lineLimit(2)
+                            .font(.system(Theme.footnote)).lineLimit(2)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(Theme.statusAmber)
@@ -642,16 +642,16 @@ struct SessionView: View {
                 StatusCard(tint: Theme.statusRed) {
                     HStack(spacing: 8) {
                         Text("Not sent — \(error)")
-                            .font(.system(size: 13))
+                            .font(.system(Theme.footnote))
                             .foregroundStyle(Theme.statusRed)
                             .lineLimit(2)
                         Spacer(minLength: 0)
                         Button("Retry") { Task { await store.retryPending() } }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(Theme.text)
                             .buttonStyle(.plain)
                         Button("Discard") { store.discardPending() }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(Theme.statusRed)
                             .buttonStyle(.plain)
                     }
@@ -832,7 +832,7 @@ struct ComposerView: View {
         VStack(spacing: 0) {
             if let note {
                 Text(note)
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
@@ -892,7 +892,7 @@ struct ComposerView: View {
                 if !focused {
                     if !store.pendingAttachments.isEmpty {
                         Text("+\(store.pendingAttachments.count)")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(Theme.footnote, weight: .bold))
                             .foregroundStyle(Theme.textMuted)
                             .frame(width: 30, height: 30)
                             .background(Theme.subtleStrong)
@@ -1117,7 +1117,7 @@ struct ComposerView: View {
                     Text(steering.isEmpty
                          ? "\(waiting.count) queued message\(waiting.count == 1 ? "" : "s") will send automatically."
                          : "Sending into the running turn…")
-                        .font(.system(size: 13))
+                        .font(.system(Theme.footnote))
                         .foregroundStyle(Theme.textMuted)
                 }
             }
@@ -1127,13 +1127,13 @@ struct ComposerView: View {
                     let sending = turn.state == .steering
                     HStack(spacing: 10) {
                         Text(turn.prompt)
-                            .font(.system(size: 13))
+                            .font(.system(Theme.footnote))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         if sending {
                             Text("sending")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(Theme.caption, weight: .medium))
                                 .textCase(.uppercase)
                                 .foregroundStyle(Theme.statusSky)
                         } else {
@@ -1142,7 +1142,7 @@ struct ComposerView: View {
                                     Task { await store.promote(turn.runId) }
                                 } label: {
                                     Image(systemName: "bolt.fill")
-                                        .font(.system(size: 12))
+                                        .font(.system(Theme.footnote))
                                         .foregroundStyle(Theme.text)
                                 }
                                 .buttonStyle(.plain)
@@ -1152,7 +1152,7 @@ struct ComposerView: View {
                                 Task { await store.withdraw(turn.runId) }
                             } label: {
                                 Image(systemName: "xmark")
-                                    .font(.system(size: 11, weight: .medium))
+                                    .font(.system(Theme.caption, weight: .medium))
                                     .foregroundStyle(Theme.textMuted)
                             }
                             .buttonStyle(.plain)
