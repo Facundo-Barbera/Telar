@@ -253,13 +253,19 @@ func panelView(for path: String, dataScience: Bool) -> FileView {
         persist()
     }
 
-    /// A path from anywhere — a transcript chip, a diagnostic, the tree.
+    /// A path from anywhere — a transcript chip, a diagnostic, the tree, or
+    /// the agent's own `display.opened`.
+    ///
+    /// THE RAISE IS `open`'s, never a second copy of it. Opening a file used to
+    /// write `isOpen` itself, so a tap on the session menu and a file arriving
+    /// from the agent raised the panel down two paths that only happened to
+    /// agree — and the unguarded write here broke this file's one rule, that a
+    /// setter writes only what changes. One path, and `generation` goes up on
+    /// every open, which is what a view watches to re-raise a presentation
+    /// against a panel the model already calls open.
     func openFile(_ path: String, pin: Bool = true) {
         editor.open(path, view: panelView(for: path, dataScience: dataScience), pin: pin)
-        active = .files
-        isOpen = true
-        generation += 1
-        persist()
+        open(.files)
     }
 
     func activateFile(_ path: String) {

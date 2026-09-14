@@ -45,6 +45,68 @@ import Testing
         #expect(!panel.isOpen)
     }
 
+    /// THE AGENT'S DISPLAY-OPEN, on a panel that is not showing. `openFile` is
+    /// the whole raise: the reader should not have to open the panel first for
+    /// a file the agent asked to be shown to arrive in it.
+    @Test @MainActor func openingAFileRaisesAClosedPanel() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
+        #expect(!panel.isOpen)
+        let generation = panel.generation
+
+        panel.openFile("src/main.swift")
+
+        #expect(panel.isOpen)
+        #expect(panel.active == .files)
+        #expect(panel.editor.activePath == "src/main.swift")
+        // And the width's presentation raises off this, not off `isOpen`.
+        #expect(panel.generation > generation)
+        // Raised, and it says so on the next launch: the pop on a compact
+        // width reads the model, so a raise that was never written down comes
+        // back as a panel that is not showing.
+        let reopened = PanelModel(hostId: panel.hostId, sessionId: "s", defaults: defaults)
+        #expect(reopened.isOpen && reopened.editor.activePath == "src/main.swift")
+    }
+
+    /// THE REPORTED BUG. The panel is already open in the model — on a compact
+    /// width that is a push, and a push the reader left can put nothing back on
+    /// `isOpen` for a watcher to fire on. `generation` is what moves, so it is
+    /// what the view raises off; without it the agent's second file landed in a
+    /// panel that never came up.
+    @Test @MainActor func openingAFileInAnOpenPanelStillSignalsARaise() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
+        panel.openFile("first.md")
+        let generation = panel.generation
+
+        panel.openFile("second.md")
+
+        #expect(panel.isOpen)
+        #expect(panel.generation > generation)
+        #expect(panel.editor.activePath == "second.md")
+        // The push is up either way, since a compact width has only the one.
+        #expect(PanelRaise.flags(open: panel.isOpen, wantsColumn: false, fullScreen: panel.isFullScreen).push)
+    }
+
+    /// A file opened while the reader is on another tab takes them to Files —
+    /// the raise and the selection are one move, not two.
+    @Test @MainActor func openingAFileSelectsTheFilesTab() {
+        let suite = "telar.panel.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let panel = PanelModel(hostId: UUID(), sessionId: "s", defaults: defaults)
+        panel.open(.diff)
+        #expect(panel.active == .diff)
+
+        panel.openFile("notes.md")
+
+        #expect(panel.active == .files)
+    }
+
     /// Closing an already-closed panel writes nothing — a repeated dismissal
     /// costs no state change and no `persist()`.
     @Test @MainActor func closingTwiceIsTheSameAsClosingOnce() {
