@@ -30,6 +30,7 @@ import {
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   MONO_FONTS,
+  MONOSPACED_FONTS,
   SANS_FONTS,
   type Accent,
   type Appearance,
@@ -44,7 +45,7 @@ import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Row } from "../settings-shell";
 import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";
 
@@ -60,9 +61,18 @@ export const SANS_LABEL: Record<SansFont, string> = {
   geist: "Geist",
   inter: "Inter",
   "plex-sans": "IBM Plex Sans",
+  "source-sans": "Source Sans 3",
+  roboto: "Roboto",
+  "noto-sans": "Noto Sans",
+  "space-grotesk": "Space Grotesk",
+  lato: "Lato",
   jetbrains: "JetBrains Mono",
   "plex-mono": "IBM Plex Mono",
   "fira-code": "Fira Code",
+  "geist-mono": "Geist Mono",
+  "source-code-pro": "Source Code Pro",
+  "roboto-mono": "Roboto Mono",
+  "cascadia-code": "Cascadia Code",
   system: "System",
   custom: "Custom…",
 };
@@ -322,8 +332,24 @@ function TypeField({
   );
 }
 
-/** The family picker. A select rather than a row of pills: this is a value out
- *  of a list, and the list grows with every custom face. */
+/**
+ * The family picker. A select rather than a row of pills: this is a value out
+ * of a list, and the list grows with every custom face.
+ *
+ * GROUPED BY WHAT THE FACE IS, NOT BY WHICH SLOT IT IS FOR (#471). Both slots
+ * offer the whole catalogue — a reader who wants the entire interface in
+ * JetBrains Mono is not making a mistake — but at fifteen faces an ungrouped
+ * list is a wall, and "is this one monospaced?" is the question a reader
+ * actually brings to it. `MONOSPACED_FONTS` is the seam; the two that name no
+ * webfont at all (System, Custom…) stand apart at the end, because neither is
+ * a face this app ships.
+ */
+const FONT_GROUPS: ReadonlyArray<{ heading: string; belongs: (font: string) => boolean }> = [
+  { heading: "Proportional", belongs: (font) => font !== "system" && font !== "custom" && !MONOSPACED_FONTS.has(font) },
+  { heading: "Monospaced", belongs: (font) => MONOSPACED_FONTS.has(font) },
+  { heading: "Yours", belongs: (font) => font === "system" || font === "custom" },
+];
+
 function FontSelect<T extends string>({
   value,
   items,
@@ -349,11 +375,20 @@ function FontSelect<T extends string>({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={option} value={option}>
-            {items[option]}
-          </SelectItem>
-        ))}
+        {FONT_GROUPS.map(({ heading, belongs }) => {
+          const members = options.filter((option) => belongs(option));
+          if (members.length === 0) return null;
+          return (
+            <SelectGroup key={heading}>
+              <SelectLabel>{heading}</SelectLabel>
+              {members.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {items[option]}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          );
+        })}
       </SelectContent>
     </Select>
   );

@@ -64,6 +64,7 @@ export {
   MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   MONO_FONTS,
+  MONOSPACED_FONTS,
   SANS_FONTS,
   type Accent,
   type Depth,

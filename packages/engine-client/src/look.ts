@@ -117,7 +117,37 @@ export type Accent = (typeof ACCENTS)[number];
  * The two type names survive because every caller distinguishes the two
  * SLOTS even now that they share a range.
  */
-export const APP_FONTS = ["geist", "inter", "plex-sans", "jetbrains", "plex-mono", "fira-code", "system", "custom"] as const;
+/**
+ * THE DEFAULT IS ELEMENT ZERO AND HAS TO STAY THERE — the cockpit's pre-paint
+ * script decides "is this the default?" by comparing against the head of the
+ * list it is handed (see DEPTHS below for the same contract). Everything after
+ * it is ordered proportional faces first, then monospaced, then the two that
+ * name no webfont at all; `MONOSPACED_FONTS` is the seam, and the picker draws
+ * its headings from it.
+ *
+ * EVERY ONE OF THESE IS SELF-HOSTED AT BUILD TIME by next/font (apps/web's
+ * layout.tsx), so adding a face costs bytes on disk and nothing at runtime —
+ * no request leaves the machine to render one.
+ */
+export const APP_FONTS = [
+  "geist",
+  "inter",
+  "plex-sans",
+  "source-sans",
+  "roboto",
+  "noto-sans",
+  "space-grotesk",
+  "lato",
+  "jetbrains",
+  "plex-mono",
+  "fira-code",
+  "geist-mono",
+  "source-code-pro",
+  "roboto-mono",
+  "cascadia-code",
+  "system",
+  "custom",
+] as const;
 
 export const SANS_FONTS = APP_FONTS;
 export type SansFont = (typeof SANS_FONTS)[number];
@@ -125,9 +155,25 @@ export type SansFont = (typeof SANS_FONTS)[number];
 export const MONO_FONTS = APP_FONTS;
 export type MonoFont = (typeof MONO_FONTS)[number];
 
-/** Which faces are monospaced — the picker groups by it, and nothing else
- *  depends on it, because either slot may take either kind. */
-export const MONOSPACED_FONTS: ReadonlySet<string> = new Set(["jetbrains", "plex-mono", "fira-code"]);
+/**
+ * Which faces are monospaced. Either slot may take either kind — a reader who
+ * wants the whole interface in JetBrains Mono is not making a mistake — so this
+ * decides nothing; it is what the picker puts its two headings around, which at
+ * fifteen faces is the difference between a list and a wall.
+ *
+ * `geist` is in neither set on purpose: it is the one id whose face depends on
+ * the SLOT (Geist in the interface, Geist Mono in code), which is what it has
+ * always meant in each. `geist-mono` is the explicit one, for the interface.
+ */
+export const MONOSPACED_FONTS: ReadonlySet<string> = new Set([
+  "jetbrains",
+  "plex-mono",
+  "fira-code",
+  "geist-mono",
+  "source-code-pro",
+  "roboto-mono",
+  "cascadia-code",
+]);
 
 /** The root px the whole interface is measured in — every rem-based dimension
  *  scales with it, which is the point: this is a zoom, not a text-only tweak. */

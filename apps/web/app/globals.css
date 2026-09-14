@@ -739,18 +739,45 @@
    mistake, and the picker no longer pretends they are. `geist` stays
    role-dependent because that is what it has always meant in each slot:
    Geist in the interface, Geist Mono in code. */
+/* THE FALLBACK STACK FOLLOWS THE FACE, NOT THE SLOT. A proportional face falls
+   back to the system's proportional stack and a monospaced one to its
+   monospaced stack, in BOTH slots — so a reader who puts Fira Code in the
+   interface still gets a monospaced fallback while it loads, and one who puts
+   Lato in the code slot gets the proportional one they asked for. */
 [data-font-sans="inter"] { --app-font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
 [data-font-sans="plex-sans"] { --app-font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="source-sans"] { --app-font-sans: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="roboto"] { --app-font-sans: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="noto-sans"] { --app-font-sans: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="space-grotesk"] { --app-font-sans: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="lato"] { --app-font-sans: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
 [data-font-sans="jetbrains"] { --app-font-sans: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="plex-mono"] { --app-font-sans: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="fira-code"] { --app-font-sans: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="geist-mono"] { --app-font-sans: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="source-code-pro"] { --app-font-sans: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="roboto-mono"] { --app-font-sans: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="cascadia-code"] { --app-font-sans: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="system"] { --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 
 [data-font-mono="inter"] { --app-font-mono: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
 [data-font-mono="plex-sans"] { --app-font-mono: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="source-sans"] { --app-font-mono: var(--font-source-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="roboto"] { --app-font-mono: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="noto-sans"] { --app-font-mono: var(--font-noto-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="space-grotesk"] { --app-font-mono: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="lato"] { --app-font-mono: var(--font-lato), ui-sans-serif, system-ui, sans-serif; }
 [data-font-mono="jetbrains"] { --app-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="plex-mono"] { --app-font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="fira-code"] { --app-font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* `geist-mono` in the code slot names the same face `geist` already resolves to
+   there. It exists for the OTHER slot — `geist` means Geist in the interface,
+   so there was no way to ask for Geist Mono outside code — and a slot that
+   silently had no rule would fall through to the default. */
+[data-font-mono="geist-mono"] { --app-font-mono: var(--font-geist-mono-face), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="source-code-pro"] { --app-font-mono: var(--font-source-code-pro), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="roboto-mono"] { --app-font-mono: var(--font-roboto-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="cascadia-code"] { --app-font-mono: var(--font-cascadia-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 /* THE SIZE OF MONO CONTENT, and pointedly not of mono CHROME.

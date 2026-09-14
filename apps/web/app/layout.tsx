@@ -1,6 +1,22 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
-import { Fira_Code, Geist, Geist_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Inter, JetBrains_Mono } from "next/font/google";
+import {
+  Cascadia_Code,
+  Fira_Code,
+  Geist,
+  Geist_Mono,
+  IBM_Plex_Mono,
+  IBM_Plex_Sans,
+  Inter,
+  JetBrains_Mono,
+  Lato,
+  Noto_Sans,
+  Roboto,
+  Roboto_Mono,
+  Source_Code_Pro,
+  Source_Sans_3,
+  Space_Grotesk,
+} from "next/font/google";
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
 import "streamdown/styles.css";
 // KaTeX's own stylesheet, for the math plugin wired into components/ui/message.tsx.
@@ -27,6 +43,42 @@ const jetbrainsMono = JetBrains_Mono({ variable: "--font-jetbrains", subsets: ["
 const plexSans = IBM_Plex_Sans({ variable: "--font-plex-sans", subsets: ["latin"], weight: ["400", "500", "600"], preload: false });
 const plexMono = IBM_Plex_Mono({ variable: "--font-plex-mono", subsets: ["latin"], weight: ["400", "500", "600"], preload: false });
 const firaCode = Fira_Code({ variable: "--font-fira-code", subsets: ["latin"], preload: false });
+// The rest of the catalogue (#471). Same terms as the three above: self-hosted
+// at build time, `preload: false` because nobody should pay a preload hint for
+// a face they did not choose, and a `weight` list only where the family ships
+// no variable axis — Lato is the one here that does not.
+const geistMonoFace = Geist_Mono({ variable: "--font-geist-mono-face", subsets: ["latin"], preload: false });
+const sourceSans = Source_Sans_3({ variable: "--font-source-sans", subsets: ["latin"], preload: false });
+const roboto = Roboto({ variable: "--font-roboto", subsets: ["latin"], preload: false });
+const notoSans = Noto_Sans({ variable: "--font-noto-sans", subsets: ["latin"], preload: false });
+const spaceGrotesk = Space_Grotesk({ variable: "--font-space-grotesk", subsets: ["latin"], preload: false });
+const lato = Lato({ variable: "--font-lato", subsets: ["latin"], weight: ["300", "400", "700"], preload: false });
+const sourceCodePro = Source_Code_Pro({ variable: "--font-source-code-pro", subsets: ["latin"], preload: false });
+const robotoMono = Roboto_Mono({ variable: "--font-roboto-mono", subsets: ["latin"], preload: false });
+const cascadiaCode = Cascadia_Code({ variable: "--font-cascadia-code", subsets: ["latin"], preload: false });
+
+/** Every selectable face's CSS-variable class, in one place — fifteen of them
+ *  do not belong inline in the <html> className. */
+const FONT_VARIABLES = [
+  geistSans,
+  geistMono,
+  geistMonoFace,
+  inter,
+  jetbrainsMono,
+  plexSans,
+  plexMono,
+  firaCode,
+  sourceSans,
+  roboto,
+  notoSans,
+  spaceGrotesk,
+  lato,
+  sourceCodePro,
+  robotoMono,
+  cascadiaCode,
+]
+  .map((font) => font.variable)
+  .join(" ");
 
 export const metadata: Metadata = {
   title: "Telar",
@@ -64,7 +116,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     /* `suppressHydrationWarning` because THEME_INIT_SCRIPT mutates this exact
        element's class list before React hydrates — the mismatch is the design,
        not a bug, and it is confined to <html>. */
-    <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} ${jetbrainsMono.variable} ${plexSans.variable} ${plexMono.variable} ${firaCode.variable} h-full antialiased`}>
+    <html lang="en" suppressHydrationWarning className={`${FONT_VARIABLES} h-full antialiased`}>
       <head>
         {/**
          * `next/script`, NOT a bare `<script>`, and the difference is a warning

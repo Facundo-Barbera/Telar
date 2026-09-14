@@ -116,16 +116,41 @@ const ACCENT_COLOURS: Record<Accent, { light: string; dark: { primary: string; p
 const SANS_TAIL = "ui-sans-serif, system-ui, sans-serif";
 const MONO_TAIL = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
-const SANS_STACKS: Record<SansFont, string> = {
-  geist: `"Geist", ${SANS_TAIL}`,
+/**
+ * ONE TABLE FOR THE FACES THE SLOT DOES NOT CHANGE, which is all of them but
+ * `geist`. The two slots used to keep near-identical copies of this, and the
+ * copies were what went stale the moment the catalogue grew — a face missing
+ * here publishes the DEFAULT stack, so a paired reader sees the wrong typeface
+ * with nothing anywhere saying why.
+ *
+ * THE TAIL FOLLOWS THE FACE, NOT THE SLOT: a monospaced face chosen for the
+ * interface keeps monospaced fallbacks, because falling back to a proportional
+ * one would silently undo the one thing the reader asked for.
+ */
+type SharedFace = Exclude<SansFont, "geist" | "system" | "custom">;
+
+const FACE_STACKS: Record<SharedFace, string> = {
   inter: `"Inter", ${SANS_TAIL}`,
   "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
-  // A monospaced face chosen for the INTERFACE — its fallbacks are monospaced
-  // too, because falling back to a proportional face would silently undo the
-  // one thing the reader asked for.
+  "source-sans": `"Source Sans 3", ${SANS_TAIL}`,
+  roboto: `"Roboto", ${SANS_TAIL}`,
+  "noto-sans": `"Noto Sans", ${SANS_TAIL}`,
+  "space-grotesk": `"Space Grotesk", ${SANS_TAIL}`,
+  lato: `"Lato", ${SANS_TAIL}`,
   jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
   "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
   "fira-code": `"Fira Code", ${MONO_TAIL}`,
+  "geist-mono": `"Geist Mono", ${MONO_TAIL}`,
+  "source-code-pro": `"Source Code Pro", ${MONO_TAIL}`,
+  "roboto-mono": `"Roboto Mono", ${MONO_TAIL}`,
+  "cascadia-code": `"Cascadia Code", ${MONO_TAIL}`,
+};
+
+const SANS_STACKS: Record<SansFont, string> = {
+  ...FACE_STACKS,
+  // The one id whose face depends on the slot — Geist in the interface, Geist
+  // Mono in code, which is what it has always meant in each.
+  geist: `"Geist", ${SANS_TAIL}`,
   system: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
   // Replaced below by the reader's own typed family; this is the fallback tail
   // the cockpit appends to it, and the answer when nothing was typed.
@@ -133,12 +158,8 @@ const SANS_STACKS: Record<SansFont, string> = {
 };
 
 const MONO_STACKS: Record<MonoFont, string> = {
+  ...FACE_STACKS,
   geist: `"Geist Mono", ${MONO_TAIL}`,
-  inter: `"Inter", ${SANS_TAIL}`,
-  "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
-  jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
-  "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
-  "fira-code": `"Fira Code", ${MONO_TAIL}`,
   system: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   custom: MONO_TAIL,
 };
