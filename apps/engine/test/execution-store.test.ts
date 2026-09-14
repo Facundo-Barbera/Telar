@@ -317,6 +317,86 @@ test("a failed command does not take already-accepted deltas with it", () => {
     .map((event) => (event as { text?: string }).text)).toEqual(["held-one ", "held-two "]);
 });
 
+/**
+ * THE DELTA PATH SKIPS THE TRANSACTION AND THE PROJECTION READS (#443) — AND
+ * NOTHING ELSE.
+ *
+ * `ingestObservations` routes a batch of nothing but `content.delta` past
+ * `executeCommand` and past `readItems`/`readTasks`/`readQueue`, because such a
+ * batch writes no document and a delta asks the projection one question. Every
+ * one of these is a way that shortcut could be WRONG, and each is the same
+ * demand: the fast path must refuse, drop and order exactly as the command path
+ * does. What the two paths agree about when nothing is wrong is already pinned
+ * by "deltas arriving in one tick…" above.
+ */
+function streaming(): { store: EngineStore; home: string; runId: string; token: string } {
+  const { store, home } = setup();
+  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const turn = store.claimTurn("session_one", "worker_one")!;
+  const token = turn.claim!.token;
+  store.markRunning("session_one", turn.runId, token);
+  store.ingestObservations("session_one", turn.runId, token, [
+    { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  return { store, home, runId: turn.runId, token };
+}
+const deltas = (store: EngineStore): string[] =>
+  store.readEvents("session_one").filter((event) => event.type === "content.delta").map((event) => (event as { text: string }).text);
+
+test("a stream cannot outlive its turn, even though the delta path reads a shared queue", () => {
+  const { store, runId, token } = streaming();
+  const delta = (text: string) => () =>
+    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId: "item_one", stream: "assistant_text", text }]);
+  // The first one is what puts the queue in the shared cache the fast path
+  // reads; the turn then settles behind it. A cache that outlived the write
+  // would let this stream go on writing into a turn that is over.
+  delta("live ")();
+  store.completeTurn("session_one", runId, token, { text: "done" });
+  expect(delta("late ")).toThrow(/already settled \(completed\)/);
+  expect(deltas(store)).toEqual(["live "]);
+});
+
+test("a delta under a claim that is not the running one is refused and journals nothing", () => {
+  const { store, runId } = streaming();
+  expect(() =>
+    store.ingestObservations("session_one", runId, "not-the-token-at-all", [
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "forged " },
+    ]),
+  ).toThrow(/not running under this worker claim/);
+  expect(deltas(store)).toEqual([]);
+});
+
+test("one malformed delta refuses the whole batch, including the valid ones ahead of it", () => {
+  const { store, runId, token } = streaming();
+  expect(() =>
+    store.ingestObservations("session_one", runId, token, [
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "accepted " },
+      // Empty text is the one thing the schema refuses about a delta.
+      { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: "" },
+    ]),
+  ).toThrow(/observations are invalid/);
+  expect(deltas(store)).toEqual([]);
+});
+
+test("a delta for an item that never opened is dropped, and one for an item opened mid-stream is not", () => {
+  const { store, runId, token } = streaming();
+  const say = (itemId: string, text: string) =>
+    store.ingestObservations("session_one", runId, token, [{ kind: "content.delta", itemId, stream: "assistant_text", text }]);
+  say("item_one", "one ");
+  // No such item: accepted as a report, journalled as nothing — the same thing
+  // the command path does with it.
+  expect(say("item_two", "nowhere ")).toEqual({ accepted: 1 });
+  expect(deltas(store)).toEqual(["one "]);
+
+  // …and the cached projection must not make that verdict permanent: an item
+  // opened AFTER the stream began has to be visible to the very next delta.
+  store.ingestObservations("session_one", runId, token, [
+    { kind: "item.started", item: { id: "item_two", detail: { type: "assistant_message", text: "" } } },
+  ]);
+  say("item_two", "two ");
+  expect(deltas(store)).toEqual(["one ", "two "]);
+});
+
 test("a restart retires the claim on a stopped turn without disturbing the session", () => {
   const { home, store } = setup();
   store.submitTurn("session_one", { runId: "run_one", input: "hello" });

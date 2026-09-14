@@ -1472,6 +1472,23 @@ export type EngineNotifier = (input: {
   title: string;
 }) => boolean;
 
+/**
+ * IS THIS BATCH NOTHING BUT STREAMED TEXT? — the route selector for
+ * `ingestObservations`, read off the RAW input before anything validates it.
+ *
+ * Only ever a route: both paths validate the whole batch with the same schema
+ * and refuse the same things, so the worst a lie here can do is send a malformed
+ * batch down the path that rejects it slightly sooner. It reads one property per
+ * observation and allocates nothing, because it runs per streamed token-chunk.
+ */
+function isDeltaOnlyBatch(observations: unknown[]): boolean {
+  if (!Array.isArray(observations) || observations.length === 0) return false;
+  for (const observation of observations) {
+    if ((observation as { kind?: unknown } | null)?.kind !== "content.delta") return false;
+  }
+  return true;
+}
+
 export class EngineStore {
   private executionStore?: ExecutionStore;
   private commandDepth = 0;
@@ -4520,8 +4537,11 @@ export class EngineStore {
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
     if (migrated || options.executionStorage === "sqlite") {
       this.executionStore = new ExecutionStore(root);
+      // `ingestObservations` is NOT here: it wraps itself, because a batch of
+      // nothing but deltas writes no document at all and must not open a
+      // transaction. See the method.
       const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
-        "claimTurn", "claimNextTurn", "markRunning", "ingestObservations", "openRequest", "resolveRequest", "completeTurn", "failTurn",
+        "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
         "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
         "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
         "subscribe", "unsubscribe"] as const;
@@ -8018,6 +8038,74 @@ export class EngineStore {
    * provider message in the journal.
    */
   ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
+    if (isDeltaOnlyBatch(observations)) return this.ingestDeltas(sessionId, runId, claimToken, observations);
+    return this.executeCommand("ingestObservations", () => this.ingestBatch(sessionId, runId, claimToken, observations));
+  }
+
+  /**
+   * A STREAM COSTS ONE TRANSACTION PER FLUSH, NOT ONE PER TOKEN-CHUNK.
+   *
+   * #246 stopped a delta reaching the disk where it was appended; what it could
+   * not touch was the machinery each `ingestObservations` CALL ran around the
+   * append, and the driver makes one call per delta. Measured (`bench:append`,
+   * a 327-item session): 0.078 ms for `ingest, 1 per call` against 0.006 ms for
+   * the append itself — so twelve of every thirteen microseconds a streamed
+   * chunk cost were spent on the call, not the write.
+   *
+   * ALL OF IT IS WORK A DELTA DOES NOT NEED:
+   *
+   *   the transaction   a delta-only batch writes NO row. Every delta goes into
+   *                     the execution store's buffer and reaches sqlite on a
+   *                     later flush, so the BEGIN/COMMIT wrapped around nothing
+   *                     at all — and, with it, the two `total_changes()` probes
+   *                     that decide whether a receipt is owed.
+   *   the task read     a delta cannot touch a task. The document was parsed and
+   *                     validated per chunk to be handed to nobody.
+   *   the items copy    `readItems` hands out a Map of its own over the cached
+   *                     items, which on a 327-item session is 327 entries
+   *                     rebuilt per chunk to answer `items.has(itemId)` once.
+   *   the queue parse   `readQueue` re-parses and re-validates `queue.json` per
+   *                     chunk. Nothing here MUTATES the turn, so the shared
+   *                     read-only copy `scanQueue` already keeps is the right
+   *                     one — the same bargain every other reader makes.
+   *
+   * WHAT IS NOT SKIPPED: the claim check, the schema validation, the ordering.
+   * A caller cannot tell these two paths apart — the journal gets the same
+   * events, with the same ids, in the same order, and `readEvents` answers with
+   * held deltas exactly as it did before.
+   *
+   * ATOMICITY IS THE ONE REAL DIFFERENCE, and it is the trade #246 already made
+   * one layer down. Without a transaction around the batch, a failure PART WAY
+   * through it — which after validation means sqlite failing on a flush — leaves
+   * the deltas before it journalled. That is already true between calls, and a
+   * flush that cannot write is a daemon in trouble either way.
+   */
+  private ingestDeltas(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
+    // First, and against the shared copy: the claim is checked before the batch
+    // is validated, exactly as the command path checks it before parsing.
+    const turn = this.requireRunningClaimFromQueue(this.scanQueue(sessionId), runId, claimToken);
+    // THE SAME SCHEMA THE COMMAND PATH USES, not a narrower copy of the delta
+    // member: one definition, so the two paths cannot drift on what they accept.
+    const parsed = TurnObservationSchema.array().safeParse(observations);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
+    for (const observation of parsed.data) {
+      // `isDeltaOnlyBatch` is what chose this path; this is what tells the compiler.
+      if (observation.kind !== "content.delta") continue;
+      // The one thing the projection was read for. `journalObservation` drops a
+      // delta whose item never opened, and so does this.
+      if (!this.hasItem(sessionId, observation.itemId)) continue;
+      const written = this.appendEvent(
+        sessionId,
+        { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
+        turn.runId,
+      );
+      // #214: a reader arriving mid-reply still has to see the prefix.
+      this.extendOpenPrefix(sessionId, observation.itemId, observation.text, written.id);
+    }
+    return { accepted: parsed.data.length };
+  }
+
+  private ingestBatch(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
     const queue = this.readQueue(sessionId);
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
@@ -10015,12 +10103,15 @@ export class EngineStore {
    * would be ~98 MB on the dogfood store. The cap is the number of sessions
    * that can plausibly be streaming at once; past it the oldest goes.
    */
-  private readonly itemsCache = new Map<string, Item[]>();
+  private readonly itemsCache = new Map<string, Map<string, Item>>();
   private static readonly ITEMS_CACHE_LIMIT = 8;
 
-  private readItems(sessionId: string): Map<string, Item> {
+  /** THE CACHED PROJECTION ITSELF — read-only, and never handed to a caller.
+   *  Keyed rather than listed so the one question the streaming path asks can be
+   *  answered without building anything: see `hasItem`. */
+  private itemsById(sessionId: string): Map<string, Item> {
     const cached = this.itemsCache.get(sessionId);
-    if (cached) return new Map(cached.map((item) => [item.id, item]));
+    if (cached) return cached;
     const stored = this.readDocument(itemsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
@@ -10029,8 +10120,25 @@ export class EngineStore {
       const oldest = this.itemsCache.keys().next();
       if (!oldest.done) this.itemsCache.delete(oldest.value);
     }
-    this.itemsCache.set(sessionId, parsed.data);
-    return new Map(parsed.data.map((item) => [item.id, item]));
+    const items = new Map(parsed.data.map((item) => [item.id, item]));
+    this.itemsCache.set(sessionId, items);
+    return items;
+  }
+
+  /**
+   * DOES THIS ITEM EXIST — without building a caller's copy of the projection.
+   *
+   * `readItems` hands out a Map of its own, which is right for anything that
+   * MUTATES items and wrong for the streaming path: a delta asks this one
+   * question and changes nothing, and on a 327-item session the copy was 327
+   * entries rebuilt per token-chunk to answer it. See `ingestDeltas`.
+   */
+  private hasItem(sessionId: string, itemId: string): boolean {
+    return this.itemsById(sessionId).has(itemId);
+  }
+
+  private readItems(sessionId: string): Map<string, Item> {
+    return new Map(this.itemsById(sessionId));
   }
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
@@ -10549,15 +10657,30 @@ export class EngineStore {
    * payload fails at compile time here rather than at a client's call site.
    */
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
-    const file = eventsFile(this.paths, sessionId);
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     // The head is read from disk ONCE per session per store, through the same
     // parse that validates every record and repairs a torn tail — so a restart
     // still recovers exactly as before. After that the daemon lock makes this
     // process the only writer, and the head is whatever it last wrote. Parsing
     // a 9 MB journal to learn one integer on every append was the cost that
     // made long sessions sluggish.
-    const head = this.executionStore ? this.executionStore.cursor(sessionId) : this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
+    if (this.executionStore) {
+      const stored = {
+        id: this.executionStore.cursor(sessionId) + 1,
+        at: this.now(),
+        sessionId,
+        ...(runId ? { runId } : {}),
+        ...event,
+      } as EngineEvent;
+      // NO DIRECTORY, AND NO `eventsFile`. There is no journal file on this
+      // backend — every other writer to `sessions/<id>/` goes through
+      // `atomicWrite`, which makes its own — so the `mkdir` below was a syscall
+      // per streamed token-chunk to guarantee a directory nothing would use.
+      this.executionStore.append(stored);
+      return stored;
+    }
+    const file = eventsFile(this.paths, sessionId);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
     const record = {
       id: head + 1,
       at: this.now(),
@@ -10565,10 +10688,6 @@ export class EngineStore {
       ...(runId ? { runId } : {}),
       ...event,
     } as EngineEvent;
-    if (this.executionStore) {
-      this.executionStore.append(record);
-      return record;
-    }
     // NDJSON is an append-only stream, not a document: do not replace it with
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
     try {
