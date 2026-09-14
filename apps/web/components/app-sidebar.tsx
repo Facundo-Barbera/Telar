@@ -3,13 +3,21 @@
 // The app sidebar, ported from the frozen app's components/app-sidebar.tsx.
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
-// wordmark; a search field wearing its ⌘K hint, with reveal / add-project /
-// new-conversation in one pill beside it; then the five bands —
+// wordmark; a search field wearing a project filter at its head and its ⌘K hint
+// at its tail, with add-project / new-conversation in one pill beside it; then
+// the five bands —
 //
-// NO PROJECT FILTER ANYWHERE IN THAT HEAD (#400). There was a scope dropdown on
-// a row of its own, then the same menu as a chip inside the field; both were a
-// second way to do what the collapsible project groups below already do, and
-// only one of them could be left switched on by accident.
+// THE FILTER IS A SET, AND THAT IS WHY IT IS BACK (#470). A scope dropdown on a
+// row of its own became a single-select chip in the field (#395) and then went
+// altogether (#400), on the argument that the collapsible project groups below
+// already answer "fewer rows". They do — one project at a time. "These three
+// and not the other eleven" is the thing they cannot say, and it is what this
+// control is for: nothing checked is every project, n checked is those n.
+//
+// AND IT NARROWS WHAT IS DRAWN, NOTHING ELSE. The old chip was a scope, so the
+// rail could read "the project at hand" off it and point New conversation and
+// Reveal at it. A set of three has no such answer, so every guess in this file
+// is exactly the one it makes with no filter set.
 //
 //   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
 //             in the rail: a conversation you started writing and did not send
@@ -52,11 +60,10 @@
 // not routing, and it occupies the switcher's OWN slot rather than adding a
 // second door beside the one it replaces.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   ChevronRightIcon,
-  FolderOpenIcon,
   FolderPlusIcon,
   FoldVerticalIcon,
   MessageSquareIcon,
@@ -69,13 +76,19 @@ import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
+import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandHandlers, useCommandKeys } from "@/lib/use-command-keys";
-import { workspaceOpener } from "@/lib/workspace-open";
+import {
+  appliedProjectFilter,
+  filterSessionsToProjects,
+  projectFilterKey,
+  useProjectFilter,
+} from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
@@ -165,15 +178,6 @@ const APP_SIDEBAR_RESIZABLE = {
  * happens, which is the whole reason `app-no-drag` is spelled on each one
  * rather than assumed.
  */
-/**
- * The desktop shell never appears or disappears mid-session, so the store this
- * rail reads it through has nothing to subscribe to and nothing to answer on the
- * server. Both are module constants because `useSyncExternalStore` compares them
- * by identity — inline arrows would resubscribe on every render.
- */
-const subscribeNothing = () => () => {};
-const serverNoBridge = () => undefined;
-
 /**
  * ⌘B ON THE COLLAPSE TRIGGER while ⌘ is held — issue #401. The hint sits beside
  * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
@@ -390,6 +394,10 @@ function SidebarBody() {
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
   const { collapsed: collapsedGroups, toggle: toggleGroup, collapseOthers, collapseAll, expandAll } = useCollapsedGroups();
+  /** WHICH PROJECTS THE RAIL IS NARROWED TO — the head of the search field.
+   *  Per client, like the fold state above and for the same reason; see
+   *  lib/project-filter.ts. */
+  const projectFilter = useProjectFilter();
   /**
    * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
    * browser tab and a paired phone draw the same arrangement. The fold state
@@ -761,16 +769,34 @@ function SidebarBody() {
    * looks unfiled, and the human checking "did this land in the right project"
    * gets no answer.
    *
-   * IT USED TO BE CONDITIONAL, on a per-project filter this rail no longer has
-   * (#400). Scoped to one project the name was genuinely redundant — the chip
-   * said it — and with the chip gone there is no state in which it is, so the
-   * flag went with it. A row inside a project GROUP still passes `false`: that
-   * header names the project one line above, which is the same argument and
-   * the reason `SessionRow` keeps the prop.
+   * IT USED TO BE CONDITIONAL, on the single-project scope chip (#400). Scoped
+   * to one project the name was genuinely redundant — the chip said it — and
+   * #470's filter is a SET, which never makes it redundant: three projects
+   * selected is three names worth saying. A row inside a project GROUP still
+   * passes `false`: that header names the project one line above, which is the
+   * same argument and the reason `SessionRow` keeps the prop.
    */
   const activeSessionId = activeSessionFromPathname(pathname);
+  /**
+   * THE FILTER, APPLIED ONCE, HERE — over the rows rather than over the groups.
+   *
+   * Hiding whole groups is what the reader asked for and filtering the ROWS is
+   * how it is delivered: a group with nothing left in it is not drawn, and the
+   * same pass narrows Needs-you and Pinned, which sit outside the groups and
+   * would otherwise go on showing a project the reader had just hidden.
+   *
+   * `sessions` ITSELF IS UNTOUCHED, and every other reader of it stays whole on
+   * purpose: the palette searches every conversation (a filter over the rail is
+   * not an instruction about what ⌘K may find), and the poll's cadence follows
+   * what is live on this Mac rather than what is on screen.
+   */
+  const knownProjectKeys = [
+    ...projects.map((project) => projectFilterKey(project.id)),
+    ...remoteProjects.map((project) => projectFilterKey(project.id, project.hostId)),
+  ];
+  const projectsShown = appliedProjectFilter(projectFilter.selected, knownProjectKeys);
   const list = deriveSessionList({
-    sessions,
+    sessions: filterSessionsToProjects(sessions, projectsShown),
     query,
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
@@ -939,6 +965,11 @@ function SidebarBody() {
   const openCanvasProject = canvasProjectFromPathname(pathname);
   const needle = query.trim().toLocaleLowerCase();
   const draftRows = drafts
+    // A DRAFT IS A ROW IN THE RAIL, so the project filter reaches it too — a
+    // band of scraps from a project the reader has just hidden is the same
+    // contradiction as a session from it. Drafts are this Mac's only, hence the
+    // bare key.
+    .filter((draft) => projectsShown.size === 0 || projectsShown.has(projectFilterKey(draft.projectId)))
     .filter((draft) => (needle ? draft.text.toLocaleLowerCase().includes(needle) : true))
     .map((draft) => ({ ...draft, projectName: projects.find((project) => project.id === draft.projectId)?.name }))
     .filter((draft) => draft.projectName !== undefined);
@@ -1095,55 +1126,28 @@ function SidebarBody() {
   };
 
   /**
-   * THE DESKTOP SHELL, READ THROUGH A STORE rather than during render.
+   * THE RAIL NO LONGER ANSWERS "REVEAL IN FINDER" — issue #470.
    *
-   * `workspaceOpener()` answers `undefined` on the server and an object in the
-   * shell, so reading it straight would make the first client render disagree
-   * with the markup it hydrates. The store's server snapshot is what keeps them
-   * in step — the same arrangement `OpenWorkspaceButton` makes for the opener
-   * preference. It never changes after load, so the subscribe is a no-op.
+   * It used to, from the bottom of the command stack: a guess at "the project
+   * at hand" behind a button in the header pill. The verb is not gone — it is on
+   * every project group's own menu (`project-group.tsx`) and on the session's
+   * Reveal button (`session/open-workspace-button.tsx`), both of which name the
+   * folder they will open instead of guessing at one. What went with the button
+   * is the guess: a rail-wide ⌘O whose target the reader had to infer from a
+   * tooltip, and which was wrong exactly when they had several projects open.
+   *
+   * THE CHORD FOLLOWS THE BINDING, which is the point. The palette lists a
+   * command only when a mounted component can run it, and the held-⌘ hints read
+   * the same registry — so outside a conversation, ⌘O now promises nothing
+   * rather than promising a folder nobody chose.
+   *
+   * `project-settings` stays: it is the same guess, but it navigates inside the
+   * app rather than opening something on the machine, and it is the rail's only
+   * answer to that command.
    */
-  const revealBridge = useSyncExternalStore(subscribeNothing, workspaceOpener, serverNoBridge);
-
-  /**
-   * WHICH FOLDER THE FINDER BUTTON WOULD SHOW.
-   *
-   * THE RAIL'S OWN GUESS — the project you are reading, then the one you touched
-   * last — which is what `New conversation` already acts on. It used to prefer
-   * the scoped project ahead of that guess; with the scope chip gone (#400) the
-   * guess is the whole answer, and it is named in the button's `title` so the
-   * reader never has to infer which folder is about to open.
-   *
-   * THIS MAC'S PROJECTS ONLY. A paired Mac's checkout is on that Mac; revealing
-   * a same-named path here would show somebody the wrong folder, which is the
-   * refusal `workspaceOpenBlocker` makes everywhere else.
-   */
-  const revealProject = (() => {
-    const local = composerTarget && !composerTarget.hostId ? projects.find((project) => project.id === composerTarget.projectId) : undefined;
-    return local?.root ? { name: local.name, root: local.root } : undefined;
-  })();
-
-  /**
-   * THE RAIL'S ANSWER TO TWO COMMANDS ABOUT "THE PROJECT YOU ARE IN" — and it
-   * is deliberately the BOTTOM of the stack rather than an override.
-   *
-   * `bindCommands` keeps a stack per command and the newest binder wins, so a
-   * session's own Reveal button (session/open-workspace-button.tsx) outranks
-   * this one while that session is open and this is what answers everywhere
-   * else. Passed as overrides, the rail would have shadowed it — and ⌘O inside
-   * a conversation would have opened the rail's guess instead of the workspace
-   * you were looking at.
-   *
-   * NEITHER IS BOUND WHEN THERE IS NOTHING TO OPEN, which is what keeps the
-   * palette honest: it lists a command only when something can run it, so
-   * "Reveal in Finder" is absent from a browser tab rather than present and
-   * inert.
-   */
-  const reveal = revealBridge && revealProject ? () => void revealBridge.reveal(revealProject.root) : undefined;
   const localProjectId = composerTarget && !composerTarget.hostId ? composerTarget.projectId : undefined;
   useCommandHandlers(
     {
-      ...(reveal ? { "reveal-in-finder": reveal } : {}),
       ...(localProjectId
         ? {
             "project-settings": () => {
@@ -1153,24 +1157,34 @@ function SidebarBody() {
           }
         : {}),
     },
-    [Boolean(reveal), localProjectId],
+    [localProjectId],
   );
 
   /**
-   * NO PROJECT-SCOPE CHIP — issue #400.
+   * THE FILTER AT THE HEAD OF THE FIELD — issue #470, and see
+   * `sidebar-project-filter.tsx` for what it is and is not.
    *
-   * #395 folded the old "All projects ▾" row into the search field as a chip,
-   * which was a smaller version of a control the rail should not have had at
-   * all: the collapsible project groups already answer "fewer rows", and they
-   * answer it without hiding the rest of the list behind a menu a reader can
-   * leave set and forget. A filter inside a search box is furniture on top of
-   * that. Its one non-filter verb — the gear beside each project — lives on the
-   * group header's own menu (`project-group.tsx`), which is where a per-project
-   * verb belongs.
+   * ABSENT ON A COCKPIT WITH ONE PROJECT, unchanged from the chip it replaces:
+   * "every project" and "that one project" select the same rows, so the control
+   * would be furniture eating the width of the field. A selection stored from a
+   * time when there were more is harmless — `appliedProjectFilter` narrows it to
+   * the projects this cockpit can see, and one known key selects the one group
+   * there is.
    *
-   * The three verbs at the field's right (reveal, add project, new
-   * conversation) stay exactly as #395 built them.
+   * ITS PER-PROJECT VERBS STAYED WHERE #400 PUT THEM. The old chip's menu
+   * carried a gear beside each project; that row lives on the group header's own
+   * menu, which is where a per-project verb belongs, and this popover is a
+   * filter and only a filter.
    */
+  const projectFilterControl =
+    pickerTargets.length > 1 ? (
+      <SidebarProjectFilter
+        targets={pickerTargets}
+        selected={projectsShown}
+        onToggle={projectFilter.toggle}
+        onClear={projectFilter.clear}
+      />
+    ) : undefined;
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1266,6 +1280,7 @@ function SidebarBody() {
               aria-expanded={Boolean(query)}
               aria-controls="sidebar-session-results"
               aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
+              {...(projectFilterControl ? { start: projectFilterControl } : {})}
               end={
                 query ? (
                   <button
@@ -1295,20 +1310,23 @@ function SidebarBody() {
               }
             />
             {/*
-              THREE VERBS IN ONE PILL, at the field's right — T3's header, and
-              the reason the rail is a line shorter than it was.
+              TWO VERBS IN ONE PILL, at the field's right — T3's header, and the
+              reason the rail is a line shorter than it was.
 
-              WHAT WENT: a second row under the field holding "All projects ▾"
-              and a lone `+`. It spent a whole line of a narrow rail on a filter
-              most cockpits never change, and it put the two things you press
-              most (add a project, start a conversation) on different rows at
-              opposite ends. The filter moved into the field as a chip and then
-              went altogether (#400) — the project groups below already narrow
-              the list, and they do it without a mode to leave set.
+              WHAT WENT, TWICE OVER. First a second row under the field holding
+              "All projects ▾" and a lone `+`: it spent a whole line of a narrow
+              rail, and it put the two things you press most (add a project,
+              start a conversation) on different rows at opposite ends. The
+              filter is back at the HEAD of the field (#470), where it narrows
+              the same list the field narrows. Then Reveal in Finder, which was a
+              third button here (#470 again): it acted on a guess at "the project
+              at hand", and the two places that can name the folder instead of
+              guessing — a project group's menu, a session's own Reveal — both
+              still carry it.
 
-              THE PILL IS ONE BORDER AROUND THREE BUTTONS rather than three
-              loose glyphs, because they are one cluster of verbs about the rail
-              and the space beside the field is not theirs to float in.
+              THE PILL IS ONE BORDER AROUND ITS BUTTONS rather than loose glyphs,
+              because they are one cluster of verbs about the rail and the space
+              beside the field is not theirs to float in.
             */}
             {/* EACH VERB IS A COMMAND, PRESSED (#402). The buttons used to do
                 the work themselves — reach for the bridge, set the palette's
@@ -1316,23 +1334,6 @@ function SidebarBody() {
                 slightly different things. They ask the dispatcher now, exactly
                 as the keyboard and the palette's own rows do. */}
             <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5">
-              {/* HIDDEN IN A BROWSER TAB, never disabled: `workspaceOpenBlocker`
-                  is the one place that decides whether a folder can be opened
-                  from this window, and a greyed Finder button in a tab would be
-                  the platform explained forever. Disabled is only for the case
-                  the desktop CAN do and there is simply nothing chosen yet. */}
-              {revealBridge && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!revealProject}
-                  aria-label="Reveal in Finder"
-                  title={revealProject ? `Reveal ${revealProject.name} in Finder` : "Reveal in Finder — choose a project first"}
-                  onClick={() => run("reveal-in-finder")}
-                >
-                  <FolderOpenIcon />
-                </Button>
-              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -1552,10 +1553,21 @@ function SidebarBody() {
               // reader they have "No sessions yet" contradicts the four rows
               // they can see.
               (list.flat || !(list.settledCount || list.snoozedCount || list.pinned.length)) ? (
+              /* THREE ANSWERS, AND THE FILTERED ONE IS BACK (#470). A rail
+                 emptied by a filter is not a rail with nothing in it, and
+                 "No sessions yet" over a cockpit full of work is the sentence
+                 that makes a reader think they lost something. The arm is
+                 reachable again exactly because a filter can now produce it. */
               <SidebarEmpty
                 icon={MessageSquareIcon}
-                title={query ? "No sessions found" : "No sessions yet"}
-                detail={query ? "Try another title or project." : "Start one from the button above."}
+                title={query ? "No sessions found" : projectsShown.size ? "No sessions in the selected projects" : "No sessions yet"}
+                detail={
+                  query
+                    ? "Try another title or project."
+                    : projectsShown.size
+                      ? "Clear the filter at the head of the field to see the rest."
+                      : "Start one from the button above."
+                }
               />
             ) : grouped ? (
               drawnGroups.map((group) => {

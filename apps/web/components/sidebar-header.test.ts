@@ -3,16 +3,18 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 /**
- * THE RAIL'S HEAD IS ONE LINE NOW — a search field with three verbs in a pill at
- * its right, and NO project filter anywhere in it.
+ * THE RAIL'S HEAD IS ONE LINE — a project filter at the head of the search
+ * field, two verbs in a pill at its right, and no Reveal in Finder among them.
  *
  * It was two lines: the field with a lone New-conversation button, then a whole
  * second row holding "All projects ▾" and a lone `+`. That row spent a line of a
  * narrow rail on a control most cockpits never change, and it put the two things
  * pressed most on different rows at opposite ends. #395 folded the filter into
- * the field as a chip; #400 removed the filter itself — the collapsible project
- * groups already answer "fewer rows", so both the row and the chip were
- * furniture around a control the rail does not need.
+ * the field as a chip; #400 removed the filter itself; #470 puts one back in
+ * that same place as a SET rather than a scope — "these three projects and not
+ * the other eleven" is the question the collapsible groups cannot answer — and
+ * takes Reveal in Finder out of the pill, because it acted on a guess at "the
+ * project at hand" that the two surfaces which can NAME a folder do not need.
  *
  * PINNED AGAINST SOURCE, like the palette's own keyboard rules: this markup
  * renders inside a sidebar provider with a router, a command registry and four
@@ -25,7 +27,9 @@ import { readFileSync } from "node:fs";
 const code = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 const sidebar = readFileSync(new URL("./app-sidebar.tsx", import.meta.url), "utf8");
+const bare = code(sidebar);
 const field = code(readFileSync(new URL("./sidebar-search-field.tsx", import.meta.url), "utf8"));
+const filter = code(readFileSync(new URL("./sidebar-project-filter.tsx", import.meta.url), "utf8"));
 
 /** The head, from the search field down to the drafts band. */
 const header = sidebar.slice(sidebar.indexOf("<SidebarSearchField"), sidebar.indexOf("DRAFTS SIT ABOVE EVERYTHING"));
@@ -36,20 +40,19 @@ describe("the rail's header is one row", () => {
     expect(header).not.toContain("min-w-0 flex-1\" />}");
   });
 
-  test("three verbs, in one pill, at the field's right", () => {
-    const pill = header.slice(header.indexOf("THREE VERBS IN ONE PILL"));
-    for (const label of ['aria-label="Reveal in Finder"', 'aria-label="Add project"', 'aria-label="New conversation"']) {
+  test("two verbs, in one pill, at the field's right", () => {
+    const pill = header.slice(header.indexOf("TWO VERBS IN ONE PILL"));
+    for (const label of ['aria-label="Add project"', 'aria-label="New conversation"']) {
       expect(pill).toContain(label);
     }
-    // One border around the three, not three glyphs floating beside the field.
+    // One border around the two, not loose glyphs floating beside the field.
     expect(pill).toContain('className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5"');
   });
 
   test("each verb is a COMMAND, pressed — not a second implementation of one", () => {
     // #402: a button that reached for the bridge or set the palette's state
     // itself is how a button and its chord come to mean two slightly different
-    // things. All three ask the dispatcher the keyboard asks.
-    expect(header).toContain('onClick={() => run("reveal-in-finder")}');
+    // things. Both ask the dispatcher the keyboard asks.
     expect(header).toContain('onClick={() => run("add-project")}');
     expect(header).toContain('onClick={() => run("new-conversation")}');
     // And the dispatcher is the rail's own, so "New conversation" still goes
@@ -60,53 +63,104 @@ describe("the rail's header is one row", () => {
   });
 });
 
-describe("Reveal in Finder", () => {
-  test("it is absent in a browser tab, and disabled only when nothing is chosen", () => {
-    // A greyed Finder button in a tab would be the platform explained forever —
-    // the rule `workspaceOpenBlocker` states and `project-group.tsx` follows.
-    expect(header).toContain("{revealBridge && (");
-    expect(header).toContain("disabled={!revealProject}");
-  });
-
-  test("the shell is read through a store, so the first client render matches the markup", () => {
-    // `workspaceOpener()` answers undefined on the server and an object in the
-    // shell; reading it during render would hydrate into a mismatch.
-    expect(sidebar).toContain("useSyncExternalStore(subscribeNothing, workspaceOpener, serverNoBridge)");
-    // Module constants, because the store compares them by identity.
-    expect(sidebar).toContain("const subscribeNothing = () => () => {};");
-  });
-
-  test("it reveals THIS Mac's project, never a paired Mac's same-named path", () => {
-    const pick = sidebar.slice(sidebar.indexOf("const revealProject = (() => {"));
-    expect(pick.slice(0, 400)).toContain("!composerTarget.hostId");
-    expect(header).toContain("`Reveal ${revealProject.name} in Finder`");
-  });
-
-  test("the guess is the rail's OWN, with no scoped project ahead of it", () => {
-    // #400: the chip that set a scope is gone, so "the project at hand" has
-    // exactly one meaning here — the one `New conversation` already acts on.
-    const pick = sidebar.slice(sidebar.indexOf("const revealProject = (() => {"));
-    expect(pick.slice(0, 400)).not.toContain("selectedProject");
-  });
-});
-
-describe("there is no project filter in the rail — #400", () => {
-  /** The chip and every code path it was the only way to reach. The rail's
-   *  collapsible project groups are the "fewer rows" control now. */
-  test("the chip, its menu and its state are gone from the source", () => {
-    for (const dead of ["scopeChip", "selectScope", "selectedScope", "selectedProject", "setScope", "Filter by project"]) {
-      expect(sidebar).not.toContain(dead);
+describe("Reveal in Finder left the rail's head — #470", () => {
+  test("no button, and no bridge read to feed one", () => {
+    expect(header).not.toContain('aria-label="Reveal in Finder"');
+    expect(header).not.toContain('run("reveal-in-finder")');
+    // The whole code path, not just the markup: the shell store, the guess it
+    // fed, and the handler that closed over both.
+    for (const dead of ["revealBridge", "revealProject", "workspaceOpener", "subscribeNothing", "serverNoBridge"]) {
+      expect(bare).not.toContain(dead);
     }
   });
 
-  test("nothing is handed to a leading slot the field no longer has", () => {
-    expect(header).not.toContain("start:");
-    expect(header).not.toContain("start=");
+  test("the rail binds the command no more, which is what drops its chord", () => {
+    // The palette lists a command only when a mounted component can run it, and
+    // the held-⌘ hints read the same registry — so ⌘O outside a conversation now
+    // promises nothing rather than a folder nobody chose.
+    expect(bare).not.toContain('"reveal-in-finder"');
+    // `project-settings` is the same guess and it stays: it navigates inside the
+    // app rather than opening something on the machine.
+    expect(sidebar).toContain('"project-settings": () => {');
   });
 
-  test("the rail always names a row's project, with no flag left to say otherwise", () => {
-    // `showProject` was `!selectedScope`, so with no scope it is always true and
-    // a derived boolean that cannot vary is worse than the literal.
+  test("the two surfaces that can NAME a folder still reveal one", () => {
+    // Scope of #470 is the header only. A project group's menu and a session's
+    // own Reveal button both act on a path they were handed, not on a guess.
+    const group = readFileSync(new URL("./session/project-group.tsx", import.meta.url), "utf8");
+    expect(group).toContain("Reveal in Finder");
+    expect(readFileSync(new URL("./session/open-workspace-button.tsx", import.meta.url), "utf8")).toContain('"reveal-in-finder": () => {');
+  });
+});
+
+describe("the project filter is back, as a set — #470", () => {
+  test("it is the field's leading slot, not a row of its own", () => {
+    expect(header).toContain("{...(projectFilterControl ? { start: projectFilterControl } : {})}");
+    expect(sidebar).toContain("<SidebarProjectFilter");
+  });
+
+  test("absent on a cockpit with one project, like the chip it replaces", () => {
+    // "Every project" and "that one project" select the same rows, so the
+    // control would be furniture eating the width of the field.
+    expect(sidebar).toContain("pickerTargets.length > 1 ? (");
+  });
+
+  test("the trigger counts the APPLIED selection, so it cannot disagree with the list", () => {
+    // A stored key for a project that has left the registry — or for a paired
+    // Mac that is away — names nothing the popover can list. Counting the raw
+    // set would badge a filter with no checked row to explain it.
+    expect(sidebar).toContain("const projectsShown = appliedProjectFilter(projectFilter.selected, knownProjectKeys);");
+    expect(sidebar).toContain("selected={projectsShown}");
+  });
+
+  test("the rows are filtered ONCE, before the list is derived", () => {
+    // Filtering rows rather than groups is what hides a whole group AND narrows
+    // Needs-you and Pinned, which sit outside the groups.
+    expect(sidebar).toContain("sessions: filterSessionsToProjects(sessions, projectsShown),");
+    // Host-qualified keys: project ids are minted per engine, so a bare id would
+    // filter this Mac's project and hide the mini's of the same id.
+    expect(sidebar).toContain("projectFilterKey(project.id, project.hostId)");
+  });
+
+  test("everything else reads the WHOLE list, deliberately", () => {
+    // A filter over the rail is not an instruction about what ⌘K may find, and
+    // the poll's cadence follows what is live rather than what is on screen.
+    expect(sidebar).toContain("sessions={sessions}");
+    expect(sidebar).toContain("const anyLive = sessions.some((session) => session.activity !== \"idle\");");
+  });
+
+  test("a draft is a row in the rail, so the filter reaches it too", () => {
+    expect(sidebar).toContain("projectsShown.size === 0 || projectsShown.has(projectFilterKey(draft.projectId))");
+  });
+
+  test("an emptied rail says which emptiness it is", () => {
+    // "No sessions yet" over a cockpit full of work is the sentence that makes a
+    // reader think they lost something. The arm is reachable again exactly
+    // because a filter can now produce it.
+    expect(sidebar).toContain('projectsShown.size ? "No sessions in the selected projects" : "No sessions yet"');
+  });
+
+  test("nothing checked is every project — there is no All row to press", () => {
+    // An empty selection already says it, and a row meaning "uncheck the other
+    // eleven" is a second way to spell Clear.
+    expect(filter).not.toContain("All projects");
+    expect(filter).toContain("Clear");
+    expect(filter).toContain("{count > 0 && (");
+  });
+
+  test("one checkbox row per project, host-grouped only when there are hosts to group by", () => {
+    expect(filter).toContain('role="checkbox"');
+    expect(filter).toContain("aria-checked={on}");
+    expect(filter).toContain("{hosts.length > 1 && ");
+  });
+});
+
+describe("the rail always names a row's project", () => {
+  test("no flag is left to say otherwise", () => {
+    // `showProject` was `!selectedScope`, so with no single scope it is always
+    // true and a derived boolean that cannot vary is worse than the literal.
+    // #470's filter is a SET, which never makes the name redundant: three
+    // projects selected is three names worth saying.
     expect(sidebar).not.toContain("const showProject =");
     expect(sidebar).not.toContain("showProject={showProject}");
     // The prop itself survives on SessionRow: a row INSIDE a project group
@@ -114,23 +168,19 @@ describe("there is no project filter in the rail — #400", () => {
     expect(readFileSync(new URL("./session/project-group.tsx", import.meta.url), "utf8")).toContain("showProject={false}");
   });
 
-  test("the empty rail has one answer, not a scoped one", () => {
-    // Below the header slice, in the list's own empty state: the third arm read
-    // "No sessions in this project" and nothing could put the rail in it.
-    expect(sidebar).toContain('title={query ? "No sessions found" : "No sessions yet"}');
-  });
-
   test("per-project settings stayed reachable — on the group header's own menu", () => {
-    // It lived in the chip's menu as a gear beside each project name. The group
-    // header already carried the same row, which is why the chip could go
-    // without taking the verb with it.
+    // It lived in the old chip's menu as a gear beside each project name. The
+    // group header already carried the same row, which is why the chip could go
+    // without taking the verb with it — and why #470's popover is a filter and
+    // only a filter.
     const group = readFileSync(new URL("./session/project-group.tsx", import.meta.url), "utf8");
     expect(group).toContain("Project settings");
     expect(group).toContain("onProjectSettings");
+    expect(filter).not.toContain("Project settings");
   });
 });
 
-describe("the shared field has one slot, and it is the trailing one", () => {
+describe("the shared field has two slots again, and the leading one replaces the glyph", () => {
   test("the chrome is on the row, not the input — the reason a slot can hold anything", () => {
     // The absolute icon over a full-width Input with a hand-counted pl-7/pr-10
     // works for two things of fixed width and for nothing else.
@@ -138,10 +188,10 @@ describe("the shared field has one slot, and it is the trailing one", () => {
     expect(field).not.toContain("pr-10");
   });
 
-  test("the leading slot went with the chip that was its only caller", () => {
-    // #400. The glyph is unconditional again; no rail passes a `start`.
-    expect(field).toContain("<SearchIcon");
-    expect(field).not.toContain("start");
+  test("`start` REPLACES the search glyph rather than sitting beside it", () => {
+    // Two marks at the head of one field is one too many, and the field's width
+    // belongs to what you are typing.
+    expect(field).toContain("{start ?? <SearchIcon");
   });
 
   test("a caller that passes no slot draws what it drew before", () => {
