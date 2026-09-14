@@ -2,7 +2,7 @@ const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { verifyCrx, mainWorldShims, sanitizePreloadSource, sanitizedPreloadPath, disableLibraryDebug } = require("./extension-compat");
+const { verifyCrx, mainWorldShims, sanitizePreloadSource, sanitizedPreloadPath, isExtensionPreloadContext, disableLibraryDebug } = require("./extension-compat");
 
 describe("the library preload is sanitized before it runs", () => {
   const upstream = fs.readFileSync(require.resolve("electron-chrome-extensions/preload"), "utf8");
@@ -22,10 +22,45 @@ describe("the library preload is sanitized before it runs", () => {
     expect(() => sanitizePreloadSource(upstream + "\nif (true) { x(); }")).toThrow(/if \(true\)/);
     expect(() => sanitizePreloadSource(upstream + "\nconsole.info(1)")).toThrow(/console\.log\/info\/debug/);
   });
-  test("the file written for registration is the sanitized one", () => {
+  test("the file written for registration is the sanitized one, behind the #487 gate", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-preload-"));
     const file = sanitizedPreloadPath(dir);
-    expect(fs.readFileSync(file, "utf8")).toBe(sanitizePreloadSource(upstream));
+    const written = fs.readFileSync(file, "utf8");
+    // The sanitized body is carried through byte-for-byte; only a prelude and
+    // a wrapping block are added around it.
+    expect(written).toContain(sanitizePreloadSource(upstream));
+    expect(written).toContain("if (__telarIsExtensionContext) {");
+    expect(written.indexOf("__telarIsExtensionContext")).toBeLessThan(written.indexOf(sanitizePreloadSource(upstream)));
+  });
+  test("the gated file parses — a SyntaxError here is 1Password not loading", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-preload-"));
+    const written = fs.readFileSync(sanitizedPreloadPath(dir), "utf8");
+    expect(() => new Function(written)).not.toThrow();
+  });
+});
+
+describe("the extension preloads are gated to chrome-extension: contexts (#487)", () => {
+  test("a site's frame and a site's service worker are refused", () => {
+    expect(isExtensionPreloadContext({ protocol: "https:" })).toBe(false);
+    expect(isExtensionPreloadContext({ scope: "https://github.com/" })).toBe(false);
+    expect(isExtensionPreloadContext({ scope: "https://www.youtube.com/" })).toBe(false);
+  });
+  test("the extension's own frame and worker are allowed", () => {
+    expect(isExtensionPreloadContext({ protocol: "chrome-extension:" })).toBe(true);
+    expect(isExtensionPreloadContext({ scope: `chrome-extension://${ID}/` })).toBe(true);
+  });
+  test("a context that names nothing still runs — that is 1Password's worker on this Electron", () => {
+    expect(isExtensionPreloadContext({})).toBe(true);
+    expect(isExtensionPreloadContext()).toBe(true);
+    expect(isExtensionPreloadContext({ protocol: null, scope: null, runtimeId: null })).toBe(true);
+    // An unparseable scope is a context we could not name, not a site.
+    expect(isExtensionPreloadContext({ scope: "not a url" })).toBe(true);
+  });
+  test("a content script's runtime id does not override the document it runs in", () => {
+    // The isolated world of a content script on github carries chrome.runtime.id;
+    // the frame is still github's, and upstream never injected there either.
+    expect(isExtensionPreloadContext({ protocol: "https:", runtimeId: ID })).toBe(false);
+    expect(isExtensionPreloadContext({ runtimeId: ID })).toBe(true);
   });
   test("the library's debug namespaces are off even when DEBUG asks for everything", () => {
     const { createRequire } = require("node:module");
