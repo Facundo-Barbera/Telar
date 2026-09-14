@@ -45,8 +45,10 @@ test("the range is read off the registry, not hardcoded", () => {
   // A tenth slot must widen the row rather than go unlisted, and a registry with
   // one jump has no range to fold.
   const table: Command[] = [
-    { id: "jump-1" as never, label: "Jump 1", group: "Rail", defaultChord: "CommandOrControl+1", jump: 1 },
-    { id: "jump-2" as never, label: "Jump 2", group: "Rail", defaultChord: "CommandOrControl+2", jump: 2 },
+    // `icon` is carried because the registry's type requires one; this pane
+    // pointedly ignores it — a keybindings row is a chord, not a glyph.
+    { id: "jump-1" as never, label: "Jump 1", group: "Rail", icon: "hash", defaultChord: "CommandOrControl+1", jump: 1 },
+    { id: "jump-2" as never, label: "Jump 2", group: "Rail", icon: "hash", defaultChord: "CommandOrControl+2", jump: 2 },
   ];
   const keymap = { "jump-1": "CommandOrControl+1", "jump-2": "CommandOrControl+2" } as Keymap;
   expect(keybindingRows("mac", keymap, table)[0]?.title).toBe("Jump to conversation 1–2");

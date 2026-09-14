@@ -32,6 +32,17 @@
  * @property {string} group - which heading the settings pane files it under.
  *   The cockpit's vocabulary, not the menu's: "Conversation", "Rail", "Panel",
  *   "Application".
+ * @property {string} icon - a lucide icon NAME ("folder-open"), which the web
+ *   resolves through the one map in apps/web/lib/command-icons.ts (#479).
+ *
+ *   A NAME RATHER THAN THE GLYPH ITSELF, because of the rule at the top of this
+ *   file: main.js requires this table inside Electron's real main process, so
+ *   nothing here may import React. A string crosses that wall; a component does
+ *   not. The application menu and the keybindings pane both ignore the field
+ *   entirely — it exists for the one surface that draws a LIST of commands.
+ *
+ *   A name the web's map does not know falls back to the group's glyph, so a
+ *   command added here is never a row with a hole where its icon should be.
  * @property {string} defaultChord - an Electron accelerator string. Always
  *   "CommandOrControl+…", never a hardcoded "Cmd" or "Ctrl" — issue #16 asks for
  *   CommandOrControl semantics explicitly so the same table works unmodified on
@@ -57,29 +68,29 @@
 
 /** @type {Command[]} */
 const COMMANDS = [
-  { id: "new-conversation", label: "New Conversation", group: "Conversation", defaultChord: "CommandOrControl+N", menu: "file" },
+  { id: "new-conversation", label: "New Conversation", group: "Conversation", icon: "message-square-plus", defaultChord: "CommandOrControl+N", menu: "file" },
   // THE SAME VERB, ASKED RATHER THAN GUESSED. ⌘N opens the project you are
   // already in (or the palette, on a cockpit with several); this one always
   // walks to the list, and is the palette's "New conversation in…" sub-page.
   // No chord of its own: ⌘N already reaches the same page when it has to.
-  { id: "new-conversation-in", label: "New Conversation In…", group: "Conversation", defaultChord: "" },
-  { id: "new-tab", label: "New Tab", group: "Conversation", defaultChord: "CommandOrControl+T", menu: "file" },
-  { id: "new-window", label: "New Window", group: "Conversation", defaultChord: "CommandOrControl+Shift+N", menu: "file" },
-  { id: "focus-composer", label: "Focus Composer", group: "Conversation", defaultChord: "CommandOrControl+L" },
-  { id: "send", label: "Send", group: "Conversation", defaultChord: "CommandOrControl+Return" },
-  { id: "stop-turn", label: "Stop Turn", group: "Conversation", defaultChord: "CommandOrControl+." },
+  { id: "new-conversation-in", label: "New Conversation In…", group: "Conversation", icon: "messages-square", defaultChord: "" },
+  { id: "new-tab", label: "New Tab", group: "Conversation", icon: "square-plus", defaultChord: "CommandOrControl+T", menu: "file" },
+  { id: "new-window", label: "New Window", group: "Conversation", icon: "app-window", defaultChord: "CommandOrControl+Shift+N", menu: "file" },
+  { id: "focus-composer", label: "Focus Composer", group: "Conversation", icon: "text-cursor", defaultChord: "CommandOrControl+L" },
+  { id: "send", label: "Send", group: "Conversation", icon: "send", defaultChord: "CommandOrControl+Return" },
+  { id: "stop-turn", label: "Stop Turn", group: "Conversation", icon: "square", defaultChord: "CommandOrControl+." },
   // The session's workspace folder, shown in Finder (#384) — the same verb the
   // header's Open menu carries, from the keyboard. `menu: "file"` because it is
   // about a folder on disk, which is what a File menu is for; the handler lives
   // with the bridge, in components/session/open-workspace-button.tsx.
-  { id: "reveal-in-finder", label: "Reveal in Finder", group: "Conversation", defaultChord: "CommandOrControl+O", menu: "file" },
+  { id: "reveal-in-finder", label: "Reveal in Finder", group: "Conversation", icon: "folder-open", defaultChord: "CommandOrControl+O", menu: "file" },
   // Pin or unpin the conversation you are LOOKING AT (#408) — the same verb the
   // session menu's Pin row performs, from the keyboard. One command with two
   // names rather than two commands: a person binds "pin this", and which of the
   // two things that means is the session's state, never a second chord to
   // learn. `menu: "file"` for the same reason Reveal in Finder is there — it is
   // about the conversation as a thing you keep, not about the panel.
-  { id: "pin-session", label: "Pin Conversation", altLabel: "Unpin Conversation", group: "Conversation", defaultChord: "CommandOrControl+P", menu: "file" },
+  { id: "pin-session", label: "Pin Conversation", altLabel: "Unpin Conversation", group: "Conversation", icon: "pin", defaultChord: "CommandOrControl+P", menu: "file" },
 
   // ⌘K IS THE PALETTE NOW (#402), WHICH IS WHY THE LABEL MOVED AND THE ID DID
   // NOT. It used to put the cursor in the rail's search field; it opens one
@@ -87,11 +98,11 @@ const COMMANDS = [
   // field stays exactly what it was, a filter over the rows in front of you.
   // The id is what a person's stored override names, so renaming it would throw
   // away every rebinding of this key that exists on disk.
-  { id: "search-sessions", label: "Command Palette", group: "Rail", defaultChord: "CommandOrControl+K" },
+  { id: "search-sessions", label: "Command Palette", group: "Rail", icon: "search", defaultChord: "CommandOrControl+K" },
   // The rail's add-project button, as a command — so the button, the palette row
   // and the empty-space menu are one thing rather than three.
-  { id: "add-project", label: "Add Project…", group: "Rail", defaultChord: "" },
-  { id: "toggle-rail", label: "Toggle Rail", group: "Rail", defaultChord: "CommandOrControl+B" },
+  { id: "add-project", label: "Add Project…", group: "Rail", icon: "folder-plus", defaultChord: "" },
+  { id: "toggle-rail", label: "Toggle Rail", group: "Rail", icon: "panel-left", defaultChord: "CommandOrControl+B" },
   // jump-1..jump-9: the Nth conversation in the rail, top to bottom as drawn.
   // Generated, not hand-written nine times — see railRowsForCommandKeys in
   // apps/web/lib/session-groups.ts for exactly which rows count.
@@ -101,25 +112,28 @@ const COMMANDS = [
       id: `jump-${n}`,
       label: `Jump to Conversation ${n}`,
       group: "Rail",
+      // The digit is the whole of what distinguishes these nine, and the
+      // palette never lists them anyway — one glyph for the set is honest.
+      icon: "hash",
       defaultChord: `CommandOrControl+${n}`,
       menu: "file",
       jump: n,
     };
   }),
 
-  { id: "toggle-panel", label: "Toggle Right Panel", group: "Panel", defaultChord: "CommandOrControl+\\", menu: "panel" },
-  { id: "panel-next-tab", label: "Next Panel Tab", group: "Panel", defaultChord: "CommandOrControl+Alt+Right", menu: "panel" },
-  { id: "panel-previous-tab", label: "Previous Panel Tab", group: "Panel", defaultChord: "CommandOrControl+Alt+Left", menu: "panel" },
-  { id: "panel-fullscreen", label: "Fill the Window", group: "Panel", defaultChord: "CommandOrControl+Alt+F", menu: "panel" },
-  { id: "open-diff", label: "Open Diff", group: "Panel", defaultChord: "CommandOrControl+Shift+D", menu: "panel" },
-  { id: "open-editor", label: "Open Editor", group: "Panel", defaultChord: "CommandOrControl+Shift+E", menu: "panel" },
-  { id: "open-data", label: "Open Data", group: "Panel", defaultChord: "CommandOrControl+Shift+B", menu: "panel" },
-  { id: "open-latex", label: "Open LaTeX", group: "Panel", defaultChord: "CommandOrControl+Shift+X", menu: "panel" },
+  { id: "toggle-panel", label: "Toggle Right Panel", group: "Panel", icon: "panel-right", defaultChord: "CommandOrControl+\\", menu: "panel" },
+  { id: "panel-next-tab", label: "Next Panel Tab", group: "Panel", icon: "arrow-right", defaultChord: "CommandOrControl+Alt+Right", menu: "panel" },
+  { id: "panel-previous-tab", label: "Previous Panel Tab", group: "Panel", icon: "arrow-left", defaultChord: "CommandOrControl+Alt+Left", menu: "panel" },
+  { id: "panel-fullscreen", label: "Fill the Window", group: "Panel", icon: "maximize", defaultChord: "CommandOrControl+Alt+F", menu: "panel" },
+  { id: "open-diff", label: "Open Diff", group: "Panel", icon: "git-compare", defaultChord: "CommandOrControl+Shift+D", menu: "panel" },
+  { id: "open-editor", label: "Open Editor", group: "Panel", icon: "file-code", defaultChord: "CommandOrControl+Shift+E", menu: "panel" },
+  { id: "open-data", label: "Open Data", group: "Panel", icon: "table", defaultChord: "CommandOrControl+Shift+B", menu: "panel" },
+  { id: "open-latex", label: "Open LaTeX", group: "Panel", icon: "sigma", defaultChord: "CommandOrControl+Shift+X", menu: "panel" },
   // Chromium's DevTools on the browser panel's ACTIVE tab (#423), on the chord
   // every browser uses for it. `menu: "view"` because that is where a person
   // looks for it; the row does nothing when no browser tab is active, which is
   // exactly what `bindCommands` means by a command nobody has claimed.
-  { id: "toggle-devtools", label: "Developer Tools", group: "Panel", defaultChord: "CommandOrControl+Alt+I", menu: "view" },
+  { id: "toggle-devtools", label: "Developer Tools", group: "Panel", icon: "bug", defaultChord: "CommandOrControl+Alt+I", menu: "view" },
   /**
    * ⇧⌘P, NOT ⌘P: #408 gave ⌘P to `pin-session`, and an editor's "go to file" is
    * the shifted one in every app that has both. Opens the Editor and puts the
@@ -127,7 +141,7 @@ const COMMANDS = [
    * apps/web/lib/use-command-keys.ts), because the panel's strip is the
    * cockpit's state and only it can open a tab.
    */
-  { id: "go-to-file", label: "Go to File…", group: "Panel", defaultChord: "CommandOrControl+Shift+P" },
+  { id: "go-to-file", label: "Go to File…", group: "Panel", icon: "file-search", defaultChord: "CommandOrControl+Shift+P" },
   /**
    * SEARCH THE PROJECT'S CONTENTS — and it is deliberately UNANSWERED today.
    * Telar has no content search: the Editor's field filters file NAMES, and
@@ -136,10 +150,10 @@ const COMMANDS = [
    * something can run it (`paletteActions`), so this stays out of the list until
    * the surface exists rather than sitting in it as a dead row.
    */
-  { id: "search-project-contents", label: "Search in Project…", group: "Panel", defaultChord: "CommandOrControl+Shift+F" },
+  { id: "search-project-contents", label: "Search in Project…", group: "Panel", icon: "text-search", defaultChord: "CommandOrControl+Shift+F" },
 
-  { id: "settings", label: "Settings…", group: "Application", defaultChord: "CommandOrControl+,", menu: "file" },
-  { id: "search-settings", label: "Search Settings…", group: "Application", defaultChord: "CommandOrControl+Shift+,", menu: "file" },
+  { id: "settings", label: "Settings…", group: "Application", icon: "settings", defaultChord: "CommandOrControl+,", menu: "file" },
+  { id: "search-settings", label: "Search Settings…", group: "Application", icon: "settings-2", defaultChord: "CommandOrControl+Shift+,", menu: "file" },
   /**
    * THE PANES A PERSON ASKS FOR BY NAME. Every one of these was reachable only
    * by opening Settings and then reading a nav — which is exactly the question a
@@ -147,13 +161,13 @@ const COMMANDS = [
    * the palette knows about privately: one list, and the keybindings pane can
    * put a chord on any of them.
    */
-  { id: "appearance", label: "Appearance…", group: "Application", defaultChord: "" },
+  { id: "appearance", label: "Appearance…", group: "Application", icon: "palette", defaultChord: "" },
   // The project you are working in, wherever you are. The rail is what knows
   // which one that is, so the rail answers it.
-  { id: "project-settings", label: "Project Settings…", group: "Application", defaultChord: "" },
-  { id: "open-usage", label: "Usage…", group: "Application", defaultChord: "" },
-  { id: "open-plugins", label: "Plugins…", group: "Application", defaultChord: "" },
-  { id: "check-for-updates", label: "Check for Updates…", group: "Application", defaultChord: "" },
+  { id: "project-settings", label: "Project Settings…", group: "Application", icon: "folder-cog", defaultChord: "" },
+  { id: "open-usage", label: "Usage…", group: "Application", icon: "gauge", defaultChord: "" },
+  { id: "open-plugins", label: "Plugins…", group: "Application", icon: "puzzle", defaultChord: "" },
+  { id: "check-for-updates", label: "Check for Updates…", group: "Application", icon: "refresh-cw", defaultChord: "" },
 ];
 
 /** The order modifiers are written in, so two spellings of one chord compare
