@@ -42,6 +42,35 @@ import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken 
  */
 export { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@telar/engine-client";
 
+/**
+ * WHERE EACH TOKEN ACTUALLY PAINTS, in one phrase (#471).
+ *
+ * The sixteen rows carried a NAME and nothing else — "Hover", "Chip", "Rail
+ * hover" — and the owner's complaint about this editor was exactly that: "you
+ * basically need to know how each component of each surface reacts to these".
+ * A name is only legible to somebody who already knows the token; a phrase
+ * naming the thing on screen it colours is legible to anybody who has looked at
+ * the app. These are the app's own surfaces, not the CSS variable restated.
+ */
+export const THEME_TOKEN_HINTS: Record<ThemeToken, string> = {
+  background: "The canvas the whole window sits on",
+  foreground: "Body text on that canvas",
+  card: "Raised surfaces — cards, panels, dialogs",
+  "card-foreground": "Text on a card",
+  popover: "Menus, dropdowns and tooltips",
+  "popover-foreground": "Text inside a menu",
+  secondary: "Chips, badges and quiet buttons",
+  "secondary-foreground": "Text on a chip",
+  muted: "Quiet fills — empty states, stripes",
+  "muted-foreground": "Hints, captions and secondary text",
+  accent: "A row under the pointer",
+  "accent-foreground": "Text on a row under the pointer",
+  border: "Every hairline in the app",
+  input: "The edge of a text field",
+  sidebar: "The rail down the side",
+  "sidebar-accent": "A rail row under the pointer",
+};
+
 export const THEME_TOKEN_LABELS: Record<ThemeToken, string> = {
   background: "Canvas",
   foreground: "Text",

@@ -168,6 +168,57 @@ describe("the Looks shelf reads as a list", () => {
 });
 
 /**
+ * THE PALETTE LEADS WITH A THEME, NOT WITH SIXTEEN TOKENS — issue #471.
+ *
+ * "You basically need to know how each component of each surface reacts to
+ * these and it's complicated to see that." The sixteen-token editor was the
+ * first thing in the Colour group and the only way to change a colour, so every
+ * colour decision began by working out which of sixteen names governs the thing
+ * you are looking at. The theme pickers lead now, the tokens are folded away,
+ * and each token row says where it paints.
+ */
+describe("the Colour group", () => {
+  function colourGroup(): HTMLElement | null {
+    return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Colour") ?? null;
+  }
+
+  test("the two theme pickers are rows, and they come before the tokens", () => {
+    const group = colourGroup();
+    expect(group?.querySelector("#settings-row-colour-light-theme")).not.toBeNull();
+    expect(group?.querySelector("#settings-row-colour-dark-theme")).not.toBeNull();
+
+    const html = group?.innerHTML ?? "";
+    expect(html.indexOf("Light theme")).toBeGreaterThan(-1);
+    expect(html.indexOf("Light theme")).toBeLessThan(html.indexOf("Edit tokens"));
+  });
+
+  test("the sixteen tokens sit behind a closed disclosure", () => {
+    const details = colourGroup()?.querySelector("details");
+    expect(details).not.toBeNull();
+    // Closed on arrival: the tokens are the tool you reach for after choosing a
+    // theme, not the thing that greets you.
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toContain("Edit tokens");
+  });
+
+  test("every token row says where it paints, not just what it is called", () => {
+    // Rendered even while the disclosure is closed — `details` hides its
+    // content, it does not unmount it — which is what lets this assert the
+    // pairing rather than the folding.
+    const tokens = colourGroup()?.querySelector("details")?.textContent ?? "";
+    expect(tokens).toContain("The canvas the whole window sits on");
+    expect(tokens).toContain("Every hairline in the app");
+    expect(tokens).toContain("A rail row under the pointer");
+  });
+
+  test("a built-in says it will be copied before the first edit lands", () => {
+    // The fork is `editActiveHalf`'s contract, and a reader who discovers it
+    // afterwards has already got a theme they did not ask to create.
+    expect(colourGroup()?.textContent).toContain("is a built-in. The first edit copies it");
+  });
+});
+
+/**
  * ONE READING COLUMN, AND APPEARANCE IS IN IT — issue #435.
  *
  * The shell sets the measure on a single wrapper around whatever pane is

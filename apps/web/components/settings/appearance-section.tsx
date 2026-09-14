@@ -51,6 +51,7 @@
  */
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { ChevronRightIcon } from "lucide-react";
 import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { detachFromHost } from "@/lib/host-follow";
@@ -69,13 +70,13 @@ import { mergeById, readAppearanceHome } from "@/lib/appearance-home";
 import { concreteHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition, type ThemeToken } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
 import { useTheme } from "@/components/theme-provider";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { BackdropTool } from "./studio/backdrop-tool";
 import { GroupStrip } from "./studio/tool-strip";
-import { ColourTool, ShowThroughRow, TypeTool } from "./studio/tools";
+import { ColourTool, PaletteStrip, ShowThroughRow, TypeTool } from "./studio/tools";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
 // external fact, present before React ran, and it never changes.
@@ -197,16 +198,24 @@ export function AppearanceSection() {
     [mounted, backdrop],
   );
 
+  /** A worn half's theme, never undefined: a half pointing at a theme that has
+   *  been deleted falls home to Telar, which is what the store stores anyway. */
+  const themeOf = (id: string): ThemeDefinition => themes.find((entry) => entry.id === id) ?? themes[0]!;
+  const labelOf = (id: string) => themeOf(id).label;
+
   /** The palette this window has on, on the half in front of you — concrete,
    *  because the identity theme's halves are deliberately empty. */
-  const half = useMemo(() => {
-    const worn = themes.find((entry) => entry.id === active[mode]) ?? themes[0]!;
-    return concreteHalf(worn, mode);
-  }, [themes, active, mode]);
+  const half = useMemo(() => concreteHalf(themes.find((entry) => entry.id === active[mode]) ?? themes[0]!, mode), [themes, active, mode]);
 
-  /** The name of the palette on each half, for the strip — one theme, or a
-   *  pair mixed from two. */
-  const paletteSource = themes.find((entry) => entry.id === active[mode])?.label ?? "Telar";
+  const paletteSource = labelOf(active[mode]);
+  /** Editing a built-in forks it (see `editActiveHalf`), which is worth saying
+   *  BEFORE the first edit rather than leaving to be discovered afterwards. */
+  const isBuiltIn = themeOf(active[mode]).builtIn === true;
+
+  /** The library as a dropdown — the one control that decides how each half
+   *  looks. Built-ins first, then whatever has been saved, which is the order
+   *  the grid below draws them in. */
+  const themeOptions = useMemo(() => themes.map((entry) => ({ value: entry.id, label: entry.label })), [themes]);
 
   /**
    * WEAR A WHOLE LOOK — the palette, the scene, the accent, the type and the
@@ -230,9 +239,11 @@ export function AppearanceSection() {
     setActive(next.id);
   };
 
-  const wearThemeHalf = (side: StudioMode, next: ThemeDefinition) => {
+  const wearThemeHalf = (side: StudioMode, next: ThemeDefinition) => wearThemeHalfById(side, next.id);
+
+  const wearThemeHalfById = (side: StudioMode, id: string) => {
     detachFromHost();
-    setHalf(side, next.id);
+    setHalf(side, id);
   };
 
   /** A palette read out of a picture: into the library, then worn. No third
@@ -271,15 +282,58 @@ export function AppearanceSection() {
 
       <LooksSection onWear={wear} />
 
+      {/* THE COLOUR GROUP, TOP TO BOTTOM: which theme each half wears, what
+          that looks like, the sixteen tokens if you actually want them, and the
+          library the themes come from. The order is the answer to the owner's
+          complaint — the sixteen-token editor was the FIRST thing here and the
+          only way to change a colour, so every colour decision started by
+          asking which of sixteen names governs the thing you are looking at.
+          The one control that decides how light and dark look is a theme, and
+          it leads now. */}
       <SettingsGroup
         title="Colour"
-        description="The sixteen tokens this window paints with, and the library a palette comes from."
+        description="A theme is a palette — one for the light half, one for the dark. A look is a theme pair with a backdrop, type and depth saved around it."
       >
-        {/* The strip NAMES the palette. Sixteen anonymous colour rows could not
-            say whether you were editing Ember or something that exists nowhere
-            but this window. */}
-        <GroupStrip label={`Palette · ${mode} · ${paletteSource}`} count={THEME_TOKENS.length} />
-        <ColourTool half={half} mode={mode} onToken={editToken} onCopyHalf={copyHalf} />
+        <Row
+          label="Light theme"
+          hint="The palette this window wears in daylight."
+          control={<Dropdown value={active.light} onChange={(id) => wearThemeHalfById("light", id)} options={themeOptions} label="Light theme" />}
+        />
+        <Row
+          label="Dark theme"
+          hint="And the one it wears after dark."
+          control={<Dropdown value={active.dark} onChange={(id) => wearThemeHalfById("dark", id)} options={themeOptions} label="Dark theme" />}
+        />
+        {/* WHAT THE PAIR ACTUALLY LOOKS LIKE, both halves at once — including
+            the one your window is not wearing, which is the half a theme picker
+            otherwise asks you to choose blind. */}
+        <div className="flex gap-2 py-3">
+          <PaletteStrip half={concreteHalf(themeOf(active.light), "light")} label={`Light · ${labelOf(active.light)}`} current={mode === "light"} />
+          <PaletteStrip half={concreteHalf(themeOf(active.dark), "dark")} label={`Dark · ${labelOf(active.dark)}`} current={mode === "dark"} />
+        </div>
+        {/* THE SIXTEEN TOKENS, FOLDED AWAY. They are still the whole truth of a
+            palette and still editable — but they are the tool you reach for
+            after choosing a theme, not the thing that greets you. `<details>`
+            rather than state: the browser keeps it, it is keyboard-reachable
+            and screen-reader-announced for free, and nothing else on the pane
+            needs to know whether it is open. */}
+        <details className="group py-2">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" />
+            Edit tokens
+            <span className="font-mono text-4xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">{THEME_TOKENS.length}</span>
+          </summary>
+          {/* The strip NAMES what the rows below are editing. Sixteen anonymous
+              colour rows could not say whether you were changing Ember or a
+              palette that exists nowhere but this window. */}
+          <GroupStrip label={`Editing the ${mode} half · ${paletteSource}`} tone={isBuiltIn ? "attention" : "none"} />
+          {isBuiltIn && (
+            <p className="pb-1.5 text-xs text-muted-foreground">
+              {paletteSource} is a built-in. The first edit copies it into a theme of your own and wears that; {paletteSource} itself is left alone.
+            </p>
+          )}
+          <ColourTool half={half} mode={mode} onToken={editToken} onCopyHalf={copyHalf} />
+        </details>
         <ThemeLibrary onWear={wearTheme} onWearHalf={wearThemeHalf} />
       </SettingsGroup>
 

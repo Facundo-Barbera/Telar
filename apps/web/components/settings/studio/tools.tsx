@@ -36,7 +36,7 @@ import {
   type MonoFont,
   type SansFont,
 } from "@/lib/appearance";
-import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@/lib/theme-palettes";
+import { cssColorToHex, hexToCssColor, THEME_TOKEN_HINTS, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@/lib/theme-palettes";
 import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
 import type { StudioMode } from "@/lib/studio-draft";
@@ -159,6 +159,44 @@ function HexField({ value, label, onCommit }: { value: string; label: string; on
   );
 }
 
+/**
+ * THE PALETTE AT A GLANCE — one half, as the surfaces it actually paints.
+ *
+ * Sixteen swatches in a grid say what the VALUES are and nothing about what
+ * they add up to; this says what they add up to, at the size a thumbnail can.
+ * It is drawn from the half's own tokens and nothing else — no Tailwind
+ * classes, because the whole point is to show a palette the window may not be
+ * wearing (the dark half while you are in daylight).
+ */
+export function PaletteStrip({ half, label, current }: { half: ThemeHalf; label: string; current: boolean }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div
+        className={cn("flex h-14 items-center gap-1.5 overflow-hidden rounded-lg px-2 ring-1 ring-inset", current ? "ring-primary" : "ring-foreground/10")}
+        style={{ background: half.background }}
+      >
+        {/* A card, a chip and the rail — the three surfaces a reader can name
+            on sight — each carrying its own text colour so the pairing is
+            visible rather than implied. */}
+        <span className="flex h-9 flex-1 items-center rounded-md px-1.5 text-3xs" style={{ background: half.card, border: `1px solid ${half.border}`, color: half["card-foreground"] }}>
+          Card
+        </span>
+        <span className="flex h-9 items-center rounded-md px-1.5 text-3xs" style={{ background: half.secondary, color: half["secondary-foreground"] }}>
+          Chip
+        </span>
+        <span className="h-9 w-4 shrink-0 rounded-md" style={{ background: half.sidebar, border: `1px solid ${half.border}` }} />
+        <span className="text-3xs" style={{ color: half["muted-foreground"] }}>
+          Aa
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-1.5 px-0.5 font-mono text-4xs tracking-[0.08em] uppercase">
+        <span className={cn("min-w-0 truncate", current ? "text-primary" : "text-muted-foreground/70")}>{label}</span>
+        {current && <span className="shrink-0 text-muted-foreground/60">· in front of you</span>}
+      </div>
+    </div>
+  );
+}
+
 export function ColourTool({
   half,
   mode,
@@ -176,28 +214,30 @@ export function ColourTool({
   const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock>
-      {/* TWO COLUMNS IS THE CEILING NOW (#435). The third tier was keyed to the
-          VIEWPORT, not to this card — so on a wide window the sixteen rows
-          would still split three ways inside the 42rem reading column. A row
-          here spends about 130px on things that cannot shrink (the swatch, the
-          contrast figure, a hex field wide enough to type into), which left
-          each token name under 60px of the 189 a third of the card is: every
-          label truncated to a word and a half. Two columns is the narrowest
-          split that fits all four parts honestly. */}
-      <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
+      {/* ONE COLUMN, BECAUSE EACH ROW NOW CARRIES A SENTENCE (#471). It was two
+          columns of name-and-swatch, which fitted only because the name was all
+          there was — and a bare name ("Hover", "Rail hover") is legible only to
+          somebody who already knows the token. The phrase under it is what
+          makes the row answer "where does this paint?", and a phrase needs the
+          measure. Sixteen rows are also no longer the first thing on the group:
+          they sit behind a disclosure, so their height costs nothing. */}
+      <div className="flex flex-col gap-0.5">
         {THEME_TOKENS.map((token) => {
           const hex = cssColorToHex(half[token]);
           const ratio = ratioFor(half, token);
           return (
-            <label key={token} className="flex items-center gap-1.5 py-0.5 text-xs" title={`--${token}`}>
+            <label key={token} className="flex items-center gap-2 py-0.5 text-xs" title={`--${token}`}>
               <input
                 type="color"
                 value={hex}
                 aria-label={THEME_TOKEN_LABELS[token]}
                 onChange={(event) => onToken(token, hexToCssColor(event.target.value))}
-                className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+                className="size-6 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
               />
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{THEME_TOKEN_LABELS[token]}</span>
+                <span className="block truncate text-2xs leading-snug text-muted-foreground">{THEME_TOKEN_HINTS[token]}</span>
+              </span>
               {ratio !== undefined && (
                 <span
                   className={cn("shrink-0 font-mono text-4xs tabular-nums", ratio < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
