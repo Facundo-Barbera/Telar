@@ -2,7 +2,7 @@
 // test. `exists` and `run` are injected so the suite neither depends on which
 // editors this machine has nor actually launches one.
 const { describe, expect, test } = require("bun:test");
-const { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS } = require("./workspace-openers");
+const { discoverOpeners, openWith, openersWithIcons, openerIconDataUrl, bundleIconFile, bundleIcon, searchRoots, FINDER_BUNDLE, KNOWN_EDITORS } = require("./workspace-openers");
 
 const roots = ["/Applications", "/Users/x/Applications", "/System/Applications"];
 
@@ -128,6 +128,12 @@ describe("reading each app's own icon", () => {
     expect(answer.openers[0].iconDataUrl).toBeUndefined();
   });
 
+  test("an image that decoded nothing is a MISS, so the vector mark stays", async () => {
+    const { getFileIcon } = stub(() => ({ isEmpty: () => true, toPNG: () => Buffer.from([1, 2, 3]) }));
+    const answer = await openersWithIcons({ openers: [openers[0]], getFileIcon, cache: new Map(), exists: () => false });
+    expect(answer.openers[0].iconDataUrl).toBeUndefined();
+  });
+
   test("a miss is NOT remembered — the next open asks again", async () => {
     const cache = new Map();
     let fail = true;
@@ -184,5 +190,69 @@ describe("launching", () => {
     const result = await openWith({ target: "/Users/x/code", appPath: "/Applications/Gone.app", run });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("no such app");
+  });
+});
+
+// The bundle's OWN .icns, not `app.getFileIcon` (which answers a generic glyph
+// for every .app on macOS — the blank grey squares of the first #398 build).
+describe("reading the bundle's own icon file", () => {
+  const run = (answers) => (_bin, args, _opts, cb) => {
+    const plist = args[args.length - 1];
+    const answer = answers[plist];
+    if (answer === undefined) return cb(new Error("no such key"), "");
+    cb(null, answer + "\n");
+  };
+
+  test("CFBundleIconFile with and without the extension both resolve to Contents/Resources", async () => {
+    const files = new Set([
+      "/Applications/Xcode.app/Contents/Info.plist",
+      "/Applications/Xcode.app/Contents/Resources/Xcode.icns",
+      "/Applications/Code.app/Contents/Info.plist",
+      "/Applications/Code.app/Contents/Resources/Code.icns",
+    ]);
+    const exists = (candidate) => files.has(candidate);
+    const answers = { "/Applications/Xcode.app/Contents/Info.plist": "Xcode", "/Applications/Code.app/Contents/Info.plist": "Code.icns" };
+    expect(await bundleIconFile("/Applications/Xcode.app", { run: run(answers), exists })).toBe("/Applications/Xcode.app/Contents/Resources/Xcode.icns");
+    expect(await bundleIconFile("/Applications/Code.app", { run: run(answers), exists })).toBe("/Applications/Code.app/Contents/Resources/Code.icns");
+  });
+
+  test("a bundle that names no icon, or whose file is missing, answers undefined", async () => {
+    const exists = (candidate) => candidate.endsWith("Info.plist");
+    expect(await bundleIconFile("/Applications/Bare.app", { run: run({}), exists })).toBeUndefined();
+    expect(await bundleIconFile("/Applications/Lost.app", { run: run({ "/Applications/Lost.app/Contents/Info.plist": "Lost" }), exists })).toBeUndefined();
+    expect(await bundleIconFile("/Applications/Gone.app", { run: run({}), exists: () => false })).toBeUndefined();
+  });
+
+  test("bundleIcon converts the file with sips at the requested square and cleans up", async () => {
+    const calls = [];
+    const removed = [];
+    const run = (bin, args, _opts, cb) => { calls.push({ bin, args }); cb(null); };
+    const image = await bundleIcon("/Applications/Xcode.app", {
+      run,
+      iconFile: async () => "/Applications/Xcode.app/Contents/Resources/Xcode.icns",
+      readFile: async () => Buffer.from([137, 80, 78, 71]),
+      unlink: async (file) => { removed.push(file); },
+      tmpDir: () => "/tmp",
+    });
+    expect(image.isEmpty()).toBe(false);
+    expect(image.toPNG().length).toBe(4);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].bin).toBe("/usr/bin/sips");
+    expect(calls[0].args.slice(0, 5)).toEqual(["-s", "format", "png", "-Z", "64"]);
+    expect(calls[0].args[5]).toBe("/Applications/Xcode.app/Contents/Resources/Xcode.icns");
+    expect(calls[0].args[6]).toBe("--out");
+    expect(calls[0].args[7]).toStartWith("/tmp/telar-icon-");
+    expect(removed).toEqual([calls[0].args[7]]);
+  });
+
+  test("a sips failure, an unreadable output, or no icon file is undefined — and the temp file still goes", async () => {
+    const removed = [];
+    const unlink = async (file) => { removed.push(file); };
+    const failing = (_b, _a, _o, cb) => cb(new Error("sips: no such file"));
+    expect(await bundleIcon("/Applications/X.app", { run: failing, iconFile: async () => "/x.icns", unlink, tmpDir: () => "/tmp" })).toBeUndefined();
+    const ok = (_b, _a, _o, cb) => cb(null);
+    expect(await bundleIcon("/Applications/X.app", { run: ok, iconFile: async () => "/x.icns", readFile: async () => { throw new Error("gone"); }, unlink, tmpDir: () => "/tmp" })).toBeUndefined();
+    expect(await bundleIcon("/Applications/X.app", { run: ok, iconFile: async () => undefined, unlink })).toBeUndefined();
+    expect(removed).toHaveLength(2);
   });
 });
