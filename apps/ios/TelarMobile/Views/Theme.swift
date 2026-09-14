@@ -39,7 +39,22 @@ enum Theme {
     static let radiusRow: CGFloat = 8
     static let radiusCard: CGFloat = 14
     static let radiusBubble: CGFloat = 18
-    static let radiusComposer: CGFloat = 22
+    /// THE COMPOSER'S TWO CORNERS, BECAUSE IT HAS TWO SHAPES. At rest the box
+    /// is a 54pt pill beside a 44pt send button and the corner is half its
+    /// height — a pill, not a rounded rectangle. Focused it grows into a card
+    /// that holds seven lines, and a card at 27 looks like a lozenge, so the
+    /// corner comes in as the box goes up. That easing between them is the
+    /// affordance: the composer visibly becomes a different object when you
+    /// start writing, which the desktop's static box does not do.
+    ///
+    /// #250 item 12 asked whether the web should gain that or iOS should lose
+    /// it, and the owner kept it — the defect was never the animation, it was
+    /// that 20 and 27 were literals at three call sites in no scale at all.
+    /// They are outside the proportional ladder ON PURPOSE, for the same reason
+    /// `--control-radius` is on the web: this is one object at one size, and a
+    /// pill's corner is a function of its own height rather than of a step.
+    static let radiusComposerRest: CGFloat = 27
+    static let radiusComposerFocused: CGFloat = 20
     static let radiusDrawer: CGFloat = 16
     /// The transcript and composer lane, in points. About 70 characters of
     /// body text per line — the web's 50rem measure at its smaller type.
