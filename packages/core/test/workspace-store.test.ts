@@ -1091,7 +1091,11 @@ describe("AC9 raw and rawSource are never overwritten", () => {
     const r = typecheck(`const patch: ItemPatch = { title: "fine", desk: false, lane: "office" };\nvoid patch;`);
     expect(r.output).toBe("");
     expect(r.ok).toBe(true);
-  });
+    // ONE tsc SPAWN, and it still crossed bun's 5 s default on the loaded CI
+    // Mac mini (#458 names this test by name). Same explicit budget as the six
+    // spawns above rather than the suite's 20 s ceiling: a cold compiler is the
+    // slowest thing this file does, and its budget should say so out loud.
+  }, 60_000);
 
   test("AC9 a hostile updateItem past the type leaves both fields byte-identical AND is REPORTED", () => {
     ensureWorkspace();
