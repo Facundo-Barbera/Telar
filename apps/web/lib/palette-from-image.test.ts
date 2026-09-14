@@ -1,7 +1,9 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { dominantHues, pickSecondary, rgbToHsl, themeFromPalette, themeFromPixels, tintForSaturation, type Rgb } from "./palette-from-image";
-import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { dominantHues, halfFor, halfFromBase, pickSecondary, rgbToHsl, themeFromPalette, themeFromPixels, tintForSaturation, type Rgb } from "./palette-from-image";
+import { cssColorToHex, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { FOREGROUND_SURFACES } from "./theme-designer";
+import { contrastRatio, parseVsCodeColor } from "./vscode-theme-import";
 
 /** An RGBA buffer of `count` copies of one colour — a synthetic "photograph"
  *  the extraction can chew on without a canvas anywhere. */
@@ -204,5 +206,76 @@ describe("themeFromPixels", () => {
     const theme = themeFromPixels(fill(ORANGE, 64));
     expect(theme.label).toBe("From image");
     expect(theme.light.background).toMatch(/^oklch\(/);
+  });
+});
+
+/**
+ * THE COMPOSER'S BASE, AND THE PROMISE IT MAKES.
+ *
+ * The composition derives its sixteen tokens from one base colour (#471), so
+ * the base is the only colour decision a person has to get right — and the
+ * whole reason it goes through THIS engine rather than becoming `--background`
+ * directly is that the engine keeps Telar's lightness spine. Any base
+ * therefore yields a palette whose text sits readably on its surfaces: you
+ * cannot pick a canvas your foreground disappears into, because the foreground
+ * moves with it.
+ *
+ * That is a claim about EVERY base, so it is tested against a spread of them
+ * rather than against one, in both states, on every foreground/surface pair
+ * the designer itself repairs to.
+ */
+describe("halfFromBase", () => {
+  /** A hue wheel plus the awkward ones: black, white, a mid grey, a neon and a
+   *  colour written the way the app actually stores them. */
+  const BASES = [
+    "#ff0000", "#ff8800", "#ffee00", "#88ff00", "#00ff44", "#00ffee",
+    "#0044ff", "#5500ff", "#cc00ff", "#ff0088", "#000000", "#ffffff",
+    "#808080", "#1e1e2e", "#f8f8f9", "oklch(0.5 0.2 240)",
+  ];
+
+  test("every base keeps every foreground readable, in both states", () => {
+    for (const base of BASES) {
+      for (const mode of ["light", "dark"] as const) {
+        const half = halfFromBase(base, mode);
+        for (const [text, surface] of FOREGROUND_SURFACES) {
+          const fg = parseVsCodeColor(cssColorToHex(half[text]));
+          const bg = parseVsCodeColor(cssColorToHex(half[surface]));
+          expect(fg, `${base} ${mode} ${text}`).not.toBeNull();
+          expect(bg, `${base} ${mode} ${surface}`).not.toBeNull();
+          // WCAG AA for body copy — the bar the designer and the VS Code
+          // importer both repair to.
+          expect(contrastRatio(fg!, bg!), `${base} ${mode} ${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
+  test("a base with no hue to trust derives Telar itself", () => {
+    // Same rule a grey photograph gets: under the saturation floor there is no
+    // hue, and inventing one tints the identity look on a rounding error.
+    expect(halfFromBase("#808080", "light")).toEqual(TELAR_LIGHT);
+    expect(halfFromBase("#ffffff", "dark")).toEqual(TELAR_DARK);
+    expect(halfFromBase("not a colour", "light")).toEqual(TELAR_LIGHT);
+  });
+
+  test("a coloured base moves every token onto its hue, and only C and H", () => {
+    const half = halfFromBase("#0044ff", "light");
+    const lightness = (value: string) => /^oklch\(([\d.]+)/.exec(value)?.[1];
+    for (const token of THEME_TOKENS) {
+      // The lightness string is carried across VERBATIM — it is the contrast
+      // contract, and re-formatting a number is a chance to drift it.
+      expect(lightness(half[token]), token).toBe(lightness(TELAR_LIGHT[token]));
+    }
+    // #0044ff is hue 224 in HSL, and that is the hue every token lands on.
+    expect(half.background).toMatch(/ 224[0-9.]*\)$/);
+  });
+
+  test("an override wins over what the base derived, and only where it is set", () => {
+    const state = { base: "#0044ff", overrides: { card: "#ffffff" } };
+    const half = halfFor(state, "light");
+    expect(half.card).toBe("#ffffff");
+    // Everything absent still follows the base, which is what makes clearing
+    // one override hand that token back.
+    expect(half.background).toBe(halfFromBase("#0044ff", "light").background);
   });
 });

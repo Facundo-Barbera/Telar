@@ -33,7 +33,7 @@
  * translucent border — is copied through untouched.
  */
 
-import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeDefinition, type ThemeHalf, type ThemeToken } from "./theme-palettes";
+import { cssColorToHex, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeDefinition, type ThemeHalf, type ThemeToken } from "./theme-palettes";
 
 export type Rgb = { r: number; g: number; b: number };
 
@@ -258,6 +258,54 @@ export function themeFromPalette(colors: readonly PaletteColor[]): Omit<ThemeDef
 /** The whole pipeline, for the picker: pixels in, theme out. */
 export function themeFromPixels(pixels: Uint8ClampedArray | readonly Rgb[]): Omit<ThemeDefinition, "id"> {
   return themeFromPalette(dominantHues(pixels));
+}
+
+/* ── The composer's base, through the same engine ────────────────────────── */
+
+/**
+ * ONE COLOUR BECOMES SIXTEEN — the derivation the composer is built on (#471).
+ *
+ * A composition state is a BASE colour and a stack of layers; the surface
+ * tokens are derived from that base rather than stored, which is what makes
+ * "the composer IS the theme" true rather than a slogan. This is the same
+ * engine a photograph goes through, one step shorter: a picture has to be
+ * reduced to a hue first, and a base colour already is one.
+ *
+ * WHICH MEANS THE BASE IS A HUE, NOT A CANVAS COLOUR. Telar's lightness spine
+ * is kept underneath and only C and H are rewritten, so every base yields a
+ * palette whose text sits readably on its surfaces — you cannot pick a canvas
+ * your foreground disappears into, because the foreground moves with it. That
+ * is the property the contrast test pins, and it is the reason the owner asked
+ * for this engine rather than "the base IS --background".
+ *
+ * A COLOURLESS BASE DERIVES TELAR ITSELF, by the same rule a grey photograph
+ * does: under the extractor's own saturation floor there is no hue to trust,
+ * and inventing one would tint the identity look faintly red on the strength of
+ * a rounding error.
+ */
+export function halfFromBase(base: string, mode: "light" | "dark"): ThemeHalf {
+  const neutral = mode === "light" ? TELAR_LIGHT : TELAR_DARK;
+  const hex = cssColorToHex(base);
+  const parsed = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
+  if (!parsed) return { ...neutral };
+  const [r, g, b] = [1, 2, 3].map((index) => parseInt(parsed[index]!, 16)) as [number, number, number];
+  const { hue, saturation } = rgbToHsl(r, g, b);
+  if (saturation < MIN_SATURATION) return { ...neutral };
+  return tintHalf(neutral, mode === "light" ? LIGHT_WEIGHTS : DARK_WEIGHTS, hue, tintForSaturation(saturation));
+}
+
+/**
+ * The palette a state actually paints: what the base derived, with whatever
+ * somebody set by hand on top. The one place those two are combined, so nothing
+ * can disagree about which wins — the hand does.
+ */
+export function halfFor(state: { base: string; overrides: Partial<ThemeHalf> }, mode: "light" | "dark"): ThemeHalf {
+  const derived = halfFromBase(state.base, mode);
+  for (const token of THEME_TOKENS) {
+    const override = state.overrides[token];
+    if (typeof override === "string" && override.length > 0) derived[token] = override;
+  }
+  return derived;
 }
 
 /**
