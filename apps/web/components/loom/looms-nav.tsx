@@ -14,9 +14,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronRightIcon, WorkflowIcon } from "lucide-react";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
+import { CAPTION } from "@/lib/idiom";
 import { cn } from "@/lib/utils";
-
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 interface NavLoom {
   id: string;
@@ -121,7 +120,7 @@ export function LoomsNav() {
           <button
             type="button"
             onClick={() => setAcceptedOpen((v) => !v)}
-            className={cn(CAPTION, "flex w-full items-center gap-1 px-2 pb-1 text-left")}
+            className={cn(CAPTION, "flex w-full items-center gap-1 rounded-sm px-2 pb-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring")}
             aria-expanded={acceptedOpen}
           >
             <ChevronRightIcon className={cn("size-3 transition-transform", acceptedOpen && "rotate-90")} aria-hidden />

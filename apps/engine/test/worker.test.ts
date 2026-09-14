@@ -1224,8 +1224,31 @@ test("a provider that ignores a Stop never delays the turn's stopped state", asy
   expect(stopped.live?.runId).toBe("run_one");
   // Read back through the API the cockpit reads, not from the return value.
   expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
-  expect((await client.events("session_one")).events.at(-1)).toMatchObject({ type: "turn.stopped", runId: "run_one" });
-  expect(Date.now() - pressedAt).toBeLessThan(300);
+  const lastEvent = (await client.events("session_one")).events.at(-1);
+  expect(lastEvent).toMatchObject({ type: "turn.stopped", runId: "run_one" });
+
+  /**
+   * THE LATENCY IS MEASURED ON THE ENGINE'S CLOCK, NOT THE ROUND TRIP'S.
+   *
+   * This used to read `Date.now() - pressedAt < 300`, which put three HTTP
+   * round trips inside the window — the stop, the session read and the events
+   * read — and so measured the client's latency rather than the engine's. It
+   * hit 564 ms on the loaded CI Mac mini and failed PR #461's Verify twice on
+   * a branch that touches no engine code (#458).
+   *
+   * Both timestamps below are the engine's own and nothing between them
+   * crosses a socket: `completedAt` is the instant `stopSession` decided this
+   * turn was stopped, `at` is the instant it journalled that decision. The
+   * claim is unchanged — a provider that ignores a Stop does not hold the
+   * turn's stopped state up — because a stop that waited on the driver would
+   * sit between those two points for its whole three seconds.
+   */
+  expect(stopped.live?.completedAt).toBeDefined();
+  expect(lastEvent!.at - stopped.live!.completedAt!).toBeLessThan(300);
+  // A loose wall-clock ceiling under the three seconds the driver sleeps, so a
+  // stop that hangs somewhere the engine's own timestamps cannot see — the
+  // socket, the daemon's request handling — still fails this test.
+  expect(Date.now() - pressedAt).toBeLessThan(2_000);
   // …and the provider really was still running when that was already true.
   expect(returnedAfterStop).toBe(false);
 });

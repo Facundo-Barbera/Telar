@@ -88,14 +88,14 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
           value={target}
           onChange={(event) => setTarget(event.target.value)}
           placeholder={defaultFile ? `Default: ${defaultFile}` : "report/main.tex"}
-          className="h-7 min-w-0 flex-1 font-mono text-[0.6875rem]"
+          className="h-7 min-w-0 flex-1 font-mono text-2xs"
           aria-label="LaTeX document to compile"
         />
         <button
           type="button"
           onClick={() => void compile()}
           disabled={!sessionId || compiling}
-          className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground hover:bg-muted/70 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           {compiling ? <Loader2Icon className="size-3 animate-spin" /> : <PlayIcon className="size-3" />}
           {compiling ? "Compiling..." : "Compile"}
@@ -103,7 +103,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
         {last && (
           <span
             className={cn(
-              "rounded-full px-2 py-0.5 text-[0.6875rem] font-medium",
+              "rounded-full px-2 py-0.5 text-2xs font-medium",
               last.status === "ok" && "bg-success/15 text-success",
               last.status === "failed" && "bg-destructive/15 text-destructive",
               last.status === "running" && "bg-muted text-muted-foreground",
@@ -118,7 +118,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
           <button
             type="button"
             onClick={() => onOpenFile(last.pdfPath!)}
-            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground outline-none hover:bg-muted/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             <FileTextIcon className="size-3" />
             Open PDF
@@ -143,7 +143,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
                   disabled={!diagnostic.file || !onOpenFile}
                   onClick={() => diagnostic.file && onOpenFile?.(diagnostic.file)}
                   className={cn(
-                    "flex w-full items-start gap-2 rounded-md border border-border px-2.5 py-1.5 text-left",
+                    "flex w-full items-start gap-2 rounded-md border border-border px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     diagnostic.file && onOpenFile && "hover:bg-muted/50",
                   )}
                 >
@@ -153,7 +153,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block text-xs leading-snug text-foreground">{diagnostic.message}</span>
-                    <span className="block truncate text-[0.6875rem] text-muted-foreground">
+                    <span className="block truncate text-2xs text-muted-foreground">
                       {diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}` : severityLabel(diagnostic)}
                       {diagnostic.suggestion ? ` — ${diagnostic.suggestion}` : ""}
                     </span>
@@ -171,20 +171,20 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
             <button
               type="button"
               onClick={() => setLogOpen((open) => !open)}
-              className="flex items-center gap-1 text-[0.6875rem] font-medium text-muted-foreground hover:text-foreground"
+              className="flex items-center gap-1 rounded-sm text-2xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               {logOpen ? <ChevronDownIcon className="size-3" /> : <ChevronRightIcon className="size-3" />}
               Log tail
             </button>
             {logOpen && (
-              <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-[0.6875rem] leading-relaxed text-muted-foreground">
+              <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-2xs leading-relaxed text-muted-foreground">
                 {last.logTail.join("\n") || "(empty)"}
               </pre>
             )}
           </div>
         )}
         {errors.length + warnings.length > 0 && (
-          <p className="mt-3 text-[0.6875rem] text-muted-foreground">
+          <p className="mt-3 text-2xs text-muted-foreground">
             {errors.length} error{errors.length === 1 ? "" : "s"}, {warnings.length} warning{warnings.length === 1 ? "" : "s"}.
           </p>
         )}

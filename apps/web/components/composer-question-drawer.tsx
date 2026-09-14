@@ -118,14 +118,14 @@ export function ComposerQuestionDrawer({
           type="button"
           aria-expanded={!collapsed}
           onClick={() => setCollapsedIndex(collapsed ? undefined : draft.index)}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left"
+          className="flex w-full items-center gap-2 px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <MessageCircleQuestionIcon className="size-3.5 shrink-0 text-warning" />
           <span className="min-w-0 flex-1 truncate text-xs font-medium">
             {collapsed ? field.label : "The agent needs your input"}
           </span>
           {fields.length > 1 && (
-            <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">
+            <span className="shrink-0 font-mono text-3xs text-muted-foreground tabular-nums">
               {draft.index + 1}/{fields.length}
             </span>
           )}
@@ -139,7 +139,7 @@ export function ComposerQuestionDrawer({
               {field.choices.map((choice, at) => {
                 const selected = (draft.selected[field.key] ?? []).includes(choice);
                 const digit = at < 9 && (
-                  <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-[0.625rem] text-muted-foreground">{at + 1}</kbd>
+                  <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-3xs text-muted-foreground">{at + 1}</kbd>
                 );
                 return (
                   <button
@@ -151,7 +151,7 @@ export function ComposerQuestionDrawer({
                     {...(field.multiple ? { "aria-pressed": selected } : {})}
                     onClick={() => pick(choice)}
                     className={cn(
-                      "flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition-colors",
+                      "flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       selected ? "border-warning/60 bg-warning/10" : "border-border/60 hover:bg-muted/60",
                     )}
                   >
@@ -176,7 +176,7 @@ export function ComposerQuestionDrawer({
                 <button
                   type="button"
                   onClick={() => onDraft(back(draft))}
-                  className="rounded-md px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Previous
                 </button>
@@ -187,7 +187,7 @@ export function ComposerQuestionDrawer({
                   "Enter continues" the moment one lands would read as "that
                   was the answer" — the exact misreading the checkbox is there
                   to prevent. */}
-              <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
                 {canAdvance(fields, draft)
                   ? `${field.multiple ? "Pick any, " : ""}${isLastQuestion(fields, draft) ? "Enter submits" : "Enter continues"}`
                   : field.multiple
@@ -198,7 +198,7 @@ export function ComposerQuestionDrawer({
                 type="button"
                 disabled={sending}
                 onClick={onCancelTurn}
-                className="shrink-0 rounded-md px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                className="shrink-0 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Cancel the turn
               </button>

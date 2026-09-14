@@ -74,7 +74,7 @@ interface LoomDetail {
 
 type Selection = "overview" | "conductor" | "origin" | { thread: string };
 
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground/70";
+const CAPTION = "text-3xs font-semibold uppercase tracking-wider text-muted-foreground/70";
 
 function MemberRow({
   title,
@@ -106,7 +106,7 @@ function MemberRow({
       <span className="min-w-0 flex-1 truncate">{title}</span>
       {trailing}
       <span className="shrink-0">
-        {ghost ? <span className="text-[0.6875rem] not-italic text-muted-foreground">planned</span> : <ThreadStatusSlot live={live} />}
+        {ghost ? <span className="text-2xs not-italic text-muted-foreground">planned</span> : <ThreadStatusSlot live={live} />}
       </span>
     </button>
   );
@@ -536,7 +536,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                       ].map((stat) => (
                         <div key={stat.label} className="bg-card py-2">
                           <div className="text-sm font-semibold tabular-nums">{stat.value}</div>
-                          <div className="text-[0.5625rem] uppercase tracking-wider text-muted-foreground">{stat.label}</div>
+                          <div className="text-4xs uppercase tracking-wider text-muted-foreground">{stat.label}</div>
                         </div>
                       ))}
                     </div>
@@ -561,7 +561,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                             <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted-foreground/60">{entry.when}</span>
                             <span
                               className={cn(
-                                "w-16 shrink-0 font-mono text-[0.625rem] uppercase",
+                                "w-16 shrink-0 font-mono text-3xs uppercase",
                                 entry.actor === "human"
                                   ? "text-foreground"
                                   : entry.actor === "conductor"

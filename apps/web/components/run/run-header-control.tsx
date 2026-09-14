@@ -316,7 +316,7 @@ export function RunHeaderControl({
               {/* A run whose output belongs to another worktree is the one fact
                   that makes the panel confusing if it goes unsaid. */}
               {action?.kind === "switch" && (
-                <p className="text-[0.6875rem] leading-snug text-warning">
+                <p className="text-2xs leading-snug text-warning">
                   Deployed from {worktreeLabel(action.from)} — another tree. Starting here takes it over.
                 </p>
               )}
@@ -325,7 +325,7 @@ export function RunHeaderControl({
                   href={active.readinessUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="truncate text-[0.6875rem] text-muted-foreground underline-offset-2 hover:underline"
+                  className="truncate text-2xs text-muted-foreground underline-offset-2 hover:underline"
                 >
                   {active.readinessUrl}
                 </a>
@@ -334,9 +334,9 @@ export function RunHeaderControl({
 
             <div className="flex min-h-0 max-h-72 flex-col gap-0.5 overflow-y-auto p-1">
               {configs === undefined ? (
-                <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Reading configurations…</p>
+                <p className="px-2 py-1.5 text-2xs text-muted-foreground">Reading configurations…</p>
               ) : configs.length === 0 ? (
-                <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">
                   No run configuration yet. Add one to give this project a start command.
                 </p>
               ) : (
@@ -367,7 +367,7 @@ export function RunHeaderControl({
                             copy of the icon already up in the masthead. */}
                         {live ? <RotateCwIcon className="size-3.5 shrink-0" /> : <RunGlyph icon={config.icon} className="size-3.5 shrink-0" />}
                         <span className="min-w-0 flex-1 truncate">{config.name}</span>
-                        {live && <span className="shrink-0 text-[0.625rem] text-muted-foreground">running</span>}
+                        {live && <span className="shrink-0 text-3xs text-muted-foreground">running</span>}
                       </button>
                       <Button
                         type="button"
@@ -411,7 +411,7 @@ export function RunHeaderControl({
               )}
             </div>
 
-            {error && <p className="border-t border-border px-3 py-1.5 text-[0.6875rem] leading-snug text-destructive">{error}</p>}
+            {error && <p className="border-t border-border px-3 py-1.5 text-2xs leading-snug text-destructive">{error}</p>}
 
             <div className="flex items-center gap-1 border-t border-border p-1">
               <Button type="button" variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs" onClick={() => setEditing({})}>

@@ -55,7 +55,7 @@ struct TableSurface: View {
                                     VStack(alignment: .leading, spacing: 0) {
                                         Text(column).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
                                         if let dtype = meta.dtypes?[safe: i] {
-                                            Text(dtype).font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                                            Text(dtype).font(.system(size: 9)).foregroundStyle(Theme.textMuted)
                                         }
                                     }
                                     if sort?.column == column {
@@ -124,7 +124,7 @@ struct TableSurface: View {
                         }
                 }
             } else {
-                Text("…").font(.system(size: 11)).foregroundStyle(Theme.textTertiary).padding(.horizontal, 8).frame(height: Self.rowHeight)
+                Text("…").font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.horizontal, 8).frame(height: Self.rowHeight)
             }
         }
         .background(index % 2 == 0 ? Color.clear : Theme.subtle.opacity(0.5))
@@ -132,8 +132,8 @@ struct TableSurface: View {
 
     private func cellText(_ cell: JSONValue) -> some View {
         let tone: Color = switch cell {
-        case .null: Theme.textTertiary
-        case .string(let s): s.isEmpty ? Theme.textTertiary : Theme.text
+        case .null: Theme.textMuted
+        case .string(let s): s.isEmpty ? Theme.textMuted : Theme.text
         case .number, .bool: Theme.text
         default: Theme.textMuted
         }

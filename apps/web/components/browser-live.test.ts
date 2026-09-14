@@ -92,7 +92,7 @@ describe("the row's markup is the budget's own claim", () => {
   const source = fs.readFileSync(path.join(fileURLToPath(new URL(".", import.meta.url)), "browser-live.tsx"), "utf8");
 
   test("the input takes the slack and can be crushed by nothing", () => {
-    expect(source).toContain('className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"');
+    expect(source).toContain('className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-2xs outline-none focus:border-ring"');
   });
 
   test("the row measures ITSELF — a window-width query cannot see this column", () => {

@@ -45,7 +45,7 @@ export function ComposerStashMenu({
       aria-label="Stashed prompts"
       className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-3 backdrop-blur-xl"
     >
-      <div className="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Stash</div>
+      <div className="px-3 pt-2 pb-1 text-3xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Stash</div>
       {entries.length === 0 ? (
         // THE ONLY PLACE THE GESTURE IS WRITTEN DOWN. The badge is hidden while
         // the stash is empty, so this line is the whole of the feature's
@@ -81,7 +81,7 @@ export function ComposerStashMenu({
                     // eslint-disable-next-line @next/next/no-img-element -- a data URL held in memory; next/image cannot optimise it
                     <img key={`${entry.id}-${at}`} src={image.dataUrl} alt="" className="size-6 rounded object-cover ring-1 ring-border" />
                   ))}
-                  {entry.images.length > 3 && <span className="text-[0.625rem] text-muted-foreground">+{entry.images.length - 3}</span>}
+                  {entry.images.length > 3 && <span className="text-3xs text-muted-foreground">+{entry.images.length - 3}</span>}
                 </span>
               )}
               {/* Hidden below the width where the summary would be squeezed to

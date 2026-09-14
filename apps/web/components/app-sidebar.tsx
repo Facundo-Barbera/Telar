@@ -140,6 +140,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
+import { CAPTION } from "@/lib/idiom";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -224,7 +225,7 @@ function SidebarEmpty({
     <div className="px-3 py-6 text-center text-sidebar-foreground/55">
       <Icon className="mx-auto mb-2 size-5" />
       <p className="text-xs font-medium text-sidebar-foreground/75">{title}</p>
-      <p className="mt-1 text-[0.6875rem] leading-4">{detail}</p>
+      <p className="mt-1 text-2xs leading-4">{detail}</p>
     </div>
   );
 }
@@ -244,15 +245,14 @@ function SidebarEmpty({
  * here is a control, so it is unconditionally a <button>.
  *
  * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
- * the two rails' grammar. `warehouse-nav.tsx`'s `CAPTION` (10px, semibold,
- * uppercase, tracking-wider) is the newer of the two section-caption
- * treatments this app has; this label used to sit at 11px, regular weight,
- * sentence case — a difference between two "small grey word beside a rule"
- * treatments with no reason beyond having been written on different days.
- * Everything else about the rule (the rule itself, the chevron, the count)
- * is unchanged — only the label's type scale moved.
+ * the two rails' grammar. `CAPTION` (10px, semibold, uppercase,
+ * tracking-wider) now lives in `lib/idiom.ts` and this label reads it from
+ * there; it used to sit at 11px, regular weight, sentence case — a difference
+ * between two "small grey word beside a rule" treatments with no reason
+ * beyond having been written on different days. Everything else about the
+ * rule (the rule itself, the chevron, the count) is unchanged — only the
+ * label's type scale moved.
  */
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
@@ -265,7 +265,7 @@ function BandRule({ label, count, open, onToggle }: { label: string; count: numb
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
       <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums text-[0.6875rem]">{count}</span>
+      <span className="shrink-0 tabular-nums text-2xs">{count}</span>
     </button>
   );
 }
@@ -1398,7 +1398,7 @@ function SidebarBody() {
             <ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {showingStale ? (
-              <p className="px-2 pb-1 pt-0.5 text-[0.6875rem] leading-4 text-sidebar-foreground/55">
+              <p className="px-2 pb-1 pt-0.5 text-2xs leading-4 text-sidebar-foreground/55">
                 The engine did not answer — retrying. Showing the last read.
               </p>
             ) : null}
@@ -1594,7 +1594,7 @@ function SidebarBody() {
               .filter((host) => unreachable.has(host.id))
               .map((host) => (
                 <div key={host.id}>
-                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-[0.6875rem] text-muted-foreground" role="status">
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-2xs text-muted-foreground" role="status">
                     <MonitorIcon className="size-3 shrink-0" />
                     <span className="min-w-0 truncate">{host.name} did not answer — retrying</span>
                   </div>

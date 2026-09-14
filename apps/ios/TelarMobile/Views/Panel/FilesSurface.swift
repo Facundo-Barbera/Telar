@@ -240,7 +240,7 @@ struct FilesSurface: View {
                 }
                 Text(node.name)
                     .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(panel.editor.activePath == node.path ? Theme.text : Theme.textMuted2)
+                    .foregroundStyle(panel.editor.activePath == node.path ? Theme.text : Theme.textMuted)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
@@ -310,7 +310,7 @@ struct FilesSurface: View {
                  ? "First \(maxSearchMatches) matches; \(dropped) more not shown."
                  : "\(listing.files.count) files\(listing.truncated ? " (capped)" : "") · \(listing.source == .git ? "tracked and unignored, from git" : "walked — not a repository")")
                 .font(.system(size: 10))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
         }

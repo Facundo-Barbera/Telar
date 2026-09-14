@@ -49,7 +49,7 @@ type Tab = "tasks" | "board" | "calendar" | "notes" | "about";
 function BriefSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <p className="text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">{title}</p>
+      <p className="text-2xs font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">{title}</p>
       {children}
     </div>
   );
@@ -435,7 +435,7 @@ export function SubjectRoom({
                   type="button"
                   onClick={() => setBriefExpanded((e) => !e)}
                   aria-expanded={briefExpanded}
-                  className="min-w-0 flex-1 space-y-0.5 text-left"
+                  className="min-w-0 flex-1 space-y-0.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {/* FIXED 2026-08-19, §13.8: pickup entries can point at a
                       threadId the brief's own open lists don't resolve (or
@@ -468,7 +468,7 @@ export function SubjectRoom({
                     disabled={!candidateItemId || resuming}
                     onClick={resumeSession}
                     title={!candidateItemId ? "Nothing queued to resume yet" : undefined}
-                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-spool/40 disabled:pointer-events-none disabled:opacity-40"
+                    className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors outline-none hover:border-spool/40 focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
                   >
                     Resume session
                   </button>
@@ -477,7 +477,7 @@ export function SubjectRoom({
                     onClick={dismissBrief}
                     aria-label="Dismiss the brief"
                     title="Dismiss the brief for this subject"
-                    className="rounded-md p-1.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+                    className="rounded-md p-1.5 text-muted-foreground/50 transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <XIcon className="size-3.5" />
                   </button>
@@ -517,7 +517,7 @@ export function SubjectRoom({
                                 setSettleError(null);
                                 setSettling({ threadId: t.threadId, title: t.handle?.trim() || t.question });
                               }}
-                              className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+                              className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors outline-none hover:border-spool/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               Settle
                             </button>
@@ -540,10 +540,10 @@ export function SubjectRoom({
                             <button
                               type="button"
                               onClick={() => onOpenItem(n.itemId)}
-                              className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none hover:bg-muted/40"
+                              className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               <span className="min-w-0 flex-1 truncate text-sm text-foreground">{n.title}</span>
-                              <span className="shrink-0 text-[0.625rem] text-muted-foreground/60">{n.source}</span>
+                              <span className="shrink-0 text-3xs text-muted-foreground/60">{n.source}</span>
                             </button>
                           </li>
                         ))}
@@ -564,7 +564,7 @@ export function SubjectRoom({
                       <button
                         type="button"
                         onClick={() => setClosingDead(true)}
-                        className="underline decoration-dotted transition-colors hover:text-foreground"
+                        className="rounded-sm underline decoration-dotted transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         say the word
                       </button>
@@ -588,7 +588,7 @@ export function SubjectRoom({
               aria-pressed={tab === option}
               onClick={() => setTab(option)}
               className={cn(
-                "rounded-[7px] px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                "rounded-[7px] px-2.5 py-1 text-xs font-medium capitalize transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 tab === option
                   ? "bg-background text-foreground shadow-1 ring-1 ring-foreground/10"
                   : "text-muted-foreground hover:text-foreground",
@@ -608,7 +608,7 @@ export function SubjectRoom({
               clearSelection();
             }}
             className={cn(
-              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               selecting
                 ? "border-border bg-background text-foreground shadow-1"
                 : "border-border text-muted-foreground hover:border-spool/40 hover:text-foreground",
@@ -621,7 +621,7 @@ export function SubjectRoom({
           <button
             type="button"
             onClick={() => onNewNote(subjectKey)}
-            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors outline-none hover:border-spool/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             New note
           </button>
@@ -634,7 +634,7 @@ export function SubjectRoom({
           <button
             type="button"
             onClick={() => setAdding(true)}
-            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors outline-none hover:border-spool/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             Add a task
           </button>
@@ -649,7 +649,7 @@ export function SubjectRoom({
             aria-pressed={!!filter.stuckOnMe}
             onClick={() => setFilter((f) => ({ ...f, stuckOnMe: f.stuckOnMe ? undefined : true }))}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
+              "rounded-full border px-2 py-0.5 text-2xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               filter.stuckOnMe ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
             )}
           >
@@ -660,7 +660,7 @@ export function SubjectRoom({
             aria-pressed={!!filter.unfiled}
             onClick={() => setFilter((f) => ({ ...f, unfiled: f.unfiled ? undefined : true }))}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
+              "rounded-full border px-2 py-0.5 text-2xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               filter.unfiled ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
             )}
           >
@@ -673,7 +673,7 @@ export function SubjectRoom({
               aria-pressed={filter.lane === lane.key}
               onClick={() => setFilter((f) => ({ ...f, lane: f.lane === lane.key ? undefined : lane.key }))}
               className={cn(
-                "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
+                "rounded-full border px-2 py-0.5 text-2xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 filter.lane === lane.key ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
               )}
             >
@@ -687,7 +687,7 @@ export function SubjectRoom({
               aria-pressed={filter.tag === tag}
               onClick={() => setFilter((f) => ({ ...f, tag: f.tag === tag ? undefined : tag }))}
               className={cn(
-                "rounded-full border px-2 py-0.5 font-mono text-[0.625rem] transition-colors",
+                "rounded-full border px-2 py-0.5 font-mono text-3xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 filter.tag === tag ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
               )}
             >
@@ -698,7 +698,7 @@ export function SubjectRoom({
             <button
               type="button"
               onClick={() => setFilter({})}
-              className="ml-1 text-[0.6875rem] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+              className="ml-1 rounded-sm text-2xs text-muted-foreground/70 underline decoration-dotted transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               clear ✕
             </button>

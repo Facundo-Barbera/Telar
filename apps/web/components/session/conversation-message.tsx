@@ -44,7 +44,7 @@ export function MessageAttachments({ attachments }: { attachments?: readonly Tur
         <li
           key={attachment.id}
           title={attachment.path}
-          className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground"
+          className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-2xs text-muted-foreground"
         >
           <PaperclipIcon className="size-3 shrink-0" />
           <span className="max-w-48 truncate">{attachment.name}</span>
@@ -158,16 +158,16 @@ export function AgentMessageBubble({
     <div className="mx-auto w-full min-w-0 max-w-[50rem] py-0.5 text-sm" aria-label="Message from another agent">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
         <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">{intentLabel(intent)}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground">
           {notice ? noticeLine(notice) : agentSenderLabel(sender)}
         </span>
-        {scope && <span className="shrink-0 truncate text-[0.6875rem] text-muted-foreground">{scope}</span>}
+        {scope && <span className="shrink-0 truncate text-2xs text-muted-foreground">{scope}</span>}
         <ChevronRightIcon className={`size-3 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
       </button>
       {open && (
@@ -181,12 +181,12 @@ export function AgentMessageBubble({
           {sender.sessionId ? (
             <a
               href={`/sessions/${encodeURIComponent(sender.sessionId)}`}
-              className="mb-1.5 block min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground underline-offset-2 hover:underline"
+              className="mb-1.5 block min-w-0 truncate font-mono text-2xs text-muted-foreground underline-offset-2 hover:underline"
             >
               {agentSenderLabel(sender)}
             </a>
           ) : (
-            <span className="mb-1.5 block min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{agentSenderLabel(sender)}</span>
+            <span className="mb-1.5 block min-w-0 truncate font-mono text-2xs text-muted-foreground">{agentSenderLabel(sender)}</span>
           )}
           <MessageResponse streaming={false}>{text}</MessageResponse>
           <MessageAttachments {...(attachments ? { attachments } : {})} />

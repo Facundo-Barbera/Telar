@@ -151,7 +151,7 @@ export function ProjectNoteEditor({
         rows={8}
         className="w-full resize-none rounded-md border border-border/60 bg-transparent px-2 py-1.5 font-mono text-xs leading-relaxed outline-none placeholder:font-sans placeholder:text-muted-foreground focus:border-ring"
       />
-      {error && <p className="px-1.5 text-[0.6875rem] text-destructive">{error}</p>}
+      {error && <p className="px-1.5 text-2xs text-destructive">{error}</p>}
       <div className="flex items-center gap-1 border-t border-border/60 pt-1.5">
         <button
           type="button"
@@ -159,7 +159,7 @@ export function ProjectNoteEditor({
           aria-label={pinned ? "Unpin" : "Pin to the front"}
           title={pinned ? "Unpin" : "Pin to the front"}
           className={cn(
-            "flex size-6 items-center justify-center rounded-md transition-colors hover:bg-muted",
+            "flex size-6 items-center justify-center rounded-md transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
             pinned ? "text-foreground" : "text-muted-foreground",
           )}
         >
@@ -170,11 +170,11 @@ export function ProjectNoteEditor({
           onClick={() => void remove()}
           aria-label="Delete this note"
           title="Delete this note"
-          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Trash2Icon className="size-3.5" />
         </button>
-        <span className="ml-auto flex items-center gap-1.5 text-[0.625rem] text-muted-foreground">
+        <span className="ml-auto flex items-center gap-1.5 text-3xs text-muted-foreground">
           {saving && <Loader2Icon className="size-3 animate-spin" />}
           {/* WHO WROTE IT, when it was not the reader. Provenance is stamped
               once and never changes, so a note an agent kept stays marked as

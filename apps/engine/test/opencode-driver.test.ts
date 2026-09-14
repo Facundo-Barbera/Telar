@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test";
-import { createOpencodeClient } from "@opencode-ai/sdk/v2";
+import { createOpencodeClient, type QuestionInfo } from "@opencode-ai/sdk/v2";
 import { TurnObservation, type TurnObservation as Observation } from "@telar/engine-client";
 import { createOpenCodeDriver } from "../src/opencode/driver";
 import type { DriverRun } from "../src/provider-contract";
 
-function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; providerErrorShape?: { name: string; data: Record<string, unknown> }; multiple?: boolean; mcpAddFails?: boolean } = {}) {
+/**
+ * The raw question payload the server parks, typed as OPENCODE'S OWN
+ * `QuestionInfo` so the compiler checks these against the SDK's generated
+ * shape. There is no captured multi-select sample to copy from — the opencode
+ * binary is not installed here — so these are constructed, and the SDK type is
+ * what keeps them honest.
+ */
+const BRANCH_OPTIONS = [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }];
+const MULTI_QUESTION: QuestionInfo = { question: "Which branches?", header: "Branches", options: BRANCH_OPTIONS, multiple: true };
+
+function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; providerErrorShape?: { name: string; data: Record<string, unknown> }; questions?: QuestionInfo[]; mcpAddFails?: boolean } = {}) {
   const calls: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
   let messageID = "";
   let snapshots = 0;
@@ -30,7 +40,8 @@ function fixture(options: { lostAck?: boolean; permission?: boolean; question?: 
     }
     if (pathname === "/session/status") return json({ ses_test: { type: permissionDone && questionDone && snapshots > 1 ? "idle" : "busy" } });
     if (pathname === "/permission") return json(permissionDone ? [] : [{ id: "perm_test", sessionID: "ses_test", permission: "bash", patterns: ["echo hello"], metadata: {}, always: [], tool: { messageID: "msg_answer", callID: "call_one" } }]);
-    if (pathname === "/question") return json(questionDone ? [] : [{ id: "que_test", sessionID: "ses_test", questions: [{ question: "Which branch?", header: "Branch", options: options.multiple ? [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }] : [], ...(options.multiple ? { multiple: true, custom: false } : {}) }] }]);
+    if (pathname === "/question") return json(questionDone ? [] : [{ id: "que_test", sessionID: "ses_test",
+      questions: options.questions ?? [{ question: "Which branch?", header: "Branch", options: [] }] }]);
     if (pathname === "/permission/perm_test/reply") { permissionDone = true; return json(true); }
     if (pathname === "/question/que_test/reply" || pathname === "/question/que_test/reject") { questionDone = true; return json(true); }
     if (pathname.endsWith("/abort")) return json(true);
@@ -220,16 +231,71 @@ test("a server that will not register costs its tools, not the turn", async () =
   f.driver.dispose?.();
 });
 
-test("multiple-choice questions keep their choices and submit independent selections", async () => {
-  const f = fixture({ question: true, multiple: true });
+test("a multi-select question is ONE checklist field, not one boolean per option", async () => {
+  /**
+   * #242. Exploded into N `boolean` fields the request was no longer
+   * all-choice, so neither drawer would render it — the human got a stack of
+   * switches on a form card instead of the one question that was asked.
+   */
+  const f = fixture({ question: true, questions: [MULTI_QUESTION] });
   f.input.onRequest = async (request) => {
-    expect(request.detail).toMatchObject({ kind: "user_input", fields: [
-      { key: "0:0", label: "Branch: main", kind: "boolean" },
-      { key: "0:1", label: "Branch: dev", kind: "boolean" },
-    ] });
-    return { decision: "accept", answers: { "0:0": true, "0:1": true } };
+    expect(request.detail).toEqual({ kind: "user_input",
+      prompt: "Which branches?\nmain: Main branch\ndev: Development",
+      fields: [{ key: "0", label: "Which branches?", kind: "choice", choices: ["main", "dev"], multiple: true, required: true }] });
+    return { decision: "accept", answers: { "0": ["main", "dev"] } };
   };
   await f.driver.run(f.input);
   expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["main", "dev"]]);
+  f.driver.dispose?.();
+});
+
+test("a multi-select question the human typed an answer to sends the typed answer", async () => {
+  // The drawer's composer is the free-text affordance for a choice field, and
+  // it answers with a one-element list — the shape the field asked for. It must
+  // reach OpenCode as the answer rather than being dropped for not being an
+  // offered label.
+  const f = fixture({ question: true, questions: [MULTI_QUESTION] });
+  f.input.onRequest = async () => ({ decision: "accept" as const, answers: { "0": ["release/2026-09"] } });
+  await f.driver.run(f.input);
+  expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["release/2026-09"]]);
+  f.driver.dispose?.();
+});
+
+test("a multi-select question with no options at all stays a text field", async () => {
+  // A checklist of nothing is not a question; the flag alone does not make one.
+  const f = fixture({ question: true, questions: [{ question: "Which branches?", header: "Branches", options: [], multiple: true }] });
+  f.input.onRequest = async (request) => {
+    expect(request.detail).toMatchObject({ fields: [{ key: "0", kind: "text", required: true }] });
+    return { decision: "accept", answers: { "0": "main and dev" } };
+  };
+  await f.driver.run(f.input);
+  expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["main and dev"]]);
+  f.driver.dispose?.();
+});
+
+test("a single-select question takes the FIRST pick of an array, never all of them", async () => {
+  /**
+   * An array on a field that never said `multiple` is a client bug. Joining it
+   * would answer a one-pick question with several and the model would act on
+   * it — the same guard the Claude and Codex arms carry.
+   */
+  const f = fixture({ question: true, questions: [{ question: "Which branch?", header: "Branch", options: BRANCH_OPTIONS, custom: false }] });
+  f.input.onRequest = async (request) => {
+    expect(request.detail).toMatchObject({ fields: [{ key: "0", kind: "choice", choices: ["main", "dev"], required: true }] });
+    expect((request.detail as { fields: Array<{ multiple?: boolean }> }).fields[0]?.multiple).toBeUndefined();
+    return { decision: "accept", answers: { "0": ["main", "dev"] } };
+  };
+  await f.driver.run(f.input);
+  expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["main"]]);
+  f.driver.dispose?.();
+});
+
+test("two questions answer positionally, one list each", async () => {
+  // `QuestionAnswer` is per question BY POSITION, so a mixed pair is where a
+  // 1:1 field mapping stops being a detail and starts being the contract.
+  const f = fixture({ question: true, questions: [MULTI_QUESTION, { question: "Which remote?", header: "Remote", options: [{ label: "origin", description: "Default" }], custom: false }] });
+  f.input.onRequest = async () => ({ decision: "accept" as const, answers: { "0": ["dev"], "1": "origin" } });
+  await f.driver.run(f.input);
+  expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["dev"], ["origin"]]);
   f.driver.dispose?.();
 });

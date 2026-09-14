@@ -117,7 +117,7 @@ export function PdfSurface({
             setGeneration((v) => v + 1);
             void load().finally(() => setRefreshing(false));
           }}
-          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
         </button>

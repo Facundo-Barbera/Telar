@@ -45,7 +45,7 @@ struct DiffView: View {
                                 HStack(spacing: 10) {
                                     Text(commit.shortSha)
                                         .font(.system(size: 12, design: .monospaced))
-                                        .foregroundStyle(Theme.textTertiary)
+                                        .foregroundStyle(Theme.textMuted)
                                     Text(commit.subject)
                                         .font(.system(size: 14))
                                         .foregroundStyle(Theme.text)
@@ -58,13 +58,13 @@ struct DiffView: View {
                         } header: {
                             Text("Commits")
                                 .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Theme.textTertiary)
+                                .foregroundStyle(Theme.textMuted)
                         }
                     }
                     if diff.files.isEmpty && diff.commits.isEmpty {
                         Text("No changes yet.")
                             .font(.system(size: 14))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     }
@@ -102,7 +102,7 @@ struct DiffView: View {
                 if let branch = diff.branch {
                     Text(branch)
                         .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -123,7 +123,7 @@ struct DiffView: View {
             if diff.truncated {
                 Text("File list truncated.")
                     .font(.system(size: 12))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
             }
         }
     }
@@ -164,7 +164,7 @@ struct DiffView: View {
             if file.binary == true {
                 Text("binary")
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
             } else {
                 if let added = file.linesAdded {
                     Text("+\(added)")
@@ -264,7 +264,7 @@ struct PatchLines: View {
             if shown.count < all.count {
                 Text("\(all.count - shown.count) more lines — tap the row to read the whole patch.")
                     .font(.system(size: 11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
                     .padding(.top, 4)
             }
         }
@@ -290,7 +290,7 @@ private struct InlinePatch: View {
                 if patch.binary {
                     Text("Binary file — no text diff to show.")
                         .font(.system(size: 11))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textMuted)
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
                         PatchLines(patch: patch.patch, limit: Self.lineCap).padding(10)
@@ -317,7 +317,7 @@ private func patchLineColor(_ line: Substring) -> Color {
     if line.hasPrefix("+") && !line.hasPrefix("+++") { return Theme.statusEmerald }
     if line.hasPrefix("-") && !line.hasPrefix("---") { return Theme.statusRed }
     if line.hasPrefix("@@") { return Theme.statusSky }
-    return Theme.textMuted2
+    return Theme.textMuted
 }
 
 private func patchLineBackground(_ line: Substring) -> Color {
