@@ -7451,6 +7451,19 @@ export class EngineStore {
     const projection = { items: this.readItems(sessionId), tasks, itemsTouched: false, tasksTouched: false, turnTouched: false };
     let accepted = 0;
     for (const observation of parsed.data) {
+      /**
+       * THE ONE OBSERVATION THAT NEEDS NO ROW TO LAND ON. A task report folds
+       * onto a stored row and is dropped when there is none; a runtime warning
+       * is about the PROCESS, and the case that produces it between turns
+       * (#465: the CLI died with background shells inside it) is precisely the
+       * one where those rows are about to stop meaning anything. Journalled at
+       * the session level — there is no live run out here to stamp it with.
+       */
+      if (observation.kind === "runtime.warning") {
+        this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message });
+        accepted += 1;
+        continue;
+      }
       if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
       const seed = observation.task;
       const known =
@@ -10317,6 +10330,13 @@ export class EngineStore {
     const items = projection.items;
     if (observation.kind === "usage") {
       this.appendEvent(sessionId, { type: "usage.updated", usage: observation.usage }, turn.runId);
+      return;
+    }
+    if (observation.kind === "runtime.warning") {
+      // Touches no projection: it is a line in the journal about the runtime,
+      // not a row, a task or a turn field. Stamped with the run so the
+      // transcript shows it where it happened.
+      this.appendEvent(sessionId, { type: "runtime.warning", message: observation.message }, turn.runId);
       return;
     }
     if (observation.kind === "content.delta") {

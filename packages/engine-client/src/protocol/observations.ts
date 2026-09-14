@@ -130,6 +130,25 @@ export const TurnObservation = z.discriminatedUnion("kind", [
    * write remains the authoritative end-of-turn value.
    */
   z.object({ kind: z.literal("provider.session"), providerSessionId: z.string().min(1).max(512) }),
+
+  /**
+   * SOMETHING WENT WRONG THAT IS NOT THIS TURN'S FAILURE — the driver's own
+   * voice on the journal, for a fact a person needs and no row carries.
+   *
+   * THE MEASURED CASE (#465): the CLI process dies with background shells still
+   * running inside it. Every one of them is gone, and until this there was no
+   * way to say so — the task rows close, but "three of them were lost because
+   * the harness went away" is a sentence about the PROCESS, not about any one
+   * task. The person previously learned it on the next resume, second-hand,
+   * as the model's own "didn't finish before the previous session ended".
+   *
+   * DELIBERATELY NOT AN ITEM. An item is something the agent did; this is
+   * something that happened TO it, and the engine already has a journal line
+   * for exactly that shape (`runtime.warning`). It is also the only observation
+   * that is legal with no turn to own it — the driver reports one from between
+   * turns, where there is no run to stamp it with.
+   */
+  z.object({ kind: z.literal("runtime.warning"), message: z.string().min(1).max(2000) }),
 ]);
 export type TurnObservation = z.infer<typeof TurnObservation>;
 
