@@ -392,7 +392,11 @@ describe("AC11.3 — the union is pinned against the compiler, not just against 
     );
     expect(r.output).toBe("");
     expect(r.ok).toBe(true);
-  });
+    // A tsc SPAWN, against bun's 5 s default on the loaded CI Mac mini (#458).
+    // Same explicit budget as workspace-store.test.ts's AC9 proofs rather than
+    // the suite's 20 s ceiling: a cold compiler is the slowest thing this file
+    // does, and its budget should say so out loud.
+  }, 60_000);
 
   test("AC11 the compile pin DISCRIMINATES — a wrong expectation really does fail", () => {
     // Without this, a fixture that silently stopped compiling anything would

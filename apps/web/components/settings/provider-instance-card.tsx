@@ -221,7 +221,7 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
             spellCheck={false}
             autoComplete="off"
           />
-          <label className="flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
+          <label className="flex shrink-0 items-center gap-1 text-2xs text-muted-foreground">
             <input
               type="checkbox"
               checked={variable.sensitive}
@@ -252,7 +252,7 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
       >
         <PlusIcon className="size-3" /> Add variable
       </Button>
-      <p className="text-[0.6875rem] leading-snug text-muted-foreground/70">
+      <p className="text-2xs leading-snug text-muted-foreground/70">
         Applied to this login&rsquo;s provider process, over the worker&rsquo;s own environment. A configured instance also stops
         inheriting the variables its provider owns — an ambient <code className="font-mono">ANTHROPIC_API_KEY</code> would
         otherwise move a subscription account onto metered billing without saying so.
@@ -337,7 +337,7 @@ export function ProviderInstanceCard({
               {/* The routing key, shown when the label is not already it. Every
                   session stores this string; it never changes. */}
               {title !== instance.id && (
-                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[0.625rem] text-muted-foreground">{instance.id}</code>
+                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{instance.id}</code>
               )}
               {version && <code className="text-xs text-muted-foreground">{version}</code>}
               {/* THE MARKER IS A WAY IN, not a decoration: it sits beside the
@@ -357,7 +357,7 @@ export function ProviderInstanceCard({
                 </button>
               )}
               {isDefault && (
-                <Badge variant="outline" className="text-[0.625rem]" title="The provider's base login, detected rather than added">
+                <Badge variant="outline" className="text-3xs" title="The provider's base login, detected rather than added">
                   built-in
                 </Badge>
               )}
@@ -372,7 +372,7 @@ export function ProviderInstanceCard({
                   and the detail behind it lives in the expanded body where the
                   sign-in command and the advisory already are. */}
               {summary && (
-                <Badge variant={status === "error" ? "destructive" : "outline"} className="text-[0.625rem]">
+                <Badge variant={status === "error" ? "destructive" : "outline"} className="text-3xs">
                   {summary}
                 </Badge>
               )}
@@ -451,11 +451,11 @@ export function ProviderInstanceCard({
                     </Button>
                   )}
                 </div>
-                <p className="text-[0.6875rem] leading-snug text-muted-foreground">{advisory.detail}</p>
+                <p className="text-2xs leading-snug text-muted-foreground">{advisory.detail}</p>
                 {advisory.command && (
                   <>
                     <CopyCommand command={advisory.command} />
-                    <p className="text-[0.6875rem] leading-snug text-muted-foreground/70">
+                    <p className="text-2xs leading-snug text-muted-foreground/70">
                       Telar picked this from how the CLI was installed, and runs exactly it. Any other login of{" "}
                       {DRIVER_LABEL[instance.driver]} pointing at the same binary moves with it.
                     </p>
@@ -468,7 +468,7 @@ export function ProviderInstanceCard({
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-foreground">Sign in</span>
                 <CopyCommand command={signInCommand} />
-                <p className="text-[0.6875rem] text-muted-foreground/70">
+                <p className="text-2xs text-muted-foreground/70">
                   Run this in your terminal. Telar reads the result — it never signs in for you.
                 </p>
               </div>
@@ -482,7 +482,7 @@ export function ProviderInstanceCard({
                 placeholder={title}
                 className="mt-1.5 h-8 text-xs"
               />
-              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+              <span className="mt-1 block text-2xs text-muted-foreground">
                 Shown in the pickers. The routing key ({instance.id}) never changes.
               </span>
             </label>
@@ -492,7 +492,7 @@ export function ProviderInstanceCard({
               <div className="mt-1.5">
                 <AccentPicker {...(instance.accentColor ? { value: instance.accentColor } : {})} onChange={(accentColor) => onPatch({ accentColor })} />
               </div>
-              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">Tells this login apart from another on the same provider.</span>
+              <span className="mt-1 block text-2xs text-muted-foreground">Tells this login apart from another on the same provider.</span>
             </div>
 
             <label className="block">
@@ -504,7 +504,7 @@ export function ProviderInstanceCard({
                    CLAUDE_CONFIG_DIR at ~/.claude reaches a DIFFERENT, empty
                    Keychain entry and 401s — only an unset variable uses the base
                    login, which is why this slot has to leave it unset. */
-                <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
+                <p className="mt-1.5 text-2xs text-muted-foreground">
                   {instance.driver === "opencode" ? "Uses the native OpenCode CLI login. A config folder does not isolate credentials." : "Empty — this is the base login. Telar leaves the config variable unset to preserve its credential store."}
                 </p>
               ) : (
@@ -517,7 +517,7 @@ export function ProviderInstanceCard({
                     spellCheck={false}
                     autoComplete="off"
                   />
-                  <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+                  <span className="mt-1 block text-2xs text-muted-foreground">
                     The folder this login is already signed in with. It must already exist.
                   </span>
                 </>
@@ -539,7 +539,7 @@ export function ProviderInstanceCard({
                   machines, and a full path means one exact build. Offering only
                   the second would make every export of these settings machine-
                   specific for no reason. */}
-              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
+              <span className="mt-1 block text-2xs text-muted-foreground">
                 Empty uses <code className="font-mono">{instance.driver}</code> as your shell would resolve it. A bare name looks that
                 name up on PATH; a full path runs exactly that file. Beats{" "}
                 <code className="font-mono">{instance.driver === "opencode" ? "OPENCODE_BIN" : instance.driver === "codex" ? "CODEX_BIN" : "CLAUDE_CODE_EXECUTABLE"}</code> when both are

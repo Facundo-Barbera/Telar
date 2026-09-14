@@ -30,13 +30,13 @@ struct WelcomeView: View {
 
             Text("Your work, within reach.")
                 .font(.system(size: 17))
-                .foregroundStyle(Theme.textMuted2)
+                .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 6)
 
             Text("Follow your agents. Review their work.\nPick up the conversation anywhere.")
                 .font(.system(size: 13))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
 
             Spacer()
@@ -70,7 +70,7 @@ struct WelcomeView: View {
                 } label: {
                     Text("Connect manually")
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .frame(maxWidth: .infinity)
                         .frame(height: 44)
                 }
@@ -78,7 +78,7 @@ struct WelcomeView: View {
 
             Text("The code lives on the Mac: Settings → Remote access.")
                 .font(.system(size: 12))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
                 .padding(.top, 8)
         }
         .padding(.horizontal, 24)

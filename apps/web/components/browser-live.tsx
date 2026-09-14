@@ -584,7 +584,7 @@ function DeviceFrame({ viewport, mode, hostSize, preview, onPreview, onCommit, r
         style={{ left: previewFit.x, top: previewFit.y, width: previewFit.width, height: previewFit.height, boxShadow: "0 0 0 9999px color-mix(in oklab, var(--muted) 55%, transparent)" }}
       />
       {preview && (
-        <span aria-live="polite" className="pointer-events-none absolute z-30 rounded-md bg-foreground px-1.5 py-0.5 font-mono text-[0.625rem] text-background" style={{ left: previewFit.x + 6, top: previewFit.y + 6 }}>
+        <span aria-live="polite" className="pointer-events-none absolute z-30 rounded-md bg-foreground px-1.5 py-0.5 font-mono text-3xs text-background" style={{ left: previewFit.x + 6, top: previewFit.y + 6 }}>
           {shown.width}×{shown.height}
         </span>
       )}
@@ -1407,7 +1407,7 @@ export function DesktopBrowserSurface({
           aria-label="Address"
           placeholder="Type an address"
           spellCheck={false}
-          className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
+          className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-2xs outline-none focus:border-ring"
           // Uncontrolled-until-touched: the URL keeps updating under an
           // untouched field, and a draft survives navigation until submitted.
           value={draft ?? addressValue(activeTab?.url)}
@@ -1430,7 +1430,7 @@ export function DesktopBrowserSurface({
                   type="button"
                   aria-label={`Viewport: ${describeViewport(activeTab.viewport, viewportMode)}`}
                   title={`Viewport ${describeViewport(activeTab.viewport, viewportMode)}${state?.presentation && state.presentation.scale < 1 ? ` · shown at ${Math.round(state.presentation.scale * 100)}%` : ""}`}
-                  className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                  className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-3xs text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
                 >
                   <ScalingIcon className="size-3.5 shrink-0" />
                   {/* The size is in the label and in the title; on a narrow row
@@ -1468,7 +1468,7 @@ export function DesktopBrowserSurface({
                   >
                     <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
                     <span className="min-w-0 flex-1">{preset.label}</span>
-                    <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">{preset.width}×{preset.height}</span>
+                    <span className="shrink-0 font-mono text-3xs text-muted-foreground">{preset.width}×{preset.height}</span>
                   </button>
                 );
               })}
@@ -1491,9 +1491,9 @@ export function DesktopBrowserSurface({
                   // A portal's events still bubble through the REACT tree, so
                   // the panel's browser chords would read what is typed here.
                   onKeyDown={(event) => event.stopPropagation()}
-                  className="h-6 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
+                  className="h-6 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-2xs outline-none focus:border-ring"
                 />
-                <Button type="submit" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[0.6875rem]" disabled={!parseViewportInput(customSize)}>
+                <Button type="submit" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-2xs" disabled={!parseViewportInput(customSize)}>
                   Set
                 </Button>
               </form>
@@ -1542,7 +1542,7 @@ export function DesktopBrowserSurface({
                     <IdentityIcon icon={state.profile.icon} color={state.profile.color} className="mt-0.5 size-3.5 shrink-0" />
                     <div className="min-w-0">
                       <p className="truncate text-[0.75rem] font-medium">{state.profile.label}</p>
-                      <p className="truncate font-mono text-[0.625rem] text-muted-foreground">
+                      <p className="truncate font-mono text-3xs text-muted-foreground">
                         {state.profile.account || "No expected account"}
                       </p>
                     </div>
@@ -1574,7 +1574,7 @@ export function DesktopBrowserSurface({
                             rides along so the toolbar's is recognisable here. */}
                         <IdentityIcon icon={profile.icon} color={profile.color} className="size-3.5 shrink-0" />
                         <span className="min-w-0 flex-1 truncate">{profile.label}</span>
-                        {profile.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">default</span>}
+                        {profile.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">default</span>}
                       </button>
                     );
                   })}
@@ -1633,7 +1633,7 @@ export function DesktopBrowserSurface({
                       New profile…
                     </button>
                   )}
-                  <p className="px-2 pt-1.5 pb-1 text-[0.625rem] leading-snug text-muted-foreground">
+                  <p className="px-2 pt-1.5 pb-1 text-3xs leading-snug text-muted-foreground">
                     Switching changes where the next tab opens. Tabs already open stay signed in as the profile they were opened with — an
                     expected account is what you intend, not a verified login.
                   </p>
@@ -1649,7 +1649,7 @@ export function DesktopBrowserSurface({
                     void profileAction(() => bridge.updateProfile!({ profileId: state.profile!.id, label }));
                   }}
                 >
-                  <label htmlFor="telar-browser-profile-rename" className="text-[0.6875rem] text-muted-foreground">Rename this profile</label>
+                  <label htmlFor="telar-browser-profile-rename" className="text-2xs text-muted-foreground">Rename this profile</label>
                   <input
                     id="telar-browser-profile-rename"
                     key={state.profile.id}
@@ -1660,10 +1660,10 @@ export function DesktopBrowserSurface({
                     className="h-7 rounded-md border border-border bg-background px-2 text-[0.75rem] outline-none focus:border-ring"
                   />
                   <div className="flex justify-end gap-1">
-                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]" onClick={() => setProfilePane("menu")}>
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" onClick={() => setProfilePane("menu")}>
                       Cancel
                     </Button>
-                    <Button type="submit" size="sm" variant="outline" className="h-6 px-2 text-[0.6875rem]">
+                    <Button type="submit" size="sm" variant="outline" className="h-6 px-2 text-2xs">
                       Rename
                     </Button>
                   </div>
@@ -1682,7 +1682,7 @@ export function DesktopBrowserSurface({
                     void profileAction(() => bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey }));
                   }}
                 >
-                  <label htmlFor="telar-browser-profile-new" className="text-[0.6875rem] text-muted-foreground">New profile</label>
+                  <label htmlFor="telar-browser-profile-new" className="text-2xs text-muted-foreground">New profile</label>
                   <input
                     id="telar-browser-profile-new"
                     aria-label="New profile name"
@@ -1699,13 +1699,13 @@ export function DesktopBrowserSurface({
                     value={newProfileAccount}
                     onChange={(event) => setNewProfileAccount(event.target.value)}
                     onKeyDown={(event) => event.stopPropagation()}
-                    className="h-7 rounded-md border border-border bg-background px-2 font-mono text-[0.6875rem] outline-none focus:border-ring"
+                    className="h-7 rounded-md border border-border bg-background px-2 font-mono text-2xs outline-none focus:border-ring"
                   />
                   <div className="flex justify-end gap-1">
-                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]" onClick={() => setProfilePane("menu")}>
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" onClick={() => setProfilePane("menu")}>
                       Cancel
                     </Button>
-                    <Button type="submit" size="sm" variant="outline" disabled={!newProfileLabel.trim()} className="h-6 px-2 text-[0.6875rem]">
+                    <Button type="submit" size="sm" variant="outline" disabled={!newProfileLabel.trim()} className="h-6 px-2 text-2xs">
                       Add and use
                     </Button>
                   </div>
@@ -1733,7 +1733,7 @@ export function DesktopBrowserSurface({
             disabled={extension.phase !== "ready"}
             onClick={() => void openPasswordManager()}
             className={cn(
-              "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] font-medium",
+              "flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-3xs font-medium",
               describeExtensionHealth(extension).tone === "error" ? "text-destructive hover:bg-muted" : extension.phase === "ready" ? "text-muted-foreground hover:bg-muted hover:text-foreground" : "text-muted-foreground/60",
             )}
           >
@@ -1759,7 +1759,7 @@ export function DesktopBrowserSurface({
           swallowed by the silent refresh (which hid real toolbar errors).
           Dismissible; it also clears on the next successful action. */}
       {actionError && (
-        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[0.6875rem] text-destructive">
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-2xs text-destructive">
           <span className="min-w-0 flex-1 truncate">{actionError}</span>
           <button type="button" onClick={() => setActionError(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-destructive/20" aria-label="Dismiss">
             Dismiss
@@ -1767,7 +1767,7 @@ export function DesktopBrowserSurface({
         </div>
       )}
       {extensionError && (
-        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[0.6875rem] text-destructive">
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-2xs text-destructive">
           <span className="min-w-0 flex-1 truncate">{extensionError}</span>
           <button type="button" onClick={() => setExtensionError(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-destructive/20">Dismiss</button>
         </div>
@@ -1777,7 +1777,7 @@ export function DesktopBrowserSurface({
           NotAllowedError. A warning rather than an error: nothing here is
           broken, and the sentence names the pane that fixes it. */}
       {permissionDenial && (
-        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-[0.6875rem] text-foreground">
+        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-2xs text-foreground">
           <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-warning" />
           <span className="min-w-0 flex-1">{permissionDenial}</span>
           <button type="button" onClick={() => setPermissionDenial(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Dismiss</button>

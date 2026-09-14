@@ -46,12 +46,12 @@ struct FileAddressRow: View {
             Image(systemName: fileGlyph(path)).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
             Text(path)
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Theme.textMuted2)
+                .foregroundStyle(Theme.textMuted)
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 4)
             if let detail {
-                Text(detail).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                Text(detail).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
             }
             if let trailing { trailing }
         }

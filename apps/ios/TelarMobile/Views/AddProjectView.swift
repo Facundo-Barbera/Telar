@@ -38,7 +38,7 @@ struct DirectoryBrowserView: View {
                                         HStack(spacing: 12) {
                                             Image(systemName: dir.git ? "arrow.triangle.branch" : "folder")
                                                 .font(.system(size: 15))
-                                                .foregroundStyle(dir.git ? Theme.accent : Theme.textMuted2)
+                                                .foregroundStyle(dir.git ? Theme.accent : Theme.textMuted)
                                                 .frame(width: 27)
                                             Text(dir.name)
                                                 .font(.system(size: 16, weight: dir.git ? .bold : .regular))

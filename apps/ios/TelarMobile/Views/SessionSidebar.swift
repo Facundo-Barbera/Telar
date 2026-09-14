@@ -117,7 +117,10 @@ struct SessionSidebar: View {
                             // the one that delegated, which read as a sub-agent
                             // of it. It is a conversation; it draws like one.
                             let drawn = group.sessions
-                            ForEach(drawn) { row in sessionRow(row, variant: .slim) }
+                            // THE HEADER'S BADGES ARE THE ROW'S CONTEXT. One
+                            // place above and the header has already answered
+                            // "which Mac"; two and it has only listed them.
+                            ForEach(drawn) { row in sessionRow(row, variant: .slim, placesAbove: group.places.count) }
                                 .onMove { offsets, destination in
                                     Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
                                 }
@@ -416,7 +419,7 @@ struct SessionSidebar: View {
         Binding(get: { subject.wrappedValue != nil }, set: { if !$0 { subject.wrappedValue = nil } })
     }
 
-    private func hostName(_ id: HostID) -> String { settings.host(id)?.name ?? "Mac" }
+    private func hostName(_ id: HostID) -> String { HostLabel.name(settings.host(id)?.name) }
 
     /// WHICH MAC A FOLDER IS BEING REGISTERED ON. A project lives in one
     /// checkout on one machine, so "Add project" is only a plain button when
@@ -500,12 +503,22 @@ struct SessionSidebar: View {
     /// would be the one place this file lied about what a tap does. The two
     /// widths look alike everywhere it is a matter of taste; here it is a
     /// matter of fact, so they are allowed to differ.
-    private func sessionRow(_ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true) -> some View {
-        NavigationLink(value: row.id) {
+    ///
+    /// `placesAbove` is how many Macs this row's group header names, and 0 when
+    /// nothing is heading it. It is the row's whole input to `HostLabel.row`;
+    /// see that type for why the header answering "which Mac" keeps the row
+    /// quiet and the header LISTING two does not.
+    private func sessionRow(
+        _ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true, placesAbove: Int = 0
+    ) -> some View {
+        let host = HostLabel.row(
+            name: settings.host(row.hostId)?.name, hostCount: settings.hosts.count, placesAbove: placesAbove
+        )
+        return NavigationLink(value: row.id) {
             Group {
                 switch variant {
-                case .card: cardBody(row, showsProject: showsProject)
-                case .slim: slimBody(row)
+                case .card: cardBody(row, showsProject: showsProject, host: host)
+                case .slim: slimBody(row, host: host)
                 }
             }
             .opacity(inbox.staleHosts.contains(row.hostId) ? 0.6 : 1)
@@ -555,7 +568,7 @@ struct SessionSidebar: View {
                     .tint(Theme.statusSky)
             } else {
                 Button { Task { await inbox.setSettled(row.id, true) } } label: { Label("Settle", systemImage: "checkmark") }
-                    .tint(Theme.textTertiary)
+                    .tint(Theme.textMuted)
                 Button { snoozing = row } label: { Label("Snooze", systemImage: "moon.zzz") }
                     .tint(Theme.statusAmber)
             }
@@ -651,7 +664,7 @@ struct SessionSidebar: View {
     ///   project + status   whose is this, and what is it doing
     ///   title              the only thing anyone scans for
     ///   branch + provider  where the work lands, and who is doing it
-    @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool) -> some View {
+    @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool, host: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 if row.session.settledOverride == "active" {
@@ -665,10 +678,7 @@ struct SessionSidebar: View {
                     Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                if settings.hosts.count > 1 {
-                    Text(hostName(row.hostId)).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
-                        .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-                }
+                if let host { hostBadge(host) }
                 // THE STATUS SITS WHERE THE TIMESTAMP WOULD, never beside
                 // it: a row showing "Working" and "8h ago" invites the
                 // question of which one is now.
@@ -718,7 +728,7 @@ struct SessionSidebar: View {
     /// mark doubles as the indent that puts the row below its header. The
     /// provider is identity that the card already carries, so it is only the
     /// fallback for an orphan session with no project.
-    @ViewBuilder private func slimBody(_ row: HostedSession) -> some View {
+    @ViewBuilder private func slimBody(_ row: HostedSession, host: String?) -> some View {
         HStack(spacing: 6) {
             if row.session.settledOverride == "active" {
                 Image(systemName: "pin.fill").font(.system(size: 8)).foregroundStyle(Theme.textMuted.opacity(0.7))
@@ -744,6 +754,12 @@ struct SessionSidebar: View {
                 .foregroundStyle(Settling.showsUnreadMark(row.session) ? Theme.text : Theme.text.opacity(0.7))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
+            // WHICH MAC, WHEN NOTHING ABOVE THE ROW HAS SAID — issue #244. It
+            // rides ahead of the contested right-hand slot rather than in it:
+            // the hint and the status are both claims about this conversation
+            // and take turns, and which Mac it is on is neither, so it must not
+            // be able to displace either of them.
+            if let host { hostBadge(host) }
             // WHY THE SHELF TOOK IT, WHERE THE AGE WOULD BE — issue #378.
             //
             // A settled row's right-hand slot says "8h ago", which on this
@@ -773,6 +789,21 @@ struct SessionSidebar: View {
             row.session,
             coordinatorTitle: row.session.settledBy.flatMap { inbox.title($0.coordinatorSessionId, on: row.hostId) }
         )
+    }
+
+    /// THE MAC'S MARK, one drawing for both row variants — issue #244. The card
+    /// already wore it and the slim row did not, so a conversation moved from
+    /// the pinned band into its project group lost the only thing that said
+    /// which machine it was on. One function so the two cannot drift.
+    ///
+    /// It carries no glyph, unlike the strip's: the rail draws these in company
+    /// — beside a group header's list of them, above and below other rows
+    /// wearing the same shape — and in company the shape is already the word.
+    private func hostBadge(_ name: String) -> some View {
+        Text(name).font(.system(size: 10)).foregroundStyle(Theme.textMuted.opacity(0.7))
+            .lineLimit(1).truncationMode(.tail)
+            .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+            .accessibilityLabel("On \(name)")
     }
 
     /// THERE IS AN ANSWER HERE NOBODY HAS READ — the mail convention, and

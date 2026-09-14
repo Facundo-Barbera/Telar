@@ -270,7 +270,7 @@ export function CommandPalette({
                     {/* THE CAPTION NAMES THE SECTION, which the field cannot:
                         it says what you may TYPE, and three kinds of answer come
                         back under it. */}
-                    <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">{section.title}</p>
+                    <p aria-hidden className="px-2 pt-1 pb-1.5 text-2xs font-medium text-muted-foreground">{section.title}</p>
                     {section.rows.map((row, rowAt) => {
                       const position = (offsets[sectionAt] ?? 0) + rowAt;
                       const on = position === at;
@@ -339,7 +339,7 @@ export function CommandPalette({
 
               {/* THE LEGEND, as T3 draws it: a palette whose keys are
                   undiscoverable is a list people click. */}
-              <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+              <div className="flex items-center gap-4 border-t px-3 py-2 text-2xs text-muted-foreground">
                 <span>
                   <kbd className="font-sans">↑↓</kbd> Navigate
                 </span>

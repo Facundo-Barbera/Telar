@@ -1405,7 +1405,11 @@ describe("the automatic credential lifecycle", () => {
   const settle = async () => { await new Promise((r) => setTimeout(r, 40)); };
   // Wait until a predicate holds (bounded) — for transitions gated on a real
   // probe timeout (~750ms), not just a poll tick.
-  const until = async (fn, ms = 2_500) => {
+  // 15 s, the bound the engine suite's `eventually`/`until` helpers carry,
+  // under the 20 s bunfig ceiling: every caller asserts the predicate came
+  // true, so a healthy run leaves on the first passing poll and only a loaded
+  // runner ever spends the budget (#458).
+  const until = async (fn, ms = 15_000) => {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) { if (fn()) return true; await new Promise((r) => setTimeout(r, 20)); }
     return fn();

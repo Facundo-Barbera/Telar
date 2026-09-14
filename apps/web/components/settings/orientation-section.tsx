@@ -108,7 +108,7 @@ export function OrientationSection() {
             type="button"
             onClick={() => setShowing((open) => !open)}
             aria-expanded={showing}
-            className="flex items-center gap-1 text-left text-sm font-medium text-foreground"
+            className="flex items-center gap-1 rounded-sm text-left text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronRightIcon className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${showing ? "rotate-90" : ""}`} />
             Show the text
