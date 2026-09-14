@@ -53,7 +53,11 @@ const fakePlanNonWovenWithHints = (async () => ({
   proofHints: [{ criterion: "bun-test-suite-passes", run: "bun test" }],
 })) as any;
 
-async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
+// 15 s, the bound the engine suite's `eventually`/`until` helpers carry, under
+// the 20 s bunfig ceiling: the predicate is one this test expects to become
+// true, so a healthy run leaves as soon as it does and only a loaded runner
+// ever spends the budget (#458).
+async function waitFor(pred: () => boolean, ms = 15_000): Promise<void> {
   const start = Date.now();
   while (!pred() && Date.now() - start < ms) {
     await new Promise((r) => setTimeout(r, 5));
