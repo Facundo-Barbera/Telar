@@ -332,30 +332,32 @@ class ProfileRegistry {
   }
 
   /**
-   * FORGET A PROFILE. Allowed only when nothing points at it: a profile some
-   * project is assigned to is that project's identity, and a profile that is the
-   * global default is where every unassigned project browses.
+   * FORGET A PROFILE, AND LET WHATEVER POINTED AT IT FALL BACK TO THE DEFAULT.
+   *
+   * THE ONLY REFUSAL LEFT IS THE DEFAULT ITSELF, because it is the ladder's last
+   * rung: forgetting it would leave every unassigned project with nowhere to
+   * land. A profile some project was assigned to used to be refused too — "point
+   * them at another profile first" — which made a person do by hand, one project
+   * at a time, the exact thing this does now: drop the assignments, so rung 1 is
+   * gone and the ladder decides again (#476). It is `assign(key, null)` for each,
+   * which means a project whose pre-profile jar is still on disk lands on THAT
+   * (rung 2) rather than on the default — the same identity it would keep if the
+   * person had cleared its assignment themselves.
    *
    * THE COOKIE JAR IS NOT DELETED. Like every other operation here this moves
    * metadata only — the partition directory stays exactly where it is, so a
-   * record removed by mistake costs a re-creation, never a login. (That is also
-   * why deleting is not offered for a profile in use: the jar would survive with
-   * nothing left naming it.)
+   * record removed by mistake costs a re-creation, never a login.
    */
   remove(profileId) {
     const record = this.require(profileId);
     if (record.id === this.document.defaultProfileId) {
       throw new Error(`“${record.label}” is the default profile. Make another profile the default first.`);
     }
-    const used = this.projectsOf(record.id);
-    if (used.length) {
-      throw new Error(
-        `“${record.label}” is used by ${used.length} project${used.length === 1 ? "" : "s"}. Point ${used.length === 1 ? "it" : "them"} at another profile first.`,
-      );
-    }
+    const moved = this.projectsOf(record.id);
+    for (const key of moved) delete this.document.projects[key];
     delete this.document.profiles[record.id];
     this.save();
-    return { id: record.id, label: record.label };
+    return { id: record.id, label: record.label, projects: moved };
   }
 
   /** Point a project at a profile, or (null) drop the assignment and let the

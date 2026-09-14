@@ -14,14 +14,17 @@
  * profile browses in the default, so changing the default moves all of them — the
  * row says so rather than leaving it to be discovered.
  *
- * NOTHING HERE DELETES A COOKIE JAR. Delete forgets a record, and the shell
- * refuses it while the default, a project, or a live session still points at the
- * profile. The partition on disk is never removed, by anything.
+ * NOTHING HERE DELETES A COOKIE JAR. Delete forgets a record; the partition on
+ * disk is never removed, by anything. Every profile but the default is
+ * deletable, and the projects assigned to one fall back to the default with it
+ * (#476) — the shell still refuses while a live session has a tab open in it,
+ * which is a thing this pane cannot see and only learns from the refusal.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon } from "lucide-react";
 import {
+  confirmProfileDeletion,
   desktopBrowserProfiles,
   describeProfileUse,
   profileNameProblem,
@@ -202,7 +205,14 @@ export function BrowserProfilesSection() {
                     {...(whyUndeletable(profile) ? { "aria-describedby": `profile-undeletable-${profile.id}` } : {})}
                     title={whyUndeletable(profile) ?? "Forget this profile. Its cookies stay on disk."}
                     className="text-destructive hover:text-destructive"
-                    onClick={() => void act(profile.id, () => bridge.deleteProfile!(profile.id))}
+                    // TODO(confirmations): a `window.confirm`, like the logins
+                    // group's own remove. The Confirmations pass owns collecting
+                    // these into one "ask before removing" group; until then
+                    // there is nowhere for a reader to say "stop asking me this".
+                    onClick={() => {
+                      if (!window.confirm(confirmProfileDeletion(profile, profiles ?? []))) return;
+                      void act(profile.id, () => bridge.deleteProfile!(profile.id));
+                    }}
                   >
                     Delete
                   </Button>
@@ -212,10 +222,10 @@ export function BrowserProfilesSection() {
           >
             {/* WHY DELETE IS GREY, ON THE ROW (#430). A `title` is a tooltip:
                 it needs a mouse, it needs a hover, and it is never read by
-                someone scanning a list of eight rows wondering why none of
-                them can be deleted. The sentence's second half is the way out
-                — make another profile the default, point that project
-                elsewhere — so it is the half that has to be on screen. */}
+                someone scanning the list wondering why one row cannot be
+                deleted. The sentence's second half is the way out — make
+                another profile the default — so it is the half that has to be
+                on screen. Only the default reaches here now (#476). */}
             {bridge.deleteProfile && whyUndeletable(profile) && (
               <p id={`profile-undeletable-${profile.id}`} className="mt-1 text-xs leading-snug text-muted-foreground/80">
                 {whyUndeletable(profile)}

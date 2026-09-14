@@ -171,21 +171,50 @@ describe("named, reusable profiles", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test("a profile is deleted only when nothing points at it; the jar on disk is left alone", () => {
+  test("any profile but the default is deleted, its projects fall back to the default, and the jar on disk is left alone", () => {
     const dir = tmp();
     const store = registry(dir);
     const spare = store.create({ label: "Spare" });
     const used = store.create({ label: "Used" });
     store.assign(A, used.id);
+    store.assign(B, used.id);
 
+    // The last rung of the ladder cannot be taken away: the projects it catches
+    // would have nowhere to land.
     expect(() => store.remove(store.defaultProfileId)).toThrow(/default profile/);
-    expect(() => store.remove(used.id)).toThrow(/used by 1 project/);
+
     expect(store.remove(spare.id).label).toBe("Spare");
     expect(store.get(spare.id)).toBeNull();
+
+    // A profile two projects are assigned to goes too, and says which moved.
+    const removed = store.remove(used.id);
+    expect(removed.label).toBe("Used");
+    expect(removed.projects.sort()).toEqual([A, B].sort());
+    expect(store.get(used.id)).toBeNull();
+    // Dropped assignments, not rewritten ones — the ladder decides again, and
+    // with no jar of their own on disk both projects land on the default.
+    expect(store.assignmentOf(A)).toBeNull();
+    expect(store.resolve(A).id).toBe(store.defaultProfileId);
+    expect(store.resolve(B).id).toBe(store.defaultProfileId);
     // Forgetting the record never touches the partition directory, so the
-    // surviving profiles' jars are unaffected and the default still resolves.
-    expect(store.resolve(A).id).toBe(used.id);
-    expect(readProfileRegistry(dir).list().map((profile) => profile.label)).toEqual([DEFAULT_PROFILE_LABEL, "Used"]);
+    // surviving profile's jar is unaffected.
+    expect(readProfileRegistry(dir).list().map((profile) => profile.label)).toEqual([DEFAULT_PROFILE_LABEL]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("deleting a profile leaves a migrated project on its own jar, not on the default", () => {
+    // `remove` drops assignments, and rung 2 of the ladder is what catches a
+    // project whose pre-profile cookies are still on disk. Landing it on the
+    // default instead would be the one thing migration exists to prevent.
+    const dir = tmp();
+    const store = registry(dir, ["persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+    const adopted = store.resolve(A);
+    const work = store.create({ label: "Work" });
+    store.assign(A, work.id);
+
+    store.remove(work.id);
+    expect(store.resolve(A).id).toBe(adopted.id);
+    expect(store.resolve(A).id).not.toBe(store.defaultProfileId);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
