@@ -562,8 +562,17 @@ export function BackdropTool({
   const valueView = viewOf(value);
   // Local so a picker can be opened BEFORE anything is chosen; adjusted during
   // render (React's sanctioned derived-state idiom, not an effect) so a change
-  // from outside — undo, the chat drafting a gradient — moves the control.
-  const [view, setView] = useState<SceneView>(valueView);
+  // from outside — a Look worn from its card — moves the control.
+  //
+  // COMPOSE IS WHERE YOU LAND (#471). With nothing behind the app the old
+  // default view was "None", which is a picker with no picker in it: the pane
+  // opened on the sentence "The canvas paints flat" and left you to guess which
+  // of the other three words had anything in it. Compose is the kind that can
+  // BUILD any of the others — a preset gradient is one layer, an image is one
+  // layer, and a stack of both is the only thing the narrower kinds cannot
+  // represent — so it is the one worth arriving in. Opening it writes nothing:
+  // an empty stack composes to nothing and `sceneBackdrop` refuses it.
+  const [view, setView] = useState<SceneView>(valueView === "none" ? "scene" : valueView);
   const [seenView, setSeenView] = useState<SceneView>(valueView);
   if (seenView !== valueView) {
     setSeenView(valueView);
@@ -577,7 +586,7 @@ export function BackdropTool({
     // chooses what the WHOLE group edits, which is exactly what `action` is for.
     <SettingsGroup
       title="Backdrop"
-      description="What the canvas paints behind the app. It travels in the look."
+      description="What the canvas paints behind the app. It is part of the look, not part of the palette — a theme decides the surfaces, this decides what is under them."
       action={
         <Segmented<SceneView>
           value={view}
@@ -587,11 +596,14 @@ export function BackdropTool({
             // is actually chosen, so browsing never blanks what is in place.
             if (next === "none") onChange({ kind: "none" });
           }}
+          // COMPOSE FIRST, then the two narrower kinds it subsumes, then the
+          // way out. The order is the order of capability, and the first
+          // segment is also the one this control lands on.
           options={[
-            { value: "none", label: "None" },
+            { value: "scene", label: "Compose" },
             { value: "gradient", label: "Gradient" },
             { value: "image", label: "Image" },
-            { value: "scene", label: "Compose" },
+            { value: "none", label: "None" },
           ]}
         />
       }

@@ -80,7 +80,20 @@ describe("the pane is a stack of settings groups", () => {
     // room for — a mono `WINDOW` chip cannot say that none of it travels in a
     // look.
     expect(host.textContent).toContain("None of it travels in a look");
-    expect(host.textContent).toContain("Whole appearances");
+    expect(host.textContent).toContain("A look is a theme pair");
+  });
+
+  /**
+   * THE COPY TEACHES ONE COLOUR MODEL — the owner's "we have too many ways of
+   * selecting colour themes: themes, colours, looks". There are two nouns, and
+   * the two groups that own them each state the same definition rather than
+   * leaving a reader to infer that a "theme" and a "look" differ at all.
+   */
+  test("a theme is a palette per half, and a look is a theme pair with things saved around it", () => {
+    expect(host.textContent).toContain("A theme is a palette — one for the light half, one for the dark");
+    expect(host.textContent).toContain("A look is a theme pair");
+    // And the backdrop says which of the two it belongs to.
+    expect(host.textContent).toContain("It is part of the look, not part of the palette");
   });
 });
 
@@ -164,6 +177,33 @@ describe("the Looks shelf reads as a list", () => {
     const labels = [...(looksGroup()?.querySelectorAll("button") ?? [])].map((button) => button.getAttribute("aria-label") ?? "");
     expect(labels.filter((label) => label.startsWith("Rename "))).toEqual([]);
     expect(labels.filter((label) => label.startsWith("Delete "))).toEqual([]);
+  });
+});
+
+/**
+ * COMPOSE IS WHERE THE BACKDROP GROUP LANDS — issue #471.
+ *
+ * With nothing behind the app the group used to open on "None", which is a
+ * picker with no picker in it: a sentence saying the canvas paints flat, and
+ * three other words to guess between. Compose is the kind that can build any of
+ * the others, so it leads the control and is where the group arrives.
+ */
+describe("the Backdrop group", () => {
+  function backdropGroup(): HTMLElement | null {
+    return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Backdrop") ?? null;
+  }
+
+  test("Compose is the first segment", () => {
+    const segments = [...(backdropGroup()?.querySelectorAll('button[aria-pressed]') ?? [])].map((button) => button.textContent);
+    expect(segments.slice(0, 4)).toEqual(["Compose", "Gradient", "Image", "None"]);
+  });
+
+  test("with nothing behind the app, the group opens on the composer rather than on None", () => {
+    // A fresh store has no backdrop, and arriving must not write one: the
+    // composer's empty stack composes to nothing and is refused.
+    const pressed = [...(backdropGroup()?.querySelectorAll('button[aria-pressed="true"]') ?? [])].map((button) => button.textContent);
+    expect(pressed).toContain("Compose");
+    expect(backdropGroup()?.textContent).not.toContain("The canvas paints flat");
   });
 });
 

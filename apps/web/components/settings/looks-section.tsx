@@ -496,7 +496,7 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
     // a control that acts on the WHOLE group belongs.
     <SettingsGroup
       title="Looks"
-      description="Whole appearances — palette, scene, accent and type together. Click one to wear it."
+      description="A look is a theme pair — the light palette and the dark one — with the backdrop, the accent, the type and the depth saved around them. Wear one to put the lot on."
       action={
         <div className="flex items-center gap-2">
           <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
