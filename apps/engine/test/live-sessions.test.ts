@@ -336,6 +336,99 @@ test("an unchanged answer costs almost nothing, which is the whole point", async
   }
 });
 
+/**
+ * ISSUE #457, STEP 3 — the conditional read spelled the way HTTP spells it.
+ *
+ * WHY IT EXISTS BESIDE `?since=`, which already answers an idle tick in sixty
+ * bytes. Three things the body cursor cannot do: a 304 carries no body at all;
+ * the MODE is inside the tag, so the wide read can be conditional too (a cursor
+ * cannot, because the revision does not move when a reader opens a shelf); and
+ * it is the standard spelling, so anything that speaks HTTP gets the cheap tick
+ * without knowing about this engine's query parameters.
+ */
+test("an ETag answers the tick, and the tag knows which list it described", async () => {
+  const engineRoot = root();
+  const daemon = await startEngine({ models: stubModels, engineRoot });
+  const ask = (query: string, headers: Record<string, string> = {}) =>
+    fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/sessions/live${query}`, {
+      headers: { authorization: `Bearer ${daemon.discovery.token}`, ...headers },
+    });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: engineRoot });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    const first = await ask("");
+    const tag = first.headers.get("etag");
+    expect(tag).toBeTruthy();
+
+    // THE IDLE TICK: no status, no body, nothing folded.
+    const again = await ask("", { "if-none-match": tag! });
+    expect(again.status).toBe(304);
+    expect(again.headers.get("etag")).toBe(tag!);
+    expect(await again.text()).toBe("");
+
+    /**
+     * AND THE TAG IS NOT TRANSFERABLE BETWEEN THE TWO LISTS. This is the whole
+     * reason the tag exists beside the cursor: the revision has NOT moved here
+     * — nothing was written — so a `?since=` would say "unchanged" and the
+     * reader's Settled shelf would stay empty. The tag names the list it
+     * described, so the wide ask is answered with the wide list.
+     */
+    const wide = await ask("?all=1", { "if-none-match": tag! });
+    expect(wide.status).toBe(200);
+    const wideTag = wide.headers.get("etag");
+    expect(wideTag).toBeTruthy();
+    expect(wideTag).not.toBe(tag!);
+    // And the wide read IS conditional on its own tag, which `?since=` refuses.
+    expect((await ask("?all=1", { "if-none-match": wideTag! })).status).toBe(304);
+    // The narrow tag still answers the narrow ask; neither has disturbed the
+    // other.
+    expect((await ask("", { "if-none-match": tag! })).status).toBe(304);
+
+    // Something moves and the tag is spent — a full answer, with a new tag.
+    await client.updateSession("session_one", { title: "Renamed" });
+    const moved = await ask("", { "if-none-match": tag! });
+    expect(moved.status).toBe(200);
+    expect(moved.headers.get("etag")).not.toBe(tag!);
+    expect(((await moved.json()) as { sessions: Array<{ title: string }> }).sessions[0]?.title).toBe("Renamed");
+
+    // A tag from a dead daemon is not "unchanged" — the same failure mode the
+    // cursor guards, and for the same reason: a frozen rail is the one thing a
+    // reader cannot see and cannot recover from.
+    expect((await ask("", { "if-none-match": 'W/"live-1-lean"' })).status).toBe(200);
+    // `*` means "if you have anything", which here is always true.
+    expect((await ask("", { "if-none-match": "*" })).status).toBe(304);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("the client's conditional read reports not-modified rather than failing on an empty body", async () => {
+  const engineRoot = root();
+  const daemon = await startEngine({ models: stubModels, engineRoot });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: engineRoot });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    // A cold read hands back the tag the next one asks with. It has to: without
+    // a tag on the unconditional answer the cheap tick is unreachable.
+    const cold = await client.liveSessionsMatching();
+    expect(cold.notModified).toBeFalsy();
+    expect(cold.etag).toBeTruthy();
+
+    const tick = await client.liveSessionsMatching({ etag: cold.etag! });
+    expect(tick.notModified).toBe(true);
+    expect(tick.etag).toBe(cold.etag!);
+    // `request`'s envelope parses a body on every path, which is exactly why
+    // this method has one of its own: a 304 has none.
+    expect(tick).not.toHaveProperty("sessions");
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("`?full=1` serves the old shape over the wire, for one release", async () => {
   const engineRoot = root();
   const daemon = await startEngine({ models: stubModels, engineRoot });

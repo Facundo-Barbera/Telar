@@ -683,6 +683,64 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "GET",
         `/api/sessions/live?since=${encodeURIComponent(String(since))}`,
       ),
+    /**
+     * THE SAME PASS, CONDITIONAL ON AN ETAG — issue #457, step 3.
+     *
+     * `liveSessionsSince` is this in the body and it stays. What the header buys
+     * is a 304 with NO BODY at all, and — the part the cursor cannot do — a
+     * conditional WIDE read: the mode is inside the tag, where a `?since=`
+     * earned against the unsettled list would have been answered "unchanged"
+     * against `?all=1` and left the Settled shelf permanently empty.
+     *
+     * ITS OWN ENVELOPE, because `send` parses a JSON body on every path and a
+     * 304 has none. It keeps the read budget, which is the part of that envelope
+     * a poll actually needs — this is one of the reads the budget exists for.
+     *
+     * `cache: "no-store"` SO THE BROWSER STAYS OUT OF IT. The conditional here
+     * is the rail's own, held per host in a ref; an HTTP cache revalidating
+     * underneath it would answer from a copy this code never saw and the tag
+     * bookkeeping would be describing someone else's state.
+     */
+    liveSessionsMatching: async (
+      options: { etag?: string; all?: boolean } = {},
+    ): Promise<{ notModified: true; etag: string } | (LiveSessionsPage & { notModified?: false; etag?: string })> => {
+      const pathname = options.all ? "/api/sessions/live?all=1" : "/api/sessions/live";
+      await acquireRead();
+      let response: Response;
+      try {
+        response = await fetcher(pathname, {
+          method: "GET",
+          cache: "no-store",
+          ...(options.etag === undefined ? {} : { headers: { "if-none-match": options.etag } }),
+        });
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+        const host = answeringHost(fetcher);
+        throw new EngineApiError(
+          "engine_unavailable",
+          host ? `The cockpit cannot reach ${host.name ?? "that Mac"}.` : "The cockpit cannot reach its local adapter.",
+          undefined,
+          host,
+        );
+      } finally {
+        releaseRead();
+      }
+      const etag = response.headers.get("etag") ?? undefined;
+      // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none.
+      if (response.status === 304) return { notModified: true, etag: etag ?? options.etag ?? "" };
+      const host = answeringHost(fetcher, response);
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status, host);
+      }
+      if (!response.ok) {
+        const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
+        throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status, host);
+      }
+      return { ...(payload as LiveSessionsPage), ...(etag === undefined ? {} : { etag }) };
+    },
     createSession: (
       projectId: string,
       input: {

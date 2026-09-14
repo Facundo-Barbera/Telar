@@ -493,18 +493,28 @@ function SidebarBody() {
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
   /**
-   * THE CONDITIONAL READ'S TWO HALVES, per host (#459): the cursor that was
-   * handed back last time, and the page it described.
+   * THE CONDITIONAL READ'S TWO HALVES, per host (#459, #457): the `ETag` that
+   * was handed back last time, and the page it described.
+   *
+   * AN ETAG RATHER THAN THE REVISION CURSOR, because the tag carries the MODE as
+   * well as the revision. The cursor is a number about the store, so one earned
+   * against the unsettled list and spent against `?all=1` is answered
+   * "unchanged" — and the Settled shelf a reader has just opened stays empty
+   * until something else happens on the machine. The cursor is still served, for
+   * anything that sends one; this rail sends a tag.
    *
    * REFS RATHER THAN STATE, because neither is rendered and both are written
    * inside the read: putting them in state would re-render the rail once a tick
-   * to store a number nothing draws — which is most of what this issue is about.
+   * to store a string nothing draws — which is most of what this issue is about.
    * Keyed like the sidebar cache (`LOCAL_HOST` for this engine), so one Mac's
-   * cursor can never be spent against another's revision.
+   * tag can never be spent against another's revision.
    *
-   * A HOST THAT ANSWERS NO REVISION KEEPS NO ENTRY, so an engine too old to
-   * count simply goes on making full reads.
+   * A HOST THAT ANSWERS NO ETAG KEEPS NO ENTRY, so an engine too old to mint one
+   * simply goes on making full reads.
    */
+  const tags = useRef(new Map<string, string>());
+  /** The older spelling of the same cursor (#459), kept as the floor for a Mac
+   *  whose engine mints no tag — that pair loses nothing it had. */
   const revisions = useRef(new Map<string, number>());
   const pages = useRef(new Map<string, HostPage>());
   /**
@@ -592,18 +602,49 @@ function SidebarBody() {
      * shelf, and a cursor spent across the two lists would answer the wide ask
      * with "unchanged" and leave the shelf empty until something else happened.
      */
+    /**
+     * AND IT IS CONDITIONAL ON AN ETAG (#457) RATHER THAN ON `?since=`.
+     *
+     * The cursor came first (#459) and still answers for anything that sends
+     * one; this rail sends a tag because the tag carries the MODE. A cursor is
+     * a number about the store, so one earned against the unsettled list and
+     * spent against `?all=1` is answered "unchanged" — and the Settled shelf
+     * this rail has just opened stays empty until somebody happens to write
+     * something on the machine. With the mode inside the tag, both reads are
+     * conditional and neither can be answered with the other's list. A 304 also
+     * carries no body at all, where the cursor's cheapest answer is sixty bytes.
+     *
+     * UNCHANGED STILL MEANS "KEEP WHAT YOU HAVE", so the held page is returned
+     * verbatim and nothing re-renders. The fallback below is for the case that
+     * should not happen — a tag with no page behind it — because answering a
+     * not-modified read with no rows would empty the rail.
+     */
     const key = host?.id ?? LOCAL_HOST;
-    const known = revisions.current.get(key);
-    const answer = wantsSettled.current
-      ? await hostApi.liveSessions({ all: true })
-      : known === undefined
-        ? await hostApi.liveSessions()
-        : await hostApi.liveSessionsSince(known);
-    if (answer.unchanged) {
+    const wide = wantsSettled.current;
+    const known = tags.current.get(key);
+    /**
+     * THE CURSOR IS THE FLOOR, NOT THE DEAD PATH. A Mac too old to mint a tag
+     * answers 200 with none, and this rail then falls back to `?since=` — which
+     * is exactly what it did before, so a mixed-version pair loses nothing. Only
+     * the NARROW read may use a cursor; the wide one is refused one for the
+     * reason above and simply pays.
+     */
+    const cursor = revisions.current.get(key);
+    const answer = known === undefined && !wide && cursor !== undefined
+      ? await hostApi.liveSessionsSince(cursor).then((page) => (page.unchanged ? { notModified: true as const, etag: "" } : { ...page, notModified: false as const, etag: undefined }))
+      : await hostApi.liveSessionsMatching({
+        ...(known === undefined ? {} : { etag: known }),
+        ...(wide ? { all: true } : {}),
+      });
+    if (answer.notModified) {
       const held = pages.current.get(key);
       if (held) return held;
     }
-    const result = answer.unchanged ? await hostApi.liveSessions() : answer;
+    const result = answer.notModified ? await hostApi.liveSessions({ all: wide }) : answer;
+    // THE TAG IS WHAT THE NEXT TICK ASKS WITH. An engine too old to mint one
+    // leaves no entry, and the cursor above carries the tick instead.
+    if (answer.etag) tags.current.set(key, answer.etag);
+    else tags.current.delete(key);
     if (result.revision === undefined) revisions.current.delete(key);
     else revisions.current.set(key, result.revision);
     const daemonId = result.daemonId;
@@ -660,9 +701,10 @@ function SidebarBody() {
       // then counted off the rows, exactly as it always was.
       ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
     };
-    // Held so the next unchanged answer has something to BE. Only alongside a
-    // revision: without one every read is a full one and nothing reads this.
-    if (result.revision !== undefined) pages.current.set(key, page);
+    // Held so the next not-modified answer has something to BE. Only alongside
+    // a tag or a cursor: with neither, every read is a full one and nothing
+    // reads this.
+    if (tags.current.has(key) || revisions.current.has(key)) pages.current.set(key, page);
     return page;
   }, []);
 

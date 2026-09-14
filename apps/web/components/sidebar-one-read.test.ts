@@ -26,7 +26,9 @@ const loadHost = sidebar.slice(sidebar.indexOf("const loadHost = useCallback"), 
 
 describe("a rail's pass is one read per host", () => {
   test("the fan-out is gone: no health, no inbox, no Promise.all beside the list", () => {
-    expect(loadHost).toContain("hostApi.liveSessions()");
+    // The live list, whichever of its three spellings this pass uses — the
+    // claim is that there is ONE read here and not three.
+    expect(loadHost).toContain("hostApi.liveSessions");
     expect(loadHost).not.toContain("hostApi.health()");
     expect(loadHost).not.toContain("hostApi.inbox()");
     // The concurrency itself, not just its members: a `Promise.all` here is the
@@ -49,25 +51,35 @@ describe("a rail's pass is one read per host", () => {
 });
 
 describe("and that one read is conditional", () => {
-  test("the rail asks with the cursor it was given, and keeps its page when nothing moved", () => {
-    expect(loadHost).toContain("revisions.current.get(key)");
-    expect(loadHost).toContain("hostApi.liveSessionsSince(known)");
-    // "Unchanged" means KEEP WHAT YOU HAVE. A rail that redrew from the absent
-    // rows would blank itself once a tick, which is the one way this design can
-    // fail in a reader's face.
-    expect(loadHost).toContain("if (answer.unchanged)");
+  test("the rail asks with the tag it was given, and keeps its page when nothing moved", () => {
+    // AN ETAG RATHER THAN THE CURSOR (#457): the tag names the LIST it
+    // described, so a tag earned against the unsettled rows cannot be answered
+    // with "unchanged" against `?all=1` — which would leave the Settled shelf
+    // a reader just opened permanently empty.
+    expect(loadHost).toContain("tags.current.get(key)");
+    expect(loadHost).toContain("hostApi.liveSessionsMatching(");
+    // "Not modified" means KEEP WHAT YOU HAVE. A rail that redrew from the
+    // absent rows would blank itself once a tick, which is the one way this
+    // design can fail in a reader's face.
+    expect(loadHost).toContain("if (answer.notModified)");
     expect(loadHost).toContain("pages.current.get(key)");
   });
 
-  test("a cursor is only kept while the engine offers one", () => {
-    // An engine too old to count sends no revision, and the rail then goes on
-    // making full reads rather than spending a stale cursor against it.
+  test("the cursor is the floor, so a Mac too old to mint a tag loses nothing it had", () => {
+    // An engine that predates the ETag answers 200 without one; the rail then
+    // falls back to `?since=` — exactly what it did before — rather than
+    // dropping to a full read every tick.
+    expect(loadHost).toContain("hostApi.liveSessionsSince(cursor)");
     expect(loadHost).toContain("if (result.revision === undefined) revisions.current.delete(key)");
-    expect(loadHost).toContain("if (result.revision !== undefined) pages.current.set(key, page)");
   });
 
-  test("the cursor is per host, so one Mac's number is never spent on another's", () => {
-    // Two Macs count independently; a cursor crossing hosts would look current
+  test("a conditional is only kept while the engine offers one", () => {
+    expect(loadHost).toContain("else tags.current.delete(key)");
+    expect(loadHost).toContain("pages.current.set(key, page)");
+  });
+
+  test("the conditional is per host, so one Mac's tag is never spent on another's", () => {
+    // Two Macs count independently; a tag crossing hosts would look current
     // against a revision that means something else entirely.
     expect(loadHost).toContain("const key = host?.id ?? LOCAL_HOST;");
   });
@@ -104,11 +116,23 @@ describe("the route forwards what the engine stamped", () => {
     // the phone's — reaching the engine verbatim through the hosts proxy —
     // filled: the same asymmetry this file exists to catch.
     expect(route).toContain('query.get("all") === "1"');
-    expect(route).toContain("client.liveSessions({ all: true })");
+    expect(route).toContain("...(all ? { all: true } : {})");
     expect(route).toContain("...(settledCount === undefined ? {} : { settledCount })");
-    // AND THE WIDE ASK IS NOT CONDITIONAL. The revision counts writes, so it
-    // does not move when a reader opens a shelf; spending a cursor across the
-    // two lists would answer "unchanged" and leave the shelf empty.
-    expect(route.indexOf('all ? await client.liveSessions({ all: true })')).toBeGreaterThan(-1);
+  });
+
+  test("and it forwards the conditional, and passes a 304 straight back", () => {
+    // Without this a browser's rail would pull the full list every tick while
+    // the phone — which reaches the engine verbatim through the hosts proxy —
+    // got the cheap answer. The same asymmetry this file exists to catch.
+    expect(route).toContain('request.headers.get("if-none-match")');
+    expect(route).toContain("client.liveSessionsMatching(");
+    expect(route).toContain("status: 304");
+    // AND THE UNCONDITIONAL READ CARRIES A TAG OUT. Without one the caller has
+    // nothing to hand back and the cheap tick is unreachable from a cold start.
+    expect(route).toContain("compose(answer, answer.etag)");
+    expect(route).toContain("{ headers: { etag, \"cache-control\": \"no-store\" } }");
+    // The cursor still answers a caller that sends one and no tag: nothing is
+    // taken away from `?since=`.
+    expect(route).toContain("client.liveSessionsSince(Number(since))");
   });
 });

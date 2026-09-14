@@ -2009,6 +2009,64 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/live?since=${encodeURIComponent(String(since))}`);
   }
 
+  /**
+   * THE SAME LIST, CONDITIONAL ON AN ETAG — issue #457, step 3.
+   *
+   * `liveSessionsSince` is this in the body and it stays; this is the HTTP
+   * spelling, and it buys three things the body cursor cannot. A 304 carries no
+   * body at all. The MODE is inside the tag, so this is safe for `all: true` —
+   * a `?since=` earned against the unsettled list would have been answered
+   * "unchanged" against `?all=1` and left a shelf empty, which is why that
+   * combination is refused. And it is the standard spelling, so an intermediary
+   * that has never heard of `?since=` still does the right thing.
+   *
+   * ITS OWN ENVELOPE, not `request`'s, for the same reason `requestBytes` has
+   * one: `request` parses a JSON body on every path, and a 304 has none. Two
+   * routes with an unusual shape is not a reason to put a branch on all of them.
+   *
+   * NO `etag` MEANS AN UNCONDITIONAL READ, which is also what an engine too old
+   * to mint one leaves the caller with — it answers 200 with no tag, and a
+   * caller with nothing to hand back simply keeps reading in full.
+   */
+  async liveSessionsMatching(
+    options: { etag?: string; all?: boolean } = {},
+  ): Promise<{ notModified: true; etag: string } | (LiveSessionsAnswer & { notModified?: false; etag?: string })> {
+    const pathname = options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.discovery.token}`,
+          ...(options.etag === undefined ? {} : { "if-none-match": options.etag }),
+        },
+      });
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
+        operation: "liveSessionsMatching",
+        ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
+      });
+    }
+    const etag = response.headers.get("etag") ?? undefined;
+    // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none, and asking for
+    // one would turn the cheapest answer on this client into a parse failure.
+    if (response.status === 304) {
+      return { notModified: true, etag: etag ?? options.etag ?? "" };
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status, { operation: "liveSessionsMatching", transport: "malformed_response" });
+    }
+    if (!response.ok) {
+      const error = (payload as EngineErrorBody | null)?.error;
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status, { operation: "liveSessionsMatching" });
+    }
+    return { ...(payload as LiveSessionsAnswer), ...(etag === undefined ? {} : { etag }) };
+  }
+
   createSession(input: {
     draft?: boolean;
     id?: string;

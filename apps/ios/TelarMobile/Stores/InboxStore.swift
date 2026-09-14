@@ -120,6 +120,18 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// too old to count, and a Mac that restarted and now counts from somewhere
     /// else. One store is one Mac, so a cursor can never be spent on another's.
     private var revision: Int?
+    /// THE CONDITIONAL READ'S TAG (#457) — what the Mac handed back last time,
+    /// sent with the next ask so a tick with nothing behind it costs a 304 and
+    /// no body at all.
+    ///
+    /// AN ETAG RATHER THAN `revision` ABOVE, because the tag carries the MODE:
+    /// a cursor earned against the unsettled list and spent against the wide one
+    /// would be answered "unchanged" and leave the settled shelf empty. `nil`
+    /// means ask for everything, which is the right answer in all three cases
+    /// that produce it: the first poll after this store was built, a Mac too old
+    /// to mint a tag, and a Mac that restarted and now counts from somewhere
+    /// else. One store is one Mac, so a tag can never be spent on another's.
+    private var etag: String?
     /// HOW MANY SETTLED ROWS THE MAC IS HOLDING BACK (#457).
     ///
     /// Its live read answers the UNSETTLED rows by default — 7 of 291 on the
@@ -249,20 +261,39 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
 
              AND IT IS THE UNSETTLED ROWS UNLESS THE SHELF IS OPEN (#457). The
              Mac now sends 7 rows where it sent 291, and `settledCount` beside
-             them draws the divider that asks for the other 284. The wide read
-             is deliberately NOT conditional on either side: the revision counts
-             writes, so it does not move when somebody opens a shelf, and a
-             cursor spent across the two lists would answer the wide ask with
-             "unchanged" and leave the shelf empty until the Mac did something
-             else.
+             them draws the divider that asks for the other 284.
+
+             THE CONDITIONAL IS AN ETAG RATHER THAN THE CURSOR, and that is what
+             makes the wide read conditional too. A cursor is a number about the
+             Mac's store, so it does not move when a reader opens a shelf — one
+             earned against the unsettled list and spent against `all` would be
+             answered "unchanged" and the shelf would stay empty until something
+             else happened over there. The tag carries the mode, so the two asks
+             can never be answered with each other's list. A 304 also has no
+             body at all, where the cursor's cheapest answer is sixty bytes.
+             `revision` is still read off the answers that carry one, so a Mac
+             too old to mint a tag keeps working exactly as it did.
              */
-            let live: LiveSessions
-            if wantsSettled {
-                live = try await api.liveSessions(all: true)
-            } else if let cursor = revision {
-                live = try await api.liveSessions(since: cursor)
+            /**
+             THE CURSOR IS THE FLOOR, NOT THE DEAD PATH. A Mac too old to mint a
+             tag answers 200 with none, and this phone then falls back to
+             `?since=` — which is exactly what it did before, so a mixed-version
+             pair loses nothing. Only the NARROW read can use a cursor; the wide
+             one is refused a cursor for the reason above and simply pays.
+             */
+            var answer: (live: LiveSessions?, etag: String?)
+            if etag == nil, !wantsSettled, let cursor = revision {
+                answer = (try await api.liveSessions(since: cursor), nil)
             } else {
-                live = try await api.liveSessions()
+                answer = try await api.liveSessions(matching: etag, all: wantsSettled)
+            }
+            etag = answer.etag
+            guard let live = answer.live else {
+                lastError = nil
+                unauthorized = false
+                loaded = true
+                recordedAt = nil
+                return
             }
             revision = live.revision
             if live.unchanged {

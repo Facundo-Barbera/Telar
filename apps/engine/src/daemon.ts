@@ -273,6 +273,43 @@ function writeJson(response: http.ServerResponse, status: number, body: unknown,
   response.end(JSON.stringify(body));
 }
 
+/**
+ * THE LIVE LIST'S ETAG — the revision cursor (#462) spelled the way HTTP spells
+ * it, so a client that knows nothing about `?since=` still gets the cheap tick.
+ *
+ * THE MODE IS IN THE TAG, and that is what the query cursor could not do. A
+ * `?since=` earned against the unsettled list and spent against `?all=1` would
+ * be answered "unchanged" and leave a shelf empty, because the revision counts
+ * WRITES and does not move when a reader opens one — which is why the wide read
+ * refuses to be conditional on it. Two modes, two tags, and the wide read can
+ * be conditional too.
+ *
+ * WEAK, because the claim is semantic. Two answers at one revision carry the
+ * same rows; nothing here promises the same bytes, and `W/` is how that is said.
+ */
+function liveSessionsETag(revision: number, all: boolean): string {
+  return `W/"live-${revision}-${all ? "all" : "lean"}"`;
+}
+
+/**
+ * Does `If-None-Match` name this tag?
+ *
+ * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
+ * and `"x"` match, and a client that stripped the prefix somewhere along the
+ * way is not punished for it. A list is a list — a browser may send back
+ * several — and `*` means "if you have anything at all", which here is always.
+ */
+function matchesETag(header: string | string[] | undefined, tag: string): boolean {
+  if (header === undefined) return false;
+  const bare = (value: string): string => value.trim().replace(/^W\//, "");
+  const wanted = bare(tag);
+  for (const entry of (Array.isArray(header) ? header : [header]).flatMap((value) => value.split(","))) {
+    const candidate = bare(entry);
+    if (candidate === "*" || candidate === wanted) return true;
+  }
+  return false;
+}
+
 async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -3485,6 +3522,32 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         const all = url.searchParams.get("all") === "1";
         /**
+         * `If-None-Match` — THE SAME CONDITIONAL READ, SPELLED IN HEADERS.
+         *
+         * `?since=` (#462) is this in the body, and it stays: two proxy hops sit
+         * between this engine and a browser, and the cockpit's own route
+         * RE-COMPOSES the answer rather than streaming it, so a cursor a route
+         * handler can read is the thing that works everywhere. What the header
+         * adds is three things the body cursor cannot:
+         *
+         *   - A 304 HAS NO BODY AT ALL, against the cursor's sixty-odd bytes.
+         *   - THE WIDE READ CAN BE CONDITIONAL. The mode is inside the tag, so a
+         *     tag earned against the unsettled list simply does not match an
+         *     `?all=1` ask — where a `?since=` would have matched and answered
+         *     the shelf with "unchanged". See `liveSessionsETag`.
+         *   - IT IS THE STANDARD SPELLING, so a script, a cache or a client that
+         *     has never heard of `?since=` gets the cheap tick for free.
+         *
+         * BEFORE THE CURSOR, because it is the cheaper of the two and because a
+         * client sending both means both.
+         */
+        const etag = liveSessionsETag(store.sessionsRevision(), all);
+        if (matchesETag(request.headers["if-none-match"], etag)) {
+          response.writeHead(304, { etag, "cache-control": "no-store" });
+          response.end();
+          return;
+        }
+        /**
          * `?since=<revision>` — THE CONDITIONAL READ, and the reason this route
          * stopped being the engine's largest cost (#459).
          *
@@ -3514,10 +3577,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         const since = Number(url.searchParams.get("since"));
         if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
-          writeJson(response, 200, { revision: since, unchanged: true, daemonId });
+          writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
           return;
         }
-        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId });
+        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId }, { etag });
         return;
       }
       /**
