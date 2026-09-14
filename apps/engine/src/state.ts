@@ -1083,6 +1083,12 @@ const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSIO
  *  Spelled once so the three arrangements cannot fall back to different things. */
 const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
 
+/** The order every session list is in: newest work first, ties broken by id so
+ *  two passes over the same store never disagree. Named because two readers
+ *  share it (#464) and a sort written twice is a sort that drifts once. */
+const newestFirst = (left: Session, right: Session): number =>
+  right.updatedAt - left.updatedAt || left.id.localeCompare(right.id);
+
 /**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
  *
@@ -6987,7 +6993,27 @@ export class EngineStore {
    * them is the reader's to act on. Decided here so every client agrees.
    */
   private withActivity(session: Session): Session {
-    const turns = this.readQueue(session.id).turns;
+    return this.withActivityFrom(session, this.readQueue(session.id).turns);
+  }
+
+  /**
+   * THE SAME FOLD, OVER TURNS THE CALLER ALREADY HAS — issue #464.
+   *
+   * The live list read every session's queue TWICE in one pass: once here, for
+   * the activity, and once in `sessionAssignments`, for who the session is
+   * working for. Two sqlite reads, two `JSON.parse`s and two `TurnSchema`
+   * validations of the same document, 291 times, every three seconds per
+   * connected cockpit — and `readQueue` was already 43.9% of a profile taken at
+   * rest for exactly this kind of repetition.
+   *
+   * SPLIT RATHER THAN CACHED, deliberately. `scanQueue`'s cache is bounded by
+   * `liveQueueIndex` — the sessions that concern a worker — and routing this
+   * fold through it would put EVERY conversation's parsed queue in memory for
+   * the life of the daemon, which is the unbounded growth that cache was pruned
+   * to avoid (the engine is already 563 MB resident). Sharing one read within
+   * the pass costs nothing and keeps nothing.
+   */
+  private withActivityFrom(session: Session, turns: Turn[]): Session {
     /**
      * THE QUEUE IS NOW READ ON EVERY PATH, including the blocked one that used
      * to return before reaching it. A blocked session has a history too, and
@@ -7070,26 +7096,80 @@ export class EngineStore {
    * for the same reason.
    */
   private readSessions(): Session[] {
-    if (this.executionStore) return this.executionStore.sessionIds().map((id) => this.getSession(id))
-      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    return entries
-      .filter((entry) => entry.isDirectory() && ID.test(entry.name))
-      .flatMap((entry) => {
+    return this.storedSessionIds()
+      .flatMap((id) => {
         try {
-          return [this.getSession(entry.name)];
+          return [this.getSession(id)];
         } catch (error) {
           if (error instanceof EngineStateError && error.code === "not_found") return [];
           throw error;
         }
       })
-      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+      .sort(newestFirst);
+  }
+
+  /**
+   * EVERY SESSION ID ON THIS ENGINE, whichever backend holds them.
+   *
+   * EXTRACTED so the enumeration is not written twice (#464): `readSessions`
+   * above wants a whole record each, and `foldLiveSessions` wants to look at a
+   * session's METADATA before deciding whether to pay for its queue. Both
+   * agreed on the directory rules already; one of them agreeing by accident is
+   * how they drift.
+   */
+  private storedSessionIds(): string[] {
+    if (this.executionStore) return this.executionStore.sessionIds();
+    try {
+      return fs.readdirSync(this.paths.sessions, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && ID.test(entry.name))
+        .map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  /**
+   * THE LIVE LIST'S OWN PASS, WHICH READS EACH QUEUE ONCE — issue #464.
+   *
+   * It used to read every queue TWICE: `getSession` folded the activity out of
+   * one read, and `sessionAssignments` folded the assignments out of a second
+   * read of the same document, moments later. Two sqlite reads, two
+   * `JSON.parse`s and two `TurnSchema` validations per session per pass, 291
+   * times, every three seconds per connected cockpit.
+   *
+   * AND AN ARCHIVED SESSION COSTS NO QUEUE READ AT ALL. The old path folded the
+   * activity of every session on the machine and then threw away everything not
+   * `active` — which is an activity fold, over a whole queue, for a
+   * conversation the answer does not contain. The state is in the metadata
+   * document, so it is answerable before the expensive read rather than after.
+   *
+   * AN UNREADABLE SESSION IS SKIPPED, NOT THROWN, exactly as in `readSessions`:
+   * one corrupt directory must not blank a sidebar.
+   */
+  private foldLiveSessions(): { sessions: Session[]; assignments: Record<string, SessionAssignment[]> } {
+    const sessions: Session[] = [];
+    const assignments: Record<string, SessionAssignment[]> = {};
+    for (const id of this.storedSessionIds()) {
+      const stored = this.readDocument(sessionMetadataFile(this.paths, id));
+      if (stored === undefined) continue;
+      let record: Session;
+      try {
+        record = parseSession(stored);
+      } catch {
+        continue;
+      }
+      if (record.state !== "active") continue;
+      const turns = this.readQueue(id).turns;
+      sessions.push(this.withActivityFrom(structuredClone(record), turns));
+      // A PLAIN cast, for the reason `sessionAssignments` gives: the structural
+      // type names fields a `Turn` really has, so a rename that breaks the fold
+      // is a type error rather than an `undefined` on every assignment (#380).
+      const held = assignmentsOf(turns as AssignmentTurn[]);
+      if (held.length > 0) assignments[id] = held;
+    }
+    sessions.sort(newestFirst);
+    return { sessions, assignments };
   }
 
   listSessions(projectId: string): Session[] {
@@ -7130,7 +7210,6 @@ export class EngineStore {
   } {
     const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects;
-    const sessions = this.readSessions().filter((session) => session.state === "active");
     /**
      * ASSIGNMENTS RIDE THE LIST, not a fetch per row.
      *
@@ -7138,12 +7217,11 @@ export class EngineStore {
      * every session's full history to learn who each is working for would be an
      * N+1 over whole transcripts — the most expensive read in the engine,
      * repeated per session, per poll. One pass over the queues answers it here.
+     *
+     * AND IT IS ONE PASS NOW, rather than one for the activity and a second for
+     * the assignments over the same documents (#464). See `foldLiveSessions`.
      */
-    const assignments: Record<string, SessionAssignment[]> = {};
-    for (const session of sessions) {
-      const held = this.sessionAssignments(session.id);
-      if (held.length > 0) assignments[session.id] = held;
-    }
+    const { sessions, assignments } = this.foldLiveSessions();
     return {
       sessions,
       projects: projects.map((project) => ({ id: project.id, name: project.name })),

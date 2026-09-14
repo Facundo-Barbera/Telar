@@ -188,6 +188,43 @@ test("the default answer carries only the rows a rail draws, and says how many i
   for (const id of Object.keys(after.assignments)) expect(kept.has(id)).toBe(true);
 });
 
+/**
+ * ISSUE #464, PINNED ON THE THING IT IS ABOUT: how many times the pass opens
+ * each queue.
+ *
+ * SPYING ON A PRIVATE METHOD, deliberately. The claim is not about an answer —
+ * both shapes were correct before and after — it is about the WORK, and the
+ * only honest way to fail when the work comes back is to count it. `readQueue`
+ * is where the sqlite read, the `JSON.parse` and the `TurnSchema` validation
+ * all happen, so it is the call that costs what this issue measured.
+ */
+test("the live fold opens each session's queue once, and an archived one not at all", () => {
+  const store = new EngineStore(root(), () => 1_700_000_000_000);
+  store.registerProject({ id: "project_one", name: "Telar", root: checkout() });
+  const ids = ["session_aaaaaaaa1111111111111111111111", "session_bbbbbbbb2222222222222222222222", "session_cccccccc3333333333333333333333"];
+  for (const id of ids) store.createSession({ id, projectId: "project_one", title: id });
+  store.archiveSession(ids[2]!);
+
+  const spied = store as unknown as { readQueue(sessionId: string): { turns: unknown[] } };
+  const original = spied.readQueue.bind(store);
+  const opened: string[] = [];
+  spied.readQueue = (sessionId: string) => {
+    opened.push(sessionId);
+    return original(sessionId);
+  };
+
+  const answer = store.liveSessionRows({ all: true });
+  expect(answer.sessions).toHaveLength(2);
+  // ONCE EACH. It was twice — the activity fold read one copy and the
+  // assignment fold read another of the same document, moments apart. Sorted
+  // because the pass reads in the store's own order and sorts afterwards; the
+  // claim here is the COUNT, not the order.
+  expect(opened.sort()).toEqual([ids[0]!, ids[1]!].sort());
+  // And the archived one is never opened: its state is in the metadata
+  // document, so it is answerable before the expensive read rather than after.
+  expect(opened).not.toContain(ids[2]!);
+});
+
 test("a blocker, a pin and a draft all survive the filter — the rows it must never drop", () => {
   const now = 1_700_000_000_000;
   const store = new EngineStore(root(), () => now);
