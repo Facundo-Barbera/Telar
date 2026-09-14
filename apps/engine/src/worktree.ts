@@ -171,6 +171,22 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
 
 export const defaultAsyncGitRunner: AsyncGitRunner = createAsyncGitRunner();
 
+/**
+ * A SEPARATE POOL FOR THE MUTATIONS, not a share of the read pool above.
+ *
+ * `worktree add` is the slowest git child this engine spawns — seconds on a
+ * large checkout, against milliseconds for the `rev-parse` a rail poll makes.
+ * Drawing both from one four-slot pool would let a handful of concurrent cuts
+ * hold every slot, and the reads queued behind them would expire on their own
+ * deadlines: not a frozen app, but a rail whose branch labels go stale exactly
+ * while somebody is opening sessions. Two pools, and neither can starve the
+ * other.
+ *
+ * TWO SLOTS, because a checkout is disk-bound: cutting four at once is not four
+ * times faster, and `createWorktreeQueue` already holds each project to one.
+ */
+export const defaultWorktreeGitRunner: AsyncGitRunner = createAsyncGitRunner({ concurrency: 2 });
+
 /** Serialise work under a key; see `createWorktreeQueue`. */
 export type WorktreeQueue = <T>(key: string, work: () => Promise<T>) => Promise<T>;
 

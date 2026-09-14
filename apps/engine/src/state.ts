@@ -266,7 +266,7 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
@@ -2177,6 +2177,9 @@ export class EngineStore {
   private readonly manifest: ModelManifest;
   private readonly git: GitRunner;
   private readonly asyncGit: AsyncGitRunner;
+  /** The cuts and removals, on a pool the rail's polls do not share — see
+   *  `defaultWorktreeGitRunner`. The same runner when a caller injected one. */
+  private readonly worktreeGit: AsyncGitRunner;
   /**
    * One worktree mutation at a time per project — the ordering the synchronous
    * runner used to buy by blocking the daemon (#496). In memory, like
@@ -5174,6 +5177,11 @@ export class EngineStore {
     this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
+    // A POOL OF ITS OWN FOR THE CUTS, so the slowest git child cannot hold a
+    // slot the rail's polls need — see `defaultWorktreeGitRunner`. An INJECTED
+    // runner still wins, and wins for both: a test that fakes git is faking the
+    // whole of git, and two seams would let a fake apply to half of it.
+    this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
     this.gh = options.gh ?? defaultGhRunner;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
@@ -7174,7 +7182,7 @@ export class EngineStore {
   private prepareWorktree(sessionId: string, projectRoot: string, plan: WorktreePlan, baseSha: string): void {
     void this.worktreeQueue(projectRoot, async () => {
       try {
-        await createSessionWorktreeAsync(this.asyncGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
+        await createSessionWorktreeAsync(this.worktreeGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
         this.settleWorktree(sessionId, undefined);
       } catch (error) {
         // Git's own words, not ours — see `SessionPreparation.error`.
@@ -9834,7 +9842,7 @@ export class EngineStore {
    * the same project do not race on the index lock.
    */
   private releaseWorktree(projectRoot: string, worktreePath: string): void {
-    void this.worktreeQueue(projectRoot, () => removeSessionWorktreeAsync(this.asyncGit, projectRoot, worktreePath));
+    void this.worktreeQueue(projectRoot, () => removeSessionWorktreeAsync(this.worktreeGit, projectRoot, worktreePath));
   }
 
   private releaseDataScience(session: Session, reason: string): void {
