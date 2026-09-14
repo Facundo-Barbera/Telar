@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CheckIcon, DownloadIcon, LayersIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { CheckIcon, DownloadIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
 import { useFollowHost } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
@@ -65,10 +65,9 @@ function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
 }
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
-import { Row } from "./settings-shell";
+import { Row, SettingsGroup } from "./settings-shell";
 
 /** The one word the HOST row still needs — a row has no thumbnail to say it
  *  with. The cards do, so they carry no subtitle at all. */
@@ -286,71 +285,68 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
   }, []);
 
   const ready = state.status === "ready";
+  // ON THE SETTINGS GRAMMAR. This row had hand-rolled `Row`'s whole anatomy — a
+  // `font-medium` div for the label, a muted `text-xs` one for the hint,
+  // controls pushed right — which is exactly the duplication the shared grammar
+  // exists to end. `Row` eats no padding of its own and draws no hairline: the
+  // `SettingsGroup` card around it supplies both to its direct children
+  // (settings-shell.tsx says so), which is why the wrapper this used to carry
+  // went with the Panel in #399.
   return (
-    // ON THE SETTINGS GRAMMAR, INSIDE A PANEL. This row had hand-rolled `Row`'s
-    // whole anatomy — a `font-medium` div for the label, a muted `text-xs` one
-    // for the hint, controls pushed right — which is exactly the duplication
-    // the shared grammar exists to end. `Row` eats no padding of its own, so a
-    // Panel supplies the horizontal inset the way a SettingsGroup would
-    // (settings-shell.tsx says so); the hairline stays, the `tone="info"` rail
-    // goes, because a rail on the one row a panel has says nothing the row does
-    // not already say.
-    <div className="border-b border-border px-3">
-      <Row
-        // The label carries the thumbnail, so it is not a string and cannot
-        // derive its own anchor.
-        id="settings-row-appearance-host-look"
-        label={
-          <span className="flex items-center gap-2">
-            {ready ? (
-              <LookStrip look={state.look} />
-            ) : (
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground [&_svg]:size-4">
-                <MonitorSmartphoneIcon />
-              </span>
-            )}
-            <span>{following ? "Following the host's look" : "Host's look"}</span>
-          </span>
-        }
-        hint={
-          ready
-            ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
-            : HOST_LOOK_HINT[state.status]
-        }
-        control={
-          <div className="flex items-center gap-2">
-            {ready && !following && (
-              <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
-                Open
-              </Button>
-            )}
-            {!ready && (
-              <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
-                {state.status === "loading" ? "Loading…" : "Retry"}
-              </Button>
-            )}
-            {/* NOT `unavailable`, deliberately. There is nothing to follow until
-                the host publishes something — but Retry is the whole point of
-                the not-ready states, and `unavailable` would take the control
-                column inert as a unit and disable the one control that still
-                works. The switch says no for itself. */}
-            <Switch
-              checked={following}
-              disabled={!ready && !following}
-              onCheckedChange={(next) => (next ? follow() : detach())}
-              aria-label="Follow the host's look"
-              title={
-                ready
-                  ? following
-                    ? "Stop following the host's look"
-                    : "Wear the host's look, and keep wearing it as it changes"
-                  : "The host has not published a look to follow."
-              }
-            />
-          </div>
-        }
-      />
-    </div>
+    <Row
+      // The label carries the thumbnail, so it is not a string and cannot
+      // derive its own anchor.
+      id="settings-row-appearance-host-look"
+      label={
+        <span className="flex items-center gap-2">
+          {ready ? (
+            <LookStrip look={state.look} />
+          ) : (
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground [&_svg]:size-4">
+              <MonitorSmartphoneIcon />
+            </span>
+          )}
+          <span>{following ? "Following the host's look" : "Host's look"}</span>
+        </span>
+      }
+      hint={
+        ready
+          ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
+          : HOST_LOOK_HINT[state.status]
+      }
+      control={
+        <div className="flex items-center gap-2">
+          {ready && !following && (
+            <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
+              Open
+            </Button>
+          )}
+          {!ready && (
+            <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
+              {state.status === "loading" ? "Loading…" : "Retry"}
+            </Button>
+          )}
+          {/* NOT `unavailable`, deliberately. There is nothing to follow until
+              the host publishes something — but Retry is the whole point of
+              the not-ready states, and `unavailable` would take the control
+              column inert as a unit and disable the one control that still
+              works. The switch says no for itself. */}
+          <Switch
+            checked={following}
+            disabled={!ready && !following}
+            onCheckedChange={(next) => (next ? follow() : detach())}
+            aria-label="Follow the host's look"
+            title={
+              ready
+                ? following
+                  ? "Stop following the host's look"
+                  : "Wear the host's look, and keep wearing it as it changes"
+                : "The host has not published a look to follow."
+            }
+          />
+        </div>
+      }
+    />
   );
 }
 
@@ -428,17 +424,26 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
   };
 
   return (
-    <Panel>
-      <PanelHeader
-        icon={<LayersIcon />}
-        label="Looks"
-        count={looks.length + STARTER_LOOKS.length}
-        actions={
+    // THE SHELF OWNS ITS OWN GROUP, the way InboxSection and
+    // BrowserProfilesSection own theirs (#399). It was a `Panel` inside a pane
+    // built out of tabs; the pane is stacked `SettingsGroup` cards now, and a
+    // section that draws its own card inside one of those is a card in a card.
+    // The count and the import button move to the caption line, which is where
+    // a control that acts on the WHOLE group belongs.
+    <SettingsGroup
+      title="Looks"
+      description="Whole appearances — palette, scene, accent and type together. Click one to open it as a draft; hover to wear it outright."
+      action={
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
+            {looks.length + STARTER_LOOKS.length}
+          </span>
           <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>
             <UploadIcon />
           </Button>
-        }
-      />
+        </div>
+      }
+    >
       <input
         ref={fileInput}
         type="file"
@@ -453,9 +458,9 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
           void file.text().then(importFile);
         }}
       />
-      {error && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{error}</p>}
+      {error && <p className="py-1.5 text-xs text-warning">{error}</p>}
       {!isHost && <HostLookRow onOpen={onOpen} />}
-      <PanelBody className="overflow-x-auto p-2">
+      <div className="overflow-x-auto py-2">
         <div className="flex items-start gap-1.5">
           {looks.map((look) => (
             <LookCard
@@ -486,7 +491,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
             />
           ))}
         </div>
-      </PanelBody>
-    </Panel>
+      </div>
+    </SettingsGroup>
   );
 }

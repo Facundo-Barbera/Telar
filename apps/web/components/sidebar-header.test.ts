@@ -45,14 +45,18 @@ describe("the rail's header is one row", () => {
     expect(pill).toContain('className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5"');
   });
 
-  test("each verb is the control it already was, not a second implementation", () => {
-    // Add project opens the palette's Sources page — the same page the rail's
-    // empty-space menu opens, so `chooseDirectory` still has one caller.
-    expect(header).toContain('onClick={() => openPalette("sources")}');
-    // New conversation still goes through the one place that decides between
-    // the palette and a canvas.
-    expect(header).toContain("onClick={newConversation}");
+  test("each verb is a COMMAND, pressed — not a second implementation of one", () => {
+    // #402: a button that reached for the bridge or set the palette's state
+    // itself is how a button and its chord come to mean two slightly different
+    // things. All three ask the dispatcher the keyboard asks.
+    expect(header).toContain('onClick={() => run("reveal-in-finder")}');
+    expect(header).toContain('onClick={() => run("add-project")}');
+    expect(header).toContain('onClick={() => run("new-conversation")}');
+    // And the dispatcher is the rail's own, so "New conversation" still goes
+    // through the one place that decides between the palette and a canvas.
+    expect(sidebar).toContain("const run = useCommandKeys(jumpRows, {");
     expect(sidebar).toContain('"new-conversation": () => newConversation(),');
+    expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
   });
 });
 

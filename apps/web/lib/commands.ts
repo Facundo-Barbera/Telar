@@ -52,6 +52,7 @@ export type { CommandKeyEventLike };
  */
 export type CommandId =
   | "new-conversation"
+  | "new-conversation-in"
   | "new-tab"
   | "new-window"
   | "focus-composer"
@@ -60,6 +61,7 @@ export type CommandId =
   | "reveal-in-finder"
   | "pin-session"
   | "search-sessions"
+  | "add-project"
   | "toggle-rail"
   | `jump-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
   | "toggle-panel"
@@ -71,8 +73,15 @@ export type CommandId =
   | "open-data"
   | "open-latex"
   | "toggle-devtools"
+  | "go-to-file"
+  | "search-project-contents"
   | "settings"
-  | "search-settings";
+  | "search-settings"
+  | "appearance"
+  | "project-settings"
+  | "open-usage"
+  | "open-plugins"
+  | "check-for-updates";
 
 export type CommandGroup = "Conversation" | "Rail" | "Panel" | "Application";
 
