@@ -28,6 +28,14 @@ import {
   whyUndeletable,
   type BrowserProfile,
 } from "@/lib/desktop-browser-profiles";
+import {
+  desktopSitePermissions,
+  describeSitePermission,
+  siteLabel,
+  type SitePermissionKind,
+  type SitePermissionProfile,
+} from "@/lib/desktop-site-permissions";
+import { PermissionKindIcon } from "@/components/browser-permission-prompt";
 import { NewBrowserProfileDialog } from "@/components/browser-profile-prompt";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { Badge } from "@/components/ui/badge";
@@ -203,6 +211,7 @@ export function BrowserProfilesSection() {
           </Row>
         ))}
       </SettingsGroup>
+      <SitePermissionsGroup />
       <NewBrowserProfileDialog
         open={creating}
         onOpenChange={setCreating}
@@ -210,5 +219,126 @@ export function BrowserProfilesSection() {
         onCreated={() => void load()}
       />
     </>
+  );
+}
+
+/**
+ * SITE PERMISSIONS — every answer this install has given a site, by profile, and
+ * the one button that takes one back.
+ *
+ * WHY IT IS HERE AND NOT ONLY UNDER THE LOCK ICON. The lock answers "what does
+ * THIS page hold", which is the question you have while looking at that page.
+ * The question this pane answers is the other one — "what have I agreed to" —
+ * and it cannot be asked from inside any single session, because the answers are
+ * scattered across as many profiles as this install has.
+ *
+ * READ AND REVOKE ONLY, like remembered logins below it. A permission is created
+ * in exactly one way: by answering a prompt with the page in front of you. A
+ * settings screen that could mint one would be a settings screen handing out a
+ * camera at a distance.
+ */
+export function SitePermissionsGroup() {
+  const [profiles, setProfiles] = useState<SitePermissionProfile[]>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const bridge = desktopSitePermissions();
+  const supported = Boolean(bridge?.sitePermissions && bridge?.forgetSitePermission);
+
+  const load = useCallback(async () => {
+    const reader = desktopSitePermissions();
+    if (!reader?.sitePermissions) return;
+    try {
+      const answer = await reader.sitePermissions({});
+      setProfiles("profiles" in answer ? answer.profiles : []);
+      setError(undefined);
+    } catch {
+      setError("The desktop shell did not answer; its browser host may still be starting.");
+    }
+  }, []);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(task);
+  }, [load]);
+
+  /** Every write lands the shell's own answer — a refusal has to show up as the
+   *  refusal, not as a row that moved. */
+  const forget = async (key: string, input: { partition: string; origin: string; kind?: SitePermissionKind }) => {
+    if (!bridge?.forgetSitePermission) return;
+    setBusy(key);
+    setError(undefined);
+    try {
+      setProfiles((await bridge.forgetSitePermission(input)).profiles);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "That permission could not be forgotten.");
+      await load();
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  if (!supported) {
+    return (
+      <SettingsGroup title="Site permissions" description="What sites may do in Telar's own browser.">
+        <Row icon={MonitorIcon} label="Desktop app only" hint="This browser tab has no browser host to keep site permissions for." />
+      </SettingsGroup>
+    );
+  }
+
+  return (
+    <SettingsGroup
+      title="Site permissions"
+      description="Camera, microphone, notifications, location, clipboard and screen sharing, as you answered them."
+    >
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {profiles === undefined && !error && <Spinner className="size-4" />}
+      {/* A row rather than a loose paragraph, so the empty state sits on the
+          same grid as the list it replaces. */}
+      {profiles?.length === 0 && (
+        <Row label="Nothing decided yet" hint="Telar asks the first time a site wants something, over the browser's address bar." />
+      )}
+      {profiles?.map((profile) =>
+        profile.origins.map((site) => (
+          <Row
+            key={`${profile.partition}:${site.origin}`}
+            id={`settings-row-site-permission-${profile.partition}-${site.origin}`}
+            label={<span className="truncate font-mono text-[0.75rem]">{siteLabel(site.origin)}</span>}
+            /* THE PROFILE IS THE HALF THAT CANNOT BE LEFT OUT: the same site can
+               be allowed in one identity and blocked in another, and a list that
+               did not say which would be a list you cannot act on. */
+            hint={`${profile.label} · ${site.kinds.map(describeSitePermission).join(", ")}`}
+            control={
+              <div className="flex items-center gap-1">
+                {site.kinds.map((record) => (
+                  <button
+                    key={record.kind}
+                    type="button"
+                    disabled={busy === `${profile.partition}:${site.origin}`}
+                    aria-label={`Forget ${describeSitePermission(record)} for ${siteLabel(site.origin)} in ${profile.label}`}
+                    title={`${describeSitePermission(record)} — forget this answer. The site asks again next time.`}
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                    onClick={() =>
+                      void forget(`${profile.partition}:${site.origin}`, { partition: profile.partition, origin: site.origin, kind: record.kind })
+                    }
+                  >
+                    <PermissionKindIcon kind={record.kind} className={record.decision === "block" ? "opacity-50" : undefined} />
+                  </button>
+                ))}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy === `${profile.partition}:${site.origin}`}
+                  title={`Forget every answer given to ${siteLabel(site.origin)} in ${profile.label}. Nothing is signed out; the site asks again next time.`}
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => void forget(`${profile.partition}:${site.origin}`, { partition: profile.partition, origin: site.origin })}
+                >
+                  Remove
+                </Button>
+              </div>
+            }
+          />
+        )),
+      )}
+    </SettingsGroup>
   );
 }
