@@ -2777,6 +2777,42 @@ export function createClaudeDriver(
         outstandingSteerCuts.delete(first);
         return true;
       };
+      /**
+       * THE CALLS THE CUT KILLED ARE OVER — AND SAYING SO IS WHAT LETS THE TURN
+       * EVER END AGAIN (#465).
+       *
+       * A steer is delivered by interrupting the CLI, which kills the in-flight
+       * response. A `Bash` the model had just called therefore never produces a
+       * `tool_result` — and `openTopLevelTools` only ever loses an id ON a
+       * tool_result. Left alone, that id sits in the set for the rest of the
+       * turn, with two consequences that compound: the end-turn grace above
+       * never arms (it requires an empty set, because a genuinely open call is
+       * exactly what a turn SHOULD wait for), and every later `result` whose
+       * `stop_reason` is null or `tool_use` trips `toolsStillRunning` and keeps
+       * the pump waiting. Nothing in the stream can ever clear it, so only a
+       * human pressing Stop ends the turn.
+       *
+       * That matches the measured session exactly: after the first steer landed
+       * at 05:56 UTC every turn ended as `turn.stopped` and not one as
+       * `turn.completed`, and the single turn that did complete was the first
+       * turn of a fresh process, before any steer.
+       *
+       * CLOSED AS FAILED, WITH THE REASON ON THE ROW, rather than silently
+       * dropped: the call really did not finish, and a spinner left on the
+       * transcript for the rest of the turn is the same lie told visually. The
+       * sub-agent rows are deliberately left to the turn-end sweep — a
+       * backgrounded agent's rows legitimately outlive the turn, and only the
+       * top-level set is what gates the turn's ending.
+       */
+      const closeCutTools = (): void => {
+        for (const useId of [...openTopLevelTools]) {
+          openTopLevelTools.delete(useId);
+          const open = openTools.get(useId);
+          if (!open) continue;
+          openTools.delete(useId);
+          emit({ kind: "item.completed", itemId: open.id, status: "failed", detail: withToolResult(open.detail, "cut by a steer") });
+        }
+      };
       if (persistent && steer) {
         void (async () => {
           for (;;) {
@@ -3235,6 +3271,10 @@ export function createClaudeDriver(
               // end. The words that caused it are already in the feed, so keep
               // pumping; the text streamed before the cut stays journalled.
               if (consumeSteerCut()) {
+                // …but the calls the interrupt killed ARE over, and leaving
+                // them open is what wedged every steered turn — see
+                // `closeCutTools`.
+                closeCutTools();
                 await flush();
                 continue;
               }

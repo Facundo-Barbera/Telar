@@ -4362,3 +4362,66 @@ describe("background work outlives its turn, but not its process (#465)", () => 
     expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "stopped" });
   });
 });
+
+test("a steer that cuts a tool call does not wedge the turn — the cut row closes and the next result ends it (#465)", async () => {
+  /**
+   * THE ONE STALL THE END-TURN GRACE CANNOT CATCH, and the reason it explains
+   * "fine until the first steer". Measured on the coordinator session: after
+   * the first steer landed at 05:56 UTC every turn ended as `turn.stopped` (the
+   * owner pressing Stop) and not one as `turn.completed`; the single turn that
+   * did complete was the first turn of a fresh process, before any steer.
+   *
+   * A steer is delivered by interrupting the CLI, which kills the response
+   * mid-flight, so the `Bash` the model had just called never produces a
+   * `tool_result` — and `openTopLevelTools` only ever loses an id ON a
+   * tool_result. The stale id then blocks the grace (which requires an empty
+   * set, because a genuinely open call is what a turn SHOULD wait for) and
+   * trips `toolsStillRunning` on every later `result` that states nothing
+   * definite. Nothing in the stream can clear it.
+   */
+  let startedGenerating: (() => void) | undefined;
+  const generating = new Promise<void>((resolve) => { startedGenerating = resolve; });
+  let releaseGeneration: (() => void) | undefined;
+  const cut = new Promise<void>((resolve) => { releaseGeneration = resolve; });
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    query({ prompt }: { prompt: AsyncIterable<{ uuid?: string; message: { content: unknown } }> }) {
+      const iterator = prompt[Symbol.asyncIterator]();
+      async function* pump() {
+        const first = await iterator.next();
+        const uuid = first.value!.uuid!;
+        heard.push(first.value!.message.content);
+        yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: uuid };
+        yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_cut", name: "Bash", input: { command: "gh pr checks" } }] } };
+        startedGenerating!();
+        // The call is in flight when the steer lands. Its `tool_result` never
+        // arrives — the interrupt killed the response that would have sent it.
+        await cut;
+        yield { type: "result", subtype: "interrupted", user_message_uuid: uuid };
+        const second = await iterator.next();
+        heard.push(second.value!.message.content);
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "stopped, here is where I got to" }] } };
+        // The shape the measured stall produced: a result that states nothing
+        // definite. Against a stale tool set this used to park the pump.
+        yield { type: "result", subtype: "success", stop_reason: null };
+        await iterator.next();
+      }
+      return Object.assign(pump(), { interrupt: async () => releaseGeneration!() });
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const { sink, result } = run(driver, { sessionId: "session_465_cut", steer });
+  await generating;
+  steer.push("actually, stop");
+  // THE ASSERTION IS THAT THIS RESOLVES AT ALL. Before the fix the pump sat on
+  // the stale id until a human pressed Stop — here, until the test timed out.
+  await expect(result).resolves.toMatchObject({ text: "stopped, here is where I got to" });
+  // The steer really was delivered as a second message, not queued behind.
+  expect(heard).toEqual(["prompt", "actually, stop"]);
+  // And the call the interrupt killed is closed rather than left spinning, with
+  // the reason on the row: it really did not finish.
+  const closed = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_toolu_cut");
+  expect(closed?.kind === "item.completed" && closed.status).toBe("failed");
+  expect(JSON.stringify(closed?.kind === "item.completed" ? closed.detail : undefined)).toContain("cut by a steer");
+});
