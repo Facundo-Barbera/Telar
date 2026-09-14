@@ -129,7 +129,6 @@ export function SettingsShell({
   backHref,
   headerActions,
   search,
-  wide,
   children,
 }: {
   title: ReactNode;
@@ -146,16 +145,6 @@ export function SettingsShell({
    * settings-registry.ts). Without it the nav is exactly what it was.
    */
   search?: SettingsSearchIndex;
-  /**
-   * OPT OUT OF THE READING COLUMN. Every pane here is a list of rows, and a
-   * list of rows wants a measure — hence the `max-w-2xl` that has held since
-   * this frame was ported. Appearance stopped being a list: it is an editor
-   * with a preview, a transcript and an inspector beside each other, and three
-   * columns folded into 42rem is a worse version of each. This flag is the
-   * ONE exception, asked for per pane rather than made the default, so no
-   * other section's measure moves.
-   */
-  wide?: boolean;
   children: ReactNode;
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
@@ -456,7 +445,15 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>
+          {/* ONE MEASURE, EVERY PANE (#435). Appearance used to opt out through
+              a `wide` flag, on the reasoning that a theme editor is not a list
+              of rows — and it read as a different application: the same nav,
+              the same header, and content running twice as far. A reader who
+              crosses from General to Appearance should not have the column
+              move under them. The editor reflows to 42rem instead (the type
+              specimens and the colour grid both), which is the trade this
+              frame has always made everywhere else. */}
+          <div className="mx-auto w-full max-w-2xl px-5 py-5">
             <SettingsPaneContext.Provider value={activeSection.id}>
               <SettingsRestoreContext.Provider value={restoreRegistry}>{children}</SettingsRestoreContext.Provider>
             </SettingsPaneContext.Provider>

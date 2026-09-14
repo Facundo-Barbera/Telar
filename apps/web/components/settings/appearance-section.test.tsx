@@ -18,9 +18,12 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { SlidersHorizontalIcon } from "lucide-react";
+import { Row, SettingsGroup, SettingsShell } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -120,6 +123,79 @@ describe("the rows settings search points at", () => {
     expect(new Set(claimed).size).toBe(claimed.length);
     expect(claimed).toContain("settings-row-appearance-backdrop-show-through");
     expect(claimed).toContain("settings-row-window-show-through");
+  });
+});
+
+/**
+ * ONE READING COLUMN, AND APPEARANCE IS IN IT — issue #435.
+ *
+ * The shell sets the measure on a single wrapper around whatever pane is
+ * showing (settings-shell.tsx), and Appearance used to be handed an opt-out
+ * that swapped `max-w-2xl` for `max-w-[1400px]`. The result read as a second
+ * application behind the same nav: cross from General and the column doubled.
+ *
+ * MOUNTED IN THE SHELL, NOT ASSERTED FROM A CLASS NAME. The claim is about an
+ * ANCESTOR — which element actually constrains the pane — so both panes are
+ * rendered inside a real `SettingsShell` and the constraining node is found by
+ * walking up from something only that pane draws. A test that read the class
+ * off the shell in isolation would still pass with the flag restored.
+ */
+describe("the pane sits in the same reading column as every other", () => {
+  /** The shell's measure wrapper, found from a node only this pane renders. */
+  function measureAround(marker: string): HTMLElement | null {
+    const child = host.querySelector(marker);
+    return child?.closest("div.mx-auto.w-full") ?? null;
+  }
+
+  async function renderShell(active: string, pane: React.ReactNode) {
+    await act(async () => {
+      root.render(
+        <SettingsShell
+          title="Settings"
+          sections={[
+            { id: "general", label: "General", icon: SlidersHorizontalIcon },
+            { id: "appearance", label: "Appearance", icon: SlidersHorizontalIcon },
+          ]}
+          active={active}
+          onSelect={() => undefined}
+        >
+          {pane}
+        </SettingsShell>,
+      );
+    });
+  }
+
+  test("Appearance is wrapped in the measure General is wrapped in", async () => {
+    await renderShell("appearance", <AppearanceSection />);
+    const appearance = measureAround('[aria-label="Look name"]')?.className;
+
+    await renderShell(
+      "general",
+      <SettingsGroup title="Settling">
+        <Row label="Settle quiet sessions" />
+      </SettingsGroup>,
+    );
+    // Any row will do as the handle — what is being compared is the ancestor
+    // above it, not which row it is.
+    const general = measureAround('[id^="settings-row-"]')?.className;
+
+    expect(appearance).toBeDefined();
+    expect(general).toBeDefined();
+    // The SAME class, not merely a narrow one: the regression this guards is a
+    // per-pane branch coming back, whatever width it picks.
+    expect(appearance).toBe(general);
+    expect(appearance).toContain("max-w-2xl");
+  });
+
+  test("the shell offers no per-pane width to opt out through", () => {
+    // Pinned against source because the old escape hatch was a PROP: a pane
+    // could be widened again without any rendered element here changing until
+    // somebody passed it. Both halves are checked — the knob and its caller.
+    const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
+    expect(shell).not.toContain("max-w-[1400px]");
+    expect(shell).not.toContain("wide?: boolean");
+    expect(page).not.toContain("wide=");
   });
 });
 

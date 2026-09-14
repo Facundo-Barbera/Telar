@@ -253,9 +253,6 @@ export function SettingsPage() {
       // six panes holds it — which is the gap this nav has always had, since
       // General alone stacks six sections. See settings-registry.ts.
       search={SETTINGS_SEARCH_INDEX}
-      // Appearance is a theme editor, not a list of rows — see `wide` in
-      // settings-shell.tsx. Every other pane keeps the reading column.
-      wide={active === "appearance"}
     >
       {active === "appearance" && <AppearanceSection />}
 
