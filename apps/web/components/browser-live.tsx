@@ -457,11 +457,10 @@ function CameraButton({ busy, onCapture }: { busy: boolean; onCapture: (fullPage
   );
 }
 
-/** The shell's bridge, or undefined outside the desktop app. */
-export function desktopBrowserBridge(): DesktopBrowserBridge | undefined {
-  if (typeof window === "undefined" || hostFromPathname(window.location.pathname) !== LOCAL_HOST_ID) return undefined;
-  return (window as unknown as { telarDesktop?: { browser?: DesktopBrowserBridge } }).telarDesktop?.browser;
-}
+/* `desktopBrowserBridge()` moved to lib/desktop-browser-bridge.ts (#492). It is
+   a `typeof window` check that three modules make without drawing a browser, and
+   from here it kept this whole surface in the conversation route's first bundle
+   no matter what `next/dynamic` did with the component below. */
 
 /**
  * THE HOST'S OWN CORNER, IN PX (#475).

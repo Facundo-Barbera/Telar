@@ -56,7 +56,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // turn header here. One vocabulary, or the two spellings drift apart.
 import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
-import { desktopBrowserBridge } from "./browser-live";
+import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
