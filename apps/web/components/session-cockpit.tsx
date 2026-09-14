@@ -23,7 +23,7 @@ import {
   type TurnAttachment,
   type TurnState,
 } from "@telar/engine-client";
-import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
@@ -32,7 +32,8 @@ import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
-import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { projectLabel } from "@/lib/hosts/host-projects";
 import { isSettled } from "@/lib/session-settling";
 import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
@@ -191,12 +192,26 @@ export function cockpitPlugins(project: Pick<Project, "plugins" | "latex" | "dat
   return { dataScience: pluginEnabled(plugins, "data-science"), latex: pluginEnabled(plugins, "latex") };
 }
 
+/**
+ * WHICH MACHINE SAID NO (#204).
+ *
+ * A session id is minted per engine, so the engine's own words — "session does
+ * not exist" — are only interpretable once the reader knows whose session store
+ * answered. Unattributed, on a cockpit holding three paired Macs, it reads as a
+ * broken app; attributed, it is either the plain truth or a visible sign that
+ * the row was opened against the wrong Mac. Nothing is said for a local failure:
+ * there is only one of this machine, and naming it would be noise on every
+ * ordinary error.
+ */
 function SessionProblem({ error }: { error: EngineApiError }) {
   const unavailable = error.code === "engine_unavailable" || error.code === "engine_locked";
+  const host = refusedBy(error);
   return (
     <Alert variant="destructive" className="mx-auto max-w-[50rem]">
       <TriangleAlertIcon />
-      <AlertTitle>{unavailable ? "Engine unavailable" : "Request failed"}</AlertTitle>
+      <AlertTitle>
+        {unavailable ? (host ? `${host} is unavailable` : "Engine unavailable") : host ? `${host} refused the request` : "Request failed"}
+      </AlertTitle>
       <AlertDescription>{error.message}</AlertDescription>
     </Alert>
   );
@@ -257,6 +272,7 @@ function SessionMasthead({
   projectId,
   hostId,
   projectName,
+  projectResolved,
   session,
   onRename,
   panel,
@@ -267,10 +283,13 @@ function SessionMasthead({
   projectId: string;
   /** Which Mac the project is on — the breadcrumb's link must stay there. */
   hostId: string;
-  /** Resolved from the project record. Absent until it loads — the breadcrumb
-   *  falls back to the id rather than showing a gap, but an opaque
-   *  `project_1a1649…` is addressing, not a name a person navigates by. */
+  /** Resolved from THIS host's project record. Absent until it loads, and
+   *  absent for good when this Mac does not hold the project — `projectLabel`
+   *  tells those two apart. It never falls back to the id: `project_1a1649…` is
+   *  addressing, and the same string names different work on two Macs (#204). */
   projectName?: string;
+  /** Whether this host's registry has answered at all. */
+  projectResolved?: boolean;
   session?: Session;
   /** `sending` is gone from here: it gated the rename pencil, and renaming a
    *  session is a PATCH on its title that has nothing to do with whether a turn
@@ -400,7 +419,7 @@ function SessionMasthead({
             href={canvasHref(projectId, hostId)}
             className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {projectName ?? session?.projectId ?? projectId}
+            {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
           </Link>
           <span className="text-border">/</span>
           {editing ? (
@@ -1256,6 +1275,26 @@ export function SessionCockpit({
    * routes, which do not have it, and for a project renamed while open.
    */
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
+  /** Whether THIS host's registry has answered. Distinct from having a name:
+   *  an answer that does not hold the project is the tell for a row opened
+   *  against the wrong Mac, and the breadcrumb says so rather than showing an
+   *  id (#204). */
+  const [projectResolved, setProjectResolved] = useState(false);
+  /**
+   * A DIFFERENT MAC IS A DIFFERENT REGISTRY, so what is held describes the old
+   * one. Cleared during render rather than from an effect, so no frame names
+   * one Mac's project under another's address — the same rule, for the same
+   * reason, as `lib/hosts/host-projects.ts`. Without it, remote B → local left
+   * B's project name in the breadcrumb until the local read landed, and with
+   * overlapping ids there was nothing on screen to say it had.
+   */
+  const nameKey = JSON.stringify([hostId, projectId]);
+  const [nameSubject, setNameSubject] = useState(nameKey);
+  if (nameSubject !== nameKey) {
+    setNameSubject(nameKey);
+    setProjectName(undefined);
+    setProjectResolved(false);
+  }
   /** The project's data-science opt-in, read with its name. Off until known. */
   const [dataScience, setDataScience] = useState(false);
   /** The project's LaTeX opt-in — same lifecycle. */
@@ -1565,7 +1604,11 @@ export function SessionCockpit({
         setBrowserCanStart(Boolean(projectId && (hostId !== LOCAL_HOST_ID || desktopBrowserBridge())));
         return;
       }
-      api.browserState(sessionId).then(
+      // PINNED, like `openBrowser` two paragraphs up and like every other read
+      // in this component: this runs a task after the effect, so a switch that
+      // lands in between would otherwise send a read for THIS session to
+      // whichever Mac the address bar had moved on to (#204).
+      createEngineApi(hostFetcher(hostId)).browserState(sessionId).then(
         (result) => {
           if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
         },
@@ -2139,12 +2182,28 @@ export function SessionCockpit({
       const remembered = rememberedProjectName(projectId);
       if (remembered) setProjectName(remembered);
     }, 0);
-    void api.projects().then(
+    /**
+     * PINNED TO THIS SCREEN'S MAC, not to the address bar (#204).
+     *
+     * Every other read in this component is already `hostFetcher(hostId)`; this
+     * one was the module-level `api`, whose fetcher resolves the host from
+     * `window.location.pathname` AT CALL TIME. The subject of this effect is the
+     * session being shown, which is a fact about `hostId` — and the two can
+     * disagree for the length of a navigation, at which point the breadcrumb is
+     * named by one Mac's registry for another Mac's project. With ids minted per
+     * engine, the failure is silent: an overlapping id resolves to a real name
+     * belonging to the wrong work.
+     */
+    void createEngineApi(hostFetcher(hostId)).projects().then(
       (result) => {
         if (cancelled) return;
         answered = true;
         const found = result.projects.find((project) => project.id === projectId);
         setProjectName(found?.name);
+        // ANSWERED, whether or not it held the project — which is the difference
+        // between "the name has not arrived" and "this project is not on this
+        // Mac", and only the second is worth saying out loud.
+        setProjectResolved(true);
         const plugins = cockpitPlugins(found);
         setDataScience(plugins.dataScience);
         setLatex(plugins.latex);
@@ -3023,6 +3082,7 @@ export function SessionCockpit({
           projectId={projectId}
           hostId={hostId}
           projectName={projectName}
+          projectResolved={projectResolved}
           session={session}
           {...(headerMenu ? { menu: headerMenu } : {})}
           readOnly={observe}
