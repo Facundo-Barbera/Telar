@@ -365,7 +365,9 @@ function SidebarBody() {
   const inSpool = pathname.startsWith("/spool");
   const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
-  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar();
+  // `open` is here for the palette's Quick settings row, which reports which
+  // way Toggle Rail would go — the rail is what knows, so the rail says.
+  const { isMobile, open: railOpen, setOpenMobile, toggleSidebar } = useSidebar();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
@@ -1228,6 +1230,7 @@ function SidebarBody() {
         onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
         targets={pickerTargets}
         sessions={sessions}
+        railOpen={railOpen}
         onRun={run}
         onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
         onOpenSession={(session) => {

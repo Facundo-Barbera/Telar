@@ -45,6 +45,20 @@ describe("the registry", () => {
     }
   });
 
+  test("every command names its own glyph, as a lucide NAME and never a component", () => {
+    // #479: the palette used to draw one glyph per GROUP, so a list of
+    // twenty-odd verbs was scannable by section and not by row. The name lives
+    // HERE because the table is the one list both halves read — but it stays a
+    // string, since this file is required inside Electron's main process and a
+    // React import would break the menu it builds.
+    for (const command of COMMANDS) {
+      expect(typeof command.icon).toBe("string");
+      // kebab-case, which is the spelling lucide's own registry uses and what
+      // the web's map is keyed by.
+      expect(command.icon).toMatch(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/);
+    }
+  });
+
   test("an unbound command reaches no menu with an accelerator of nothing", () => {
     // Electron rejects an empty accelerator, and main.js spreads it
     // conditionally — but a command that ships unbound should not be reaching a

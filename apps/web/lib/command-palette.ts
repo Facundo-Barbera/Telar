@@ -1,12 +1,20 @@
 /**
- * WHAT THE COMMAND PALETTE IS LOOKING AT — the fold from three lists into one,
- * with none of the dialog around it (issue #402).
+ * WHAT THE COMMAND PALETTE IS LOOKING AT — the fold from four lists into one,
+ * with none of the dialog around it (issues #402, #479).
  *
- * THREE SECTIONS, ALWAYS IN THIS ORDER: Actions, Projects, Recent
- * conversations. It is the order of how specific the answer is — a verb, a
- * place, a thing — and it is fixed rather than ranked, because a list that
- * reorders itself under a query is a list you cannot learn the shape of. What a
- * query changes is which rows survive, never where a section sits.
+ * FOUR SECTIONS, ALWAYS IN THIS ORDER: Actions, Quick settings, Projects,
+ * Recent conversations. It is the order of how specific the answer is — a verb,
+ * a knob, a place, a thing — and it is fixed rather than ranked, because a list
+ * that reorders itself under a query is a list you cannot learn the shape of.
+ * What a query changes is which rows survive, never where a section sits.
+ *
+ * QUICK SETTINGS ARE THE PALETTE DOING THE THING, not opening the page that
+ * does it (#479). Every other Application row is a door — "Appearance…" walks
+ * you to a pane with a nav down its side — and the settings people actually
+ * change in passing (the scheme, the accent, one step of text size) were three
+ * clicks behind that door. A quick row applies on Enter and says what it is set
+ * to now at its right edge, which is the part that makes it a control rather
+ * than a guess: you can see the state you are about to change.
  *
  * AN EMPTY SECTION IS NOT DRAWN. A heading over nothing is a heading that says
  * "you found nothing here", three times, on the way to the one row that matched.
@@ -24,6 +32,7 @@
  * rule are the parts worth pinning, and none of them needs a DOM to be true.
  */
 
+import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "@telar/engine-client";
 import type { NewConversationTarget } from "@/components/project-palette";
 import { matchTargets } from "@/components/project-palette";
 import type { Command, CommandId, Keymap } from "@/lib/commands";
@@ -58,6 +67,151 @@ export const PALETTE_SUB_PAGES: Partial<Record<CommandId, PaletteSubPage>> = {
   "add-project": "sources",
 };
 
+/**
+ * THE PALETTE'S OWN PAGES, which are not the project palette's — a shelf of
+ * Looks and the eight accents (#479).
+ *
+ * Same MECHANISM as the two above (a second page of this dialog, Backspace on
+ * an empty field walks back out), different owner: these lists are the
+ * cockpit's appearance stores, and nothing in the project palette knows about
+ * them. Two types rather than one union so `PALETTE_SUB_PAGES` keeps its
+ * compile-time promise that its values really are the project palette's pages.
+ */
+export type PaletteQuickPage = "looks" | "accent";
+
+/**
+ * WHICH COMMANDS GAVE UP THEIR ACTIONS ROW TO QUICK SETTINGS.
+ *
+ * `toggle-rail` was already a command and already a palette row — it just said
+ * "Toggle Rail" with no hint of which way it would go. The quick row runs that
+ * exact command and adds the readout, so this is a row MOVING between sections
+ * rather than a second way to do one thing; listing it in both would be the
+ * palette offering the same verb twice, once with the answer and once without.
+ */
+export const PALETTE_QUICK_COMMANDS: readonly CommandId[] = ["toggle-rail"];
+
+/**
+ * The quick rows, in the order they are always drawn. Ids are `quick-*` so the
+ * keybindings pane can bind them later without colliding with a registry id;
+ * they are deliberately NOT in the shared table, because the application menu
+ * has no business carrying a row whose whole point is the state beside it.
+ */
+export type QuickSettingId =
+  | "quick-colour-scheme"
+  | "quick-look"
+  | "quick-accent"
+  | "quick-font-size-smaller"
+  | "quick-font-size-larger"
+  | "quick-translucency"
+  | "quick-rail";
+
+export type PaletteQuickSetting = {
+  id: QuickSettingId;
+  label: string;
+  /** What it is set to RIGHT NOW, drawn at the row's right edge. This is what
+   *  makes the row a control instead of a guess. */
+  value: string;
+  /** A lucide name, resolved through `lib/command-icons.ts` like a command's. */
+  icon: string;
+  /** Set when the row walks to a page instead of applying in place. */
+  page?: PaletteQuickPage;
+};
+
+/** What the live stores say, as the little this module needs to know. The one
+ *  file that reads those stores is `lib/quick-settings.ts`; keeping the shape
+ *  this small is what lets the order and the readouts be tested without one. */
+export type QuickSettingsState = {
+  scheme: "light" | "dark" | "system";
+  /** The Look being worn, when the appearance is recognisably one; "" when it
+   *  is not, and the row then simply offers the shelf. */
+  look: string;
+  /** Already human-readable ("Indigo") — naming the eight is the appearance
+   *  vocabulary's job, not this module's. */
+  accent: string;
+  fontSize: number;
+  translucent: boolean;
+  /** False in a browser tab and off macOS. The row is then not drawn AT ALL
+   *  rather than drawn disabled: a palette row that cannot do its thing is the
+   *  dead row the Actions section already refuses to carry. */
+  translucency: boolean;
+  railOpen: boolean;
+};
+
+const SCHEME_LABELS = { light: "Light", dark: "Dark", system: "System" } as const;
+
+/**
+ * The Quick settings rows for this state, in the fixed order.
+ *
+ * A ROW THAT CANNOT MOVE IS NOT DRAWN, which is why the two text-size rows come
+ * and go: at 18px there is no larger, and offering one would be the palette
+ * promising a step it will silently clamp away. Same rule, same reason, as the
+ * Actions section dropping a command nothing can run.
+ */
+export function quickSettings(state: QuickSettingsState): PaletteQuickSetting[] {
+  const rows: PaletteQuickSetting[] = [
+    {
+      id: "quick-colour-scheme",
+      label: "Colour scheme",
+      value: SCHEME_LABELS[state.scheme],
+      icon: "sun-moon",
+    },
+    {
+      id: "quick-look",
+      label: "Wear look…",
+      value: state.look,
+      icon: "shirt",
+      page: "looks",
+    },
+    {
+      id: "quick-accent",
+      label: "Accent colour",
+      value: state.accent,
+      icon: "swatch-book",
+      page: "accent",
+    },
+  ];
+  if (state.fontSize > MIN_FONT_SIZE) {
+    rows.push({
+      id: "quick-font-size-smaller",
+      label: "Text size: smaller",
+      value: `${state.fontSize} px`,
+      icon: "a-arrow-down",
+    });
+  }
+  if (state.fontSize < MAX_FONT_SIZE) {
+    rows.push({
+      id: "quick-font-size-larger",
+      label: "Text size: larger",
+      value: `${state.fontSize} px`,
+      icon: "a-arrow-up",
+    });
+  }
+  if (state.translucency) {
+    rows.push({
+      id: "quick-translucency",
+      label: "Translucency",
+      value: state.translucent ? "On" : "Off",
+      icon: "blend",
+    });
+  }
+  rows.push({
+    id: "quick-rail",
+    label: "Rail",
+    value: state.railOpen ? "Shown" : "Hidden",
+    icon: "panel-left",
+  });
+  return rows;
+}
+
+/** A quick row matches on what it SAYS, what it is CALLED, and what it is SET
+ *  TO — so "dark" finds the colour scheme row while it is on Dark, which is
+ *  how somebody looks for the setting they can see. */
+export function matchQuick(rows: readonly PaletteQuickSetting[], query: string): PaletteQuickSetting[] {
+  const needle = needleOf(query);
+  if (!needle) return [...rows];
+  return rows.filter((row) => `${row.label} ${row.id} ${row.value}`.toLocaleLowerCase().includes(needle));
+}
+
 /** One row of the Actions section: a command, at whatever chord it is bound to
  *  now. `chord` is "" for the many that ship unbound — the row draws no caps
  *  rather than a key that does nothing. */
@@ -80,10 +234,11 @@ export type PaletteSessionLike = {
   updatedAt: number;
 };
 
-export type PaletteSectionId = "actions" | "projects" | "sessions";
+export type PaletteSectionId = "actions" | "quick" | "projects" | "sessions";
 
 export type PaletteRow<S extends PaletteSessionLike> =
   | ({ kind: "action"; key: string } & PaletteAction)
+  | ({ kind: "quick"; key: string } & PaletteQuickSetting)
   | { kind: "project"; key: string; target: NewConversationTarget }
   | { kind: "session"; key: string; session: S };
 
@@ -95,6 +250,7 @@ export type PaletteSection<S extends PaletteSessionLike> = {
 
 const SECTION_TITLES: Record<PaletteSectionId, string> = {
   actions: "Actions",
+  quick: "Quick settings",
   projects: "Projects",
   sessions: "Recent conversations",
 };
@@ -178,12 +334,16 @@ export function paletteSessionKey(session: PaletteSessionLike): string {
  */
 export function paletteSections<S extends PaletteSessionLike>({
   actions,
+  quick = [],
   targets,
   sessions,
   query,
   limit = RECENT_CONVERSATION_LIMIT,
 }: {
   actions: readonly PaletteAction[];
+  /** The live settings rows. Defaults to none, which is what a palette rendered
+   *  outside the cockpit's stores (a test, the server) correctly has. */
+  quick?: readonly PaletteQuickSetting[];
   targets: readonly NewConversationTarget[];
   sessions: readonly S[];
   query: string;
@@ -194,6 +354,11 @@ export function paletteSections<S extends PaletteSessionLike>({
       id: "actions",
       title: SECTION_TITLES.actions,
       rows: matchActions(actions, query).map((action) => ({ kind: "action" as const, key: action.id, ...action })),
+    },
+    {
+      id: "quick",
+      title: SECTION_TITLES.quick,
+      rows: matchQuick(quick, query).map((setting) => ({ kind: "quick" as const, key: setting.id, ...setting })),
     },
     {
       id: "projects",

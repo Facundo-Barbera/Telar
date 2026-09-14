@@ -26,6 +26,11 @@ export type Command = {
    *  state is not known. */
   altLabel?: string;
   group: string;
+  /** A lucide icon NAME, resolved to a component by the web's one map in
+   *  `lib/command-icons.ts`. A string and not a glyph because this table is
+   *  required by Electron's main process and may not import React; the menu
+   *  builder and the keybindings pane both ignore it. */
+  icon: string;
   defaultChord: string;
   menu?: CommandMenu;
   jump?: number;
