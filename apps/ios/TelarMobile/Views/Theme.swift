@@ -11,7 +11,10 @@ enum Theme {
     static let codeBackground = adaptive(light: 0xF4F4F5, dark: 0x252525)
     static let text = adaptive(light: 0x27272A, dark: 0xF5F5F5)
     static let textMuted = adaptive(light: 0x696973, dark: 0xA1A1A1)
-    static let accent = adaptive(light: 0x2F58B9, dark: 0x6594FA)
+    /// THE ANCHOR HUE, AND IT BELONGS TO THE COCKPIT — see `Accent`. Indigo is
+    /// the default on both platforms, and this reads it from the table rather
+    /// than restating it so the two cannot drift.
+    static let accent = Accent.indigo.fill
     static let statusAmber = adaptive(light: 0x8E5B01, dark: 0xF2A635)
     static let statusIndigo = adaptive(light: 0x8E5B01, dark: 0xF2A635)
     static let statusSky = adaptive(light: 0x007386, dark: 0x22BEDC)
@@ -25,7 +28,7 @@ enum Theme {
     static let subtle = adaptive(light: 0xF1F1F3, dark: 0x252525)
     static let subtleStrong = adaptive(light: 0xF0F0F1, dark: 0x2F2F2F)
     static let composerSurface = adaptive(light: 0xFFFFFF, dark: 0x1C1C1C)
-    static let primaryGlyph = adaptive(light: 0xFFFFFF, dark: 0x070F21)
+    static let primaryGlyph = Accent.indigo.glyph
     static let primaryFill = accent
     static let border = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.10) : UIColor(rgb: 0xE4E4E7) })
     static let borderSubtle = border.opacity(0.6)
@@ -68,6 +71,66 @@ enum Theme {
     static let metaSmall = Font.system(.caption2)
     static let mono = Font.system(.caption, design: .monospaced)
     static let monoSmall = Font.system(.caption2, design: .monospaced)
+
+    /// THE EIGHT ACCENTS, AND WHOSE CHOICE THEY ARE.
+    ///
+    /// The cockpit lets a person move `--primary` around the wheel
+    /// (globals.css, "ACCENTS — the anchor hue as a setting"). The phone had no
+    /// appearance settings at all, so the look you chose did not travel: pick
+    /// rose on the desktop, open the phone, it is indigo. Issue #250 item 11
+    /// settled WHOSE setting it is — **the phone follows its paired cockpit**.
+    /// It gets no picker of its own, ever; the accent is the cockpit's property
+    /// and the phone is showing you that cockpit's sessions.
+    ///
+    /// WHAT IS HERE AND WHAT IS NOT. This is the table, and the table is live:
+    /// `Theme.accent` and `Theme.primaryGlyph` ARE this enum's indigo row, so
+    /// the default is provably the same colour the cockpit ships and nothing
+    /// below is an unused token. Carrying the paired cockpit's choice over the
+    /// wire is a follow-up — when it lands, it replaces the two `.indigo`
+    /// references above with the stored value and nothing else changes.
+    ///
+    /// THE VALUES ARE CONVERTED, NOT CHOSEN. Each is its `oklch()` from
+    /// globals.css in sRGB, clipped the way the rest of this file's ports are:
+    /// lightness pinned at 0.488 light / 0.68 dark so every accent keeps the
+    /// same contrast maths, and chroma per-hue because sRGB's gamut is not
+    /// round — sea and moss run out of room long before rose does. The dark
+    /// glyph re-tints with the hue, which is why it is per-accent rather than
+    /// one near-black: a rose accent with an indigo-tinted glyph on it is the
+    /// drift this table exists to prevent.
+    enum Accent: String, CaseIterable, Sendable {
+        case indigo, sky, sea, moss, amber, rose, plum, violet
+
+        /// The fill — the cockpit's `--primary` on this hue.
+        var fill: Color {
+            switch self {
+            case .indigo: Theme.adaptive(light: 0x2F58B9, dark: 0x6594FA)
+            case .sky: Theme.adaptive(light: 0x0067AB, dark: 0x1AA2EB)
+            case .sea: Theme.adaptive(light: 0x006F7B, dark: 0x21ABB8)
+            case .moss: Theme.adaptive(light: 0x3B6E2F, dark: 0x6BAC5C)
+            case .amber: Theme.adaptive(light: 0x8A5100, dark: 0xCE871B)
+            case .rose: Theme.adaptive(light: 0xAA2340, dark: 0xEE6476)
+            case .plum: Theme.adaptive(light: 0x8B3790, dark: 0xC675CB)
+            case .violet: Theme.adaptive(light: 0x6745B5, dark: 0x9D82F1)
+            }
+        }
+
+        /// What reads ON the fill — the cockpit's `--primary-foreground`. White
+        /// in light on every hue; in dark it is `oklch(0.17 0.04 <hue>)`, the
+        /// hue's own near-black.
+        var glyph: Color {
+            switch self {
+            case .indigo: Theme.adaptive(light: 0xFFFFFF, dark: 0x070F21)
+            case .sky: Theme.adaptive(light: 0xFFFFFF, dark: 0x00111F)
+            case .sea: Theme.adaptive(light: 0xFFFFFF, dark: 0x001418)
+            case .moss: Theme.adaptive(light: 0xFFFFFF, dark: 0x061304)
+            case .amber: Theme.adaptive(light: 0xFFFFFF, dark: 0x1A0C00)
+            case .rose: Theme.adaptive(light: 0xFFFFFF, dark: 0x1E070A)
+            case .plum: Theme.adaptive(light: 0xFFFFFF, dark: 0x180919)
+            case .violet: Theme.adaptive(light: 0xFFFFFF, dark: 0x100B1F)
+            }
+        }
+    }
+
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         Color(UIColor { UIColor(rgb: $0.userInterfaceStyle == .dark ? dark : light) })
     }
