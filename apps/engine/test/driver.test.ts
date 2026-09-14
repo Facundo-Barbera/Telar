@@ -389,6 +389,77 @@ test("a tool-use result with no unresolved top-level tools ends the turn", async
   expect(raced.kind === "resolved" && raced.value.text).toBe("not blocking on the background work");
 });
 
+describe("the end-turn grace (#465)", () => {
+  /**
+   * THE STALL THIS PINS, measured on the coordinator session (session_b1d34698…,
+   * 2026-09-14): the main loop's final assistant envelope said `end_turn`, every
+   * tool result before it was answered, and the CLI's `result` never came —
+   * the engine turn sat `running` with nothing on screen for 15–25 minutes
+   * until the owner restarted Telar. Five times in one evening. The fake here
+   * models exactly that: `end_turn`, then silence forever.
+   */
+  test("an end_turn with no result following settles the turn after the grace, with a row saying why", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          await new Promise(() => undefined);
+        },
+      }),
+      { endTurnGraceMs: 30 },
+    );
+    const { sink, result } = run(driver);
+    const raced = await Promise.race([
+      result.then((value) => ({ kind: "resolved" as const, value })),
+      new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 500)),
+    ]);
+    expect(raced.kind).toBe("resolved");
+    expect(raced.kind === "resolved" && raced.value.text).toBe("the answer");
+    // The transcript says the turn settled itself, so a future stall names its cause.
+    const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(row?.kind === "item.started" && row.item.title).toBe("Settled without the provider's result");
+  });
+
+  test("a result that arrives inside the grace wins — no row, same text", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "text", text: "quick" }], stop_reason: "end_turn" } };
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+        },
+      }),
+      { endTurnGraceMs: 200 },
+    );
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "quick" });
+    expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+  });
+
+  test("end_turn with a top-level tool still open does NOT arm the grace", async () => {
+    // A tool round can straddle an `end_turn` on the envelope that launched
+    // it; the tool's result is what the turn waits for, and it must keep
+    // waiting past the grace.
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 1" } }], stop_reason: "end_turn" } };
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }] } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "after" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+        },
+      }),
+      { endTurnGraceMs: 20 },
+    );
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "after" });
+    expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+    const toolClose = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_t1");
+    expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
+  });
+});
+
 test("a sub-agent's result never completes the parent turn", async () => {
   // Every message produced inside a sub-agent carries `parent_tool_use_id`.
   // A child's result completing the PARENT would end a turn whose main loop
