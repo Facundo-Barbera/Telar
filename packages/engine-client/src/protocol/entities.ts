@@ -574,6 +574,41 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
 export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
 
 /**
+ * THE CHECKOUT IS NOT THERE YET, OR NEVER WILL BE — issue #496.
+ *
+ * `git worktree add` on a large checkout is seconds, and it used to run
+ * synchronously inside `POST /v2/sessions`, which froze the daemon's event loop
+ * for the duration: every cockpit's poll and every agent's stream stopped
+ * together while one person opened one conversation. It runs in the background
+ * now, so the route answers immediately and the row says what is still true —
+ * that its workspace is being made.
+ *
+ * ABSENT MEANS READY, and that is the state almost every row is in: a `local`
+ * session never has one, and a worktree session carries it for the seconds
+ * between its creation and its cut. Readers must treat absence as ready rather
+ * than as unknown — a client that waited for a positive "ready" would hang on
+ * every session written before this field existed.
+ *
+ * NOT A `SessionState`. That enum is the CONVERSATION's lifecycle — active or
+ * archived, a thing a person decides — and this is a fact about a directory.
+ * Folding them together would have made `state !== "active"` (which the engine
+ * asks in a dozen places, and the phone in several) quietly mean "or still being
+ * prepared", and a preparing session would have been treated as one that is
+ * over.
+ *
+ * `error` IS GIT'S OWN STDERR, not a rewrite of it. A cut fails for reasons a
+ * sentence of ours would flatten — a branch that exists, a locked index, a full
+ * disk — and the person who can act on it is the one reading the row.
+ */
+export const SessionPreparation = z.object({
+  state: z.enum(["preparing", "failed"]),
+  /** Only ever on `failed`, and only what git said. */
+  error: z.string().optional(),
+  at: Timestamp,
+});
+export type SessionPreparation = z.infer<typeof SessionPreparation>;
+
+/**
  * WHY A ROW IS ON THE SHELF, WHEN THE ENGINE PUT IT THERE — issue #378.
  *
  * `settledOverride: "settled"` was only ever a human's decision, and it says
@@ -654,6 +689,8 @@ export const Session = z.object({
   model: ModelSelection.optional(),
 
   workspace: SessionWorkspace,
+  /** Absent means the workspace is ready. See `SessionPreparation`. */
+  preparation: SessionPreparation.optional(),
   envMode: EnvMode,
   /** Browser-only conversation. Workspace creation is deferred until first send. */
   draft: z.object({ baseRef: z.string().optional(), branchName: z.string().optional(), branchSlug: z.string().optional() }).optional(),

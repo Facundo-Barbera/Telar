@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktree, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, prepareSessionWorktree, removeSessionWorktreeAsync, WorktreeError, type AsyncGitRunner, type GitRunner } from "../src/worktree";
 import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
 const roots: string[] = [];
@@ -36,6 +36,44 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
+/**
+ * The whole cut, the way `createSession` makes it: refuse on the request, then
+ * do the expensive half asynchronously (#496). Composed here rather than in the
+ * source because the store is the only caller that needs the two halves apart —
+ * a test asserting on a finished checkout wants one call.
+ */
+async function cutWorktree(input: {
+  engineRoot: string;
+  projectRoot: string;
+  sessionId: string;
+  baseRef?: string;
+  branchSlug?: string;
+  branchName?: string;
+}): Promise<{ path: string; branch: string; baseRef: string }> {
+  const { plan, baseSha } = prepareSessionWorktree(defaultGitRunner, input);
+  return createSessionWorktreeAsync(defaultAsyncGitRunner, {
+    engineRoot: input.engineRoot,
+    projectRoot: input.projectRoot,
+    plan,
+    baseSha,
+  });
+}
+
+/**
+ * Wait for a session's background cut to land — the seam #496 introduced.
+ *
+ * POLLS THE ROW rather than the disk, because the row is what a client reads:
+ * `preparation` absent means ready, and a `failed` one is a settled answer too,
+ * so this returns on either rather than spinning until the timeout.
+ */
+async function settled(store: EngineStore, sessionId: string): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if (store.getSession(sessionId).preparation?.state !== "preparing") return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`worktree for ${sessionId} never finished preparing`);
+}
+
 /** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
   const root = tmp("telar-wt-repo-");
@@ -50,10 +88,10 @@ function repo(): string {
   return root;
 }
 
-test("a worktree session gets its own checkout on a named branch", () => {
+test("a worktree session gets its own checkout on a named branch", async () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "session_one" });
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "session_one" });
 
   expect(fs.existsSync(path.join(cut.path, "README.md"))).toBe(true);
   expect(cut.branch).toBe("telar/session_one");
@@ -66,12 +104,12 @@ test("a worktree session gets its own checkout on a named branch", () => {
   expect(cut.path.startsWith(path.join(engineRoot, "worktrees"))).toBe(true);
 });
 
-test("two sessions on one project get separate checkouts", () => {
+test("two sessions on one project get separate checkouts", async () => {
   // The whole point: N detached sessions must not fight over one working copy.
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
-  const second = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two" });
+  const first = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  const second = await cutWorktree({ engineRoot, projectRoot, sessionId: "two" });
   expect(first.path).not.toBe(second.path);
   expect(first.branch).not.toBe(second.branch);
 
@@ -82,39 +120,41 @@ test("two sessions on one project get separate checkouts", () => {
 test("a non-git project is refused with an actionable message rather than a git error", () => {
   const projectRoot = tmp("telar-wt-plain-");
   const engineRoot = tmp("telar-wt-state-");
-  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(WorktreeError);
-  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(/envMode "local"/);
+  // ON THE REQUEST, not on the row: a directory that cannot host a worktree is
+  // a bad request, and #496 deliberately left those refusals synchronous.
+  expect(() => prepareSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(WorktreeError);
+  expect(() => prepareSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(/envMode "local"/);
 });
 
-test("recreating a session's worktree after a reap succeeds instead of failing on the branch name", () => {
+test("recreating a session's worktree after a reap succeeds instead of failing on the branch name", async () => {
   // `-B` rather than `-b`. With `-b`, a session whose worktree was reaped could
   // never be recreated: the branch still exists and git refuses.
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
-  expect(removeSessionWorktree(defaultGitRunner, projectRoot, first.path)).toBe(true);
-  const again = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
+  const first = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  expect(await removeSessionWorktreeAsync(defaultAsyncGitRunner, projectRoot, first.path)).toBe(true);
+  const again = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
   expect(fs.existsSync(again.path)).toBe(true);
 });
 
-test("removal reports whether the directory is ACTUALLY gone", () => {
+test("removal reports whether the directory is ACTUALLY gone", async () => {
   // The caller's only reliable signal: a failed `git worktree remove` comes
   // back as a non-zero status rather than an exception, and the trailing
   // prune would otherwise hide it.
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
-  expect(removeSessionWorktree(defaultGitRunner, projectRoot, cut.path)).toBe(true);
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
+  expect(await removeSessionWorktreeAsync(defaultAsyncGitRunner, projectRoot, cut.path)).toBe(true);
 
-  const deaf: GitRunner = () => ({ status: 1, stdout: "", stderr: "nope" });
-  const stubborn = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two" });
-  expect(removeSessionWorktree(deaf, projectRoot, stubborn.path)).toBe(false);
+  const deaf: AsyncGitRunner = async () => ({ status: 1, stdout: "", stderr: "nope" });
+  const stubborn = await cutWorktree({ engineRoot, projectRoot, sessionId: "two" });
+  expect(await removeSessionWorktreeAsync(deaf, projectRoot, stubborn.path)).toBe(false);
 });
 
-test("a branch slug names the branch and the directory after the work", () => {
+test("a branch slug names the branch and the directory after the work", async () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const cut = createSessionWorktree(defaultGitRunner, {
+  const cut = await cutWorktree({
     engineRoot,
     projectRoot,
     sessionId: "session_one",
@@ -132,7 +172,7 @@ test("a branch slug outside the engine-owned namespaces is refused", () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
   for (const slug of ["main", "feature/login", "loom", "loom//x"]) {
-    expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchSlug: slug })).toThrow(
+    expect(() => prepareSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchSlug: slug })).toThrow(
       WorktreeError,
     );
   }
@@ -152,22 +192,70 @@ test("a titled worktree session derives its branch from the title", () => {
   expect(session.workspace.branch).toBe("telar/fix-presupuestos-login-abcdef");
 });
 
-test("a session created with envMode worktree records its branch and base", () => {
+test("a session created with envMode worktree records its branch and base", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
   expect(session.envMode).toBe("worktree");
+  // THE ROW IS COMPLETE BEFORE THE DIRECTORY IS (#496): the branch and the base
+  // are decided on the request, so the rail never shows a session whose most
+  // stable identifier is missing for a few seconds.
   expect(session.workspace).toMatchObject({ mode: "worktree", branch: "telar/session_one" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   expect(session.workspace.baseRef).toMatch(/^[0-9a-f]{40}$/);
+  expect(session.preparation).toEqual({ state: "preparing", at: 100 });
+
+  await settled(store, "session_one");
+  expect(store.getSession("session_one").preparation).toBeUndefined();
   expect(fs.existsSync(session.workspace.path)).toBe(true);
 
   // The claim hands the worker the SESSION's checkout, not the project root —
   // otherwise the isolation is cosmetic.
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(store.claimNextTurn("worker_one")?.projectRoot).toBe(session.workspace.path);
+});
+
+test("a turn does not dispatch until the checkout it would run in exists", async () => {
+  // The cut is asynchronous now, so an agent can create a session and send to
+  // it in the same breath. Dispatching then would set a provider process's cwd
+  // to a directory nothing has made yet.
+  const projectRoot = repo();
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claimNextTurn("worker_one")).toBeUndefined();
+  expect(store.claimTurn("session_one", "worker_one")).toBeUndefined();
+
+  // The message kept its place rather than being dropped, and runs once the
+  // checkout lands.
+  await settled(store, "session_one");
+  expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+});
+
+test("a cut that fails flips the row to failed, with git's own words on it", async () => {
+  const projectRoot = repo();
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100, {
+    // The request-side probes still run for real; only `worktree add` is faked.
+    asyncGit: async (cwd, args) =>
+      args[0] === "worktree" && args[1] === "add"
+        ? { status: 128, stdout: "", stderr: "fatal: Unable to create '.git/index.lock': File exists" }
+        : defaultAsyncGitRunner(cwd, args),
+  });
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+
+  await settled(store, "session_one");
+  const failed = store.getSession("session_one").preparation;
+  expect(failed?.state).toBe("failed");
+  // GIT'S OWN STDERR, not a rewrite: the person reading the row is the one who
+  // can act on a stale lock, and our sentence for it would say less.
+  expect(failed?.error).toContain("index.lock");
+  // And nothing runs in a checkout that was never made.
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claimNextTurn("worker_one")).toBeUndefined();
 });
 
 test("the standing default decides an omitted envMode, and an explicit one still wins", () => {
@@ -189,7 +277,7 @@ test("the standing default decides an omitted envMode, and an explicit one still
 });
 
 test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
-  // `createSessionWorktree` refuses a directory that is not a repo — right for
+  // `prepareSessionWorktree` refuses a directory that is not a repo — right for
   // a caller who asked for a worktree, and wrong for one who asked for nothing
   // and would otherwise be unable to open a session in that project at all.
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
@@ -202,27 +290,34 @@ test("the worktree default yields on an unversioned project, but a stated worktr
   expect(() => store.createSession({ id: "session_two", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
 });
 
-test("a failed worktree cut leaves no half-created session behind", () => {
-  // The worktree is cut BEFORE the session document is written, so there is
-  // nothing to repair on read.
+test("a refused worktree request leaves no half-created session behind", () => {
+  // The REFUSALS still happen before the session document is written (#496), so
+  // a bad request leaves nothing to repair on read. What moved to the
+  // background is only the cut itself, whose failure lands on the row.
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   expect(() => store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
   expect(() => store.getSession("session_one")).toThrow(EngineStateError);
 });
 
-test("archiving frees the checkout and KEEPS the branch", () => {
+test("archiving frees the checkout and KEEPS the branch", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
+  await settled(store, "session_one");
 
   // Work the session produced.
   execFileSync("git", ["commit", "-qm", "session work", "--allow-empty"], { cwd: session.workspace.path });
 
   const archived = store.archiveSession("session_one");
   expect(archived.state).toBe("archived");
+  // The removal runs on the same per-project queue the cut did, so it is not
+  // done the instant `archiveSession` returns — see `releaseWorktree`.
+  for (let i = 0; i < 400 && fs.existsSync(session.workspace.path); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   expect(fs.existsSync(session.workspace.path)).toBe(false);
   // THE BRANCH SURVIVES. A detached run whose output vanished when it finished
   // would be worse than one that never ran.
@@ -254,7 +349,7 @@ test("archiving is idempotent", () => {
   expect(store.readEvents("session_one").filter((event) => event.type === "session.archived")).toHaveLength(1);
 });
 
-test("a worktree cut from a NAMED base starts at that commit, not HEAD", () => {
+test("a worktree cut from a NAMED base starts at that commit, not HEAD", async () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
   const git = (...args: string[]) =>
@@ -266,18 +361,20 @@ test("a worktree cut from a NAMED base starts at that commit, not HEAD", () => {
   git("add", "-A");
   git("commit", "-qm", "second");
 
-  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", baseRef: "feature-x" });
+  const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "s", baseRef: "feature-x" });
   expect(cut.baseRef).toBe(baseSha);
   expect(fs.existsSync(path.join(cut.path, "later.md"))).toBe(false);
 });
 
-test("a HUMAN-named branch is created with -b: a collision refuses, never resets", () => {
+test("a HUMAN-named branch is created with -b: a collision refuses, never resets", async () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
-  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one", branchName: "my-feature" });
+  const first = await cutWorktree({ engineRoot, projectRoot, sessionId: "one", branchName: "my-feature" });
   expect(first.branch).toBe("my-feature");
   // The same name again must refuse — a branch a person values is never reset.
-  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two", branchName: "my-feature" })).toThrow(
+  // GIT is what refuses here rather than a name check, so this one surfaces
+  // from the background half and reaches a session row as `failed`.
+  await expect(cutWorktree({ engineRoot, projectRoot, sessionId: "two", branchName: "my-feature" })).rejects.toThrow(
     WorktreeError,
   );
 });
@@ -286,7 +383,7 @@ test("human branch names refuse the engine namespaces and unusable shapes", () =
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
   for (const bad of ["telar/mine", "loom/x", "-flag", "a..b", "a//b", "ends/"]) {
-    expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchName: bad })).toThrow(WorktreeError);
+    expect(() => prepareSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchName: bad })).toThrow(WorktreeError);
   }
 });
 

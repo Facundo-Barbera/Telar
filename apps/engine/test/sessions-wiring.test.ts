@@ -241,6 +241,14 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // tool shape carries it.
   expect(made!.origin).toBe("session");
   expect(made!.envMode).toBe("worktree");
+  // THE CHECKOUT ARRIVES AFTER THE ROW DOES (#496). The tool answers the agent
+  // as soon as the session exists — the row says `preparing` — and the cut
+  // lands behind it, which is the whole reason creating one no longer stalls
+  // every other session on the machine.
+  expect(made!.preparation).toMatchObject({ state: "preparing" });
+  for (let i = 0; i < 400 && !fs.existsSync(path.join(made!.workspace.path, "README.md")); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   expect(fs.existsSync(path.join(made!.workspace.path, "README.md"))).toBe(true);
 
   // The engine agrees, read back through the ordinary API.

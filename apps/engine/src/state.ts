@@ -266,7 +266,7 @@ import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeMod
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
-import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
+import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
@@ -1116,6 +1116,11 @@ const liveRow = (session: Session): LiveSessionRow => ({
     session.workspace.mode === "worktree"
       ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
       : { mode: "local", path: session.workspace.path },
+  // ON THE ROW because it is a row's question: the rail is where a person
+  // watches a session they just opened, and "the checkout is still being made"
+  // is the only thing worth saying about it in those seconds. Absent on every
+  // ready session, which is almost all of them — see `SessionPreparation`.
+  ...(session.preparation === undefined ? {} : { preparation: session.preparation }),
   ...(session.draft === undefined ? {} : { draft: session.draft }),
   ...(session.usage === undefined ? {} : { usage: session.usage }),
   activity: session.activity,
@@ -2172,6 +2177,13 @@ export class EngineStore {
   private readonly manifest: ModelManifest;
   private readonly git: GitRunner;
   private readonly asyncGit: AsyncGitRunner;
+  /**
+   * One worktree mutation at a time per project — the ordering the synchronous
+   * runner used to buy by blocking the daemon (#496). In memory, like
+   * `liveRevision`: one writer, in this process, and a restart has nothing in
+   * flight to order.
+   */
+  private readonly worktreeQueue: WorktreeQueue = createWorktreeQueue();
   private readonly gh: GhRunner;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
@@ -7016,14 +7028,37 @@ export class EngineStore {
     const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
     if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
-    // The worktree is cut BEFORE the session document is written. A session
-    // whose workspace does not exist is unusable and would have to be repaired
-    // on read; failing here leaves nothing behind to repair.
-    const workspace: Session["workspace"] =
+    /**
+     * THE WORKTREE IS PLANNED HERE AND CUT IN THE BACKGROUND — issue #496.
+     *
+     * It used to be cut right here, synchronously, "BEFORE the session document
+     * is written" so that no session could exist without its workspace. That
+     * ordering was right and its cost was the whole daemon: `git worktree add`
+     * on a large checkout is seconds of a blocked event loop, and for those
+     * seconds every cockpit's poll and every agent's stream stopped.
+     *
+     * WHAT SPLITS, AND WHERE THE LINE IS. Everything whose answer is a REFUSAL
+     * stays on this call — a directory that is not a repository, a base ref that
+     * does not resolve, a branch name the engine will not create. Those are bad
+     * requests and the caller is still here to be told. What moves is the one
+     * expensive step, `worktree add` itself, and its failures land on the row
+     * (`SessionPreparation`) because by then there is nobody left to answer.
+     *
+     * THE ROW IS COMPLETE FROM THE FIRST INSTANT even so: the path and the
+     * branch are decided by `planSessionWorktree` without touching git, so the
+     * rail's most stable identifier is never the field that flickers. What is
+     * missing for those seconds is the directory, and the row says so.
+     */
+    const cut =
       envMode === "worktree" && !input.draft
         ? (() => {
             const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
-            const cut = createSessionWorktree(this.git, {
+            // The repository probe inside this is the same one the
+            // omitted-`envMode` ladder above makes, and it has to be made
+            // again: that one only runs when nobody stated a mode, and a
+            // STATED `worktree` on an unversioned project must still refuse
+            // rather than open a session with nowhere to work.
+            return prepareSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
               sessionId: id,
@@ -7031,8 +7066,14 @@ export class EngineStore {
               ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
               ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
             });
-            return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
           })()
+        : undefined;
+    const workspace: Session["workspace"] =
+      cut !== undefined
+        ? // `baseRef` is stored NOW rather than when the cut lands: it is the
+          // commit the checkout will start from, so a reader asking "what has
+          // this session done" has its anchor from the first instant.
+          { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
         : (() => {
             /**
              * A LOCAL SESSION GETS A BASE TOO, which it never used to.
@@ -7088,6 +7129,9 @@ export class EngineStore {
         ? { model: project.defaultModel }
         : {}),
       workspace,
+      // The directory is not there yet; `prepareWorktree` below clears this or
+      // flips it to `failed`. Absent means ready, which is every other session.
+      ...(cut !== undefined ? { preparation: { state: "preparing" as const, at } } : {}),
       envMode,
       ...(input.draft ? { draft: {
         ...(input.baseRef ? { baseRef: input.baseRef } : {}),
@@ -7107,7 +7151,62 @@ export class EngineStore {
     // delete must not find the old session's cached queue waiting for it.
     this.writeQueue(id, emptyQueue(id));
     this.appendEvent(id, { type: "session.created", session });
+    // AFTER the document, never before: the flip this schedules writes the same
+    // record, and a cut that finished first would be overwritten by the row that
+    // said it had not started.
+    if (cut !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
     return structuredClone(session);
+  }
+
+  /**
+   * Cut the checkout a `preparing` session is waiting for, then flip its row.
+   *
+   * NOT AWAITED BY ITS CALLER, which is the entire point of #496: `createSession`
+   * returns the moment the row exists, and this runs on the queue behind it.
+   * Every exit writes the row — there is no path that leaves a session
+   * `preparing` forever except the daemon dying mid-cut, and a restart re-reads
+   * a stale `preparing` it can see and act on.
+   *
+   * SERIALISED PER PROJECT by `worktreeQueue`, not by blocking. Two cuts at once
+   * on one repository fight over the same index lock, which is why the
+   * synchronous version was kept as long as it was; see `createWorktreeQueue`.
+   */
+  private prepareWorktree(sessionId: string, projectRoot: string, plan: WorktreePlan, baseSha: string): void {
+    void this.worktreeQueue(projectRoot, async () => {
+      try {
+        await createSessionWorktreeAsync(this.asyncGit, { engineRoot: this.paths.root, projectRoot, plan, baseSha });
+        this.settleWorktree(sessionId, undefined);
+      } catch (error) {
+        // Git's own words, not ours — see `SessionPreparation.error`.
+        this.settleWorktree(sessionId, error instanceof Error ? error.message : String(error));
+      }
+    });
+  }
+
+  /**
+   * Record how a cut ended, on whatever the row says NOW.
+   *
+   * RE-READ RATHER THAN CLOSED OVER. Seconds passed while git ran, and the
+   * session may have been renamed, settled or paused in them; writing a record
+   * captured before the cut would silently undo whatever happened during it.
+   * A session deleted while its cut ran is not an error — there is simply
+   * nothing left to flip, and the worktree the cut made is reaped like any
+   * other orphan.
+   */
+  private settleWorktree(sessionId: string, failure: string | undefined): void {
+    const existing = this.readDocument(sessionMetadataFile(this.paths, sessionId));
+    if (existing === undefined) return;
+    const session = parseSession(existing);
+    const updated: Session = {
+      ...session,
+      // Absent is READY. A success clears the key rather than writing a third
+      // state, so every reader's "is this ready" is one question.
+      ...(failure === undefined ? {} : { preparation: { state: "failed" as const, error: failure, at: this.now() } }),
+      updatedAt: this.now(),
+    };
+    if (failure === undefined) delete updated.preparation;
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
   }
 
   /**
@@ -8118,23 +8217,32 @@ export class EngineStore {
           }
         : {}),
     };
+    /** Scheduled after the document is written, never before — see `createSession`. */
+    let cut: { projectRoot: string; plan: WorktreePlan; baseSha: string } | undefined;
     if (session.draft) {
       if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
       if (kind === "compact") throw new EngineStateError("conflict", "a browser draft has no conversation to compact");
       if (session.envMode === "worktree") {
         if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
         const project = this.getProject(session.projectId);
-        const cut = createSessionWorktree(this.git, {
+        // Planned and refused here, cut in the background — `createSession`'s
+        // split, for `createSession`'s reason. The turn this promotion belongs
+        // to waits in the queue until the checkout lands; `claimTurn` is what
+        // holds it, and the row says why.
+        const planned = prepareSessionWorktree(this.git, {
           engineRoot: this.paths.root, projectRoot: project.root, sessionId,
           branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
           ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
           ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
         });
-        session.workspace = { mode: "worktree", path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
+        session.workspace = { mode: "worktree", path: planned.plan.path, branch: planned.plan.branch, baseRef: planned.baseSha };
+        session.preparation = { state: "preparing", at };
+        cut = { projectRoot: project.root, ...planned };
       }
       if (session.title === "Browser draft") session.title = input.input.replace(/\s+/g, " ").slice(0, 80);
       delete session.draft;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      if (cut) this.prepareWorktree(sessionId, cut.projectRoot, cut.plan, cut.baseSha);
     }
     /**
      * PAUSED MEANS PAUSED. Every message that arrives while a human has the
@@ -8348,6 +8456,20 @@ export class EngineStore {
     // inferred from held flags, so a message that slipped into `queued`
     // unheld by any path still cannot run. See `pauseSession`.
     if (this.getSession(sessionId).paused) return undefined;
+    /**
+     * NEITHER DOES ONE WHOSE CHECKOUT IS NOT THERE — #496.
+     *
+     * The cut runs in the background now, so an agent that creates a session
+     * and sends to it in the same breath can have a turn queued before the
+     * directory exists. Dispatching it would spawn a provider process with its
+     * cwd set to a path nothing has made yet.
+     *
+     * BOTH STATES, not just `preparing`. A `failed` session has no checkout and
+     * is not going to grow one on its own; its turn waits, in order, while the
+     * row carries git's reason for a person to act on. Waiting loses nothing —
+     * the message keeps its place — and running loses the turn.
+     */
+    if (this.getSession(sessionId).preparation) return undefined;
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
     /**
@@ -8722,6 +8844,9 @@ export class EngineStore {
       // winning the sort and stalling every other session for a poll.
       const session = this.getSession(sessionId);
       if (session.paused) continue;
+      // Same, for a session whose checkout is still being cut or failed to be
+      // (#496) — `claimTurn` is authoritative and would refuse it anyway.
+      if (session.preparation) continue;
       /**
        * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
        * Decided here, before a candidate exists, so no lease is taken and
@@ -9649,7 +9774,7 @@ export class EngineStore {
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
       // unhappy would strand the session in a state a human cannot leave.
-      removeSessionWorktree(this.git, project.root, session.workspace.path);
+      this.releaseWorktree(project.root, session.workspace.path);
     }
     const at = this.now();
     session.state = "archived";
@@ -9694,6 +9819,24 @@ export class EngineStore {
    * feature. The venv removal stays here because it is the store's own file
    * layout, not any plugin's.
    */
+  /**
+   * Give a checkout back, on the queue, without waiting for it — #496's other
+   * half.
+   *
+   * NOT AWAITED, AND THAT LOSES NOTHING A CALLER HAD. `removeSessionWorktree`
+   * always returned whether the directory was actually gone, and neither caller
+   * ever read it: both are best-effort by their own comments, because a leaked
+   * worktree is bounded inside the engine's root and reapable later, while an
+   * archive that refused because git was unhappy would strand a session nobody
+   * can leave. What blocking bought here was not a decision — it was the wait.
+   *
+   * IT STILL GOES THROUGH THE QUEUE, so a removal and the next session's cut on
+   * the same project do not race on the index lock.
+   */
+  private releaseWorktree(projectRoot: string, worktreePath: string): void {
+    void this.worktreeQueue(projectRoot, () => removeSessionWorktreeAsync(this.asyncGit, projectRoot, worktreePath));
+  }
+
   private releaseDataScience(session: Session, reason: string): void {
     this.pluginRelease?.(session.id, reason);
     void this.kernels?.dispose(session.id, reason);
@@ -9715,7 +9858,7 @@ export class EngineStore {
     // See `archiveSession` for why the project is checked beside the mode.
     if (session.workspace.mode === "worktree" && session.projectId) {
       const project = this.getProject(session.projectId);
-      removeSessionWorktree(this.git, project.root, session.workspace.path);
+      this.releaseWorktree(project.root, session.workspace.path);
     }
 
     // The event is appended BEFORE the directory goes, so a subscriber watching
