@@ -92,6 +92,7 @@ import type { NotesCapability } from "./notes-tools/tools";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
+import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
@@ -654,6 +655,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     }
     if (parts.length > 0) process.stdout.write(`Telar engine: removed ${parts.join(" and ")}\n`);
   }
+  /**
+   * AND WHAT THE SPOOL AND THE LOOMS LEFT — issue #501, step 2.
+   *
+   * Beside the sweep above and for the same reason: two directories nothing in
+   * this repository can open any more. Once per home, best-effort, and silent
+   * unless something actually went. See `decommission-sweep.ts`.
+   */
+  const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
+  if (decommissioned) process.stdout.write(`${decommissioned}\n`);
   /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
