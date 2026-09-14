@@ -98,9 +98,39 @@ struct ErrorDetail: Codable, Equatable {
     var kind: String?
 }
 
+/// A MESSAGE THAT LANDED MID-TURN, and WHO PUT IT THERE.
+///
+/// A struct rather than a bare `text`, because authorship is what decides how
+/// the row is drawn and this decoded the text alone: a peer's 3 KB report
+/// arrived as `user_message` and was drawn as the reader's own bubble, on the
+/// right of the screen, as though they had typed it.
+///
+/// Every field but `text` is optional and lenient, like `Turn`'s: they come
+/// from an engine that may be older than this build, and an item without them
+/// is exactly the item this app already drew.
+struct UserMessageDetail: Equatable {
+    var text: String
+    /// The files sent with it, so the transcript can show them the way it
+    /// shows a queued turn's. Absent on every row written before the steer
+    /// channel carried attachments.
+    var attachments: [TurnAttachment]? = nil
+    /// Present when an AGENT sent this message (`sessions_send`). Stamped by
+    /// the engine from a claim token, so a model cannot assert it.
+    var sender: MessageSender? = nil
+    /// The engine's short announcement of that message — sender, run, size and
+    /// opening line — which is ALSO what the recipient's model was handed in
+    /// place of `text`. The collapsed label; expanding shows what was sent.
+    var notice: String? = nil
+    /// Present when the ENGINE ITSELF wrote this message: a wake, from a
+    /// session this one subscribed to. STRUCTURAL, never the `[wake: …]` text
+    /// — a person is free to type those characters and must not become a wake
+    /// for it. Exactly one of `sender`/`wakeReason` is ever present.
+    var wakeReason: WakeReason? = nil
+}
+
 /// The contract's discriminated union on `type`.
 enum ItemDetail: Equatable {
-    case userMessage(text: String)
+    case userMessage(UserMessageDetail)
     case assistantMessage(text: String)
     case reasoning(text: String)
     case plan(PlanDetail)
@@ -121,6 +151,7 @@ extension ItemDetail: Decodable {
     private enum CodingKeys: String, CodingKey {
         case type, text, plan, command, change, read, call, query, resultCount
         case url, taskId, reason, preTokens, postTokens, error, label
+        case attachments, sender, notice, wakeReason
     }
 
     init(from decoder: Decoder) throws {
@@ -131,7 +162,19 @@ extension ItemDetail: Decodable {
         func fallback() -> ItemDetail { .unknown(label: type) }
         switch type {
         case "user_message":
-            self = (try? c.decode(String.self, forKey: .text)).map { .userMessage(text: $0) } ?? fallback()
+            // LENIENT PER FIELD, not all-or-nothing: an attachment shape this
+            // build cannot read must not cost the row its `sender`, which is
+            // the whole difference between a peer's report and your own words.
+            if let text = try? c.decode(String.self, forKey: .text) {
+                var message = UserMessageDetail(text: text)
+                message.attachments = try? c.decodeIfPresent([TurnAttachment].self, forKey: .attachments)
+                message.sender = try? c.decodeIfPresent(MessageSender.self, forKey: .sender)
+                message.notice = try? c.decodeIfPresent(String.self, forKey: .notice)
+                message.wakeReason = try? c.decodeIfPresent(WakeReason.self, forKey: .wakeReason)
+                self = .userMessage(message)
+            } else {
+                self = fallback()
+            }
         case "assistant_message":
             self = (try? c.decode(String.self, forKey: .text)).map { .assistantMessage(text: $0) } ?? fallback()
         case "reasoning":
