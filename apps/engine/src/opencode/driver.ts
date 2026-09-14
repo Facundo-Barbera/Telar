@@ -171,25 +171,49 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
         await client.permission.reply({ requestID: request.id, reply: (outcome.decision === "accept" || outcome.decision === "acceptForSession") ? "once" : "reject" }, requestOptions());
       };
       const question = async (request: QuestionRequest) => {
+        /**
+         * ONE FIELD PER QUESTION, NEVER ONE PER OPTION — and `map` rather than
+         * `flatMap` so that stays true by construction: `QuestionAnswer` is a
+         * list POSITIONALLY per question, so the reply below can only be built
+         * from a 1:1 mapping.
+         *
+         * A multi question used to explode into N `boolean` fields plus a text
+         * field for a further answer, which is a form of checkboxes rather than
+         * the ONE question it is: the request was no longer all-choice, so the
+         * cockpit's question drawer and the phone's both refused it and fell to
+         * the form card. `multiple: true` on a single `choice` field is the
+         * contract's own way to say "pick any of these" (see `UserInputField`),
+         * and it is what the Claude arm carries `multiSelect` out as.
+         *
+         * `custom` DOES NOT BRANCH THE MULTI ARM the way it branches the single
+         * one below. Free text is the drawer's own affordance there — the
+         * composer doubles as the answer box for any choice field — so keeping
+         * the checklist costs nothing, whereas a second field of another kind
+         * would cost the drawer entirely, which is the whole point of this. A
+         * multi question with no options at all still falls through to the text
+         * field, because a checklist of nothing is not a question.
+         */
+        const fields = request.questions.map((q, index): UserInputField => {
+          const choices = q.options.map((option) => option.label);
+          if (q.multiple && choices.length) return { key: String(index), label: q.question, kind: "choice", choices, multiple: true, required: true };
+          return { key: String(index), label: q.question, kind: q.custom === false && choices.length ? "choice" : "text",
+            ...(choices.length ? { choices } : {}), required: true };
+        });
         const outcome = normalizeOutcome(await input.onRequest?.({ kind: "user_input", toolUseId: request.id,
           detail: { kind: "user_input", prompt: request.questions.map((q) => [q.question, ...q.options.map((option) => `${option.label}: ${option.description}`)].join("\n")).join("\n\n"),
-            fields: request.questions.flatMap((q, index): UserInputField[] => {
-              if (q.multiple) return [
-                ...q.options.map((option, choice) => ({ key: `${index}:${choice}`, label: `${q.header}: ${option.label}`, kind: "boolean" as const })),
-                ...(q.custom === false ? [] : [{ key: String(index), label: `${q.header}: another answer`, kind: "text" as const }]),
-              ];
-              return [{ key: String(index), label: q.question, kind: q.custom === false && q.options.length ? "choice" : "text",
-                ...(q.options.length ? { choices: q.options.map((option) => option.label) } : {}), required: true }];
-            }) } }) ?? "decline");
+            fields } }) ?? "decline");
         if (input.signal.aborted) return;
         if (outcome.decision !== "accept" && outcome.decision !== "acceptForSession") { await client.question.reject({ requestID: request.id }, requestOptions()); return; }
-        const answers = request.questions.map((q, index) => {
-          const value = outcome.answers?.[String(index)];
-          if (q.multiple) return [
-            ...q.options.filter((_option, choice) => outcome.answers?.[`${index}:${choice}`] === true).map((option) => option.label),
-            ...(q.custom !== false && typeof value === "string" && value.trim() ? [value.trim()] : []),
-          ];
-          return Array.isArray(value) ? value.map(String) : value === undefined ? [] : [String(value)];
+        const answers = fields.map((field) => {
+          const value = outcome.answers?.[field.key];
+          if (value === undefined) return [];
+          if (!Array.isArray(value)) return [String(value)];
+          // THE WIRE SHAPE IS A LIST EITHER WAY — that is `QuestionAnswer` —
+          // but what may go in it is the FIELD's call. An array on a field that
+          // never said `multiple` is a client bug, and the first pick is the
+          // honest reading of it; passing the rest through would answer a
+          // one-pick question with several. Same guard as the Codex arm.
+          return field.multiple ? value.map(String) : value.slice(0, 1).map(String);
         });
         await client.question.reply({ requestID: request.id, answers }, requestOptions());
       };
