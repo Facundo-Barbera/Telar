@@ -110,6 +110,28 @@ function directorySize(directory: string): { bytes: number; files: number } {
   return { bytes, files };
 }
 
+/**
+ * THE HALF-OPEN RANGE THAT MATCHES A KEY PREFIX — `[prefix, prefix+1)`.
+ *
+ * `documents.key` is the table's PRIMARY KEY, so a comparison against a
+ * constant is an index seek and a `LIKE` is not: SQLite's `LIKE` is
+ * case-insensitive over ASCII by default, which makes it unusable as an index
+ * constraint, and `substr(key,1,?)=?` is a function of the column, which is
+ * worse — it has to compute the left side for every row in the table before it
+ * can compare anything. Measured on the owner's store (#493), both were full
+ * scans of 305 rows holding 48 MB of conversation text, one per call.
+ *
+ * THE UPPER BOUND IS THE PREFIX WITH ITS LAST CHARACTER INCREMENTED, which is
+ * why every caller here passes a prefix ending in `/` (0x2F): the bound is the
+ * same string ending in `0` (0x30), and no key that starts with the prefix can
+ * sort at or above it. Spelled as a function rather than inline so the two call
+ * sites cannot disagree about it.
+ */
+function prefixRange(prefix: string): [string, string] {
+  const last = prefix.charCodeAt(prefix.length - 1);
+  return [prefix, `${prefix.slice(0, -1)}${String.fromCharCode(last + 1)}`];
+}
+
 /** Only a bench or a test sets these; production runs the constants above.
  *  `flushCount: 1` is the behaviour before coalescing — every delta written
  *  where it was appended — which is what makes the two comparable.
@@ -406,16 +428,28 @@ export class ExecutionStore {
     if (this.buffered.length + this.pending.length >= this.flushCount) this.flush();
     else this.arm();
   }
+  /**
+   * SEEKS THE PREFIX, THEN FILTERS THE SUFFIX — see `prefixRange`.
+   *
+   * The range is what makes this an index seek; the `LIKE` that remains only
+   * chooses between the five documents a session directory holds, over rows the
+   * seek has already narrowed to. It reads keys alone and never touches `value`,
+   * so no conversation text is loaded to answer it.
+   */
   sessionIds(): string[] {
-    return this.statement("SELECT key FROM documents WHERE key LIKE 'sessions/%/session.json'").all().map((row) => String(row.key).split("/")[1]!);
+    const [low, high] = prefixRange("sessions/");
+    return this.statement("SELECT key FROM documents WHERE key >= ? AND key < ? AND key LIKE '%/session.json' ORDER BY key")
+      .all(low, high).map((row) => String(row.key).split("/")[1]!);
   }
   deleteSession(sessionId: string): void {
     this.alone(() => {
       // Store the held deltas so the DELETE below is what decides they are gone —
       // and so a rollback brings back a whole session, not a truncated one.
       this.drain(this.depth > 0);
-      const prefix = `sessions/${sessionId}/`;
-      this.statement("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
+      // A RANGE, NOT `substr(key,1,?)=?`: see `prefixRange`. The old spelling
+      // computed a substring of every key in the table to delete five rows.
+      const [low, high] = prefixRange(`sessions/${sessionId}/`);
+      this.statement("DELETE FROM documents WHERE key >= ? AND key < ?").run(low, high);
       this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
       this.cursors.delete(sessionId);
     });
