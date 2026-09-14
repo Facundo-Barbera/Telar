@@ -14,7 +14,7 @@
  * an ordinary profile; the swatch row ends in a dashed ring and the icon grid
  * starts with one, so clearing is a click rather than a thing you cannot express.
  *
- * THE COLOUR IS AN IDENTITY, NOT A STATE — the same law the Spool's hues carry.
+ * THE COLOUR IS AN IDENTITY, NOT A STATE — the law the `--subject-*` hues carry.
  * Nothing here derives a colour from whether a profile is the default, is in use,
  * or has a problem; a person picks it and it means whose it is.
  */

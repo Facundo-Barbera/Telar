@@ -125,9 +125,8 @@ export type SessionActionItem = {
 export type SessionActionTarget = {
   id: string;
   title: string;
-  /** Absent on the Spool's master chat, which belongs to no project — so the
-   *  two items that need one say so rather than building a `/projects/undefined`
-   *  URL. */
+  /** Absent on a session that belongs to no project — so the two items that
+   *  need one say so rather than building a `/projects/undefined` URL. */
   projectId?: string;
   /** For the label. Falls back to "this project" when the project list has not
    *  landed: an opaque `project_1a16…` is addressing, not a name. */

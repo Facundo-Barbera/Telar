@@ -251,7 +251,7 @@ function ReviewFileRow({
        file rows in right-panel.tsx. */
     <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
       {/* THE TRIGGER IS INSIDE THE DRAGGABLE, wrapping only the row's own
-          content — the board card's rule in `spool/idiom.test.ts`, and for its
+          content — the app's trigger-inside rule, and for its
           reason: a right-click on the drag handle would race the drag.
 
           STAGE, UNSTAGE AND REVERT ARE NOT HERE, and their absence is the same

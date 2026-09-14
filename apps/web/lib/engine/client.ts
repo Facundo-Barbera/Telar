@@ -539,8 +539,8 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
         patch,
       ),
-    /** A REAL delete, unlike the Spool shelf's retire — a project note is a
-     *  scratchpad. `deleted: false` means it was already gone, never an error. */
+    /** A REAL delete, not a retire — a project note is a scratchpad.
+     *  `deleted: false` means it was already gone, never an error. */
     deleteProjectNote: (projectId: string, noteId: string) =>
       request<{ deleted: boolean }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
     pinProjectNote: (projectId: string, noteId: string, pinned: boolean) =>

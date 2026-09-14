@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
  * own surfaces: transcript rows, the composer's chrome, notebook cells, table
  * headers, diff rows and browser tabs.
  *
- * ASSERTED AS SOURCE TEXT, for the reason `spool/idiom.test.ts` gives: this app
+ * ASSERTED AS SOURCE TEXT, for the reason the app's other idiom tests give: it
  * has no DOM harness, and every claim here is structural rather than visual —
  * "there is ONE primitive", "every item fires a callback the surface already
  * wires", "no menu spells a second write path". Each is decidable by reading
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  * THE RULE THE WHOLE ROUND TURNS ON: a menu item's handler is a function the
  * same surface already gives a VISIBLE control. A right-click that reached a
  * second `fetch` would be a second way for the same verb to go wrong, and the
- * Spool's own round established that it does not happen.
+ * earlier rounds established that it does not happen.
  */
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const read = (name: string) => fs.readFileSync(path.join(dir, name), "utf8");
@@ -146,8 +146,8 @@ describe("the notebook cell's menu", () => {
 
 /**
  * THE TABLE. Two DIFFERENT menus on one surface — a header's and a cell's —
- * which is the point the Spool's calendar case makes about a day cell and a
- * pill: they are genuinely different objects, not one list reused twice.
+ * and the earlier rounds' point about a container and the thing inside it:
+ * they are genuinely different objects, not one list reused twice.
  */
 describe("the table's column header and its cells", () => {
   const tbl = () => code("session/table-surface.tsx");

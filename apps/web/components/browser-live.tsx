@@ -375,7 +375,7 @@ function TabMenu({
   onOpenExternal?: (url: string) => Promise<{ ok: boolean; error?: string }>;
   /** The trigger IS the tab, not a box around it — the drag stays on the
    *  wrapper outside, so a right-click can never be confused with one. Same
-   *  shape the Spool's board card uses. */
+   *  shape every draggable row in this app uses. */
   className?: string;
   children: React.ReactNode;
 }) {
@@ -1605,8 +1605,8 @@ export function DesktopBrowserSurface({
             // the URL cold. Same drag `drag-reference.ts` gives every panel row.
             //
             // IT STAYS ON THIS WRAPPER, outside the menu's trigger, so a
-            // right-click cannot start or be confused with a drag — the board
-            // card's rule in `spool/idiom.test.ts`.
+            // right-click cannot start or be confused with a drag — the app's
+            // trigger-inside rule.
             draggable
             onDragStart={(event) => startReferenceDrag(event.dataTransfer, browserPageReference({ title: tab.title, url: tab.url }))}
             // Middle-click closes, the way every browser's strip does.

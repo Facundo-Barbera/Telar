@@ -195,15 +195,15 @@ describe("the shared field has two slots again, and the leading one replaces the
   });
 
   test("a caller that passes no slot draws what it drew before", () => {
-    // The Spool's rail and the settings nav pass no `start`; the glyph, the
-    // height and the hover treatment are unchanged for them.
+    // The settings nav passes no `start`; the glyph, the height and the hover
+    // treatment are unchanged for it.
     expect(field).toContain("h-8 min-w-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2");
     expect(field).toContain("hover:bg-sidebar-accent/70 focus-within:border-sidebar-border focus-within:bg-sidebar-accent/70");
   });
 
   test("the field still binds no key of its own", () => {
-    // Telar's ⌘K stays Telar's `useCommandKeys` call; the Spool's field opens on
-    // focus. Neither is smuggled into the shared chrome.
+    // Telar's ⌘K stays Telar's `useCommandKeys` call — it is not smuggled into
+    // the shared chrome.
     expect(field).not.toMatch(/onKeyDown|useCommandKeys|metaKey|ctrlKey/);
   });
 });

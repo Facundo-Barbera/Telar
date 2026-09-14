@@ -878,8 +878,7 @@ export function SessionRow({
 
   /**
    * THE HANDLE IS A BOX AROUND THE MENU, NOT THE ELEMENT INSIDE IT — the same
-   * separation the Spool's board card makes (`spool/board.tsx`) and the project
-   * header makes one level up.
+   * separation the project header makes one level up.
    *
    * The row's right-click trigger renders `display: contents`, which paints
    * nothing and is therefore never an event target: the row's own <div> is what

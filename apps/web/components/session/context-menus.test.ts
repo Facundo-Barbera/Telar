@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 /**
  * THE EDITOR'S AND THE PANEL'S RIGHT-CLICK MENUS, PINNED AS SOURCE.
  *
- * The same instrument the Spool uses for the same claims
- * (`spool/idiom.test.ts`), and for the same reason: there is no DOM harness in
+ * The same instrument the app's other idiom tests use for the same claims, and
+ * for the same reason: there is no DOM harness in
  * this app, and everything asserted here is structural. Four surfaces grew a
  * menu in one pass, and the ways that decays are all invisible on screen — a
  * fifth surface copying the primitive instead of importing it, an item quietly
@@ -47,7 +47,7 @@ describe("one primitive, four surfaces", () => {
   test("the quiet idiom holds: no destructive colour on any of the new items, closes included", () => {
     // Closing a tab is ordinary, and four close verbs painted red would make
     // the strip look dangerous to tidy. The primitive keeps the variant for a
-    // future caller; none of these opts in — the same line the Spool draws.
+    // future caller; none of these opts in — the same line every menu draws.
     for (const [name, source] of Object.entries(MENUS)) {
       expect(source, `${name} spends no destructive colour in a menu item`).not.toMatch(/ContextMenuItem[^>]*variant="destructive"/);
     }

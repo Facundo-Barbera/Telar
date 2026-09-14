@@ -6,7 +6,7 @@
  * chip and collapsible group header; the donor's other exports are not used
  * here and were not brought over).
  *
- * SHARED SO THE SPOOL AND EVERY LATER LIST READ AS ONE SYSTEM. The queue is
+ * SHARED SO EVERY LIST IN THE APP READS AS ONE SYSTEM. The queue is
  * described in `ui-contract.md` as "the app's proven list idiom: search-first
  * toolbar, lane filter chips, collapsible groups, dense rows" — proven meaning
  * these, rather than a shape invented for it.

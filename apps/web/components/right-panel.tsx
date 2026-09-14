@@ -1784,8 +1784,8 @@ export function RightPanelResizeHandle({
   panelRef: RefObject<HTMLElement | null>;
   /**
    * WHICH PANEL'S WIDTH THIS REMEMBERS. Defaulted so every existing caller is
-   * unchanged, and parameterised because the Spool's panel is a different panel
-   * — sharing one key would make widening a packet resize the cockpit's diff.
+   * unchanged, and parameterised because a second panel is a different panel —
+   * sharing one key would make widening one resize the other.
    */
   storageKey?: string;
 }) {

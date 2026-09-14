@@ -223,7 +223,7 @@ describe("browser pages are their own tabs", () => {
     // rather than the tab silently vanishing on restore.
     expect(isPanelTab("browser:whatever")).toBe(true);
     expect(isPanelTab("agents")).toBe(true);
-    expect(isPanelTab("looms")).toBe(false);
+    expect(isPanelTab("not-a-tab")).toBe(false);
   });
 });
 

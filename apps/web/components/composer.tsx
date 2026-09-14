@@ -133,7 +133,7 @@ function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): st
   // A message mid-turn reaches the running agent; say so.
   if (busy) return "Enter sends into the running turn…";
   // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
-  // which the Spool's front door does not have one of.
+  // which a project-less conversation does not have one of.
   return placeholder ?? "Ask for changes, or explore the project…";
 }
 
@@ -468,9 +468,8 @@ export function Composer({
   /**
    * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
    * statement rather than a missing value — see `Session.projectId`'s own note.
-   * The Spool's master chat is the one that has none: it answers ACROSS
-   * projects, so a project here would scope it to the single thing it must not
-   * be.
+   * A project-less conversation answers ACROSS projects, so a project here
+   * would scope it to the single thing it must not be.
    *
    * THREE OF THIS COMPONENT'S FOUR USES OF IT ARE THINGS A PROJECT-LESS CHAT
    * DOES NOT WANT — the git environment strip, the project greeting, and
@@ -521,7 +520,7 @@ export function Composer({
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
   /** What the input invites. The default offers to "explore the project",
-   *  which is wrong on the Spool's front door — it has no project. */
+   *  which is wrong where there is no project. */
   placeholder?: string;
   onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
@@ -709,7 +708,7 @@ export function Composer({
         /**
          * A HOST THAT TAKES NO ATTACHMENTS.
          *
-         * The Spool's master chat passes a stub `onAttach` and an always-empty
+         * Such a host passes a stub `onAttach` and an always-empty
          * list, and nothing in the props tells it apart from a real one. The
          * only honest test is to hand the files over and then look: if the box
          * is not holding more than it was, they never arrived, and they go back

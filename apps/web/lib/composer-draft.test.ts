@@ -44,13 +44,13 @@ describe("which slot a composer writes to", () => {
     expect(readDraft(undefined, "project_b", store)).toBe("for B");
   });
 
-  test("the Spool's project-less session still gets its own slot", () => {
+  test("a project-less session still gets its own slot", () => {
     // A session with no project exists before anyone can type into it, so the
     // project half is never reached — but the session half must still key.
     const store = storage();
-    writeDraft("master", undefined, "spool thought", store);
+    writeDraft("master", undefined, "a thought", store);
     expect([...store.slots.keys()]).toEqual(["telar:draft:master"]);
-    expect(readDraft("master", undefined, store)).toBe("spool thought");
+    expect(readDraft("master", undefined, store)).toBe("a thought");
   });
 });
 

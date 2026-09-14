@@ -581,13 +581,13 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * ONE TURN, RENDERED — your message, then everything the agent did about it.
  *
  * EXPORTED, AND IT COSTS NOTHING TO EXPORT: this component reads `projectId`
- * zero times. It was written for the project cockpit and turns out to be the
- * shared conversation shell the Spool's master chat needed — the extraction the
+ * zero times. It was written for the project cockpit and turns out to be a
+ * project-agnostic conversation shell — the extraction the
  * donor planned, already done by accident because nothing in a rendered turn is
  * a property of a repository.
  *
- * So the master chat consumes THIS rather than hand-rebuilding a second
- * transcript. The donor's own rule for that situation was to stop rather than
+ * So any second transcript surface consumes THIS rather than hand-rebuilding
+ * one. The donor's own rule for that situation was to stop rather than
  * build the second one, and the reason is visible here: approvals, sub-agent
  * chips, the activity fold, the live step window and the ambiguous-turn recovery
  * are all decided in this function. A copy would start identical and drift.
@@ -707,8 +707,8 @@ function SessionTurnBody({
   roster = [],
 }: {
   /**
-   * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. The Spool's chat sets this:
-   * there, a settled turn's step summary and token count read as telemetry
+   * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. For a surface where a settled
+   * turn's step summary and token count read as telemetry
    * presented as conversation, so both fold behind one quiet disclosure and
    * the answer leads. The cockpit leaves it unset and renders exactly as it
    * always has — a LIVE turn ignores it too, because the step window is the
@@ -951,8 +951,7 @@ function SessionTurnBody({
           {folded && (activity.length > 0 || turn.usage) && (
             <div>
               {/* A quiet INLINE control in the message flow, not floating mono
-                  micro-text — the Spool's transcript is the only caller of the
-                  quiet fold, and this is its one disclosure. */}
+                  micro-text — one disclosure for the whole quiet fold. */}
               <button
                 type="button"
                 aria-expanded={workShown}
