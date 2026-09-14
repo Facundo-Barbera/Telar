@@ -334,7 +334,13 @@ function useRelated(sessionId: string | undefined, hostId: string | undefined, v
     const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
     const tick = async () => {
       const [list, subscriptions] = await Promise.all([
-        api.liveSessions().then((value) => value, () => undefined),
+        // ALL OF THEM (#457). The route answers the unsettled rows by default,
+        // which is right for a RAIL and wrong here: a delegate is settled
+        // precisely BECAUSE its work was delivered, so the narrow list would
+        // drop the finished errands this panel exists to show. It ticks only
+        // while the panel is open and visible, which is what makes paying for
+        // the whole list the right trade in this one place.
+        api.liveSessions({ all: true }).then((value) => value, () => undefined),
         api.sessionSubscriptions(sessionId).then((value) => value.subscriptions, () => undefined),
       ]);
       if (!live) return;

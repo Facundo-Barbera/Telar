@@ -211,7 +211,16 @@ struct SessionSidebar: View {
                     }
                 }
                 shelf("Snoozed", rows: inbox.sections.snoozed.sorted { ($0.session.snoozedUntil ?? 0) < ($1.session.snoozedUntil ?? 0) }, open: $snoozedOpen)
-                shelf("Settled", rows: inbox.sections.settled, open: $settledOpen)
+                // THE ROWS ARE NOT HERE UNTIL THIS IS OPENED (#457): the Macs
+                // answer the unsettled list and say how many they kept, which
+                // is what draws this and what the tap then asks for.
+                shelf(
+                    "Settled",
+                    rows: inbox.sections.settled,
+                    open: $settledOpen,
+                    heldBack: inbox.shelvedOnMacs,
+                    onOpen: { await inbox.showSettled() },
+                )
             }
             // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
             // copy audit (`SidebarEmpty`, app-sidebar.tsx). "Your work starts
@@ -903,9 +912,30 @@ struct SessionSidebar: View {
         .presentationDetents([.medium])
     }
 
-    @ViewBuilder private func shelf(_ name: String, rows: [HostedSession], open: Binding<Bool>) -> some View {
+    /// `heldBack` IS THE COUNT OF ROWS THE MACS DID NOT SEND (#457), and it is
+    /// what keeps this shelf drawable when it is empty.
+    ///
+    /// The live read answers only the unsettled rows until somebody opens the
+    /// settled shelf, so `rows` is empty until then — and a shelf that hides
+    /// itself when empty would be a shelf with no way to open it. `onOpen` is
+    /// what asks for them, so the rows arrive on the tap rather than three
+    /// seconds later on the next poll.
+    @ViewBuilder private func shelf(
+        _ name: String,
+        rows: [HostedSession],
+        open: Binding<Bool>,
+        heldBack: Int = 0,
+        // `@MainActor` and not `@Sendable`: it closes over the store, which is
+        // main-actor-isolated, and the Task below inherits the same isolation.
+        onOpen: (@MainActor () async -> Void)? = nil,
+    ) -> some View {
         let filtered = rows.filter(matches)
-        if !filtered.isEmpty {
+        // WHAT THE HEADER SAYS. Open, the rows are here and they are the
+        // answer — filtered by the search field, which `heldBack` is not.
+        // Closed, the Macs' own count is the only thing that knows there is
+        // anything behind this at all.
+        let count = open.wrappedValue ? filtered.count : max(filtered.count, heldBack)
+        if !filtered.isEmpty || heldBack > 0 {
             Section {
                 if open.wrappedValue {
                     // A SHELF IS OFF THE LIST — history behind you, or work
@@ -924,17 +954,23 @@ struct SessionSidebar: View {
                 // own separator because a section header in an inset-grouped
                 // list sits OUTSIDE the card, on the page, where the list draws
                 // no separator at all.
-                Button { open.wrappedValue.toggle() } label: {
+                Button {
+                    let opening = !open.wrappedValue
+                    open.wrappedValue = opening
+                    // Only on the way OPEN, and only once it is: closing keeps
+                    // whatever rows arrived, which cost nothing to hold.
+                    if opening, let onOpen { Task { await onOpen() } }
+                } label: {
                     HStack(spacing: 6) {
                         Image(systemName: open.wrappedValue ? "chevron.down" : "chevron.right")
                             .font(.caption)
                         Text(name)
                         Rectangle().fill(Theme.border).frame(height: 1).accessibilityHidden(true)
-                        Text("\(filtered.count)").monospacedDigit()
+                        Text("\(count)").monospacedDigit()
                     }
                     .bandCaption()
                 }
-                .accessibilityLabel("\(name), \(filtered.count), \(open.wrappedValue ? "expanded" : "collapsed")")
+                .accessibilityLabel("\(name), \(count), \(open.wrappedValue ? "expanded" : "collapsed")")
             }
         }
     }

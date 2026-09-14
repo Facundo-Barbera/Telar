@@ -7,6 +7,18 @@ import Foundation
 protocol EngineAPI: Sendable {
     func health() async throws -> EngineHealth
     func liveSessions() async throws -> LiveSessions
+    /// THE SAME READ, WIDE — every session, settled ones included (#457).
+    ///
+    /// The Mac's default answer is the UNSETTLED rows alone: 7 of 291 on the
+    /// owner's store, where it used to fold and serialise all 291 every three
+    /// seconds for every device attached to it. This is what the settled shelf
+    /// asks with, and `LiveSessions.settledCount` on the narrow answer is what
+    /// draws the shelf that does the asking.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW, like `liveSessions(since:)`: a
+    /// conformer that does not implement it (the test doubles) falls back to
+    /// the plain read, which on a Mac too old to filter IS the whole list.
+    func liveSessions(all: Bool) async throws -> LiveSessions
     /// THE SAME READ, CONDITIONALLY (#459) — what the inbox poll should use.
     ///
     /// Hand back the `revision` from last time and a Mac with nothing new
@@ -138,6 +150,13 @@ extension EngineAPI {
     /// And a conformer that has not learned the conditional read just makes the
     /// full one — which is what a Mac too old to count would force anyway.
     func liveSessions(since: Int) async throws -> LiveSessions {
+        try await liveSessions()
+    }
+
+    /// Likewise the WIDE read (#457): a conformer that has not learned to ask
+    /// for the settled rows makes the plain read, which against a Mac too old
+    /// to hold any back is already every row there is.
+    func liveSessions(all: Bool) async throws -> LiveSessions {
         try await liveSessions()
     }
 }
@@ -395,10 +414,28 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/health")
     }
 
+    /// THE UNSETTLED ROWS (#457) — 7 of 291 on the owner's store, where this
+    /// route used to fold and serialise all 291 every three seconds for every
+    /// device attached to the Mac. `LiveSessions.settledCount` says how many it
+    /// held back, which is what draws the shelf that asks for them.
     func liveSessions() async throws -> LiveSessions {
         try await get("api/sessions/live")
     }
 
+    /// And every row, settled ones included — what the settled shelf asks with.
+    ///
+    /// SPELLED AS ITS OWN METHOD rather than a defaulted argument on the one
+    /// above: a default argument does not witness a protocol requirement that
+    /// takes no argument, and both spellings are requirements here.
+    func liveSessions(all: Bool) async throws -> LiveSessions {
+        try await get("api/sessions/live", query: all ? [URLQueryItem(name: "all", value: "1")] : [])
+    }
+
+    /// THE SAME LIST, CONDITIONALLY — and always the NARROW one. `all` is
+    /// deliberately not offered here: the revision counts writes, so it does not
+    /// move when a reader opens the shelf, and a cursor earned against one list
+    /// and spent against the other would be answered "unchanged" and leave the
+    /// shelf empty. The wide ask pays for itself; see the engine's route.
     func liveSessions(since: Int) async throws -> LiveSessions {
         try await get("api/sessions/live", query: [URLQueryItem(name: "since", value: String(since))])
     }

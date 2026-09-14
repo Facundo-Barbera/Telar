@@ -63,7 +63,9 @@ function loadedStore(count: number): EngineStore {
 
 test("the live list answers rows, not whole sessions — every key a rail draws and none it does not", () => {
   const store = loadedStore(1);
-  const [row] = store.liveSessionRows().sessions;
+  // `all` because this is about the row's SHAPE, not about which rows are on
+  // it — and session 0 is one of the fixture's pinned-settled third (#457).
+  const [row] = store.liveSessionRows({ all: true }).sessions;
   const [full] = store.liveSessions().sessions;
   expect(row).toBeDefined();
   expect(full).toBeDefined();
@@ -100,10 +102,14 @@ test("the live list answers rows, not whole sessions — every key a rail draws 
 test("a 267-session store answers the live list in a fraction of what it used to", () => {
   // The owner's store, to the session: 267 live conversations.
   const store = loadedStore(267);
+  // `all` on both sides: this measures the PROJECTION, so the two answers have
+  // to describe the same 267 rows. What the narrower default is worth on top of
+  // it is the test below (#457).
+  const wide = store.liveSessionRows({ all: true });
   const full = JSON.stringify(store.liveSessions()).length;
-  const lean = JSON.stringify(store.liveSessionRows()).length;
+  const lean = JSON.stringify(wide).length;
 
-  expect(store.liveSessionRows().sessions).toHaveLength(267);
+  expect(wide.sessions).toHaveLength(267);
   /**
    * THE BOUND IS PER ROW, not per answer, because it is the per-row cost that
    * multiplies: 267 sessions today, more next month, and the same read on every
@@ -134,11 +140,92 @@ test("the shapes disagree about rows and about nothing else", () => {
   // reading a different LIST.
   const store = loadedStore(3);
   const full = store.liveSessions();
-  const lean = store.liveSessionRows();
+  const lean = store.liveSessionRows({ all: true });
   expect(lean.sessions.map((session) => session.id)).toEqual(full.sessions.map((session) => session.id));
   expect(lean.projects).toEqual(full.projects);
   expect(lean.layout).toEqual(full.layout);
   expect(lean.assignments).toEqual(full.assignments);
+});
+
+/**
+ * THE MEASUREMENT #457 ASKED FOR — what the route costs before and after the
+ * default narrowed, on the same store.
+ *
+ * THE FIXTURE'S SHELF IS THE PIN, NOT THE CLOCK. `loadedStore` builds every
+ * session at one fixed instant and the store's clock is that same instant, so
+ * nothing is stale and the only settled rows are the third that carry
+ * `settledOverride: "settled"`. The owner's real store is the other way round —
+ * 284 of 291 settled, nearly all of them by the inactivity clock — so the
+ * saving measured here (a third) is the FLOOR of the saving in production
+ * (97%), not an estimate of it.
+ */
+test("the default answer carries only the rows a rail draws, and says how many it kept", () => {
+  const store = loadedStore(267);
+  const before = store.liveSessionRows({ all: true });
+  const after = store.liveSessionRows();
+
+  // Every third session is pinned settled by the fixture.
+  const settled = Math.ceil(267 / 3);
+  expect(before.sessions).toHaveLength(267);
+  expect(after.sessions).toHaveLength(267 - settled);
+  // The count rides BOTH answers: the narrow one needs it to draw a shelf
+  // header, and the wide one must not contradict the narrow one about it.
+  expect(after.settledCount).toBe(settled);
+  expect(before.settledCount).toBe(settled);
+
+  // And the bytes, which are the point. Bounded as a RATIO rather than a byte
+  // count for the reason the per-row bound above is a ratio: the fixture's
+  // rows are lighter than the owner's, and it is the proportion that carries
+  // over to a store where 284 of 291 are settled.
+  const wide = JSON.stringify(before).length;
+  const narrow = JSON.stringify(after).length;
+  expect(narrow).toBeLessThan(wide * 0.75);
+
+  // NOT ONE OF THE DROPPED ROWS IS REACHABLE from the narrow answer, including
+  // through the assignment map — an entry keyed by a session the reader cannot
+  // see is bytes describing a conversation that is not there.
+  const kept = new Set(after.sessions.map((session) => session.id));
+  for (const id of Object.keys(after.assignments)) expect(kept.has(id)).toBe(true);
+});
+
+test("a blocker, a pin and a draft all survive the filter — the rows it must never drop", () => {
+  const now = 1_700_000_000_000;
+  const store = new EngineStore(root(), () => now);
+  store.registerProject({ id: "project_one", name: "Telar", root: checkout() });
+  // An hour is the shortest window the policy allows, and every session below
+  // is stamped `now`, so NOTHING is stale: this isolates the guards from the
+  // clock. The clock's own case is the 267-session test above.
+  store.setInboxPolicy({ autoSettleAfterHours: 1 });
+
+  const make = (suffix: string): string => {
+    const id = `session_${suffix.padEnd(30, "0")}`;
+    store.createSession({ id, projectId: "project_one", title: suffix });
+    return id;
+  };
+
+  const pinnedSettled = make("settled");
+  store.updateSession(pinnedSettled, { settledOverride: "settled" });
+  const pinnedActive = make("active");
+  store.updateSession(pinnedActive, { settledOverride: "active" });
+  // A DRAFT IS NEVER SHELVED BY THE CLOCK. `isStale` is true of every draft
+  // ever opened — an unsent conversation has done nothing to measure — so
+  // without the carve-out this row would vanish off the rail a window after
+  // the composer opened it. See `isShelved`.
+  const draft = make("draft");
+  store.updateSession(draft, { draft: {} });
+  // A SETTLED PIN STILL TAKES A DRAFT: the carve-out is against the clock, not
+  // against a person's decision.
+  const settledDraft = make("draftsettled");
+  store.updateSession(settledDraft, { draft: {}, settledOverride: "settled" });
+
+  const rows = new Set(store.liveSessionRows().sessions.map((session) => session.id));
+  expect(rows.has(pinnedActive)).toBe(true);
+  expect(rows.has(draft)).toBe(true);
+  expect(rows.has(pinnedSettled)).toBe(false);
+  expect(rows.has(settledDraft)).toBe(false);
+  expect(store.liveSessionRows().settledCount).toBe(2);
+  // And `?all=1` is the same list with nothing held back.
+  expect(store.liveSessionRows({ all: true }).sessions).toHaveLength(4);
 });
 
 test("the revision moves when the list would, and not when only a transcript grows", () => {

@@ -75,7 +75,13 @@ export function FrontDoor() {
         api.projects().then((value) => value, () => undefined),
         // Only to rank; its own project list carries no `createdAt`, so it
         // cannot answer the cold case on its own.
-        api.liveSessions().then((value) => value, () => undefined),
+        //
+        // ALL OF THEM (#457): the route's default is the unsettled rows, which
+        // is right for a rail and wrong for a ranking — a machine whose work has
+        // all been shelved would rank on nothing and open the wrong project.
+        // One read at the front door, not a poll, so the whole list is cheap
+        // here in a way it is not on the rail.
+        api.liveSessions({ all: true }).then((value) => value, () => undefined),
       ]);
       if (cancelled) return;
       if (!registry) {

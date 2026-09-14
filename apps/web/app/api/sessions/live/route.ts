@@ -37,11 +37,22 @@ export async function GET(request: Request) {
      * cheap read instead of two full ones, and the rare changed tick pays one
      * extra local round trip for it.
      */
-    const since = new URL(request.url).searchParams.get("since");
+    /**
+     * `?all=1` IS PASSED THROUGH TOO (#457) — the shelf's ask.
+     *
+     * The engine answers only the unsettled rows by default; `all=1` is the
+     * whole list, and it is deliberately NOT conditional (see the engine's
+     * route), so a cursor sent beside it is ignored on both sides rather than
+     * answering the wide ask with a narrow "unchanged".
+     */
+    const query = new URL(request.url).searchParams;
+    const all = query.get("all") === "1";
+    const since = query.get("since");
     const live: LiveSessionsAnswer | LiveSessionsUnchanged =
-      since === null ? await client.liveSessions() : await client.liveSessionsSince(Number(since));
+      all ? await client.liveSessions({ all: true })
+        : since === null ? await client.liveSessions() : await client.liveSessionsSince(Number(since));
     if (live.unchanged) return Response.json(live);
-    const { sessions, assignments, layout, daemonId, inbox, revision } = live;
+    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount } = live;
     const { projects } = await client.listProjects();
     // DETACHMENT (docs/loom-model-v1.md): same subtraction as the per-project
     // list — loom-owned sessions do not exist on ordinary surfaces, and this
@@ -77,6 +88,11 @@ export async function GET(request: Request) {
       // WHAT TO ASK WITH NEXT TIME. Absent from an engine too old to count, and
       // a rail that gets none simply keeps making full reads.
       ...(revision === undefined ? {} : { revision }),
+      // HOW BIG THE SHELF THIS ANSWER LEFT OUT IS (#457) — one integer, and the
+      // only thing that tells a rail the list it just received is partial.
+      // Absent from an engine that predates the filter, which reads as "you have
+      // everything" rather than as an empty shelf.
+      ...(settledCount === undefined ? {} : { settledCount }),
     });
   } catch (error) {
     return engineErrorResponse(error);

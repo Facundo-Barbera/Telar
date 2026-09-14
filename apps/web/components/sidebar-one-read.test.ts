@@ -90,11 +90,25 @@ describe("the route forwards what the engine stamped", () => {
     // This proxy re-composes rather than streams, so without this a browser's
     // rail would pull the full list every tick while the phone — which reaches
     // the engine verbatim through the hosts proxy — got the cheap answer.
-    expect(route).toContain('searchParams.get("since")');
+    expect(route).toContain('query.get("since")');
     expect(route).toContain("client.liveSessionsSince(Number(since))");
     expect(route).toContain("if (live.unchanged) return Response.json(live)");
     // An unchanged answer must not go on to fetch the registry either: writing
     // it bumps the same revision, so it cannot have moved.
     expect(route.indexOf("if (live.unchanged)")).toBeLessThan(route.indexOf("client.listProjects()"));
+  });
+
+  test("and the shelf's ask reaches the engine, with the count that draws the shelf", () => {
+    // The engine answers only the unsettled rows by default (#457). Without the
+    // pass-through a browser's Settled shelf would be permanently empty while
+    // the phone's — reaching the engine verbatim through the hosts proxy —
+    // filled: the same asymmetry this file exists to catch.
+    expect(route).toContain('query.get("all") === "1"');
+    expect(route).toContain("client.liveSessions({ all: true })");
+    expect(route).toContain("...(settledCount === undefined ? {} : { settledCount })");
+    // AND THE WIDE ASK IS NOT CONDITIONAL. The revision counts writes, so it
+    // does not move when a reader opens a shelf; spending a cursor across the
+    // two lists would answer "unchanged" and leave the shelf empty.
+    expect(route.indexOf('all ? await client.liveSessions({ all: true })')).toBeGreaterThan(-1);
   });
 });

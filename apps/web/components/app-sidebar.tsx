@@ -354,6 +354,11 @@ type HostPage = {
   daemonId?: string;
   policy?: InboxPolicy;
   layout?: SidebarLayout;
+  /** How many SETTLED rows this Mac did not send (#457). The rows above are the
+   *  unsettled ones unless the shelf is open; this is what draws the header that
+   *  opens it. Absent from an engine that predates the filter — which means "you
+   *  have everything", so the count is taken from the rows instead. */
+  settledCount?: number;
 };
 
 function SidebarBody() {
@@ -433,6 +438,15 @@ function SidebarBody() {
   const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
   /**
+   * HOW MANY SETTLED ROWS THE ENGINES ARE HOLDING BACK (#457), across every Mac
+   * in the rail. State rather than a ref because the shelf header draws it.
+   *
+   * Zero from an engine that predates the filter, which sent every row — so the
+   * shelf is counted off the rows in hand, exactly as it always was, and this
+   * adds nothing to it.
+   */
+  const [shelvedOnEngines, setShelvedOnEngines] = useState(0);
+  /**
    * THE OTHER MACS, and which of them did not answer on the last read. The
    * book is re-read on every poll (it is one small local file) so a Mac
    * paired from Settings shows up on the next tick without a reload. A host
@@ -493,6 +507,17 @@ function SidebarBody() {
    */
   const revisions = useRef(new Map<string, number>());
   const pages = useRef(new Map<string, HostPage>());
+  /**
+   * WHETHER THIS RAIL IS ASKING FOR THE SHELF'S ROWS (#457) — `settledOpen`, in
+   * a ref because `loadHost` reads it.
+   *
+   * A REF AND NOT A DEP, for the reason the two above are refs: `loadAll` is
+   * held by an interval, and making it depend on this would tear the timer down
+   * and build it again every time somebody opened a shelf. The ref is written in
+   * `toggleSettled` BEFORE the read it triggers, so the pass that opens the
+   * shelf is already the wide one.
+   */
+  const wantsSettled = useRef(false);
 
   // On a phone the rail is a sheet OVER the content, so following a link has to
   // close it — otherwise the destination is behind the thing you just used.
@@ -556,9 +581,24 @@ function SidebarBody() {
      * should not happen — a cursor with no page behind it — because answering
      * an unchanged read with no rows would empty the rail.
      */
+    /**
+     * AND ONLY THE ROWS A RAIL DRAWS (#457), UNLESS THE SHELF IS OPEN.
+     *
+     * The engine answers the unsettled rows by default — 7 of 291 on the owner's
+     * store — and `settledCount` beside them is what lets this rail draw
+     * "Settled (284)" without holding 284 rows. Opening that shelf is what asks
+     * for them, and the wide read is deliberately NOT conditional on either side:
+     * the revision counts writes, so it does not move when a reader opens a
+     * shelf, and a cursor spent across the two lists would answer the wide ask
+     * with "unchanged" and leave the shelf empty until something else happened.
+     */
     const key = host?.id ?? LOCAL_HOST;
     const known = revisions.current.get(key);
-    const answer = known === undefined ? await hostApi.liveSessions() : await hostApi.liveSessionsSince(known);
+    const answer = wantsSettled.current
+      ? await hostApi.liveSessions({ all: true })
+      : known === undefined
+        ? await hostApi.liveSessions()
+        : await hostApi.liveSessionsSince(known);
     if (answer.unchanged) {
       const held = pages.current.get(key);
       if (held) return held;
@@ -615,6 +655,10 @@ function SidebarBody() {
       // only meaningful for THIS Mac, whose document holds the keys this rail
       // mints. A remote Mac's own arrangement is of ITS rail, not of ours.
       ...(result.layout ? { layout: result.layout } : {}),
+      // HOW MANY THIS MAC HELD BACK (#457). Absent from an engine that predates
+      // the filter, and absent must read as "it sent everything" — the shelf is
+      // then counted off the rows, exactly as it always was.
+      ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
     };
     // Held so the next unchanged answer has something to BE. Only alongside a
     // revision: without one every read is a full one and nothing reads this.
@@ -657,7 +701,7 @@ function SidebarBody() {
       // cannot put the group back under the pointer.
       observeSidebarLayout(local.value.layout);
       const away = new Set<string>();
-      const reads: { daemonId?: string; sessions: SidebarSession[] }[] = [local.value];
+      const reads: { daemonId?: string; sessions: SidebarSession[]; settledCount?: number }[] = [local.value];
       const remoteProjects: RemoteProject[] = [];
       const windows = new Map<string, number | null>();
       if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
@@ -692,12 +736,39 @@ function SidebarBody() {
       }
       setStaleByHost(remembered);
       setUnreachable(away);
+      // WHAT THE ENGINES KEPT (#457), summed over the Macs that answered. Not
+      // deduplicated the way the rows are: two addresses onto one engine would
+      // double it, which is the same caveat the closed shelf's count carries and
+      // for the same reason — it is an affordance, not a figure.
+      setShelvedOnEngines(reads.reduce((total, read) => total + (read.settledCount ?? 0), 0));
       setSessions(dedupeAcrossHosts(reads));
       setRenderedAt(Date.now());
     } finally {
       loadAllRunning.current = false;
     }
   }, [loadHost]);
+
+  /**
+   * OPEN OR CLOSE THE SHELF, AND FETCH WHAT IT NEEDS.
+   *
+   * The engine sends the settled rows only when asked (#457), so opening the
+   * shelf has to ASK — and has to ask now rather than on the next tick, or the
+   * reader clicks "Settled (284)" and watches an empty shelf for three seconds.
+   * The ref is set before the read so that read is already the wide one.
+   *
+   * CLOSING KEEPS THE ROWS IT ALREADY HAS. They cost nothing to hold, they band
+   * to a shelf that is now shut, and dropping them would mean re-fetching all of
+   * them the next time the reader glanced at the list.
+   */
+  const toggleSettled = useCallback(() => {
+    // Off the REF rather than through a state updater: the updater is called
+    // twice under StrictMode, and a fetch fired from inside one is a side
+    // effect in a place React is allowed to re-run.
+    const next = !wantsSettled.current;
+    wantsSettled.current = next;
+    setSettledOpen(next);
+    if (next) void loadAll();
+  }, [loadAll]);
 
   useEffect(() => {
     const task = window.setTimeout(() => void loadAll(), 0);
@@ -1760,7 +1831,19 @@ function SidebarBody() {
             />
             <SessionShelf
               label="Settled"
-              count={list.settledCount}
+              // THE ENGINE'S COUNT WHEN THE ROWS ARE NOT HERE (#457). The live
+              // read holds the settled rows back until this shelf is open, so
+              // banding what is in hand would say "0" and the header would not
+              // be drawn at all — a shelf with no way to open it. `Math.max` so
+              // the local band still wins when it is larger, which is what an
+              // engine too old to send the count leaves us with.
+              //
+              // THE CLOSED COUNT IS THE WHOLE MACHINE'S, and under a project
+              // filter that is more than this rail would list. It is an
+              // affordance rather than a figure — it says "there are settled
+              // conversations behind this" — and the moment the shelf opens the
+              // rows are here and the number is the filtered one.
+              count={settledOpen ? list.settledCount : Math.max(list.settledCount, shelvedOnEngines)}
               rows={list.settled}
               // NOT forced open while it holds the session you are reading.
               // It used to be, so the open row stayed visible in the rail —
@@ -1770,7 +1853,7 @@ function SidebarBody() {
               // "you are inside settled history" now; the shelf opens only
               // when asked.
               open={settledOpen}
-              onToggle={() => setSettledOpen((open) => !open)}
+              onToggle={toggleSettled}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
               onShowMore={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
               limit={settledLimit}

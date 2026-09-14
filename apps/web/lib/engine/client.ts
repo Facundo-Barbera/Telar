@@ -304,6 +304,10 @@ export type LiveSessionsPage = {
   /** What to pass as `since` next time. Absent from an engine too old to
    *  count, which keeps every read a full one. */
   revision?: number;
+  /** How many SETTLED rows this answer left out (#457) — the size of the shelf
+   *  behind `?all=1`. Absent from an engine that predates the filter, which
+   *  means "you have everything", never "the shelf is empty". */
+  settledCount?: number;
   unchanged?: false;
 };
 
@@ -652,8 +656,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * bytes and no fold — instead of every row the caller already has. Check
      * `unchanged` before reading `sessions`: it means "keep what you have", and
      * a rail that redrew from it would blank itself once a tick.
+     *
+     * `all` IS THE SHELF'S ASK (#457). The route answers only the UNSETTLED rows
+     * by default — 7 of 291 on the owner's store — and `settledCount` says how
+     * many it left out, so a rail can draw the shelf header that opens it and
+     * only then pay for the rows behind it.
      */
-    liveSessions: () => request<LiveSessionsPage>(fetcher, "GET", "/api/sessions/live"),
+    liveSessions: (options: { all?: boolean } = {}) =>
+      request<LiveSessionsPage>(fetcher, "GET", options.all ? "/api/sessions/live?all=1" : "/api/sessions/live"),
     /**
      * THE SAME PASS, CONDITIONALLY — the read a RAIL should make (#459).
      *

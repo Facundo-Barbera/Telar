@@ -458,8 +458,15 @@ struct AgentsSurface: View {
     ///
     /// A FAILED READ PRESERVES THE LAST GOOD ANSWER. An empty list claims
     /// nobody is working here, and a dropped request is not evidence of that.
+    ///
+    /// AND IT ASKS FOR ALL OF THEM (#457). The live route answers the unsettled
+    /// rows by default, which is right for a RAIL and wrong here: a delegate is
+    /// settled precisely BECAUSE its work was delivered, so the narrow list
+    /// would drop the finished agents this surface exists to show. It is a read
+    /// per open panel rather than a poll per rail, which is what makes paying
+    /// for the whole list the right trade in this one place.
     private func read() async {
-        let list = try? await api.liveSessions()
+        let list = try? await api.liveSessions(all: true)
         let subscriptions = try? await api.sessionSubscriptions(sessionId)
         if let list {
             sessions = list.sessions

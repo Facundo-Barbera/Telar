@@ -120,6 +120,22 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// too old to count, and a Mac that restarted and now counts from somewhere
     /// else. One store is one Mac, so a cursor can never be spent on another's.
     private var revision: Int?
+    /// HOW MANY SETTLED ROWS THE MAC IS HOLDING BACK (#457).
+    ///
+    /// Its live read answers the UNSETTLED rows by default — 7 of 291 on the
+    /// owner's store, where it used to fold and serialise all 291 every three
+    /// seconds for this phone and every other device at once. This is the count
+    /// it sends instead, and it is what the "Settled" divider draws so there is
+    /// something to tap that asks for the rest.
+    ///
+    /// ZERO FROM A MAC THAT PREDATES THE FILTER, which sent every row — the
+    /// sections below then hold the settled ones already and this adds nothing.
+    private(set) var shelvedOnMac = 0
+    /// WHETHER THIS PHONE IS ASKING FOR THEM. Off until a reader opens the
+    /// shelf, and it stays on afterwards: the rows cost nothing to keep, and
+    /// turning it back off would mean re-fetching all of them the next time
+    /// they glanced at the list.
+    private var wantsSettled = false
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
         self.api = api
@@ -230,9 +246,20 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
              answer carries none to replace them with. The error state is
              cleared first, because a tick that succeeded is a tick that
              succeeded.
+
+             AND IT IS THE UNSETTLED ROWS UNLESS THE SHELF IS OPEN (#457). The
+             Mac now sends 7 rows where it sent 291, and `settledCount` beside
+             them draws the divider that asks for the other 284. The wide read
+             is deliberately NOT conditional on either side: the revision counts
+             writes, so it does not move when somebody opens a shelf, and a
+             cursor spent across the two lists would answer the wide ask with
+             "unchanged" and leave the shelf empty until the Mac did something
+             else.
              */
             let live: LiveSessions
-            if let cursor = revision {
+            if wantsSettled {
+                live = try await api.liveSessions(all: true)
+            } else if let cursor = revision {
                 live = try await api.liveSessions(since: cursor)
             } else {
                 live = try await api.liveSessions()
@@ -279,11 +306,24 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         }
     }
 
+    /// A reader opened the settled shelf. Ask the Mac for its rows, now rather
+    /// than on the next tick — otherwise they tap "Settled (284)" and watch an
+    /// empty shelf for three seconds.
+    func showSettled() async {
+        guard !wantsSettled else { return }
+        wantsSettled = true
+        await refresh()
+    }
+
     private func apply(_ live: LiveSessions) {
         // The Mac's own word about where things sit. Absent means an engine
         // that cannot say, never "nobody has arranged anything" — so the copy
         // already held survives rather than being blanked every poll.
         if let arrangement = live.layout { layout = arrangement }
+        // HOW MANY IT HELD BACK (#457). Nil means a Mac that sent everything,
+        // and the sections below then hold the settled rows themselves — so
+        // zero here is "nothing withheld", never "nothing settled".
+        shelvedOnMac = live.settledCount ?? 0
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         assignments = live.assignments

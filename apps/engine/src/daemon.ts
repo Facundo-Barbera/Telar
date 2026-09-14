@@ -3467,12 +3467,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
        * the old shape — a paired Mac on last week's nightly, a script. It is not
        * a mode anything of ours asks for, and it is meant to be deleted.
+       *
+       * AND THE DEFAULT IS NOW THE UNSETTLED ROWS ALONE (#457). Re-measured on
+       * the owner's store after #459: 276 KB and 2.33 s per read, three seconds
+       * apart, per connected cockpit — for 291 sessions of which SEVEN were not
+       * settled. `?all=1` is the whole list and is what the cockpit's shelf
+       * sends when a reader opens it; `settledCount` rides the default answer so
+       * the shelf header that asks for them is drawn without them. The rule is
+       * the clients' own (`isShelved`), so the engine cannot drop a row a rail
+       * would have shown. `?full=1` is unfiltered, because its entire contract
+       * is "the old answer, verbatim".
        */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
         if (url.searchParams.get("full") === "1") {
           writeJson(response, 200, store.liveSessions());
           return;
         }
+        const all = url.searchParams.get("all") === "1";
         /**
          * `?since=<revision>` — THE CONDITIONAL READ, and the reason this route
          * stopped being the engine's largest cost (#459).
@@ -3491,13 +3502,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          *
          * An unparseable cursor is not an error: it is a client that has no
          * useful cursor, which is exactly the full answer's case.
+         *
+         * `?all=1` IS NEVER CONDITIONAL, and that is a correctness rule rather
+         * than an oversight (#457). The revision counts WRITES, so it does not
+         * move when a reader opens the Settled shelf — a cursor earned against
+         * the default list, spent against `all=1`, would be answered "unchanged"
+         * and the shelf would stay empty for as long as nothing else happened on
+         * the machine. Making the wide ask always pay for itself is the version
+         * of this that cannot be got wrong: the shelf is opened by hand and for
+         * a moment, and the state this issue is about is the other one.
          */
         const since = Number(url.searchParams.get("since"));
-        if (Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+        if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
           writeJson(response, 200, { revision: since, unchanged: true, daemonId });
           return;
         }
-        writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
+        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId });
         return;
       }
       /**

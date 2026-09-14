@@ -56,6 +56,12 @@ import {
   pluginConfigFromLegacy,
   readProjectPlugins,
   assignmentsOf,
+  // THE CLIENTS' OWN SETTLING RULE, imported rather than re-implemented: the
+  // live list drops the rows a rail would shelve (#457), so an engine that
+  // disagreed with a cockpit here would produce a conversation neither of them
+  // shows. See `protocol/settling.ts`.
+  isShelved,
+  settlingActivityOf,
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
@@ -7169,14 +7175,38 @@ export class EngineStore {
    * per tick, for one number that changes when somebody opens Settings. It is
    * the same argument the arrangement makes: this is the read a rail is already
    * making, so anything the rail needs on every pass belongs on it.
+   *
+   * ══ AND BY DEFAULT IT IS ONLY THE UNSETTLED ROWS — issue #457 ══
+   *
+   * The lean row and the conditional cursor (#459) took this route off the
+   * engine's floor for an IDLE cockpit. They did nothing for a cockpit that is
+   * being used: every write bumps the revision, so a person typing in one
+   * conversation makes every connected rail re-read all of them. Re-measured on
+   * the owner's store at 276 KB and 2.33 s per full read, polled every three
+   * seconds by each connected cockpit, with 291 sessions in the body — AND SEVEN
+   * OF THEM NOT SETTLED. The other 284 were folded, projected and serialised so
+   * that each rail could decide, again, to draw them on a shelf nobody had open.
+   *
+   * SO THE SHELF ASKS FOR ITSELF. `?all=1` is the whole list, and it is what the
+   * cockpit sends when a reader opens Settled; the default is the rows a rail
+   * actually draws. `settledCount` rides both answers because the shelf's HEADER
+   * is drawn from the default one — a count is one integer, and without it the
+   * affordance that asks for the rest would not be there to click.
+   *
+   * THE RULE IS THE CLIENTS' OWN, IMPORTED (`isShelved`), never a second fold
+   * written here. A row this dropped and a rail would have drawn is a
+   * conversation that is simply not in the list, with nothing on either side to
+   * notice — which is the one failure this change could have, and the reason the
+   * rule sits in the protocol package rather than in each of us.
    */
-  liveSessionRows(): {
+  liveSessionRows(options: { all?: boolean } = {}): {
     sessions: LiveSessionRow[];
     projects: Array<{ id: string; name: string }>;
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
     revision: number;
+    settledCount: number;
   } {
     /**
      * THE REVISION IS READ FIRST, so a write that lands mid-fold is reported by
@@ -7186,7 +7216,41 @@ export class EngineStore {
      */
     const revision = this.sessionsRevision();
     const full = this.liveSessions();
-    return { ...full, sessions: full.sessions.map(liveRow), inbox: this.getInboxPolicy(), revision };
+    const inbox = this.getInboxPolicy();
+    /**
+     * ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — `this.now()`, the
+     * same clock that stamped every `updatedAt` this compares against. A test
+     * driving a counting clock would otherwise measure its fixtures' staleness
+     * against a wall clock and shelve all of them.
+     */
+    const at = { now: this.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
+    const shelved = new Set<string>();
+    for (const session of full.sessions) {
+      /**
+       * TWO FIELDS SPELLED THE RAIL'S WAY, and both are the projection
+       * `toSidebarSession` already makes: `archived` is the `state` enum as the
+       * boolean the rule reads, and `draft` is the PRESENCE of the draft record
+       * (the engine stores a base-ref/branch object; the rail stores whether
+       * there is one). Converting here is what lets the rule be one function.
+       */
+      const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
+      if (isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
+    }
+    const sessions = options.all === true ? full.sessions : full.sessions.filter((session) => !shelved.has(session.id));
+    return {
+      ...full,
+      sessions: sessions.map(liveRow),
+      // THE MAP FOLLOWS THE ROWS. An assignment is keyed by the session that
+      // holds it, so an entry for a row this answer does not carry is bytes
+      // describing a conversation the reader cannot see — and on the owner's
+      // store the dropped 284 are most of them.
+      assignments: options.all === true
+        ? full.assignments
+        : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
+      inbox,
+      revision,
+      settledCount: shelved.size,
+    };
   }
 
   turns(sessionId: string): Turn[] {
