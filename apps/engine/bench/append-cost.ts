@@ -12,22 +12,33 @@
  *
  * THE ROWS ATTRIBUTE THE COST TO DIFFERENT LAYERS:
  *
- *   append, uncoalesced     one INSERT where it was appended — the behaviour
- *                           before #246, one WAL fsync per event at
- *                           `synchronous=FULL`. `flushCount: 1` restores it.
+ *   append, uncoalesced     one INSERT and one transaction where the delta was
+ *                           appended — the behaviour before #246.
+ *                           `flushCount: 1` restores it.
  *   append, coalesced       the shipping default: deltas held and stored in one
- *                           transaction. THIS IS THE ISSUE'S TARGET (< 0.010).
+ *                           transaction. #246's target (< 0.010).
  *   raw append, batched     the same INSERTs inside ONE explicit transaction,
  *                           for the fsync arithmetic on its own.
  *   ingest, N per call      the REAL path a delta takes — `reportObservations`,
  *                           swept over the batch sizes a driver might produce.
  *
- * READ THE SWEEP, NOT ONE ROW. Coalescing fixes the append; it does not fix the
- * per-CALL cost, and `ingest, 1 per call` is what a driver reporting one delta
- * at a time still pays. That gap is everything the store does AROUND the insert
- * — the queue read, the item projection's read, the BEGIN/COMMIT — and on a
- * session with any history it is now the larger number of the two. That is why
- * this bench times the public path and not just `ExecutionStore.append`.
+ * `ingest, 1 per call` IS THE ROW THAT MATTERS, because one delta per call is
+ * what a streaming driver actually produces. It measured 0.09–0.12 ms against
+ * 0.006 for the append itself: the gap was everything `ingestObservations` did
+ * AROUND the insert — a BEGIN/COMMIT over a batch that writes no row, the queue
+ * re-parsed, the item projection copied, the task projection read — and on a
+ * session with any history it dwarfed the write. #443 routes a delta-only batch
+ * past all of it; the row is now under 0.02 and this bench is what keeps it
+ * there. That is why it times the public path and not just
+ * `ExecutionStore.append`.
+ *
+ * COMPARE A ROW WITH ITSELF ACROSS RUNS, NOT WITH THE ROW ABOVE IT. The sweep
+ * shares one store, and the SECOND row measures about twice the first whichever
+ * batch size is put there — swapping the sweep to `[2, 1, 4, 16]` moves the cost
+ * onto `1 per call`, it does not move with the size. So it is something the
+ * second pass inherits from the first (a grown store, a collection, a
+ * checkpoint) rather than anything about batching, and the first row is the one
+ * with a clean baseline behind it. That is the row #443 names.
  *
  * A terminal `item.completed` closes each timed append run, because that is
  * what forces a held batch out and a real streamed item always ends with one.

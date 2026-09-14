@@ -12,11 +12,11 @@ const FILES = new Set(["session.json", "queue.json", "items.json", "requests.jso
 /**
  * HOW LONG A STREAMED DELTA MAY SIT IN MEMORY, and how many may sit there.
  *
- * `synchronous=FULL` means one WAL fsync per transaction, and the engine runs
- * one transaction per `ingestObservations` call — so a driver reporting one
- * delta at a time buys one fsync per token-chunk. Measured on the dogfood Mac:
- * 0.116 ms for a single append, 0.025 ms each at sixteen per transaction. The
- * fsync is the whole cost and the batch size is the only lever on it.
+ * A WAL fsync costs one transaction, and the engine used to run one transaction
+ * per `ingestObservations` call — so a driver reporting one delta at a time
+ * bought one fsync per token-chunk. Measured on the dogfood Mac: 0.116 ms for a
+ * single append, 0.025 ms each at sixteen per transaction. The fsync is the
+ * whole cost and the batch size is the only lever on it.
  *
  * THE COUNT IS THE LEVER; THE AGE IS THE BOUND. A streaming turn peaks at 133
  * deltas/s (docs/investigations/performance-2026-09-11.md), so a 16 ms window
@@ -33,10 +33,41 @@ const FILES = new Set(["session.json", "queue.json", "items.json", "requests.jso
 const FLUSH_COUNT = 32;
 const FLUSH_AFTER_MS = 200;
 
+/**
+ * HOW LONG A COMMAND RECEIPT IS WORTH KEEPING, and how often the old ones go.
+ *
+ * A receipt answers one question — "did this exact command id already run?" —
+ * and it is asked within the seconds a client spends retrying a request whose
+ * response it lost. Nothing reads one afterwards: `transaction` looks a receipt
+ * up only when a caller supplies a `commandId`, and the internal ones written
+ * as audit markers are never read by anything at all.
+ *
+ * Kept anyway, they are most of the store. Measured on the dogfood home (#457):
+ * 299,323 receipts in a 723 MB `execution.sqlite`, none of them reachable, all
+ * of them paid for on every page the streaming path walks. A week is far longer
+ * than any retry window and short enough that the table stays small.
+ *
+ * THE SWEEP IS A FULL SCAN, DELIBERATELY. An index on `at` would be maintained
+ * on every command the engine runs, all day, to speed up a DELETE that runs
+ * twice a day; the scan is the cheaper side of that trade by orders of
+ * magnitude.
+ */
+const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
+
 /** Only a bench or a test sets these; production runs the constants above.
  *  `flushCount: 1` is the behaviour before coalescing — every delta written
- *  where it was appended — which is what makes the two comparable. */
-export type ExecutionStoreOptions = { flushCount?: number; flushAfterMs?: number };
+ *  where it was appended — which is what makes the two comparable.
+ *
+ *  `now` IS WALL-CLOCK HOUSEKEEPING, NOT THE ENGINE'S LOGICAL CLOCK. A receipt's
+ *  age decides when it is swept and nothing else; a store driven by a test's
+ *  counting clock must not age its receipts in ticks. */
+export type ExecutionStoreOptions = {
+  flushCount?: number;
+  flushAfterMs?: number;
+  now?: () => number;
+  receiptRetentionMs?: number;
+};
 
 /** One authoritative execution database; legacy files become a migration backup.
  * Runtime adapters use the built-in SQLite API of Bun and Node/Electron.
@@ -96,27 +127,88 @@ export class ExecutionStore {
   private readonly cursors = new Map<string, number>();
   private readonly flushCount: number;
   private readonly flushAfterMs: number;
+  private readonly now: () => number;
+  private readonly receiptRetentionMs: number;
+  private pruneTimer?: ReturnType<typeof setInterval>;
   constructor(readonly root: string, options: ExecutionStoreOptions = {}) {
     this.flushCount = Math.max(1, options.flushCount ?? FLUSH_COUNT);
     this.flushAfterMs = Math.max(0, options.flushAfterMs ?? FLUSH_AFTER_MS);
+    this.now = options.now ?? Date.now;
+    this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
     try {
     fs.chmodSync(file, 0o600);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
+    /**
+     * `synchronous=NORMAL`, NOT `FULL` — WAL IS WHAT MAKES THAT SAFE.
+     *
+     * In WAL mode NORMAL still writes every committed transaction to the WAL; it
+     * only stops fsyncing the WAL at each commit. A PROCESS crash — the engine
+     * throwing, being killed, the daemon restarting — loses nothing at all,
+     * because the committed bytes are already in the file and recovery replays
+     * them. What NORMAL gives up is the POWER-LOSS case: an OS crash or a pulled
+     * plug may lose the last transaction or two that the kernel had not yet
+     * flushed. FULL bought that one guarantee at one fsync per transaction, and
+     * fsync was the engine's largest single cost while an agent typed (#443).
+     *
+     * The trade is the same one the delta buffer above already makes, one layer
+     * down: the tail of a conversation may not survive the machine losing power.
+     * A checkpoint still fsyncs, so the database file itself is never at risk.
+     */
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     this.db.exec(`CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (session_id TEXT NOT NULL, id INTEGER NOT NULL, value TEXT NOT NULL, PRIMARY KEY(session_id,id));
-      CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, command TEXT NOT NULL, result TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, command TEXT NOT NULL, result TEXT NOT NULL, at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       PRAGMA user_version=1;`);
+    /**
+     * ADDITIVE, AND `user_version` STAYS AT 1 ON PURPOSE — a column with a
+     * default is not a downgrade fence. An older binary names the three columns
+     * it knows in its INSERT and the new one defaults, so a build without this
+     * change still reads and writes the table correctly.
+     *
+     * ROWS FROM BEFORE THE COLUMN CARRY 0 and go on the very first sweep. They
+     * are exactly the backlog this is for — 299k markers accumulated over
+     * months — and a receipt has no other record of its age to recover.
+     */
+    if (!this.db.prepare("PRAGMA table_info(receipts)").all().some((column) => String(column.name) === "at"))
+      this.db.exec("ALTER TABLE receipts ADD COLUMN at INTEGER NOT NULL DEFAULT 0");
     if (!this.db.prepare("SELECT value FROM metadata WHERE key='imported'").get()) this.importLegacy();
     atomicWrite(path.join(root, "execution-store.json"), { version: 1, backend: "sqlite" });
     // A previous binary must fail closed instead of reading stale JSON state.
     for (const sessionId of this.sessionIds()) this.fenceLegacy(sessionId);
+    this.pruneReceipts();
     } catch (error) { this.db.close(); throw error; }
+    // AFTER the constructor can still throw: a timer armed on a store that
+    // failed to open would fire against a closed database. Never the reason a
+    // process stays up, like the flush timer.
+    this.pruneTimer = setInterval(() => {
+      if (this.closed) return;
+      // A timer has no caller to throw at, and housekeeping is not worth taking
+      // the daemon down for; the next sweep covers whatever this one missed.
+      try { this.pruneReceipts(); } catch {}
+    }, RECEIPT_PRUNE_EVERY_MS);
+    this.pruneTimer.unref?.();
+  }
+
+  /**
+   * DROP THE RECEIPTS NOTHING CAN STILL REPLAY — on open, and once a day after.
+   *
+   * Returns how many rows went, which is what a test can assert on: the table
+   * is not otherwise observable, and "the receipt no longer replays" is the
+   * behaviour that actually matters.
+   */
+  pruneReceipts(): number {
+    const cutoff = this.now() - this.receiptRetentionMs;
+    let removed = 0;
+    this.alone(() => {
+      this.statement("DELETE FROM receipts WHERE at < ?").run(cutoff);
+      removed = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
+    });
+    return removed;
   }
   owns(file: string): boolean {
     const key = path.relative(this.root, file);
@@ -276,9 +368,9 @@ export class ExecutionStore {
     this.db.exec("BEGIN IMMEDIATE");
     this.depth += 1;
     try {
-      // A receipt id this call just minted cannot already be on file, and the
-      // streaming path mints one per delta — so the lookup is an index probe
-      // per token-chunk that can only ever miss.
+      // A receipt id this call just minted cannot already be on file, so the
+      // lookup is skipped entirely unless a CALLER supplied the id — which is
+      // the only case where a replay is possible.
       const known = commandId === undefined ? undefined : this.statement("SELECT command,result FROM receipts WHERE id=?").get(receiptId);
       if (known) {
         if (known.command !== command) throw new Error("command id was already used for a different command");
@@ -291,8 +383,8 @@ export class ExecutionStore {
       if (commandId !== undefined || changed)
         // Internal receipts are audit markers, not replayable responses. In
         // particular, never retain a resolved worker claim's provider secrets.
-        this.statement("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command,
-          JSON.stringify(commandId === undefined ? {} : { value: result }));
+        this.statement("INSERT INTO receipts(id,command,result,at) VALUES(?,?,?,?)").run(receiptId, command,
+          JSON.stringify(commandId === undefined ? {} : { value: result }), this.now());
       this.db.exec("COMMIT");
       this.settle();
       return result;
@@ -344,6 +436,7 @@ export class ExecutionStore {
   close(): void {
     if (this.closed) return;
     this.disarm();
+    if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = undefined; }
     // An orderly shutdown stores the tail. Only a crash may lose it.
     try { this.flush(); } finally { this.statements.clear(); this.cursors.clear(); this.db.close(); this.closed = true; }
   }
