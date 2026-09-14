@@ -119,6 +119,14 @@ function fitViewport(viewport, bounds) {
  *  approaching this means there is no frame coming. */
 const CAPTURE_TIMEOUT_MS = 8_000;
 const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame to capture.";
+/**
+ * THE FROZEN FRAME'S CEILING (#475). A menu appears on a click, and the
+ * capture that has to land before the view goes down is spent out of that
+ * same moment — so this is a budget, not a timeout for a hung page. Past it
+ * the view is hidden plainly, exactly as it was before the frame existed.
+ */
+const FREEZE_TIMEOUT_MS = 150;
+const FREEZE_TIMEOUT_MESSAGE = "The page did not produce a frame in time to freeze.";
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 /**
@@ -558,6 +566,16 @@ class DesktopBrowserManager {
      * wrote the global rect and re-placed the OTHER session's view with it.
      */
     this.boundsByScope = new Map();
+    /**
+     * AND SO IS THE CORNER RADIUS (#475). The page fills the panel edge to
+     * edge in fit mode, so the native view has to wear the panel's own
+     * rounded corner or it overhangs it — and the panel's radius is a CSS
+     * token the main process cannot read, so the renderer publishes it with
+     * the rect it belongs to. Per scope for the same reason bounds are: a
+     * late publish for a session the renderer has left must not round the
+     * view another session is showing.
+     */
+    this.radiusByScope = new Map();
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
@@ -1854,6 +1872,7 @@ class DesktopBrowserManager {
     if (!view || view.webContents.isDestroyed?.()) return;
     const place = () => {
       if (tab.view !== view || view.webContents.isDestroyed?.()) return;
+      this.applyBorderRadius(tab, view);
       // PREVIEWED: the view fills its own window and the panel's visibility
       // rules do not apply to it (#473).
       if (this.previewing(tab)) {
@@ -1895,6 +1914,32 @@ class DesktopBrowserManager {
     place();
   }
 
+  /**
+   * THE PANEL'S CORNER, ON THE NATIVE VIEW (#475).
+   *
+   * A `WebContentsView` ignores the CSS radius of the element it is glued to —
+   * it is composited above this renderer's DOM, not clipped by it — which is
+   * why the host used to sit 8px inside the panel card to clear its corner.
+   * Now the page fills the panel instead, and `setBorderRadius` is what keeps
+   * it from overhanging the panel's own rounded rectangle. Electron rounds all
+   * four corners with one number; the two that meet the address row above read
+   * as the page tucking under the toolbar.
+   *
+   * WRITTEN ONLY ON A CHANGE. It is called from `place()`, which runs on every
+   * bounds publish (the renderer's self-heal resends the same rect), and a
+   * re-round per frame is a compositor change per frame for nothing.
+   * OPTIONAL CALL: the API landed in Electron 36, and a square view is the
+   * honest fallback below that rather than a crash on a panel bounds sync.
+   */
+  applyBorderRadius(tab, view) {
+    // A previewed tab fills a window of its own, whose corners are the OS's
+    // to round — the panel's radius is not its (#473).
+    const radius = this.previewing(tab) ? 0 : this.radiusByScope.get(tab.scopeKey) || 0;
+    if (tab.borderRadius === radius) return;
+    tab.borderRadius = radius;
+    view.setBorderRadius?.(radius);
+  }
+
   applyVisibility() {
     for (const tab of this.tabs) {
       if (!tab.view) continue;
@@ -1921,6 +1966,10 @@ class DesktopBrowserManager {
     };
     const scope = this.requireScope(scopeKey);
     this.boundsByScope.set(scope, next);
+    // The panel's own corner, in device-independent pixels, rides the rect it
+    // applies to (#475). Absent — an older renderer, or a fixed viewport whose
+    // stage sits inside a padded host — means a square view, as before.
+    this.radiusByScope.set(scope, Math.max(0, Math.round(Number(input?.radius) || 0)));
     // ANOTHER SCOPE'S RECT NEVER MOVES THE VISIBLE VIEW: remembered for when
     // that scope is shown, applied to nothing now.
     if (this.visibleScopeKey && this.visibleScopeKey !== scope) return;
@@ -1958,6 +2007,56 @@ class DesktopBrowserManager {
     // Awaited for the shown scope's active tab, so a caller (the panel's
     // viewport hook, a harness) observes the view placed when this resolves.
     await this.applyVisibilityAsync(scope);
+  }
+
+  /**
+   * HIDE THE VIEW BEHIND A MENU WITHOUT THE PAGE BLINKING OUT (#475).
+   *
+   * Every menu in the right panel takes the native view down while it is open
+   * — it has to, because Electron composites the view ABOVE this renderer's
+   * DOM and a portal menu under it is the same as no menu at all
+   * (`lib/native-view-overlay.ts`). What the person sees is the page vanish
+   * and come back on every ⋯.
+   *
+   * There is no way to draw DOM over a `WebContentsView`, so the honest trick
+   * is a FROZEN FRAME: the last pixels of the page, handed to the renderer to
+   * paint into the host at the view's own rect, so the panel still looks like
+   * the page is there while the menu is open. Nothing about it is live — it is
+   * a picture, and it goes the moment the real view is back.
+   *
+   * ONE CALL, BECAUSE THE ORDER IS THE WHOLE POINT. Capture, THEN hide. A
+   * renderer that hid first and captured after would be asking a view with no
+   * compositor frame for one — the blink this exists to remove, with a stall
+   * on top. A capture that fails or outruns FREEZE_TIMEOUT_MS answers null and
+   * the view is hidden plainly, exactly as it was before this existed.
+   */
+  async freezeView(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const frame = await this.captureFrozenFrame(scope);
+    await this.setVisible(scopeKey, false);
+    return frame;
+  }
+
+  /** The visible page's own pixels and the rect they occupy, or null when
+   *  there is nothing to freeze (no tab, a blank one, a tab in a window of
+   *  its own, a capture that failed or ran past its budget). */
+  async captureFrozenFrame(scope) {
+    if (this.visibleScopeKey !== scope) return null;
+    const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : null;
+    if (!tab?.view || tab.view.webContents.isDestroyed?.()) return null;
+    // The same three cases that make the view invisible in `place()`: there
+    // are no pixels behind a start page, a previewed tab or a 1×1 panel.
+    if (!this.isTabVisible(tab) || this.isBlank(tab) || this.previewing(tab)) return null;
+    const rect = this.nativeRect(tab);
+    try {
+      const image = await withTimeout(tab.view.webContents.capturePage(), FREEZE_TIMEOUT_MS, FREEZE_TIMEOUT_MESSAGE);
+      if (!image || image.isEmpty()) return null;
+      return { data: image.toPNG().toString("base64"), mimeType: "image/png", rect };
+    } catch {
+      // A page with no frame to give is not an error anyone can act on: the
+      // menu still has to open, and the view still has to go down for it.
+      return null;
+    }
   }
 
   /** applyVisibility, awaiting the scope's active tab's own placement. */
@@ -2027,6 +2126,8 @@ class DesktopBrowserManager {
     // A new WebContents has no emulation: forget what the old one was told.
     tab.viewportOverride = undefined;
     tab.colorSchemeApplied = undefined;
+    // A new view is square, whatever the old one had been rounded to (#475).
+    tab.borderRadius = undefined;
     this.bindTab(tab);
     // THE INTRINSIC VIEWPORT APPLIES TO EVERY VIEW, NOT ONLY AGENT-INSPECTED
     // ONES. The emulation rides the debugger, and the debugger used to attach
@@ -3000,6 +3101,7 @@ class DesktopBrowserManager {
     const scope = this.requireScope(scopeKey);
     this.activeTabIds.delete(scope);
     this.boundsByScope.delete(scope);
+    this.radiusByScope.delete(scope);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
     this.emitState(scope, { ended: true });
@@ -4095,6 +4197,7 @@ class DesktopBrowserManager {
     this.scopeProjects.delete(scope);
     this.scopeProfileOverrides.delete(scope);
     this.boundsByScope.delete(scope);
+    this.radiusByScope.delete(scope);
     this.lastAgentInputAt.delete(scope);
     this.activeToolCalls.delete(scope);
     this.activeTabIds.delete(scope);
@@ -4221,6 +4324,7 @@ class DesktopBrowserManager {
         this.scopeProjects.size +
         this.scopeProfileOverrides.size +
         this.boundsByScope.size +
+        this.radiusByScope.size +
         this.lastAgentInputAt.size +
         this.activeToolCalls.size +
         this.activeTabIds.size +
@@ -4249,6 +4353,7 @@ class DesktopBrowserManager {
     this.agentTabIds.clear();
     this.agentTabClosed.clear();
     this.boundsByScope.clear();
+    this.radiusByScope.clear();
     this.lastAgentInputAt.clear();
     this.activeToolCalls.clear();
     // The hosts hold a partition session's listener and a module-level

@@ -66,7 +66,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { describeViewport, fitViewport, resizeByDrag, resizeByKey, sizeFromFields, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
-import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
+import { createOverlayFreezer, onNativeViewOverlay, useNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
@@ -246,8 +246,18 @@ export function describeExtensionHealth(extension: DesktopExtensionStatus): { to
 export type DesktopBrowserBridge = {
   getState(scopeKey: string): Promise<DesktopBrowserPanelState>;
   action(scopeKey: string, action: Record<string, unknown>): Promise<DesktopBrowserPanelState>;
-  setBounds(scopeKey: string, bounds: { x: number; y: number; width: number; height: number }): Promise<void>;
+  /** `radius` is the panel's own corner in CSS px (#475) — the native view
+   *  ignores this DOM's radius, so it has to be told. Absent means square. */
+  setBounds(scopeKey: string, bounds: { x: number; y: number; width: number; height: number; radius?: number }): Promise<void>;
   setVisible(scopeKey: string, visible: boolean): Promise<void>;
+  /**
+   * TAKE THE VIEW DOWN FOR A MENU WITHOUT THE PAGE BLINKING OUT (#475): the
+   * shell captures the page's last frame and THEN hides the view, and this
+   * panel paints that frame where the page was. Null means there was nothing
+   * to capture — the view is hidden either way. Optional: an older shell has
+   * no handler, and the plain `setVisible(false)` is the fallback.
+   */
+  freezeView?(scopeKey: string): Promise<FrozenFrame | null>;
   onState(listener: (state: DesktopBrowserPanelState) => void): () => void;
   /** Bind this session's browser scope to its project profile (per-project
    *  cookies). Idempotent; the engine does the same before agent turns. */
@@ -454,6 +464,22 @@ export function desktopBrowserBridge(): DesktopBrowserBridge | undefined {
 }
 
 /**
+ * THE HOST'S OWN CORNER, IN PX (#475).
+ *
+ * Fit mode rounds the host with the panel's `rounded-b-xl` — the same token
+ * the panel's body is clipped by — and the native view has to be given that
+ * radius as a number, because it is composited above this DOM and no CSS
+ * reaches it. READ COMPUTED, not from the token: `--radius-xl` is a `calc()`
+ * a browser hands back unresolved, while the element's own
+ * `borderBottomLeftRadius` is already px at whatever `--radius` the current
+ * Look set. So one class moves both.
+ */
+function hostRadius(host: HTMLElement): number {
+  const radius = Number.parseFloat(window.getComputedStyle(host).borderBottomLeftRadius);
+  return Number.isFinite(radius) ? Math.max(0, Math.round(radius)) : 0;
+}
+
+/**
  * Glue Fit mode to the whole host. Fixed viewports reserve right and bottom
  * rails (`stageOf`) so the native layer cannot cover their resize handles.
  *
@@ -476,7 +502,11 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
     const applyBounds = async () => {
       const rect = host.getBoundingClientRect();
       const stage = mode === "fixed" ? stageOf(rect) : rect;
-      await bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: rect.width === 0 ? 0 : stage.width, height: rect.height === 0 ? 0 : stage.height });
+      // A FIXED VIEWPORT'S STAGE IS SQUARE: it sits inside a padded host with
+      // resize rails around it and never reaches the panel's corner. Only the
+      // edge-to-edge fit page wears the panel's radius.
+      const radius = mode === "fixed" ? 0 : hostRadius(host);
+      await bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: rect.width === 0 ? 0 : stage.width, height: rect.height === 0 ? 0 : stage.height, radius });
       if (disposed) return;
       // The zero-area latch — see the header comment.
       if (rect.width === 0 || rect.height === 0) {
@@ -527,7 +557,7 @@ function useDesktopBrowserViewport(bridge: DesktopBrowserBridge, scopeKey: strin
       const rect = host.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       const stage = mode === "fixed" ? stageOf(rect) : rect;
-      void bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: stage.width, height: stage.height });
+      void bridge.setBounds(scopeKey, { x: rect.left, y: rect.top, width: stage.width, height: stage.height, radius: mode === "fixed" ? 0 : hostRadius(host) });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [bridge, hostRef, scopeKey, layoutKey, mode]);
@@ -1079,17 +1109,48 @@ export function DesktopBrowserSurface({
    * viewport hook, which must not re-show the view under an open menu.
    */
   const overlayRef = useRef(false);
-  useEffect(
-    () =>
-      onNativeViewOverlay((hidden) => {
-        if (overlayRef.current === hidden) return;
-        overlayRef.current = hidden;
-        // Showing restores the scope's own remembered rect (see setVisible),
-        // so nothing has to be republished here.
-        void bridge.setVisible(scopeKey, !hidden).catch(() => undefined);
-      }),
-    [bridge, scopeKey],
-  );
+  /**
+   * AND THE PAGE STAYS PUT WHILE IT IS DOWN (#475) — the shell's last frame of
+   * it, painted into the host at the view's own rect. `rect` arrives in WINDOW
+   * coordinates (what `setBounds` was given), so the host's own rect comes off
+   * it, the way `DeviceFrame` does.
+   */
+  const [frozenFrame, setFrozenFrame] = useState<{ src: string; left: number; top: number; width: number; height: number }>();
+  useEffect(() => {
+    const swap = createOverlayFreezer({
+      freeze: async () => {
+        // An older shell has no handler: the plain hide is what it always did.
+        if (!bridge.freezeView) {
+          await bridge.setVisible(scopeKey, false);
+          return null;
+        }
+        return bridge.freezeView(scopeKey);
+      },
+      // Showing restores the scope's own remembered rect (see setVisible), so
+      // nothing has to be republished here.
+      show: () => bridge.setVisible(scopeKey, true),
+      paint: (frame) => {
+        const host = hostRef.current;
+        if (!frame || !host) {
+          setFrozenFrame(undefined);
+          return;
+        }
+        const rect = host.getBoundingClientRect();
+        setFrozenFrame({
+          src: `data:${frame.mimeType};base64,${frame.data}`,
+          left: frame.rect.x - rect.left,
+          top: frame.rect.y - rect.top,
+          width: frame.rect.width,
+          height: frame.rect.height,
+        });
+      },
+    });
+    return onNativeViewOverlay((hidden) => {
+      if (overlayRef.current === hidden) return;
+      overlayRef.current = hidden;
+      void swap(hidden);
+    });
+  }, [bridge, scopeKey]);
 
   const refresh = useCallback(async () => {
     const gen = scope.capture();
@@ -2404,11 +2465,42 @@ export function DesktopBrowserSurface({
       )}
 
       {/* ── the native viewport is glued to this element's rect ─────────
-          INSET, NOT CLIPPED. The WebContentsView ignores CSS radius, so the
-          host sits 8px inside the panel card: a 14px corner overhangs a
-          square by ~4px, and the inset clears it. The native pixels stay
-          square; the card around them is what is rounded. */}
-      <div ref={hostRef} className="relative min-h-0 flex-1 bg-muted/20 md:mx-2 md:mb-2 md:overflow-hidden md:rounded-lg" aria-label="Live browser viewport" aria-busy={activeTab?.loading || undefined}>
+          FIT MODE FILLS THE PANEL (#475). It used to sit 8px inside a card of
+          its own — the WebContentsView ignores CSS radius, so an inset was
+          the only way to clear the panel's corner — and the page then read as
+          a small rounded box with a margin inside a panel that was already a
+          rounded rectangle. Now the host runs to the panel's edges and wears
+          the panel body's own `rounded-b-xl`, which `hostRadius` reads back
+          and the shell applies to the native view itself.
+
+          A FIXED VIEWPORT KEEPS THE CARD. Its stage is a device being shown
+          inside the panel rather than the panel's own content, and the resize
+          rails live in the margin. */}
+      <div
+        ref={hostRef}
+        className={cn(
+          "relative min-h-0 flex-1 bg-muted/20 md:overflow-hidden",
+          viewportMode === "fixed" ? "md:mx-2 md:mb-2 md:rounded-lg" : "md:rounded-b-xl",
+        )}
+        aria-label="Live browser viewport"
+        aria-busy={activeTab?.loading || undefined}
+      >
+        {/* THE PAGE, FROZEN, WHILE A MENU IS OPEN OVER THE PANEL (#475). The
+            native view is down so the menu can be seen at all; this is its
+            last frame, at the rect it filled, so the panel does not blink
+            empty every time a menu opens. Decoration and nothing else — a
+            pointer goes through it to the host, which is what closes the menu
+            today. */}
+        {frozenFrame && (
+          <img
+            aria-hidden
+            alt=""
+            draggable={false}
+            src={frozenFrame.src}
+            className="pointer-events-none absolute select-none"
+            style={{ left: frozenFrame.left, top: frozenFrame.top, width: frozenFrame.width, height: frozenFrame.height }}
+          />
+        )}
         {/* THE DEVICE FRAME: where the (scaled) page actually sits inside
             this host. The shell reports the native rect in window
             coordinates; drawn here relative to the host so a phone-sized

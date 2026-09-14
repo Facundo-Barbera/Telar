@@ -390,6 +390,73 @@ describe("the device toolbar", () => {
    */
 });
 
+/**
+ * #475 — THE PAGE FILLS THE PANEL, AND STAYS PUT BEHIND A MENU.
+ *
+ * The host used to sit 8px inside a rounded card of its own, because a
+ * `WebContentsView` ignores CSS radius and an inset was the only way to clear
+ * the panel's corner. The page therefore read as a small box with a margin
+ * inside a panel that was already a rounded rectangle.
+ */
+const viewportHost = (host: Element) => host.querySelector('[aria-label="Live browser viewport"]')!;
+const frozenImage = (host: Element) => viewportHost(host).querySelector("img");
+
+describe("the live viewport's box", () => {
+  test("fit mode runs to the panel's edges and takes the panel body's own corner", async () => {
+    const { host } = await mount(panelState());
+    const box = viewportHost(host).className;
+    expect(box).toContain("md:rounded-b-xl");
+    expect(box).not.toContain("md:mx-2");
+    expect(box).not.toContain("md:mb-2");
+  });
+
+  test("a fixed viewport keeps the card — its stage is a device shown inside the panel, and the resize rails live in that margin", async () => {
+    const fixed = tab({ viewport: { width: 390, height: 844, preset: "phone", mode: "fixed" } });
+    const { host } = await mount(panelState({ tabs: [fixed] }));
+    const box = viewportHost(host).className;
+    expect(box).toContain("md:mx-2");
+    expect(box).toContain("md:mb-2");
+    expect(box).toContain("md:rounded-lg");
+  });
+});
+
+describe("the frozen frame a menu opens over", () => {
+  test("the shell's last frame of the page is painted at the rect the view filled, and goes when the view is back", async () => {
+    const frame = { data: "cG5n", mimeType: "image/png", rect: { x: 0, y: 0, width: 640, height: 400 } };
+    const froze: string[] = [];
+    const { host, visibility } = await mount(panelState(), {
+      freezeView: async (scopeKey: string) => {
+        froze.push(scopeKey);
+        return frame;
+      },
+    });
+
+    await mouseClick(optionsTrigger(host));
+    await waitFor(() => Boolean(frozenImage(host)));
+    expect(froze).toEqual(["session_a"]);
+    expect(frozenImage(host)!.getAttribute("src")).toBe("data:image/png;base64,cG5n");
+    // Freezing IS the hide — the shell captures and then puts the view down in
+    // one call, so the panel never asks for a plain one alongside it.
+    expect(visibility).not.toContain(false);
+
+    await mouseClick(optionsTrigger(host));
+    await waitFor(() => !frozenImage(host));
+    expect(visibility.at(-1)).toBe(true);
+  });
+
+  test("a shell that has nothing to freeze paints nothing, and the view still goes down", async () => {
+    // A blank tab, a capture past its budget, a page with no frame: null is
+    // the shell saying it hid the view with no picture to show for it.
+    const { host, visibility } = await mount(panelState(), { freezeView: async () => null });
+    await mouseClick(optionsTrigger(host));
+    expect(frozenImage(host)).toBeNull();
+    expect(nativeViewOverlayHidden()).toBe(true);
+
+    await mouseClick(optionsTrigger(host));
+    expect(visibility.at(-1)).toBe(true);
+  });
+});
+
 /** The panel has nothing to draw for a tab that is in a window of its own —
  *  the live view was MOVED there, not copied. */
 describe("a previewed tab", () => {
