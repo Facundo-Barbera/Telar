@@ -1,6 +1,6 @@
 /**
  * ID → GLYPH, AND NOTHING ELSE — the one door to the identity icons, the way
- * `spool/subject-color.ts` is the one door to the identity hues.
+ * `identityColorVar` below is the one door to the identity hues.
  *
  * THE MAP IS WRITTEN OUT, NOT COMPUTED. `lucide-react` exports ~1,600 icons;
  * reaching them through a dynamic index (`icons[toPascalCase(id)]`) defeats

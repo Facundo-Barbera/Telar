@@ -3,8 +3,8 @@
 /**
  * The stash, as a composer sees it.
  *
- * TWO COMPOSERS CAN BE ON SCREEN AT ONCE — a session cockpit and a Spool stance
- * — and this app has no store to share between them. The pattern it does have is
+ * TWO COMPOSERS CAN BE ON SCREEN AT ONCE — and this app has no store to share
+ * between them. The pattern it does have is
  * `inbox-policy.ts`'s: write, then announce on a `CustomEvent` carrying the new
  * value, so a listener never has to re-read what the writer already holds. That
  * matters more here than there, because re-reading means parsing megabytes of

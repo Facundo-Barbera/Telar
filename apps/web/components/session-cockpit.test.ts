@@ -38,8 +38,8 @@ describe("an unsent draft belongs to the composer it was typed in", () => {
    * stayed in storage and was restored into the next conversation you started.
    * A render test sees an empty box in both the broken and the fixed build.
    *
-   * Same reasoning as `spool/idiom.test.ts` — a rule a future edit could break
-   * silently is worth reading off the file.
+   * Same reasoning the app's other source-text tests give — a rule a future
+   * edit could break silently is worth reading off the file.
    */
   const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
   const submit = source.slice(source.indexOf("const submit = async ()"), source.indexOf("const rename = async ("));

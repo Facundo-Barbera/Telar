@@ -1,6 +1,6 @@
 /**
- * THE RAIL'S RIGHT-CLICK MENUS — issue #273, and the Spool's idiom (see
- * `components/spool/idiom.test.ts`) applied to the sessions list.
+ * THE RAIL'S RIGHT-CLICK MENUS — issue #273, the app's menu idiom applied to
+ * the sessions list.
  *
  * THREE SURFACES, ONE PRIMITIVE, AND EXACTLY ONE OF THEM SHARES ITS LIST. The
  * session row's menu and the row's `⋯` render `lib/session-action-menu.ts` —
@@ -132,8 +132,8 @@ describe("the project header composes its own list", () => {
   });
 
   test("only this surface carries the header's own verbs — the session menu never grows them", () => {
-    // The Spool's distinguishing-item rule: a verb that identifies a surface
-    // must not appear in another's list.
+    // The distinguishing-item rule: a verb that identifies a surface must not
+    // appear in another's list.
     const definition = fs.readFileSync(path.join(dir, "..", "..", "lib", "session-action-menu.ts"), "utf8");
     for (const verb of ["Collapse others", "Move up", "Move down", "Reveal in Finder"]) {
       expect(code(definition), `the session definition does not carry "${verb}"`).not.toContain(verb);

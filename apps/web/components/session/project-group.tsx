@@ -146,8 +146,8 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
  * on another group and it lands above or below, by which half of that group
  * the pointer was in. The drag is the platform's own (`draggable` and
  * `dataTransfer`, the app's one drag idiom — see `lib/drag-reference.ts`), the
- * handlers arrive as bare prop references the way the Spool's lobby takes
- * them, and the sidebar owns the state, because the drop lands on a DIFFERENT
+ * handlers arrive as bare prop references,
+ * and the sidebar owns the state, because the drop lands on a DIFFERENT
  * group than the one that started the drag.
  *
  * THE INSERT MARK IS A SHADOW, NOT A BORDER. A border added on drag-over would
@@ -164,7 +164,7 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
  * THE TRIGGER WRAPS THE LABEL, NEVER THE BUTTON. That button is the drag
  * handle, and base-ui's trigger renders an element of its own — one carrying
  * `draggable` would make a right-press and a grab compete for the same node,
- * which is the race the Spool's board card avoids the same way.
+ * which is the race every draggable row in this app avoids the same way.
  */
 export function ProjectGroupSection({
   group,

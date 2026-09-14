@@ -4,7 +4,7 @@
  * Asserted as SOURCE TEXT because all four are about ordering inside one
  * `onKeyDown` and one async callback, this app has no DOM harness, and every one
  * of them is decidable by reading the file — the same reasoning as
- * `session-cockpit.test.ts` and `spool/idiom.test.ts`. They are the claims whose
+ * `session-cockpit.test.ts`. They are the claims whose
  * violation is silent: a ⌘S that opens the browser's Save dialog, a stash that
  * clears the box on a write that did not land, a badge that greys the whole
  * composer. None of those fail loudly, and all four survive a refactor only if

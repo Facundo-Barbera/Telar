@@ -7,7 +7,6 @@ import { GET as projectsGet, POST as projectsPost } from "@/app/api/projects/rou
 import { GET as eventsGet } from "@/app/api/sessions/[sessionId]/events/route";
 import { GET as liveGet } from "@/app/api/sessions/live/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
-import { saveLoom } from "@/lib/looms/store";
 import { EngineClient } from "@telar/engine-client";
 import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
 import { startEngine, type EngineDaemon } from "../../../engine/src/daemon";
@@ -62,7 +61,7 @@ describe("engine route adapters", () => {
     expect((await response.json()).error.code).toBe("invalid_request");
   });
 
-  test("the live list carries every project's sessions minus the ones a loom owns, and the rail's arrangement", async () => {
+  test("the live list carries every project's sessions, and the rail's arrangement", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);
     process.env.TELAR_HOME = home;
@@ -74,10 +73,7 @@ describe("engine route adapters", () => {
     await client.registerProject({ id: "project_one", name: "One", root: path.join(home, "one") });
     await client.registerProject({ id: "project_two", name: "Two", root: path.join(home, "two") });
     await client.createSession({ id: "session_plain", projectId: "project_one" });
-    await client.createSession({ id: "session_owned", projectId: "project_two" });
-    // DETACHMENT: a loom-owned session must not appear on this surface any
-    // more than on the per-project list — the phone reads this route.
-    saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_two", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
+    await client.createSession({ id: "session_other", projectId: "project_two" });
 
     // THE ARRANGEMENT RIDES THE RAIL'S OWN READ (#306). This is how a drop made
     // on the phone reaches a browser tab: the rail polls this route anyway, so
@@ -88,7 +84,7 @@ describe("engine route adapters", () => {
     const response = await liveGet(new Request("http://cockpit.test/api/sessions/live"));
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.sessions.map((s: { id: string }) => s.id)).toEqual(["session_plain"]);
+    expect(body.sessions.map((s: { id: string }) => s.id).sort()).toEqual(["session_other", "session_plain"]);
     expect(body.projects.map((p: { id: string }) => p.id).sort()).toEqual(["project_one", "project_two"]);
     expect(body.layout).toEqual({ projectOrder: ["project_two", "project_one"], sessionOrder: {}, pinnedOrder: ["session_plain"] });
   });
@@ -101,7 +97,7 @@ describe("engine route adapters", () => {
    * silently empty `relatedWork`: nothing was ever `active` or `review`, so the
    * elbow tree (#324) drew each delegate as a sibling of its coordinator.
    */
-  test("the live list carries who each session is working for, minus the ones a loom owns", async () => {
+  test("the live list carries who each session is working for", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);
     process.env.TELAR_HOME = home;
@@ -115,7 +111,6 @@ describe("engine route adapters", () => {
     await client.registerProject({ id: "project_one", name: "One", root: home });
     await client.createSession({ id: "session_coord", projectId: "project_one" });
     await client.createSession({ id: "session_worker", projectId: "project_one" });
-    await client.createSession({ id: "session_owned", projectId: "project_one" });
 
     // The coordinator has to be MID-TURN to hand work over: `proof` is the
     // sending turn's own claim, which is what lets the engine stamp the sender
@@ -126,10 +121,6 @@ describe("engine route adapters", () => {
     await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
     const proof = { sessionId: "session_coord", runId: "run_coord", claimToken: claim.turn.claim!.token };
     await client.submitAgentTurn("session_worker", { intent: "task", runId: "run_task", input: "Fix #316", proof });
-    // Same coordinator, a session a loom owns: the row is subtracted above, so
-    // its assignment must go with it rather than naming a detached session.
-    await client.submitAgentTurn("session_owned", { intent: "task", runId: "run_owned", input: "Fix #269", proof });
-    saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_one", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
 
     const body = await (await liveGet(new Request("http://cockpit.test/api/sessions/live"))).json();
     expect(body.assignments.session_worker).toMatchObject([
@@ -137,7 +128,6 @@ describe("engine route adapters", () => {
     ]);
     // Outstanding, which is the whole distinction `relatedWork` draws on.
     expect(body.assignments.session_worker[0].outcome).toBeUndefined();
-    expect(body.assignments.session_owned).toBeUndefined();
   });
 
   test("keeps the legacy discard endpoint harmless after boot stops interrupted work", async () => {

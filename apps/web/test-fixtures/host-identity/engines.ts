@@ -103,8 +103,6 @@ export function makeWire(): Wire {
       // The book is always THIS cockpit's, whichever Mac the fetcher points at.
       if (rest === "/hosts" || rest === "/hosts/") return answer(200, { hosts: BOOK });
       if (rest === "/sidebar-layout") return answer(200, { layout: {} });
-      if (rest === "/looms") return answer(200, { looms: [] });
-      if (rest === "/spool") return answer(200, {});
       const found = /^\/sessions\/([^/]+)$/.exec(rest);
       if (found) {
         const id = decodeURIComponent(found[1]!);

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -127,10 +127,6 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
-/** The masthead's "Spin into loom" entrance — off until the flow is ready to
- *  live in every session's header. See the render site for why off means
- *  absent rather than greyed. */
-const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -276,7 +272,6 @@ function SessionMasthead({
   session,
   onRename,
   panel,
-  readOnly = false,
   onWatchRun,
   menu,
 }: {
@@ -300,9 +295,6 @@ function SessionMasthead({
    *  masthead stays identity-only and does not acquire the session record's
    *  items, tasks, turns and events just to hand them straight through. */
   panel: React.ReactNode;
-  /** Observe mode: the title is a fact, not a field, and there is no spin —
-   *  a loom-owned session cannot be spun into another loom. */
-  readOnly?: boolean;
   /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
    *  Run control only configures, starts and stops. */
   onWatchRun?: () => void;
@@ -468,7 +460,7 @@ function SessionMasthead({
                     }}
                     onDoubleClick={() => {
                       cancelPendingOpen();
-                      if (!readOnly) beginRename();
+                      beginRename();
                     }}
                   >
                     {title}
@@ -524,7 +516,7 @@ function SessionMasthead({
         {/* KEYED BY HOST AND SESSION: a different machine is a different
             mount, so no answer, latch or poll from the previous one can reach
             this one. Two hosts can hold the same session id. */}
-        {session && !readOnly && (
+        {session && (
           <RunHeaderControl
             key={`${hostId}:${session.id}`}
             sessionId={session.id}
@@ -537,28 +529,6 @@ function SessionMasthead({
         {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
             "another machine" is true where a guessed name would not be. */}
         {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
-        {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
-            produced enough shape, hand it to the weaver. The session becomes
-            the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on.
-
-            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
-            before it earns a place in every session's header, and a disabled
-            button would be chrome apologising for itself — so nothing renders
-            until the flag flips. The Looms place stays reachable through the
-            place switcher; only this entrance is closed. */}
-        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Spin into loom"
-            title="Spin into loom"
-            render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
-          >
-            <WorkflowIcon />
-          </Button>
-        )}
         {panel}
       </div>
     </header>
@@ -607,13 +577,13 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * ONE TURN, RENDERED — your message, then everything the agent did about it.
  *
  * EXPORTED, AND IT COSTS NOTHING TO EXPORT: this component reads `projectId`
- * zero times. It was written for the project cockpit and turns out to be the
- * shared conversation shell the Spool's master chat needed — the extraction the
+ * zero times. It was written for the project cockpit and turns out to be a
+ * project-agnostic conversation shell — the extraction the
  * donor planned, already done by accident because nothing in a rendered turn is
  * a property of a repository.
  *
- * So the master chat consumes THIS rather than hand-rebuilding a second
- * transcript. The donor's own rule for that situation was to stop rather than
+ * So any second transcript surface consumes THIS rather than hand-rebuilding
+ * one. The donor's own rule for that situation was to stop rather than
  * build the second one, and the reason is visible here: approvals, sub-agent
  * chips, the activity fold, the live step window and the ambiguous-turn recovery
  * are all decided in this function. A copy would start identical and drift.
@@ -721,7 +691,6 @@ function SessionTurnBody({
   sending,
   live,
   now,
-  quiet = false,
   onDecide,
   onRetry,
   onOpenAgent,
@@ -732,15 +701,6 @@ function SessionTurnBody({
   onOpenFileInNewTab,
   roster = [],
 }: {
-  /**
-   * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. The Spool's chat sets this:
-   * there, a settled turn's step summary and token count read as telemetry
-   * presented as conversation, so both fold behind one quiet disclosure and
-   * the answer leads. The cockpit leaves it unset and renders exactly as it
-   * always has — a LIVE turn ignores it too, because the step window is the
-   * one part of the work worth watching while it happens.
-   */
-  quiet?: boolean;
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
@@ -824,10 +784,7 @@ function SessionTurnBody({
   const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
-  /** The quiet fold's own toggle. Per turn, never persisted — looking at how
-   *  one answer was made is a glance, not a mode. */
-  const [workShown, setWorkShown] = useState(false);
-  const folded = quiet && !live;
+
 
   /**
    * THE COMPACTION GESTURE IS NOT A MESSAGE. A press of the Compact button
@@ -935,9 +892,7 @@ function SessionTurnBody({
             <LiveActivity items={answering.items} tasks={turn.tasks} {...rowGestures} />
           ) : (
             <>
-              {!folded && (
-                <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...rowGestures} />
-              )}
+              <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...rowGestures} />
               {closing.map((item) => (
                 <TranscriptItem key={item.id} item={item} tasks={turn.tasks} {...rowGestures} />
               ))}
@@ -969,35 +924,10 @@ function SessionTurnBody({
               now={now}
             />
           )}
-          {!folded && turn.usage && !live && (
+          {turn.usage && !live && (
             <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
-          )}
-          {folded && (activity.length > 0 || turn.usage) && (
-            <div>
-              {/* A quiet INLINE control in the message flow, not floating mono
-                  micro-text — the Spool's transcript is the only caller of the
-                  quiet fold, and this is its one disclosure. */}
-              <button
-                type="button"
-                aria-expanded={workShown}
-                onClick={() => setWorkShown((v) => !v)}
-                className="mt-1 inline-flex items-center gap-1 rounded-md text-2xs text-muted-foreground/70 transition-colors hover:text-foreground"
-              >
-                {workShown ? "hide the work" : "how it did this"}
-              </button>
-              {workShown && (
-                <div className="mt-2 space-y-2">
-                  <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...rowGestures} />
-                  {turn.usage && (
-                    <p className="font-mono text-3xs text-muted-foreground/70 tabular-nums">
-                      {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
           )}
           {/* NO RECOVERY CHOICE AND NO HELD MESSAGE. A turn the app lost is
               stopped, not ambiguous, and nothing waits behind it — so there is
@@ -1030,23 +960,12 @@ export function SessionCockpit({
   projectId,
   sessionId: routeSessionId,
   projectName: serverProjectName,
-  observe = false,
 }: {
   projectId: string;
   sessionId?: string;
   /** Resolved by the page, so the breadcrumb and the greeting never paint the
    *  raw id first and correct themselves a moment later. */
   projectName?: string;
-  /**
-   * WATCHING, NOT DRIVING. A loom's worker thread is driven by its loom —
-   * brief, contract, conductor nudges — and a human typing into it would be
-   * a second boss. Observe mode keeps everything that informs (transcript,
-   * panel, diff) and removes everything that drives: the composer, rename,
-   * spin. Engine requests (an agent's explicit question) stay answerable —
-   * a parked question IS for a human. The conductor and origin sessions are
-   * never observed: talking there is steering, which is the human's job.
-   */
-  observe?: boolean;
 }) {
   /**
    * THE SESSION ID IS STATE, NOT JUST A PROP.
@@ -2379,13 +2298,11 @@ export function SessionCockpit({
   /**
    * The question the COMPOSER answers — the first open all-choice `user_input`
    * request. It leaves the turn's approval cards and meets the person at the
-   * box instead (see composer-question-drawer.tsx). Only while the composer
-   * exists: an observed session keeps the card, because there is no composer
-   * to host the drawer and the question must still be visible.
+   * box instead (see composer-question-drawer.tsx).
    */
   const composerQuestion = useMemo(
-    () => (observe ? undefined : openRequests.find((request) => questionFields(request).length > 0)),
-    [openRequests, observe],
+    () => openRequests.find((request) => questionFields(request).length > 0),
+    [openRequests],
   );
 
   /**
@@ -2909,7 +2826,7 @@ export function SessionCockpit({
           // `current` is unconditional here: this menu is only ever about the
           // session this screen is showing, so `Open` is the one verb it can
           // state and cannot perform.
-          capabilities: { remote: hostId !== LOCAL_HOST_ID, readOnly: observe, current: true },
+          capabilities: { remote: hostId !== LOCAL_HOST_ID, current: true },
           actions: {
             // Inert on this surface (see `current`), and still handed over: the
             // handler is the definition's contract, not this screen's guess at
@@ -3105,7 +3022,6 @@ export function SessionCockpit({
           projectResolved={projectResolved}
           session={session}
           {...(headerMenu ? { menu: headerMenu } : {})}
-          readOnly={observe}
           onRename={(next) => void rename(next)}
           // The masthead's Run control hands monitoring back to the panel
           // through the same opener every other surface uses.
@@ -3206,12 +3122,6 @@ export function SessionCockpit({
           <ConversationScrollButton />
         </ConversationViewport>
         </div>
-        {observe ? (
-          <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
-            <EyeIcon className="size-3.5 shrink-0" />
-            Observing — this thread is driven by its loom. Talk to the conductor to steer it.
-          </div>
-        ) : (
         <Composer
           draft={draft}
           // A fresh canvas is READY: there is nothing to wait for, because the
@@ -3273,7 +3183,6 @@ export function SessionCockpit({
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
           onOpenChanges={() => showPanelTab("diff")}
         />
-        )}
       </div>
       {panelPresence.mounted && (
         <RightPanel

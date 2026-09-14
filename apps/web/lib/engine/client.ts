@@ -539,8 +539,8 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
         patch,
       ),
-    /** A REAL delete, unlike the Spool shelf's retire — a project note is a
-     *  scratchpad. `deleted: false` means it was already gone, never an error. */
+    /** A REAL delete, not a retire — a project note is a scratchpad.
+     *  `deleted: false` means it was already gone, never an error. */
     deleteProjectNote: (projectId: string, noteId: string) =>
       request<{ deleted: boolean }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`),
     pinProjectNote: (projectId: string, noteId: string, pinned: boolean) =>
@@ -751,7 +751,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         envMode?: "local" | "worktree";
         /** Worktree base — any name from `GitOverview.refs`. Absent = HEAD. */
         baseRef?: string;
-        /** A human's own branch name, outside loom//telar/. */
+        /** A human's own branch name, outside telar/. */
         branchName?: string;
       } = {},
     ) =>
