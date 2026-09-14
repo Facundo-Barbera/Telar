@@ -1,45 +1,42 @@
 "use client";
 
 /**
- * LOOKS — the shelf of whole appearances, and where a design session starts.
+ * LOOKS — the gallery of whole appearances, and the ONLY preset system (#471).
  *
- * A card here is the theme AND the backdrop AND the accent AND the type AND
- * the translucency strength, captured together (lib/looks.ts states what is in
+ * A row here is a COMPOSITION — both colour states, their bases, their layers
+ * and anything set by hand — plus the accent, the two faces, their sizes, the
+ * show-through and the depth, captured together (lib/looks.ts states what is in
  * the bundle and why the desktop translucency TOGGLE is not).
  *
- * A LIST, NOT A STRIP (#471). It was an `overflow-x-auto` rank of thumbnails
- * running off the right edge of the pane, which cost three things a settings
- * pane cannot afford: looks past the fourth were INVISIBLE until you thought to
- * scroll sideways inside a vertically-scrolling page; a 128px card had room for
- * a picture and a truncated name and nothing else, so what a look actually
- * CARRIES could only be guessed from a 70px thumbnail; and the actions hid
- * behind a hover, which is not a thing a keyboard or a touchscreen has.
+ * THERE IS NOTHING UNDERNEATH IT ANY MORE. This used to sit above a LIBRARY of
+ * themes answering an overlapping question — a look referenced a palette, a
+ * palette could also be picked on its own, and a reader had to hold two ideas
+ * apart to change one colour. "Themes should not exist, there should be default
+ * settings for the composer." The defaults are the ten built-ins at the bottom
+ * of this list (lib/built-in-looks.ts), and the composer below is what a look
+ * is made of.
  *
- * So it is `Row`s in the group's card, like every other list in Settings: the
- * thumbnail at the left where the picture still does its work, the name, and a
- * line saying what is in the bundle — which palette (or which pair, when the
- * two halves come from different themes), what is behind the app, and the two
- * faces. The worn one says so with a chip rather than with a ring, and every
- * action is a real button in the control column.
+ * A LIST, NOT A STRIP. It was an `overflow-x-auto` rank of thumbnails running
+ * off the right edge of the pane, which cost three things a settings pane cannot
+ * afford: looks past the fourth were INVISIBLE until you thought to scroll
+ * sideways inside a vertically-scrolling page; a 128px card had room for a
+ * picture and a truncated name and nothing else; and the actions hid behind a
+ * hover, which is not a thing a keyboard or a touchscreen has.
  *
- * ONE GESTURE, ONE MEANING (#471). Clicking a card WEARS the look. It used to
- * SELECT one — loaded into a draft, previewed, worn only on Apply — with Wear
- * hidden behind a hover as the shortcut past all that. There is no draft, so
- * there is nothing for a second gesture to mean: the cheapest thing anyone
- * wants to do here is "put that one on", and it is now the only thing a click
- * does. Import goes the same way: the file becomes a card and is worn.
+ * ONE GESTURE, ONE MEANING. Clicking a row WEARS the look. It used to SELECT one
+ * — loaded into a draft, previewed, worn only on Apply — with Wear hidden behind
+ * a hover as the shortcut past all that. There is no draft, so there is nothing
+ * for a second gesture to mean. Import goes the same way: the file becomes a
+ * card and is worn.
  *
- * SAVE LIVES HERE, on the group that holds the shelf. It photographs every
- * appearance store as it stands (`captureLook`) and puts the result on the
- * shelf — which is the whole of what saving means once nothing is pending. It
- * was a masthead button fed by the draft; the draft is gone and the shelf is
- * where a new card appears, so the button belongs beside it.
+ * SAVE LIVES HERE, on the group that holds the list. It photographs both
+ * appearance stores as they stand (`captureLook`) — which is the whole of what
+ * saving means once nothing is pending — and the new card appears right here.
  *
- * THE SHELF IS NEVER EMPTY. Six STARTERS (lib/starter-looks.ts) stand after
- * whatever has been saved — built from the same themes and presets the pane
- * offers, so they cost no storage and cannot be deleted away. They are what
- * makes this pane legible on first arrival: the first thing you can do here is
- * wear something, not read a paragraph about what a Look would be.
+ * THE DEFAULTS ARE NEVER EMPTY AND NEVER DELETABLE, being a table rather than
+ * storage. They are what makes this pane legible on first arrival: the first
+ * thing you can do here is wear something, not read a paragraph about what a
+ * Look would be.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -50,9 +47,9 @@ import { isHostWindow } from "@/lib/host-window";
 import {
   captureLook,
   lookFilename,
-  lookThemeId,
   newLookId,
   parseLookFile,
+  sameComposition,
   serializeLook,
   upsertLook,
   useLooks,
@@ -61,52 +58,50 @@ import {
   LOOKS_QUOTA_MESSAGE,
   type Look,
 } from "@/lib/looks";
-import { STARTER_LOOKS } from "@/lib/starter-looks";
-import { matchThemeHalf, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
+import { BUILT_IN_LOOKS, BUILT_IN_NOTES } from "@/lib/built-in-looks";
 import { useAppearance } from "@/lib/appearance";
-import { useBackdrop, type Backdrop } from "@/lib/backdrop";
+import { useComposition } from "@/lib/composition";
 import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
-
-/** Same scene, by the CHOICE rather than by the resolved pixels — two gradients
- *  from one preset are the same scene even if one carries a dim the other does
- *  not, and comparing megabytes of image data to draw a tick would be absurd. */
-function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
-  if (look.kind !== worn.kind) return false;
-  if (look.kind === "gradient" && worn.kind === "gradient") return look.id === worn.id;
-  return true;
-}
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "./settings-shell";
 
-/** What is behind the app, in one word. A thumbnail shows the scene but cannot
- *  say which KIND it is — "composed scene" and "gradient" can look identical
- *  at 70px, and only one of them reopens in the layer composer. */
-const BACKDROP_LABEL: Record<Look["backdrop"]["kind"], string> = {
-  none: "no backdrop",
-  gradient: "gradient",
-  "custom-gradient": "custom gradient",
-  image: "image",
-  scene: "composed scene",
-};
-
 /**
- * WHAT A LOOK CARRIES, IN ONE LINE: its palette, its scene, its two faces.
+ * WHAT A LOOK'S COMPOSITION IS, IN A PHRASE.
  *
- * The palette is named by matching each embedded half back against the library
- * (a Look stores its halves CONCRETE, never a theme id — see lib/looks.ts), so
- * a look built from Ember says "Ember", a MIXED pair says both, and a palette
- * that matches nothing says so rather than claiming a name it does not have.
+ * A thumbnail shows the scene but cannot say how it is MADE — a photograph and
+ * a gradient can look alike at 56px, and only one of them will still be there
+ * when the gradient presets change. The two states are counted separately
+ * because they genuinely can differ; when they agree, which is the common case,
+ * the phrase says it once.
  */
-function lookSummary(look: Look, themes: readonly ThemeDefinition[]): string {
-  const light = matchThemeHalf(look.theme.light, themes, "light")?.label;
-  const dark = matchThemeHalf(look.theme.dark, themes, "dark")?.label;
-  const palette = light && dark ? (light === dark ? light : `${light} / ${dark}`) : "a palette of its own";
+function stackPhrase(layers: readonly { type: string }[]): string {
+  if (layers.length === 0) return "flat";
+  const images = layers.filter((layer) => layer.type === "image").length;
+  const gradients = layers.length - images;
+  const parts: string[] = [];
+  if (gradients > 0) parts.push(`${gradients} gradient${gradients === 1 ? "" : "s"}`);
+  if (images > 0) parts.push(`${images} image${images === 1 ? "" : "s"}`);
+  return parts.join(" + ");
+}
+
+function compositionPhrase(look: Look): string {
+  const light = stackPhrase(look.composition.light.layers);
+  const dark = stackPhrase(look.composition.dark.layers);
+  return light === dark ? light : `${light} / ${dark}`;
+}
+
+/** WHAT A LOOK CARRIES, IN ONE LINE: what it is made of, and its two faces.
+ *  A built-in says what it is in its own words instead — the table wrote them,
+ *  and "Tide, under a dusk gradient" is a better sentence than anything a
+ *  layer count can assemble. */
+function lookSummary(look: Look): string {
   const sans = look.fontSans === "custom" ? look.fontSansCustom || "a custom face" : SANS_LABEL[look.fontSans];
   const mono = look.fontMono === "custom" ? look.fontMonoCustom || "a custom face" : MONO_LABEL[look.fontMono];
-  return `${palette} · ${BACKDROP_LABEL[look.backdrop.kind]} · ${sans} / ${mono}`;
+  const what = BUILT_IN_NOTES[look.id] ?? compositionPhrase(look);
+  return `${what} · ${look.accent} · ${sans} / ${mono}`;
 }
 
 function downloadFile(filename: string, contents: string): void {
@@ -153,14 +148,14 @@ function LookRow({
   onRemove,
 }: {
   look: Look;
-  /** What the bundle carries — built by the caller, which is where the theme
-   *  library the palette is named against already lives. */
+  /** What the bundle carries, in one line — built by the caller, which is where
+   *  the defaults' own notes live. */
   summary: string;
   /** The window has this look on. */
   worn: boolean;
   onWear: () => void;
-  /** Absent for a starter: it is a recipe this build rebuilds every load, not
-   *  a card, so there is nothing of yours to rename. */
+  /** Absent for a default: it is a table this build rebuilds every load, not a
+   *  card, so there is nothing of yours to rename. */
   onRename?: (label: string) => void;
   onExport?: () => void;
   onRemove?: () => void;
@@ -361,7 +356,7 @@ function HostLookRow({ onWear }: { onWear: (look: Look) => void }) {
       }
       hint={
         ready
-          ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
+          ? `“${state.look.label}” — ${compositionPhrase(state.look)}${following ? " · changing anything here stops following" : ""}`
           : HOST_LOOK_HINT[state.status]
       }
       control={
@@ -411,37 +406,22 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
-  const { activeId, active, themes } = useThemeLibrary();
-  /** What a fresh snapshot is called: the palette it was taken from, or the
-   *  honest "Mixed look" when the two halves disagree. */
-  const wornThemeLabel = themes.find((theme) => theme.id === activeId)?.label ?? "Mixed look";
   const { appearance } = useAppearance();
-  const { backdrop } = useBackdrop();
+  const { composition } = useComposition();
   /**
-   * WORN IS ABOUT WHAT THE WINDOW HAS ON, NOT ABOUT AN ID. Wearing a look whose
-   * palette is already in the library now wears THAT theme rather than minting
-   * a copy (applyLook), so the id this card would have installed may never
-   * exist and an id test would mark nothing at all.
+   * WORN IS ABOUT WHAT THE WINDOW HAS ON, NOT ABOUT AN ID. Wearing a look
+   * copies its composition into the live store and installs nothing anywhere,
+   * so there is no id to test against — and the built-ins are rebuilt from a
+   * table on every load, which an id test would mark worn or not by accident.
    *
-   * BUT A PALETTE IS NOT A LOOK. Dusk and Deep Sea are both built on Tide, so a
-   * colours-only test marked both of them worn at once — two cards claiming the
-   * one thing only one of them can be true of. A look is its palette AND its
-   * scene AND its accent, so all three have to agree.
+   * BUT A COMPOSITION IS NOT A LOOK. Dusk and Deep Sea share a base, and Ember
+   * and Emberglow share everything but a layer, so the comparison has to be the
+   * whole composition AND the accent — anything looser marks two cards worn at
+   * once, which is a claim only one of them can be true of.
    */
   const worn = useCallback(
-    (look: Look) => {
-      if (look.accent !== appearance.accent) return false;
-      if (!sameScene(look.backdrop, backdrop)) return false;
-      if (activeId === lookThemeId(look)) return true;
-      const lightTheme = themes.find((theme) => theme.id === active.light);
-      const darkTheme = themes.find((theme) => theme.id === active.dark);
-      if (!lightTheme || !darkTheme) return false;
-      return (
-        matchThemeHalf(look.theme.light, [lightTheme], "light") !== undefined &&
-        matchThemeHalf(look.theme.dark, [darkTheme], "dark") !== undefined
-      );
-    },
-    [activeId, active, themes, appearance.accent, backdrop],
+    (look: Look) => look.accent === appearance.accent && sameComposition(look.composition, composition),
+    [appearance.accent, composition],
   );
   const looks = useLooks();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
@@ -476,10 +456,14 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
     if (commit(next)) onWear(look);
   };
 
-  /** A photograph of every appearance store, shelved. A fresh id every time —
-   *  Save means "keep this one too", never "overwrite the last one". */
+  /** A photograph of both appearance stores, shelved. A fresh id every time —
+   *  Save means "keep this one too", never "overwrite the last one". Named
+   *  after whatever is worn when one of the defaults is, so saving a tweak to
+   *  Dusk gives a card that says where it came from; otherwise it is untitled
+   *  and renamed on its row. */
   const saveLook = () => {
-    const next = upsertLook(looks, captureLook(wornThemeLabel));
+    const from = BUILT_IN_LOOKS.find((entry) => worn(entry))?.label;
+    const next = upsertLook(looks, captureLook(from ? `${from} — edited` : "My look"));
     if (!next) {
       setError(LOOKS_FULL_MESSAGE);
       return;
@@ -496,11 +480,11 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
     // a control that acts on the WHOLE group belongs.
     <SettingsGroup
       title="Looks"
-      description="A look is a theme pair — the light palette and the dark one — with the backdrop, the accent, the type and the depth saved around them. Wear one to put the lot on."
+      description="A look is a whole composition — both colour states, their layers and their colours — with the accent, the type and the depth saved around it. Wear one to put the lot on, then change anything below."
       action={
         <div className="flex items-center gap-2">
           <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
-            {looks.length + STARTER_LOOKS.length}
+            {looks.length + BUILT_IN_LOOKS.length}
           </span>
           {/* SAVE IS A PLAIN BUTTON, and it acts on the whole group rather than
               on any row in it — which is exactly what `action` is for. */}
@@ -533,7 +517,7 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
         <LookRow
           key={look.id}
           look={look}
-          summary={lookSummary(look, themes)}
+          summary={lookSummary(look)}
           worn={worn(look)}
           onWear={() => onWear(look)}
           onRename={(label) => {
@@ -544,13 +528,13 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
           onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
         />
       ))}
-      {/* A starter carries a STABLE id, so wearing Dusk twice updates the one
-          library theme it installs instead of breeding a second one called
-          Dusk. Save mints a fresh id, which is the moment a starter stops being
-          a recipe and becomes a card of your own — which is also why a starter
-          has no rename, export or delete: there is no card to act on yet. */}
-      {STARTER_LOOKS.map((look) => (
-        <LookRow key={look.id} look={look} summary={lookSummary(look, themes)} worn={worn(look)} onWear={() => onWear(look)} />
+      {/* THE DEFAULTS, AFTER WHAT YOU SAVED. They are a table this build
+          rebuilds every load, not cards — wearing one copies its composition
+          into the live store and installs nothing, and Save is what mints a
+          card of your own from whatever is on. Which is also why a default has
+          no rename, export or delete: there is nothing of yours to act on. */}
+      {BUILT_IN_LOOKS.map((look) => (
+        <LookRow key={look.id} look={look} summary={lookSummary(look)} worn={worn(look)} onWear={() => onWear(look)} />
       ))}
     </SettingsGroup>
   );

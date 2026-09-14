@@ -37,12 +37,20 @@ import {
   type MonoFont,
   type SansFont,
 } from "@/lib/appearance";
-import { cssColorToHex, hexToCssColor, THEME_TOKEN_HINTS, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@/lib/theme-palettes";
-import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
+import {
+  cssColorToHex,
+  FOREGROUND_SURFACES,
+  hexToCssColor,
+  THEME_TOKEN_HINTS,
+  THEME_TOKEN_LABELS,
+  THEME_TOKENS,
+  type ThemeHalf,
+  type ThemeToken,
+} from "@/lib/theme-palettes";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
-import type { StudioMode } from "@/lib/studio-draft";
+import type { CompositionMode } from "@/lib/composition";
 import { cn } from "@/lib/utils";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, RotateCcwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -207,21 +215,65 @@ export function PaletteStrip({ half, label, current }: { half: ThemeHalf; label:
   );
 }
 
+/**
+ * THE BASE — one colour, and the sixteen it decides.
+ *
+ * "The composer's base is the app colour." It is not the canvas literally: it
+ * supplies the HUE and how colourful to be, and Telar's lightness spine is kept
+ * underneath, which is what makes every base yield a palette whose text sits
+ * readably on its surfaces (lib/palette-from-image.ts says so at length). So
+ * the swatch beside it is the colour you picked and the strip under it is what
+ * the app becomes — the two together are the whole explanation, and neither
+ * alone is.
+ */
+export function BaseControl({ base, label, onChange }: { base: string; label: string; onChange: (next: string) => void }) {
+  const hex = cssColorToHex(base);
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="color"
+        value={hex}
+        aria-label={label}
+        onChange={(event) => onChange(hexToCssColor(event.target.value))}
+        className="size-7 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+      />
+      <HexField value={hex} label={label} onCommit={(next) => onChange(hexToCssColor(next))} />
+    </div>
+  );
+}
+
+/**
+ * THE SIXTEEN TOKENS, AS OVERRIDES OVER WHAT THE BASE DERIVED (#471).
+ *
+ * This was the primary colour control and the owner's complaint about it was
+ * exactly that: "you basically need to know how each component of each surface
+ * reacts to these and it's complicated to see that." It is an escape hatch now,
+ * folded behind a disclosure, and what it edits has changed with it — a value
+ * here is a token somebody set BY HAND over the base's own answer, and every
+ * token left alone follows the base. Which is why each row can be reverted:
+ * clearing an override is a thing you can say, and it was not before.
+ *
+ * A HAND-SET ROW SAYS SO, and the revert control is the affordance rather than
+ * a badge — there is nothing to mark on a row that is merely following, and a
+ * row you can put back is self-describing.
+ */
 export function ColourTool({
   half,
-  mode,
+  derived,
+  overrides,
   onToken,
-  onCopyHalf,
 }: {
-  /** The half being edited, concrete — the palette the window is wearing on
-   *  this side, never a draft of one. */
+  /** What this state actually paints: the derivation with the hand-set values
+   *  over it. */
   half: ThemeHalf;
-  mode: StudioMode;
-  onToken: (token: ThemeToken, value: string) => void;
-  /** Replace the OTHER half with a copy of this one. */
-  onCopyHalf: () => void;
+  /** What the base alone gives — what a revert goes back to. */
+  derived: ThemeHalf;
+  /** Which tokens are hand-set. Sparse: absent means "follows the base". */
+  overrides: Partial<ThemeHalf>;
+  mode: CompositionMode;
+  /** `undefined` clears the override and hands the token back to the base. */
+  onToken: (token: ThemeToken, value: string | undefined) => void;
 }) {
-  const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock>
       {/* ONE COLUMN, BECAUSE EACH ROW NOW CARRIES A SENTENCE (#471). It was two
@@ -235,6 +287,7 @@ export function ColourTool({
         {THEME_TOKENS.map((token) => {
           const hex = cssColorToHex(half[token]);
           const ratio = ratioFor(half, token);
+          const set = overrides[token] !== undefined;
           return (
             <label key={token} className="flex items-center gap-2 py-0.5 text-xs" title={`--${token}`}>
               <input
@@ -257,20 +310,25 @@ export function ColourTool({
                 </span>
               )}
               <HexField value={hex} label={THEME_TOKEN_LABELS[token]} onCommit={(next) => onToken(token, hexToCssColor(next))} />
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="shrink-0 text-muted-foreground"
+                disabled={!set}
+                title={set ? `Follow the base again (${cssColorToHex(derived[token])})` : "This one follows the base"}
+                aria-label={`Revert ${THEME_TOKEN_LABELS[token]} to the base`}
+                onClick={(event) => {
+                  // The row is a <label>: without this the click reaches the
+                  // colour input and pops the OS picker on every revert.
+                  event.preventDefault();
+                  onToken(token, undefined);
+                }}
+              >
+                <RotateCcwIcon />
+              </Button>
             </label>
           );
         })}
-      </div>
-      <div className="mt-2.5">
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2 text-2xs text-muted-foreground"
-          title={`Replace the ${other} half with a copy of the ${mode} half`}
-          onClick={onCopyHalf}
-        >
-          <CopyIcon /> Copy {mode} half → {other}
-        </Button>
       </div>
     </ToolBlock>
   );
