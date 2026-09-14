@@ -182,6 +182,12 @@ const AUTO_RELEASE_POLL_MS = 300;
 /** The whole cross-tab credential probe is bounded to this, independent of
  *  how many tabs/frames it must ask (they run in parallel). */
 const CREDENTIAL_STATUS_BUDGET_MS = 1_500;
+/** How long the HOLDING tab may go on failing to answer before the window is
+ *  called STUCK and the banner offers a way out (#480). A single slow poll is
+ *  ordinary — a page that has just submitted a form is busy — so one timeout
+ *  must not flip the wording to "not responding". Privacy is kept either way:
+ *  stuck names a recovery, it never releases anything. */
+const PRIVACY_STUCK_AFTER_MS = 3_000;
 
 function humanActiveOn(tab, index) {
   return `The human is interacting with tab ${index} — ${tab.title || tab.url || "untitled"} — right now. Wait a moment and look again (snapshot or screenshot), or work in another tab.`;
@@ -563,8 +569,18 @@ class DesktopBrowserManager {
      */
     this.heldLoginCapture = null;
     this.onCredentialEntryFinished = dependencies.onCredentialEntryFinished || null;
+    /** A person ended the private window by hand over a page that would not
+     *  answer the safety probe (`resumeFromPrivate({ force: true })`). Told to
+     *  the shell log rather than a session journal: privacy is GLOBAL — it has
+     *  no scopeKey (`privacy.begin(reason, null)`) — so there is no one
+     *  session whose transcript this belongs in. */
+    this.onPrivacyForced = dependencies.onPrivacyForced || null;
     this.holdRevision = 0;
     this.privacyStuck = false;
+    /** When the holding tab first failed to answer, or null while it is
+     *  answering — see `autoReleaseLoop`. */
+    this.unresponsiveSince = null;
+    this.stuckAfterMs = Number.isFinite(dependencies.stuckAfterMs) ? dependencies.stuckAfterMs : PRIVACY_STUCK_AFTER_MS;
     this._autoReleaseRunning = false;
     this._disposed = false;
     /** One inventory walk per turn of the event loop — see `persist`. */
@@ -1034,11 +1050,17 @@ class DesktopBrowserManager {
     if (!scopes.size && !this.window.isDestroyed()) this.window.webContents.send("telar:browser:privacy", this.privacyState());
   }
 
-  /** The privacy state the renderer reads: the epoch boundary PLUS whether the
-   *  automatic release is stuck (a probe would not answer) so the UI can show
-   *  a specific recovery instead of a bare spinner. */
+  /** The privacy state the renderer reads: the epoch boundary, whether the
+   *  automatic release is stuck (the holding page would not answer) so the UI
+   *  can show a specific recovery instead of a bare spinner, and WHICH tabs
+   *  hold it — the banner has to name the page a person is being asked to
+   *  reload, which may be in another session's browser (#480).
+   *
+   *  A HOST, NEVER THE FULL ADDRESS: a sign-in URL carries tokens in its query,
+   *  and naming the page must not be how one of them leaves the shell. */
   privacyState() {
-    return { ...this.privacy.state(), stuck: this.privacyStuck };
+    const holding = this.holdingTabs().map((tab) => ({ id: tab.id, label: tab.title || parseUrl(tab.url)?.host || "a sign-in page" }));
+    return { ...this.privacy.state(), stuck: this.privacyStuck, holding };
   }
 
   // ── automatic credential lifecycle ──────────────────────────────────────
@@ -1124,7 +1146,18 @@ class DesktopBrowserManager {
       if (this.holdRevision !== rev) continue;
       if (status === "clear") { this.autoRelease(); break; }
       // "active" (typing/filled) or "unresponsive" (probe stuck): stay private.
-      this.setPrivacyStuck(status === "unresponsive");
+      // STUCK IS A DURATION, NOT AN EVENT (#480): a page that has just
+      // submitted a form can miss one 750 ms probe without being wedged, and
+      // flipping the banner's wording on that single miss cries wolf. Only an
+      // UNBROKEN run of them past the threshold earns the word — and either
+      // way the window stays open, because neither answer is "clear".
+      if (status === "unresponsive") {
+        if (this.unresponsiveSince === null) this.unresponsiveSince = this.now();
+        this.setPrivacyStuck(this.now() - this.unresponsiveSince >= this.stuckAfterMs);
+      } else {
+        this.unresponsiveSince = null;
+        this.setPrivacyStuck(false);
+      }
     }
   }
 
@@ -1134,6 +1167,7 @@ class DesktopBrowserManager {
   autoRelease() {
     this.credentialHold = false;
     this.privacyStuck = false;
+    this.unresponsiveSince = null;
     for (const tab of this.tabs) {
       tab.generation += 1;
       tab.staleReason = "a private interaction ended";
@@ -1162,20 +1196,32 @@ class DesktopBrowserManager {
   }
 
   /**
-   * The credential state across the tabs that could hold one — those that
-   * reported a field, plus the active tab of each scope — probed IN PARALLEL
-   * under one overall budget so the check does not grow with tab count.
+   * THE TABS THAT HOLD — the ones whose own preload reported a credential
+   * field (#480). A tab that never reported one vouches for itself by that
+   * silence: the report is what opened the window in the first place, so a
+   * tab the reporter never named cannot be the reason it has to stay open.
+   *
+   * Asking EVERY tab was the wedge. One unrelated tab with an ad iframe the
+   * preload never reached, or a background tab Chromium throttled past the
+   * probe's 750 ms, answered "cannot vouch" — and held every agent's browser
+   * tools in every session, forever, over a sign-in in a different window.
+   */
+  holdingTabs() {
+    return this.tabs.filter((tab) => tab.credentialFieldsAt !== undefined && tab.view && !tab.view.webContents.isDestroyed());
+  }
+
+  /**
+   * The credential state across the HOLDING tabs, probed IN PARALLEL under one
+   * overall budget so the check does not grow with tab count.
    * Returns "clear" | "active" | "unresponsive".
    */
   async credentialStatus() {
-    // EVERY live tab, in parallel: a background tab a reporter missed can still
-    // hold a filled field, so narrowing to reported/active tabs would let one
-    // slip through. Parallel + a shared deadline keeps this bounded regardless
-    // of tab count.
-    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
-    if (live.length === 0) return "clear";
+    const holders = this.holdingTabs();
+    // Nothing reported a field, or the tab that did has closed: there is
+    // nothing left to wait for.
+    if (holders.length === 0) return "clear";
     const deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS;
-    const results = await Promise.all(live.map((tab) => this.tabHoldsCredentials(tab, deadline)));
+    const results = await Promise.all(holders.map((tab) => this.tabHoldsCredentials(tab, deadline)));
     if (results.includes("active")) return "active";
     if (results.includes("unresponsive")) return "unresponsive";
     return "clear";
@@ -1186,8 +1232,28 @@ class DesktopBrowserManager {
    * lifecycle handles the normal flow). Ends privacy only if the page is
    * clean now; otherwise returns an actionable refusal. Never releases while
    * a blocking field is filled/focused or a probe will not answer.
+   *
+   * `force` IS THE PERSON OVERRULING THE PROBE (#480) — the second button, on
+   * the banner, reached only after the ordinary Resume has been refused. The
+   * probe's job is to keep an agent from reading a page mid-sign-in; when the
+   * page will not answer at all, the only remaining witness to whether that
+   * sign-in is over is the person looking at it, and they must not have to
+   * kill the app to say so. It is logged, because a boundary somebody stepped
+   * over by hand is worth a line even when stepping over it was right.
    */
-  async resumeFromPrivate() {
+  async resumeFromPrivate(options = {}) {
+    if (options.force) {
+      const forced = { at: this.now(), tabIds: this.holdingTabs().map((tab) => tab.id), wasStuck: this.privacyStuck };
+      this.autoRelease();
+      if (this.onPrivacyForced) {
+        try {
+          this.onPrivacyForced(forced);
+        } catch {
+          // A log's failure is not the human's recovery.
+        }
+      }
+      return this.privacyState();
+    }
     const rev = this.holdRevision;
     const status = await this.credentialStatus();
     // Same guard as the auto loop: a popup or a fill that arrived DURING the
@@ -1346,23 +1412,34 @@ class DesktopBrowserManager {
    * filled OR focused-while-empty (the human is about to type). Asked through
    * the preload's own probe; values are never read.
    *
-   * Returns "clear" | "active" | "unresponsive". EVERY FRAME is asked, IN
-   * PARALLEL, and the result FAILS CLOSED: a frame with no probe, a frame that
-   * throws, or a background frame whose `executeJavaScript` never settles all
-   * count as NOT clear. Per-frame probes are bounded and the whole tab is
-   * bounded by `deadline`, so the check never hangs — a timeout is
-   * "unresponsive" (privacy stays on), never a bypass.
+   * Returns "clear" | "active" | "unresponsive". EVERY FRAME of the holding
+   * tab is asked, IN PARALLEL. A frame that ANSWERS "filled or focused" is what
+   * keeps the window open; a frame that will not answer at all is
+   * "unresponsive", which also keeps it open but says something different to
+   * the person (#480). Per-frame probes are bounded and the whole tab is
+   * bounded by `deadline`, so the check never hangs.
+   *
+   * A FRAME WITH NO PROBE VOUCHES. `null` means the preload never ran in that
+   * frame — a cross-origin ad iframe, `about:blank`, the PDF viewer, an
+   * extension frame. A frame the preload never reached cannot contain a field
+   * the preload would have reported, so treating it as "cannot vouch" bought
+   * no safety and was the other half of the wedge: an ad iframe on the sign-in
+   * page kept the window open forever after the person had signed in.
    */
   async tabHoldsCredentials(tab, deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS) {
     // No document, no fields: a hibernated tab holds nothing.
     if (!tab.view || tab.view.webContents.isDestroyed()) return "clear";
     const wc = tab.view.webContents;
     const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
-    if (!frames.length) return "unresponsive";
+    // Mid-navigation, between documents: there is no field in a page that is
+    // not there. The hold itself is dropped on the commit (`noteNavigation`).
+    if (!frames.length) return "clear";
     const answers = await Promise.all(frames.map((frame) => this.probeFrame(frame, deadline).catch(() => PROBE_TIMEOUT)));
-    if (answers.includes(PROBE_TIMEOUT)) return "unresponsive";
-    if (answers.includes(null)) return "unresponsive"; // a frame with no probe can't vouch
+    // A REAL ANSWER OUTRANKS A SILENT ONE: a frame saying "filled" is the
+    // interaction itself, and must not be reported as a page that is merely slow.
     if (answers.some((answer) => answer === true)) return "active";
+    // A frame that timed out or threw mid-question could still hold one.
+    if (answers.includes(PROBE_TIMEOUT)) return "unresponsive";
     return "clear";
   }
 
@@ -1380,10 +1457,19 @@ class DesktopBrowserManager {
     return Promise.race([probe, timeout]).finally(() => clearTimeout(timer));
   }
 
-  /** A navigation committed: the page the agent observed is gone. */
+  /** A navigation committed: the page the agent observed is gone — and with
+   *  it any credential field that page reported, so this tab stops holding the
+   *  private window (#480). The next document reports for itself if it has one
+   *  (an OTP step, a second factor) and the window re-opens on that report. */
   noteNavigation(tab) {
     tab.generation += 1;
     tab.staleReason = "the page navigated";
+    if (tab.credentialFieldsAt !== undefined) {
+      tab.credentialFieldsAt = undefined;
+      // The set of holders changed under the probe in flight: re-arm the wait
+      // rather than let a result decided before this commit end the window.
+      this.holdRevision += 1;
+    }
   }
 
   /** A committed top-level navigation → `onVisited`, if it is one worth
@@ -3375,7 +3461,7 @@ class DesktopBrowserManager {
    *  not answer) it names the recovery instead of promising an auto-clear. */
   privacyBusyResult() {
     const text = this.privacyStuck
-      ? "The browser is waiting on a sign-in page that is not responding. Reload or close that page; browser tools resume automatically once it is clear."
+      ? "The browser is waiting on a sign-in page that is not responding. Tools resume automatically once that page is reloaded or closed, and the person can resume them from the banner over the browser panel — ask them if this persists."
       : "A person is signing in or handling credentials. Browser tools are paused and resume automatically when they finish — retry in a moment.";
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true, retriable: true };
   }
