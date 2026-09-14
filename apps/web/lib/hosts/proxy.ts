@@ -1,4 +1,5 @@
 import type { Host } from "./book";
+import { HOST_NAME_HEADER } from "./client";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 
 /**
@@ -19,6 +20,14 @@ import { HOST_HEADER } from "@/lib/remote/host-token";
  * hop-by-hop headers belong to the connection, not the request. The remote's
  * `set-cookie` is dropped on the way back for the mirror reason: the remote
  * pairs a device, this cockpit does not become one.
+ *
+ * WHAT IS ADDED, and it is the only thing: `telar-host` / `telar-host-id`,
+ * naming the Mac this answer came from (#204). A 404 carried back faithfully is
+ * indistinguishable from one this Mac minted — "session does not exist" with
+ * nothing saying whose session store was asked — so the identity of the
+ * ANSWERING machine rides with the answer. Set from the book AFTER the upstream
+ * headers are copied, so a remote that sends a header of this name cannot name
+ * itself anything here.
  *
  * Pure over `fetch`, so the route is a one-liner and the rules are a test.
  */
@@ -62,9 +71,18 @@ export function upstreamUrl(host: Pick<Host, "baseUrl">, path: string[], search:
   return `${host.baseUrl}/api/${path.map(encodeURIComponent).join("/")}${search}`;
 }
 
+/** The two headers that say whose answer this is. Written last, over anything
+ *  the other end sent under the same names. */
+export const HOST_ID_HEADER = "telar-host-id";
+function stamp(headers: Headers, host: Pick<Host, "id" | "name">): Headers {
+  headers.set(HOST_NAME_HEADER, host.name);
+  headers.set(HOST_ID_HEADER, host.id);
+  return headers;
+}
+
 export async function forward(
   request: Request,
-  host: Pick<Host, "baseUrl" | "deviceToken">,
+  host: Pick<Host, "id" | "name" | "baseUrl" | "deviceToken">,
   path: string[],
   fetcher: typeof fetch = fetch,
 ): Promise<Response> {
@@ -89,10 +107,12 @@ export async function forward(
   } catch {
     // The one answer this hop mints itself: the same code the local adapter
     // uses when its engine is down, so a remote that is away renders as
-    // "unavailable" everywhere the local one would.
+    // "unavailable" everywhere the local one would. It names the Mac, because
+    // "that Mac" is the one thing the reader of a rail holding three of them
+    // cannot work out for themselves.
     return Response.json(
-      { error: { code: "engine_unavailable", message: "That Mac did not answer." } },
-      { status: 503, headers: { "cache-control": "no-store" } },
+      { error: { code: "engine_unavailable", message: `${host.name} did not answer.` } },
+      { status: 503, headers: stamp(new Headers({ "cache-control": "no-store", "content-type": "application/json" }), host) },
     );
   }
 
@@ -100,5 +120,5 @@ export async function forward(
   upstream.headers.forEach((value, name) => {
     if (!RESPONSE_HEADERS_DROPPED.has(name.toLowerCase())) out.set(name, value);
   });
-  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out });
+  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: stamp(out, host) });
 }

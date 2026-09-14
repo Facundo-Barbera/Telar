@@ -91,7 +91,7 @@ import type {
   WakeKind,
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
-import { pathnameFetcher } from "@/lib/hosts/client";
+import { hostName, HOST_NAME_HEADER, LOCAL_HOST_ID, pathnameFetcher, pinnedHost } from "@/lib/hosts/client";
 // Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
 // must not follow into the browser bundle.
 import type { DirectoryListing } from "@/lib/fs-dirs";
@@ -112,15 +112,46 @@ import type { PublicHost } from "@/lib/hosts/store";
  */
 export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 
+/** WHICH MAC AN ANSWER CAME FROM. `id` is this cockpit's own id for it (the one
+ *  in the URL); `name` is what that Mac calls itself, when it has said. */
+export type ErrorHost = { id: string; name?: string };
+
 export class EngineApiError extends Error {
-  constructor(readonly code: EngineApiErrorCode, message: string, readonly status?: number) {
+  constructor(
+    readonly code: EngineApiErrorCode,
+    message: string,
+    readonly status?: number,
+    /**
+     * THE MACHINE THAT REFUSED (#204). A session id is minted per engine, so a
+     * 404 is only interpretable once you know whose session store was asked:
+     * "session does not exist" against the wrong Mac reads as a broken app,
+     * and against the right one it is the plain truth. Absent for local, which
+     * needs no attribution — there is only one of it.
+     */
+    readonly host?: ErrorHost,
+  ) {
     super(message);
     this.name = "EngineApiError";
   }
 }
 
+/** The Mac to name in a failure, or nothing when this one answered. The UI
+ *  shows the name when the Mac has given one, and falls back to the id rather
+ *  than to silence — an id at least distinguishes two paired Macs. */
+export function refusedBy(error: EngineApiError): string | undefined {
+  if (!error.host || error.host.id === LOCAL_HOST_ID) return undefined;
+  return error.host.name ?? error.host.id;
+}
+
 type Fetcher = typeof fetch;
 
+/** What the request reached, as opposed to what it meant to reach: the pin on
+ *  the fetcher, corrected by the name the proxy stamped on the way back. */
+function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undefined {
+  const id = pinnedHost(fetcher);
+  if (!id || id === LOCAL_HOST_ID) return undefined;
+  const name = response?.headers.get(HOST_NAME_HEADER) ?? hostName(id);
+  return name ? { id, name } : { id };
 /**
  * THE CONNECTION BUDGET (#82).
  *
@@ -223,18 +254,27 @@ async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?
     // An abort is the CALLER's decision arriving back, not the adapter being
     // away — it must surface as itself so the UI can say "Stopped".
     if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-    throw new EngineApiError("engine_unavailable", "The cockpit cannot reach its local adapter.");
+    // A remote hop that throws here never reached this cockpit's proxy, so the
+    // sentence about a "local adapter" would name the wrong machine.
+    const host = answeringHost(fetcher);
+    throw new EngineApiError(
+      "engine_unavailable",
+      host ? `The cockpit cannot reach ${host.name ?? "that Mac"}.` : "The cockpit cannot reach its local adapter.",
+      undefined,
+      host,
+    );
   }
 
+  const host = answeringHost(fetcher, response);
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status);
+    throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status, host);
   }
   if (!response.ok) {
     const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
-    throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status);
+    throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status, host);
   }
   return payload as T;
 }
