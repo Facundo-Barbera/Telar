@@ -98,8 +98,14 @@ describe("the design token palette", () => {
   test("bridges every colour token into @theme, so a utility exists for it", () => {
     // The state vocabulary is the part that regressed historically: --info,
     // --verify, --success and --warning were declared and unreachable.
+    //
+    // `var(--x-wash, var(--x))` counts as bridged: the wash indirection (see
+    // @theme's note on --color-sidebar) is how a token the translucency rules
+    // have to move reaches a utility, and the FALLBACK is still the themed
+    // token. --muted-foreground wears it since #434.
     for (const token of ["info", "verify", "success", "warning", "destructive", "primary", "muted-foreground", "border"]) {
-      expect(theme, `--color-${token} is not bridged in @theme`).toContain(`--color-${token}: var(--${token})`);
+      const bridge = new RegExp(`--color-${token}:\\s*var\\(--${token}\\)|--color-${token}:\\s*var\\(--${token}-wash,\\s*var\\(--${token}\\)\\)`);
+      expect(theme, `--color-${token} is not bridged in @theme`).toMatch(bridge);
     }
   });
 
@@ -164,20 +170,24 @@ describe("the translucency wash", () => {
   });
 
   /**
-   * THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY — issue #399.
+   * THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY — issues #399, #434.
    *
-   * Translucent light read as fog where translucent dark read as glass, because
-   * both halves thinned by the same percentage and only one of them was thinning
-   * toward a colour its own text is not. The fix is a factor on the light half
-   * alone, and the failure mode it replaces is silent: a future edit that
-   * collapses the two rules back into one produces a pane that still works and
-   * is simply unreadable in daylight.
+   * Translucent light read as a sheet where translucent dark read as glass, and
+   * #399 got the direction of the fix backwards: it gave light LESS of the
+   * slider, on a contrast argument, and the pane stayed opaque. The same alpha
+   * simply does not buy the same see-through in the two halves — a near-white
+   * canvas frosts where a near-black one glasses — so light has to OVERSHOOT,
+   * with a cap keeping the top of the slider from erasing the canvas.
+   *
+   * Asserted as a SHAPE (factor above 1, and a cap) rather than as the two
+   * numbers, because both are tunings and a re-tune should not be a test edit.
    */
-  test("the light half spends LESS of the slider than the dark half", () => {
-    const scale = code.match(/--wash-transparency:\s*calc\(\s*var\(--translucency[^)]*\)\s*\*\s*([0-9.]+)\s*\)/);
-    expect(scale, "the light half must scale --translucency").not.toBeNull();
-    expect(Number(scale?.[1])).toBeGreaterThan(0);
-    expect(Number(scale?.[1])).toBeLessThan(1);
+  test("the light half spends MORE of the slider than the dark half, up to a cap", () => {
+    const rule = code.match(/--wash-transparency:\s*min\(\s*calc\(\s*var\(--translucency[^)]*\)\s*\*\s*([0-9.]+)\s*\)\s*,\s*([0-9.]+)%\s*\)/);
+    expect(rule, "the light half must overshoot --translucency and cap the result").not.toBeNull();
+    expect(Number(rule?.[1]), "light must spend more of the slider, not less").toBeGreaterThan(1);
+    expect(Number(rule?.[2])).toBeGreaterThan(0);
+    expect(Number(rule?.[2]), "the cap has to leave some canvas").toBeLessThan(100);
   });
 
   test("only the light half declares it — dark takes the fallback, unchanged", () => {
@@ -186,6 +196,30 @@ describe("the translucency wash", () => {
     const declarations = [...code.matchAll(/^([^\n{]*)\{[^}]*--wash-transparency\s*:/gm)].map(([, selector]) => selector.trim());
     expect(declarations).toHaveLength(1);
     expect(declarations[0]).toContain(":not(.dark)");
+  });
+
+  /**
+   * THE QUIET TOKENS GET A FLOOR UNDER GLASS, IN LIGHT ONLY — issue #434.
+   *
+   * --muted-foreground is tuned to clear 4.5:1 on the quietest OPAQUE surface
+   * it lands on; thinning that surface takes the measurement away with it and
+   * sidebar rows and hints go grey on grey. The scope is the assertion: on the
+   * dark half the floor would only make text heavier for nothing, and on an
+   * opaque window the palette is already correct.
+   */
+  test("light under glass gets a legibility floor, and nothing else does", () => {
+    const floor = code.match(/html:not\(\.dark\)\[data-telar-shell\]\[data-translucent\]\s*\{([^{}]*)\}/);
+    expect(floor, "the light translucent scene must raise its quiet text tokens").not.toBeNull();
+    // Toward the theme's OWN ink — a hardcoded colour here would throw away a
+    // custom theme's hue, which is the mistake the wash contract above records.
+    expect(floor?.[1]).toContain("--muted-foreground-wash: color-mix(in oklab, var(--foreground)");
+    expect(floor?.[1]).toContain("--sidebar-foreground-wash: color-mix(in oklab, var(--foreground)");
+
+    for (const token of ["--muted-foreground-wash", "--sidebar-foreground-wash"]) {
+      const declarations = [...code.matchAll(new RegExp(`([^\\n{]*)\\{[^{}]*${token}\\s*:`, "g"))].map(([, selector]) => selector.trim());
+      expect(declarations, `${token} must be declared exactly once`).toHaveLength(1);
+      expect(declarations[0]).toBe("html:not(.dark)[data-telar-shell][data-translucent]");
+    }
   });
 
   test("body and the rail read the scaled value, not the raw slider", () => {
