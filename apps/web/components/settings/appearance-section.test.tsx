@@ -127,6 +127,47 @@ describe("the rows settings search points at", () => {
 });
 
 /**
+ * THE SHELF IS A LIST — issue #471.
+ *
+ * It was a horizontal rank of 128px thumbnails inside a vertically-scrolling
+ * pane, so a shelf of more than four hid the rest sideways, a card had room for
+ * a picture and a truncated name, and every action was behind a hover. What is
+ * pinned is the shape that replaced it: no sideways scroller, a row per look
+ * carrying a line about what it holds, and actions that are real buttons.
+ */
+describe("the Looks shelf reads as a list", () => {
+  /** The section `SettingsGroup` draws for the shelf, found by its caption. */
+  function looksGroup(): HTMLElement | null {
+    return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Looks") ?? null;
+  }
+
+  test("nothing in it scrolls sideways", () => {
+    expect(looksGroup()?.querySelector(".overflow-x-auto")).toBeNull();
+  });
+
+  test("every starter is a row of its own, with a Wear button on it", () => {
+    // Six starters (lib/starter-looks.ts), none of them worn on a fresh store.
+    const wears = [...(looksGroup()?.querySelectorAll("button") ?? [])].filter((button) => button.textContent === "Wear");
+    expect(wears.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("a row says what the look carries, not just what it is called", () => {
+    // Palette · backdrop · the two faces. "Paper" is the starter built on the
+    // identity theme with no backdrop at all, which is the line most likely to
+    // read wrong if the summary were assembled from the wrong members.
+    const text = looksGroup()?.textContent ?? "";
+    expect(text).toContain("Telar · no backdrop · Geist / Geist Mono");
+    expect(text).toContain("Tide · gradient ·");
+  });
+
+  test("the starters carry no rename, export or delete — there is no card yet", () => {
+    const labels = [...(looksGroup()?.querySelectorAll("button") ?? [])].map((button) => button.getAttribute("aria-label") ?? "");
+    expect(labels.filter((label) => label.startsWith("Rename "))).toEqual([]);
+    expect(labels.filter((label) => label.startsWith("Delete "))).toEqual([]);
+  });
+});
+
+/**
  * ONE READING COLUMN, AND APPEARANCE IS IN IT — issue #435.
  *
  * The shell sets the measure on a single wrapper around whatever pane is

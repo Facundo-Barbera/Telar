@@ -54,7 +54,9 @@ export type TypeToolProps = { appearance: Appearance; onChange: (patch: Partial<
 
 // The SAME catalogue in both slots; only the name of the shared `geist` id
 // differs, because Geist and Geist Mono are what it has always meant in each.
-const SANS_LABEL: Record<SansFont, string> = {
+// EXPORTED because the Looks list names a look's two faces in its summary line
+// and must not keep a second table of the same names.
+export const SANS_LABEL: Record<SansFont, string> = {
   geist: "Geist",
   inter: "Inter",
   "plex-sans": "IBM Plex Sans",
@@ -64,7 +66,7 @@ const SANS_LABEL: Record<SansFont, string> = {
   system: "System",
   custom: "Custom…",
 };
-const MONO_LABEL: Record<MonoFont, string> = { ...SANS_LABEL, geist: "Geist Mono" };
+export const MONO_LABEL: Record<MonoFont, string> = { ...SANS_LABEL, geist: "Geist Mono" };
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
   sky: "Sky",

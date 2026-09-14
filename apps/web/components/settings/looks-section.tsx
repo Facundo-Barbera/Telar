@@ -7,6 +7,21 @@
  * the translucency strength, captured together (lib/looks.ts states what is in
  * the bundle and why the desktop translucency TOGGLE is not).
  *
+ * A LIST, NOT A STRIP (#471). It was an `overflow-x-auto` rank of thumbnails
+ * running off the right edge of the pane, which cost three things a settings
+ * pane cannot afford: looks past the fourth were INVISIBLE until you thought to
+ * scroll sideways inside a vertically-scrolling page; a 128px card had room for
+ * a picture and a truncated name and nothing else, so what a look actually
+ * CARRIES could only be guessed from a 70px thumbnail; and the actions hid
+ * behind a hover, which is not a thing a keyboard or a touchscreen has.
+ *
+ * So it is `Row`s in the group's card, like every other list in Settings: the
+ * thumbnail at the left where the picture still does its work, the name, and a
+ * line saying what is in the bundle — which palette (or which pair, when the
+ * two halves come from different themes), what is behind the app, and the two
+ * faces. The worn one says so with a chip rather than with a ring, and every
+ * action is a real button in the control column.
+ *
  * ONE GESTURE, ONE MEANING (#471). Clicking a card WEARS the look. It used to
  * SELECT one — loaded into a draft, previewed, worn only on Apply — with Wear
  * hidden behind a hover as the shortcut past all that. There is no draft, so
@@ -28,7 +43,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CheckIcon, DownloadIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { DownloadIcon, MonitorSmartphoneIcon, PencilIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
 import { useFollowHost } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
@@ -47,9 +62,10 @@ import {
   type Look,
 } from "@/lib/looks";
 import { STARTER_LOOKS } from "@/lib/starter-looks";
-import { matchThemeHalf, useThemeLibrary } from "@/lib/theme-palettes";
+import { matchThemeHalf, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { useAppearance } from "@/lib/appearance";
 import { useBackdrop, type Backdrop } from "@/lib/backdrop";
+import { MONO_LABEL, SANS_LABEL } from "./studio/tools";
 
 /** Same scene, by the CHOICE rather than by the resolved pixels — two gradients
  *  from one preset are the same scene even if one carries a dim the other does
@@ -59,14 +75,15 @@ function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
   if (look.kind === "gradient" && worn.kind === "gradient") return look.id === worn.id;
   return true;
 }
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
 import { Row, SettingsGroup } from "./settings-shell";
 
-/** The one word the HOST row still needs — a row has no thumbnail to say it
- *  with. The cards do, so they carry no subtitle at all. */
+/** What is behind the app, in one word. A thumbnail shows the scene but cannot
+ *  say which KIND it is — "composed scene" and "gradient" can look identical
+ *  at 70px, and only one of them reopens in the layer composer. */
 const BACKDROP_LABEL: Record<Look["backdrop"]["kind"], string> = {
   none: "no backdrop",
   gradient: "gradient",
@@ -74,6 +91,23 @@ const BACKDROP_LABEL: Record<Look["backdrop"]["kind"], string> = {
   image: "image",
   scene: "composed scene",
 };
+
+/**
+ * WHAT A LOOK CARRIES, IN ONE LINE: its palette, its scene, its two faces.
+ *
+ * The palette is named by matching each embedded half back against the library
+ * (a Look stores its halves CONCRETE, never a theme id — see lib/looks.ts), so
+ * a look built from Ember says "Ember", a MIXED pair says both, and a palette
+ * that matches nothing says so rather than claiming a name it does not have.
+ */
+function lookSummary(look: Look, themes: readonly ThemeDefinition[]): string {
+  const light = matchThemeHalf(look.theme.light, themes, "light")?.label;
+  const dark = matchThemeHalf(look.theme.dark, themes, "dark")?.label;
+  const palette = light && dark ? (light === dark ? light : `${light} / ${dark}`) : "a palette of its own";
+  const sans = look.fontSans === "custom" ? look.fontSansCustom || "a custom face" : SANS_LABEL[look.fontSans];
+  const mono = look.fontMono === "custom" ? look.fontMonoCustom || "a custom face" : MONO_LABEL[look.fontMono];
+  return `${palette} · ${BACKDROP_LABEL[look.backdrop.kind]} · ${sans} / ${mono}`;
+}
 
 function downloadFile(filename: string, contents: string): void {
   const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
@@ -95,67 +129,114 @@ function LookStrip({ look }: { look: Look }) {
 }
 
 /**
- * A CARD IS THE LOOK ITSELF — a thumbnail, and a name under it. The old card
- * spent two thirds of its width on words ("Gradient", "Composed scene") that
- * the picture says better, and the picture is the only thing anyone chooses a
- * look by.
+ * ONE LOOK, AS A ROW.
+ *
+ * The thumbnail is the avatar (`LookStrip`, the same one the host row wears),
+ * the label is the name, the hint is what the bundle carries, and the controls
+ * are the four things you can do to a card: wear it, rename it, export it,
+ * delete it. Nothing hides behind a hover — the strip's actions did, and a
+ * hover is not an affordance a keyboard or a touchscreen has.
+ *
+ * RENAMING IS INLINE, and it is the only editing a Look supports: everything
+ * else about a look is changed by wearing it and moving the controls below,
+ * then saving again. The field commits on Enter or blur and abandons on Escape,
+ * the same contract `HexField` has in the palette rows — an empty name is a
+ * refusal rather than a card with no name.
  */
-function LookCard({
+function LookRow({
   look,
-  active,
+  summary,
+  worn,
   onWear,
+  onRename,
   onExport,
   onRemove,
 }: {
   look: Look;
-  /** Worn: the window has this look on. */
-  active: boolean;
-  /** Put it on. The card's only verb. */
+  /** What the bundle carries — built by the caller, which is where the theme
+   *  library the palette is named against already lives. */
+  summary: string;
+  /** The window has this look on. */
+  worn: boolean;
   onWear: () => void;
+  /** Absent for a starter: it is a recipe this build rebuilds every load, not
+   *  a card, so there is nothing of yours to rename. */
+  onRename?: (label: string) => void;
   onExport?: () => void;
   onRemove?: () => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(look.label);
+
+  const commitRename = () => {
+    setRenaming(false);
+    const trimmed = draftName.trim();
+    if (trimmed.length > 0 && trimmed !== look.label) onRename?.(trimmed);
+  };
+
   return (
-    <div
-      className={cn(
-        // A RANK, NOT A GRID: the shelf runs across the top of the pane, where
-        // it is a place to start from rather than a section to read.
-        "group relative w-32 shrink-0 cursor-pointer rounded-lg p-1 ring-1 transition-colors",
-        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
-      )}
-      onClick={onWear}
-      role="button"
-      title={`Wear ${look.label}`}
-      aria-label={`Wear ${look.label}`}
-      aria-pressed={active}
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onWear();
-        }
-      }}
-    >
-      <LookThumb look={look} />
-      <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
-        <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
-        {active && (
-          <span className="shrink-0 text-primary [&_svg]:size-3" title="Worn">
-            <CheckIcon />
-          </span>
-        )}
-      </div>
-      {(onExport || onRemove) && (
-        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          {onExport && (
+    // No `id`: the label is a component, so `Row` derives no anchor — and an
+    // anchor spliced from a look's own id would be one that moves with data,
+    // which is exactly what settings-shell.tsx warns against.
+    <Row
+      label={
+        <span className="flex items-center gap-2.5">
+          <LookStrip look={look} />
+          {renaming ? (
+            <Input
+              autoFocus
+              value={draftName}
+              aria-label={`Rename ${look.label}`}
+              className="h-7 w-44"
+              onChange={(event) => setDraftName(event.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRename();
+                }
+                if (event.key === "Escape") {
+                  setRenaming(false);
+                  setDraftName(look.label);
+                }
+              }}
+            />
+          ) : (
+            <span className="min-w-0 truncate">{look.label}</span>
+          )}
+        </span>
+      }
+      hint={summary}
+      {...(worn
+        ? {
+            status: (
+              <span className="font-mono text-4xs tracking-[0.08em] text-primary uppercase" title="The window has this look on">
+                Worn
+              </span>
+            ),
+          }
+        : {})}
+      control={
+        <div className="flex items-center gap-0.5">
+          <Button size="sm" variant={worn ? "ghost" : "secondary"} disabled={worn} title={`Wear ${look.label}`} onClick={onWear}>
+            Wear
+          </Button>
+          {onRename && (
             <Button
               size="icon-sm"
-              variant="secondary"
-              className="size-6 shadow-1"
-              title="Export"
-              aria-label={`Export ${look.label}`}
-              onClick={(event) => (event.stopPropagation(), onExport())}
+              variant="ghost"
+              title="Rename"
+              aria-label={`Rename ${look.label}`}
+              onClick={() => {
+                setDraftName(look.label);
+                setRenaming(true);
+              }}
             >
+              <PencilIcon />
+            </Button>
+          )}
+          {onExport && (
+            <Button size="icon-sm" variant="ghost" title="Export" aria-label={`Export ${look.label}`} onClick={onExport}>
               <DownloadIcon />
             </Button>
           )}
@@ -166,18 +247,17 @@ function LookCard({
             // has on. Said here, where the hand is, rather than nowhere.
             <Button
               size="icon-sm"
-              variant="secondary"
-              className="size-6 shadow-1"
+              variant="ghost"
               title="Take this look off the shelf. Its theme stays in the library, and the window keeps what it has on."
               aria-label={`Delete ${look.label}`}
-              onClick={(event) => (event.stopPropagation(), onRemove())}
+              onClick={onRemove}
             >
               <Trash2Icon />
             </Button>
           )}
         </div>
-      )}
-    </div>
+      }
+    />
   );
 }
 
@@ -449,28 +529,29 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
       />
       {error && <p className="py-1.5 text-xs text-warning">{error}</p>}
       {!isHost && <HostLookRow onWear={onWear} />}
-      <div className="overflow-x-auto py-2">
-        <div className="flex items-start gap-1.5">
-          {looks.map((look) => (
-            <LookCard
-              key={look.id}
-              look={look}
-              active={worn(look)}
-              onWear={() => onWear(look)}
-              onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
-              onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
-            />
-          ))}
-          {looks.length > 0 && <span className="mx-1 h-16 w-px shrink-0 self-center bg-border" />}
-          {/* A starter carries a STABLE id, so wearing Dusk twice updates the
-              one library theme it installs instead of breeding a second one
-              called Dusk. Save mints a fresh id, which is the moment a starter
-              stops being a recipe and becomes a card of your own. */}
-          {STARTER_LOOKS.map((look) => (
-            <LookCard key={look.id} look={look} active={worn(look)} onWear={() => onWear(look)} />
-          ))}
-        </div>
-      </div>
+      {looks.map((look) => (
+        <LookRow
+          key={look.id}
+          look={look}
+          summary={lookSummary(look, themes)}
+          worn={worn(look)}
+          onWear={() => onWear(look)}
+          onRename={(label) => {
+            const next = upsertLook(looks, { ...look, label });
+            if (next) commit(next);
+          }}
+          onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
+          onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
+        />
+      ))}
+      {/* A starter carries a STABLE id, so wearing Dusk twice updates the one
+          library theme it installs instead of breeding a second one called
+          Dusk. Save mints a fresh id, which is the moment a starter stops being
+          a recipe and becomes a card of your own — which is also why a starter
+          has no rename, export or delete: there is no card to act on yet. */}
+      {STARTER_LOOKS.map((look) => (
+        <LookRow key={look.id} look={look} summary={lookSummary(look, themes)} worn={worn(look)} onWear={() => onWear(look)} />
+      ))}
     </SettingsGroup>
   );
 }
