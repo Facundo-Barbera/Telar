@@ -3077,6 +3077,48 @@ describe("what the main process holds — the heap log's counts (#296)", () => {
 });
 
 /**
+ * ISSUE #487. What the runaway-worker watchdog asks the manager: which origins
+ * still have a page on screen, per partition. Everything else about the
+ * decision is pure and lives in service-worker-watchdog.test.js.
+ */
+describe("the origins with a live page, per partition (#487)", () => {
+  test("a live tab's origin answers for its partition; a hibernated one does not", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://github.com/facundo/telar");
+    await manager.createTab("s", "https://www.youtube.com/watch?v=1");
+    const partition = manager.partitionOf("s");
+
+    expect(manager.liveOriginsByPartition().get(partition)).toEqual(
+      new Set(["https://github.com", "https://www.youtube.com"]),
+    );
+
+    // THE WHOLE POINT: the page closes, the worker does not. A hibernated tab
+    // must stop vouching for its origin or every runaway looks busy.
+    manager.requestHibernate(manager.scopeTabs("s")[0]);
+    expect(manager.liveOriginsByPartition().get(partition)).toEqual(new Set(["https://www.youtube.com"]));
+
+    manager.requestHibernate(manager.scopeTabs("s")[1]);
+    expect(manager.liveOriginsByPartition().has(partition)).toBe(false);
+  });
+
+  test("a page with no origin of its own vouches for nothing", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "about:blank");
+    expect(manager.liveOriginsByPartition().size).toBe(0);
+  });
+
+  test("the partitions to walk include one whose every tab has hibernated", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://github.com/");
+    const partition = manager.partitionOf("s");
+    manager.requestHibernate(manager.scopeTabs("s")[0]);
+    // No live view left, and that is exactly the partition whose workers are
+    // still running — it must not drop out of the walk.
+    expect(manager.activePartitions().has(partition)).toBe(true);
+  });
+});
+
+/**
  * ISSUE #296, THE BOUNDS. Every structure the audit found growing without a
  * matching removal, and the walk whose cost grew with it.
  */

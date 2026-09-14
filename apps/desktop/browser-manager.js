@@ -926,6 +926,48 @@ class DesktopBrowserManager {
     return this.extensionHosts.get(tab.partition) || null;
   }
 
+  /**
+   * THE ORIGINS WITH A PAGE ON SCREEN, PER PARTITION — what the runaway-worker
+   * watchdog asks so it can tell a service worker that is still serving
+   * somebody from one whose pages all closed half an hour ago (#487).
+   *
+   * A LIVE VIEW, NOT A REMEMBERED TAB. A hibernated tab is a URL and no
+   * renderer, and its origin's worker is exactly the kind that outlives its
+   * pages — counting it would make every runaway look busy. The address is
+   * read from the record rather than the WebContents when the view has not
+   * committed one yet, so a tab mid-navigation still answers for where it is
+   * going.
+   */
+  liveOriginsByPartition() {
+    const byPartition = new Map();
+    for (const tab of this.tabs) {
+      const wc = tab.view && !tab.view.webContents?.isDestroyed?.() ? tab.view.webContents : null;
+      if (!wc || !tab.partition) continue;
+      let origin = null;
+      try {
+        origin = new URL(wc.getURL?.() || tab.url || "about:blank").origin;
+      } catch {
+        origin = null;
+      }
+      // "null" is what a URL with no host answers (about:blank, data:). A page
+      // with no origin owns no service worker.
+      if (!origin || origin === "null") continue;
+      if (!byPartition.has(tab.partition)) byPartition.set(tab.partition, new Set());
+      byPartition.get(tab.partition).add(origin);
+    }
+    return byPartition;
+  }
+
+  /** Every partition this manager has put a view in, plus any that got an
+   *  extension host without one. What the watchdog walks to find workers. */
+  activePartitions() {
+    return new Set([
+      ...this.preparedPartitions,
+      ...this.extensionHosts.keys(),
+      ...this.tabs.map((tab) => tab.partition).filter(Boolean),
+    ]);
+  }
+
   /** The extension host for a scope's profile, created on demand. Null when
    *  the scope is not bound yet or extensions are off — the caller then shows
    *  "unavailable" rather than throwing. */
