@@ -187,20 +187,15 @@ function resolveThroughCss(value: string): string | undefined {
 }
 
 /**
- * A CSS colour as the six-digit hex `<input type="color">` insists on.
+ * A CSS colour as six-digit hex, or NOTHING when it is not a colour at all.
  *
- * IT MUST ALWAYS RETURN `#rrggbb`. Both callers put the result straight into an
- * `<input type="color">`, whose value sanitiser rejects anything else and shows
- * black — so "return the original when it is exotic" would trade a wrong colour
- * for a wrong colour AND a broken swatch. Everything below exists to make the
- * last-resort grey unreachable in practice instead.
- *
- * It used to be two branches — a strict oklch shape, and literal `#rrggbb` —
- * and everything else became `#808080`. That grey is not a display artefact:
- * lib/studio-draft.ts fingerprints a draft through this function and
- * lib/vscode-theme-import.ts reads imported colours through it, so a value it
- * could not parse became a real grey downstream. `oklch(96% 0 0)`, `#abc`,
- * `rgb(20 20 20)` and every named colour all took that path.
+ * THE STRICT HALF OF `cssColorToHex`, split out for the one caller that has to
+ * tell the two apart (#471): a field somebody TYPES into. Everywhere else reads
+ * a value this app itself stored, so "it did not parse" is a bug rather than an
+ * input, and a fallback grey is the kindest thing to show. In a text field it is
+ * the opposite — typing `bananas` and getting a real grey stop is the field
+ * quietly accepting nonsense — so the composer's colour field wants the
+ * undefined and does the snapping back itself.
  *
  * ALPHA IS DROPPED, AND THAT IS A PROPERTY OF THE WIDGET, NOT A BUG HERE. There
  * is no way to show 10% white in a colour input. `oklch(1 0 0 / 10%)` reports
@@ -208,7 +203,7 @@ function resolveThroughCss(value: string): string | undefined {
  * survives in the stored value and is only lost if the reader actually picks a
  * new colour through that swatch, which is an edit.
  */
-export function cssColorToHex(value: string): string {
+export function parseCssColor(value: string): string | undefined {
   const trimmed = value.trim();
 
   const oklch = /^oklch\(\s*(none|[\d.]+%?)\s+(none|[\d.]+%?)\s+(none|-?[\d.]+(?:deg|rad|grad|turn)?)/i.exec(trimmed);
@@ -255,7 +250,27 @@ export function cssColorToHex(value: string): string {
     if (channels.every(Number.isFinite)) return toHex(channels);
   }
 
-  return resolveThroughCss(trimmed) ?? "#808080";
+  return resolveThroughCss(trimmed);
+}
+
+/**
+ * A CSS colour as the six-digit hex `<input type="color">` insists on.
+ *
+ * IT MUST ALWAYS RETURN `#rrggbb`. Most callers put the result straight into an
+ * `<input type="color">`, whose value sanitiser rejects anything else and shows
+ * black — so "return the original when it is exotic" would trade a wrong colour
+ * for a wrong colour AND a broken swatch. `parseCssColor` above exists to make
+ * the last-resort grey unreachable in practice instead.
+ *
+ * It used to be two branches — a strict oklch shape, and literal `#rrggbb` —
+ * and everything else became `#808080`. That grey is not a display artefact:
+ * lib/studio-draft.ts fingerprints a draft through this function and
+ * lib/vscode-theme-import.ts reads imported colours through it, so a value it
+ * could not parse became a real grey downstream. `oklch(96% 0 0)`, `#abc`,
+ * `rgb(20 20 20)` and every named colour all took that path.
+ */
+export function cssColorToHex(value: string): string {
+  return parseCssColor(value) ?? "#808080";
 }
 
 /** Hex straight through — CSS accepts it, and round-tripping user picks

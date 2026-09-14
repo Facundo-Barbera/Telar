@@ -20,7 +20,6 @@
  * differs. The colour scheme is therefore the mode selector for this tool.
  */
 
-import { useState } from "react";
 import {
   ACCENTS,
   MAX_FONT_SIZE,
@@ -55,6 +54,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Row } from "../settings-shell";
+import { HexField } from "./hex-field";
 import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";
 
 /** What the type rows read and write: the live appearance, and the store's own
@@ -131,50 +131,6 @@ function ratioFor(half: ThemeHalf, token: ThemeToken): number | undefined {
   const bg = parseVsCodeColor(cssColorToHex(half[surfaceToken]));
   if (!fg || !bg) return undefined;
   return contrastRatio(fg, bg);
-}
-
-/**
- * The hex, TYPEABLE. `<input type="color">` cannot accept a pasted `#1e1e2e`,
- * and building a palette through 32 OS colour dialogs was the old editor's
- * worst chore. The field holds free text while focused and commits on Enter or
- * blur — only a well-formed hex lands; anything else snaps back.
- */
-function HexField({ value, label, onCommit }: { value: string; label: string; onCommit: (hex: string) => void }) {
-  // `text` only means anything while focused — display falls back to `value`
-  // otherwise, so no effect has to chase external changes.
-  const [text, setText] = useState(value);
-  const [editing, setEditing] = useState(false);
-  const commit = () => {
-    setEditing(false);
-    const bare = text.trim().replace(/^([0-9a-f]{6}|[0-9a-f]{3})$/i, "#$1");
-    if (/^#[0-9a-f]{6}$/i.test(bare)) onCommit(bare.toLowerCase());
-    else if (/^#[0-9a-f]{3}$/i.test(bare)) onCommit(`#${[...bare.slice(1)].map((c) => c + c).join("")}`.toLowerCase());
-    else setText(value);
-  };
-  return (
-    <Input
-      value={editing ? text : value}
-      aria-label={`${label} hex value`}
-      spellCheck={false}
-      className="h-6 w-[4.75rem] shrink-0 px-1.5 font-mono text-3xs tabular-nums"
-      onFocus={() => {
-        setEditing(true);
-        setText(value);
-      }}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          commit();
-        }
-        if (event.key === "Escape") {
-          setEditing(false);
-          setText(value);
-        }
-      }}
-    />
-  );
 }
 
 /**
