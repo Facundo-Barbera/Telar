@@ -1,35 +1,64 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import {
   applyLook,
+  captureLook,
   lookAppearance,
   lookFilename,
-  lookThemeId,
   MAX_LOOKS,
   parseLook,
-  parseLookBackdrop,
   parseLookFile,
   parseLooks,
   parseThemeHalf,
+  sameComposition,
   serializeLook,
   upsertLook,
   type Look,
 } from "./looks";
+import { parseLookBackdrop as parseLookBackdropValue, type Composition } from "@telar/engine-client";
 import { DEFAULT_APPEARANCE, MAX_FONT_SIZE, MIN_FONT_SIZE } from "./appearance";
-import { DEFAULT_SCENE } from "./scene-composer";
+import { currentComposition, DEFAULT_COMPOSITION, writeComposition } from "./composition";
+import { DEFAULT_SCENE, SCENE_PRESETS } from "./scene-composer";
 import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
 
 const GRADIENT = "linear-gradient(180deg, oklch(0.95 0.02 250) 0%, oklch(0.9 0.03 260) 100%)";
 const DATA_URL = "data:image/webp;base64,AAAA";
 const SCENE_VALUE = `url("data:image/webp\\00003Bbase64,AAAA"), ${GRADIENT}`;
 
+/** The cockpit's own wrapper, restated — the module-level one moved out with
+ *  the backdrop store it used to feed, and these tests still exercise the
+ *  shared parser with THIS build's preset table. */
+const parseLookBackdrop = (value: unknown) => parseLookBackdropValue(value, SCENE_PRESETS);
+
+/**
+ * A DOM FOR THIS FILE, because capture and wear are the two halves of a real
+ * STORE now. The suite's preload deliberately hands the globals back (see
+ * scripts/test-dom.mjs — most of these modules are written for a world with no
+ * `window` and test that branch), so a file that wants one registers it.
+ */
+beforeAll(() => {
+  GlobalRegistrator.register({ url: "http://localhost/" });
+});
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
+});
+
+function composition(overrides: Partial<Composition> = {}): Composition {
+  return {
+    light: { base: "#f8f8f9", layers: [], overrides: {} },
+    dark: { base: "#252525", layers: [], overrides: {} },
+    ...overrides,
+  };
+}
+
 function look(overrides: Partial<Look> = {}): Look {
   return {
-    version: 1,
+    version: 2,
     id: "look-1",
     label: "Dusk",
-    theme: { light: { ...TELAR_LIGHT }, dark: { ...TELAR_DARK } },
-    backdrop: { kind: "none" },
+    composition: composition(),
+    images: {},
     accent: "rose",
     fontSans: "inter",
     fontMono: "jetbrains",
@@ -72,6 +101,11 @@ describe("parseThemeHalf", () => {
   });
 });
 
+/**
+ * THE PRE-COMPOSITION BACKDROP STILL PARSES, because a Look file written before
+ * #471 still carries one and `compositionFromV1` reads it forward. Nothing in
+ * this build WRITES one.
+ */
 describe("parseLookBackdrop", () => {
   test("anything unrecognised is no backdrop", () => {
     expect(parseLookBackdrop(undefined)).toEqual({ kind: "none" });
@@ -114,14 +148,6 @@ describe("parseLookBackdrop", () => {
     expect(parseLookBackdrop({ kind: "image", fit: "cover", image: "https://example.com/x.png" })).toEqual({ kind: "none" });
   });
 
-  test("an unknown fit falls back to cover", () => {
-    const parsed = parseLookBackdrop({ kind: "image", fit: "stretch", image: DATA_URL });
-    expect(parsed.kind === "image" && parsed.fit).toBe("cover");
-  });
-
-  // The composer's own source shape is ITS business — this asserts only that a
-  // Look carries one through, keeps the per-layer lists, and filters the image
-  // map, so a change to Scene's members does not rewrite this test.
   test("a scene keeps its editable source, its images and its lists", () => {
     const parsed = parseLookBackdrop({
       kind: "scene",
@@ -134,12 +160,6 @@ describe("parseLookBackdrop", () => {
     expect(parsed.scene).toEqual(DEFAULT_SCENE);
     expect(Object.keys(parsed.images).sort()).toEqual(["l1", "orig:l1"]);
     expect(parsed.resolved.size).toBe("60% auto, cover");
-  });
-
-  test("a scene with an unreadable source still parses, on the composer's default", () => {
-    const parsed = parseLookBackdrop({ kind: "scene", scene: "junk", images: "junk", resolved: { light: SCENE_VALUE } });
-    expect(parsed.kind === "scene" && parsed.scene).toEqual(DEFAULT_SCENE);
-    expect(parsed.kind === "scene" && parsed.images).toEqual({});
   });
 
   // isSceneValue only allows data: URLs; a remote one would make the page fetch.
@@ -157,8 +177,7 @@ describe("parseLook", () => {
     expect(parseLook("nope")).toBeUndefined();
     const bare = parseLook({ id: "a", label: "Bare" });
     expect(bare?.accent).toBe(DEFAULT_APPEARANCE.accent);
-    expect(bare?.backdrop).toEqual({ kind: "none" });
-    expect(bare?.theme.light).toEqual(TELAR_LIGHT);
+    expect(bare?.composition).toEqual(DEFAULT_COMPOSITION);
   });
 
   test("unrecognised enum members fall to the appearance defaults", () => {
@@ -197,8 +216,29 @@ describe("parseLook", () => {
     expect(parsed && "frost" in parsed).toBe(false);
   });
 
-  test("always reports version 1", () => {
-    expect(parseLook({ id: "a", label: "L", version: 99 })?.version).toBe(1);
+  test("always reports version 2", () => {
+    expect(parseLook({ id: "a", label: "L", version: 99 })?.version).toBe(2);
+  });
+
+  /**
+   * THE MIGRATION, FROM THE COCKPIT'S SIDE. The shape-by-shape cases live with
+   * the parser in engine-client; what this pins is that a file from the old
+   * model still arrives WEARABLE through this build's own wrapper, with its
+   * palette intact and its backdrop as layers.
+   */
+  test("a look from before the composition arrives as one, losslessly", () => {
+    const old = parseLook({
+      id: "old",
+      label: "Old",
+      theme: { light: { ...TELAR_LIGHT, background: "#fefefe" }, dark: { ...TELAR_DARK } },
+      backdrop: { kind: "gradient", id: "aurora", resolved: { light: GRADIENT, dark: GRADIENT } },
+    });
+    expect(old?.composition.light.base).toBe("#fefefe");
+    // Every token pinned: the base only starts deciding once one is cleared.
+    expect(old?.composition.light.overrides.background).toBe("#fefefe");
+    expect(Object.keys(old?.composition.dark.overrides ?? {}).sort()).toEqual([...THEME_TOKENS].sort());
+    expect(old?.composition.light.layers).toEqual([{ type: "gradient", presetId: "aurora", opacity: 100 }]);
+    expect(old?.composition.dark.layers).toEqual([{ type: "gradient", presetId: "aurora", opacity: 100 }]);
   });
 });
 
@@ -228,7 +268,9 @@ describe("parseLooks", () => {
 describe("the shareable file", () => {
   test("export then import round-trips every member but the id", () => {
     const original = look({
-      backdrop: { kind: "gradient", id: "aurora", resolved: { light: GRADIENT, dark: GRADIENT } },
+      composition: composition({
+        light: { base: "#123456", layers: [{ type: "gradient", presetId: "aurora", opacity: 60 }], overrides: { card: "#ffffff" } },
+      }),
       fontSans: "custom",
       fontSansCustom: "SF Pro Text, Helvetica",
     });
@@ -250,7 +292,7 @@ describe("the shareable file", () => {
   test("a file with only a label still opens, filled from the defaults", () => {
     const restored = parseLookFile('{"label":"Minimal"}', "look-min");
     expect(restored?.label).toBe("Minimal");
-    expect(restored?.theme.dark).toEqual(TELAR_DARK);
+    expect(restored?.composition).toEqual(DEFAULT_COMPOSITION);
   });
 });
 
@@ -284,8 +326,9 @@ describe("upsertLook", () => {
 });
 
 describe("wearing", () => {
-  test("the installed theme id is stable per look", () => {
-    expect(lookThemeId(look({ id: "look-7" }))).toBe("look-look-7");
+  beforeEach(() => {
+    window.localStorage.clear();
+    writeComposition(DEFAULT_COMPOSITION, {});
   });
 
   test("the appearance patch carries taste and not the machine's toggle", () => {
@@ -303,58 +346,63 @@ describe("wearing", () => {
       depth: "deep",
     });
   });
+
+  /** WEARING INSTALLS NOTHING ANYWHERE. It used to mint a custom theme in a
+   *  library; there is no library, so the look's composition simply becomes the
+   *  live one and the only side effect is the window changing colour. */
+  test("a look's composition becomes the live one, images and all", () => {
+    const worn = look({
+      composition: composition({ light: { base: "#123456", layers: [{ type: "gradient", presetId: "aurora", opacity: 100 }], overrides: {} } }),
+    });
+    const patches: unknown[] = [];
+    expect(applyLook(worn, (patch) => void patches.push(patch))).toBeUndefined();
+    expect(currentComposition().composition).toEqual(worn.composition);
+    expect(patches).toEqual([lookAppearance(worn)]);
+  });
+
+  test("wearing the same look twice leaves exactly the same state", () => {
+    const worn = look({ id: "twice" });
+    applyLook(worn, () => {});
+    const once = currentComposition().composition;
+    applyLook(look({ id: "twice-again", composition: worn.composition }), () => {});
+    expect(currentComposition().composition).toEqual(once);
+  });
+
+  test("the taste beside the composition still applies when the composition is unchanged", () => {
+    const patches: unknown[] = [];
+    applyLook(look({ accent: "moss" }), (patch) => void patches.push(patch));
+    expect((patches[0] as { accent: string }).accent).toBe("moss");
+  });
 });
 
-describe("wearing something that already exists", () => {
-  const themes = [
-    { id: "ember", label: "Ember", builtIn: true, light: { ...TELAR_LIGHT }, dark: { ...TELAR_DARK } },
-  ];
-
-  function writer() {
-    const saved: unknown[] = [];
-    let activeId: string | undefined;
-    return {
-      saved,
-      get activeId() {
-        return activeId;
-      },
-      writer: {
-        saveCustom: (theme: unknown) => void saved.push(theme),
-        setActive: (id: string) => void (activeId = id),
-        themes,
-      },
-    };
-  }
-
-  test("a look whose palette is already a theme wears that theme and mints nothing", () => {
-    const spy = writer();
-    // Same halves as the one library entry, under a different name and id.
-    applyLook(look({ id: "fresh-capture", label: "Dusk" }), spy.writer, () => {});
-    expect(spy.saved).toEqual([]);
-    expect(spy.activeId).toBe("ember");
+describe("sameComposition", () => {
+  test("is about what is painted, not about identity", () => {
+    expect(sameComposition(composition(), composition())).toBe(true);
+    expect(sameComposition(composition(), composition({ light: { base: "#000000", layers: [], overrides: {} } }))).toBe(false);
   });
 
-  test("applying the same capture twice still leaves one entry", () => {
-    const spy = writer();
-    applyLook(look({ id: "capture-1" }), spy.writer, () => {});
-    applyLook(look({ id: "capture-2" }), spy.writer, () => {});
-    expect(spy.saved).toEqual([]);
+  test("a difference in only one state is still a difference", () => {
+    const tweaked = composition({ dark: { base: "#252525", layers: [{ type: "gradient", presetId: "aurora", opacity: 100 }], overrides: {} } });
+    expect(sameComposition(composition(), tweaked)).toBe(false);
+  });
+});
+
+describe("captureLook", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
   });
 
-  test("genuinely new colours do become a new entry, keyed by the look", () => {
-    const spy = writer();
-    const edited = look({ id: "mine", label: "Mine" });
-    edited.theme.dark = { ...edited.theme.dark, background: "#123456" };
-    applyLook(edited, spy.writer, () => {});
-    expect(spy.saved).toHaveLength(1);
-    expect(spy.activeId).toBe("look-mine");
+  test("photographs the live composition, and names an untitled one", () => {
+    const live = composition({ light: { base: "#abcdef", layers: [], overrides: { card: "#ffffff" } } });
+    writeComposition(live, {});
+    const captured = captureLook("  ");
+    expect(captured.label).toBe("Untitled look");
+    expect(captured.composition).toEqual(live);
+    expect(captured.version).toBe(2);
   });
 
-  test("one half matching is not enough — a mixed pair is its own theme", () => {
-    const spy = writer();
-    const mixed = look({ id: "mixed" });
-    mixed.theme.light = { ...mixed.theme.light, background: "#fefefe" };
-    applyLook(mixed, spy.writer, () => {});
-    expect(spy.saved).toHaveLength(1);
+  test("every capture takes a fresh id — Save means 'keep this one too'", () => {
+    writeComposition(DEFAULT_COMPOSITION, {});
+    expect(captureLook("A").id).not.toBe(captureLook("A").id);
   });
 });
