@@ -159,7 +159,8 @@ import {
   type WorkspaceListing,
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
-import { atomicWrite } from "./atomic";
+import { atomicWrite, atomicWriteText } from "./atomic";
+import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import { TELAR_ORIENTATION } from "./orientation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
@@ -486,6 +487,94 @@ const MAX_TEXT_LENGTH = 200_000;
  * it had. `steered` is terminal (its words live inside the run it joined).
  */
 const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running", "steering"]);
+
+/**
+ * HOW MANY SETTLED REQUESTS A SNAPSHOT CARRIES (#245).
+ *
+ * Windowing the key by turn was most of the fix, but it left the shape that
+ * produced the complaint reachable: one long agentic turn can open thousands of
+ * approvals, and every one of them rode a window that turn was in — 1,066,437
+ * bytes per read on the dogfood store, re-read once a second by every open
+ * cockpit. Nothing renders a settled request beyond the handful above the
+ * composer, so the tail is the answer and the rest is the history that
+ * `requests()` still serves in full.
+ *
+ * AN OPEN REQUEST IS NEVER DROPPED, whatever this number is: an unanswered
+ * question is the one thing on this key a client must act on, and a snapshot
+ * that omitted it would be a question nobody could answer.
+ */
+const SNAPSHOT_SETTLED_REQUESTS = 50;
+
+/**
+ * Every open request, plus the newest settled ones — see above.
+ *
+ * `chosen` narrows to a window's turns first when there is one; without it this
+ * is the unwindowed snapshot, where the tail is the only bound.
+ */
+function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequest[] {
+  const carried = chosen === undefined ? all : all.filter((request) => chosen.has(request.runId) || request.state === "open");
+  const settled = carried.filter((request) => request.state !== "open");
+  if (settled.length <= SNAPSHOT_SETTLED_REQUESTS) return carried;
+  const dropped = new Set(settled.slice(0, settled.length - SNAPSHOT_SETTLED_REQUESTS));
+  return carried.filter((request) => !dropped.has(request));
+}
+
+/**
+ * ONE INDEX ROW PER TURN, NOT PER ELEMENT.
+ *
+ * `items.json` holds eight or more rows per turn, and an index with one entry
+ * each would grow with the conversation — which is the thing being fixed. The
+ * window chooses TURNS, so a turn's items only ever need one span between them,
+ * and on a 500-turn session that is the difference between an index of a few
+ * kilobytes and one of a hundred and sixty.
+ *
+ * A span may swallow rows belonging to other turns — nothing promises a turn's
+ * items are contiguous, only that they are written in creation order and
+ * usually are. The caller filters what it reads by `runId` regardless, so a
+ * generous span costs bytes and never correctness.
+ */
+function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array<{ start: number; end: number }>): DocumentIndex["rows"] {
+  const merged = new Map<string, DocumentIndex["rows"][number]>();
+  for (const [at, row] of rows.entries()) {
+    const range = ranges[at]!;
+    const known = merged.get(row.key);
+    if (!known) merged.set(row.key, { ...row, ...range });
+    else {
+      known.start = Math.min(known.start, range.start);
+      known.end = Math.max(known.end, range.end);
+    }
+  }
+  return [...merged.values()];
+}
+
+/**
+ * WHICH ROWS A WINDOW HOLDS, decided from ids and states alone.
+ *
+ * Shared by the indexed read and the whole-document fallback so the two cannot
+ * answer differently — the index exists to make the read cheap, not to change
+ * what a page contains.
+ */
+function planWindow(
+  rows: Array<{ key: string; tag?: string }>,
+  window: { limit: number; before?: string },
+): { chosen: Set<string>; page: { before: string | null; more: boolean } } {
+  let end = rows.length;
+  if (window.before !== undefined) {
+    end = rows.findIndex((row) => row.key === window.before);
+    if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
+  }
+  const active = (row: { tag?: string }): boolean => ACTIVE_TURN_STATES.has(row.tag as Turn["state"]);
+  const settled = rows.slice(0, end).filter((row) => !active(row));
+  const start = Math.max(0, settled.length - window.limit);
+  const paged = settled.slice(start);
+  // The active tail is never paged out — but only on the FIRST page; an older
+  // page is history and must not repeat rows the client already has.
+  const unsettled = window.before === undefined ? rows.filter(active) : [];
+  return {
+    chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
+    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0 },
+  };
+}
 
 export class EngineStateError extends Error {
   constructor(
@@ -1278,6 +1367,15 @@ function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "queue.json");
 }
 
+/** Where each turn and each item sits in its document — see `document-window.ts`. */
+function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "queue.index.json");
+}
+
+function itemsIndexFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "items.index.json");
+}
+
 /**
  * How many open items keep their streamed text in memory at once.
  *
@@ -1336,6 +1434,26 @@ function readJson(file: string): unknown | undefined {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+/** `[start, end)` of a document file, read at an offset rather than whole —
+ *  the file store's half of the windowed read (`document-window.ts`). */
+function readFileSlice(file: string, start: number, end: number): Buffer | undefined {
+  if (end <= start) return Buffer.alloc(0);
+  let handle: number;
+  try {
+    handle = fs.openSync(file, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    const span = Buffer.alloc(end - start);
+    const read = fs.readSync(handle, span, 0, span.length, start);
+    return read === span.length ? span : span.subarray(0, read);
+  } finally {
+    fs.closeSync(handle);
   }
 }
 
@@ -1483,6 +1601,100 @@ export class EngineStore {
     if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
     else atomicWrite(file, value, mode);
   }
+
+  /**
+   * WHAT A READ ACTUALLY TOUCHED, so a test can hold the engine to it (#419).
+   *
+   * `documentBytes` is the span of `queue.json` / `items.json` that reached
+   * `JSON.parse` — the whole document on the fallback path, the window's own
+   * rows on the indexed one. Public because that difference is the fix, and a
+   * claim that a 120-turn session now costs its tail is only worth making if
+   * something can fail when it stops being true.
+   */
+  readonly readAccounting = { documentBytes: 0, documentReads: 0 };
+
+  /**
+   * Write a document and the offset index that lets its tail be read alone.
+   *
+   * ONE SERIALISATION, SHARED. The index is byte ranges into the exact text
+   * stored, so the text has to be built here rather than inside each backend:
+   * the JSON store pretty-prints and SQLite does not, and an index measured
+   * against the wrong one of those would point into the middle of a row.
+   *
+   * An unindexable document simply loses its index — the read falls back to
+   * parsing the whole thing, which is what every document written before this
+   * existed already does.
+   */
+  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>): void {
+    const sqlite = this.executionStore?.owns(file);
+    const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
+    if (sqlite) this.executionStore!.writeText(file, text);
+    else atomicWriteText(file, text);
+    const bytes = Buffer.from(text, "utf8");
+    const ranges = arrayElementRanges(bytes, property);
+    const index: DocumentIndex = ranges && ranges.length === rows.length
+      ? { version: STATE_VERSION, length: bytes.length, rows: coalesceByKey(rows, ranges) }
+      // An absent index reads as a stale one — both mean "parse it whole" — so
+      // a document that could not be indexed writes the unmatchable marker
+      // rather than leaving the PREVIOUS document's index in place to be
+      // trusted. No document has a negative length.
+      : { version: STATE_VERSION, length: -1, rows: [] };
+    // COMPACT WHATEVER THE BACKEND DOES. This is read on the way to every
+    // windowed snapshot, so it is on the path it exists to shorten; indenting
+    // it would roughly triple the only document a tail read still parses whole.
+    if (this.executionStore?.owns(indexFile)) this.executionStore.write(indexFile, index);
+    else atomicWriteText(indexFile, `${JSON.stringify(index)}\n`);
+  }
+
+  /** The index beside `file`, or `undefined` when there is none that still
+   *  describes it. See `DocumentIndex.length` for why that is a size check. */
+  private documentIndex(file: string, indexFile: string): DocumentIndex | undefined {
+    const stored = this.readDocument(indexFile) as DocumentIndex | undefined;
+    // Counted against the read, because it IS the read's cost: the index is the
+    // one document a windowed snapshot still parses whole, and a measurement
+    // that left it out would flatter the thing it is measuring.
+    this.readAccounting.documentBytes += this.documentBytes(indexFile) ?? 0;
+    if (!stored || stored.version !== STATE_VERSION || !Array.isArray(stored.rows)) return undefined;
+    return this.documentBytes(file) === stored.length ? stored : undefined;
+  }
+
+  private documentBytes(file: string): number | undefined {
+    if (this.executionStore?.owns(file)) return this.executionStore.byteLength(file);
+    try {
+      return fs.statSync(file).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * The rows `wanted` names, parsed from one span of the document.
+   *
+   * ONE READ, NOT ONE PER ROW. The window is a tail, so its rows are adjacent
+   * in the document and the span between the first and the last is mostly the
+   * answer; anything else caught inside it — an older settled turn sitting
+   * between an unsettled one and the tail — is dropped by the caller's filter.
+   * A row-at-a-time read would be a query per turn to save bytes that are
+   * already in the page sqlite had to fetch.
+   */
+  private readIndexedRows(file: string, wanted: DocumentIndex["rows"]): unknown[] {
+    if (wanted.length === 0) return [];
+    const from = Math.min(...wanted.map((row) => row.start));
+    const to = Math.max(...wanted.map((row) => row.end));
+    const span = this.executionStore?.owns(file) ? this.executionStore.slice(file, from, to) : readFileSlice(file, from, to);
+    if (!span || span.length !== to - from) throw new EngineStateError("invalid_request", "document index does not describe this document");
+    this.readAccounting.documentBytes += span.length;
+    this.readAccounting.documentReads += 1;
+    return parseSpan(span);
+  }
+
+  /** What a whole-document read of `file` cost, for the accounting above. */
+  private accountWholeRead(file: string): void {
+    this.readAccounting.documentBytes += this.documentBytes(file) ?? 0;
+    this.readAccounting.documentReads += 1;
+  }
+
   closeExecutionStore(): void { this.executionStore?.close(); }
   executeCommand<T>(command: string, action: () => T, commandId?: string): T {
     if (!this.executionStore) return action();
@@ -6859,7 +7071,12 @@ export class EngineStore {
    * along regardless of the page because an unanswered question on a paged-out
    * turn must still reach the composer, and it rides along on EVERY page
    * because a client replaces the key rather than merging it
-   * (`SessionSyncEngine.swift`).
+   * (`SessionSyncEngine.swift`). The settled ones are bounded on top of the
+   * window — see `SNAPSHOT_SETTLED_REQUESTS`, which is the half of #245 the
+   * window alone did not reach.
+   *
+   * AND IT IS READ FROM THE TAIL, not filtered out of the whole history: see
+   * `windowedTurns` and `windowedItems` (#419).
    */
   snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
     turns: Turn[];
@@ -6869,27 +7086,71 @@ export class EngineStore {
     page: { before: string | null; more: boolean };
   } {
     this.getSession(sessionId);
-    const all = this.readQueue(sessionId).turns;
-    let end = all.length;
-    if (window.before !== undefined) {
-      end = all.findIndex((turn) => turn.runId === window.before);
-      if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
-    }
-    const settled = all.slice(0, end).filter((turn) => !ACTIVE_TURN_STATES.has(turn.state));
-    const start = Math.max(0, settled.length - window.limit);
-    const paged = settled.slice(start);
-    // The active tail is never paged out — but only on the FIRST page; an
-    // older page is history and must not repeat rows the client already has.
-    const active = window.before === undefined ? all.filter((turn) => ACTIVE_TURN_STATES.has(turn.state)) : [];
-    const chosen = new Set([...paged, ...active].map((turn) => turn.runId));
-    const turns = all.filter((turn) => chosen.has(turn.runId));
+    const plan = this.windowedTurns(sessionId, window);
+    const chosen = new Set(plan.turns.map((turn) => turn.runId));
     return structuredClone({
-      turns,
-      items: [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId)),
+      turns: plan.turns,
+      items: this.windowedItems(sessionId, chosen),
       tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
-      requests: [...this.readRequests(sessionId).values()].filter((request) => chosen.has(request.runId) || request.state === "open"),
-      page: { before: start > 0 ? (paged[0]?.runId ?? null) : null, more: start > 0 },
+      requests: boundedRequests([...this.readRequests(sessionId).values()], chosen),
+      page: plan.page,
     });
+  }
+
+  /**
+   * The window's turns, from the tail of the queue rather than the whole of it.
+   *
+   * THE INDEX DECIDES WITHOUT READING. Which turns a window holds needs only
+   * each turn's id and state, in order, and `queue.index.json` carries exactly
+   * those — so the choosing is free and the reading is one span. Without an
+   * index (a queue written by an older engine, or edited behind the store's
+   * back) this is the fold it has always been, over a document parsed whole.
+   */
+  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean } } {
+    const file = sessionQueueFile(this.paths, sessionId);
+    const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
+    if (!index) {
+      const all = this.readQueue(sessionId).turns;
+      this.accountWholeRead(file);
+      const plan = planWindow(all.map((turn) => ({ key: turn.runId, tag: turn.state })), window);
+      return { turns: all.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
+    }
+    const plan = planWindow(index.rows, window);
+    const span = this.readIndexedRows(file, index.rows.filter((row) => plan.chosen.has(row.key)));
+    const parsed = TurnSchema.array().safeParse(span);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid session queue");
+    return { turns: parsed.data.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
+  }
+
+  /** The window's items, by the same route and for the same reason — and this
+   *  is the big document: 753 KB of the dogfood store's 1.07 MB snapshot. */
+  private windowedItems(sessionId: string, chosen: Set<string>): Item[] {
+    // Already parsed and in hand: a streaming session is read once a second and
+    // the cache is what that repetition is for. Nothing to save by seeking.
+    if (this.itemsCache.has(sessionId)) return [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId));
+    const file = itemsFile(this.paths, sessionId);
+    const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
+    if (!index) {
+      const all = [...this.readItems(sessionId).values()];
+      this.accountWholeRead(file);
+      return all.filter((item) => chosen.has(item.runId));
+    }
+    const span = this.readIndexedRows(file, index.rows.filter((row) => chosen.has(row.key)));
+    const parsed = ItemSchema.array().safeParse(span);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    return parsed.data.filter((item) => chosen.has(item.runId));
+  }
+
+  /**
+   * The requests a snapshot carries when the caller asked for no window.
+   *
+   * Bounded for the same reason the windowed key is (#245) — see
+   * `boundedRequests`. `requests()` stays whole: a tool asking what a session
+   * has ever been asked is a different question from what a transcript renders.
+   */
+  snapshotRequests(sessionId: string): EngineRequest[] {
+    this.getSession(sessionId);
+    return structuredClone(boundedRequests([...this.readRequests(sessionId).values()]));
   }
 
   items(sessionId: string): Item[] {
@@ -9786,7 +10047,13 @@ export class EngineStore {
    *  maintained in one place rather than at each of the thirteen transitions
    *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
-    this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
+    this.writeIndexedDocument(
+      sessionQueueFile(this.paths, sessionId),
+      sessionQueueIndexFile(this.paths, sessionId),
+      queue,
+      "turns",
+      queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
+    );
     this.queueCache.delete(sessionId);
     this.announceQueueChange();
     if (!this.liveQueueIndex) return;
@@ -10034,7 +10301,16 @@ export class EngineStore {
   }
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
-    this.writeDocument(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+    const rows = [...items.values()];
+    this.writeIndexedDocument(
+      itemsFile(this.paths, sessionId),
+      itemsIndexFile(this.paths, sessionId),
+      { version: STATE_VERSION, items: rows },
+      "items",
+      // Keyed by the TURN, not the item: the window chooses turns, and an item
+      // is wanted exactly when its turn is.
+      rows.map((item) => ({ key: item.runId })),
+    );
     this.itemsCache.delete(sessionId);
   }
 

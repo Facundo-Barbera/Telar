@@ -120,16 +120,49 @@ export class ExecutionStore {
   }
   owns(file: string): boolean {
     const key = path.relative(this.root, file);
-    return key === "task-stops.json" || key === "subscriptions.json" || /^sessions\/[A-Za-z0-9_-]+\/(session|queue|items|requests|tasks)\.json$/.test(key);
+    return key === "task-stops.json" || key === "subscriptions.json"
+      || /^sessions\/[A-Za-z0-9_-]+\/(session|queue|items|requests|tasks)\.json$/.test(key)
+      // The offset indexes beside the documents they describe (#419). They are
+      // derived, but they belong to the same transaction as their document —
+      // an index committed while its document rolled back would describe bytes
+      // that are not there.
+      || /^sessions\/[A-Za-z0-9_-]+\/(queue|items)\.index\.json$/.test(key);
   }
   read(file: string): unknown {
     const row = this.statement("SELECT value FROM documents WHERE key=?").get(path.relative(this.root, file));
     return row ? JSON.parse(String(row.value)) : undefined;
   }
   write(file: string, value: unknown): void {
+    this.writeText(file, JSON.stringify(value));
+  }
+  /** The same write for a caller holding the exact text an index describes. */
+  writeText(file: string, text: string): void {
     this.statement("INSERT INTO documents(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-      .run(path.relative(this.root, file), JSON.stringify(value));
+      .run(path.relative(this.root, file), text);
     if (path.basename(file) === "session.json") this.fenceLegacy(path.basename(path.dirname(file)));
+  }
+  /**
+   * A document's size in BYTES, and a span of it, without handing the rest to
+   * JavaScript (#419).
+   *
+   * `CAST(value AS BLOB)` is the whole point of both: sqlite's `length` and
+   * `substr` count characters over TEXT and bytes over BLOB, and a conversation
+   * full of non-ASCII makes those two different numbers. Bytes are what the
+   * index records and what the file store can seek to, so bytes are what these
+   * answer.
+   */
+  byteLength(file: string): number | undefined {
+    const row = this.statement("SELECT length(CAST(value AS BLOB)) AS size FROM documents WHERE key=?").get(path.relative(this.root, file));
+    return row ? Number(row.size) : undefined;
+  }
+  /** `[start, end)` of the stored document, as bytes. */
+  slice(file: string, start: number, end: number): Buffer | undefined {
+    if (end <= start) return Buffer.alloc(0);
+    const row = this.statement("SELECT substr(CAST(value AS BLOB),?,?) AS span FROM documents WHERE key=?")
+      .get(start + 1, end - start, path.relative(this.root, file));
+    if (!row) return undefined;
+    const span = row.span;
+    return Buffer.isBuffer(span) ? span : Buffer.from(span as Uint8Array);
   }
   events(sessionId: string, after = 0): EngineEvent[] {
     const stored = this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
@@ -294,6 +327,11 @@ export class ExecutionStore {
     if (fs.existsSync(destination)) throw new Error("Export destination must not already exist");
     fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
     for (const row of this.db.prepare("SELECT key,value FROM documents ORDER BY key").all()) {
+      // The offset indexes describe THIS store's compact text; an export
+      // pretty-prints, so carrying them over would ship offsets into bytes the
+      // exported file does not have. They are derived — the next write rebuilds
+      // them, and a read without one is whole-document and correct.
+      if (String(row.key).endsWith(".index.json")) continue;
       const file = path.join(destination, String(row.key));
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
       atomicWrite(file, JSON.parse(String(row.value)));

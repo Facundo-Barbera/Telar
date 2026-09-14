@@ -154,7 +154,7 @@ test("the cursor is read before the rows, and the journal after them", () => {
     turns: () => record("turns", []),
     items: () => record("items", []),
     tasks: () => record("tasks", []),
-    requests: () => record("requests", []),
+    snapshotRequests: () => record("requests", []),
     snapshotWindow: () => record("window", { turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
     openItemPrefix: () => undefined,
     sessionAssignments: () => record("assignments", []),
@@ -182,7 +182,7 @@ test("an open item's prefix is stamped with the cursor the journal resumes from"
     turns: () => [],
     items: () => [open as never],
     tasks: () => [],
-    requests: () => [],
+    snapshotRequests: () => [],
     snapshotWindow: () => ({ turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
     openItemPrefix: (_id, _itemId, through) => {
       askedThrough = through;
