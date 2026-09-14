@@ -465,3 +465,66 @@ test("a restart retires the claim on a stopped turn without disturbing the sessi
   // And with no claim left, no worker is asked about this session again.
   expect(reopened.cancellationsForWorker("worker_one")).toEqual([]);
 });
+
+/**
+ * ISSUE #457, STEP 4 — the JSON the import replaced does not live forever.
+ *
+ * `importLegacy` keeps a copy of everything it read, as an undo for a migration
+ * that went wrong. Its value is in the days right after the migration: a store
+ * read and written through sqlite for a week has diverged from that copy
+ * completely, so restoring it would discard the week rather than recover it. On
+ * the dogfood home it was 239 MB, months old, beside a 735 MB database.
+ */
+test("the pre-SQLite backup is kept for its week and then swept, and the sweep says what it took", () => {
+  const day = 24 * 60 * 60 * 1000;
+  let clock = Date.now();
+  const { store: original, home } = setup("json");
+  original.submitTurn("session_one", { runId: "run_one", input: "keep me" });
+  original.closeExecutionStore(); stores.splice(stores.indexOf(original), 1);
+
+  // The migration itself, which is what writes the backup.
+  const migrated = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(migrated);
+  const backup = path.join(home, "execution-json-backup");
+  expect(fs.existsSync(path.join(backup, "session_one", "queue.json"))).toBe(true);
+  // INSIDE ITS WEEK IT STAYS, and the report says so rather than nothing: a
+  // migration that went wrong this morning still has its undo.
+  const held = migrated.executionHousekeeping()?.backup;
+  expect(held?.removed).toBe(false);
+  expect(held!.files).toBeGreaterThan(0);
+  expect(held!.bytes).toBeGreaterThan(0);
+  expect(fs.existsSync(backup)).toBe(true);
+  migrated.closeExecutionStore(); stores.splice(stores.indexOf(migrated), 1);
+
+  // A WEEK LATER, ON THE ORDINARY START. Not a command anybody has to know to
+  // run: the backlog this exists for is on machines nobody is administering.
+  clock += 8 * day;
+  const swept = new ExecutionStore(home, { now: () => clock });
+  try {
+    const report = swept.housekeeping.backup;
+    expect(report?.removed).toBe(true);
+    // AND IT SAYS WHAT WENT. A silent deletion of a quarter of a gigabyte is
+    // one a person only ever learns about from its absence.
+    expect(report!.files).toBeGreaterThan(0);
+    expect(report!.bytes).toBeGreaterThan(0);
+    expect(report!.ageMs).toBeGreaterThan(7 * day);
+    expect(fs.existsSync(backup)).toBe(false);
+    // The store it was a backup OF is untouched, which is the whole premise.
+    expect(swept.sessionIds()).toContain("session_one");
+  } finally { swept.close(); }
+
+  // AND IT IS IDEMPOTENT. Nothing to consider on the next start, and nothing
+  // reported — a line saying "removed nothing" every morning trains its reader
+  // to skip the line that matters.
+  const again = new ExecutionStore(home, { now: () => clock + day });
+  try {
+    expect(again.housekeeping.backup).toBeUndefined();
+  } finally { again.close(); }
+});
+
+test("a store with no migration behind it has no backup to consider", () => {
+  const { store } = setup();
+  // Born on sqlite: `importLegacy` never ran, so there is nothing to age and
+  // nothing to say about it.
+  expect(store.executionHousekeeping()?.backup).toBeUndefined();
+  expect(store.executionHousekeeping()?.receipts).toBe(0);
+});

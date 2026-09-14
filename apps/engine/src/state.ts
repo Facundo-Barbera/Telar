@@ -3,7 +3,7 @@
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
-import { ExecutionStore } from "./execution-store";
+import { ExecutionStore, type ExecutionHousekeeping } from "./execution-store";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1713,6 +1713,19 @@ export class EngineStore {
   private liveRevision = Date.now();
   sessionsRevision(): number {
     return this.liveRevision;
+  }
+
+  /**
+   * WHAT THE EXECUTION STORE SWEPT WHEN IT OPENED — issue #457, step 4.
+   *
+   * Command receipts past their retention, and the JSON the sqlite import
+   * replaced once sqlite has owned the store a week. Surfaced so the daemon can
+   * SAY it: both sweeps delete things nothing can reach, so without a line in
+   * the log the only evidence a person has that a quarter of a gigabyte went
+   * away is that it is gone. Absent on a store that never migrated.
+   */
+  executionHousekeeping(): ExecutionHousekeeping | undefined {
+    return this.executionStore?.housekeeping;
   }
 
   /**

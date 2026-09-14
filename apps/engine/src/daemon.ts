@@ -649,6 +649,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
   } catch (error) { lock.release(); throw error; }
   /**
+   * WHAT THE STORE SWEPT ON THE WAY UP — issue #457, step 4.
+   *
+   * Both sweeps delete things nothing can reach: command receipts past their
+   * week, and the JSON copy the sqlite import left behind once sqlite has owned
+   * the store for a week. On the dogfood home that was 299,323 receipts and
+   * 239 MB of backup, and the only evidence a person would otherwise have that
+   * a quarter of a gigabyte went away is that it is gone.
+   *
+   * ONE LINE, AND ONLY WHEN SOMETHING WENT. A daemon that printed "removed
+   * nothing" on every start would be training its reader to skip the line that
+   * matters. A backup still inside its week is deliberately silent too: it is
+   * not news, it is the ordinary state of a store migrated this week.
+   */
+  const swept = store.executionHousekeeping();
+  if (swept) {
+    const parts: string[] = [];
+    if (swept.receipts > 0) parts.push(`${swept.receipts.toLocaleString("en-US")} spent command receipts`);
+    if (swept.backup?.removed) {
+      const mb = (swept.backup.bytes / 1_000_000).toFixed(1);
+      const days = Math.floor(swept.backup.ageMs / 86_400_000);
+      parts.push(`the pre-SQLite JSON backup (${swept.backup.files.toLocaleString("en-US")} files, ${mb} MB, ${days} days old)`);
+    }
+    if (parts.length > 0) process.stdout.write(`Telar engine: removed ${parts.join(" and ")}\n`);
+  }
+  /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
    *
