@@ -563,11 +563,20 @@ struct HTTPEngineAPI: EngineAPI {
             }
             throw EngineAPIError.badResponse(status: status)
         }
+        // DECODED OFF THE CALLER'S EXECUTOR, exactly as `perform` does it and
+        // for the same reason: the only caller is `@MainActor`, and this is the
+        // list of every unsettled session on the Mac, parsed every three
+        // seconds while anything is live. Going around `perform` to read a 304
+        // must not also go around that.
+        //
         // A 2xx that does not decode is version skew, not a wrong address —
         // `incompatible`, exactly as `perform` classifies it.
-        guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
-            throw EngineAPIError.incompatible(status: status)
-        }
+        let live = try await Task.detached(priority: .userInitiated) {
+            guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
+                throw EngineAPIError.incompatible(status: status)
+            }
+            return live
+        }.value
         // NOT THE BYTES OF AN `unchanged` ANSWER. The cursor's cheap reply is a
         // 200 carrying no rows, and recording it would replace the phone's copy
         // with emptiness — the one thing the cache exists not to show.
