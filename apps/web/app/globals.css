@@ -411,6 +411,30 @@
      seeing before committing, and shipping half of it inside a dead-token
      cleanup would have pre-empted it. Deleting the name changes no pixel. */
   --radius: 0.625rem;
+  /* Two radii, because a button and a dialog are not the same object. --radius
+     is the container value the whole scale derives from. --control-radius is
+     authored rather than derived: on something the size of a button, a chip or
+     a field, 10px of corner starts eating the label, and the value has to hold
+     at 8px even if someone later rounds the containers harder.
+
+     THE HIERARCHY THIS LANDS — 8px controls, 10px fields and popovers, 14px
+     CARDS, 18px dialogs and the composer.
+
+     That 14 is a correction, and #250 item 13 is where it was made. This
+     comment used to say "18px cards and dialogs", and it was the only place
+     that believed it: the app draws cards at 14px (`rounded-xl`) at 58 sites in
+     32 files against seven at 18px, and iOS `Theme.radiusCard` is 14 too. So
+     the doctrine was wrong rather than the practice, and the alternative —
+     moving those 58 to 18px — would have made the phone the thing out of step
+     with a paragraph. A ladder documented as one thing and shipped as another
+     is worse than an undocumented one, because the next person reads the
+     paragraph and trusts it.
+
+     `rounded-xl` reads as the odd rung in Tailwind's names, not in the scale:
+     the steps are ×0.6 / ×0.8 / ×1 / ×1.4 / ×1.8, so a card at 1.4 sits
+     exactly where a card should — between the field it contains and the dialog
+     that contains it. The names are Tailwind's; the ladder is ours. */
+  --control-radius: 0.5rem;
 
   /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
      because there is no room above white, and lifts in dark because there is no

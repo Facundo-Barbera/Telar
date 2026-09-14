@@ -4,6 +4,7 @@ import { useState } from "react";
 import { FileIcon, KeyRoundIcon, MessageCircleQuestionIcon, PencilIcon, ShieldIcon, TerminalIcon, WrenchIcon } from "lucide-react";
 import { displayToolName, type EngineRequest, type RequestDecision, type SecretAccessDetail, type UserInputField } from "@telar/engine-client";
 import { Button } from "@/components/ui/button";
+import { cardSurface } from "@/components/ui/card";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -72,7 +73,16 @@ function capitalise(word: string): string {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
-const CARD = "flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/5 p-3";
+/**
+ * THE APPROVAL CARD IS A CARD, TINTED — not a fourth box that happens to be
+ * round. The shape comes from `cardSurface` (ui/card.tsx), which is the same
+ * radius, fill and hairline the `Card` primitive wears; only the spacing is
+ * local, because these three cards lay their own children out at a flat `p-3`
+ * rather than through Card's --card-spacing slots. The hairline is now a RING
+ * rather than a border, which is what the primitive uses: it paints outside the
+ * box instead of inside it, so the 1px stops being part of the layout.
+ */
+const CARD = `flex flex-col gap-3 p-3 ${cardSurface("warning")}`;
 const EYEBROW = "font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase";
 
 /** One field of a `user_input` request, in the kind the agent asked for. */

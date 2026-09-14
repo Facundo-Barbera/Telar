@@ -927,13 +927,13 @@ struct ComposerView: View {
         .padding(.leading, focused ? 14 : 18)
         .padding(.trailing, focused ? 14 : 5)
         .padding(.vertical, focused ? 12 : 5)
-        .composerGlass(cornerRadius: focused ? 20 : 27)
+        .composerGlass(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
         // THE WHOLE PILL IS THE TARGET, its margins included. The glass used
         // to make the padding hit-testable as a side effect of wrapping the
         // box; behind it, a tap beside the text would fall through to the
         // transcript — which dismisses the keyboard.
-        .contentShape(RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest, style: .continuous))
         .onTapGesture { focus.wrappedValue = true }
         // THE BOX'S OWN MENU — the desktop's `ComposerChromeMenu`. Remove
         // attachment lives on the chip that has one (see `AttachmentChip`), so
@@ -955,7 +955,7 @@ struct ComposerView: View {
         }
         .overlay {
             if dropping {
-                RoundedRectangle(cornerRadius: focused ? 20 : 27, style: .continuous)
+                RoundedRectangle(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest, style: .continuous)
                     .strokeBorder(Theme.accent, lineWidth: 2)
             }
         }
