@@ -49,7 +49,7 @@ import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { decideStale } from "@/lib/stale-state";
-import { Composer } from "./composer";
+import { Composer, MAX_ATTACHMENTS } from "./composer";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
@@ -1881,6 +1881,26 @@ export function SessionCockpit({
   }, [setDraft, setDraftRunId]);
 
   /**
+   * A PICTURE FROM THE PANEL INTO THE MESSAGE — the browser's camera and its
+   * annotate mode (#474).
+   *
+   * THE PASTE PATH, NOT A SECOND ONE. A screenshot becomes exactly what a
+   * pasted image already is: a `File` on this list, drawn as a chip, uploaded
+   * by the same loop in `submit`, and counted against the same ceiling
+   * (`MAX_ATTACHMENTS`, imported rather than re-stated). The only thing the
+   * browser adds is the caption — the page's address, which a picture of a
+   * page does not otherwise carry — and it goes through `insertIntoComposer`,
+   * so what the agent is sent is what the box says.
+   *
+   * SILENTLY FULL IS NOT AN OPTION: at the ceiling the caption is still
+   * written, so pressing the camera never looks like nothing happened.
+   */
+  const attachFromPanel = useCallback((files: readonly File[], caption?: string) => {
+    if (files.length > 0) setAttachments((current) => [...current, ...files].slice(0, MAX_ATTACHMENTS));
+    if (caption) insertIntoComposer(caption);
+  }, [setAttachments, insertIntoComposer]);
+
+  /**
    * LINK CLICKS IN THE CONVERSATION, when the Links setting says "keep them
    * here" (`lib/link-policy.ts`): an issue or pull request OF THIS PROJECT
    * opens as its right-panel tab, anything else as a tab in the session's
@@ -3275,6 +3295,7 @@ export function SessionCockpit({
           onOpenNewTab={showNewPanelTab}
           onOpenFileInNewTab={openFileInNewPanelTab}
           onInsertReference={insertIntoComposer}
+          onAttach={attachFromPanel}
           onCloseTab={(id) => updatePanel((current) => closePanelTab(current, id))}
           // A surface rewriting its own instance's params — the Diff's filter
           // (#335). Through the same `updatePanel` every other tab gesture

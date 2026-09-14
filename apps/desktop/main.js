@@ -1473,6 +1473,26 @@ ipcMain.handle("telar:browser:clear-data", (event, input) => {
   }
   return manager.clearBrowsingData(input?.scopeKey, input?.kind);
 });
+/**
+ * THE CAMERA BUTTON AND THE ANNOTATE OVERLAY'S FROZEN FRAME (#474).
+ *
+ * THE COCKPIT'S OWN TOP FRAME ONLY, the guard "clear data" and "open in system
+ * browser" wear. A screenshot is a copy of whatever the person is signed into:
+ * a browser tab's preload, a subframe, or anything an agent can reach must not
+ * be able to take one. An agent that wants a picture of a page has
+ * `browser_take_screenshot` and its own tab to point it at.
+ */
+ipcMain.handle("telar:browser:capture", (event, input) => {
+  const manager = requireBrowserManager(event);
+  const cockpit = manager.window;
+  if (!cockpit || cockpit.isDestroyed() || event.sender !== cockpit.webContents || event.senderFrame !== cockpit.webContents.mainFrame) {
+    throw new Error("Only the Telar window may capture this browser.");
+  }
+  return manager.capture(input?.scopeKey, {
+    fullPage: Boolean(input?.fullPage),
+    elements: Boolean(input?.elements),
+  });
+});
 ipcMain.handle("telar:browser:tool", (event, input) =>
   requireBrowserManager(event).callTool(input?.scopeKey, input?.name, input?.args || {}),
 );

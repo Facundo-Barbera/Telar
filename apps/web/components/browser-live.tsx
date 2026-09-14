@@ -22,6 +22,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  CameraIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -33,6 +34,7 @@ import {
   MinusIcon,
   MonitorSmartphoneIcon,
   MoonIcon,
+  PencilIcon,
   PlusIcon,
   RotateCwIcon,
   SquareArrowOutUpRightIcon,
@@ -40,6 +42,8 @@ import {
   UserRoundIcon,
   XIcon,
 } from "lucide-react";
+import { BrowserAnnotateOverlay, type AnnotateCapture } from "@/components/browser-annotate";
+import { captionFor, captureFileName, type ElementBox } from "@/lib/browser-annotation";
 import { BrowserPrivacyBanner, type DesktopPrivacyState } from "@/components/browser-privacy-banner";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import {
@@ -148,6 +152,23 @@ export type DesktopBrowserPresentation = {
   rect: { x: number; y: number; width: number; height: number };
 };
 
+/**
+ * ONE CAPTURE, AS THE SHELL ANSWERS IT (#474): the PNG, the page it is of, and
+ * the viewport it was taken at — which is the tab's own, never the panel's fit
+ * scale. `elements` is present only when it was asked for.
+ */
+export type DesktopBrowserCapture = {
+  /** Base64, no data-URL prefix — `mimeType` says what it is. */
+  data: string;
+  mimeType: string;
+  url: string;
+  title?: string;
+  width: number;
+  height: number;
+  fullPage?: boolean;
+  elements?: readonly ElementBox[];
+};
+
 export type DesktopBrowserPanelState = {
   scopeKey: string;
   controller?: "agent" | "human" | "idle";
@@ -243,6 +264,24 @@ export type DesktopBrowserBridge = {
   setDefaultProfile?(profileId: string): Promise<{ profiles: DesktopBrowserProfile[] }>;
   assignProjectProfile?(input: { scopeKey: string; profileId: string | null }): Promise<{ profiles: DesktopBrowserProfile[] }>;
   setScopeProfile?(scopeKey: string, profileId: string): Promise<{ profileId: string; partition: string }>;
+  /**
+   * A PICTURE OF THE PAGE THE PERSON IS LOOKING AT (#474) — the camera button
+   * in the address row, and the frozen frame annotate mode draws on.
+   *
+   * THE HUMAN'S ACTIVE TAB, AT THAT TAB'S OWN SCALE. Not the agent's tab
+   * (`browser_take_screenshot` reads that one), and not the panel's fit scale:
+   * a page laid out at 1280×800 in a 500px column comes back 1280×800, which
+   * is the only size the marks drawn on it mean anything in.
+   *
+   * `elements` is opted into because it costs a DOM walk: the camera never
+   * asks, annotate mode always does, and both get the boxes from the SAME
+   * moment as the frame rather than from a second call against a page that
+   * has since been hidden.
+   *
+   * Optional because an older shell installs no handler; the camera and the
+   * pen are hidden rather than offered and refused.
+   */
+  capture?(scopeKey: string, options?: { fullPage?: boolean; elements?: boolean }): Promise<DesktopBrowserCapture>;
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   /** End the private window. Plain: the shell re-probes the holding page and
@@ -363,6 +402,46 @@ function TabMenu({
         >
           Close others
         </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
+/**
+ * THE CAMERA, AND THE OTHER WAY TO PRESS IT (#474).
+ *
+ * A press takes the viewport; a right-click offers the full page as well.
+ * That is where a browser already keeps "the other way to do this", and it is
+ * the only place on this row it could go: a split button with a caret would be
+ * another 14px on a row whose budget has four (`ADDRESS_CONTROLS`). Both rows
+ * are in the `⋯` menu too, so nobody has to guess the gesture.
+ *
+ * CONTROLLED, AND IT TAKES THE NATIVE VIEW DOWN WHILE IT IS OPEN — the rule
+ * `lib/native-view-overlay.ts` states for every menu in this panel. Its own
+ * state rather than the toolbar's `openOverlay`, exactly as `TabMenu`'s is:
+ * the hook counts claims, so one menu closing as another opens never reveals
+ * the page under the second.
+ */
+function CameraButton({ busy, onCapture }: { busy: boolean; onCapture: (fullPage: boolean) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  useNativeViewOverlay(menuOpen);
+  return (
+    <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <ContextMenuTrigger className="contents">
+        <button
+          type="button"
+          aria-label="Screenshot this page"
+          title={"Attach a screenshot of this page to your message.\nRight-click for the full page."}
+          disabled={busy}
+          onClick={() => onCapture(false)}
+          className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+        >
+          {busy ? <Loader2Icon className="size-3.5 animate-spin" /> : <CameraIcon className="size-3.5" />}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-auto">
+        <ContextMenuItem onClick={() => onCapture(false)}>Screenshot the viewport</ContextMenuItem>
+        <ContextMenuItem onClick={() => onCapture(true)}>Screenshot the full page</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -696,10 +775,69 @@ export const ADDRESS_ROW_PADDING = 16;
 /** Under this the address bar is a decoration rather than a place to type a
  *  URL: "Type an address" does not fit, and neither does most of a hostname. */
 export const ADDRESS_INPUT_FLOOR = 200;
+/**
+ * THE CAMERA AND THE PEN (#474), at 22 each with a 4px gap each — the same
+ * `p-1`-around-14px every glyph on this row costs.
+ *
+ * COUNTED SEPARATELY BECAUSE THEY FOLD. The budget above has no slack at all
+ * (at the 420px panel #319 was filed about the input clears the floor by 4px),
+ * so two more glyphs on the row unconditionally would be #319 happening again
+ * — a crushed, untypable address bar — and this issue's own acceptance is not
+ * worth that one. So the row spends this only when it can: `addressRowFitsTools`
+ * decides, and below that width both gestures are in the `⋯` menu, where they
+ * are ALWAYS listed anyway. Nothing disappears; only the shortcut does.
+ */
+export const ADDRESS_TOOLS = 2 * 22 + 2 * 4;
 
-/** What is left for the address input on a row of `rowWidth` content px. */
-export function addressInputRoom(rowWidth: number): number {
-  return rowWidth - ADDRESS_CONTROLS;
+/** What is left for the address input on a row of `rowWidth` content px, with
+ *  or without the two folding tool glyphs on it. */
+export function addressInputRoom(rowWidth: number, tools = false): number {
+  return rowWidth - ADDRESS_CONTROLS - (tools ? ADDRESS_TOOLS : 0);
+}
+
+/** Can this row afford the camera and the pen without crushing the input? */
+export function addressRowFitsTools(rowWidth: number): boolean {
+  return addressInputRoom(rowWidth, true) >= ADDRESS_INPUT_FLOOR;
+}
+
+/**
+ * Whether the address row is wide enough for its two folding glyphs.
+ *
+ * MEASURED, not a media query: the panel's width is its own — the window can
+ * be wide while this column is narrow because the conversation took the
+ * difference — so the only width that answers the question is this row's.
+ * Only the boolean is state, so a drag across the whole range re-renders twice.
+ */
+function useAddressRowTools(rowRef: RefObject<HTMLElement | null>): boolean {
+  const [room, setRoom] = useState(false);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setRoom(addressRowFitsTools(entry.contentRect.width));
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [rowRef]);
+  return room;
+}
+
+/**
+ * THE SHELL'S BASE64 AS A `File` (#474) — which is what the composer's
+ * attachment list holds, so a screenshot is the same kind of thing a pasted
+ * image is from the moment it arrives.
+ *
+ * DECODED HERE RATHER THAN FETCHED AS A DATA URL. `fetch("data:…")` would do
+ * it in Chromium and is the shorter line, but it makes an attachment path
+ * depend on a URL scheme being fetchable — this is eleven characters of
+ * arithmetic with no such assumption, and it works anywhere a test can run.
+ */
+function fileFromCapture(shot: DesktopBrowserCapture, kind: "screenshot" | "annotated"): File {
+  const binary = atob(shot.data);
+  const bytes = new Uint8Array(binary.length);
+  for (let at = 0; at < binary.length; at += 1) bytes[at] = binary.charCodeAt(at);
+  const type = shot.mimeType || "image/png";
+  return new File([bytes], captureFileName(shot.url, kind), { type });
 }
 
 /**
@@ -745,10 +883,20 @@ export function DesktopBrowserSurface({
   scopeKey,
   projectId,
   onEnded,
+  onAttach,
 }: {
   bridge: DesktopBrowserBridge;
   scopeKey: string;
   projectId?: string;
+  /**
+   * WHERE A PICTURE OF THIS PAGE GOES (#474): the composer's attachment list,
+   * with its caption in the draft. The cockpit owns both, so it owns this.
+   *
+   * Absent hides the camera and the pen rather than offering them — a capture
+   * with nowhere to land is a button that appears to do nothing. Same reason
+   * the tab menu hides "Open in system browser" on a shell without it.
+   */
+  onAttach?: (files: readonly File[], caption?: string) => void;
   /**
    * THE LAST TAB CLOSED, so this browser is over (#383) — the panel tab that
    * holds this surface should close with it.
@@ -801,6 +949,26 @@ export function DesktopBrowserSurface({
   const [optionsPane, setOptionsPane] = useState<"menu" | "appearance" | "cookies" | "cache">("menu");
   /** A clear in flight, so the confirm's button cannot be pressed twice. */
   const [clearing, setClearing] = useState(false);
+  /**
+   * ANNOTATE MODE (#474) — the frozen frame being marked up, or nothing.
+   *
+   * THE CAPTURE IS THE STATE. Entering annotate mode IS having a frame; there
+   * is no "on but still capturing" to draw an empty canvas for, and no way for
+   * the two to disagree about which page is being marked. `capturing` below is
+   * the press, not the mode: it disables both buttons while a capture is in
+   * flight so a second press cannot start a second one.
+   *
+   * IT TAKES THE NATIVE VIEW DOWN, by the same counted claim every menu here
+   * makes (`lib/native-view-overlay.ts`) — a separate claim from
+   * `openOverlay`'s, so a menu opened and closed over the overlay cannot
+   * reveal the live page under a half-drawn annotation.
+   */
+  const [annotating, setAnnotating] = useState<AnnotateCapture>();
+  const [capturing, setCapturing] = useState(false);
+  useNativeViewOverlay(Boolean(annotating));
+  /** Whether this row is wide enough for the camera and the pen — see
+   *  `ADDRESS_TOOLS`. Below it they are in the `⋯` menu only. */
+  const rowFitsTools = useAddressRowTools(addressRowRef);
   /**
    * The device toolbar's two size fields while they are being typed into.
    * Undefined = show the tab's own numbers.
@@ -1217,6 +1385,76 @@ export function DesktopBrowserSurface({
     },
     [bridge, bindNow, refresh, scope, scopeKey],
   );
+
+  /**
+   * THE CAMERA (#474): a picture of this page, into the message being written.
+   *
+   * ATTACHMENT PLUS CAPTION, WHICH IS ONE GESTURE AND TWO THINGS. The PNG goes
+   * where a pasted image goes; the address goes into the draft, because a
+   * picture of a page an agent cannot go and load is a picture of nothing it
+   * can act on. `captionFor` writes both the address and the VIEWPORT, which is
+   * the only way to read a 390-wide screenshot correctly.
+   *
+   * A plain function rather than a memo: it closes over `activeTab`, derived
+   * from `state`, and the compiler's preserve-memoization rule will not take a
+   * manual memo over that — the same reason `commitSize` below is one.
+   */
+  const captureInto = async (options: { fullPage?: boolean }) => {
+    if (!bridge.capture || !onAttach || capturing) return;
+    const gen = scope.capture();
+    setCapturing(true);
+    try {
+      const shot = await bridge.capture(scopeKey, options);
+      if (!scope.isCurrent(gen)) return;
+      setActionError(undefined);
+      onAttach([fileFromCapture(shot, "screenshot")], captionFor(shot));
+    } catch (error) {
+      if (!scope.isCurrent(gen)) return;
+      setActionError(error instanceof Error ? error.message : "That page could not be captured.");
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  /**
+   * THE PEN (#474): freeze the page and mark it up.
+   *
+   * ELEMENTS ARE ASKED FOR HERE AND NOWHERE ELSE — the pick tool needs boxes,
+   * and they are taken in the SAME call as the frame so what can be picked and
+   * what is on screen are one moment. The camera above pays for none of it.
+   *
+   * THE CAPTURE HAPPENS BEFORE THE VIEW GOES DOWN, which is simply the order
+   * these two statements are in: `setAnnotating` is what claims the overlay,
+   * and by then the picture is already taken.
+   */
+  const startAnnotate = async () => {
+    if (!bridge.capture || !onAttach || capturing) return;
+    const gen = scope.capture();
+    setCapturing(true);
+    try {
+      const shot = await bridge.capture(scopeKey, { elements: true });
+      if (!scope.isCurrent(gen)) return;
+      setActionError(undefined);
+      setAnnotating({
+        dataUrl: `data:${shot.mimeType || "image/png"};base64,${shot.data}`,
+        url: shot.url,
+        ...(shot.title ? { title: shot.title } : {}),
+        width: shot.width,
+        height: shot.height,
+        elements: shot.elements ?? [],
+      });
+    } catch (error) {
+      if (!scope.isCurrent(gen)) return;
+      setActionError(error instanceof Error ? error.message : "That page could not be captured to annotate.");
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  /** Whether the camera and the pen can do anything at all here: a shell that
+   *  knows how to capture, somewhere for the result to land, and a loaded page
+   *  to point at. */
+  const canCapture = Boolean(bridge.capture && onAttach && activeTab && addressValue(activeTab.url) !== "" && !activeTab.sleeping && !activeTab.preview);
 
   /**
    * ⌥⌘I — Chromium DevTools on the tab you are LOOKING at (#423).
@@ -1786,6 +2024,37 @@ export function DesktopBrowserSurface({
             {describeExtensionHealth(extension).tone === "error" ? <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-destructive" /> : null}
           </button>
         ) : null}
+        {/* ── the camera and the pen (#474) ─────────────────────────────────
+            ON THE ROW WHILE THE ROW CAN AFFORD THEM. The budget above has no
+            slack at all, so these two fold into the `⋯` menu below the width
+            at which the address bar would be crushed — which is #319, and
+            #319 outranks a shortcut. They are in that menu at EVERY width, so
+            nothing is ever unreachable; only the shortcut folds.
+
+            THE CAMERA'S SECOND ITEM IS ON THE CAMERA. A right-click is where
+            a browser already keeps "the other way to do this", and it costs
+            the row nothing — a split button with a caret would be another
+            14px on a row that has none. The full-page row is in the menu too,
+            for anyone who never thinks to right-click a toolbar glyph. */}
+        {rowFitsTools && canCapture ? (
+          <>
+            <CameraButton busy={capturing} onCapture={(fullPage) => void captureInto(fullPage ? { fullPage: true } : {})} />
+            <button
+              type="button"
+              aria-label="Annotate this page"
+              aria-pressed={Boolean(annotating)}
+              title="Freeze the page and mark it up, then send it to the agent."
+              disabled={capturing}
+              onClick={() => (annotating ? setAnnotating(undefined) : void startAnnotate())}
+              className={cn(
+                "shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40",
+                annotating && "bg-muted text-foreground",
+              )}
+            >
+              <PencilIcon className="size-3.5" />
+            </button>
+          </>
+        ) : null}
         {/* ── the options menu (#473) ───────────────────────────────────────
             ONE `⋯` AT THE RIGHT END, where every browser keeps its tools.
             What used to be spread across this row, the viewport popover and
@@ -1816,6 +2085,26 @@ export function DesktopBrowserSurface({
           <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Browser options" className="w-64 gap-0 p-1">
             {optionsPane === "menu" ? (
               <>
+                {/* ── the camera and the pen, ALWAYS (#474) ──────────────
+                    The glyphs on the row above fold away on a narrow panel;
+                    these three rows do not. A gesture that exists at one
+                    width and not another is a gesture nobody learns. */}
+                {canCapture ? (
+                  <>
+                    <button type="button" disabled={capturing} onClick={() => { closeOverlay(); void captureInto({}); }} className={cn(menuRow, "pl-9")}>
+                      <span className="min-w-0 flex-1">Screenshot the viewport</span>
+                      <CameraIcon aria-hidden className="size-3 shrink-0" />
+                    </button>
+                    <button type="button" disabled={capturing} onClick={() => { closeOverlay(); void captureInto({ fullPage: true }); }} className={cn(menuRow, "pl-9")}>
+                      Screenshot the full page
+                    </button>
+                    <button type="button" disabled={capturing} onClick={() => { closeOverlay(); void startAnnotate(); }} className={cn(menuRow, "pl-9")}>
+                      <span className="min-w-0 flex-1">Annotate this page</span>
+                      <PencilIcon aria-hidden className="size-3 shrink-0" />
+                    </button>
+                    <div aria-hidden className="my-1 h-px bg-border" />
+                  </>
+                ) : null}
                 <button type="button" disabled={!activeTab} onClick={() => { closeOverlay(); void act({ action: "hard-reload" }); }} className={cn(menuRow, "pl-9")}>
                   Hard reload
                 </button>
@@ -2156,6 +2445,23 @@ export function DesktopBrowserSurface({
             </Button>
           </div>
         )}
+        {/* ── annotate mode (#474) ───────────────────────────────────────
+            OVER EVERYTHING IN THE HOST, and over nothing native: the view is
+            down for as long as this is mounted (`useNativeViewOverlay` above),
+            so the DOM here is the whole picture. Keyed by the frame's address
+            so marking a second page starts a second annotation rather than
+            inheriting the first one's marks. */}
+        {annotating && onAttach ? (
+          <BrowserAnnotateOverlay
+            key={`${annotating.url}:${annotating.width}x${annotating.height}`}
+            capture={annotating}
+            onCancel={() => setAnnotating(undefined)}
+            onSend={({ file, text }) => {
+              onAttach([file], text);
+              setAnnotating(undefined);
+            }}
+          />
+        ) : null}
         {/* THE START PAGE — no tabs, or a blank active tab. DOM, under
             nothing: the shell hides the native view of a blank tab so this
             can be read and clicked (browser-manager isBlank). Opening a

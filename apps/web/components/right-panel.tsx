@@ -824,6 +824,7 @@ function BrowserPageSurface({
   projectId,
   scopeKey,
   onEnded,
+  onAttach,
 }: {
   pageId: string;
   state?: BrowserState;
@@ -835,6 +836,10 @@ function BrowserPageSurface({
   /** The native browser's last tab closed (#383). Nothing for the screenshot
    *  fallback, which is a view of a browser it does not own. */
   onEnded?: () => void;
+  /** The camera's destination (#474) — the composer's attachment list and its
+   *  draft. Only the LIVE surface takes it: the screenshot fallback is a poll
+   *  of a browser on another machine, with no shell capture to hand over. */
+  onAttach?: (files: readonly File[], caption?: string) => void;
 }) {
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
@@ -858,6 +863,7 @@ function BrowserPageSurface({
         scopeKey={scope}
         {...(projectId ? { projectId } : {})}
         {...(onEnded ? { onEnded } : {})}
+        {...(onAttach ? { onAttach } : {})}
       />
     );
   }
@@ -1319,6 +1325,7 @@ export function PanelSurface({
   onOpenNewTab,
   onOpenFileInNewTab,
   onInsertReference,
+  onAttach,
   onTabParams,
   onCloseSelf,
   active,
@@ -1383,6 +1390,17 @@ export function PanelSurface({
    * owns this; absent (a canvas with no composer) simply hides the item.
    */
   onInsertReference?: (text: string) => void;
+  /**
+   * ATTACH FILES to the message being written, with an optional one-line
+   * caption inserted into the draft beside them (#474).
+   *
+   * The browser's camera is the caller: a screenshot is an attachment, and a
+   * picture of a page needs the page's address said in words or the agent
+   * cannot go look at it. The cockpit owns the draft AND the attachment list,
+   * so it owns this — absent (a canvas with no composer) simply hides the
+   * camera, rather than offering one that captures into nowhere.
+   */
+  onAttach?: (files: readonly File[], caption?: string) => void;
   /**
    * Rewrite THIS instance's params — what a surface calls when the thing that
    * identifies it changes, so the strip's label follows (#335). Bound to the
@@ -1515,6 +1533,7 @@ export function PanelSurface({
         {...(sessionId ? { sessionId, scopeKey: browserScopeKey(sessionId, tab.id) } : {})}
         {...(projectId ? { projectId } : {})}
         {...(onCloseSelf ? { onEnded: onCloseSelf } : {})}
+        {...(onAttach ? { onAttach } : {})}
       />
     );
   if (kind === "diff")
@@ -1891,6 +1910,7 @@ export function RightPanel({
   onOpenNewTab,
   onOpenFileInNewTab,
   onInsertReference,
+  onAttach,
   onCloseTab,
   onMoveTab,
   onClose,
@@ -1946,6 +1966,8 @@ export function RightPanel({
   onOpenFileInNewTab?: (path: string) => void;
   /** Put a reference into the message being written — see `PanelSurface`. */
   onInsertReference?: (text: string) => void;
+  /** Attach files to the message being written — see `PanelSurface`. */
+  onAttach?: (files: readonly File[], caption?: string) => void;
   /** Rewrite one instance's params, so a surface can keep its own tab's label
    *  true — see `PanelSurface`. By id, like `onEditorChange`. */
   onTabParams?: (id: string, params: PanelTabParams) => void;
@@ -2489,6 +2511,7 @@ export function RightPanel({
               {...(onOpenNewTab ? { onOpenNewTab } : {})}
               {...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {})}
               {...(onInsertReference ? { onInsertReference } : {})}
+              {...(onAttach ? { onAttach } : {})}
               // Bound to THIS instance, exactly as `onEditorChange` below is —
               // a surface changes its own tab's params and no other's.
               {...(onTabParams ? { onTabParams: (params: PanelTabParams) => onTabParams(activeTab.id, params) } : {})}

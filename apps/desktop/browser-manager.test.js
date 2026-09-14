@@ -1538,6 +1538,86 @@ describe("hidden screenshots", () => {
   }, 15_000);
 });
 
+/**
+ * THE COCKPIT'S CAMERA (#474) — `capture`, which the address row's camera
+ * button and the annotate overlay's frozen frame both go through.
+ *
+ * WHAT THESE PIN is the one thing a screenshot under a fit scale gets wrong:
+ * the SCALE. A page laid out at 1280×800 inside a 640px column must come back
+ * 1280×800, because the overlay draws on those pixels and a person marking up
+ * a third-size frame in the corner of a blank one is the bug.
+ */
+describe("the cockpit's own capture", () => {
+  test("a fixed tab under a 0.5 fit scale is captured at the tab's own scale, not the panel's", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    await manager.resizeTab(manager.activeTab("s"), { preset: "default" });
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The panel is showing it at half size...
+    expect(manager.state("s").presentation.scale).toBe(0.5);
+    const shot = await manager.capture("s");
+    // ...and the capture is the INTRINSIC page: an explicit scale-1 clip at
+    // the tab's own viewport, which is what travels back with the image.
+    const clip = views[0].webContents.debugger.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1);
+    expect(clip.params).toMatchObject({ clip: { x: 0, y: 0, width: 1280, height: 800, scale: 1 }, captureBeyondViewport: true, fromSurface: true });
+    expect(shot).toMatchObject({ data: "cG5n", mimeType: "image/png", url: "https://one.example/", width: 1280, height: 800, fullPage: false });
+  });
+
+  test("it reads the HUMAN's active tab, never the agent's", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    // A tab the agent opened and works in; the human stays on the first.
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://agent.example/" });
+    await manager.action("s", { action: "select", index: 0 });
+    expect(manager.activeTab("s").url).toBe("https://one.example/");
+    expect((await manager.capture("s")).url).toBe("https://one.example/");
+  });
+
+  test("a full-page capture asks for the document's height, and says it did", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    manager.setBounds("s", { x: 0, y: 0, width: 1280, height: 800 });
+    await manager.setVisible("s", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      if (method === "Runtime.evaluate" && String(params?.expression).includes("scrollHeight")) return { result: { value: { width: 1280, height: 4000 } } };
+      return originalSend(method, params);
+    };
+    const shot = await manager.capture("s", { fullPage: true });
+    expect(shot.fullPage).toBe(true);
+    expect(debug.commands.filter((c) => c.method === "Page.captureScreenshot").at(-1).params.clip).toMatchObject({ height: 4000, scale: 1 });
+  });
+
+  test("element boxes ride the same call, so the frame and what can be picked on it are one moment", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://one.example/");
+    const debug = views[0].webContents.debugger;
+    const originalSend = debug.sendCommand.bind(debug);
+    debug.sendCommand = async (method, params) => {
+      if (method === "Runtime.evaluate" && String(params?.expression).includes("getBoundingClientRect")) {
+        return { result: { value: [{ role: "button", name: "Save", selector: "#save", x: 10, y: 20, width: 80, height: 32 }] } };
+      }
+      return originalSend(method, params);
+    };
+    expect((await manager.capture("s", { elements: true })).elements).toEqual([
+      { role: "button", name: "Save", selector: "#save", x: 10, y: 20, width: 80, height: 32 },
+    ]);
+    // Not asked for, not gathered — the camera button pays for no DOM walk.
+    expect((await manager.capture("s")).elements).toBeUndefined();
+  });
+
+  test("a blank tab and an empty scope are refused with a sentence, not an empty PNG", async () => {
+    const { manager } = makeHarness();
+    await expect(manager.capture("s")).rejects.toThrow(/no page here/i);
+    await manager.createTab("s", "about:blank");
+    await expect(manager.capture("s")).rejects.toThrow(/no page loaded/i);
+  });
+});
+
 describe("the automatic credential lifecycle", () => {
   // Real (tiny) timers so the poll loop actually yields between iterations
   // instead of busy-spinning; the loop cadence is compressed to ~1ms.
