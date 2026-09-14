@@ -101,19 +101,36 @@ struct SessionAssignment: Codable, Equatable {
     /// state is genuinely unknown. NOT outstanding — a paged-out completed
     /// carrier would otherwise look busy forever.
     var unresolved: Bool?
+    /// WHEN THE WORK ARRIVED, and when it ended once it has — the two halves of
+    /// "and when" that the Agents surface puts on a row (#390). The rail never
+    /// needed them: an indent has no room for a date.
+    ///
+    /// OPTIONAL THOUGH THE CONTRACT MAKES `receivedAt` REQUIRED, like every
+    /// other field on this struct. A row decoded through `Skippable` is DROPPED
+    /// when a required field is missing, so declaring this one required would
+    /// trade a missing timestamp for a missing relationship — and `receivedAt`
+    /// is exactly the field an engine was once shipping as `undefined` (#380).
+    var receivedAt: Timestamp?
+    var endedAt: Timestamp?
 
-    private enum CodingKeys: String, CodingKey { case fromSessionId, scope, outcome, unresolved }
+    private enum CodingKeys: String, CodingKey { case fromSessionId, scope, outcome, unresolved, receivedAt, endedAt }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         fromSessionId = try c.decode(EngineID.self, forKey: .fromSessionId)
         scope = try c.decodeIfPresent(String.self, forKey: .scope)
         outcome = try c.decodeIfPresent(String.self, forKey: .outcome)
         unresolved = try c.decodeIfPresent(Bool.self, forKey: .unresolved)
+        receivedAt = try c.decodeIfPresent(Timestamp.self, forKey: .receivedAt)
+        endedAt = try c.decodeIfPresent(Timestamp.self, forKey: .endedAt)
     }
 
-    init(fromSessionId: EngineID, scope: String? = nil, outcome: String? = nil, unresolved: Bool? = nil) {
+    init(
+        fromSessionId: EngineID, scope: String? = nil, outcome: String? = nil, unresolved: Bool? = nil,
+        receivedAt: Timestamp? = nil, endedAt: Timestamp? = nil
+    ) {
         self.fromSessionId = fromSessionId; self.scope = scope
         self.outcome = outcome; self.unresolved = unresolved
+        self.receivedAt = receivedAt; self.endedAt = endedAt
     }
 }
 
