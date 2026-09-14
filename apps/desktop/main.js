@@ -1465,6 +1465,10 @@ ipcMain.handle("telar:browser:set-bounds", (event, input) => {
 ipcMain.handle("telar:browser:set-visible", (event, input) =>
   requireBrowserManager(event).setVisible(input?.scopeKey, input?.visible),
 );
+/** The frozen frame a menu opens over (#475) — capture, then hide. */
+ipcMain.handle("telar:browser:freeze-view", (event, input) =>
+  requireBrowserManager(event).freezeView(input?.scopeKey),
+);
 ipcMain.handle("telar:browser:release-scope", (event, input) =>
   requireBrowserManager(event).releaseScope(input?.scopeKey, Boolean(input?.destroy)),
 );

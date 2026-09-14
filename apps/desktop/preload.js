@@ -61,6 +61,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
     setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
+    // A menu is opening over the panel (#475): take the page's last frame,
+    // THEN put the view down, so the panel can keep showing the page while
+    // the menu is up. One call because that order is the whole point.
+    freezeView: (scopeKey) => ipcRenderer.invoke("telar:browser:freeze-view", { scopeKey }),
     releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
     onState: (listener) => on("telar:browser:state", listener),

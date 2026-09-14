@@ -71,6 +71,12 @@ class FakeWebContents extends EventEmitter {
     // for, and the zoom factor the menu reads back.
     this.reloads = [];
     this.zoomFactor = 1;
+    // The frozen frame's capture seam (#475) — see `capturePage`.
+    this.captures = [];
+    this.captureGate = null;
+    this.captureError = null;
+    this.captureEmpty = false;
+    this.view = null;
     this.navigationHistory = {
       canGoBack: () => false,
       canGoForward: () => false,
@@ -126,11 +132,23 @@ class FakeWebContents extends EventEmitter {
     return this.windowOpenHandler({ url });
   }
 
-  // A hidden view's capture path (see DesktopBrowserManager.screenshot):
-  // Electron's NativeImage, narrowed to what the manager reads.
+  /**
+   * A hidden view's capture path (see DesktopBrowserManager.screenshot), and
+   * the frozen frame's (#475): Electron's NativeImage, narrowed to what the
+   * manager reads.
+   *
+   * EVERY CALL RECORDS WHETHER ITS VIEW WAS STILL SHOWN, which is how the
+   * capture-before-hide order is pinned without an Electron. `captureGate`
+   * holds a capture open (a never-settling one is the ceiling's case),
+   * `captureError` makes it fail, `captureEmpty` makes it answer a blank
+   * frame.
+   */
   async capturePage() {
+    this.captures.push({ visibleAtCapture: this.view ? this.view.visible : null });
+    if (this.captureGate) await this.captureGate;
+    if (this.captureError) throw this.captureError;
     return {
-      isEmpty: () => false,
+      isEmpty: () => Boolean(this.captureEmpty),
       toPNG: () => Buffer.from("png"),
       toJPEG: () => Buffer.from("jpg"),
     };
@@ -213,11 +231,21 @@ class FakeWebContents extends EventEmitter {
 class FakeView {
   constructor() {
     this.webContents = new FakeWebContents();
+    // The capture records whether its own view was still shown (#475).
+    this.webContents.view = this;
     this.visible = false;
     this.bounds = null;
+    // Every radius this view was TOLD, in order — the manager writes only on
+    // a change, so the list is the claim, not the last value.
+    this.radii = [];
   }
 
   setBackgroundColor() {}
+
+  /** Electron 36+. Recorded rather than performed. */
+  setBorderRadius(radius) {
+    this.radii.push(radius);
+  }
 
   setVisible(visible) {
     this.visible = visible;
@@ -2388,6 +2416,121 @@ describe("bounds are per scope — a stale scope's publish never moves the visib
     await manager.activeTab("B").geometry.queue;
     expect(manager.visibleScopeKey).toBe("B");
     expect(views[1].visible).toBe(true);
+  });
+});
+
+/**
+ * #475 — THE PAGE FILLS THE PANEL, AND STAYS PUT BEHIND A MENU.
+ *
+ * Two complaints, one shape: the native view is composited ABOVE the cockpit's
+ * DOM, so neither the panel's rounded corner nor a menu drawn over it means
+ * anything to it. The corner it has to be TOLD (the renderer publishes it with
+ * the rect, because a CSS token is not something the main process can read),
+ * and the menu it has to be taken down for — which is what made the page blink
+ * out on every ⋯, and what the frozen frame replaces.
+ */
+describe("the panel's corner, and the frozen frame a menu opens over", () => {
+  /** A visible scope showing one real page in a real panel rect. */
+  async function shown(bounds = {}) {
+    const harness = makeHarness();
+    await harness.manager.createTab("s", "https://example.com/");
+    harness.manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, ...bounds });
+    await harness.manager.setVisible("s", true);
+    const tab = harness.manager.activeTab("s");
+    await tab.geometry.queue;
+    return { ...harness, tab, view: harness.views[0] };
+  }
+
+  test("the radius the renderer publishes is written to the view, and only when it changes", async () => {
+    const { manager, view } = await shown({ radius: 14 });
+    expect(view.radii.at(-1)).toBe(14);
+
+    // The renderer republishes the SAME rect as its self-heal, on every
+    // layout change and every frame of a panel animation. Re-rounding there
+    // would be a compositor change per frame for nothing.
+    const written = view.radii.length;
+    manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, radius: 14 });
+    await manager.activeTab("s").geometry.queue;
+    expect(view.radii.length).toBe(written);
+
+    // A device toolbar publishes 0: a fixed viewport's stage is centred
+    // inside a padded host and never reaches the panel's corner.
+    manager.setBounds("s", { x: 12, y: 40, width: 640, height: 400, radius: 0 });
+    await manager.activeTab("s").geometry.queue;
+    expect(view.radii.at(-1)).toBe(0);
+  });
+
+  test("an older renderer, which publishes no radius at all, leaves the view square", async () => {
+    const { view } = await shown();
+    expect(view.radii.every((radius) => radius === 0)).toBe(true);
+  });
+
+  test("a tab in a window of its own is square — the panel's corner is not its", async () => {
+    const { manager, view } = await shown({ radius: 14 });
+    expect(view.radii.at(-1)).toBe(14);
+    await manager.action("s", { action: "preview" });
+    await manager.applyGeometry(manager.scopeTabs("s")[0]);
+    expect(view.radii.at(-1)).toBe(0);
+  });
+
+  /**
+   * THE ORDER IS THE WHOLE POINT, and it is why freezing is one call rather
+   * than a capture the renderer follows with a hide. A view that is already
+   * down has no compositor frame to give — asking it for one is the blink
+   * this exists to remove, with a stall on top.
+   */
+  test("the capture finishes while the page is still shown, and the hide follows it", async () => {
+    const { manager, tab, view } = await shown({ radius: 14 });
+    let release;
+    tab.view.webContents.captureGate = new Promise((resolve) => { release = resolve; });
+
+    const freezing = manager.freezeView("s");
+    await Promise.resolve();
+    expect(tab.view.webContents.captures).toEqual([{ visibleAtCapture: true }]);
+    expect(view.visible).toBe(true);
+
+    release();
+    const frame = await freezing;
+    expect(frame).toEqual({
+      data: Buffer.from("png").toString("base64"),
+      mimeType: "image/png",
+      // The view's own rect, in the window coordinates `setBounds` was given,
+      // so the renderer can paint the frame exactly where the page was.
+      rect: { x: 12, y: 40, width: 640, height: 400 },
+    });
+    expect(view.visible).toBe(false);
+  });
+
+  test("a capture that outruns the ceiling hides plainly, the way it did before the frame existed", async () => {
+    const { manager, tab, view } = await shown({ radius: 14 });
+    // A page that never answers: the menu still has to open.
+    tab.view.webContents.captureGate = new Promise(() => {});
+    expect(await manager.freezeView("s")).toBeNull();
+    expect(view.visible).toBe(false);
+  });
+
+  test("a capture that fails, and one that comes back blank, hide plainly too", async () => {
+    const failing = await shown({ radius: 14 });
+    failing.tab.view.webContents.captureError = new Error("no frame");
+    expect(await failing.manager.freezeView("s")).toBeNull();
+    expect(failing.view.visible).toBe(false);
+
+    const empty = await shown({ radius: 14 });
+    empty.tab.view.webContents.captureEmpty = true;
+    expect(await empty.manager.freezeView("s")).toBeNull();
+    expect(empty.view.visible).toBe(false);
+  });
+
+  test("a blank tab is never captured — the start page is DOM, and its view is already down", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s");
+    manager.setBounds("s", { x: 0, y: 0, width: 640, height: 400, radius: 14 });
+    await manager.setVisible("s", true);
+    await manager.activeTab("s").geometry.queue;
+
+    expect(await manager.freezeView("s")).toBeNull();
+    expect(views[0].webContents.captures).toEqual([]);
+    expect(views[0].visible).toBe(false);
   });
 });
 
