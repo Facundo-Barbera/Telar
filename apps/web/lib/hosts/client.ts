@@ -45,15 +45,64 @@ export function rewriteApiPath(pathname: string, hostId: string): string {
 
 type Fetcher = typeof fetch;
 
+/**
+ * THE NAME A PAIRED MAC ANSWERS UNDER, stamped by this cockpit's own proxy on
+ * everything it carries back (lib/hosts/proxy.ts).
+ *
+ * It is read off the reads a screen was making anyway, so an error can say
+ * WHICH MAC refused without a request of its own — and it is the proxy's word,
+ * not the remote's: the hop overwrites any header of this name the other end
+ * sent, so a remote cannot name itself something else here.
+ */
+export const HOST_NAME_HEADER = "telar-host";
+
+/** hostId → what that Mac called itself, as of its last answer. Module-level
+ *  because it is a property of the pairing, not of any one screen, and every
+ *  screen that hops learns it for all the others. */
+const observedNames = new Map<string, string>();
+
+/** What a paired Mac calls itself, or nothing — for local, and for a Mac this
+ *  window has not reached yet. Never invents a name from an id. */
+export function hostName(hostId: string | undefined): string | undefined {
+  if (!hostId || hostId === LOCAL_HOST_ID) return undefined;
+  return observedNames.get(hostId);
+}
+
+/** Exported for the tests, and for a caller that already holds the book. */
+export function rememberHostName(hostId: string, name: string): void {
+  const trimmed = name.trim();
+  if (hostId === LOCAL_HOST_ID || !trimmed) return;
+  observedNames.set(hostId, trimmed);
+}
+
+/** A fetcher that says which Mac it reaches. The pin travels ON the fetcher so
+ *  `createEngineApi` can attribute a failure without every one of its ~150
+ *  methods taking a host argument. */
+export type PinnedFetcher = Fetcher & { readonly telarHostId: string };
+
+/** Which Mac a fetcher is pinned to, or nothing when it follows the address
+ *  bar (`pathnameFetcher`) and so cannot say in advance. */
+export function pinnedHost(fetcher: Fetcher): string | undefined {
+  return (fetcher as Partial<PinnedFetcher>).telarHostId;
+}
+
 /** A fetcher pinned to one host — for a screen that knows which Mac it is
  *  about regardless of the address bar (the sidebar, fanning out). */
-export function hostFetcher(hostId: string, base: Fetcher = fetch): Fetcher {
-  if (hostId === LOCAL_HOST_ID) return base;
-  return (input, init) => {
-    if (typeof input === "string") return base(rewriteApiPath(input, hostId), init);
-    if (input instanceof URL) return base(input, init);
-    return base(input, init);
+export function hostFetcher(hostId: string, base: Fetcher = fetch): PinnedFetcher {
+  // WRAPPED EVEN WHEN IT IS A NO-OP: this used to hand `base` back for local,
+  // and stamping the pin onto that value would write a property onto the global
+  // `fetch`. One closure is cheaper than a mutated global.
+  if (hostId === LOCAL_HOST_ID) {
+    const local: Fetcher = (input, init) => base(input, init);
+    return Object.assign(local, { telarHostId: LOCAL_HOST_ID });
+  }
+  const remote: Fetcher = async (input, init) => {
+    const response = typeof input === "string" ? await base(rewriteApiPath(input, hostId), init) : await base(input, init);
+    const name = response.headers.get(HOST_NAME_HEADER);
+    if (name) rememberHostName(hostId, name);
+    return response;
   };
+  return Object.assign(remote, { telarHostId: hostId });
 }
 
 /**

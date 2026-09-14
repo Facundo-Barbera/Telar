@@ -1,9 +1,10 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { forward, upstreamTimeout, upstreamUrl } from "./proxy";
+import { forward, upstreamTimeout, upstreamUrl, HOST_ID_HEADER } from "./proxy";
+import { HOST_NAME_HEADER } from "./client";
 import { HOST_HEADER } from "@/lib/remote/host-token";
 
-const host = { baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
+const host = { id: "host_b", name: "mini", baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
 
 function fake(answer: (input: string, init: RequestInit) => Response | Promise<Response>): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit) => answer(String(input), init ?? {})) as typeof fetch;
@@ -98,5 +99,36 @@ describe("forward", () => {
     }));
     expect(response.status).toBe(503);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe("engine_unavailable");
+    // …and it NAMES the Mac, in the body and in the header, because "that Mac"
+    // is unanswerable on a cockpit paired with three (#204).
+    expect(response.headers.get(HOST_NAME_HEADER)).toBe("mini");
+  });
+});
+
+/**
+ * WHOSE ANSWER THIS IS (#204). A 404 carried back faithfully is otherwise
+ * indistinguishable from one this Mac minted, and a session id means nothing
+ * without the engine that minted it.
+ */
+describe("the answer says which Mac gave it", () => {
+  test("every forwarded answer carries the host's name and id", async () => {
+    const request = new Request("http://cockpit.local/api/hosts/h/sessions/session_shared");
+    const response = await forward(request, host, ["sessions", "session_shared"], fake(() =>
+      Response.json({ error: { code: "not_found", message: "session does not exist" } }, { status: 404 }),
+    ));
+    expect(response.status).toBe(404);
+    expect(response.headers.get(HOST_NAME_HEADER)).toBe("mini");
+    expect(response.headers.get(HOST_ID_HEADER)).toBe("host_b");
+  });
+
+  test("a remote cannot name itself — the book's word wins over the wire's", async () => {
+    // Otherwise the other end could put any name on an error this cockpit then
+    // shows as fact.
+    const request = new Request("http://cockpit.local/api/hosts/h/projects");
+    const response = await forward(request, host, ["projects"], fake(() =>
+      Response.json({ projects: [] }, { headers: { [HOST_NAME_HEADER]: "your own Mac", [HOST_ID_HEADER]: "local" } }),
+    ));
+    expect(response.headers.get(HOST_NAME_HEADER)).toBe("mini");
+    expect(response.headers.get(HOST_ID_HEADER)).toBe("host_b");
   });
 });
