@@ -117,6 +117,7 @@ import {
   type ProviderProbe,
   type ProviderUpdate,
   type ProviderUpdateRun,
+  type LiveSessionRow,
   type Session,
   type SessionOrigin,
   type Subscription,
@@ -1901,6 +1902,11 @@ export class EngineClient {
   /**
    * Assignments ride this list so a sidebar never fetches a history per row.
    *
+   * ROWS, NOT WHOLE SESSIONS (#459): the engine answers `LiveSessionRow`, which
+   * is every `Session` field a rail draws and none it does not. A full record is
+   * assignable to one, so a caller holding either keeps working; a client that
+   * genuinely needs the old shape asks the route with `?full=1`, for one release.
+   *
    * AND SO DOES THE ARRANGEMENT. `layout` is the engine's whole
    * `sidebar-layout.json`, carried here because this is the one route every
    * rail already polls — which is what lets a drag on one device reach the
@@ -1909,7 +1915,7 @@ export class EngineClient {
    * the copy I have" rather than "nobody has arranged anything".
    */
   liveSessions(): Promise<{
-    sessions: Session[];
+    sessions: LiveSessionRow[];
     projects: Array<{ id: string; name: string }>;
     assignments?: Record<string, SessionAssignment[]>;
     layout?: SidebarLayout;

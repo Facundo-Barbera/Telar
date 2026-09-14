@@ -321,6 +321,14 @@ struct SidebarLayout: Decodable, Equatable, Sendable {
 }
 
 /// `GET /api/sessions/live` — the whole inbox in one call.
+///
+/// ROWS, NOT WHOLE SESSIONS (#459). The Mac sends `LiveSessionRow`: every field
+/// a rail draws and none it does not. The record below is the union of that and
+/// the fuller one `GET /api/sessions/:id` answers with, so this one type reads
+/// both — every field the list omits was already optional here, and absent goes
+/// on meaning the engine's own default rather than "unknown". Do NOT make a
+/// field required to satisfy the session screen: that screen has its own read,
+/// and a required field the list does not send blanks the whole list.
 struct LiveSessions: Decodable {
     var sessions: [Session]
     var projects: [ProjectRef]

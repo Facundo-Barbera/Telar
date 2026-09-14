@@ -58,6 +58,7 @@ import {
   assignmentsOf,
   type AssignmentTurn,
   type SessionAssignment,
+  type LiveSessionRow,
   type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
@@ -986,6 +987,50 @@ const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSIO
 /** "Nobody has arranged anything" — what an unreadable layout document costs.
  *  Spelled once so the three arrangements cannot fall back to different things. */
 const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
+
+/**
+ * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
+ *
+ * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
+ * tomorrow does not silently join every polling answer: growing the wire has to
+ * be a decision somebody writes down here. Absent keys are left absent rather
+ * than set to `undefined`, because `JSON.stringify` drops the one and the point
+ * of this function is the bytes.
+ */
+const liveRow = (session: Session): LiveSessionRow => ({
+  id: session.id,
+  ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+  title: session.title,
+  state: session.state,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt,
+  driver: session.driver,
+  ...(session.model === undefined ? {} : { model: session.model }),
+  // Not a rail's field — the `sessions` toolkit's, which lists off this route
+  // from the out-of-process worker and names each row's workspace mode.
+  envMode: session.envMode,
+  // `baseRef` is the commit a checkout was cut from: one review surface's
+  // question, and 40 bytes on every row of every poll otherwise.
+  workspace:
+    session.workspace.mode === "worktree"
+      ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
+      : { mode: "local", path: session.workspace.path },
+  ...(session.draft === undefined ? {} : { draft: session.draft }),
+  ...(session.usage === undefined ? {} : { usage: session.usage }),
+  activity: session.activity,
+  ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+  ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
+  ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
+  ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+  ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+  ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
+  ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
+  ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+  ...(session.settledBy === undefined ? {} : { settledBy: session.settledBy }),
+  ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+  ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+  ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
+});
 
 /** Copied out, never handed out: the caller gets the arrangement, not a
  *  reference into the document this store will write to next. */
@@ -6828,6 +6873,33 @@ export class EngineStore {
       assignments,
       layout: this.getSidebarLayout(),
     };
+  }
+
+  /**
+   * THE SAME ANSWER, WITH ONLY WHAT A RAIL DRAWS ON EACH ROW — issue #459, and
+   * the shape `GET /v2/sessions/live` serves.
+   *
+   * `liveSessions` above hands back whole `Session` records, which is right for
+   * the in-process `sessions` toolkit: a model that lists conversations may then
+   * ask any question about one. It is wrong for the wire. Measured on the
+   * owner's store, that route answered 318 KB in 200 ms for 267 sessions, and
+   * every cockpit asks for it on a timer, per paired host — so the engine was
+   * serializing a session's provider instance, resume cursor, runtime mode and
+   * un-settle ledger several times a second to clients that render none of them.
+   * See `LiveSessionRow` for the field-by-field argument.
+   *
+   * THE PROJECTION IS THE ONLY DIFFERENCE. Same filter, same ordering, same
+   * assignments, same layout — a caller that wants the old rows asks the route
+   * with `?full=1` and gets `liveSessions()` verbatim.
+   */
+  liveSessionRows(): {
+    sessions: LiveSessionRow[];
+    projects: Array<{ id: string; name: string }>;
+    assignments: Record<string, SessionAssignment[]>;
+    layout: SidebarLayout;
+  } {
+    const full = this.liveSessions();
+    return { ...full, sessions: full.sessions.map(liveRow) };
   }
 
   turns(sessionId: string): Turn[] {

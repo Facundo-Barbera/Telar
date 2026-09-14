@@ -3446,8 +3446,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { machine });
         return;
       }
+      /**
+       * THE RAIL'S ONE READ — and it answers ROWS, not whole sessions (#459).
+       *
+       * This is the most-served route on the engine: every cockpit polls it on a
+       * timer, for every paired host, for as long as it is open. On the owner's
+       * store it was 318 KB and 200 ms for 267 sessions, which is why the engine
+       * sat at 70% CPU with two devices attached. `liveSessionRows` serializes
+       * only what a row draws; `LiveSessionRow` argues it field by field.
+       *
+       * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
+       * the old shape — a paired Mac on last week's nightly, a script. It is not
+       * a mode anything of ours asks for, and it is meant to be deleted.
+       */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
-        writeJson(response, 200, store.liveSessions());
+        writeJson(response, 200, url.searchParams.get("full") === "1" ? store.liveSessions() : store.liveSessionRows());
         return;
       }
       /**

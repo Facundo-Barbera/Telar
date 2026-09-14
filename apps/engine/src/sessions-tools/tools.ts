@@ -62,7 +62,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -79,8 +79,13 @@ import type { EngineEvent, EngineRequest, EnvMode, ProviderDriverKind, Session, 
 export type SessionsCapability = {
   /** Every LIVE session on this engine, across projects, plus the projects
    *  themselves — a project id is what `create` takes, so a caller needs both
-   *  halves of this answer at once. */
-  list(): Promise<{ sessions: Session[]; projects: Array<{ id: string; name: string }> }>;
+   *  halves of this answer at once.
+   *
+   *  ROWS, NOT WHOLE RECORDS (#459): the route behind the out-of-process
+   *  deployment sends `LiveSessionRow`, and `summarise` below reads nothing
+   *  else. A full `Session` is assignable to one, so the daemon's own
+   *  `store.liveSessions()` still satisfies this. */
+  list(): Promise<{ sessions: LiveSessionRow[]; projects: Array<{ id: string; name: string }> }>;
   /**
    * A NEW SESSION, WITH NO LINK TO THE CALLER.
    *
@@ -281,7 +286,7 @@ export function pageEvents(events: readonly EngineEvent[]): { page: unknown[]; c
 
 /** A session as a caller should read it — the fields a person scans a sidebar
  *  for, and nothing about who created it, because nothing records that. */
-function summarise(session: Session, projects: Map<string, string>) {
+function summarise(session: LiveSessionRow, projects: Map<string, string>) {
   return {
     id: session.id,
     // ABSENT IS THE PROJECT-LESS MASTER, said out loud rather than left blank:

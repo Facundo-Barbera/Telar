@@ -37,6 +37,45 @@ func fixture(_ name: String) throws -> Data {
         }
     }
 
+    /// THE LIVE LIST SENDS ROWS, NOT WHOLE SESSIONS (#459).
+    ///
+    /// That route is what the phone polls; on the owner's store it was 318 KB a
+    /// read for 267 conversations, most of it fields no row on this phone draws.
+    /// The engine now sends only what a rail renders — no `environmentId`, no
+    /// `providerInstanceId`, no `runtimeMode`, no `detached`, no `resumeCursor`,
+    /// and no `workspace.baseRef`.
+    ///
+    /// EVERY ONE OF THOSE WAS ALREADY OPTIONAL HERE, which is why this build
+    /// needs no change to read the narrower answer — and this test is what says
+    /// so out loud, so a later edit cannot quietly make one of them required and
+    /// blank the phone's list against a current Mac. The fields the rail DOES
+    /// draw are asserted present: losing one of those is a blank row, not a
+    /// blank list, which is the harder bug to see.
+    @Test func theLiveListDecodesWithoutTheFieldsNoRowDraws() throws {
+        let lean = #"""
+        {"sessions":[{"id":"session_one","projectId":"project_one","title":"Lean the live list",
+          "state":"active","createdAt":1700000000000,"updatedAt":1700000001000,"driver":"claude",
+          "envMode":"worktree","model":{"instanceId":"claude","model":"claude-opus-5[1m]"},
+          "workspace":{"mode":"worktree","path":"/tmp/w","branch":"telar/459-lean"},
+          "activity":"working","activityAt":1700000001000,"settledOverride":"active"}],
+         "projects":[{"id":"project_one","name":"Telar"}]}
+        """#
+        let live = try JSONDecoder().decode(LiveSessions.self, from: Data(lean.utf8))
+        let session = try #require(live.sessions.first)
+        #expect(session.id == "session_one")
+        #expect(session.activity == .working)
+        #expect(session.workspace.branch == "telar/459-lean")
+        #expect(session.model?.model == "claude-opus-5[1m]")
+        #expect(session.settledOverride == "active")
+        // Absent, and absent has to keep meaning what it meant: the engine's own
+        // defaults, never "unknown" and never a blank row.
+        #expect(session.providerInstanceId == nil)
+        #expect(session.resumeCursor == nil)
+        #expect(session.workspace.baseRef == nil)
+        #expect(session.runtimeMode == "approval-required")
+        #expect(session.detached == false)
+    }
+
     /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
     /// optional, at both levels. The fixture predates the field, so this pins
     /// the tolerance the wire needs rather than the fixture's content: a Mac

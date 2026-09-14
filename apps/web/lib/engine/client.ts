@@ -74,6 +74,7 @@ import type {
   EngineRequest,
   RequestDecision,
   RuntimeMode,
+  LiveSessionRow,
   Session,
   SessionBootstrap,
   SessionSnapshot,
@@ -477,10 +478,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * one, without a second request or a connection of its own. Optional — an
      * engine older than the field simply says nothing about the arrangement,
      * and the rail keeps the copy it fetched when it mounted.
+     *
+     * ROWS, NOT WHOLE SESSIONS (#459). `LiveSessionRow` is every field a row
+     * renders and none it does not — the route was answering 318 KB for 267
+     * sessions, several times a second, most of it engine bookkeeping no rail
+     * has ever read. A full `Session` is assignable to a row, so anything here
+     * that was handed one keeps working.
      */
     liveSessions: () =>
       request<{
-        sessions: Session[];
+        sessions: LiveSessionRow[];
         projects: Project[];
         assignments?: Record<string, SessionAssignment[]>;
         layout?: SidebarLayout;

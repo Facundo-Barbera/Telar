@@ -32,7 +32,7 @@
  */
 import {
   DEFAULT_AUTO_SETTLE_HOURS,
-  type Session,
+  type LiveSessionRow,
   type SessionActivity,
   type SessionAssignment,
   type SessionSettledBy,
@@ -179,9 +179,16 @@ export type SidebarSession = {
   stale?: number;
 };
 
-/** The engine record, flattened into what the rail actually reads. */
+/**
+ * The engine record, flattened into what the rail actually reads.
+ *
+ * TAKES A `LiveSessionRow`, WHICH IS THE WIDER TYPE (#459): the live route now
+ * sends only the fields a row draws, and a whole `Session` is assignable to one
+ * — so every caller that passes a full record still typechecks, and the one
+ * that passes a row no longer has to invent the dozen keys it never read.
+ */
 export function toSidebarSession(
-  session: Session,
+  session: LiveSessionRow,
   projectName?: string,
   projectBranch?: string,
   projectIcon?: string,
