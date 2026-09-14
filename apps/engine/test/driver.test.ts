@@ -428,9 +428,9 @@ describe("the end-turn grace (#465)", () => {
     ]);
     expect(raced.kind).toBe("resolved");
     expect(raced.kind === "resolved" && raced.value.text).toBe("the answer");
-    // The transcript says the turn settled itself, so a future stall names its cause.
-    const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
-    expect(row?.kind === "item.started" && row.item.title).toBe("Settled without the provider's result");
+    // SILENT: no transcript row about the missing frame. The owner read the
+    // first cut's row as noise — the turn simply ended, from where they sit.
+    expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
   });
 
   test("a result that arrives inside the grace wins — no row, same text", async () => {

@@ -2943,12 +2943,15 @@ export function createClaudeDriver(
              * process stays alive with its pending read parked on
              * `pendingStep` for the next pump, and the transcript says why.
              */
-            const id = itemId();
-            emit({
-              kind: "item.started",
-              item: { id, detail: { type: "provider_wait", wait: { kind: "no_response", waitedMs: endTurnGraceMs } }, title: "Settled without the provider's result" },
-            });
-            emit({ kind: "item.completed", itemId: id, status: "completed" });
+            // SILENT ON THE TRANSCRIPT. The first cut wrote a row here
+            // ("Settled without the provider's result") and the owner read it
+            // as noise: from the person's side the turn simply ended, and a
+            // sentence about a frame they never see is a bad fit. The fact
+            // goes to the opt-in diagnostic channel instead, where the person
+            // chasing a missing result will look.
+            if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
+              console.error(`[claude-runtime] session=${sessionId} settled on the end-turn grace after ${endTurnGraceMs}ms; no result frame arrived`);
+            }
             completed = true;
             await flush();
             if (persistent) break;
