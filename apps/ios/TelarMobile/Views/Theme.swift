@@ -27,7 +27,29 @@ enum Theme {
     static let textTertiary = adaptive(light: 0x696973, dark: 0xA1A1A1)
     static let subtle = adaptive(light: 0xF1F1F3, dark: 0x252525)
     static let subtleStrong = adaptive(light: 0xF0F0F1, dark: 0x2F2F2F)
-    static let composerSurface = adaptive(light: 0xFFFFFF, dark: 0x1C1C1C)
+    /// THE FOURTH RUNG, WHICH WAS ALREADY HERE UNDER THE COMPOSER'S NAME.
+    ///
+    /// The web's dark elevation ladder is four steps — canvas 0x0A0A0A, rail
+    /// 0x101010, card 0x161616, popover 0x1C1C1C — and iOS was audited as being
+    /// one short. It was not: `composerSurface` is 0xFFFFFF / 0x1C1C1C, which is
+    /// `--popover` byte for byte. The rung existed and only the role was
+    /// missing, so the next surface that floats above a card had no name to
+    /// reach for and would have arrived as a fifth literal.
+    ///
+    /// #250 item 14 proposed adopting it for menus and sheets, and that half is
+    /// NOT DONE ON PURPOSE: every menu in this app is a SwiftUI `Menu` or
+    /// `.contextMenu`, whose chrome the system draws and which takes no
+    /// background, and all ten `Theme.card` call sites are genuine cards
+    /// (settings cards, the project list, a tinted notice, panel surfaces)
+    /// rather than popovers. Making dark menus less flat would mean the app
+    /// hand-rolling its own menus, which is a much larger thing than a token.
+    /// Sheets keep `Theme.sheet`: that is the rail rung (`--sidebar`), a
+    /// different role, and it is correct where it is used.
+    static let popover = adaptive(light: 0xFFFFFF, dark: 0x1C1C1C)
+    /// The composer's glass IS the popover rung — it floats over the transcript
+    /// the way a menu floats over a card. Kept as a name because that is what
+    /// its three call sites are about.
+    static let composerSurface = popover
     static let primaryGlyph = Accent.indigo.glyph
     static let primaryFill = accent
     static let border = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.10) : UIColor(rgb: 0xE4E4E7) })
