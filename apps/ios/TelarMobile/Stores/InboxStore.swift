@@ -97,6 +97,8 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// The cache read seeding the first frame — off the main thread, the
     /// same reason as SessionSyncEngine's.
     private var restoring: Task<Void, Never>?
+    /// The cache WRITE in flight, held only so the tests can wait for it.
+    private var recording: Task<Void, Never>?
     private var anythingLive = false
     /// The engine's default (3 days) until the real policy arrives; a policy
     /// fetch failure keeps the last known answer rather than rebanding.
@@ -236,9 +238,10 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         apply(live)
     }
 
-    /// Tests: wait for the cache read to land.
+    /// Tests: wait for the cache read — and the cache write — to land.
     func awaitPendingWork() async {
         await restoring?.value
+        await recording?.value
     }
 
     func refresh() async {
@@ -281,11 +284,11 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
              pair loses nothing. Only the NARROW read can use a cursor; the wide
              one is refused a cursor for the reason above and simply pays.
              */
-            let answer: (live: LiveSessions?, etag: String?)
+            let answer: LiveSessionsRead
             if etag == nil, !wantsSettled, let cursor = revision {
-                answer = (try await api.liveSessions(since: cursor), nil)
+                answer = try await api.liveSessions(matching: nil, since: cursor, all: false)
             } else {
-                answer = try await api.liveSessions(matching: etag, all: wantsSettled)
+                answer = try await api.liveSessions(matching: etag, since: nil, all: wantsSettled)
             }
             etag = answer.etag
             guard let live = answer.live else {
@@ -330,7 +333,7 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
             unauthorized = false
             loaded = true
             recordedAt = nil
-            remember()
+            remember(answer.data)
         } catch {
             lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
             unauthorized = (error as? EngineAPIError)?.isUnauthorized == true
@@ -368,20 +371,25 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         }
     }
 
-    /// The bytes of the read that just succeeded, kept for next time. A
-    /// second small GET rather than a re-encode — see SessionSyncEngine.
-    private func remember() {
-        guard let cache else { return }
-        let api = self.api
-        Task.detached(priority: .utility) { [weak self] in
-            guard let data = try? await api.liveSessionsData() else { return }
-            await self?.store(data, in: cache)
-        }
-    }
-
-    private func store(_ data: Data, in cache: HostSnapshotCache) {
-        if data == lastInboxData { return }
+    /// The bytes of the read that just succeeded, kept for next time.
+    ///
+    /// THE POLL'S OWN BODY (#499) — never a second read. This used to fire a
+    /// fresh, unconditional GET of the whole live list the instant a poll
+    /// changed anything: 318 KB on the owner's Mac, for rows it had been handed
+    /// microseconds earlier, on a route it asks every three seconds. The read
+    /// that earned the rows carries the bytes now, so warming the cache costs
+    /// nothing over reading it.
+    ///
+    /// NIL MEANS NOTHING NEW TO RECORD — a 304, an `unchanged` answer, or a
+    /// conformer with no bytes to give. The copy already on disk stands, which
+    /// is right in all three: it is still the last thing this Mac actually
+    /// said.
+    ///
+    /// THE WRITE IS DETACHED because it is file I/O, and this is the tail of a
+    /// poll that runs on the main actor while somebody is reading the list.
+    private func remember(_ data: Data?) {
+        guard let cache, let data, data != lastInboxData else { return }
         lastInboxData = data
-        cache.writeInbox(data)
+        recording = Task.detached(priority: .utility) { cache.writeInbox(data) }
     }
 }

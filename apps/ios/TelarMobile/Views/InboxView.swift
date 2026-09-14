@@ -168,7 +168,7 @@ struct InboxView: View {
             }
         }
         .refreshable { await inbox.refresh() }
-        .task(id: fleetFingerprint) { inbox.sync(hosts: settings.hosts, settings: settings) }
+        .task(id: fleetFingerprint) { inbox.sync(hosts: settings.hosts, settings: settings, active: scenePhase == .active) }
         .onDisappear { inbox.stop() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { inbox.start() } else { inbox.stop() }

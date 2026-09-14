@@ -32,12 +32,18 @@ struct HydratedSession {
     var snapshot: SessionSnapshot
     var events: [EngineEvent]
     var cursor: Int
+    /// THE SNAPSHOT'S OWN BYTES (#499) — what the phone records, so the cache
+    /// is warmed by the read the screen already made rather than by a second,
+    /// unwindowed one. Nil from a conformer that cannot hand them over.
+    var snapshotData: Data?
 }
 
 struct TailResult {
     var events: [EngineEvent]
     var cursor: Int
     var snapshot: SessionSnapshot?
+    /// As above — present exactly when `snapshot` is.
+    var snapshotData: Data?
 }
 
 /// OPEN ON THE SNAPSHOT, TAIL FROM ITS CURSOR. The snapshot already says
@@ -50,7 +56,10 @@ struct TailResult {
 /// An engine older than the stamp answers without one; then the journal has
 /// to be asked where it ends. The old cost, kept only for that case.
 func hydrateSession(_ api: some EngineAPI, _ sessionId: EngineID, window: SnapshotWindow? = nil) async throws -> HydratedSession {
-    let snapshot = try await api.session(sessionId, window: window)
+    // KEEPING THE BYTES (#499): the cache is written from this read, not from a
+    // second unwindowed one fired behind it.
+    let read = try await api.sessionRead(sessionId, window: window)
+    let snapshot = read.snapshot
     let from: Int
     if let cursor = snapshot.cursor {
         from = cursor
@@ -58,16 +67,22 @@ func hydrateSession(_ api: some EngineAPI, _ sessionId: EngineID, window: Snapsh
         from = journalCursor(try await api.events(sessionId, after: 0).events)
     }
     let tail = try await api.events(sessionId, after: from)
-    return HydratedSession(snapshot: snapshot, events: tail.events, cursor: max(from, journalCursor(tail.events)))
+    return HydratedSession(
+        snapshot: snapshot,
+        events: tail.events,
+        cursor: max(from, journalCursor(tail.events)),
+        snapshotData: read.data
+    )
 }
 
 func tailSession(_ api: some EngineAPI, _ sessionId: EngineID, after: Int, window: SnapshotWindow? = nil) async throws -> TailResult {
     let page = try await api.events(sessionId, after: after)
-    let snapshot = needsSessionSnapshot(page.events) ? try await api.session(sessionId, window: window) : nil
+    let read = needsSessionSnapshot(page.events) ? try await api.sessionRead(sessionId, window: window) : nil
     return TailResult(
         events: page.events,
         cursor: max(after, journalCursor(page.events)),
-        snapshot: snapshot
+        snapshot: read?.snapshot,
+        snapshotData: read?.data
     )
 }
 

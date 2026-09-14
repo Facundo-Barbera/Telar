@@ -31,8 +31,6 @@ private struct UnreachableAPI: EngineAPI {
     func liveSessions() async throws -> LiveSessions { fatalError("unused") }
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot { fatalError("unused") }
     func events(_ id: EngineID, after: Int) async throws -> EventPage { fatalError("unused") }
-    func sessionData(_ id: EngineID) async throws -> Data { fatalError("unused") }
-    func liveSessionsData() async throws -> Data { fatalError("unused") }
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data { fatalError("unused") }
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
     func stopSession(_ id: EngineID) async throws {}

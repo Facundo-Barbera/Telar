@@ -148,7 +148,7 @@ struct RootView: View {
             if let selection, settings.host(selection.hostId) == nil { self.selection = nil }
         }
         .task(id: fingerprint) {
-            inbox.sync(hosts: settings.hosts, settings: settings)
+            inbox.sync(hosts: settings.hosts, settings: settings, active: scenePhase == .active)
             MobileNotifications.shared.settings = settings
             await MobileNotifications.shared.syncRegistrations()
         }
