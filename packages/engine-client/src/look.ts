@@ -273,6 +273,239 @@ export function isSceneValue(value: unknown): value is string {
     .every((segment) => segment.startsWith('"data:image/'));
 }
 
+/* ════════════════════════════════════════════ the gradient vocabulary ═══ */
+
+/**
+ * A GRADIENT SOMEBODY BUILT — the stops, not a preset's name (#471).
+ *
+ * "It needs gradient customization. We give a lot of options; what if instead
+ * we let the user create them." A gradient layer used to be a PRESET ID
+ * pointing into a table of eleven authored meshes: the whole vocabulary of
+ * what a gradient could be was eleven nouns, and the eleventh-and-a-half was
+ * unreachable. So a gradient is now the thing itself — a shape, a direction,
+ * and the stops — and the presets survive as STARTING POINTS that fill this
+ * spec rather than as a kind you are locked into.
+ *
+ * THE SPEC, NOT THE RESOLVED CSS. The pre-composer branch had both: a preset
+ * layer carrying an id and a `custom-gradient` layer carrying finished CSS,
+ * because the CSS "has to paint on a build that never had this app's editor".
+ * That reasoning made a gradient unre-editable the moment anything touched the
+ * string. It is one layer type now, and it carries the spec — `composeGradient`
+ * is total and lives in this package, so any client that can read a Look can
+ * also paint one. What a hand-edited CSS value loses is stated at
+ * `parseGradientCss`.
+ *
+ * STOPS CARRY THEIR OWN POSITION AND ALPHA. Evenly-spaced colour-only stops
+ * were what made the old round-trip a regex; they were also why every custom
+ * gradient looked like the same three bands. A stop is now a colour, where it
+ * sits, and how opaque it is — and the alpha rides in the colour as an 8-digit
+ * hex, which is the one alpha notation with no comma in it and so the only one
+ * that survives a comma-split stop list.
+ */
+export type GradientType = "linear" | "radial";
+
+/** One stop. `color` is hex — `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` —
+ *  because `<input type="color">` is what authors one and hex is what it
+ *  speaks. A bare keyword from a hand-edited value is kept and painted; it
+ *  simply cannot be shown in the swatch. */
+export type GradientStop = {
+  color: string;
+  /** 0-100, where along the ramp this stop sits. */
+  position: number;
+  /** 0-100, this stop's own alpha. Zero is a real answer: it is how a
+   *  gradient fades out into what is under it. */
+  opacity: number;
+};
+
+export type CustomGradientSpec = {
+  type: GradientType;
+  /** Degrees, only meaningful when `type` is "linear". */
+  angle: number;
+  /** 0-100, the radial centre. Only meaningful when `type` is "radial". */
+  centerX: number;
+  centerY: number;
+  /** MIN_GRADIENT_STOPS to MAX_GRADIENT_STOPS, in paint order. */
+  stops: GradientStop[];
+};
+
+/** Two is the fewest that is a gradient at all; five is where a reader stops
+ *  being able to say which stop they are dragging. */
+export const MIN_GRADIENT_STOPS = 2;
+export const MAX_GRADIENT_STOPS = 5;
+
+export const GRADIENT_LIMITS = {
+  center: { min: 0, max: 100 },
+  position: { min: 0, max: 100 },
+  /** A stop may go all the way to invisible — unlike a LAYER's fade, whose
+   *  floor is 10 because a layer you cannot see reads as a broken button. */
+  opacity: { min: 0, max: 100 },
+} as const;
+
+/** What a fresh gradient opens on, per state: two stops, nothing clever. It is
+ *  deliberately plain — the starter chips are where the tuned ones live. */
+export const DEFAULT_GRADIENT_SPECS: Record<"light" | "dark", CustomGradientSpec> = {
+  light: {
+    type: "linear",
+    angle: 160,
+    centerX: 50,
+    centerY: 50,
+    stops: [
+      { color: "#eef2ff", position: 0, opacity: 100 },
+      { color: "#fce7f3", position: 100, opacity: 100 },
+    ],
+  },
+  dark: {
+    type: "linear",
+    angle: 160,
+    centerX: 50,
+    centerY: 50,
+    stops: [
+      { color: "#1e1b3a", position: 0, opacity: 100 },
+      { color: "#2d1b2e", position: 100, opacity: 100 },
+    ],
+  },
+};
+
+/** Wrap rather than clamp: 370deg and 10deg are the same picture, and a slider
+ *  that stalls at its end feels broken. */
+function wrapAngle(angle: unknown): number {
+  if (typeof angle !== "number" || !Number.isFinite(angle)) return 0;
+  return ((Math.round(angle) % 360) + 360) % 360;
+}
+
+/** Six lowercase hex digits, or null for anything that is not a hex colour.
+ *  Any alpha the value carried is DROPPED — a stop's alpha lives in its own
+ *  `opacity`, and two places holding it would eventually disagree. */
+function rgbHex(color: unknown): string | null {
+  if (typeof color !== "string") return null;
+  const match = /^#([0-9a-fA-F]{3,8})$/.exec(color.trim());
+  const hex = match?.[1];
+  if (hex === undefined) return null;
+  if (hex.length === 3 || hex.length === 4) {
+    return hex
+      .slice(0, 3)
+      .toLowerCase()
+      .replace(/./g, (char) => char + char);
+  }
+  if (hex.length === 6 || hex.length === 8) return hex.slice(0, 6).toLowerCase();
+  return null;
+}
+
+function alphaHex(opacity: number): string {
+  return Math.round((Math.min(100, Math.max(0, opacity)) / 100) * 255)
+    .toString(16)
+    .padStart(2, "0");
+}
+
+/** One stop as CSS: the colour with its alpha written in, at full opacity the
+ *  plain six digits so the value a reader sees stays legible. */
+function stopColour(stop: GradientStop): string {
+  const hex = rgbHex(stop.color);
+  const opacity = clampTo(stop.opacity, GRADIENT_LIMITS.opacity, GRADIENT_LIMITS.opacity.max);
+  // A keyword (or anything else a hand-edited value held) is passed through
+  // rather than dropped: it paints, and refusing it would silently empty
+  // somebody's gradient.
+  if (hex === null) return typeof stop.color === "string" ? stop.color : "#000000";
+  return opacity >= GRADIENT_LIMITS.opacity.max ? `#${hex}` : `#${hex}${alphaHex(opacity)}`;
+}
+
+/**
+ * THE ONE PLACE A SPEC BECOMES CSS, and the shape `parseGradientCss` is the
+ * exact inverse of: one gradient function, explicit stop percentages, nothing
+ * else. Regular enough that the round-trip is a test rather than a hope.
+ *
+ * Always emits a value `isGradientValue` accepts — no `;`, no `}`, no `url(`
+ * can come out of hex colours and integers.
+ */
+export function composeGradient(spec: CustomGradientSpec): string {
+  const stops = spec.stops.slice(0, MAX_GRADIENT_STOPS);
+  while (stops.length < MIN_GRADIENT_STOPS) {
+    stops.push(stops[stops.length - 1] ?? { color: "#000000", position: 100, opacity: 100 });
+  }
+  const list = stops.map((stop) => `${stopColour(stop)} ${clampTo(stop.position, GRADIENT_LIMITS.position, 0)}%`).join(", ");
+  if (spec.type === "radial") {
+    const x = clampTo(spec.centerX, GRADIENT_LIMITS.center, 50);
+    const y = clampTo(spec.centerY, GRADIENT_LIMITS.center, 50);
+    return `radial-gradient(circle at ${x}% ${y}%, ${list})`;
+  }
+  return `linear-gradient(${wrapAngle(spec.angle)}deg, ${list})`;
+}
+
+const LINEAR_CSS = /^linear-gradient\((\d{1,3})deg, (.+)\)$/;
+const RADIAL_CSS = /^radial-gradient\(circle at (\d{1,3})% (\d{1,3})%, (.+)\)$/;
+/** Hex or a bare keyword only. Comma-bearing functional colours (`rgb()`,
+ *  `oklch()`) are deliberately NOT recognised: splitting the stop list on
+ *  commas would shred them, and pretending otherwise would parse them wrong
+ *  rather than refuse them. */
+const STOP_CSS = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+) (\d{1,3})%$/;
+
+/**
+ * The inverse of composeGradient, and ONLY of composeGradient — which is also
+ * what the pre-composer branch's `custom-gradient` layers were written by, so
+ * every value this app has ever stored reads back exactly.
+ *
+ * A preset's authored mesh, or anything hand-edited, returns null: the caller
+ * then opens on a default rather than on a half-understood parse, which is the
+ * honest failure. Never throws.
+ */
+export function parseGradientCss(value: unknown): CustomGradientSpec | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const radial = RADIAL_CSS.exec(trimmed);
+  const linear = radial ? null : LINEAR_CSS.exec(trimmed);
+  const body = radial?.[3] ?? linear?.[2];
+  if (body === undefined) return null;
+  const stops: GradientStop[] = [];
+  for (const piece of body.split(",")) {
+    const match = STOP_CSS.exec(piece.trim());
+    if (!match) return null;
+    const hex = /^#[0-9a-fA-F]+$/.test(match[1]) ? match[1].slice(1) : null;
+    // The alpha comes back OUT of the colour and into the stop, which is where
+    // the editor's own control reads it from.
+    const alpha = hex?.length === 4 ? parseInt(hex[3] + hex[3], 16) : hex?.length === 8 ? parseInt(hex.slice(6), 16) : 255;
+    stops.push({
+      color: rgbHex(match[1]) === null ? match[1] : `#${rgbHex(match[1])}`,
+      position: clampTo(Number(match[2]), GRADIENT_LIMITS.position, 0),
+      opacity: Math.round((alpha / 255) * 100),
+    });
+  }
+  if (stops.length < MIN_GRADIENT_STOPS || stops.length > MAX_GRADIENT_STOPS) return null;
+  if (radial) {
+    return {
+      type: "radial",
+      angle: DEFAULT_GRADIENT_SPECS.light.angle,
+      centerX: clampTo(Number(radial[1]), GRADIENT_LIMITS.center, 50),
+      centerY: clampTo(Number(radial[2]), GRADIENT_LIMITS.center, 50),
+      stops,
+    };
+  }
+  return { type: "linear", angle: wrapAngle(Number(linear?.[1])), centerX: 50, centerY: 50, stops };
+}
+
+/** A stored spec, total. Undefined rather than defaulted, so a caller can tell
+ *  "no spec here" (a v2 layer naming a preset) from "a spec that needed
+ *  clamping". */
+export function parseGradientSpec(value: unknown): CustomGradientSpec | undefined {
+  if (!isRecord(value) || !Array.isArray(value.stops)) return undefined;
+  const stops: GradientStop[] = [];
+  for (const entry of value.stops.slice(0, MAX_GRADIENT_STOPS)) {
+    if (!isRecord(entry) || !isSafeColour(entry.color)) continue;
+    stops.push({
+      color: entry.color,
+      position: clampTo(entry.position, GRADIENT_LIMITS.position, 0),
+      opacity: clampTo(entry.opacity, GRADIENT_LIMITS.opacity, GRADIENT_LIMITS.opacity.max),
+    });
+  }
+  if (stops.length < MIN_GRADIENT_STOPS) return undefined;
+  return {
+    type: value.type === "radial" ? "radial" : "linear",
+    angle: wrapAngle(value.angle),
+    centerX: clampTo(value.centerX, GRADIENT_LIMITS.center, 50),
+    centerY: clampTo(value.centerY, GRADIENT_LIMITS.center, 50),
+    stops,
+  };
+}
+
 /* ═══════════════════════════════════════════════ the scene vocabulary ═══ */
 
 /** One image in the stack. Positions are `background-position` percentages,
@@ -292,40 +525,29 @@ export type SceneImageLayer = {
   tiled: boolean;
 };
 
-/** One preset gradient in the stack, painted full-bleed. `opacity` is applied
- *  in CSS by rewriting the gradient's own colour alphas, so it costs nothing
- *  to drag. */
+/**
+ * ONE AUTHORED GRADIENT IN THE STACK, painted full-bleed.
+ *
+ * ONE GRADIENT KIND, NOT TWO (#471). There used to be a `gradient` layer
+ * holding a preset id and a `custom-gradient` layer holding resolved CSS —
+ * which meant "pick one of ours" and "build your own" were different SHAPES,
+ * and a preset you liked-but-for-one-colour could not be edited into the thing
+ * you wanted without starting over. Both read forward into this one:
+ * `parseSceneLayer` expands a preset id into the spec it named, and reads a
+ * `custom-gradient`'s CSS back into the stops that made it.
+ *
+ * `opacity` is the LAYER's own fade, distinct from any stop's: it is applied in
+ * CSS by rewriting the composed gradient's colour alphas, so it costs nothing
+ * to drag, and it multiplies with whatever the stops already say.
+ */
 export type SceneGradientLayer = {
   type: "gradient";
-  presetId: string;
-  /** 10-100, written into the gradient's colours. */
+  spec: CustomGradientSpec;
+  /** 10-100, multiplied into the gradient's colours. */
   opacity: number;
 };
 
-/**
- * A gradient somebody built rather than picked, carried as the RESOLVED CSS.
- *
- * It holds the finished `linear-gradient(…)` rather than the stops it was made
- * from, for the same reason a Look has always carried resolved layers: the
- * value has to paint on a build that never had this app's editor. The editor
- * reads the stops back out of it when it can (`parseGradient`) and opens on its
- * defaults when it cannot, which is the existing contract — so a gradient
- * hand-edited outside the app still PAINTS, it just is not re-editable.
- *
- * A LAYER, NOT A MODE (#471). A custom gradient used to be a whole backdrop
- * KIND carrying a light half and a dark half. Now it is one entry in one
- * state's stack: the other state has its own stack, so there is no pair to keep
- * in step and no second control asking which half you meant.
- */
-export type SceneCustomGradientLayer = {
-  type: "custom-gradient";
-  /** A gradient value, held to `isGradientValue`. */
-  css: string;
-  /** 10-100, written into the gradient's colours. */
-  opacity: number;
-};
-
-export type SceneLayer = SceneImageLayer | SceneGradientLayer | SceneCustomGradientLayer;
+export type SceneLayer = SceneImageLayer | SceneGradientLayer;
 
 /** The composition: the stack, top layer first. Nothing is implied under it —
  *  a stack that does not end in a full-bleed gradient ends in transparency. */
@@ -352,54 +574,79 @@ export const SCENE_LIMITS = {
 export const DEFAULT_LAYER: Omit<SceneImageLayer, "id"> = { type: "image", x: 50, y: 50, scale: 60, opacity: 100, tiled: false };
 
 /**
- * WHICH GRADIENT PRESETS EXIST IS THE APP'S BUSINESS, NOT THE FORMAT'S.
+ * WHICH GRADIENT STARTERS EXIST IS THE APP'S BUSINESS, NOT THE FORMAT'S.
  *
- * `parseScene` has always been forgiving of a preset id this build does not
- * have — a scene naming a dropped preset should change colour, not stop
- * composing — and doing that requires knowing the table. The table is a web
- * module full of tuned gradients; importing it here would drag the cockpit's
- * design into the protocol. So the knowledge is a PARAMETER: the cockpit hands
- * in its real table, and a client reading a published look uses the permissive
- * default below (an id it cannot resolve is kept, and whatever paints the
- * scene decides what to do with it — the resolved layers travel anyway).
+ * A layer stored by an older build names a PRESET, and reading it forward means
+ * knowing what that preset was made of. The table is a web module full of tuned
+ * gradients; importing it here would drag the cockpit's design into the
+ * protocol. So the knowledge is a PARAMETER: the cockpit hands in its real
+ * table, and a client reading a published look uses the permissive default
+ * below, which knows no starters at all and falls back to a plain two-stop
+ * gradient — a look that arrives from another build changes colour rather than
+ * failing to compose.
  */
-export type ScenePresets = { known: (id: string) => boolean; fallback: string };
+export type ScenePresets = {
+  /** The spec a starter id names, in one colour state; undefined when this
+   *  build has no starter by that name. */
+  expand: (id: string, mode: "light" | "dark") => CustomGradientSpec | undefined;
+  /** The starter a layer naming nothing readable falls back to. */
+  fallback: string;
+};
 
 /** Ids are generated, never typed — but they are also JSON keys sharing a map
  *  with the `orig:` prefix, so the parser holds them to this shape rather than
  *  letting a hand-edited `orig:x` shadow a real original. */
 const ID_SHAPE = /^[A-Za-z0-9_-]{1,40}$/;
 
-/** The permissive gate: any plausible id is kept, and the fallback names the
- *  cockpit's own first preset so a scene with no readable base still has one. */
-export const DEFAULT_SCENE_PRESETS: ScenePresets = { known: (id) => ID_SHAPE.test(id), fallback: "aurora" };
+export const DEFAULT_SCENE_PRESETS: ScenePresets = { expand: () => undefined, fallback: "aurora" };
 
 function clampTo(value: unknown, range: { min: number; max: number }, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(range.max, Math.max(range.min, Math.round(value)));
 }
 
-function presetIdOr(value: unknown, presets: ScenePresets): string {
-  return typeof value === "string" && presets.known(value) ? value : presets.fallback;
+/** A stored preset id as the spec it named. Always answers with a gradient:
+ *  an id this build dropped falls to the fallback starter, and a build with no
+ *  starter table at all falls to the plain default — a layer that composed to
+ *  nothing would be a GAP in a positional list (see composeState). */
+export function expandGradientPreset(value: unknown, presets: ScenePresets, mode: "light" | "dark"): CustomGradientSpec {
+  const named = typeof value === "string" && ID_SHAPE.test(value) ? presets.expand(value, mode) : undefined;
+  return named ?? presets.expand(presets.fallback, mode) ?? DEFAULT_GRADIENT_SPECS[mode];
 }
 
-/** One layer, or undefined. Every field is clamped into range rather than
- *  refused: a stale scale from an older build should move the slider, not
- *  delete someone's arrangement. Only a missing/malformed id is fatal — and
- *  only for image layers, which is also the DEFAULT reading: scenes written
- *  before gradient layers existed have no `type` member at all. */
-export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): SceneLayer | undefined {
+/**
+ * One layer, or undefined. Every field is clamped into range rather than
+ * refused: a stale scale from an older build should move the slider, not
+ * delete someone's arrangement. Only a missing/malformed id is fatal — and
+ * only for image layers, which is also the DEFAULT reading: scenes written
+ * before gradient layers existed have no `type` member at all.
+ *
+ * `mode` is WHICH STATE this stack belongs to, and it exists for one reason:
+ * the preset a v2 layer names has a light half and a dark half, and expanding
+ * the wrong one would retint somebody's night on load. Every caller that knows
+ * the state passes it; the legacy scene parser is read twice, once per state.
+ */
+export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS, mode: "light" | "dark" = "light"): SceneLayer | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
   if (record.type === "gradient") {
-    return { type: "gradient", presetId: presetIdOr(record.presetId, presets), opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
+    // Its own spec if it has one; otherwise the preset a v2 layer named.
+    const spec = parseGradientSpec(record.spec) ?? expandGradientPreset(record.presetId, presets, mode);
+    return { type: "gradient", spec, opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
   }
   if (record.type === "custom-gradient") {
-    // Fatal rather than defaulted: there is no "the gradient they meant" to
-    // fall back to, and a layer that paints nothing is a gap in a positional
-    // list (see composeScene).
+    // The pre-composer layer: resolved CSS, read back into the stops that made
+    // it. Not a gradient at all is fatal rather than defaulted — there is no
+    // "the gradient they meant" to fall back to, and a layer that paints
+    // nothing is a gap in a positional list (see composeState). A gradient this
+    // parser cannot take apart (hand-edited, or an authored mesh) keeps its
+    // place and opens on the default: the layer survives, its stops do not.
     if (!isGradientValue(record.css)) return undefined;
-    return { type: "custom-gradient", css: record.css, opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
+    return {
+      type: "gradient",
+      spec: parseGradientCss(record.css) ?? DEFAULT_GRADIENT_SPECS[mode],
+      opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max),
+    };
   }
   if (typeof record.id !== "string" || !ID_SHAPE.test(record.id)) return undefined;
   return {
@@ -429,14 +676,14 @@ export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_
  * own JSON string). Both caps are applied here, so no caller can build a stack
  * the composer would refuse to draw.
  */
-export function parseSceneLayers(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): SceneLayer[] {
+export function parseSceneLayers(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS, mode: "light" | "dark" = "light"): SceneLayer[] {
   if (!Array.isArray(value)) return [];
   const layers: SceneLayer[] = [];
   const seen = new Set<string>();
   let images = 0;
   let gradients = 0;
   for (const entry of value) {
-    const layer = parseSceneLayer(entry, presets);
+    const layer = parseSceneLayer(entry, presets, mode);
     if (!layer) continue;
     if (layer.type === "image") {
       if (seen.has(layer.id) || images >= MAX_SCENE_LAYERS) continue;
@@ -451,8 +698,8 @@ export function parseSceneLayers(value: unknown, presets: ScenePresets = DEFAULT
   return layers;
 }
 
-export function parseScene(raw: string | null, presets: ScenePresets = DEFAULT_SCENE_PRESETS): Scene {
-  const empty: Scene = { layers: [{ type: "gradient", presetId: presets.fallback, opacity: SCENE_LIMITS.opacity.max }] };
+export function parseScene(raw: string | null, presets: ScenePresets = DEFAULT_SCENE_PRESETS, mode: "light" | "dark" = "light"): Scene {
+  const empty: Scene = { layers: [{ type: "gradient", spec: expandGradientPreset(presets.fallback, presets, mode), opacity: SCENE_LIMITS.opacity.max }] };
   try {
     const parsed: unknown = JSON.parse(raw ?? "null");
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return empty;
@@ -460,10 +707,10 @@ export function parseScene(raw: string | null, presets: ScenePresets = DEFAULT_S
     const stored = record.layers;
     const hasBase = typeof record.baseId === "string";
     if (!Array.isArray(stored) && !hasBase) return empty;
-    const layers = parseSceneLayers(stored, presets);
+    const layers = parseSceneLayers(stored, presets, mode);
     const gradients = layers.reduce((count, layer) => count + (layer.type === "image" ? 0 : 1), 0);
     if (hasBase && gradients < MAX_SCENE_GRADIENT_LAYERS) {
-      layers.push({ type: "gradient", presetId: presetIdOr(record.baseId, presets), opacity: SCENE_LIMITS.opacity.max });
+      layers.push({ type: "gradient", spec: expandGradientPreset(record.baseId, presets, mode), opacity: SCENE_LIMITS.opacity.max });
     }
     return { layers };
   } catch {
@@ -499,7 +746,11 @@ export type LookBackdrop =
   | { kind: "gradient"; id: string; dim?: number; resolved: BackdropLayers }
   | { kind: "custom-gradient"; light: string; dark: string; dim?: number; resolved: BackdropLayers }
   | { kind: "image"; fit: BackdropFit; blur: number; dim: number; image: string }
-  | { kind: "scene"; scene: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
+  /** `scene` and `sceneDark` are the SAME stored stack read once per colour
+   *  state — the old model had one scene for both, but a gradient layer in it
+   *  named a preset with two halves, so expanding it needs to happen twice or
+   *  the migration would paint somebody's night in daylight colours. */
+  | { kind: "scene"; scene: Scene; sceneDark: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
 
 /* ═══════════════════════════════════════════════════ the composition ═══ */
 
@@ -560,7 +811,7 @@ export function parseCompositionState(value: unknown, mode: "light" | "dark", pr
   }
   return {
     base: isSafeColour(value.base) ? value.base : fallbackBase,
-    layers: parseSceneLayers(value.layers, presets),
+    layers: parseSceneLayers(value.layers, presets, mode),
     overrides,
   };
 }
@@ -685,10 +936,11 @@ export function parseLookBackdrop(value: unknown, presets: ScenePresets = DEFAUL
     const resolved = parseLayers(value.resolved, isSceneValue);
     if (!resolved) return { kind: "none" };
     // Round-tripped through the composer's own parsers: the same clamping and
-    // the same "only real image data URLs" filter the composer applies.
-    const scene = parseScene(JSON.stringify(value.scene ?? null), presets);
+    // the same "only real image data URLs" filter the composer applies. Twice,
+    // once per state — see the `scene` variant above.
+    const raw = JSON.stringify(value.scene ?? null);
     const images = parseSceneImages(JSON.stringify(value.images ?? null));
-    return { kind: "scene", scene, images, ...dim(value.dim), resolved };
+    return { kind: "scene", scene: parseScene(raw, presets, "light"), sceneDark: parseScene(raw, presets, "dark"), images, ...dim(value.dim), resolved };
   }
   return { kind: "none" };
 }
@@ -713,29 +965,40 @@ export function parseLookBackdrop(value: unknown, presets: ScenePresets = DEFAUL
  * positioned and scaled rather than fitted, and has no blur of its own. `cover`
  * and `fill` become a full-bleed layer, `tile` becomes a tiled one, and the
  * picture survives — which is the part somebody would miss.
+ *
+ * WHAT A GRADIENT BACKDROP BECOMES is the STARTER SPEC its preset named, per
+ * state (#471) — the old value was two authored meshes behind one id, and a
+ * spec is one gradient, so the picture simplifies where the id did the work.
+ * `presets` is where this build's starter table comes in; without one, every
+ * gradient falls to the plain default.
  */
-export function compositionFromV1(theme: { light: ThemeHalf; dark: ThemeHalf }, backdrop: LookBackdrop): { composition: Composition; images: Record<string, string> } {
+export function compositionFromV1(
+  theme: { light: ThemeHalf; dark: ThemeHalf },
+  backdrop: LookBackdrop,
+  presets: ScenePresets = DEFAULT_SCENE_PRESETS,
+): { composition: Composition; images: Record<string, string> } {
   const images: Record<string, string> = {};
   const layers: SceneLayer[] = [];
+  // The one kind whose two states genuinely differ: everything else is one
+  // stored value, so the dark stack is a copy of the light one.
+  let darkOverride: SceneLayer[] | undefined;
   if (backdrop.kind === "gradient") {
-    layers.push({ type: "gradient", presetId: backdrop.id, opacity: SCENE_LIMITS.opacity.max });
+    layers.push({ type: "gradient", spec: expandGradientPreset(backdrop.id, presets, "light"), opacity: SCENE_LIMITS.opacity.max });
+    darkOverride = [{ type: "gradient", spec: expandGradientPreset(backdrop.id, presets, "dark"), opacity: SCENE_LIMITS.opacity.max }];
   } else if (backdrop.kind === "custom-gradient") {
-    layers.push({ type: "custom-gradient", css: backdrop.light, opacity: SCENE_LIMITS.opacity.max });
+    const spec = (css: string, mode: "light" | "dark") => parseGradientCss(css) ?? DEFAULT_GRADIENT_SPECS[mode];
+    layers.push({ type: "gradient", spec: spec(backdrop.light, "light"), opacity: SCENE_LIMITS.opacity.max });
+    darkOverride = [{ type: "gradient", spec: spec(backdrop.dark, "dark"), opacity: SCENE_LIMITS.opacity.max }];
   } else if (backdrop.kind === "image") {
     const id = "migrated";
     images[id] = backdrop.image;
     layers.push({ type: "image", id, x: 50, y: 50, scale: 100, opacity: SCENE_LIMITS.opacity.max, tiled: backdrop.fit === "tile" });
   } else if (backdrop.kind === "scene") {
     layers.push(...backdrop.scene.layers);
+    darkOverride = backdrop.sceneDark.layers.map((layer) => ({ ...layer }));
     Object.assign(images, backdrop.images);
   }
-  // A custom gradient's DARK half is a different string, so the dark state gets
-  // its own copy of that one layer rather than the light one — the only place
-  // the old model held two values where the new one holds two stacks.
-  const darkLayers =
-    backdrop.kind === "custom-gradient"
-      ? [{ type: "custom-gradient" as const, css: backdrop.dark, opacity: SCENE_LIMITS.opacity.max }]
-      : layers.map((layer) => ({ ...layer }));
+  const darkLayers = darkOverride ?? layers.map((layer) => ({ ...layer }));
   const state = (half: ThemeHalf, stack: SceneLayer[]): CompositionState => ({
     base: half.background,
     layers: stack,
@@ -770,6 +1033,7 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
     ? compositionFromV1(
         { light: parseThemeHalf(old.light, "light"), dark: parseThemeHalf(old.dark, "dark") },
         parseLookBackdrop(value.backdrop, presets),
+        presets,
       )
     : undefined;
   return {
