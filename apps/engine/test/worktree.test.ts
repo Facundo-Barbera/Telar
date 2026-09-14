@@ -37,6 +37,18 @@ afterEach(() => {
 });
 
 /**
+ * A POOL OF THIS FILE'S OWN, never `defaultAsyncGitRunner`.
+ *
+ * The shared singleton has four slots and every suite in this process draws on
+ * them — which is exactly what the parity test below says it will not couple
+ * itself to. Cuts are the slowest children this file spawns, so borrowing the
+ * singleton for them would make an unrelated suite's reads wait on a
+ * `worktree add`, and this file's own cuts wait on whatever that suite is
+ * doing. Measured as ~5s timeouts across this file under a full run.
+ */
+const poolGit = createAsyncGitRunner();
+
+/**
  * The whole cut, the way `createSession` makes it: refuse on the request, then
  * do the expensive half asynchronously (#496). Composed here rather than in the
  * source because the store is the only caller that needs the two halves apart —
@@ -51,7 +63,7 @@ async function cutWorktree(input: {
   branchName?: string;
 }): Promise<{ path: string; branch: string; baseRef: string }> {
   const { plan, baseSha } = prepareSessionWorktree(defaultGitRunner, input);
-  return createSessionWorktreeAsync(defaultAsyncGitRunner, {
+  return createSessionWorktreeAsync(poolGit, {
     engineRoot: input.engineRoot,
     projectRoot: input.projectRoot,
     plan,
@@ -132,7 +144,7 @@ test("recreating a session's worktree after a reap succeeds instead of failing o
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
   const first = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
-  expect(await removeSessionWorktreeAsync(defaultAsyncGitRunner, projectRoot, first.path)).toBe(true);
+  expect(await removeSessionWorktreeAsync(poolGit, projectRoot, first.path)).toBe(true);
   const again = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
   expect(fs.existsSync(again.path)).toBe(true);
 });
@@ -144,7 +156,7 @@ test("removal reports whether the directory is ACTUALLY gone", async () => {
   const projectRoot = repo();
   const engineRoot = tmp("telar-wt-state-");
   const cut = await cutWorktree({ engineRoot, projectRoot, sessionId: "one" });
-  expect(await removeSessionWorktreeAsync(defaultAsyncGitRunner, projectRoot, cut.path)).toBe(true);
+  expect(await removeSessionWorktreeAsync(poolGit, projectRoot, cut.path)).toBe(true);
 
   const deaf: AsyncGitRunner = async () => ({ status: 1, stdout: "", stderr: "nope" });
   const stubborn = await cutWorktree({ engineRoot, projectRoot, sessionId: "two" });

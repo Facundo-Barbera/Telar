@@ -23,6 +23,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
 import type { SessionsCapability } from "../src/sessions-tools/tools";
 import { stubModels } from "./stub-models";
+import { worktreeReady } from "./worktree-ready";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -203,6 +204,9 @@ describe("the protocol surface", () => {
     const { session } = await client.session(made.id);
     expect(session.title).toBe("cut from a chat client");
     expect(session.origin).toBe("session");
+    // The cut runs behind the tool's answer now (#496) — the row is complete,
+    // the directory arrives a moment later.
+    await worktreeReady(daemon.store, made.id);
     expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
 
     // A tool the wall does not have is a -32602, not a silent success.
