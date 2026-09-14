@@ -128,13 +128,11 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
   return session?.driver ?? driver ?? "claude";
 }
 
-function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
+function placeholderFor(ready: boolean, busy: boolean): string {
   if (!ready) return "Waiting for the session…";
   // A message mid-turn reaches the running agent; say so.
   if (busy) return "Enter sends into the running turn…";
-  // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
-  // which a project-less conversation does not have one of.
-  return placeholder ?? "Ask for changes, or explore the project…";
+  return "Ask for changes, or explore the project…";
 }
 
 /**
@@ -429,7 +427,6 @@ export function Composer({
   onStopBackground,
   onRuntimeMode,
   onResumeAfterRateLimit,
-  placeholder,
   onModelChange,
   onOpenChanges,
   onCompact,
@@ -519,9 +516,6 @@ export function Composer({
   onResumeAfterRateLimit?: (next: boolean) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
-  /** What the input invites. The default offers to "explore the project",
-   *  which is wrong where there is no project. */
-  placeholder?: string;
   onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
   onOpenChanges?: () => void;
@@ -1442,7 +1436,7 @@ export function Composer({
             placeholder={
               questionActive
                 ? "Type your own answer, or leave blank…"
-                : placeholderFor(ready, busy, placeholder)
+                : placeholderFor(ready, busy)
             }
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
