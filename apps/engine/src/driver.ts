@@ -3108,10 +3108,29 @@ export function createClaudeDriver(
           // that arrives in two seconds must not leave a timer standing to open
           // a row about a silence that ended twenty-eight seconds ago.
           if (ourLoopSpoke) disarmProviderSilence();
-          // Any frame of ours after `end_turn` means the CLI is still talking
-          // for this turn (the result, a late tool round): the grace no longer
-          // applies. It is re-armed below if the model says `end_turn` again.
-          if (ourLoopSpoke) endTurnSeenAt = undefined;
+          /**
+           * WHICH FRAMES DISARM THE END-TURN GRACE — and which do not.
+           *
+           * MEASURED on CLI 2.1.270 through the SDK: after the model finishes,
+           * the frames arrive as `assistant` (envelope, `stop_reason: end_turn`),
+           * then `stream_event/message_delta` (carrying the same end_turn), then
+           * `stream_event/message_stop`, then `result`. The first cut of #465
+           * disarmed on ANY frame of ours, so the two trailing stream frames of
+           * the SAME message disarmed the grace every time and the settle never
+           * fired — the nightly that shipped it still stalled (2026-09-14 10:15).
+           *
+           * Only frames that mean MORE IS COMING disarm it: a new message
+           * beginning (`message_start`), a tool result (`user`) the model will
+           * answer, or a `result` (which ends the turn on its own path). A
+           * message's own trailing delta and stop are the end being spelled
+           * out, not a continuation.
+           */
+          if (
+            ourLoopSpoke &&
+            (item.type === "user" || item.type === "result" || (item.type === "stream_event" && item.event?.type === "message_start"))
+          ) {
+            endTurnSeenAt = undefined;
+          }
           if (waitItemId && ourLoopSpoke) {
             closeProviderWait();
             /**

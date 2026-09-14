@@ -399,10 +399,21 @@ describe("the end-turn grace (#465)", () => {
    * models exactly that: `end_turn`, then silence forever.
    */
   test("an end_turn with no result following settles the turn after the grace, with a row saying why", async () => {
+    /**
+     * THE REAL FRAME ORDER, measured on CLI 2.1.270: the envelope with
+     * `end_turn`, then the message's own trailing `message_delta` (repeating
+     * end_turn) and `message_stop`, then — on a healthy producer — `result`.
+     * The first cut of this grace disarmed on those two trailing stream frames
+     * and never fired; the nightly that carried it still stalled. They are the
+     * end being spelled out, not a continuation, and must leave the grace armed.
+     */
     const driver = createClaudeDriver(
       async () => ({
         async *query() {
+          yield { type: "stream_event", event: { type: "message_start" } };
           yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" } } };
+          yield { type: "stream_event", event: { type: "message_stop" } };
           await new Promise(() => undefined);
         },
       }),
