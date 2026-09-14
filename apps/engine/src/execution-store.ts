@@ -9,6 +9,35 @@ type Statement = { run(...args: unknown[]): unknown; get(...args: unknown[]): Re
 type Database = { exec(sql: string): void; prepare(sql: string): Statement; close(): void };
 const FILES = new Set(["session.json", "queue.json", "items.json", "requests.json", "tasks.json"]);
 
+/**
+ * HOW LONG A STREAMED DELTA MAY SIT IN MEMORY, and how many may sit there.
+ *
+ * `synchronous=FULL` means one WAL fsync per transaction, and the engine runs
+ * one transaction per `ingestObservations` call — so a driver reporting one
+ * delta at a time buys one fsync per token-chunk. Measured on the dogfood Mac:
+ * 0.116 ms for a single append, 0.025 ms each at sixteen per transaction. The
+ * fsync is the whole cost and the batch size is the only lever on it.
+ *
+ * THE COUNT IS THE LEVER; THE AGE IS THE BOUND. A streaming turn peaks at 133
+ * deltas/s (docs/investigations/performance-2026-09-11.md), so a 16 ms window
+ * would hold two chunks and save almost nothing — the investigation's own
+ * suggested window cannot reach the number it asks for. 200 ms holds about
+ * twenty-six, which is where the per-event cost lands under 0.010 ms.
+ *
+ * NOTHING WAITS ON THIS. `events` and `cursor` read the buffer, so a subscriber
+ * tailing the journal sees a buffered delta exactly as soon as it saw an
+ * inserted one; the delay is durability's alone. A crash loses at most this
+ * much unwritten tail, which is the trade the investigation names: unflushed
+ * deltas may be lost, a settled turn may not.
+ */
+const FLUSH_COUNT = 32;
+const FLUSH_AFTER_MS = 200;
+
+/** Only a bench or a test sets these; production runs the constants above.
+ *  `flushCount: 1` is the behaviour before coalescing — every delta written
+ *  where it was appended — which is what makes the two comparable. */
+export type ExecutionStoreOptions = { flushCount?: number; flushAfterMs?: number };
+
 /** One authoritative execution database; legacy files become a migration backup.
  * Runtime adapters use the built-in SQLite API of Bun and Node/Electron.
  */
@@ -39,7 +68,37 @@ export class ExecutionStore {
     }
     return cached;
   }
-  constructor(readonly root: string) {
+
+  /**
+   * THE DELTAS THAT ARE JOURNALLED BUT NOT YET ON DISK.
+   *
+   * `buffered` is settled: the transaction that appended them committed, and
+   * every reader below already answers with them. `pending` was appended inside
+   * the transaction still open, so it is discarded if that transaction rolls
+   * back. `writtenAhead` is the part of `buffered` an open transaction has
+   * already inserted — it goes back into `buffered` on a rollback, because
+   * those deltas were committed by an EARLIER transaction and a later failure
+   * is not allowed to take them.
+   *
+   * Only `content.delta` is ever held. Everything else writes through, and
+   * writes through BEHIND whatever is buffered: a settled `item.completed` that
+   * reached the disk ahead of the deltas it concludes would leave a hole in the
+   * id sequence if the process died between them, and the journal's ids have to
+   * stay contiguous.
+   */
+  private buffered: EngineEvent[] = [];
+  private pending: EngineEvent[] = [];
+  private writtenAhead: EngineEvent[] = [];
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private bufferedSince = 0;
+  /** The highest id handed out per session — `MAX(id)` once, then memory.
+   *  One writer holds the daemon lock, so nothing else can move it. */
+  private readonly cursors = new Map<string, number>();
+  private readonly flushCount: number;
+  private readonly flushAfterMs: number;
+  constructor(readonly root: string, options: ExecutionStoreOptions = {}) {
+    this.flushCount = Math.max(1, options.flushCount ?? FLUSH_COUNT);
+    this.flushAfterMs = Math.max(0, options.flushAfterMs ?? FLUSH_AFTER_MS);
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -73,31 +132,121 @@ export class ExecutionStore {
     if (path.basename(file) === "session.json") this.fenceLegacy(path.basename(path.dirname(file)));
   }
   events(sessionId: string, after = 0): EngineEvent[] {
-    return this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
+    const stored = this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
       .map((row) => JSON.parse(String(row.value)) as EngineEvent);
+    // Held deltas are always newer than every stored row, so the tail appends.
+    const held = this.held().filter((event) => event.sessionId === sessionId && event.id > after);
+    return held.length ? [...stored, ...held] : stored;
   }
   cursor(sessionId: string): number {
-    return Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+    const known = this.cursors.get(sessionId);
+    if (known !== undefined) return known;
+    const stored = Number(this.statement("SELECT COALESCE(MAX(id),0) AS id FROM events WHERE session_id=?").get(sessionId)?.id ?? 0);
+    const head = this.held().reduce((highest, event) => event.sessionId === sessionId && event.id > highest ? event.id : highest, stored);
+    this.cursors.set(sessionId, head);
+    return head;
   }
   append(event: EngineEvent): void {
-    this.statement("INSERT INTO events(session_id,id,value) VALUES(?,?,?)").run(event.sessionId, event.id, JSON.stringify(event));
+    this.cursors.set(event.sessionId, Math.max(event.id, this.cursors.get(event.sessionId) ?? 0));
+    if (event.type !== "content.delta") {
+      // Nothing may reach the disk ahead of a buffered delta; see `buffered`.
+      // Outside a transaction that has to be ONE of them, or the batch this
+      // event just settled would go to the disk a row and an fsync at a time.
+      this.alone(() => { this.drain(this.depth > 0); this.insert(event); });
+      return;
+    }
+    (this.depth > 0 ? this.pending : this.buffered).push(event);
+    if (this.bufferedSince === 0) this.bufferedSince = Date.now();
+    if (this.buffered.length + this.pending.length >= this.flushCount) this.flush();
+    else this.arm();
   }
   sessionIds(): string[] {
     return this.statement("SELECT key FROM documents WHERE key LIKE 'sessions/%/session.json'").all().map((row) => String(row.key).split("/")[1]!);
   }
   deleteSession(sessionId: string): void {
-    const prefix = `sessions/${sessionId}/`;
-    this.statement("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
-    this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
+    this.alone(() => {
+      // Store the held deltas so the DELETE below is what decides they are gone —
+      // and so a rollback brings back a whole session, not a truncated one.
+      this.drain(this.depth > 0);
+      const prefix = `sessions/${sessionId}/`;
+      this.statement("DELETE FROM documents WHERE substr(key,1,?)=?").run(prefix.length, prefix);
+      this.statement("DELETE FROM events WHERE session_id=?").run(sessionId);
+      this.cursors.delete(sessionId);
+    });
+  }
+  /** Every delta this store has accepted and not yet stored. `writtenAhead` is
+   *  excluded: it is in the database already, awaiting its commit. */
+  private held(): EngineEvent[] {
+    return this.buffered.length || this.pending.length ? [...this.buffered, ...this.pending] : [];
+  }
+  private insert(event: EngineEvent): void {
+    this.statement("INSERT INTO events(session_id,id,value) VALUES(?,?,?)").run(event.sessionId, event.id, JSON.stringify(event));
+  }
+  /** Store everything held, in the write scope that is open right now.
+   *  `track` records the settled ones a caller has to hand back on a rollback. */
+  private drain(track: boolean): void {
+    if (!this.buffered.length && !this.pending.length) return;
+    for (const event of this.buffered) { this.insert(event); if (track) this.writtenAhead.push(event); }
+    for (const event of this.pending) this.insert(event);
+    this.buffered = [];
+    this.pending = [];
+    this.disarm();
+  }
+  /** Run `work` as one transaction, or inline when one is already open.
+   *  Deliberately not `transaction()`: no receipt belongs to a flush. */
+  private alone(work: () => void): void {
+    if (this.depth > 0) return work();
+    const settled = this.buffered;
+    this.db.exec("BEGIN IMMEDIATE");
+    this.depth += 1;
+    try { work(); this.db.exec("COMMIT"); }
+    catch (error) {
+      this.db.exec("ROLLBACK");
+      // What this rolled back was settled before it started; hand it back
+      // rather than lose it to a failure that came after.
+      this.buffered.unshift(...settled.filter((event) => !this.buffered.includes(event)));
+      this.cursors.clear();
+      throw error;
+    } finally { this.depth -= 1; }
+  }
+  /** Store what is held, in a transaction of its own — or, inside one already,
+   *  as part of it. `transaction` flushes what is settled before it begins. */
+  private flush(): void {
+    if (this.depth > 0) return this.drain(true);
+    if (!this.buffered.length) return;
+    this.alone(() => this.drain(false));
+  }
+  private arm(): void {
+    if (this.flushTimer) return;
+    // Never the reason a process stays up: an exit flushes through `close`.
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      if (this.closed) return;
+      // A timer has no caller to throw at, and an unhandled one here would take
+      // the daemon down over a write that the next flush will retry anyway.
+      try { this.flush(); } catch { this.arm(); }
+    }, Math.max(0, this.flushAfterMs - (Date.now() - this.bufferedSince)));
+    this.flushTimer.unref?.();
+  }
+  private disarm(): void {
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined; }
+    this.bufferedSince = 0;
   }
   transaction<T>(command: string, operation: () => T, commandId?: string): T {
     if (this.depth > 0) return operation();
+    // Deltas this store already answers for are settled by an earlier commit,
+    // so they are stored on their own rather than inside — and taken back by —
+    // whatever this transaction turns out to do.
+    if (this.buffered.length && Date.now() - this.bufferedSince >= this.flushAfterMs) this.flush();
     const receiptId = commandId ?? crypto.randomUUID();
     const changesBefore = Number(this.statement("SELECT total_changes() AS count").get()?.count ?? 0);
     this.db.exec("BEGIN IMMEDIATE");
     this.depth += 1;
     try {
-      const known = this.statement("SELECT command,result FROM receipts WHERE id=?").get(receiptId);
+      // A receipt id this call just minted cannot already be on file, and the
+      // streaming path mints one per delta — so the lookup is an index probe
+      // per token-chunk that can only ever miss.
+      const known = commandId === undefined ? undefined : this.statement("SELECT command,result FROM receipts WHERE id=?").get(receiptId);
       if (known) {
         if (known.command !== command) throw new Error("command id was already used for a different command");
         this.db.exec("COMMIT");
@@ -112,9 +261,34 @@ export class ExecutionStore {
         this.statement("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command,
           JSON.stringify(commandId === undefined ? {} : { value: result }));
       this.db.exec("COMMIT");
+      this.settle();
       return result;
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    } catch (error) { this.db.exec("ROLLBACK"); this.revert(); throw error; }
     finally { this.depth -= 1; }
+  }
+  /** The deltas appended in the transaction that just committed are now this
+   *  store's to answer for, and the ones it wrote are the disk's. */
+  private settle(): void {
+    if (this.pending.length) {
+      this.buffered.push(...this.pending);
+      this.pending = [];
+      if (this.bufferedSince === 0) this.bufferedSince = Date.now();
+      this.arm();
+    }
+    this.writtenAhead = [];
+  }
+  /** A rollback takes back what the transaction appended — and hands back what
+   *  it had written on an earlier transaction's behalf. */
+  private revert(): void {
+    this.pending = [];
+    if (this.writtenAhead.length) {
+      this.buffered.unshift(...this.writtenAhead);
+      this.writtenAhead = [];
+      this.arm();
+    }
+    // Ids assigned inside the rolled-back transaction are gone from the
+    // database; `cursor` re-reads, counting whatever is still held.
+    this.cursors.clear();
   }
   exportLegacy(destination: string): void {
     if (fs.existsSync(destination)) throw new Error("Export destination must not already exist");
@@ -129,7 +303,12 @@ export class ExecutionStore {
       fs.writeFileSync(path.join(destination, "sessions", id, "events.ndjson"), events.map((event) => JSON.stringify(event) + "\n").join(""), { mode: 0o600 });
     }
   }
-  close(): void { if (!this.closed) { this.statements.clear(); this.db.close(); this.closed = true; } }
+  close(): void {
+    if (this.closed) return;
+    this.disarm();
+    // An orderly shutdown stores the tail. Only a crash may lose it.
+    try { this.flush(); } finally { this.statements.clear(); this.cursors.clear(); this.db.close(); this.closed = true; }
+  }
   private fenceLegacy(sessionId: string): void {
     const file = path.join(this.root, "sessions", sessionId, "session.json");
     // Avoid a disk write per metadata update; this is an immutable downgrade fence.
