@@ -1357,14 +1357,13 @@ ipcMain.handle("telar:browser:update-profile", (event, input) => {
 ipcMain.handle("telar:browser:delete-profile", (event, input) => {
   const manager = requireBrowserManager(event);
   /**
-   * A SESSION CURRENTLY POINTED AT IT IS A REFUSAL, not a silent re-bind. The
-   * registry only knows about project assignments; a scope switched to this
-   * profile by hand is live state only the manager has, and deleting under it
-   * would leave that panel naming a profile that no longer exists.
+   * A SESSION ACTUALLY BROWSING IN IT IS A REFUSAL, not a silent re-bind — the
+   * rule itself lives in the manager, which is what holds the tabs
+   * (`whyProfileIsInUse`, #430). The registry knows about project assignments
+   * and enforces those in `remove`.
    */
-  if ([...manager.scopeProfiles.values()].includes(input?.profileId)) {
-    throw new Error("A session is browsing in that profile right now. Switch that session to another profile first.");
-  }
+  const busy = manager.whyProfileIsInUse(input?.profileId);
+  if (busy) throw new Error(busy);
   const removed = manager.profiles.remove(input?.profileId);
   manager.emitAllStates();
   return { profiles: manager.listProfiles(), removed };

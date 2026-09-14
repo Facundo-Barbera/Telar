@@ -55,7 +55,14 @@ function profileGlyph(profile: BrowserProfile) {
 
 export function BrowserProfilesSection() {
   const [profiles, setProfiles] = useState<BrowserProfile[]>();
-  const [error, setError] = useState<string>();
+  /**
+   * WHY THE LAST WRITE DID NOT LAND, AND TO WHICH ROW IT BELONGS (#430). A
+   * single line at the top of the group is a line the reader may never see:
+   * this list runs to eight rows on an upgraded machine, and a refusal from
+   * the bottom one scrolls off the top. `at` pins the sentence to the row that
+   * was refused; only a failure with no row (the initial read) stays up top.
+   */
+  const [error, setError] = useState<{ message: string; at?: string }>();
   const [busy, setBusy] = useState<string>();
   const [renaming, setRenaming] = useState<string>();
   const [creating, setCreating] = useState(false);
@@ -69,7 +76,7 @@ export function BrowserProfilesSection() {
       setProfiles((await reader.profiles()).profiles);
       setError(undefined);
     } catch {
-      setError("The desktop shell did not answer; its browser host may still be starting.");
+      setError({ message: "The desktop shell did not answer; its browser host may still be starting." });
     }
   }, []);
 
@@ -79,15 +86,25 @@ export function BrowserProfilesSection() {
   }, [load]);
 
   /** Every write lands the shell's own answer, because the shell is what
-   *  validates: a refusal must show up as the refusal, not as a row that moved. */
+   *  validates: a refusal must show up as the refusal, not as a row that moved.
+   *  The shell knows things this pane cannot — which sessions have tabs open in
+   *  a profile — so a Delete that looked available still comes back refused,
+   *  and that sentence is the only explanation there is. */
   const act = async (id: string, write: () => Promise<{ profiles: BrowserProfile[] }>) => {
     setBusy(id);
     setError(undefined);
     try {
       setProfiles((await write()).profiles);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "That change could not be made.");
+      const message = cause instanceof Error ? cause.message : "That change could not be made.";
+      /**
+       * THE RE-READ FIRST, THE SENTENCE AFTER IT — the other half of the silent
+       * Delete (#430). `load` clears the error line on success, so setting the
+       * refusal before re-reading wiped it a turn later: the row snapped back to
+       * exactly what it said before the press, with nothing anywhere saying why.
+       */
       await load();
+      setError({ message, at: id });
     } finally {
       setBusy(undefined);
     }
@@ -118,11 +135,16 @@ export function BrowserProfilesSection() {
           </Button>
         }
       >
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {error && !error.at && (
+          <p role="alert" className="text-xs text-destructive">
+            {error.message}
+          </p>
+        )}
         {profiles === undefined && !error && <Spinner className="size-4" />}
         {profiles?.map((profile) => (
           <Row
             key={profile.id}
+            {...(error?.at === profile.id ? { error: error.message } : {})}
             /* THE ROW'S OWN GLYPH IS THE PROFILE'S. An unmarked profile keeps
                the neutral ring rather than a generic person icon — the slot has
                to read as "nothing chosen here", because choosing is what the
@@ -177,6 +199,7 @@ export function BrowserProfilesSection() {
                     size="sm"
                     variant="ghost"
                     disabled={busy === profile.id || Boolean(whyUndeletable(profile))}
+                    {...(whyUndeletable(profile) ? { "aria-describedby": `profile-undeletable-${profile.id}` } : {})}
                     title={whyUndeletable(profile) ?? "Forget this profile. Its cookies stay on disk."}
                     className="text-destructive hover:text-destructive"
                     onClick={() => void act(profile.id, () => bridge.deleteProfile!(profile.id))}
@@ -187,6 +210,17 @@ export function BrowserProfilesSection() {
               </div>
             }
           >
+            {/* WHY DELETE IS GREY, ON THE ROW (#430). A `title` is a tooltip:
+                it needs a mouse, it needs a hover, and it is never read by
+                someone scanning a list of eight rows wondering why none of
+                them can be deleted. The sentence's second half is the way out
+                — make another profile the default, point that project
+                elsewhere — so it is the half that has to be on screen. */}
+            {bridge.deleteProfile && whyUndeletable(profile) && (
+              <p id={`profile-undeletable-${profile.id}`} className="mt-1 text-xs leading-snug text-muted-foreground/80">
+                {whyUndeletable(profile)}
+              </p>
+            )}
             {renaming === profile.id && (
               <form
                 className="mt-2 flex items-center gap-2"
@@ -195,7 +229,7 @@ export function BrowserProfilesSection() {
                   const label = String(new FormData(event.currentTarget).get("label") ?? "");
                   const problem = profileNameProblem(label, profiles ?? [], profile.id);
                   if (problem) {
-                    setError(problem);
+                    setError({ message: problem, at: profile.id });
                     return;
                   }
                   setRenaming(undefined);
