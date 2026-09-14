@@ -107,7 +107,6 @@
   --color-verify: var(--verify);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --color-spool: var(--spool);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground-wash, var(--muted-foreground));
@@ -221,51 +220,27 @@
   --warning: oklch(0.515 0.11 72);
   --destructive: oklch(0.50 0.19 25.5);
 
-  /* --spool NAMES A ROOM, NOT A STATE, and the rule directly above — "do not add
-     a sixth ramp; new state colours go on this vocabulary" — is about STATE.
-     Nothing here ever means done, blocked, failing or needs-attention; the Spool
-     reaches for --warning and --destructive for those exactly like every other
-     screen, and this appears in none of the places a status would.
+  /* THE EIGHT IDENTITY HUES — `IDENTITY_COLORS`, the per-thing marks
+     (Apple Calendar's per-calendar hues).
 
-     WHY IT EXISTS. The Spool's differentiator was `bg-muted/25` on its ground —
-     one value step, invisible in a screenshot, and the report was "I don't see
-     myself using this". The app's own law is that hue belongs on icons and
-     containers stay neutral, so the honest way to say "you are somewhere else"
-     is a mark, not a wash.
-
-     WHERE IT IS ALLOWED: the Spool's glyph, its active tab, the ripening stage
-     dots, the panel's left hairline, the "needs you" mark, and the pulse of a
-     pass in flight. NEVER a surface fill, and never a solid behind text — it is
-     tuned as a MARK, so it clears 3:1 as a dot and is not asked for more.
-
-     Hue 315 is 51 degrees off --primary at 264, past --verify at 293 and short
-     of --chart-2 at 336, at the same lightness as the state ramps in each
-     theme. */
-  --spool: oklch(0.545 0.16 315);
-
-  /* THE EIGHT IDENTITY HUES — `SpoolSubjectColor`, the Spool's per-subject
-     marks (docs/spool-loops.md §8.2, Apple Calendar's per-calendar hues).
-
-     IDENTITY, NEVER STATE. Each of these says WHOSE something is — a subject
+     IDENTITY, NEVER STATE. Each of these says WHOSE something is — a thing
      the user coloured — and nothing else. They are constant: never derived
      from state, never a function of a deadline, a pin or a tier, never used
-     for urgency. A slipped pin wears the same hue as a resting one. This is
-     NOT a sixth ramp: the rule above ("do not add a sixth ramp; new state
-     colours go on this vocabulary") is about STATE, and none of these may
-     ever mean done, blocked, failing or needs-attention — the Spool still
-     reaches for --warning and --destructive for those like every other
-     screen, and still does not, on its front page, at all.
+     for urgency. This is NOT a sixth ramp: the rule above ("do not add a
+     sixth ramp; new state colours go on this vocabulary") is about STATE, and
+     none of these may ever mean done, blocked, failing or needs-attention —
+     those stay on --warning and --destructive like every other screen.
 
      TUNED AS SMALL DOTS, deliberately quieter than the state ramps (chroma
      0.03–0.10 against the ramps' 0.09–0.20) so eight of them on one screen
-     read as a key, not a carnival. Dark lifts lightness the same way --spool
-     does (0.545 → 0.74) and holds chroma. `slate` and `sand` run near-grey
-     on purpose — a palette needs quiet members.
+     read as a key, not a carnival. Dark lifts lightness (0.55 → 0.73) and
+     holds chroma. `slate` and `sand` run near-grey on purpose — a palette
+     needs quiet members.
 
      DELIBERATELY NOT BRIDGED INTO @theme: no `bg-subject-*` utility exists,
      so the only door to these values is the one pure helper
-     (`components/spool/subject-color.ts`), which is what keeps them out of
-     state conditionals by construction. */
+     (`identityColorVar` in `lib/telar-icons.tsx`), which is what keeps them
+     out of state conditionals by construction. */
   --subject-plum: oklch(0.55 0.09 325);
   --subject-sea: oklch(0.55 0.08 205);
   --subject-moss: oklch(0.55 0.08 140);
@@ -283,7 +258,7 @@
      (`text-sky-600 dark:text-sky-400`) — a fixed sRGB pair that cannot follow a
      theme and had to restate itself in every block. One token per hue, flipping
      with the scheme like everything else, is the same fix `--subject-*` already
-     is for the Spool.
+     is for identity.
 
      IDENTITY, NEVER STATE, exactly like the subject hues above: nothing here may
      ever mean done, blocked or failing — those stay on --success / --warning /
@@ -500,11 +475,7 @@
   --warning: oklch(0.78 0.15 72);
   --destructive: oklch(0.7 0.19 25.5);
 
-  /* The room mark, lifted the same way. See the light theme for what it is and
-     — more to the point — for what it is not allowed to be. */
-  --spool: oklch(0.74 0.15 315);
-
-  /* The identity hues, lifted the way --spool is — see the light theme for
+  /* The identity hues, lifted the same way — see the light theme for
      the law they live under: WHOSE, never how urgent. */
   --subject-plum: oklch(0.73 0.1 325);
   --subject-sea: oklch(0.73 0.09 205);
@@ -798,7 +769,7 @@ code, pre, kbd, samp {
    2. ALPHA ON A TOKEN MULTIPLIES, IT DOES NOT REPLACE. Tailwind compiles
       `bg-muted/25` to `color-mix(in oklab, var(--muted) 25%, transparent)`, so
       a token already sitting at 72% alpha lands the element at 18% — and
-      `bg-muted/25` is exactly what the Spool header, the stance and the
+      `bg-muted/25` is exactly what the quiet section headers and the
       workspace strip use for their fills. Under a backdrop they dissolved.
       This is NOT fixable at the call sites: the SAME class string renders on a
       page with no backdrop at all, where the token is opaque and /25 means
