@@ -9,8 +9,7 @@
 /**
  * THE SECTION CAPTION — the small grey word above a group of rows.
  *
- * Three rails declared this identically: `app-sidebar.tsx`, the Spool's
- * `warehouse-nav.tsx` and `loom/looms-nav.tsx`. None of them was wrong; they
+ * Three rails declared this identically. None of them was wrong; they
  * were three copies of one decision, kept in step by a test that asserted the
  * strings matched. That test pinned the duplication rather than removing it —
  * it could only fail AFTER a rail had already drifted, and the fix it asked
@@ -24,9 +23,8 @@
  *
  * `text-sidebar-foreground/45` is deliberate and not interchangeable with
  * `text-muted-foreground`: a caption on the rail is measured against
- * `--sidebar`, not the canvas. A caption on a canvas surface (see
- * `app/looms/[id]/loom-room.tsx`) is a different object and keeps its own
- * string.
+ * `--sidebar`, not the canvas. A caption on a canvas surface is a different
+ * object and keeps its own string.
  */
 export const CAPTION =
   "text-3xs font-semibold uppercase tracking-wider text-sidebar-foreground/45";

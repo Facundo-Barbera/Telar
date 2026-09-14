@@ -45,7 +45,7 @@
 // while you scroll past it is a third behaviour nobody asked for.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
-// Overview, Projects, Looms, Workspace. Three are still out of scope, and a
+// Overview, Projects, Looms, Workspace. Three never arrived, and a
 // glyph that navigates nowhere is worse than a header without one. The Unread
 // chip is gone because `readAt` is unmodelled, and a chip with an unbackable
 // count is a lie with a number on it.
@@ -74,7 +74,6 @@ import {
 } from "lucide-react";
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
-import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
 import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
@@ -363,12 +362,10 @@ type HostPage = {
 
 function SidebarBody() {
   const pathname = usePathname();
-  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`, the
-  // looms floor plan on `/looms`, Telar's own session list everywhere else.
-  // The header above it (trigger, switcher) is common to all; only what is
-  // below it changes.
+  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
+  // Telar's own session list everywhere else. The header above it (trigger,
+  // switcher) is common to both; only what is below it changes.
   const inSpool = pathname.startsWith("/spool");
-  const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
   // `open` is here for the palette's Quick settings row, which reports which
   // way Toggle Rail would go — the rail is what knows, so the rail says.
@@ -1363,8 +1360,6 @@ function SidebarBody() {
             Spool's place. The header (trigger, switcher) stays common. */}
         {inSpool ? (
           <SpoolWarehouseNav />
-        ) : inLooms ? (
-          <LoomsNav />
         ) : (
         <>
         {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see

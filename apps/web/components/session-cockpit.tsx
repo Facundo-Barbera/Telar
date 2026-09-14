@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -127,10 +127,6 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
-/** The masthead's "Spin into loom" entrance — off until the flow is ready to
- *  live in every session's header. See the render site for why off means
- *  absent rather than greyed. */
-const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -300,8 +296,8 @@ function SessionMasthead({
    *  masthead stays identity-only and does not acquire the session record's
    *  items, tasks, turns and events just to hand them straight through. */
   panel: React.ReactNode;
-  /** Observe mode: the title is a fact, not a field, and there is no spin —
-   *  a loom-owned session cannot be spun into another loom. */
+  /** Observe mode: the title is a fact, not a field, and the run controls are
+   *  absent — an observed session is read, not driven. */
   readOnly?: boolean;
   /** Opens the right panel's Run tab. Monitoring lives there; the masthead's
    *  Run control only configures, starts and stops. */
@@ -537,28 +533,6 @@ function SessionMasthead({
         {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
             "another machine" is true where a guessed name would not be. */}
         {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
-        {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
-            produced enough shape, hand it to the weaver. The session becomes
-            the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on.
-
-            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
-            before it earns a place in every session's header, and a disabled
-            button would be chrome apologising for itself — so nothing renders
-            until the flag flips. The Looms place stays reachable through the
-            place switcher; only this entrance is closed. */}
-        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Spin into loom"
-            title="Spin into loom"
-            render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
-          >
-            <WorkflowIcon />
-          </Button>
-        )}
         {panel}
       </div>
     </header>

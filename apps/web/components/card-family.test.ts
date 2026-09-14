@@ -1,10 +1,10 @@
 /**
  * ONE CARD, ONE RADIUS, AND A TINT THAT IS NOT A FOURTH CARD.
  *
- * Telar shipped four card shapes at three radii: `ui/card.tsx` (2 importers,
- * both under app/looms), the approval card (`rounded-xl border-warning/40
- * bg-warning/5`), the Spool's tally strip (`rounded-xl bg-card shadow-sm
- * ring-1` — a letter-perfect restatement of the primitive), and a sidebar row
+ * Telar shipped four card shapes at three radii: `ui/card.tsx`, the approval
+ * card (`rounded-xl border-warning/40 bg-warning/5`), the Spool's tally strip
+ * (`rounded-xl bg-card shadow-sm ring-1` — a letter-perfect restatement of
+ * the primitive), and a sidebar row
  * at `rounded-md`. Nothing was wrong on its own; together they were four
  * treatments of "a raised box with a hairline", differing only in having been
  * written on different days. Issue #250 item 10 settled it: one shape, at 14px,

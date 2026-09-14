@@ -751,7 +751,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         envMode?: "local" | "worktree";
         /** Worktree base — any name from `GitOverview.refs`. Absent = HEAD. */
         baseRef?: string;
-        /** A human's own branch name, outside loom//telar/. */
+        /** A human's own branch name, outside telar/. */
         branchName?: string;
       } = {},
     ) =>
