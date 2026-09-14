@@ -103,7 +103,7 @@ struct TurnView: View {
                         Text(turn.state.isActive ? "Compacting context…" : turn.state == .failed ? "Compaction failed" : "Context compaction requested")
                             .font(.system(size: 13))
                     }
-                    .foregroundStyle(turn.state == .failed ? Theme.statusRed : Theme.textTertiary)
+                    .foregroundStyle(turn.state == .failed ? Theme.statusRed : Theme.textMuted)
                 } else {
                     ForEach(compactions) { item in
                         ItemRowView(item: item)
@@ -632,11 +632,11 @@ struct AgentNoticeRow: View {
                     Text(intent.map { $0.capitalized } ?? "Agent message")
                         .font(Theme.meta).foregroundStyle(Theme.textMuted)
                     Text(summary)
-                        .font(Theme.meta).foregroundStyle(Theme.textTertiary)
+                        .font(Theme.meta).foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 4)
                     if let scope, !scope.isEmpty {
-                        Text(scope).font(Theme.metaSmall).foregroundStyle(Theme.textTertiary).lineLimit(1)
+                        Text(scope).font(Theme.metaSmall).foregroundStyle(Theme.textMuted).lineLimit(1)
                     }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
@@ -657,7 +657,7 @@ struct AgentNoticeRow: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(senderLabel)
-                                .font(Theme.monoSmall).foregroundStyle(Theme.textTertiary)
+                                .font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
                             MarkdownText(text: message)
                         }
                     }
@@ -725,7 +725,7 @@ struct WakeRow: View {
                 .lineLimit(2)
             Spacer(minLength: 0)
         }
-        .foregroundStyle(Theme.textTertiary)
+        .foregroundStyle(Theme.textMuted)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Woken: \(line)")

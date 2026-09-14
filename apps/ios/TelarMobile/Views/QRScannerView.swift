@@ -203,7 +203,7 @@ struct QRScannerSheet: View {
                 }
                 Text("Pinch to zoom · tap to focus and expose")
                     .font(Theme.metaSmall)
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textMuted)
                 Button("Cancel") { dismiss() }
                     .font(Theme.bodyMedium)
                     .padding(.vertical, 8)

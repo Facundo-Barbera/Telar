@@ -24,7 +24,7 @@ struct SettingsSectionLabel: View {
         Text(text.uppercased())
             .font(.system(size: 12, weight: .semibold))
             .kerning(0.6)
-            .foregroundStyle(Theme.textTertiary)
+            .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
@@ -39,7 +39,7 @@ struct SettingsFootnote: View {
     var body: some View {
         Text(text)
             .font(.system(size: 13))
-            .foregroundStyle(Theme.textMuted2)
+            .foregroundStyle(Theme.textMuted)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -55,7 +55,7 @@ struct CardDivider: View {
 /// One card row: glyph, title+subtitle, trailing accessory.
 struct CardRow<Trailing: View>: View {
     let icon: String
-    var iconColor: Color = Theme.textMuted2
+    var iconColor: Color = Theme.textMuted
     let title: String
     var titleColor: Color = Theme.text
     var subtitle: String?
@@ -75,7 +75,7 @@ struct CardRow<Trailing: View>: View {
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 13))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .lineLimit(1)
                 }
             }
@@ -119,7 +119,7 @@ struct CardField: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Theme.textTertiary)
+                .foregroundStyle(Theme.textMuted)
             TextField(placeholder, text: $text)
                 .font(mono ? .system(size: 15, design: .monospaced) : .system(size: 16))
                 .foregroundStyle(Theme.text)
@@ -148,7 +148,7 @@ struct PrimaryActionButton: View {
                 } else {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(enabled ? Theme.primaryGlyph : Theme.textMuted2)
+                        .foregroundStyle(enabled ? Theme.primaryGlyph : Theme.textMuted)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -182,7 +182,7 @@ struct StatusBanner: View {
                 if let detail {
                     Text(detail)
                         .font(.system(size: 13))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

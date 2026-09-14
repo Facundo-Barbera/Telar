@@ -20,8 +20,6 @@ enum Theme {
     static let statusRed = adaptive(light: 0xB71822, dark: 0xFF645E)
     static let sheet = adaptive(light: 0xF6F6F6, dark: 0x101010)
     static let card = adaptive(light: 0xFFFFFF, dark: 0x161616)
-    static let textMuted2 = adaptive(light: 0x696973, dark: 0xA1A1A1)
-    static let textTertiary = adaptive(light: 0x696973, dark: 0xA1A1A1)
     static let subtle = adaptive(light: 0xF1F1F3, dark: 0x252525)
     static let subtleStrong = adaptive(light: 0xF0F0F1, dark: 0x2F2F2F)
     static let composerSurface = adaptive(light: 0xFFFFFF, dark: 0x1C1C1C)

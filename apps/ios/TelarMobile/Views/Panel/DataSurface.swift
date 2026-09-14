@@ -182,10 +182,10 @@ private struct PlotCard: View {
                 Text(plot.producer ?? plot.name).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 Spacer(minLength: 0)
                 if let at = plot.createdAt {
-                    Text(at.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                    Text(at.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 10)).foregroundStyle(Theme.textMuted)
                 }
                 Button { Task { await onPin() } } label: {
-                    Image(systemName: plot.isPinned ? "pin.fill" : "pin").font(.system(size: 10)).foregroundStyle(plot.isPinned ? Theme.accent : Theme.textTertiary)
+                    Image(systemName: plot.isPinned ? "pin.fill" : "pin").font(.system(size: 10)).foregroundStyle(plot.isPinned ? Theme.accent : Theme.textMuted)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(plot.isPinned ? "Unpin plot" : "Pin plot")
@@ -230,10 +230,10 @@ struct VariablesSurface: View {
                                     HStack(spacing: 8) {
                                         Text(row.name).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(Theme.text)
                                         Text(row.type).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-                                        if let shape = row.shape { Text(shape.map(String.init).joined(separator: "×")).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textTertiary) }
-                                        else if let len = row.len { Text("len \(len)").font(.system(size: 11)).foregroundStyle(Theme.textTertiary) }
+                                        if let shape = row.shape { Text(shape.map(String.init).joined(separator: "×")).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted) }
+                                        else if let len = row.len { Text("len \(len)").font(.system(size: 11)).foregroundStyle(Theme.textMuted) }
                                         Spacer(minLength: 0)
-                                        if let size = row.sizeBytes { Text(humanBytes(size)).font(.system(size: 10)).foregroundStyle(Theme.textTertiary) }
+                                        if let size = row.sizeBytes { Text(humanBytes(size)).font(.system(size: 10)).foregroundStyle(Theme.textMuted) }
                                     }
                                 }
                                 .buttonStyle(.plain)
@@ -312,7 +312,7 @@ struct EnvironmentSurface: View {
                                 Text(package.name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text)
                                 Spacer()
                                 Text(package.version).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                                if package.direct == true { Image(systemName: "pin").font(.system(size: 9)).foregroundStyle(Theme.textTertiary) }
+                                if package.direct == true { Image(systemName: "pin").font(.system(size: 9)).foregroundStyle(Theme.textMuted) }
                             }
                             .listRowBackground(Color.clear)
                             .listRowSeparatorTint(Theme.borderSubtle)

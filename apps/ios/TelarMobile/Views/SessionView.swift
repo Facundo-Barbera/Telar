@@ -851,7 +851,7 @@ struct ComposerView: View {
                     if !store.pendingAttachments.isEmpty {
                         Text("+\(store.pendingAttachments.count)")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                             .frame(width: 30, height: 30)
                             .background(Theme.subtleStrong)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -996,7 +996,7 @@ struct ComposerView: View {
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted2)
+                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted)
                     .frame(width: 44, height: 44)
                     .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
                     .clipShape(Circle())
@@ -1076,7 +1076,7 @@ struct ComposerView: View {
                          ? "\(waiting.count) queued message\(waiting.count == 1 ? "" : "s") will send automatically."
                          : "Sending into the running turn…")
                         .font(.system(size: 13))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                 }
             }
             .buttonStyle(.plain)
@@ -1111,7 +1111,7 @@ struct ComposerView: View {
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Theme.textMuted2)
+                                    .foregroundStyle(Theme.textMuted)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Remove this queued message")
@@ -1199,7 +1199,7 @@ struct ControlPillButton: View {
         Button(action: action) {
             Image(systemName: isRunning ? "stop.fill" : "arrow.up")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted2))
+                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted))
                 .frame(width: 44, height: 44)
                 .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
                 .clipShape(Circle())
