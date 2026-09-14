@@ -67,6 +67,16 @@ test("the registry is the source of the Actions list, not a second list beside i
   expect(source).toContain('["search-sessions"],');
 });
 
+test("a glyph per command, resolved through the one map (#479)", () => {
+  // This drew one glyph per GROUP, which made the list scannable by section and
+  // not by row — the wrong unit for a surface whose job is finding one verb
+  // among twenty-odd.
+  expect(source).toContain("const Glyph = commandIcon(row.id);");
+  expect(source).toContain('import { commandIcon } from "@/lib/command-icons";');
+  // And the group map is gone from this file: the fallback lives with the map.
+  expect(source).not.toContain("GROUP_ICONS");
+});
+
 test("the chord sits at the row's right, from the live keymap", () => {
   // `KeyHint` (#401) reads the same store `paletteActions` took the chord from,
   // so the row and the key it promises cannot disagree — and `always`, because

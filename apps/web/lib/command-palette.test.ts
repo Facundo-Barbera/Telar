@@ -22,6 +22,7 @@ import {
   recentSessions,
   type PaletteSessionLike,
 } from "./command-palette";
+import { COMMAND_ICONS, GROUP_ICONS, commandIcon, iconByName } from "./command-icons";
 import { COMMANDS, defaultKeymap, mergeKeymap, type CommandId } from "./commands";
 
 const targets: NewConversationTarget[] = [
@@ -97,6 +98,31 @@ describe("the Actions section is the registry, filtered", () => {
     expect(matchActions(actions, "APPEARANCE").map((action) => action.id)).toEqual(["appearance"]);
     expect(matchActions(actions, "   ").length).toBe(actions.length);
     expect(matchActions(actions, "nothing like this")).toEqual([]);
+  });
+});
+
+describe("a glyph per command, not one per group", () => {
+  test("every command in the registry names an icon this map has", () => {
+    // The test the icon field exists FOR: a command added to the shared table
+    // with a name nothing resolves would draw its group's glyph and look
+    // broken beside the ones that picked — so the miss is caught here rather
+    // than in the palette.
+    const unmapped = COMMANDS.filter((command) => !COMMAND_ICONS[command.icon]).map((command) => command.id);
+    expect(unmapped).toEqual([]);
+  });
+
+  test("distinct commands get distinct glyphs, which is the point of the field", () => {
+    // Nine jumps share one — the digit is all that separates them and the
+    // palette never lists them — so they are folded out before counting.
+    const icons = COMMANDS.filter((command) => !command.jump).map((command) => command.icon);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
+  test("an unknown name falls back to the group's glyph rather than nothing", () => {
+    // What keeps the registry free to grow without touching the map.
+    expect(iconByName("no-such-icon")).toBeUndefined();
+    expect(commandIcon("open-diff")).toBe(COMMAND_ICONS["git-compare"]);
+    expect(commandIcon("not-a-command" as CommandId)).toBe(GROUP_ICONS.Application);
   });
 });
 

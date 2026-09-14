@@ -37,17 +37,19 @@
  * commands, the window dispatcher answers them wherever focus is, and a palette
  * that quietly meant something else by them would be a palette that navigates
  * out from under you.
+ *
+ * A GLYPH PER ROW, NOT PER SECTION (#479). This drew one icon per GROUP, which
+ * made the list scannable by section and not by row — the wrong unit for a
+ * surface whose whole job is finding one verb among twenty-odd. The glyph is
+ * the registry's own `icon` name now, resolved through `lib/command-icons.ts`;
+ * a name that map has not got still falls back to the group's, so a command
+ * added to the table is never a row with a hole in it.
  */
 
 import { useState } from "react";
-import {
-  CommandIcon,
-  MessageSquareIcon,
-  PanelLeftIcon,
-  PanelRightIcon,
-  SearchIcon,
-  SettingsIcon,
-} from "lucide-react";
+// The conversation rows' own glyph — a kind of row, not a command, so it is
+// named here rather than looked up through the registry's icon map.
+import { MessageSquareIcon as SessionGlyph, SearchIcon } from "lucide-react";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import {
   PaletteRow as Row,
@@ -66,8 +68,9 @@ import {
   paletteSections,
   type PaletteSubPage,
 } from "@/lib/command-palette";
+import { commandIcon } from "@/lib/command-icons";
 import { commandDestination } from "@/lib/command-keys";
-import { COMMANDS, commandHandler, type CommandGroup, type CommandId } from "@/lib/commands";
+import { COMMANDS, commandHandler, type CommandId } from "@/lib/commands";
 import { useKeymap } from "@/lib/use-command-keys";
 import type { SidebarSession } from "@/lib/session-list";
 
@@ -83,22 +86,6 @@ export type CommandPalettePage = "root" | PalettePage;
  *  names the two without importing the component; this is where that claim is
  *  checked. */
 const SUB_PAGE: Record<PaletteSubPage, PalettePage> = { projects: "projects", sources: "sources" };
-
-/**
- * A GLYPH PER GROUP, NOT PER COMMAND.
- *
- * An icon beside every row is what makes a long list scannable, and the honest
- * unit here is the group: "this is about the conversation", "this is about the
- * rail". A hand-picked glyph per command would be twenty-odd small decisions,
- * several of them arbitrary, and every command added later would either pick one
- * or look broken beside the ones that had.
- */
-const GROUP_ICONS: Record<CommandGroup, typeof CommandIcon> = {
-  Conversation: MessageSquareIcon,
-  Rail: PanelLeftIcon,
-  Panel: PanelRightIcon,
-  Application: SettingsIcon,
-};
 
 export function CommandPalette({
   open,
@@ -277,7 +264,7 @@ export function CommandPalette({
                       const id = `command-palette-${position}`;
                       const onHover = () => setIndex(position);
                       if (row.kind === "action") {
-                        const Glyph = GROUP_ICONS[commandGroup(row.id)];
+                        const Glyph = commandIcon(row.id);
                         return (
                           <Row
                             key={row.key}
@@ -327,7 +314,7 @@ export function CommandPalette({
                           on={on}
                           onPick={() => take(row)}
                           onHover={onHover}
-                          glyph={<MessageSquareIcon className="size-4 text-muted-foreground" />}
+                          glyph={<SessionGlyph className="size-4 text-muted-foreground" />}
                           title={row.session.title}
                           hint={[row.session.projectName, row.session.hostName].filter(Boolean).join(" · ")}
                         />
@@ -381,11 +368,4 @@ export function CommandPalette({
       <RegisteredToast toast={toast} onDismiss={() => setToast(undefined)} onChanged={onRegistered} />
     </>
   );
-}
-
-/** The group a command is filed under, for its glyph. The registry is the
- *  answer; an id it does not know cannot reach a row here, and "Application" is
- *  the least wrong default for one that somehow did. */
-function commandGroup(id: CommandId): CommandGroup {
-  return COMMANDS.find((command) => command.id === id)?.group ?? "Application";
 }
