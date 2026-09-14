@@ -58,6 +58,7 @@ import {
   assignmentsOf,
   type AssignmentTurn,
   type SessionAssignment,
+  type LiveSessionRow,
   type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
@@ -159,7 +160,8 @@ import {
   type WorkspaceListing,
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
-import { atomicWrite } from "./atomic";
+import { atomicWrite, atomicWriteText } from "./atomic";
+import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
 import { TELAR_ORIENTATION } from "./orientation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
@@ -486,6 +488,94 @@ const MAX_TEXT_LENGTH = 200_000;
  * it had. `steered` is terminal (its words live inside the run it joined).
  */
 const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running", "steering"]);
+
+/**
+ * HOW MANY SETTLED REQUESTS A SNAPSHOT CARRIES (#245).
+ *
+ * Windowing the key by turn was most of the fix, but it left the shape that
+ * produced the complaint reachable: one long agentic turn can open thousands of
+ * approvals, and every one of them rode a window that turn was in — 1,066,437
+ * bytes per read on the dogfood store, re-read once a second by every open
+ * cockpit. Nothing renders a settled request beyond the handful above the
+ * composer, so the tail is the answer and the rest is the history that
+ * `requests()` still serves in full.
+ *
+ * AN OPEN REQUEST IS NEVER DROPPED, whatever this number is: an unanswered
+ * question is the one thing on this key a client must act on, and a snapshot
+ * that omitted it would be a question nobody could answer.
+ */
+const SNAPSHOT_SETTLED_REQUESTS = 50;
+
+/**
+ * Every open request, plus the newest settled ones — see above.
+ *
+ * `chosen` narrows to a window's turns first when there is one; without it this
+ * is the unwindowed snapshot, where the tail is the only bound.
+ */
+function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequest[] {
+  const carried = chosen === undefined ? all : all.filter((request) => chosen.has(request.runId) || request.state === "open");
+  const settled = carried.filter((request) => request.state !== "open");
+  if (settled.length <= SNAPSHOT_SETTLED_REQUESTS) return carried;
+  const dropped = new Set(settled.slice(0, settled.length - SNAPSHOT_SETTLED_REQUESTS));
+  return carried.filter((request) => !dropped.has(request));
+}
+
+/**
+ * ONE INDEX ROW PER TURN, NOT PER ELEMENT.
+ *
+ * `items.json` holds eight or more rows per turn, and an index with one entry
+ * each would grow with the conversation — which is the thing being fixed. The
+ * window chooses TURNS, so a turn's items only ever need one span between them,
+ * and on a 500-turn session that is the difference between an index of a few
+ * kilobytes and one of a hundred and sixty.
+ *
+ * A span may swallow rows belonging to other turns — nothing promises a turn's
+ * items are contiguous, only that they are written in creation order and
+ * usually are. The caller filters what it reads by `runId` regardless, so a
+ * generous span costs bytes and never correctness.
+ */
+function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array<{ start: number; end: number }>): DocumentIndex["rows"] {
+  const merged = new Map<string, DocumentIndex["rows"][number]>();
+  for (const [at, row] of rows.entries()) {
+    const range = ranges[at]!;
+    const known = merged.get(row.key);
+    if (!known) merged.set(row.key, { ...row, ...range });
+    else {
+      known.start = Math.min(known.start, range.start);
+      known.end = Math.max(known.end, range.end);
+    }
+  }
+  return [...merged.values()];
+}
+
+/**
+ * WHICH ROWS A WINDOW HOLDS, decided from ids and states alone.
+ *
+ * Shared by the indexed read and the whole-document fallback so the two cannot
+ * answer differently — the index exists to make the read cheap, not to change
+ * what a page contains.
+ */
+function planWindow(
+  rows: Array<{ key: string; tag?: string }>,
+  window: { limit: number; before?: string },
+): { chosen: Set<string>; page: { before: string | null; more: boolean } } {
+  let end = rows.length;
+  if (window.before !== undefined) {
+    end = rows.findIndex((row) => row.key === window.before);
+    if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
+  }
+  const active = (row: { tag?: string }): boolean => ACTIVE_TURN_STATES.has(row.tag as Turn["state"]);
+  const settled = rows.slice(0, end).filter((row) => !active(row));
+  const start = Math.max(0, settled.length - window.limit);
+  const paged = settled.slice(start);
+  // The active tail is never paged out — but only on the FIRST page; an older
+  // page is history and must not repeat rows the client already has.
+  const unsettled = window.before === undefined ? rows.filter(active) : [];
+  return {
+    chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
+    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0 },
+  };
+}
 
 export class EngineStateError extends Error {
   constructor(
@@ -987,6 +1077,50 @@ const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSIO
  *  Spelled once so the three arrangements cannot fall back to different things. */
 const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [], sessionOrder: {}, pinnedOrder: [] });
 
+/**
+ * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
+ *
+ * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
+ * tomorrow does not silently join every polling answer: growing the wire has to
+ * be a decision somebody writes down here. Absent keys are left absent rather
+ * than set to `undefined`, because `JSON.stringify` drops the one and the point
+ * of this function is the bytes.
+ */
+const liveRow = (session: Session): LiveSessionRow => ({
+  id: session.id,
+  ...(session.projectId === undefined ? {} : { projectId: session.projectId }),
+  title: session.title,
+  state: session.state,
+  createdAt: session.createdAt,
+  updatedAt: session.updatedAt,
+  driver: session.driver,
+  ...(session.model === undefined ? {} : { model: session.model }),
+  // Not a rail's field — the `sessions` toolkit's, which lists off this route
+  // from the out-of-process worker and names each row's workspace mode.
+  envMode: session.envMode,
+  // `baseRef` is the commit a checkout was cut from: one review surface's
+  // question, and 40 bytes on every row of every poll otherwise.
+  workspace:
+    session.workspace.mode === "worktree"
+      ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
+      : { mode: "local", path: session.workspace.path },
+  ...(session.draft === undefined ? {} : { draft: session.draft }),
+  ...(session.usage === undefined ? {} : { usage: session.usage }),
+  activity: session.activity,
+  ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+  ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
+  ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
+  ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+  ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+  ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
+  ...(session.settledOverride === undefined ? {} : { settledOverride: session.settledOverride }),
+  ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+  ...(session.settledBy === undefined ? {} : { settledBy: session.settledBy }),
+  ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+  ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+  ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
+});
+
 /** Copied out, never handed out: the caller gets the arrangement, not a
  *  reference into the document this store will write to next. */
 const cloneSidebarLayout = (layout: SidebarLayout): SidebarLayout => ({
@@ -1278,6 +1412,15 @@ function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "queue.json");
 }
 
+/** Where each turn and each item sits in its document — see `document-window.ts`. */
+function sessionQueueIndexFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "queue.index.json");
+}
+
+function itemsIndexFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "items.index.json");
+}
+
 /**
  * How many open items keep their streamed text in memory at once.
  *
@@ -1336,6 +1479,26 @@ function readJson(file: string): unknown | undefined {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+/** `[start, end)` of a document file, read at an offset rather than whole —
+ *  the file store's half of the windowed read (`document-window.ts`). */
+function readFileSlice(file: string, start: number, end: number): Buffer | undefined {
+  if (end <= start) return Buffer.alloc(0);
+  let handle: number;
+  try {
+    handle = fs.openSync(file, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    const span = Buffer.alloc(end - start);
+    const read = fs.readSync(handle, span, 0, span.length, start);
+    return read === span.length ? span : span.subarray(0, read);
+  } finally {
+    fs.closeSync(handle);
   }
 }
 
@@ -1472,6 +1635,23 @@ export type EngineNotifier = (input: {
   title: string;
 }) => boolean;
 
+/**
+ * IS THIS BATCH NOTHING BUT STREAMED TEXT? — the route selector for
+ * `ingestObservations`, read off the RAW input before anything validates it.
+ *
+ * Only ever a route: both paths validate the whole batch with the same schema
+ * and refuse the same things, so the worst a lie here can do is send a malformed
+ * batch down the path that rejects it slightly sooner. It reads one property per
+ * observation and allocates nothing, because it runs per streamed token-chunk.
+ */
+function isDeltaOnlyBatch(observations: unknown[]): boolean {
+  if (!Array.isArray(observations) || observations.length === 0) return false;
+  for (const observation of observations) {
+    if ((observation as { kind?: unknown } | null)?.kind !== "content.delta") return false;
+  }
+  return true;
+}
+
 export class EngineStore {
   private executionStore?: ExecutionStore;
   private commandDepth = 0;
@@ -1482,7 +1662,140 @@ export class EngineStore {
   private writeDocument(file: string, value: unknown, mode?: number): void {
     if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
     else atomicWrite(file, value, mode);
+    // See `sessionsRevision`. After the write, so a revision a reader observes
+    // is never newer than the state it would read.
+    if (path.basename(file) !== "items.json") this.liveRevision += 1;
   }
+
+  /**
+   * A NUMBER THAT CHANGES WHEN THE LIVE LIST WOULD — issue #459.
+   *
+   * The rail cannot be pushed to. There is no global event feed on this engine
+   * (journals are per session, and their ids are per session too), no SSE and no
+   * socket — and #82/#450 decided against adding the cockpit's FIRST long-lived
+   * connection, because six is all a browser has per origin. So the rail still
+   * asks on a timer, and the only thing left to fix is what the ask COSTS.
+   *
+   * This is that: a conditional read. `GET /v2/sessions/live?since=<revision>`
+   * answers `{ revision, unchanged: true }` — about sixty bytes and no fold at
+   * all — when nothing has been written since. On the owner's store that turns
+   * an idle cockpit's tick from 318 KB and a fold over 267 sessions' queues,
+   * requests and tasks into one integer comparison, several times a second,
+   * forever. An ETag by another name, spelled in the body because two proxy hops
+   * sit between this and a browser and neither forwards conditional headers.
+   *
+   * BUMPED ON EVERY DOCUMENT WRITE BUT ONE, which is deliberately the
+   * safe-by-default direction: over-bumping costs a re-read nobody needed, and
+   * under-bumping costs a rail that quietly stops moving. The exception is
+   * `items.json`, the one hot write — it is rewritten as an assistant streams,
+   * and nothing on this list is derived from it. An allowlist of the four
+   * documents the fold actually reads would be tighter and would be wrong the
+   * first time somebody adds a fifth.
+   *
+   * IN MEMORY, AND SEEDED FROM THE CLOCK. One writer, in this process, the same
+   * ground `queueCache` stands on. A restart starts from a new, larger number,
+   * so a client holding a cursor from the last daemon is told "changed" rather
+   * than being handed a false "unchanged" — the one failure mode that would show
+   * as a frozen rail.
+   */
+  private liveRevision = Date.now();
+  sessionsRevision(): number {
+    return this.liveRevision;
+  }
+
+  /**
+   * WHAT A READ ACTUALLY TOUCHED, so a test can hold the engine to it (#419).
+   *
+   * `documentBytes` is the span of `queue.json` / `items.json` that reached
+   * `JSON.parse` — the whole document on the fallback path, the window's own
+   * rows on the indexed one. Public because that difference is the fix, and a
+   * claim that a 120-turn session now costs its tail is only worth making if
+   * something can fail when it stops being true.
+   */
+  readonly readAccounting = { documentBytes: 0, documentReads: 0 };
+
+  /**
+   * Write a document and the offset index that lets its tail be read alone.
+   *
+   * ONE SERIALISATION, SHARED. The index is byte ranges into the exact text
+   * stored, so the text has to be built here rather than inside each backend:
+   * the JSON store pretty-prints and SQLite does not, and an index measured
+   * against the wrong one of those would point into the middle of a row.
+   *
+   * An unindexable document simply loses its index — the read falls back to
+   * parsing the whole thing, which is what every document written before this
+   * existed already does.
+   */
+  private writeIndexedDocument(file: string, indexFile: string, value: unknown, property: string, rows: Array<{ key: string; tag?: string }>): void {
+    const sqlite = this.executionStore?.owns(file);
+    const text = sqlite ? JSON.stringify(value) : `${JSON.stringify(value, null, 2)}\n`;
+    if (sqlite) this.executionStore!.writeText(file, text);
+    else atomicWriteText(file, text);
+    const bytes = Buffer.from(text, "utf8");
+    const ranges = arrayElementRanges(bytes, property);
+    const index: DocumentIndex = ranges && ranges.length === rows.length
+      ? { version: STATE_VERSION, length: bytes.length, rows: coalesceByKey(rows, ranges) }
+      // An absent index reads as a stale one — both mean "parse it whole" — so
+      // a document that could not be indexed writes the unmatchable marker
+      // rather than leaving the PREVIOUS document's index in place to be
+      // trusted. No document has a negative length.
+      : { version: STATE_VERSION, length: -1, rows: [] };
+    // COMPACT WHATEVER THE BACKEND DOES. This is read on the way to every
+    // windowed snapshot, so it is on the path it exists to shorten; indenting
+    // it would roughly triple the only document a tail read still parses whole.
+    if (this.executionStore?.owns(indexFile)) this.executionStore.write(indexFile, index);
+    else atomicWriteText(indexFile, `${JSON.stringify(index)}\n`);
+  }
+
+  /** The index beside `file`, or `undefined` when there is none that still
+   *  describes it. See `DocumentIndex.length` for why that is a size check. */
+  private documentIndex(file: string, indexFile: string): DocumentIndex | undefined {
+    const stored = this.readDocument(indexFile) as DocumentIndex | undefined;
+    // Counted against the read, because it IS the read's cost: the index is the
+    // one document a windowed snapshot still parses whole, and a measurement
+    // that left it out would flatter the thing it is measuring.
+    this.readAccounting.documentBytes += this.documentBytes(indexFile) ?? 0;
+    if (!stored || stored.version !== STATE_VERSION || !Array.isArray(stored.rows)) return undefined;
+    return this.documentBytes(file) === stored.length ? stored : undefined;
+  }
+
+  private documentBytes(file: string): number | undefined {
+    if (this.executionStore?.owns(file)) return this.executionStore.byteLength(file);
+    try {
+      return fs.statSync(file).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * The rows `wanted` names, parsed from one span of the document.
+   *
+   * ONE READ, NOT ONE PER ROW. The window is a tail, so its rows are adjacent
+   * in the document and the span between the first and the last is mostly the
+   * answer; anything else caught inside it — an older settled turn sitting
+   * between an unsettled one and the tail — is dropped by the caller's filter.
+   * A row-at-a-time read would be a query per turn to save bytes that are
+   * already in the page sqlite had to fetch.
+   */
+  private readIndexedRows(file: string, wanted: DocumentIndex["rows"]): unknown[] {
+    if (wanted.length === 0) return [];
+    const from = Math.min(...wanted.map((row) => row.start));
+    const to = Math.max(...wanted.map((row) => row.end));
+    const span = this.executionStore?.owns(file) ? this.executionStore.slice(file, from, to) : readFileSlice(file, from, to);
+    if (!span || span.length !== to - from) throw new EngineStateError("invalid_request", "document index does not describe this document");
+    this.readAccounting.documentBytes += span.length;
+    this.readAccounting.documentReads += 1;
+    return parseSpan(span);
+  }
+
+  /** What a whole-document read of `file` cost, for the accounting above. */
+  private accountWholeRead(file: string): void {
+    this.readAccounting.documentBytes += this.documentBytes(file) ?? 0;
+    this.readAccounting.documentReads += 1;
+  }
+
   closeExecutionStore(): void { this.executionStore?.close(); }
   executeCommand<T>(command: string, action: () => T, commandId?: string): T {
     if (!this.executionStore) return action();
@@ -4520,8 +4833,11 @@ export class EngineStore {
     if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
     if (migrated || options.executionStorage === "sqlite") {
       this.executionStore = new ExecutionStore(root);
+      // `ingestObservations` is NOT here: it wraps itself, because a batch of
+      // nothing but deltas writes no document at all and must not open a
+      // transaction. See the method.
       const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
-        "claimTurn", "claimNextTurn", "markRunning", "ingestObservations", "openRequest", "resolveRequest", "completeTurn", "failTurn",
+        "claimTurn", "claimNextTurn", "markRunning", "openRequest", "resolveRequest", "completeTurn", "failTurn",
         "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
         "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
         "subscribe", "unsubscribe"] as const;
@@ -6830,6 +7146,49 @@ export class EngineStore {
     };
   }
 
+  /**
+   * THE SAME ANSWER, WITH ONLY WHAT A RAIL DRAWS ON EACH ROW — issue #459, and
+   * the shape `GET /v2/sessions/live` serves.
+   *
+   * `liveSessions` above hands back whole `Session` records, which is right for
+   * the in-process `sessions` toolkit: a model that lists conversations may then
+   * ask any question about one. It is wrong for the wire. Measured on the
+   * owner's store, that route answered 318 KB in 200 ms for 267 sessions, and
+   * every cockpit asks for it on a timer, per paired host — so the engine was
+   * serializing a session's provider instance, resume cursor, runtime mode and
+   * un-settle ledger several times a second to clients that render none of them.
+   * See `LiveSessionRow` for the field-by-field argument.
+   *
+   * THE PROJECTION IS THE ONLY DIFFERENCE to the rows. Same filter, same
+   * ordering, same assignments, same layout — a caller that wants the old rows
+   * asks the route with `?full=1` and gets `liveSessions()` verbatim.
+   *
+   * AND THE SETTLING WINDOW RIDES ALONG, for the reason `layout` does. A rail
+   * bands every row by the policy of the engine those rows live on, so it was
+   * fetching `/v2/inbox` beside this on every pass — a second request, per host,
+   * per tick, for one number that changes when somebody opens Settings. It is
+   * the same argument the arrangement makes: this is the read a rail is already
+   * making, so anything the rail needs on every pass belongs on it.
+   */
+  liveSessionRows(): {
+    sessions: LiveSessionRow[];
+    projects: Array<{ id: string; name: string }>;
+    assignments: Record<string, SessionAssignment[]>;
+    layout: SidebarLayout;
+    inbox: InboxPolicy;
+    revision: number;
+  } {
+    /**
+     * THE REVISION IS READ FIRST, so a write that lands mid-fold is reported by
+     * the NEXT read rather than swallowed by this one. Taken after would name a
+     * state this answer does not contain, and the client would hold a cursor
+     * that says it is up to date with rows it never received.
+     */
+    const revision = this.sessionsRevision();
+    const full = this.liveSessions();
+    return { ...full, sessions: full.sessions.map(liveRow), inbox: this.getInboxPolicy(), revision };
+  }
+
   turns(sessionId: string): Turn[] {
     this.getSession(sessionId);
     return structuredClone(this.readQueue(sessionId).turns);
@@ -6859,7 +7218,12 @@ export class EngineStore {
    * along regardless of the page because an unanswered question on a paged-out
    * turn must still reach the composer, and it rides along on EVERY page
    * because a client replaces the key rather than merging it
-   * (`SessionSyncEngine.swift`).
+   * (`SessionSyncEngine.swift`). The settled ones are bounded on top of the
+   * window — see `SNAPSHOT_SETTLED_REQUESTS`, which is the half of #245 the
+   * window alone did not reach.
+   *
+   * AND IT IS READ FROM THE TAIL, not filtered out of the whole history: see
+   * `windowedTurns` and `windowedItems` (#419).
    */
   snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
     turns: Turn[];
@@ -6869,27 +7233,71 @@ export class EngineStore {
     page: { before: string | null; more: boolean };
   } {
     this.getSession(sessionId);
-    const all = this.readQueue(sessionId).turns;
-    let end = all.length;
-    if (window.before !== undefined) {
-      end = all.findIndex((turn) => turn.runId === window.before);
-      if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
-    }
-    const settled = all.slice(0, end).filter((turn) => !ACTIVE_TURN_STATES.has(turn.state));
-    const start = Math.max(0, settled.length - window.limit);
-    const paged = settled.slice(start);
-    // The active tail is never paged out — but only on the FIRST page; an
-    // older page is history and must not repeat rows the client already has.
-    const active = window.before === undefined ? all.filter((turn) => ACTIVE_TURN_STATES.has(turn.state)) : [];
-    const chosen = new Set([...paged, ...active].map((turn) => turn.runId));
-    const turns = all.filter((turn) => chosen.has(turn.runId));
+    const plan = this.windowedTurns(sessionId, window);
+    const chosen = new Set(plan.turns.map((turn) => turn.runId));
     return structuredClone({
-      turns,
-      items: [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId)),
+      turns: plan.turns,
+      items: this.windowedItems(sessionId, chosen),
       tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
-      requests: [...this.readRequests(sessionId).values()].filter((request) => chosen.has(request.runId) || request.state === "open"),
-      page: { before: start > 0 ? (paged[0]?.runId ?? null) : null, more: start > 0 },
+      requests: boundedRequests([...this.readRequests(sessionId).values()], chosen),
+      page: plan.page,
     });
+  }
+
+  /**
+   * The window's turns, from the tail of the queue rather than the whole of it.
+   *
+   * THE INDEX DECIDES WITHOUT READING. Which turns a window holds needs only
+   * each turn's id and state, in order, and `queue.index.json` carries exactly
+   * those — so the choosing is free and the reading is one span. Without an
+   * index (a queue written by an older engine, or edited behind the store's
+   * back) this is the fold it has always been, over a document parsed whole.
+   */
+  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean } } {
+    const file = sessionQueueFile(this.paths, sessionId);
+    const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
+    if (!index) {
+      const all = this.readQueue(sessionId).turns;
+      this.accountWholeRead(file);
+      const plan = planWindow(all.map((turn) => ({ key: turn.runId, tag: turn.state })), window);
+      return { turns: all.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
+    }
+    const plan = planWindow(index.rows, window);
+    const span = this.readIndexedRows(file, index.rows.filter((row) => plan.chosen.has(row.key)));
+    const parsed = TurnSchema.array().safeParse(span);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid session queue");
+    return { turns: parsed.data.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
+  }
+
+  /** The window's items, by the same route and for the same reason — and this
+   *  is the big document: 753 KB of the dogfood store's 1.07 MB snapshot. */
+  private windowedItems(sessionId: string, chosen: Set<string>): Item[] {
+    // Already parsed and in hand: a streaming session is read once a second and
+    // the cache is what that repetition is for. Nothing to save by seeking.
+    if (this.itemsCache.has(sessionId)) return [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId));
+    const file = itemsFile(this.paths, sessionId);
+    const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
+    if (!index) {
+      const all = [...this.readItems(sessionId).values()];
+      this.accountWholeRead(file);
+      return all.filter((item) => chosen.has(item.runId));
+    }
+    const span = this.readIndexedRows(file, index.rows.filter((row) => chosen.has(row.key)));
+    const parsed = ItemSchema.array().safeParse(span);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    return parsed.data.filter((item) => chosen.has(item.runId));
+  }
+
+  /**
+   * The requests a snapshot carries when the caller asked for no window.
+   *
+   * Bounded for the same reason the windowed key is (#245) — see
+   * `boundedRequests`. `requests()` stays whole: a tool asking what a session
+   * has ever been asked is a different question from what a transcript renders.
+   */
+  snapshotRequests(sessionId: string): EngineRequest[] {
+    this.getSession(sessionId);
+    return structuredClone(boundedRequests([...this.readRequests(sessionId).values()]));
   }
 
   items(sessionId: string): Item[] {
@@ -8018,6 +8426,74 @@ export class EngineStore {
    * provider message in the journal.
    */
   ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
+    if (isDeltaOnlyBatch(observations)) return this.ingestDeltas(sessionId, runId, claimToken, observations);
+    return this.executeCommand("ingestObservations", () => this.ingestBatch(sessionId, runId, claimToken, observations));
+  }
+
+  /**
+   * A STREAM COSTS ONE TRANSACTION PER FLUSH, NOT ONE PER TOKEN-CHUNK.
+   *
+   * #246 stopped a delta reaching the disk where it was appended; what it could
+   * not touch was the machinery each `ingestObservations` CALL ran around the
+   * append, and the driver makes one call per delta. Measured (`bench:append`,
+   * a 327-item session): 0.078 ms for `ingest, 1 per call` against 0.006 ms for
+   * the append itself — so twelve of every thirteen microseconds a streamed
+   * chunk cost were spent on the call, not the write.
+   *
+   * ALL OF IT IS WORK A DELTA DOES NOT NEED:
+   *
+   *   the transaction   a delta-only batch writes NO row. Every delta goes into
+   *                     the execution store's buffer and reaches sqlite on a
+   *                     later flush, so the BEGIN/COMMIT wrapped around nothing
+   *                     at all — and, with it, the two `total_changes()` probes
+   *                     that decide whether a receipt is owed.
+   *   the task read     a delta cannot touch a task. The document was parsed and
+   *                     validated per chunk to be handed to nobody.
+   *   the items copy    `readItems` hands out a Map of its own over the cached
+   *                     items, which on a 327-item session is 327 entries
+   *                     rebuilt per chunk to answer `items.has(itemId)` once.
+   *   the queue parse   `readQueue` re-parses and re-validates `queue.json` per
+   *                     chunk. Nothing here MUTATES the turn, so the shared
+   *                     read-only copy `scanQueue` already keeps is the right
+   *                     one — the same bargain every other reader makes.
+   *
+   * WHAT IS NOT SKIPPED: the claim check, the schema validation, the ordering.
+   * A caller cannot tell these two paths apart — the journal gets the same
+   * events, with the same ids, in the same order, and `readEvents` answers with
+   * held deltas exactly as it did before.
+   *
+   * ATOMICITY IS THE ONE REAL DIFFERENCE, and it is the trade #246 already made
+   * one layer down. Without a transaction around the batch, a failure PART WAY
+   * through it — which after validation means sqlite failing on a flush — leaves
+   * the deltas before it journalled. That is already true between calls, and a
+   * flush that cannot write is a daemon in trouble either way.
+   */
+  private ingestDeltas(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
+    // First, and against the shared copy: the claim is checked before the batch
+    // is validated, exactly as the command path checks it before parsing.
+    const turn = this.requireRunningClaimFromQueue(this.scanQueue(sessionId), runId, claimToken);
+    // THE SAME SCHEMA THE COMMAND PATH USES, not a narrower copy of the delta
+    // member: one definition, so the two paths cannot drift on what they accept.
+    const parsed = TurnObservationSchema.array().safeParse(observations);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
+    for (const observation of parsed.data) {
+      // `isDeltaOnlyBatch` is what chose this path; this is what tells the compiler.
+      if (observation.kind !== "content.delta") continue;
+      // The one thing the projection was read for. `journalObservation` drops a
+      // delta whose item never opened, and so does this.
+      if (!this.hasItem(sessionId, observation.itemId)) continue;
+      const written = this.appendEvent(
+        sessionId,
+        { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
+        turn.runId,
+      );
+      // #214: a reader arriving mid-reply still has to see the prefix.
+      this.extendOpenPrefix(sessionId, observation.itemId, observation.text, written.id);
+    }
+    return { accepted: parsed.data.length };
+  }
+
+  private ingestBatch(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
     const queue = this.readQueue(sessionId);
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
@@ -9786,7 +10262,13 @@ export class EngineStore {
    *  maintained in one place rather than at each of the thirteen transitions
    *  that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
-    this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
+    this.writeIndexedDocument(
+      sessionQueueFile(this.paths, sessionId),
+      sessionQueueIndexFile(this.paths, sessionId),
+      queue,
+      "turns",
+      queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
+    );
     this.queueCache.delete(sessionId);
     this.announceQueueChange();
     if (!this.liveQueueIndex) return;
@@ -10015,12 +10497,15 @@ export class EngineStore {
    * would be ~98 MB on the dogfood store. The cap is the number of sessions
    * that can plausibly be streaming at once; past it the oldest goes.
    */
-  private readonly itemsCache = new Map<string, Item[]>();
+  private readonly itemsCache = new Map<string, Map<string, Item>>();
   private static readonly ITEMS_CACHE_LIMIT = 8;
 
-  private readItems(sessionId: string): Map<string, Item> {
+  /** THE CACHED PROJECTION ITSELF — read-only, and never handed to a caller.
+   *  Keyed rather than listed so the one question the streaming path asks can be
+   *  answered without building anything: see `hasItem`. */
+  private itemsById(sessionId: string): Map<string, Item> {
     const cached = this.itemsCache.get(sessionId);
-    if (cached) return new Map(cached.map((item) => [item.id, item]));
+    if (cached) return cached;
     const stored = this.readDocument(itemsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
@@ -10029,12 +10514,38 @@ export class EngineStore {
       const oldest = this.itemsCache.keys().next();
       if (!oldest.done) this.itemsCache.delete(oldest.value);
     }
-    this.itemsCache.set(sessionId, parsed.data);
-    return new Map(parsed.data.map((item) => [item.id, item]));
+    const items = new Map(parsed.data.map((item) => [item.id, item]));
+    this.itemsCache.set(sessionId, items);
+    return items;
+  }
+
+  /**
+   * DOES THIS ITEM EXIST — without building a caller's copy of the projection.
+   *
+   * `readItems` hands out a Map of its own, which is right for anything that
+   * MUTATES items and wrong for the streaming path: a delta asks this one
+   * question and changes nothing, and on a 327-item session the copy was 327
+   * entries rebuilt per token-chunk to answer it. See `ingestDeltas`.
+   */
+  private hasItem(sessionId: string, itemId: string): boolean {
+    return this.itemsById(sessionId).has(itemId);
+  }
+
+  private readItems(sessionId: string): Map<string, Item> {
+    return new Map(this.itemsById(sessionId));
   }
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
-    this.writeDocument(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+    const rows = [...items.values()];
+    this.writeIndexedDocument(
+      itemsFile(this.paths, sessionId),
+      itemsIndexFile(this.paths, sessionId),
+      { version: STATE_VERSION, items: rows },
+      "items",
+      // Keyed by the TURN, not the item: the window chooses turns, and an item
+      // is wanted exactly when its turn is.
+      rows.map((item) => ({ key: item.runId })),
+    );
     this.itemsCache.delete(sessionId);
   }
 
@@ -10549,15 +11060,30 @@ export class EngineStore {
    * payload fails at compile time here rather than at a client's call site.
    */
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
-    const file = eventsFile(this.paths, sessionId);
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     // The head is read from disk ONCE per session per store, through the same
     // parse that validates every record and repairs a torn tail — so a restart
     // still recovers exactly as before. After that the daemon lock makes this
     // process the only writer, and the head is whatever it last wrote. Parsing
     // a 9 MB journal to learn one integer on every append was the cost that
     // made long sessions sluggish.
-    const head = this.executionStore ? this.executionStore.cursor(sessionId) : this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
+    if (this.executionStore) {
+      const stored = {
+        id: this.executionStore.cursor(sessionId) + 1,
+        at: this.now(),
+        sessionId,
+        ...(runId ? { runId } : {}),
+        ...event,
+      } as EngineEvent;
+      // NO DIRECTORY, AND NO `eventsFile`. There is no journal file on this
+      // backend — every other writer to `sessions/<id>/` goes through
+      // `atomicWrite`, which makes its own — so the `mkdir` below was a syscall
+      // per streamed token-chunk to guarantee a directory nothing would use.
+      this.executionStore.append(stored);
+      return stored;
+    }
+    const file = eventsFile(this.paths, sessionId);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
     const record = {
       id: head + 1,
       at: this.now(),
@@ -10565,10 +11091,6 @@ export class EngineStore {
       ...(runId ? { runId } : {}),
       ...event,
     } as EngineEvent;
-    if (this.executionStore) {
-      this.executionStore.append(record);
-      return record;
-    }
     // NDJSON is an append-only stream, not a document: do not replace it with
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
     try {

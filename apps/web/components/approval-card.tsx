@@ -83,7 +83,7 @@ function capitalise(word: string): string {
  * box instead of inside it, so the 1px stops being part of the layout.
  */
 const CARD = `flex flex-col gap-3 p-3 ${cardSurface("warning")}`;
-const EYEBROW = "font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase";
+const EYEBROW = "font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase";
 
 /** One field of a `user_input` request, in the kind the agent asked for. */
 function Field({ field, value, onChange }: { field: UserInputField; value: unknown; onChange: (next: unknown) => void }) {
@@ -286,7 +286,7 @@ function SecretAccessCard({
               onChange={() => setItemId(candidate.id)}
             />
             <span className="font-medium">{candidate.title}</span>
-            <span className="ml-auto flex items-center gap-2 font-mono text-[0.625rem] text-muted-foreground">
+            <span className="ml-auto flex items-center gap-2 font-mono text-3xs text-muted-foreground">
               {candidate.vault && <span>{candidate.vault}</span>}
               {/* The matched domain, shown so the human verifies the same
                   binding the engine enforced. */}
@@ -393,7 +393,7 @@ export function ApprovalCard({
         >
           <span className="text-sm leading-tight font-medium">Always allow</span>
           {/* The real scope, stated. See the note above on why this is not a glob. */}
-          <span className="font-mono text-[0.625rem] leading-tight font-normal text-muted-foreground">for this session</span>
+          <span className="font-mono text-3xs leading-tight font-normal text-muted-foreground">for this session</span>
         </Button>
         <Button variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")} className="text-destructive hover:text-destructive">
           Deny

@@ -91,7 +91,7 @@ struct NewSessionView: View {
                              : targets.isEmpty ? "No Mac reported a project. Add one below."
                              : "Try another name, Mac or path.")
                             .font(.system(size: 14))
-                            .foregroundStyle(Theme.textMuted2)
+                            .foregroundStyle(Theme.textMuted)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
@@ -210,12 +210,12 @@ struct NewSessionView: View {
                         Image(systemName: "desktopcomputer").font(.system(size: 10))
                         Text(target.hostName).font(.system(size: 11)).lineLimit(1)
                     }
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                 }
                 if let root = target.root {
                     Text(root)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.textMuted2)
+                        .foregroundStyle(Theme.textMuted)
                         .lineLimit(1).truncationMode(.head)
                 }
             }
@@ -481,7 +481,7 @@ struct NewSessionDraftView: View {
                                         .font(.system(size: 14, weight: .semibold))
                                         .lineLimit(1)
                                 }
-                                .foregroundStyle(Theme.textMuted2)
+                                .foregroundStyle(Theme.textMuted)
                                 .padding(.horizontal, 14)
                                 .frame(height: 44)
                                 .background(Theme.subtle)
@@ -502,7 +502,7 @@ struct NewSessionDraftView: View {
                         } else {
                             Image(systemName: "arrow.up")
                                 .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted2)
+                                .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
                                 .frame(width: 44, height: 44)
                                 .background(canStart ? Theme.primaryFill : Theme.subtleStrong)
                                 .clipShape(Circle())

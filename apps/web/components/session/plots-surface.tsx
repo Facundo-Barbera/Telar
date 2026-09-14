@@ -136,7 +136,7 @@ export function PlotsSurface({ sessionId, active, onOpenImage, embedded }: { ses
         // number in the corner (#357).
         {...(!embedded && plots ? { count: stacks.length } : {})}
         actions={
-          <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+          <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
             <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
           </button>
         }
@@ -235,7 +235,7 @@ function PlotCard({
         draggable
         onDragStart={(event) => event.dataTransfer.setData("text/plain", `[plot ${plot.id}]`)}
       />
-      <figcaption className="flex items-center gap-1.5 border-t border-border bg-background px-2 py-1 text-[0.625rem] text-muted-foreground">
+      <figcaption className="flex items-center gap-1.5 border-t border-border bg-background px-2 py-1 text-3xs text-muted-foreground">
         <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
         {/* The attempts behind this one. A button rather than a badge because
             the whole point is that you can go and look at them. */}
@@ -245,13 +245,13 @@ function PlotCard({
             onClick={onToggleVersions}
             aria-expanded={open}
             title={open ? "Hide the earlier attempts" : `Show the ${versions - 1} this replaced`}
-            className="shrink-0 rounded px-1 tabular-nums hover:bg-muted hover:text-foreground"
+            className="shrink-0 rounded px-1 tabular-nums outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             {versions} versions
           </button>
         )}
         {plot.createdAt && <span className="shrink-0 tabular-nums">{new Date(plot.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
-        <button type="button" title={pinned ? "Unpin" : "Pin to top"} onClick={onPin} className={cn("rounded p-0.5 hover:text-foreground", pinned ? "text-primary" : "opacity-0 group-hover:opacity-100")}>
+        <button type="button" title={pinned ? "Unpin" : "Pin to top"} onClick={onPin} className={cn("rounded p-0.5 outline-none hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring", pinned ? "text-primary" : "opacity-0 group-hover:opacity-100")}>
           {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
         </button>
       </figcaption>

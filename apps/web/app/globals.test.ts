@@ -298,11 +298,58 @@ describe("the text scale", () => {
    * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
    * app looks until the slider moves.
    */
+  /**
+   * `test-fixtures/` IS IN SCOPE for both guards below. A harness renders the
+   * real components for a visual test, so a size pinned in one is a size the
+   * snapshot then certifies — the fixture would go on asserting the drift it
+   * introduced.
+   */
+  const corpus = ["app", "components", "lib", "test-fixtures"] as const;
+
   test("no component pins a font size in px", () => {
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+    for (const file of sources(corpus, /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(/text-\[[0-9.]+px\]/g)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * A NAMED STEP AND ITS ARBITRARY TWIN CANNOT BOTH BE IN THE TREE.
+   *
+   * The px guard above is not enough on its own. Converting `text-[11px]` to
+   * `text-[0.6875rem]` satisfies it while leaving the call site exactly as
+   * unnamed as it was: the ramp still has no name at the point of use, the
+   * next 11px caption is still written by copying a decimal out of a
+   * neighbouring file, and a re-tune of the step has to find all of them by
+   * value. That is the state 61 files were in before the tokens existed, and
+   * it is the state they drift back to one paste at a time.
+   *
+   * Read off the `@theme` block rather than from a list of four, so naming a
+   * fifth step forbids its arbitrary twin in the same commit — the list here
+   * could only ever be the one that was true when it was typed.
+   *
+   * Only the EXACT declared value is an offender. A size that is genuinely not
+   * on the ramp stays writable — the point is that the scale is named, not
+   * that every size must come from it.
+   */
+  test("no component writes a named step's own value as an arbitrary size", () => {
+    const steps = [
+      ...theme.replaceAll(/\/\*[\s\S]*?\*\//g, "").matchAll(/^\s*--text-([a-z0-9-]+)\s*:\s*([0-9.]+rem)\s*;/gm),
+    ].map(([, name, value]) => ({ name, value }));
+    // The four the sweep introduced; a regex that matched nothing would make
+    // this test vacuous rather than failing.
+    expect(steps.length).toBeGreaterThanOrEqual(4);
+
+    const offenders: string[] = [];
+    for (const file of sources(corpus, /\.tsx?$/)) {
+      const source = withoutProse(file);
+      for (const { name, value } of steps) {
+        for (const hit of source.matchAll(new RegExp(`text-\\[${value.replaceAll(".", "\\.")}\\]`, "g"))) {
+          offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]} → text-${name}`);
+        }
       }
     }
     expect(offenders).toEqual([]);

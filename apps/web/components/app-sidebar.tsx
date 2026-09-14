@@ -69,7 +69,7 @@ import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
-import type { Project } from "@telar/engine-client";
+import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -140,6 +140,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
+import { CAPTION } from "@/lib/idiom";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
@@ -224,7 +225,7 @@ function SidebarEmpty({
     <div className="px-3 py-6 text-center text-sidebar-foreground/55">
       <Icon className="mx-auto mb-2 size-5" />
       <p className="text-xs font-medium text-sidebar-foreground/75">{title}</p>
-      <p className="mt-1 text-[0.6875rem] leading-4">{detail}</p>
+      <p className="mt-1 text-2xs leading-4">{detail}</p>
     </div>
   );
 }
@@ -244,15 +245,14 @@ function SidebarEmpty({
  * here is a control, so it is unconditionally a <button>.
  *
  * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
- * the two rails' grammar. `warehouse-nav.tsx`'s `CAPTION` (10px, semibold,
- * uppercase, tracking-wider) is the newer of the two section-caption
- * treatments this app has; this label used to sit at 11px, regular weight,
- * sentence case — a difference between two "small grey word beside a rule"
- * treatments with no reason beyond having been written on different days.
- * Everything else about the rule (the rule itself, the chevron, the count)
- * is unchanged — only the label's type scale moved.
+ * the two rails' grammar. `CAPTION` (10px, semibold, uppercase,
+ * tracking-wider) now lives in `lib/idiom.ts` and this label reads it from
+ * there; it used to sit at 11px, regular weight, sentence case — a difference
+ * between two "small grey word beside a rule" treatments with no reason
+ * beyond having been written on different days. Everything else about the
+ * rule (the rule itself, the chevron, the count) is unchanged — only the
+ * label's type scale moved.
  */
-const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
@@ -265,7 +265,7 @@ function BandRule({ label, count, open, onToggle }: { label: string; count: numb
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
       <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums text-[0.6875rem]">{count}</span>
+      <span className="shrink-0 tabular-nums text-2xs">{count}</span>
     </button>
   );
 }
@@ -341,6 +341,16 @@ function SessionShelf({
 
 /** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
 type RemoteProject = Pick<Project, "id" | "name" | "icon" | "iconName"> & { hostId: string; hostName: string };
+
+/** One Mac's pass, composed — what `loadHost` returns and what an UNCHANGED
+ *  answer hands back untouched. Named so it can be held in a ref. */
+type HostPage = {
+  projects: Project[];
+  sessions: SidebarSession[];
+  daemonId?: string;
+  policy?: InboxPolicy;
+  layout?: SidebarLayout;
+};
 
 function SidebarBody() {
   const pathname = usePathname();
@@ -458,6 +468,21 @@ function SidebarBody() {
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
+  /**
+   * THE CONDITIONAL READ'S TWO HALVES, per host (#459): the cursor that was
+   * handed back last time, and the page it described.
+   *
+   * REFS RATHER THAN STATE, because neither is rendered and both are written
+   * inside the read: putting them in state would re-render the rail once a tick
+   * to store a number nothing draws — which is most of what this issue is about.
+   * Keyed like the sidebar cache (`LOCAL_HOST` for this engine), so one Mac's
+   * cursor can never be spent against another's revision.
+   *
+   * A HOST THAT ANSWERS NO REVISION KEEPS NO ENTRY, so an engine too old to
+   * count simply goes on making full reads.
+   */
+  const revisions = useRef(new Map<string, number>());
+  const pages = useRef(new Map<string, HostPage>());
 
   // On a phone the rail is a sheet OVER the content, so following a link has to
   // close it — otherwise the destination is behind the thing you just used.
@@ -483,20 +508,56 @@ function SidebarBody() {
      * host being loaded rather than of the page being looked at.
      */
     const hostApi = createEngineApi(hostFetcher(host?.id ?? LOCAL_HOST_ID));
-    // The engine's identity rides beside its rows, so two reads that reached
-    // ONE engine (a Mac paired with itself, or under two addresses) can be
-    // folded into one — see `dedupeAcrossHosts`. Best-effort: a health that
-    // fails leaves the rows undeduplicated rather than dropped.
-    //
-    // ITS SETTLING WINDOW COMES WITH IT. A row is banded by the clock of the
-    // engine it lives on — the inbox policy is that engine's document — so a
-    // paired Mac's "72 hours" cannot shelve a row this Mac's "off" would keep,
-    // which is how a conversation read as settled here and live over there.
-    const [result, daemonId, policy] = await Promise.all([
-      hostApi.liveSessions(),
-      hostApi.health().then((health) => health.daemonId, () => undefined),
-      hostApi.inbox().then((answer) => answer.inbox, () => undefined),
-    ]);
+    /**
+     * ONE READ PER HOST PER PASS (#459) — and it used to be three.
+     *
+     * The engine's identity rides beside its rows, so two reads that reached ONE
+     * engine (a Mac paired with itself, or under two addresses) can be folded
+     * into one; see `dedupeAcrossHosts`. Its settling window comes with it, so a
+     * row is banded by the clock of the engine it lives on and a paired Mac's
+     * "72 hours" cannot shelve what this Mac's "off" would keep.
+     *
+     * BOTH USED TO BE THEIR OWN REQUEST, issued concurrently with the list. That
+     * is three sockets per host per tick — six with one paired Mac, against a
+     * browser's six-connection cap (#82) — to learn two fields that change when
+     * somebody opens Settings. The engine now stamps them on the list, which is
+     * the one read this rail was making anyway.
+     *
+     * STILL BEST-EFFORT, and it has to be: an engine older than the fields sends
+     * neither, and absent must read as "no answer" rather than an answer. No
+     * daemon id leaves that host's rows undeduplicated; no policy falls back to
+     * the default window. Neither costs a row.
+     */
+    /**
+     * AND THE READ IS CONDITIONAL (#459) — the half that actually took the
+     * engine off the floor.
+     *
+     * A rail cannot be pushed to. There is no global event feed on the engine,
+     * and #82 is the issue about NOT opening this cockpit's first long-lived
+     * connection — six per origin is all a browser has, and navigation needs
+     * them. So the timer below stays, and what changes is what a tick COSTS:
+     * hand back the revision from last time, and an engine with nothing new
+     * answers sixty bytes instead of folding over every session's queue,
+     * requests and tasks and sending back several hundred kilobytes of rows the
+     * rail is already drawing. On an idle cockpit that is every tick, forever.
+     *
+     * UNCHANGED MEANS "KEEP WHAT YOU HAVE", so the held page is returned
+     * verbatim and nothing re-renders. The fallback below is for the case that
+     * should not happen — a cursor with no page behind it — because answering
+     * an unchanged read with no rows would empty the rail.
+     */
+    const key = host?.id ?? LOCAL_HOST;
+    const known = revisions.current.get(key);
+    const answer = known === undefined ? await hostApi.liveSessions() : await hostApi.liveSessionsSince(known);
+    if (answer.unchanged) {
+      const held = pages.current.get(key);
+      if (held) return held;
+    }
+    const result = answer.unchanged ? await hostApi.liveSessions() : answer;
+    if (result.revision === undefined) revisions.current.delete(key);
+    else revisions.current.set(key, result.revision);
+    const daemonId = result.daemonId;
+    const policy = result.inbox;
     const names = new Map(result.projects.map((project) => [project.id, project.name]));
     // The checkout's current branch, for the local sessions that share it —
     // they have no branch of their own. Derived per project by the engine.
@@ -535,7 +596,7 @@ function SidebarBody() {
         session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
       ),
     );
-    return {
+    const page: HostPage = {
       projects: result.projects,
       sessions,
       ...(daemonId ? { daemonId } : {}),
@@ -545,6 +606,10 @@ function SidebarBody() {
       // mints. A remote Mac's own arrangement is of ITS rail, not of ours.
       ...(result.layout ? { layout: result.layout } : {}),
     };
+    // Held so the next unchanged answer has something to BE. Only alongside a
+    // revision: without one every read is a full one and nothing reads this.
+    if (result.revision !== undefined) pages.current.set(key, page);
+    return page;
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -672,6 +737,16 @@ function SidebarBody() {
    * SO THE CADENCE FOLLOWS WHAT IS ON SCREEN. Anything live and it tightens to
    * 3s; an entirely quiet list goes back to 10s, because then it is a list of
    * titles again and this is N+1 requests over the project list.
+   *
+   * AND THE TICK IS NOW NEARLY FREE (#459). The reason this stayed a timer is
+   * unchanged and worth restating: there is no global event feed on the engine
+   * to subscribe to, and #82 is the issue about NOT opening this cockpit's first
+   * long-lived connection — a browser has six per origin and navigation needs
+   * them. What changed is the cost. `loadHost` hands back the revision it was
+   * given, so a tick that finds nothing written costs sixty bytes and no fold,
+   * where it used to cost 318 KB and a pass over every session's queue. The
+   * cadence is therefore about LATENCY now — how soon a badge appears — rather
+   * than about how much the rail is willing to spend.
    */
   const anyLive = sessions.some((session) => session.activity !== "idle");
   useEffect(() => {
@@ -1398,7 +1473,7 @@ function SidebarBody() {
             <ContextMenuTrigger render={<div className="flex min-h-0 flex-1 flex-col" />}>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {showingStale ? (
-              <p className="px-2 pb-1 pt-0.5 text-[0.6875rem] leading-4 text-sidebar-foreground/55">
+              <p className="px-2 pb-1 pt-0.5 text-2xs leading-4 text-sidebar-foreground/55">
                 The engine did not answer — retrying. Showing the last read.
               </p>
             ) : null}
@@ -1594,7 +1669,7 @@ function SidebarBody() {
               .filter((host) => unreachable.has(host.id))
               .map((host) => (
                 <div key={host.id}>
-                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-[0.6875rem] text-muted-foreground" role="status">
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-2xs text-muted-foreground" role="status">
                     <MonitorIcon className="size-3 shrink-0" />
                     <span className="min-w-0 truncate">{host.name} did not answer — retrying</span>
                   </div>

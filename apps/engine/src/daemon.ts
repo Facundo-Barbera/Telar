@@ -3446,8 +3446,58 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { machine });
         return;
       }
+      /**
+       * THE RAIL'S ONE READ — and it answers ROWS, not whole sessions (#459).
+       *
+       * This is the most-served route on the engine: every cockpit polls it on a
+       * timer, for every paired host, for as long as it is open. On the owner's
+       * store it was 318 KB and 200 ms for 267 sessions, which is why the engine
+       * sat at 70% CPU with two devices attached. `liveSessionRows` serializes
+       * only what a row draws; `LiveSessionRow` argues it field by field.
+       *
+       * IT IS ALSO THE WHOLE OF WHAT A RAIL ASKS PER PASS. The sidebar used to
+       * fan out three ways here — this list, `/v2/health` for the engine's id
+       * and `/v2/inbox` for the settling window — three concurrent reads, per
+       * paired host, per tick, of which two answered one field each and changed
+       * only when somebody opened Settings. `daemonId` is stamped on here rather
+       * than in the store because it belongs to the running daemon, not to the
+       * documents: two reads that reached ONE engine (a Mac paired with itself,
+       * or under two addresses) are folded on it.
+       *
+       * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
+       * the old shape — a paired Mac on last week's nightly, a script. It is not
+       * a mode anything of ours asks for, and it is meant to be deleted.
+       */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
-        writeJson(response, 200, store.liveSessions());
+        if (url.searchParams.get("full") === "1") {
+          writeJson(response, 200, store.liveSessions());
+          return;
+        }
+        /**
+         * `?since=<revision>` — THE CONDITIONAL READ, and the reason this route
+         * stopped being the engine's largest cost (#459).
+         *
+         * A rail cannot be pushed to: there is no global event feed here, and a
+         * new long-lived connection is what #82 exists to avoid. So it still
+         * asks on a timer, and this makes the ask nearly free — a cursor that
+         * matches means nothing has been written since, and the answer is one
+         * integer instead of a fold over every session's queue, requests and
+         * tasks followed by 318 KB of rows.
+         *
+         * `daemonId` RIDES THE UNCHANGED ANSWER TOO. A rail that had not cached
+         * it (a fresh tab whose first read happened to be conditional) would
+         * otherwise have to go back to `/v2/health` for it — which is the
+         * request this route just absorbed.
+         *
+         * An unparseable cursor is not an error: it is a client that has no
+         * useful cursor, which is exactly the full answer's case.
+         */
+        const since = Number(url.searchParams.get("since"));
+        if (Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+          writeJson(response, 200, { revision: since, unchanged: true, daemonId });
+          return;
+        }
+        writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
         return;
       }
       /**

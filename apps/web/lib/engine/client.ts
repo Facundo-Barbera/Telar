@@ -74,6 +74,7 @@ import type {
   EngineRequest,
   RequestDecision,
   RuntimeMode,
+  LiveSessionRow,
   Session,
   SessionBootstrap,
   SessionSnapshot,
@@ -120,7 +121,96 @@ export class EngineApiError extends Error {
 
 type Fetcher = typeof fetch;
 
+/**
+ * THE CONNECTION BUDGET (#82).
+ *
+ * A browser opens at most six connections per origin over HTTP/1.1, and EVERY
+ * App Router navigation needs a free one for its RSC fetch. Reach the cap and
+ * navigation does not degrade — it queues, behind whatever is holding the
+ * sockets, and the cockpit stops responding to clicks until something finishes.
+ * That was measured live: exactly six established connections to the packaged
+ * server while a session worked, and no way to switch conversations.
+ *
+ * WHAT HOLDS THEM NOW IS NOT WHAT THE ISSUE DESCRIBED. The stacked SSE tails it
+ * was filed against are gone — this cockpit opens no EventSource, no WebSocket
+ * and no streaming fetch, and the engine serves no `text/event-stream` route to
+ * it. Liveness is polling: the session tail once a second, the rail every three.
+ * A poll RETURNS its socket to the keep-alive pool, where a navigation can take
+ * it, so nothing is held indefinitely any more.
+ *
+ * What is left is the BURST. A single rail pass fans out — the live list, the
+ * health probe and the inbox policy go out together, per host — and a poll tick
+ * that lands across an open cockpit's own tail can put five or six reads on the
+ * wire at one instant. The cap does not care that each is short-lived; a
+ * navigation arriving during that instant still waits.
+ *
+ * So the ceiling is enforced HERE, at the one chokepoint every call already
+ * passes through, rather than at each of the twenty-eight call sites that would
+ * otherwise have to agree. Two concurrent reads leaves four connections free,
+ * which is the budget the issue asks for and four more than navigation needs.
+ *
+ * NOTHING IS DROPPED OR DEBOUNCED: over-budget reads queue in FIFO order and go
+ * out as slots free. A caller sees latency under contention, never a failure,
+ * and the ordering it would have got from the browser's own socket queue.
+ *
+ * ONE GATE FOR EVERY HOST, deliberately. A remote Mac's reads are proxied
+ * through THIS origin (`/api/hosts/:id/…` — see lib/hosts/client.ts), so they
+ * spend the same six connections a local read does. A per-host gate would count
+ * the wrong thing and let two hosts reach the cap between them.
+ */
+export const READ_BUDGET = 2;
+
+let reading = 0;
+const queued: Array<() => void> = [];
+
+/** Take a slot, waiting in line when the budget is spent. */
+async function acquireRead(): Promise<void> {
+  if (reading < READ_BUDGET) {
+    reading += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => queued.push(resolve));
+}
+
+/**
+ * Hand the slot to whoever is next in line, or give it back.
+ *
+ * The waiter is resumed WITHOUT touching `reading` — the slot is transferred,
+ * not released and re-taken, so a third caller arriving in the same tick cannot
+ * slip past the queue into the gap that a decrement would open.
+ */
+function releaseRead(): void {
+  const next = queued.shift();
+  if (next) {
+    next();
+    return;
+  }
+  reading -= 1;
+}
+
 async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  /**
+   * READS ARE BUDGETED; EVERYTHING ELSE GOES STRAIGHT OUT.
+   *
+   * The traffic that stacks is background reads — polls, on timers nobody
+   * pressed. A mutation is somebody's click, it is rare next to a poll, and
+   * making a send wait behind two rail reads would trade the freeze this fixes
+   * for a slower Send button.
+   *
+   * A request carrying a signal is exempt for the opposite reason: it is the
+   * long, cancellable kind (`/api/textgen/complete` waits on a model), and one
+   * of those parked in a slot would starve the tail for as long as it ran.
+   */
+  const budgeted = method === "GET" && signal === undefined;
+  if (budgeted) await acquireRead();
+  try {
+    return await send<T>(fetcher, method, pathname, body, signal);
+  } finally {
+    if (budgeted) releaseRead();
+  }
+}
+
+async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetcher(pathname, {
@@ -148,6 +238,32 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
   }
   return payload as T;
 }
+
+/**
+ * ONE PASS OF THE RAIL, in the two shapes it can come back in.
+ *
+ * A UNION, SO `sessions` CANNOT BE READ WITHOUT CHECKING `unchanged` FIRST. That
+ * flag means "keep what you have" — not "there is nothing" — and a rail that
+ * redrew from the absent rows would blank itself once a tick. The type is what
+ * makes that a compile error rather than a thing to remember.
+ */
+export type LiveSessionsPage = {
+  sessions: LiveSessionRow[];
+  projects: Project[];
+  assignments?: Record<string, SessionAssignment[]>;
+  layout?: SidebarLayout;
+  /** Which engine answered — what folds two reads that reached ONE Mac.
+   *  Absent from an engine too old to stamp it; the rail then leaves its
+   *  hosts undeduplicated rather than dropping rows. */
+  daemonId?: string;
+  /** The settling window these rows band by, this engine's own. Absent
+   *  from an older engine; the rail falls back to its default. */
+  inbox?: InboxPolicy;
+  /** What to pass as `since` next time. Absent from an engine too old to
+   *  count, which keeps every read a full one. */
+  revision?: number;
+  unchanged?: false;
+};
 
 /**
  * THE DEFAULT FETCHER FOLLOWS THE ADDRESS BAR (lib/hosts/client.ts): a screen
@@ -477,14 +593,44 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * one, without a second request or a connection of its own. Optional — an
      * engine older than the field simply says nothing about the arrangement,
      * and the rail keeps the copy it fetched when it mounted.
+     *
+     * ROWS, NOT WHOLE SESSIONS (#459). `LiveSessionRow` is every field a row
+     * renders and none it does not — the route was answering 318 KB for 267
+     * sessions, several times a second, most of it engine bookkeeping no rail
+     * has ever read. A full `Session` is assignable to a row, so anything here
+     * that was handed one keeps working.
+     *
+     * AND IT IS NOW THE RAIL'S WHOLE PASS. `daemonId` and `inbox` used to be a
+     * `health()` and an `inbox()` issued beside this one, three concurrent reads
+     * per host per tick; both answer one field that moves when somebody opens
+     * Settings. They ride here for the same reason `layout` does.
+     *
+     * `since` MAKES THE PASS CONDITIONAL (#459). Hand back the `revision` from
+     * last time and an engine with nothing to say answers `unchanged` — sixty
+     * bytes and no fold — instead of every row the caller already has. Check
+     * `unchanged` before reading `sessions`: it means "keep what you have", and
+     * a rail that redrew from it would blank itself once a tick.
      */
-    liveSessions: () =>
-      request<{
-        sessions: Session[];
-        projects: Project[];
-        assignments?: Record<string, SessionAssignment[]>;
-        layout?: SidebarLayout;
-      }>(fetcher, "GET", "/api/sessions/live"),
+    liveSessions: () => request<LiveSessionsPage>(fetcher, "GET", "/api/sessions/live"),
+    /**
+     * THE SAME PASS, CONDITIONALLY — the read a RAIL should make (#459).
+     *
+     * Hand back the `revision` from last time and an engine with nothing to say
+     * answers `{ revision, unchanged: true }`: sixty bytes, no fold over 267
+     * sessions' queues, and no `listProjects()` behind it either. Everything
+     * else here calls `liveSessions()` above, because a surface that reads the
+     * list once has no cursor and wants the rows.
+     *
+     * THE UNION IS THE SAFETY. `unchanged` means "keep what you have", never
+     * "there is nothing", and narrowing on it is what stops a rail redrawing
+     * itself empty once a tick.
+     */
+    liveSessionsSince: (since: number) =>
+      request<LiveSessionsPage | { unchanged: true; revision: number; daemonId?: string }>(
+        fetcher,
+        "GET",
+        `/api/sessions/live?since=${encodeURIComponent(String(since))}`,
+      ),
     createSession: (
       projectId: string,
       input: {

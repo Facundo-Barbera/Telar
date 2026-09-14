@@ -7,6 +7,18 @@ import Foundation
 protocol EngineAPI: Sendable {
     func health() async throws -> EngineHealth
     func liveSessions() async throws -> LiveSessions
+    /// THE SAME READ, CONDITIONALLY (#459) — what the inbox poll should use.
+    ///
+    /// Hand back the `revision` from last time and a Mac with nothing new
+    /// answers `unchanged` in about sixty bytes, instead of every row this
+    /// phone is already drawing. It was 318 KB a read on the owner's store, and
+    /// this phone asks every three seconds while anything is live.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW, like `usageReport`: a conformer that
+    /// does not implement it (the test doubles) falls back to the full read,
+    /// and the real client's override still dispatches dynamically because the
+    /// requirement is on the protocol rather than only in the extension.
+    func liveSessions(since: Int) async throws -> LiveSessions
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
     func events(_ id: EngineID, after: Int) async throws -> EventPage
     /// THE SAME TWO READS, AS BYTES — what the phone keeps for when the Mac is
@@ -121,6 +133,12 @@ extension EngineAPI {
     /// with an empty window rather than by throwing.
     func usageReport(sinceMs: Timestamp, untilMs: Timestamp, resolution: String, timeZone: String) async throws -> UsageReport {
         UsageReport.empty
+    }
+
+    /// And a conformer that has not learned the conditional read just makes the
+    /// full one — which is what a Mac too old to count would force anyway.
+    func liveSessions(since: Int) async throws -> LiveSessions {
+        try await liveSessions()
     }
 }
 
@@ -379,6 +397,10 @@ struct HTTPEngineAPI: EngineAPI {
 
     func liveSessions() async throws -> LiveSessions {
         try await get("api/sessions/live")
+    }
+
+    func liveSessions(since: Int) async throws -> LiveSessions {
+        try await get("api/sessions/live", query: [URLQueryItem(name: "since", value: String(since))])
     }
 
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {

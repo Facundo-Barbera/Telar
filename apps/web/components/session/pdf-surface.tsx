@@ -117,7 +117,7 @@ export function PdfSurface({
             setGeneration((v) => v + 1);
             void load().finally(() => setRefreshing(false));
           }}
-          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
         </button>
@@ -128,7 +128,7 @@ export function PdfSurface({
           {error}
         </PanelEmpty>
       ) : !file || !src ? (
-        <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
+        <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
           <Spinner className="size-3" /> reading the file…
         </p>
       ) : (

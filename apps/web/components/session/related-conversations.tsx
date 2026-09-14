@@ -271,10 +271,10 @@ function Row({
       <Link href={href} className="flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 pl-4 hover:bg-muted/60">
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-xs">{title}</span>
-          {detail && <span className="truncate text-[0.625rem] text-muted-foreground">{detail}</span>}
+          {detail && <span className="truncate text-3xs text-muted-foreground">{detail}</span>}
         </span>
         {state && (
-          <span className={cn("shrink-0 font-mono text-[0.625rem]", tone === "danger" ? "text-destructive" : "text-muted-foreground")}>
+          <span className={cn("shrink-0 font-mono text-3xs", tone === "danger" ? "text-destructive" : "text-muted-foreground")}>
             {state}
           </span>
         )}
@@ -289,7 +289,7 @@ function Row({
  *  of the record, never a sentence addressed to the reader. */
 function SectionLabel({ label, count }: { label: string; count: number }) {
   return (
-    <div className="flex items-center gap-1.5 px-3 pt-3 pb-1 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">
+    <div className="flex items-center gap-1.5 px-3 pt-3 pb-1 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">
       <span className="min-w-0 truncate">{label}</span>
       <span className="shrink-0 text-muted-foreground/60 tabular-nums">{count}</span>
     </div>
@@ -589,9 +589,9 @@ export function RelatedConversationsView({
               <PanelRow key={`${entry.sessionId}:${entry.at}:${index}`} tone={tone} className="gap-1.5 py-2">
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-xs text-muted-foreground">{title}</span>
-                  <span className="truncate text-[0.625rem] text-muted-foreground">{[detail, "no longer listed"].filter(Boolean).join(" · ")}</span>
+                  <span className="truncate text-3xs text-muted-foreground">{[detail, "no longer listed"].filter(Boolean).join(" · ")}</span>
                 </span>
-                <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">{state}</span>
+                <span className="shrink-0 font-mono text-3xs text-muted-foreground">{state}</span>
               </PanelRow>
             );
           })}

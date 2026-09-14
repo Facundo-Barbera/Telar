@@ -1047,6 +1047,28 @@ export function titleForProviderWait(detail: ProviderWaitDetail): string {
  */
 const PROVIDER_SILENCE_MS = 30_000;
 
+/**
+ * How long a turn waits for the CLI's `result` after the model has already
+ * said `end_turn` before the engine settles the turn itself (#465).
+ *
+ * MEASURED, NOT ASSUMED. On the coordinator session (session_b1d34698…,
+ * 2026-09-14, turns …e52d15 and …7e852d) the main loop's final assistant
+ * envelope arrived with `stop_reason: "end_turn"`, every tool result before it
+ * was answered, and the `result` frame that ends the turn NEVER came — the
+ * CLI's own transcript for the whole two-hour window holds zero `result`
+ * rows. The engine turn sat `running` with no output for 15–25 minutes until
+ * the owner restarted Telar, five times in one evening. A steered session
+ * (peer reports and mid-turn messages injected as steers) is where it shows;
+ * the exact CLI-side cause is not known and this driver cannot fix it there.
+ *
+ * `end_turn` is the model's own statement that it is done; on a healthy
+ * producer the `result` follows within milliseconds. Two seconds is long
+ * enough that a slow result on a loaded machine still wins, and short enough
+ * that a person never reads it as a stall. The turn that settles this way
+ * carries a warning row saying so, so a future stall names its cause.
+ */
+const END_TURN_GRACE_MS = 2_000;
+
 /** Milliseconds as a person would say them. Sub-second stays in ms; anything
  *  longer reads in seconds to one decimal, because "1085ms" is a measurement
  *  and "1.1s" is a duration. */
@@ -1199,10 +1221,14 @@ export function createClaudeDriver(
      * sleep for the real threshold.
      */
     providerSilenceMs?: number;
+    /** How long to wait for a `result` after `end_turn` — see
+     *  `END_TURN_GRACE_MS`. Injected so a test does not sleep for the real one. */
+    endTurnGraceMs?: number;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   const providerSilenceMs = options.providerSilenceMs ?? PROVIDER_SILENCE_MS;
+  const endTurnGraceMs = options.endTurnGraceMs ?? END_TURN_GRACE_MS;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
   /**
@@ -1322,6 +1348,15 @@ export function createClaudeDriver(
        * then closes through `closeProviderWait` — one row with a beginning and
        * an end, never a marker floating in silence.
        */
+      /**
+       * THE END-TURN GRACE (#465): set when our main loop's assistant envelope
+       * says `end_turn` with no top-level tool still open — the model is done
+       * and only the CLI's `result` is owed. Cleared by any later frame of
+       * ours. While it stands, the pump's read is raced against it; if the
+       * grace wins, the turn settles here with a warning row instead of
+       * waiting forever on a `result` that measurably does not always come.
+       */
+      let endTurnSeenAt: number | undefined;
       let silenceTimer: ReturnType<typeof setTimeout> | undefined;
       const disarmProviderSilence = (): void => {
         if (silenceTimer === undefined) return;
@@ -1542,7 +1577,7 @@ export function createClaudeDriver(
         modelUsage?: unknown;
         compact_result?: string;
         compact_metadata?: unknown;
-        message?: { content?: unknown[]; usage?: unknown };
+        message?: { content?: unknown[]; usage?: unknown; stop_reason?: string | null };
         /** The tool's full structured Output — where `structuredPatch` lives. */
         tool_use_result?: unknown;
         /** Set on everything a sub-agent produced: the id of the `Task`
@@ -2774,6 +2809,27 @@ export function createClaudeDriver(
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
 
+      /**
+       * A read raced against the end-turn grace. The read itself is NOT
+       * abandoned on a grace win: `takeStep` leaves it on `pendingStep`, and
+       * the next pump (idle or the next turn) awaits that same promise, so
+       * the frame it eventually yields is read exactly once.
+       */
+      const raceEndTurnGrace = async <S,>(read: Promise<S>): Promise<S | "end-turn-grace"> => {
+        if (endTurnSeenAt === undefined || !persistent) return read;
+        const remaining = Math.max(0, endTurnSeenAt + endTurnGraceMs - Date.now());
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const grace = new Promise<"end-turn-grace">((resolve) => {
+          timer = setTimeout(() => resolve("end-turn-grace"), remaining);
+          timer.unref?.();
+        });
+        try {
+          return await Promise.race([read, grace]);
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      };
+
       try {
         for (;;) {
           /**
@@ -2785,7 +2841,25 @@ export function createClaudeDriver(
            */
           const step = runtime.parked.length > 0
             ? { done: false as const, value: runtime.parked.shift()! }
-            : await ClaudeRuntimeStore.takeStep(runtime);
+            : await raceEndTurnGrace(ClaudeRuntimeStore.takeStep(runtime));
+          if (step === "end-turn-grace") {
+            /**
+             * THE MODEL SAID IT WAS DONE AND THE RESULT NEVER CAME (#465).
+             * Settle as the result would have: the turn completes, the
+             * process stays alive with its pending read parked on
+             * `pendingStep` for the next pump, and the transcript says why.
+             */
+            const id = itemId();
+            emit({
+              kind: "item.started",
+              item: { id, detail: { type: "provider_wait", wait: { kind: "no_response", waitedMs: endTurnGraceMs } }, title: "Settled without the provider's result" },
+            });
+            emit({ kind: "item.completed", itemId: id, status: "completed" });
+            completed = true;
+            await flush();
+            if (persistent) break;
+            continue;
+          }
           if (step.done) {
             streamEnded = true;
             runtime.streamEnded = true;
@@ -2934,6 +3008,10 @@ export function createClaudeDriver(
           // that arrives in two seconds must not leave a timer standing to open
           // a row about a silence that ended twenty-eight seconds ago.
           if (ourLoopSpoke) disarmProviderSilence();
+          // Any frame of ours after `end_turn` means the CLI is still talking
+          // for this turn (the result, a late tool round): the grace no longer
+          // applies. It is re-armed below if the model says `end_turn` again.
+          if (ourLoopSpoke) endTurnSeenAt = undefined;
           if (waitItemId && ourLoopSpoke) {
             closeProviderWait();
             /**
@@ -3356,6 +3434,14 @@ export function createClaudeDriver(
                 emit({ kind: "item.completed", itemId: id, status: "completed" });
               }
             }
+            /**
+             * THE MODEL'S OWN "I AM DONE" (#465). With no top-level tool left
+             * open there is nothing more this turn can wait for except the
+             * CLI's `result`; arm the grace so a missing result cannot hold
+             * the turn forever. A `tool_use` stop reason, or an open tool,
+             * means more is coming and the grace stays down.
+             */
+            if (ours && item.message?.stop_reason === "end_turn" && openTopLevelTools.size === 0) endTurnSeenAt = Date.now();
             await flush();
             continue;
           }
@@ -3565,9 +3651,45 @@ export function createClaudeDriver(
               const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
 
               if (!wake) {
+                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
+                /**
+                 * THE REQUEST GOING OUT OPENS THE TURN — not the first token
+                 * that comes back (#71).
+                 *
+                 * A turn is what makes the cockpit say anything at all: the
+                 * working indicator and the sidebar's liveness dot read the
+                 * session's live turn and nothing else. So for as long as the
+                 * wake-up had no turn, a background task's ending was followed
+                 * by complete silence on screen — measured twice, and read both
+                 * times as "the task didn't wake you up" while a full response
+                 * was being generated. The gap is the request itself: the CLI
+                 * announces `system/status {requesting}` as it goes out and then
+                 * reports NOTHING until the reply opens (#263 puts p90 near 15s
+                 * at a large context, and measured a stall at sixty), so opening
+                 * on `message_start` meant opening after the whole silence.
+                 *
+                 * ONLY WHEN A TASK HAS JUST SPOKEN, which is what makes this a
+                 * wake-up rather than a guess. `lastWokenTaskId` is set by the
+                 * notification (or a monitor's tick) and cleared the moment a
+                 * turn opens, so exactly one request can be read this way — and
+                 * a request the CLI sends between turns for its own reasons,
+                 * which may never produce a main-loop `result` to close a turn
+                 * with, cannot mint one. A wake that announced no task still
+                 * opens the old way, on the reply.
+                 *
+                 * THE INPUT IS THE COST. The CLI echoes the notification it
+                 * injected as a `user` frame, and whichever of the two comes
+                 * first is the one that opens the turn — so a turn opened here
+                 * has no `input` to carry (the echo that follows is not a row:
+                 * `pumpFrame` reads tool results out of a user frame and
+                 * nothing else). A wake row with no expandable text is a
+                 * smaller loss than a wake nobody can see.
+                 */
+                const requesting =
+                  item.type === "system" && item.subtype === "status" && str(item.status) === "requesting" && !parentToolUseId && wokenTask !== undefined;
                 // Anything the main loop says with no turn open is the CLI
                 // starting one of its own. Open a real turn for it.
-                const opens = (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
+                const opens = requesting || (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
                 if (!opens && !ownerTaskId) continue;
                 if (ownerTaskId) {
                   // Sub-agent output with no turn: stays visible on its task.
@@ -3575,7 +3697,6 @@ export function createClaudeDriver(
                   if (await pumpFrame(item, ownerTaskId, undefined)) await flush();
                   continue;
                 }
-                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
                 const text = item.type === "user" ? userText(item.message?.content) : undefined;
                 const binding = await hooks.onProviderTurn({
                   input: text ?? "",
@@ -3606,6 +3727,9 @@ export function createClaudeDriver(
                 };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
+                // The announcement said a request went out, and the turn just
+                // opened above IS that. Nothing is left of it to render.
+                if (requesting) continue;
                 // The CLI's injected notification message is the turn's input
                 // — already on the turn; not a row.
                 if (item.type === "user" && !parentToolUseId && text !== undefined) continue;

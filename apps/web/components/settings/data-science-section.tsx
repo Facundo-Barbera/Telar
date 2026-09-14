@@ -286,7 +286,7 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
                 {interpreters.map((env) => (
                   <span key={env.id} className="flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground" title={env.python}>
                     {env.name}
-                    <span className="text-[0.625rem] opacity-70">{env.reason}</span>
+                    <span className="text-3xs opacity-70">{env.reason}</span>
                   </span>
                 ))}
               </div>
@@ -425,7 +425,7 @@ function EnvironmentCard({ env, inUse, onUse, saving }: { env: DataScienceEnviro
           )}
         </span>
       </div>
-      <code className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={env.python}>{env.root}</code>
+      <code className="truncate font-mono text-2xs text-muted-foreground" title={env.python}>{env.root}</code>
       {ok ? <ModuleChips modules={env.preflight.modules} dists={env.preflight.dists} /> : <span className="text-xs text-destructive">{env.preflight.reason}</span>}
     </div>
   );
@@ -495,13 +495,13 @@ function NewEnvironmentForm({
             value={location}
             onChange={setLocation}
             options={[
-              { value: "project", label: <code className="font-mono text-[0.6875rem]">.venv in the project</code> },
+              { value: "project", label: <code className="font-mono text-2xs">.venv in the project</code> },
               { value: "telar", label: "Under Telar's home" },
             ]}
           />
         )}
         {manager === "conda" && (
-          <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Environment name, e.g. ds-3.12" className="w-56 font-mono text-[0.6875rem]" aria-label="Conda environment name" />
+          <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Environment name, e.g. ds-3.12" className="w-56 font-mono text-2xs" aria-label="Conda environment name" />
         )}
       </div>
       <p className="text-xs text-muted-foreground">
@@ -588,7 +588,7 @@ function AddExistingForm({ projectId, onUse, onCancel }: { projectId: string; on
           onChange={(event) => { setPath(event.target.value); setProbe(undefined); }}
           onKeyDown={(event) => { if (event.key === "Enter") void check(); }}
           placeholder="~/envs/analysis  ·  /opt/miniforge3/envs/ds  ·  /usr/local/bin/python3.12"
-          className="font-mono text-[0.6875rem]"
+          className="font-mono text-2xs"
           aria-label="Path to a Python interpreter or environment"
         />
         <Button variant="outline" size="sm" disabled={probing || !path.trim()} onClick={() => void check()}>
@@ -604,7 +604,7 @@ function AddExistingForm({ projectId, onUse, onCancel }: { projectId: string; on
             {probe.version && <Badge variant="outline">{probe.version}</Badge>}
             <span className="ml-auto">{probe.ok && <Button size="xs" onClick={() => onUse(probe)}>Use this</Button>}</span>
           </div>
-          <code className="truncate font-mono text-[0.6875rem] text-muted-foreground">{probe.root ?? probe.path}</code>
+          <code className="truncate font-mono text-2xs text-muted-foreground">{probe.root ?? probe.path}</code>
           {probe.ok ? <ModuleChips modules={probe.modules} dists={probe.dists} /> : <span className="text-xs text-destructive">{probe.reason}</span>}
         </div>
       )}

@@ -389,6 +389,77 @@ test("a tool-use result with no unresolved top-level tools ends the turn", async
   expect(raced.kind === "resolved" && raced.value.text).toBe("not blocking on the background work");
 });
 
+describe("the end-turn grace (#465)", () => {
+  /**
+   * THE STALL THIS PINS, measured on the coordinator session (session_b1d34698…,
+   * 2026-09-14): the main loop's final assistant envelope said `end_turn`, every
+   * tool result before it was answered, and the CLI's `result` never came —
+   * the engine turn sat `running` with nothing on screen for 15–25 minutes
+   * until the owner restarted Telar. Five times in one evening. The fake here
+   * models exactly that: `end_turn`, then silence forever.
+   */
+  test("an end_turn with no result following settles the turn after the grace, with a row saying why", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "text", text: "the answer" }], stop_reason: "end_turn" } };
+          await new Promise(() => undefined);
+        },
+      }),
+      { endTurnGraceMs: 30 },
+    );
+    const { sink, result } = run(driver);
+    const raced = await Promise.race([
+      result.then((value) => ({ kind: "resolved" as const, value })),
+      new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 500)),
+    ]);
+    expect(raced.kind).toBe("resolved");
+    expect(raced.kind === "resolved" && raced.value.text).toBe("the answer");
+    // The transcript says the turn settled itself, so a future stall names its cause.
+    const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(row?.kind === "item.started" && row.item.title).toBe("Settled without the provider's result");
+  });
+
+  test("a result that arrives inside the grace wins — no row, same text", async () => {
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "text", text: "quick" }], stop_reason: "end_turn" } };
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+        },
+      }),
+      { endTurnGraceMs: 200 },
+    );
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "quick" });
+    expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+  });
+
+  test("end_turn with a top-level tool still open does NOT arm the grace", async () => {
+    // A tool round can straddle an `end_turn` on the envelope that launched
+    // it; the tool's result is what the turn waits for, and it must keep
+    // waiting past the grace.
+    const driver = createClaudeDriver(
+      async () => ({
+        async *query() {
+          yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 1" } }], stop_reason: "end_turn" } };
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }] } };
+          yield { type: "assistant", message: { content: [{ type: "text", text: "after" }], stop_reason: "end_turn" } };
+          yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+        },
+      }),
+      { endTurnGraceMs: 20 },
+    );
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "after" });
+    expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+    const toolClose = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_t1");
+    expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
+  });
+});
+
 test("a sub-agent's result never completes the parent turn", async () => {
   // Every message produced inside a sub-agent carries `parent_tool_use_id`.
   // A child's result completing the PARENT would end a turn whose main loop
@@ -3748,6 +3819,93 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(usages.map((usage) => usage.tokens.output)).toEqual([1, 640, 640]);
     expect(usages[1]?.contextUsed).toBe(739);
     expect(usages[1]?.tokens).toMatchObject({ input: 7, cacheRead: 90, cacheCreate: 2 });
+  });
+
+  test("THE REQUEST OPENS THE WAKE-UP'S TURN, so the gap before the first token is not silence (#71)", async () => {
+    /**
+     * #71, MEASURED TWICE: a background task ends, the CLI wakes the model, and
+     * the screen says nothing at all until the first token lands. The cockpit's
+     * working indicator has exactly one input — the session's live turn — so a
+     * wake-up with no turn yet IS the blank screen, and the blank is the whole
+     * request: the CLI announces `system/status {requesting}` as it sends and
+     * then reports nothing whatever happens (#263 measured sixty seconds of it).
+     *
+     * The announcement is held here until the turn has been opened, which is
+     * what proves the turn exists BEFORE the reply rather than because of it.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    let releaseReply: (() => void) | undefined;
+    const answered = new Promise<void>((resolve) => { releaseReply = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        // The request goes out. Everything below it is the silence.
+        yield { type: "system", subtype: "status", status: "requesting" };
+        await answered;
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+        yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "CI is green." } } };
+        yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_wake_requesting", session: door.hooks }).result;
+
+    releaseWake!();
+    // The turn is open on the announcement alone — named after the shell that
+    // woke it, and with nothing on it yet, which is the state the indicator
+    // exists to draw.
+    await settle(() => door.turns.length === 1);
+    expect(door.turns[0]!.reason).toEqual({ kind: "task_notification", taskId: "task_toolu_bg" });
+    expect(door.turns[0]!.observations.filter((o) => o.kind === "item.started")).toHaveLength(0);
+    expect(door.turns[0]!.closed).toBeUndefined();
+
+    // And the reply that follows joins THAT turn rather than opening a second.
+    releaseReply!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    expect(door.turns).toHaveLength(1);
+    expect(door.turns[0]!.closed).toEqual({ text: "CI is green." });
+    // The echoed notification is not a row: it was the turn's input, and a turn
+    // opened before it arrived simply has none.
+    expect(door.turns[0]!.observations.filter((o) => o.kind === "item.started")).toHaveLength(1);
+    expect(door.turns[0]!.input).toBe("");
+  });
+
+  test("a request the CLI sends between turns with no task behind it opens no turn", async () => {
+    /**
+     * THE OTHER HALF OF THE RULE ABOVE, and the reason it is narrow. A turn
+     * that opens holds the session — `claimTurn` refuses while one is running —
+     * and only a main-loop `result` closes it. A `requesting` the CLI sends for
+     * its own housekeeping may never produce one, so reading every announcement
+     * as a wake-up would trade #71's silence for a session wedged shut.
+     */
+    let releaseIdle: (() => void) | undefined;
+    const idled = new Promise<void>((resolve) => { releaseIdle = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield* reply(first.value!.uuid!, "done");
+        await idled;
+        // No task spoke: nothing woke the model, whatever this request is.
+        yield { type: "system", subtype: "status", status: "requesting" };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_idle_requesting", session: door.hooks }).result;
+    releaseIdle!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(door.turns).toHaveLength(0);
   });
 
   test("a Monitor's tick is a task_progress, and the wake-up it triggers is still named after the monitor", async () => {

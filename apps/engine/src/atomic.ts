@@ -19,10 +19,21 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function atomicWrite(file: string, value: unknown, mode = 0o600): void {
+  atomicWriteText(file, `${JSON.stringify(value, null, 2)}\n`, mode);
+}
+
+/**
+ * The same write, for a caller that has already serialised.
+ *
+ * A windowed read indexes a document by byte offsets into the exact text that
+ * was stored (`document-window.ts`), so the writer has to hold that text rather
+ * than hand a value to `JSON.stringify` here and never see the result.
+ */
+export function atomicWriteText(file: string, text: string, mode = 0o600): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
+    fs.writeFileSync(temporary, text, { mode });
     fs.renameSync(temporary, file);
     fs.chmodSync(file, mode);
   } finally {

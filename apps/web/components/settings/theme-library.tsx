@@ -132,7 +132,7 @@ function ThemeCard({
         <span className="truncate">{theme.label}</span>
         {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
         {worn && (
-          <span className="shrink-0 font-mono text-[0.5625rem] tracking-[0.08em] text-muted-foreground/70 uppercase" title="The theme this window is wearing">
+          <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-muted-foreground/70 uppercase" title="The theme this window is wearing">
             Worn
           </span>
         )}

@@ -39,7 +39,7 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
           {thread ? thread.title : isConductor ? "conductor" : "origin conversation"}
         </span>
         {thread?.tier ? (
-          <Badge variant="outline" className="font-mono text-[0.625rem] uppercase text-verify">
+          <Badge variant="outline" className="font-mono text-3xs uppercase text-verify">
             {thread.tier}
           </Badge>
         ) : null}

@@ -144,7 +144,7 @@ function Card({
                 <span className="min-w-0 truncate text-xs text-muted-foreground">{item.project ?? "floating"}</span>
               )}
               {item.mirrored && (
-                <span className="font-mono text-[0.625rem] text-muted-foreground/70">{item.mirrored}</span>
+                <span className="font-mono text-3xs text-muted-foreground/70">{item.mirrored}</span>
               )}
               {item.deadline && <DeadlineChip deadline={item.deadline} />}
               {item.pinned && <PinChip pinned={item.pinned} />}
@@ -207,7 +207,7 @@ function LaneDoneFold({
                       >
                         <span className="block truncate text-sm leading-snug font-medium text-muted-foreground/60">{words}</span>
                         {row.item.closed && (
-                          <span className="block truncate text-[0.625rem] text-muted-foreground/60">
+                          <span className="block truncate text-3xs text-muted-foreground/60">
                             “closed {row.item.closed.label}”
                           </span>
                         )}

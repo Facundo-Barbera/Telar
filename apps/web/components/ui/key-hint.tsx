@@ -63,7 +63,7 @@ export function KeyHint({
       {caps.map((cap, index) => (
         <kbd
           key={`${cap}-${index}`}
-          className="rounded-[3px] bg-foreground/8 px-1 font-mono text-[0.625rem] leading-4 text-muted-foreground"
+          className="rounded-[3px] bg-foreground/8 px-1 font-mono text-3xs leading-4 text-muted-foreground"
         >
           {cap}
         </kbd>

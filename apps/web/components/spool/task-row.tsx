@@ -155,7 +155,7 @@ export function RowDisclosure({
           e.stopPropagation();
           setOpen((o) => !o);
         }}
-        className="rounded-sm p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+        className="rounded-sm p-0.5 text-muted-foreground/50 transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <ChevronRightIcon className={cn("size-3 transition-transform", open && "rotate-90")} aria-hidden />
       </button>
@@ -191,7 +191,7 @@ export function RowDisclosure({
                 <button
                   type="button"
                   onClick={() => onPin(null)}
-                  className="shrink-0 text-xs text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+                  className="shrink-0 rounded-sm text-xs text-muted-foreground/70 underline decoration-dotted transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   clear
                 </button>
@@ -203,13 +203,14 @@ export function RowDisclosure({
               {tags.map((tag) => (
                 <span
                   key={tag}
-                  className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-3xs text-muted-foreground"
                 >
                   #{tag}
                   <button
                     type="button"
                     onClick={() => onTags(tags.filter((t) => t !== tag))}
                     aria-label={`Remove tag ${tag}`}
+                    className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <XIcon className="size-2.5" />
                   </button>
@@ -227,7 +228,7 @@ export function RowDisclosure({
                   }
                 }}
                 placeholder="add a tag"
-                className="h-6 w-20 rounded-md border-none bg-transparent px-1 text-right text-[0.6875rem] text-foreground outline-none placeholder:text-muted-foreground/50"
+                className="h-6 w-20 rounded-md border-none bg-transparent px-1 text-right text-2xs text-foreground outline-none placeholder:text-muted-foreground/50"
               />
             </div>
           </FieldRow>

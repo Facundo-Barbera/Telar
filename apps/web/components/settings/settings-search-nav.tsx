@@ -141,14 +141,14 @@ export function SettingsSearchNav({
                   setActive(0);
                   input.current?.focus();
                 }}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <XIcon className="size-3.5" />
               </button>
             ) : (
               // The key, shown where the clear button will be, so the chip
               // teaches the shortcut without costing a row of its own.
-              <kbd className="pointer-events-none font-sans text-[0.625rem] text-sidebar-foreground/35">/</kbd>
+              <kbd className="pointer-events-none font-sans text-3xs text-sidebar-foreground/35">/</kbd>
             )
           }
         />

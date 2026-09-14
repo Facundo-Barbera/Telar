@@ -45,6 +45,13 @@ struct SessionView: View {
     private let api: any EngineAPI
     private let sessionId: EngineID
     private let hostId: HostID?
+    /// WHICH MAC THIS CONVERSATION IS ON, and how many this phone knows —
+    /// issue #244. The two facts rather than the settings store because that is
+    /// all the strip needs, and `HostLabel.header` is what turns them into the
+    /// label (or into nothing). Passed rather than looked up: this view knows
+    /// an API and a session id, and has never held a host book.
+    private let hostName: String?
+    private let hostCount: Int
     private let cockpitBaseURL: URL?
     /// THE READ RECEIPT — see Stores/ReadReceipt.swift for why the phone needs
     /// one at all. Built in `.task` rather than in `init`, because it reaches
@@ -70,12 +77,15 @@ struct SessionView: View {
 
     init(
         api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil,
+        hostName: String? = nil, hostCount: Int = 1,
         cockpitBaseURL: URL? = nil, cache: HostSnapshotCache? = nil,
         onRead: ((Session) -> Void)? = nil
     ) {
         self.api = api
         self.sessionId = sessionId
         self.hostId = hostId
+        self.hostName = hostName
+        self.hostCount = hostCount
         self.cockpitBaseURL = cockpitBaseURL
         self.onRead = onRead
         if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
@@ -89,6 +99,11 @@ struct SessionView: View {
     /// The same API, as the panel sees it — only the HTTP client conforms;
     /// a test double is not a panel.
     private var panelAPI: (any PanelAPI)? { api as? any PanelAPI }
+
+    /// The Mac's name for the strip, or nothing when naming it would say
+    /// nothing. `HostLabel` holds the rule; see it for why one paired Mac is
+    /// silent and why this surface, unlike a rail row, never defers to context.
+    private var hostLabel: String? { HostLabel.header(name: hostName, hostCount: hostCount) }
 
     /// The refresh signal every panel surface keys on: a turn settling.
     private var turnActive: Bool { store.hasActiveTurn }
@@ -146,6 +161,12 @@ struct SessionView: View {
         store.sync.turns.filter {
             $0.state != .queued && $0.state != .steering && $0.state != .steered
         }
+    }
+
+    /// Which session speech is about, when this one is asked to read a reply
+    /// aloud. See Speech/Talkback.swift for why it carries the host too.
+    private var spokenSession: SpokenSession {
+        SpokenSession(hostId: hostId, sessionId: sessionId)
     }
 
     /// What can change the transcript's HEIGHT, and nothing else. Keying the
@@ -215,6 +236,33 @@ struct SessionView: View {
                     ActivityBadge(activity: session.activity)
                     Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
                     Spacer()
+                    // WHICH MAC THIS CONVERSATION IS ON — issue #244, and the
+                    // one fact the transcript could never supply. The title
+                    // above it is a name somebody chose, the branch beside it
+                    // is a name somebody chose, and two paired Macs can carry
+                    // the same of either; the machine is what tells them apart.
+                    //
+                    // TRAILING, BESIDE THE BRANCH, because the strip is already
+                    // read as two halves: what this conversation is DOING on the
+                    // leading edge, and WHERE its work lands on the trailing
+                    // one. The Mac is the outermost "where", so it sits just
+                    // outside the branch rather than interrupting the status.
+                    //
+                    // IT CARRIES A GLYPH, unlike the rail's badge. There the
+                    // shape is learned from company — a header's list of them,
+                    // rows above and below wearing the same mark. Here there is
+                    // exactly one, next to a branch name, and a bare rounded
+                    // rectangle would be a second piece of text to decode.
+                    if let hostLabel {
+                        HStack(spacing: 3) {
+                            Image(systemName: "desktopcomputer").font(.system(Theme.captionTiny))
+                            Text(hostLabel).lineLimit(1).truncationMode(.tail)
+                        }
+                        .padding(.horizontal, 4)
+                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("On \(hostLabel)")
+                    }
                     Text(session.workspace.branch ?? session.driver).lineLimit(1)
                 }
                 .font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
@@ -537,7 +585,7 @@ struct SessionView: View {
             Task { await store.sync.loadOlderTurns() }
         } label: {
             Text(store.sync.loadingOlder ? "Loading earlier turns…" : "Load earlier turns")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(Theme.footnote, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.horizontal, 14)
                 .frame(height: 32)
@@ -580,12 +628,12 @@ struct SessionView: View {
             if case .retrying(let message) = store.sync.connection {
                 StatusCard(tint: Theme.statusAmber) {
                     HStack(spacing: 6) {
-                        Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
+                        Image(systemName: "wifi.exclamationmark").font(.system(Theme.caption))
                         // WHAT IS ON SCREEN, when it is the phone's own copy:
                         // the transcript stays, and the card says how old it
                         // is instead of pretending it is the Mac's answer.
                         Text(store.sync.recordedAt.map { "Showing what was recorded at \(recordedAtLabel($0)) — reconnecting…" } ?? message)
-                            .font(.system(size: 13)).lineLimit(2)
+                            .font(.system(Theme.footnote)).lineLimit(2)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(Theme.statusAmber)
@@ -600,16 +648,16 @@ struct SessionView: View {
                 StatusCard(tint: Theme.statusRed) {
                     HStack(spacing: 8) {
                         Text("Not sent — \(error)")
-                            .font(.system(size: 13))
+                            .font(.system(Theme.footnote))
                             .foregroundStyle(Theme.statusRed)
                             .lineLimit(2)
                         Spacer(minLength: 0)
                         Button("Retry") { Task { await store.retryPending() } }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(Theme.text)
                             .buttonStyle(.plain)
                         Button("Discard") { store.discardPending() }
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(Theme.footnote, weight: .medium))
                             .foregroundStyle(Theme.statusRed)
                             .buttonStyle(.plain)
                     }
@@ -660,6 +708,19 @@ struct SessionView: View {
                     }
                     if let base = cockpitBaseURL {
                         ShareLink(item: session.cockpitURL(base: base)) { Label("Continue on your Mac", systemImage: "desktopcomputer") }
+                    }
+                }
+                // READ IT TO ME. The item is here rather than on the message
+                // because a control on the last reply is a control on EVERY
+                // reply, drawn to serve one — and this menu is already where
+                // the session's verbs live.
+                if Talkback.shared.isSpeaking(spokenSession) {
+                    Button("Stop speaking", systemImage: "speaker.slash") {
+                        Talkback.shared.stop()
+                    }
+                } else if let source = lastReplySource(of: visibleTurns) {
+                    Button("Speak the last reply", systemImage: "speaker.wave.2") {
+                        Talkback.shared.speak(speakableText(source), for: spokenSession)
                     }
                 }
                 Button("Panel", systemImage: "sidebar.trailing") {
@@ -790,7 +851,7 @@ struct ComposerView: View {
         VStack(spacing: 0) {
             if let note {
                 Text(note)
-                    .font(.system(size: 12))
+                    .font(.system(Theme.footnote))
                     .foregroundStyle(Theme.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
@@ -850,8 +911,8 @@ struct ComposerView: View {
                 if !focused {
                     if !store.pendingAttachments.isEmpty {
                         Text("+\(store.pendingAttachments.count)")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.textMuted2)
+                            .font(.system(Theme.footnote, weight: .bold))
+                            .foregroundStyle(Theme.textMuted)
                             .frame(width: 30, height: 30)
                             .background(Theme.subtleStrong)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -996,7 +1057,7 @@ struct ComposerView: View {
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted2)
+                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted)
                     .frame(width: 44, height: 44)
                     .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
                     .clipShape(Circle())
@@ -1075,8 +1136,8 @@ struct ComposerView: View {
                     Text(steering.isEmpty
                          ? "\(waiting.count) queued message\(waiting.count == 1 ? "" : "s") will send automatically."
                          : "Sending into the running turn…")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textMuted2)
+                        .font(.system(Theme.footnote))
+                        .foregroundStyle(Theme.textMuted)
                 }
             }
             .buttonStyle(.plain)
@@ -1085,13 +1146,13 @@ struct ComposerView: View {
                     let sending = turn.state == .steering
                     HStack(spacing: 10) {
                         Text(turn.prompt)
-                            .font(.system(size: 13))
+                            .font(.system(Theme.footnote))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         if sending {
                             Text("sending")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(Theme.caption, weight: .medium))
                                 .textCase(.uppercase)
                                 .foregroundStyle(Theme.statusSky)
                         } else {
@@ -1100,7 +1161,7 @@ struct ComposerView: View {
                                     Task { await store.promote(turn.runId) }
                                 } label: {
                                     Image(systemName: "bolt.fill")
-                                        .font(.system(size: 12))
+                                        .font(.system(Theme.footnote))
                                         .foregroundStyle(Theme.text)
                                 }
                                 .buttonStyle(.plain)
@@ -1110,8 +1171,8 @@ struct ComposerView: View {
                                 Task { await store.withdraw(turn.runId) }
                             } label: {
                                 Image(systemName: "xmark")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Theme.textMuted2)
+                                    .font(.system(Theme.caption, weight: .medium))
+                                    .foregroundStyle(Theme.textMuted)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Remove this queued message")
@@ -1199,7 +1260,7 @@ struct ControlPillButton: View {
         Button(action: action) {
             Image(systemName: isRunning ? "stop.fill" : "arrow.up")
                 .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted2))
+                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted))
                 .frame(width: 44, height: 44)
                 .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
                 .clipShape(Circle())
