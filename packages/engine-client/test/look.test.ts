@@ -102,7 +102,88 @@ test("a look reads what it can and defaults the rest, and needs only an id and a
 
   // A FUTURE version is still read on a best effort — every member already
   // falls back on its own, so refusing outright would lose a readable look.
-  expect(parseLook(look({ version: 99, accent: "sea" }))).toMatchObject({ version: 1, accent: "sea" });
+  expect(parseLook(look({ version: 99, accent: "sea" }))).toMatchObject({ version: 2, accent: "sea" });
+});
+
+/**
+ * THE COMPOSITION REPLACED THE THEME PAIR, AND EVERY OLD FILE STILL OPENS.
+ *
+ * Every Look ever exported is `theme` + `backdrop`. None of them may change
+ * appearance on load: a migration that retints somebody's saved work is worse
+ * than one that refuses, and nobody would know which token had moved.
+ */
+test("a Look from the theme-pair model migrates into a composition without changing", () => {
+  const ember = { ...TELAR_LIGHT, background: "oklch(0.988 0.008 65)", foreground: "oklch(0.28 0.0128 65)" };
+  const parsed = parseLook(look({ theme: { light: ember, dark: TELAR_DARK } }))!;
+
+  expect(parsed.version).toBe(2);
+  // The base is the old canvas, flat — the honest answer to "what colour was
+  // this?", and what the base control opens on.
+  expect(parsed.composition.light.base).toBe(ember.background);
+  expect(parsed.composition.dark.base).toBe(TELAR_DARK.background);
+  // And every token is pinned, which is what makes the migration lossless: the
+  // base only starts deciding anything once somebody clears an override.
+  expect(parsed.composition.light.overrides).toEqual(ember);
+  expect(parsed.composition.dark.overrides).toEqual(TELAR_DARK);
+  expect(parsed.composition.light.layers).toEqual([]);
+});
+
+test("the old backdrop kinds each become layers over the migrated base", () => {
+  const gradient = parseLook(
+    look({ backdrop: { kind: "gradient", id: "dusk", resolved: { light: "linear-gradient(#fff, #000)", dark: "linear-gradient(#000, #fff)" } } }),
+  )!;
+  expect(gradient.composition.light.layers).toEqual([{ type: "gradient", presetId: "dusk", opacity: 100 }]);
+
+  // A custom gradient is the ONE place the old model held two values where the
+  // new one holds two stacks, so each state takes its own half.
+  const custom = parseLook(
+    look({
+      backdrop: {
+        kind: "custom-gradient",
+        light: "linear-gradient(10deg, #fff, #eee)",
+        dark: "linear-gradient(10deg, #111, #000)",
+        resolved: { light: "linear-gradient(10deg, #fff, #eee)", dark: "linear-gradient(10deg, #111, #000)" },
+      },
+    }),
+  )!;
+  expect(custom.composition.light.layers).toEqual([{ type: "custom-gradient", css: "linear-gradient(10deg, #fff, #eee)", opacity: 100 }]);
+  expect(custom.composition.dark.layers).toEqual([{ type: "custom-gradient", css: "linear-gradient(10deg, #111, #000)", opacity: 100 }]);
+
+  // A photograph keeps its pixels — which is the part somebody would miss —
+  // and loses the fit/blur/dim a scene layer has no room for.
+  const photo = parseLook(look({ backdrop: { kind: "image", fit: "tile", blur: 4, dim: 20, image: "data:image/webp;base64,AAAA" } }))!;
+  expect(photo.images).toEqual({ migrated: "data:image/webp;base64,AAAA" });
+  expect(photo.composition.light.layers).toMatchObject([{ type: "image", id: "migrated", tiled: true }]);
+
+  // And "no backdrop" is what "no layers" now means.
+  expect(parseLook(look({ backdrop: { kind: "none" } }))!.composition.light.layers).toEqual([]);
+});
+
+test("a composition is read as itself, and a hostile override never lands", () => {
+  const composed = parseLook({
+    version: 2,
+    id: "l2",
+    label: "Composed",
+    composition: {
+      light: { base: "#101010", layers: [{ type: "custom-gradient", css: "linear-gradient(#fff, #000)", opacity: 40 }], overrides: { card: "#ffffff" } },
+      dark: { base: "#202020", layers: [], overrides: {} },
+    },
+    images: { a: "data:image/webp;base64,AAAA", b: "https://example.com/cat.png" },
+  })!;
+
+  expect(composed.composition.light).toEqual({
+    base: "#101010",
+    layers: [{ type: "custom-gradient", css: "linear-gradient(#fff, #000)", opacity: 40 }],
+    overrides: { card: "#ffffff" },
+  });
+  // Overrides end up in a compiled stylesheet, so they pass the same gate every
+  // other colour in this file does; a remote URL is not image data.
+  expect(parseLook({ version: 2, id: "l3", label: "x", composition: { light: { base: "#fff", overrides: { card: "red; } html {" } } } })!.composition.light.overrides).toEqual({});
+  expect(composed.images).toEqual({ a: "data:image/webp;base64,AAAA" });
+
+  // A layer whose gradient would not paint is dropped rather than left as a gap
+  // in a positional list.
+  expect(parseLook({ version: 2, id: "l4", label: "x", composition: { light: { layers: [{ type: "custom-gradient", css: "not a gradient" }] } } })!.composition.light.layers).toEqual([]);
 });
 
 test("a published appearance is total, gated, and fatal only in its look", () => {

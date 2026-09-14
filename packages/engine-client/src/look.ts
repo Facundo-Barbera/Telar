@@ -302,7 +302,30 @@ export type SceneGradientLayer = {
   opacity: number;
 };
 
-export type SceneLayer = SceneImageLayer | SceneGradientLayer;
+/**
+ * A gradient somebody built rather than picked, carried as the RESOLVED CSS.
+ *
+ * It holds the finished `linear-gradient(…)` rather than the stops it was made
+ * from, for the same reason a Look has always carried resolved layers: the
+ * value has to paint on a build that never had this app's editor. The editor
+ * reads the stops back out of it when it can (`parseGradient`) and opens on its
+ * defaults when it cannot, which is the existing contract — so a gradient
+ * hand-edited outside the app still PAINTS, it just is not re-editable.
+ *
+ * A LAYER, NOT A MODE (#471). A custom gradient used to be a whole backdrop
+ * KIND carrying a light half and a dark half. Now it is one entry in one
+ * state's stack: the other state has its own stack, so there is no pair to keep
+ * in step and no second control asking which half you meant.
+ */
+export type SceneCustomGradientLayer = {
+  type: "custom-gradient";
+  /** A gradient value, held to `isGradientValue`. */
+  css: string;
+  /** 10-100, written into the gradient's colours. */
+  opacity: number;
+};
+
+export type SceneLayer = SceneImageLayer | SceneGradientLayer | SceneCustomGradientLayer;
 
 /** The composition: the stack, top layer first. Nothing is implied under it —
  *  a stack that does not end in a full-bleed gradient ends in transparency. */
@@ -371,6 +394,13 @@ export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_
   if (record.type === "gradient") {
     return { type: "gradient", presetId: presetIdOr(record.presetId, presets), opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
   }
+  if (record.type === "custom-gradient") {
+    // Fatal rather than defaulted: there is no "the gradient they meant" to
+    // fall back to, and a layer that paints nothing is a gap in a positional
+    // list (see composeScene).
+    if (!isGradientValue(record.css)) return undefined;
+    return { type: "custom-gradient", css: record.css, opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
+  }
   if (typeof record.id !== "string" || !ID_SHAPE.test(record.id)) return undefined;
   return {
     type: "image",
@@ -393,6 +423,34 @@ export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_
  * so it is only supplied when the value has neither a `layers` array nor a
  * `baseId` at all, i.e. when there is no scene here to read.
  */
+/**
+ * A STACK, from an already-parsed value — the half of `parseScene` a
+ * composition state needs too (its layers arrive inside a Look, not as their
+ * own JSON string). Both caps are applied here, so no caller can build a stack
+ * the composer would refuse to draw.
+ */
+export function parseSceneLayers(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): SceneLayer[] {
+  if (!Array.isArray(value)) return [];
+  const layers: SceneLayer[] = [];
+  const seen = new Set<string>();
+  let images = 0;
+  let gradients = 0;
+  for (const entry of value) {
+    const layer = parseSceneLayer(entry, presets);
+    if (!layer) continue;
+    if (layer.type === "image") {
+      if (seen.has(layer.id) || images >= MAX_SCENE_LAYERS) continue;
+      seen.add(layer.id);
+      images += 1;
+    } else {
+      if (gradients >= MAX_SCENE_GRADIENT_LAYERS) continue;
+      gradients += 1;
+    }
+    layers.push(layer);
+  }
+  return layers;
+}
+
 export function parseScene(raw: string | null, presets: ScenePresets = DEFAULT_SCENE_PRESETS): Scene {
   const empty: Scene = { layers: [{ type: "gradient", presetId: presets.fallback, opacity: SCENE_LIMITS.opacity.max }] };
   try {
@@ -402,25 +460,8 @@ export function parseScene(raw: string | null, presets: ScenePresets = DEFAULT_S
     const stored = record.layers;
     const hasBase = typeof record.baseId === "string";
     if (!Array.isArray(stored) && !hasBase) return empty;
-    const layers: SceneLayer[] = [];
-    const seen = new Set<string>();
-    let images = 0;
-    let gradients = 0;
-    if (Array.isArray(stored)) {
-      for (const entry of stored) {
-        const layer = parseSceneLayer(entry, presets);
-        if (!layer) continue;
-        if (layer.type === "image") {
-          if (seen.has(layer.id) || images >= MAX_SCENE_LAYERS) continue;
-          seen.add(layer.id);
-          images += 1;
-        } else {
-          if (gradients >= MAX_SCENE_GRADIENT_LAYERS) continue;
-          gradients += 1;
-        }
-        layers.push(layer);
-      }
-    }
+    const layers = parseSceneLayers(stored, presets);
+    const gradients = layers.reduce((count, layer) => count + (layer.type === "image" ? 0 : 1), 0);
     if (hasBase && gradients < MAX_SCENE_GRADIENT_LAYERS) {
       layers.push({ type: "gradient", presetId: presetIdOr(record.baseId, presets), opacity: SCENE_LIMITS.opacity.max });
     }
@@ -460,18 +501,94 @@ export type LookBackdrop =
   | { kind: "image"; fit: BackdropFit; blur: number; dim: number; image: string }
   | { kind: "scene"; scene: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
 
+/* ═══════════════════════════════════════════════════ the composition ═══ */
+
+/**
+ * ONE STATE OF A COMPOSITION — what the app looks like in one colour scheme.
+ *
+ * THE COMPOSITION IS THE THEME (#471). There is no separate palette object any
+ * more. A state is a BASE colour and a stack of LAYERS over it, and the sixteen
+ * surface tokens are DERIVED from the base rather than stored — which is the
+ * whole point: "gradient and theme are different things here. We inject the
+ * gradients over the theme, where I always thought that a gradient would be
+ * part of a theme."
+ *
+ * THE BASE IS A HUE, NOT A CANVAS COLOUR. It goes through the same engine that
+ * turns a photograph into a theme half (the cockpit's palette-from-image), so
+ * what it supplies is the hue and how colourful to be; Telar's lightness spine
+ * is kept underneath. That is what makes any base yield a READABLE palette
+ * rather than letting somebody pick a canvas their text cannot sit on.
+ *
+ * OVERRIDES ARE THE ESCAPE HATCH, and they are sparse on purpose: a token in
+ * here is one somebody set by hand, and everything absent follows the base. A
+ * composition migrated from the old theme-pair model therefore arrives with a
+ * full set — it has to look exactly as it did — and clearing one hands that
+ * token back to the base.
+ */
+export type CompositionState = {
+  /** The app colour for this state. Any value `isSafeColour` accepts. */
+  base: string;
+  /** The scene over it, TOP LAYER FIRST. Empty means nothing over the base,
+   *  which is what "None" is now. */
+  layers: SceneLayer[];
+  /** Tokens set by hand, over what the base derived. */
+  overrides: Partial<ThemeHalf>;
+};
+
+/**
+ * LIGHT AND DARK ARE TWO STATES OF ONE COMPOSITION, not two themes. The
+ * window's colour scheme picks which one is showing; each carries its own base
+ * and its own stack, so a scene tuned for daylight is not forced to be the one
+ * that shows at night.
+ */
+export type Composition = { light: CompositionState; dark: CompositionState };
+
+/** The base the identity look wears — Telar's own canvas, which derives to
+ *  Telar's own palette because that is the spine the engine keeps. */
+export const DEFAULT_BASE_LIGHT = "#f8f8f9";
+export const DEFAULT_BASE_DARK = "#252525";
+
+export function parseCompositionState(value: unknown, mode: "light" | "dark", presets: ScenePresets = DEFAULT_SCENE_PRESETS): CompositionState {
+  const fallbackBase = mode === "light" ? DEFAULT_BASE_LIGHT : DEFAULT_BASE_DARK;
+  if (!isRecord(value)) return { base: fallbackBase, layers: [], overrides: {} };
+  const overrides: Partial<ThemeHalf> = {};
+  if (isRecord(value.overrides)) {
+    for (const token of THEME_TOKENS) {
+      const candidate = value.overrides[token];
+      if (isSafeColour(candidate)) overrides[token] = candidate;
+    }
+  }
+  return {
+    base: isSafeColour(value.base) ? value.base : fallbackBase,
+    layers: parseSceneLayers(value.layers, presets),
+    overrides,
+  };
+}
+
+export function parseComposition(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): Composition {
+  const record = isRecord(value) ? value : {};
+  return {
+    light: parseCompositionState(record.light, "light", presets),
+    dark: parseCompositionState(record.dark, "dark", presets),
+  };
+}
+
 export type Look = {
-  /** Bumped only for a change no total parser could absorb; the parser accepts
-   *  a missing version as 1, so files from this build's own lifetime keep
-   *  opening after a bump that only adds members. */
-  version: 1;
+  /**
+   * 2 since the composition replaced the theme pair (#471). A missing version
+   * reads as 1 and is MIGRATED rather than refused — see `compositionFromV1`.
+   * The number marks a change of meaning; members added later need no bump,
+   * because every one of them falls back on its own.
+   */
+  version: 2;
   id: string;
   label: string;
-  /** Both halves CONCRETE, never a theme id: an id the reader cannot look up
-   *  is a dangling pointer the moment the file leaves the machine that made
-   *  it, and a mixed pair (one theme's day, another's night) is itself a look. */
-  theme: { light: ThemeHalf; dark: ThemeHalf };
-  backdrop: LookBackdrop;
+  /** What the app looks like, in both states. */
+  composition: Composition;
+  /** Layer images by id, SHARED BY BOTH STATES — a layer id is unique across
+   *  the composition, and a dark state that started as a copy of light would
+   *  otherwise carry a second megabyte of the same picture. */
+  images: Record<string, string>;
   accent: Accent;
   fontSans: SansFont;
   fontMono: MonoFont;
@@ -576,21 +693,91 @@ export function parseLookBackdrop(value: unknown, presets: ScenePresets = DEFAUL
   return { kind: "none" };
 }
 
+/**
+ * A LOOK FROM BEFORE THE COMPOSITION EXISTED, read forward.
+ *
+ * Every Look ever written or exported is a theme PAIR plus a backdrop, and none
+ * of them may change appearance on load — a migration that retints somebody's
+ * saved work is worse than one that refuses. So:
+ *
+ *   THE BASE IS THE OLD CANVAS, flat. It is the honest answer to "what colour
+ *   was this?" and it is what the base control opens on.
+ *   THE OVERRIDES ARE THE WHOLE OLD HALF, which is what makes the migration
+ *   lossless: every token is pinned to the value it had, and the base only
+ *   starts deciding anything once somebody clears one.
+ *   THE BACKDROP BECOMES LAYERS, the same stack in both states — the old model
+ *   had one backdrop for both, so splitting it per state would be inventing a
+ *   difference nobody asked for.
+ *
+ * WHAT AN IMAGE BACKDROP LOSES is its `fit`, `blur` and `dim`: a scene layer is
+ * positioned and scaled rather than fitted, and has no blur of its own. `cover`
+ * and `fill` become a full-bleed layer, `tile` becomes a tiled one, and the
+ * picture survives — which is the part somebody would miss.
+ */
+export function compositionFromV1(theme: { light: ThemeHalf; dark: ThemeHalf }, backdrop: LookBackdrop): { composition: Composition; images: Record<string, string> } {
+  const images: Record<string, string> = {};
+  const layers: SceneLayer[] = [];
+  if (backdrop.kind === "gradient") {
+    layers.push({ type: "gradient", presetId: backdrop.id, opacity: SCENE_LIMITS.opacity.max });
+  } else if (backdrop.kind === "custom-gradient") {
+    layers.push({ type: "custom-gradient", css: backdrop.light, opacity: SCENE_LIMITS.opacity.max });
+  } else if (backdrop.kind === "image") {
+    const id = "migrated";
+    images[id] = backdrop.image;
+    layers.push({ type: "image", id, x: 50, y: 50, scale: 100, opacity: SCENE_LIMITS.opacity.max, tiled: backdrop.fit === "tile" });
+  } else if (backdrop.kind === "scene") {
+    layers.push(...backdrop.scene.layers);
+    Object.assign(images, backdrop.images);
+  }
+  // A custom gradient's DARK half is a different string, so the dark state gets
+  // its own copy of that one layer rather than the light one — the only place
+  // the old model held two values where the new one holds two stacks.
+  const darkLayers =
+    backdrop.kind === "custom-gradient"
+      ? [{ type: "custom-gradient" as const, css: backdrop.dark, opacity: SCENE_LIMITS.opacity.max }]
+      : layers.map((layer) => ({ ...layer }));
+  const state = (half: ThemeHalf, stack: SceneLayer[]): CompositionState => ({
+    base: half.background,
+    layers: stack,
+    overrides: { ...half },
+  });
+  return { composition: { light: state(theme.light, layers), dark: state(theme.dark, darkLayers) }, images };
+}
+
+/** The image map, keeping only entries that are actually image data URLs. */
+function parseImages(value: unknown): Record<string, string> {
+  const images: Record<string, string> = {};
+  if (!isRecord(value)) return images;
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string" && entry.startsWith("data:image/")) images[key] = entry;
+  }
+  return images;
+}
+
 /** One Look, or undefined when there is not even an id and a label to show —
  *  the only two members a card cannot be drawn without. */
 export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): Look | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || value.id.length === 0) return undefined;
   if (typeof value.label !== "string") return undefined;
-  // Version is advisory: a FUTURE version is still read on a best effort,
-  // because every member below already falls back on its own.
-  const theme = isRecord(value.theme) ? value.theme : {};
+  // WHICH SHAPE IS THIS? A composition member is the mark of the new one; a
+  // `theme` pair with no composition is a file from before it existed, and is
+  // migrated rather than half-read. Neither is an error — a Look with neither
+  // simply falls to the identity composition, like every other member here.
+  const migrated = !isRecord(value.composition) && isRecord(value.theme);
+  const old = isRecord(value.theme) ? value.theme : {};
+  const fromV1 = migrated
+    ? compositionFromV1(
+        { light: parseThemeHalf(old.light, "light"), dark: parseThemeHalf(old.dark, "dark") },
+        parseLookBackdrop(value.backdrop, presets),
+      )
+    : undefined;
   return {
-    version: 1,
+    version: 2,
     id: value.id,
     label: value.label,
-    theme: { light: parseThemeHalf(theme.light, "light"), dark: parseThemeHalf(theme.dark, "dark") },
-    backdrop: parseLookBackdrop(value.backdrop, presets),
+    composition: fromV1 ? fromV1.composition : parseComposition(value.composition, presets),
+    images: fromV1 ? fromV1.images : parseImages(value.images),
     accent: oneOf<Accent>(value.accent, ACCENTS, DEFAULT_ACCENT),
     fontSans: oneOf<SansFont>(value.fontSans, SANS_FONTS, DEFAULT_SANS_FONT),
     fontMono: oneOf<MonoFont>(value.fontMono, MONO_FONTS, DEFAULT_MONO_FONT),
