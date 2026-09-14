@@ -281,7 +281,7 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
              pair loses nothing. Only the NARROW read can use a cursor; the wide
              one is refused a cursor for the reason above and simply pays.
              */
-            var answer: (live: LiveSessions?, etag: String?)
+            let answer: (live: LiveSessions?, etag: String?)
             if etag == nil, !wantsSettled, let cursor = revision {
                 answer = (try await api.liveSessions(since: cursor), nil)
             } else {

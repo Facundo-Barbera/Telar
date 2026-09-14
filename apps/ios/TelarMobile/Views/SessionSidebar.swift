@@ -219,7 +219,7 @@ struct SessionSidebar: View {
                     rows: inbox.sections.settled,
                     open: $settledOpen,
                     heldBack: inbox.shelvedOnMacs,
-                    onOpen: { await inbox.showSettled() },
+                    onOpen: { await inbox.showSettled() }
                 )
             }
             // THE DESKTOP'S TWO SENTENCES, NOT ONE THAT COVERS BOTH — #357's
@@ -927,7 +927,7 @@ struct SessionSidebar: View {
         heldBack: Int = 0,
         // `@MainActor` and not `@Sendable`: it closes over the store, which is
         // main-actor-isolated, and the Task below inherits the same isolation.
-        onOpen: (@MainActor () async -> Void)? = nil,
+        onOpen: (@MainActor () async -> Void)? = nil
     ) -> some View {
         let filtered = rows.filter(matches)
         // WHAT THE HEADER SAYS. Open, the rows are here and they are the

@@ -498,7 +498,12 @@ struct HTTPEngineAPI: EngineAPI {
             }
             throw EngineAPIError.badResponse(status: status)
         }
-        return (try JSONDecoder().decode(LiveSessions.self, from: data), fresh)
+        // A 2xx that does not decode is version skew, not a wrong address —
+        // `incompatible`, exactly as `perform` classifies it.
+        guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
+            throw EngineAPIError.incompatible(status: status)
+        }
+        return (live, fresh)
     }
 
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
