@@ -948,6 +948,7 @@ function SessionTurnBody({
             <WorkingIndicator
               label={doing.label}
               delegated={doing.delegated}
+              compacting={isCompacting(turn)}
               startedAt={turn.startedAt}
               {...(turn.lastActivityAt ? { lastActivityAt: turn.lastActivityAt } : {})}
               now={now}
