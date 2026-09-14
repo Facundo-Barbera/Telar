@@ -3041,9 +3041,33 @@ export function createClaudeDriver(
              * that had finished in one second. The CLI's own turns are caught
              * by their `message_start` (above) or their `origin` (here).
              */
+            /**
+             * `origin` IS NOT A FOREIGN MARK ANY MORE — #465's whole cause.
+             *
+             * This used to treat ANY `origin` on a result as the CLI's own
+             * turn. That was true while Telar stamped no origin on its sends.
+             * #241 (1cf9b1c8, 2026-09-13 20:42) began stamping a person's
+             * message `origin: {kind: "human"}`, and MEASURED on CLI 2.1.270
+             * the result ECHOES that origin back — so from that commit on
+             * every result answering a human's message was discarded here as
+             * a stranger's, `completed` was never set, and the turn sat
+             * `running` until the person pressed Stop. First stall: 23:36
+             * the same evening, on the first nightly carrying #241.
+             *
+             * A result is foreign when a foreign turn is OPEN, or when it
+             * names a DIFFERENT sender. An origin whose sender is ours (or
+             * absent, on a CLI-started turn caught by its message_start) says
+             * nothing about ownership.
+             */
             const sender = str(item.user_message_uuid);
             const foreignResult =
-              foreignTurn !== undefined || (sender !== undefined && sender !== turnUuid) || str(item.origin?.kind) !== undefined;
+              foreignTurn !== undefined ||
+              (sender !== undefined && sender !== turnUuid) ||
+              // A CLI-originated turn that produced no message_start (a
+              // notification answered without streaming) is still caught
+              // by an origin that is NOT a person's — `human` is the one
+              // kind Telar itself stamps, and the CLI echoes it back.
+              (str(item.origin?.kind) !== undefined && item.origin?.kind !== "human");
             if (foreignResult) {
               foreignTurn = undefined;
               runtime.tasks.lastWokenTaskId = undefined;

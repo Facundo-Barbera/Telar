@@ -473,6 +473,33 @@ describe("the end-turn grace (#465)", () => {
   });
 });
 
+test("a result echoing the person's own `origin: human` is OURS and ends the turn (#465)", async () => {
+  /**
+   * THE ACTUAL CAUSE OF #465. #241 began stamping a person's send with
+   * `origin: {kind: "human"}`; measured on CLI 2.1.270, the result ECHOES it.
+   * The pump treated any origin on a result as "the CLI's own turn" and
+   * discarded it — so every turn answering a person sat `running` until Stop.
+   * The fake echoes exactly what the CLI does: our uuid AND our origin.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string; origin?: unknown }> }) {
+      for await (const message of prompt) {
+        yield { type: "stream_event", event: { type: "message_start" }, user_message_uuid: message.uuid };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "answered" }] } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", user_message_uuid: message.uuid, origin: message.origin };
+        return;
+      }
+    },
+  }) as never);
+  const { result } = run(driver, { promptFromHuman: true });
+  const raced = await Promise.race([
+    result.then((value) => ({ kind: "resolved" as const, value })),
+    new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 1500)),
+  ]);
+  expect(raced.kind).toBe("resolved");
+  expect(raced.kind === "resolved" && raced.value.text).toBe("answered");
+});
+
 test("a sub-agent's result never completes the parent turn", async () => {
   // Every message produced inside a sub-agent carries `parent_tool_use_id`.
   // A child's result completing the PARENT would end a turn whose main loop
