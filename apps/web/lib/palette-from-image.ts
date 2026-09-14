@@ -263,6 +263,36 @@ export function themeFromPixels(pixels: Uint8ClampedArray | readonly Rgb[]): Omi
 /* ── The composer's base, through the same engine ────────────────────────── */
 
 /**
+ * ONE COLOUR'S OKLCH HUE — the forward half of the matrices theme-palettes.ts
+ * inverts to turn oklch back into hex.
+ *
+ * WHY THE BASE NEEDS THIS AND A PHOTOGRAPH DOES NOT. `dominantHues` ranks
+ * families of pixels, and HSL is plenty for ranking; the winning hue is a
+ * circular mean over thousands of pixels, and it is written into oklch as-is
+ * because nobody ever sees the input. A BASE is different: it is one colour a
+ * person picked out of a swatch and can see. HSL and OKLCh disagree about where
+ * a hue sits by as much as forty degrees — HSL 65° is yellow-green, oklch 65° is
+ * orange — so passing the HSL number through would mean picking a yellow-green
+ * and getting a warm app. The composer's base IS the app colour, so the hue it
+ * derives has to be the hue you chose.
+ *
+ * COLOURFULNESS STILL COMES FROM HSL SATURATION, because `tintForSaturation`'s
+ * band was tuned against it and against the extractor's own floor; swapping it
+ * for oklch chroma would move the strength of every theme ever derived.
+ */
+export function oklchHue(r: number, g: number, b: number): number {
+  const linear = (channel: number) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  const [R, G, B] = [r, g, b].map((channel) => linear(channel / 255)) as [number, number, number];
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  const hue = (Math.atan2(bb, a) * 180) / Math.PI;
+  return hue < 0 ? hue + 360 : hue;
+}
+
+/**
  * ONE COLOUR BECOMES SIXTEEN — the derivation the composer is built on (#471).
  *
  * A composition state is a BASE colour and a stack of layers; the surface
@@ -278,6 +308,11 @@ export function themeFromPixels(pixels: Uint8ClampedArray | readonly Rgb[]): Omi
  * is the property the contrast test pins, and it is the reason the owner asked
  * for this engine rather than "the base IS --background".
  *
+ * THE HUE IS READ IN THE SPACE IT WILL BE WRITTEN IN — see `oklchHue`. A
+ * photograph's hue may cross from HSL because nobody sees the pixels it came
+ * from; a base is a colour somebody picked and is looking at, so what they
+ * picked and what the app wears have to be the same hue.
+ *
  * A COLOURLESS BASE DERIVES TELAR ITSELF, by the same rule a grey photograph
  * does: under the extractor's own saturation floor there is no hue to trust,
  * and inventing one would tint the identity look faintly red on the strength of
@@ -289,9 +324,9 @@ export function halfFromBase(base: string, mode: "light" | "dark"): ThemeHalf {
   const parsed = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
   if (!parsed) return { ...neutral };
   const [r, g, b] = [1, 2, 3].map((index) => parseInt(parsed[index]!, 16)) as [number, number, number];
-  const { hue, saturation } = rgbToHsl(r, g, b);
+  const { saturation } = rgbToHsl(r, g, b);
   if (saturation < MIN_SATURATION) return { ...neutral };
-  return tintHalf(neutral, mode === "light" ? LIGHT_WEIGHTS : DARK_WEIGHTS, hue, tintForSaturation(saturation));
+  return tintHalf(neutral, mode === "light" ? LIGHT_WEIGHTS : DARK_WEIGHTS, oklchHue(r, g, b), tintForSaturation(saturation));
 }
 
 /**
