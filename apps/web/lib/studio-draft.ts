@@ -1,40 +1,33 @@
 "use client";
 
 /**
- * THE STUDIO DRAFT — a Look nobody is wearing yet.
+ * THE BACKDROP CONSTRUCTORS — the four ways to build a scene, as pure values.
  *
- * The Appearance pane's controls all write THROUGH to the live stores: click a
- * theme and the window retints under you. That is the right behaviour for
- * tweaking and the wrong one for DESIGNING, where half the value is trying
- * something ugly without having to live in it. So the studio edits a draft,
- * and the draft is not a parallel model of the appearance — it IS a `Look`
- * (lib/looks.ts), the same bundle the Looks shelf saves and shares, simply one
- * that has not been through `applyLook` yet. Apply is therefore not a
- * conversion; it is `applyLook` on a value that was already the right type.
+ * WHAT THIS FILE WAS, AND WHY MOST OF IT IS GONE (#471). It held a DRAFT: a
+ * Look nobody was wearing, edited by a bank of pure updaters and applied by a
+ * masthead's Apply button. The draft existed to gate Apply, and Apply existed
+ * because the draft did. Both are gone — every control on the Appearance pane
+ * writes its own live store the moment you touch it, the way Translucency and
+ * Glass always did — so the updaters, the persistence and the "open this into
+ * the studio" loaders went with them. A theme pick is `setHalf`; a token edit
+ * is `editActiveHalf` (lib/theme-palettes.ts); an accent or a size is
+ * `setAppearance`; a backdrop is `wearBackdrop` (lib/looks.ts).
  *
- * THE UPDATERS ARE PURE — a new draft out for a draft in, which is what lets
- * the studio keep an undo history of plain values and lets the chat merge be
- * a function rather than a sequence of setState calls. The only impure code
- * here is the storage edge: `newDraftFromCurrent` (reads the stores) and the
- * persistence block (the draft and transcript surviving navigation).
+ * WHAT SURVIVED, AND WHY IT HAD TO. The backdrop editors are CONTROLLED: they
+ * are handed a `LookBackdrop` and hand a whole one back, because a backdrop is
+ * not a patch — the choice, the RESOLVED CSS the pre-paint script paints from,
+ * and any payload (an image's data URL, a scene's layers) that lives nowhere
+ * else all have to be built in one go. So the constructors live here, beside
+ * the shape they build rather than inside a component, where they could not be
+ * tested without a DOM.
  *
- * There is no mock stage any more — the draft is previewed on the document
- * itself (lib/studio-preview.ts), so this file no longer restates accent hues
- * or compiles per-container variables.
+ * THEY REFUSE RATHER THAN RETURN SOMETHING BLANK. Every one ends at the store's
+ * own gate — isGradientValue, isSceneValue via composeScene, or the
+ * `data:image/` prefix — and returns undefined when the value would not pass. A
+ * caller that gets undefined leaves the backdrop already on screen alone, which
+ * is the only outcome that is never a surprise.
  */
 
-import {
-  MAX_FONT_SIZE,
-  MAX_MONO_FONT_SIZE,
-  MAX_TRANSLUCENCY,
-  MIN_FONT_SIZE,
-  MIN_MONO_FONT_SIZE,
-  MIN_TRANSLUCENCY,
-  type Accent,
-  type Depth,
-  type MonoFont,
-  type SansFont,
-} from "./appearance";
 import { isGradientValue, MAX_BACKDROP_BLUR, MAX_BACKDROP_DIM, type BackdropFit } from "./backdrop";
 import {
   backdropPresetById,
@@ -43,67 +36,21 @@ import {
   parseGradient,
   type CustomGradientSpec,
 } from "./backdrop-presets";
-import { captureLook, parseLook, type Look, type LookBackdrop } from "./looks";
+import type { Look, LookBackdrop } from "./looks";
 import { composeScene, pruneSceneImages, SCENE_LIMITS, type Scene } from "./scene-composer";
-import { concreteHalf, cssColorToHex, THEME_TOKENS, type ThemeDefinition, type ThemeToken } from "./theme-palettes";
+import { cssColorToHex, THEME_TOKENS } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
-/** The draft IS a Look — see the header. The alias exists so the studio's own
- *  files can say what they mean without implying a second shape. */
+/** A whole appearance, as the chat's designer still speaks of one. The alias
+ *  survives its draft: what the designer answers with is a Look. */
 export type StudioDraft = Look;
 
+/** WHICH HALF a control is editing. The pane's colour scheme decides it — see
+ *  appearance-section.tsx — and every half-aware editor takes it. */
 export type StudioMode = "light" | "dark";
-
-/* --------------------------------------------------------------- opening */
-
-/** A draft that starts where the reader already is: their whole current look,
- *  photographed. Impure — it reads the stores. */
-export function newDraftFromCurrent(label = "New look"): StudioDraft {
-  return captureLook(label);
-}
-
-/**
- * A saved Look opened INTO the studio — the id survives, which is the whole
- * point: Save updates the card it came from instead of breeding a copy, and
- * Apply installs the same `look-<id>` theme wearing it directly would. The
- * halves are copied because the updaters spread them; everything else is
- * replaced wholesale when edited.
- */
-export function draftFromLook(look: Look): StudioDraft {
-  return { ...look, theme: { light: { ...look.theme.light }, dark: { ...look.theme.dark } } };
-}
-
-/**
- * A library theme loaded into the draft — the library is where a palette comes
- * FROM now, not a switch that retints the app under the studio. Both halves
- * land concrete; the draft keeps its backdrop, accent and type, because a
- * palette is not a whole look.
- */
-export function loadThemeIntoDraft(draft: StudioDraft, theme: ThemeDefinition): StudioDraft {
-  return { ...draft, label: theme.label, theme: { light: concreteHalf(theme, "light"), dark: concreteHalf(theme, "dark") } };
-}
-
-/** One half from one theme — the orb click, drafted: Ember's day over the
- *  draft's night. */
-export function loadThemeHalfIntoDraft(draft: StudioDraft, mode: StudioMode, theme: ThemeDefinition): StudioDraft {
-  return { ...draft, theme: { ...draft.theme, [mode]: concreteHalf(theme, mode) } };
-}
 
 /* ---------------------------------------------------------- persistence */
 
-/**
- * THE DRAFT SURVIVES NAVIGATION. The studio used to hold its draft in
- * component state, and clicking any other settings section unmounted the pane
- * and threw a ten-minute design away without a word. So the draft is written
- * through to storage (a draft IS a Look, so parseLook already knows how to
- * read it back — id included, which is what keeps "Save" updating the same
- * shelf card across a reload), and the transcript beside it, because the
- * record of what was asked for is how you pick a conversation back up.
- *
- * A quota refusal is swallowed: the in-memory draft keeps working for this
- * visit, and losing persistence is strictly better than losing the draft.
- */
-export const STUDIO_DRAFT_KEY = "telar-studio-draft";
 export const STUDIO_CHAT_KEY = "telar-studio-chat";
 
 /** What one transcript line needs to survive a reload. The component adds its
@@ -113,25 +60,6 @@ export type StudioChatLine = { kind: "you" | "studio" | "trouble"; text: string 
 const CHAT_KINDS = ["you", "studio", "trouble"] as const;
 const MAX_CHAT_LINES = 200;
 const MAX_CHAT_TEXT = 4000;
-
-export function readStudioDraft(): StudioDraft | undefined {
-  try {
-    const raw = window.localStorage.getItem(STUDIO_DRAFT_KEY);
-    if (raw === null) return undefined;
-    return parseLook(JSON.parse(raw));
-  } catch {
-    return undefined;
-  }
-}
-
-export function writeStudioDraft(draft: StudioDraft | undefined): void {
-  try {
-    if (draft === undefined) window.localStorage.removeItem(STUDIO_DRAFT_KEY);
-    else window.localStorage.setItem(STUDIO_DRAFT_KEY, JSON.stringify(draft));
-  } catch {
-    // Quota or private browsing — see the header.
-  }
-}
 
 /**
  * MORE THAN ONE CONVERSATION, because a design session is not one thought.
@@ -219,63 +147,11 @@ export function writeStudioChats(chats: StudioChat[]): void {
   }
 }
 
-/* -------------------------------------------------------------- updaters */
+/* ------------------------------------------ the compact preset backdrop */
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-export function setDraftLabel(draft: StudioDraft, label: string): StudioDraft {
-  return { ...draft, label };
-}
-
-/** One surface token in one half. The other half is untouched: a studio that
- *  mirrored edits across both would make the light/dark toggle a lie. */
-export function patchDraftToken(draft: StudioDraft, mode: StudioMode, token: ThemeToken, value: string): StudioDraft {
-  return { ...draft, theme: { ...draft.theme, [mode]: { ...draft.theme[mode], [token]: value } } };
-}
-
-/** Every half of a half at once — what the chat's merge writes. */
-export function patchDraftHalf(draft: StudioDraft, mode: StudioMode, half: Look["theme"]["light"]): StudioDraft {
-  return { ...draft, theme: { ...draft.theme, [mode]: { ...half } } };
-}
-
-export function patchDraftAccent(draft: StudioDraft, accent: Accent): StudioDraft {
-  return { ...draft, accent };
-}
-
-/** The type and size members, clamped to the same bounds the appearance store
- *  enforces — a draft that could hold a 40px root would only be refused later. */
-export function patchDraftType(
-  draft: StudioDraft,
-  patch: Partial<{ fontSans: SansFont; fontMono: MonoFont; fontSansCustom: string; fontMonoCustom: string; fontSize: number; fontMonoSize: number }>,
-): StudioDraft {
-  return {
-    ...draft,
-    ...(patch.fontSans ? { fontSans: patch.fontSans } : {}),
-    ...(patch.fontMono ? { fontMono: patch.fontMono } : {}),
-    ...(patch.fontSansCustom !== undefined ? { fontSansCustom: patch.fontSansCustom } : {}),
-    ...(patch.fontMonoCustom !== undefined ? { fontMonoCustom: patch.fontMonoCustom } : {}),
-    ...(patch.fontSize !== undefined ? { fontSize: clampInt(patch.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, draft.fontSize) } : {}),
-    ...(patch.fontMonoSize !== undefined ? { fontMonoSize: clampInt(patch.fontMonoSize, MIN_MONO_FONT_SIZE, MAX_MONO_FONT_SIZE, draft.fontMonoSize) } : {}),
-  };
-}
-
-export function patchDraftStrength(draft: StudioDraft, level: number): StudioDraft {
-  return { ...draft, translucencyLevel: clampInt(level, MIN_TRANSLUCENCY, MAX_TRANSLUCENCY, draft.translucencyLevel) };
-}
-
-/** How far the elevation ladder travels. A DRAFT field, not a live one, for
- *  the same reason `translucencyLevel` is: it travels in a Look, so the pane's
- *  one rule applies — everything that is taste edits the draft and waits on
- *  Apply. */
-export function patchDraftDepth(draft: StudioDraft, depth: Depth): StudioDraft {
-  return { ...draft, depth };
-}
-
-export function replaceDraftBackdrop(draft: StudioDraft, backdrop: LookBackdrop): StudioDraft {
-  return { ...draft, backdrop };
 }
 
 /**

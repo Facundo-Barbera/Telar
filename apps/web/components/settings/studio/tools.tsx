@@ -1,39 +1,45 @@
 "use client";
 
 /**
- * THE INSPECTOR'S DRAFT-WRITING TOOLS.
+ * THE PALETTE ROWS AND THE TYPE ROWS — writing the live stores, directly.
  *
- * The palette rows and the type rows: two editors that take a whole draft and
- * hand a whole draft back, writing no store on the way. They are the pane's
- * one rule in miniature — everything here edits the draft, and the draft is
- * painted on the app itself until Apply makes it the truth.
+ * They used to take a whole draft and hand a whole draft back, writing nothing
+ * until a masthead's Apply. There is no draft (#471): each of these takes the
+ * value it edits and the function that stores it, and the app retints as you
+ * drag — which is what every other settings pane in this app has always done,
+ * and what Translucency and Glass did on this one all along.
  *
  * THE BACKDROP LIVES NEXT DOOR, in backdrop-tool.tsx, because it is a
  * different shape of thing: a gallery, a gradient editor, a picture and a
  * layer stack, each of which produces a whole self-contained LookBackdrop
- * rather than a patch to the draft it came from.
+ * rather than a patch to anything.
  *
- * THE COLOUR ROWS EDIT ONE HALF — whichever the pane is showing. A studio
- * that wrote both halves from one picker would make the Light/Dark toggle a
+ * THE COLOUR ROWS EDIT ONE HALF — whichever the window is wearing. A pane that
+ * wrote both halves from one picker would make the light/dark distinction a
  * decoration, and the whole reason a theme has two halves is that the answer
- * differs. The toggle in the page header is therefore the mode selector for
- * this tool as much as it is for the preview.
+ * differs. The colour scheme is therefore the mode selector for this tool.
  */
 
 import { useState } from "react";
-import { ACCENTS, MAX_FONT_SIZE, MAX_MONO_FONT_SIZE, MAX_TRANSLUCENCY, MIN_FONT_SIZE, MIN_MONO_FONT_SIZE, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
-import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeToken } from "@/lib/theme-palettes";
+import {
+  ACCENTS,
+  MAX_FONT_SIZE,
+  MAX_MONO_FONT_SIZE,
+  MAX_TRANSLUCENCY,
+  MIN_FONT_SIZE,
+  MIN_MONO_FONT_SIZE,
+  MIN_TRANSLUCENCY,
+  MONO_FONTS,
+  SANS_FONTS,
+  type Accent,
+  type Appearance,
+  type MonoFont,
+  type SansFont,
+} from "@/lib/appearance";
+import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@/lib/theme-palettes";
 import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
-import {
-  patchDraftAccent,
-  patchDraftHalf,
-  patchDraftStrength,
-  patchDraftToken,
-  patchDraftType,
-  type StudioDraft,
-  type StudioMode,
-} from "@/lib/studio-draft";
+import type { StudioMode } from "@/lib/studio-draft";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,7 +48,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Row } from "../settings-shell";
 import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";
 
-export type DraftTool = { draft: StudioDraft; onDraft: (next: StudioDraft) => void };
+/** What the type rows read and write: the live appearance, and the store's own
+ *  patch function. */
+export type TypeToolProps = { appearance: Appearance; onChange: (patch: Partial<Appearance>) => void };
 
 // The SAME catalogue in both slots; only the name of the shared `geist` id
 // differs, because Geist and Geist Mono are what it has always meant in each.
@@ -96,11 +104,11 @@ const SURFACE_OF: Partial<Record<ThemeToken, ThemeToken>> = Object.fromEntries(F
  *  decision and the studio's job is to say what it costs. */
 const READABLE = 4.5;
 
-function ratioFor(draft: StudioDraft, mode: StudioMode, token: ThemeToken): number | undefined {
+function ratioFor(half: ThemeHalf, token: ThemeToken): number | undefined {
   const surfaceToken = SURFACE_OF[token];
   if (!surfaceToken) return undefined;
-  const fg = parseVsCodeColor(cssColorToHex(draft.theme[mode][token]));
-  const bg = parseVsCodeColor(cssColorToHex(draft.theme[mode][surfaceToken]));
+  const fg = parseVsCodeColor(cssColorToHex(half[token]));
+  const bg = parseVsCodeColor(cssColorToHex(half[surfaceToken]));
   if (!fg || !bg) return undefined;
   return contrastRatio(fg, bg);
 }
@@ -149,7 +157,20 @@ function HexField({ value, label, onCommit }: { value: string; label: string; on
   );
 }
 
-export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMode }) {
+export function ColourTool({
+  half,
+  mode,
+  onToken,
+  onCopyHalf,
+}: {
+  /** The half being edited, concrete — the palette the window is wearing on
+   *  this side, never a draft of one. */
+  half: ThemeHalf;
+  mode: StudioMode;
+  onToken: (token: ThemeToken, value: string) => void;
+  /** Replace the OTHER half with a copy of this one. */
+  onCopyHalf: () => void;
+}) {
   const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock>
@@ -163,16 +184,15 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
           split that fits all four parts honestly. */}
       <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
         {THEME_TOKENS.map((token) => {
-          const value = draft.theme[mode][token];
-          const hex = cssColorToHex(value);
-          const ratio = ratioFor(draft, mode, token);
+          const hex = cssColorToHex(half[token]);
+          const ratio = ratioFor(half, token);
           return (
             <label key={token} className="flex items-center gap-1.5 py-0.5 text-xs" title={`--${token}`}>
               <input
                 type="color"
                 value={hex}
                 aria-label={THEME_TOKEN_LABELS[token]}
-                onChange={(event) => onDraft(patchDraftToken(draft, mode, token, hexToCssColor(event.target.value)))}
+                onChange={(event) => onToken(token, hexToCssColor(event.target.value))}
                 className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
               />
               <span className="min-w-0 flex-1 truncate text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
@@ -184,7 +204,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
                   {ratio.toFixed(1)}
                 </span>
               )}
-              <HexField value={hex} label={THEME_TOKEN_LABELS[token]} onCommit={(next) => onDraft(patchDraftToken(draft, mode, token, hexToCssColor(next)))} />
+              <HexField value={hex} label={THEME_TOKEN_LABELS[token]} onCommit={(next) => onToken(token, hexToCssColor(next))} />
             </label>
           );
         })}
@@ -195,7 +215,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
           variant="ghost"
           className="h-7 px-2 text-2xs text-muted-foreground"
           title={`Replace the ${other} half with a copy of the ${mode} half`}
-          onClick={() => onDraft(patchDraftHalf(draft, other, { ...draft.theme[mode] }))}
+          onClick={onCopyHalf}
         >
           <CopyIcon /> Copy {mode} half → {other}
         </Button>
@@ -328,7 +348,7 @@ function SizeSelect({ value, min, max, label, onPick }: { value: number; min: nu
 
 function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: Accent) => void }) {
   return (
-    <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Draft accent colour">
+    <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Accent colour">
       {ACCENTS.map((accent) => {
         const on = accent === value;
         return (
@@ -355,32 +375,32 @@ function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: A
   );
 }
 
-export function TypeTool({ draft, onDraft }: DraftTool) {
+export function TypeTool({ appearance, onChange }: TypeToolProps) {
   return (
     <>
       <Row
         label="Accent"
         hint="The one hue that means a person acted — buttons, links, the caret."
-        control={<AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />}
+        control={<AccentSwatches value={appearance.accent} onChange={(accent) => onChange({ accent })} />}
       />
 
       <TypeField
         title="Interface font"
         hint="Everything outside code blocks and the terminal."
         family={
-          <FontSelect value={draft.fontSans} items={SANS_LABEL} options={SANS_FONTS} onPick={(fontSans) => onDraft(patchDraftType(draft, { fontSans }))} label="Interface font" />
+          <FontSelect value={appearance.fontSans} items={SANS_LABEL} options={SANS_FONTS} onPick={(fontSans) => onChange({ fontSans })} label="Interface font" />
         }
         size={
-          <SizeSelect value={draft.fontSize} min={MIN_FONT_SIZE} max={MAX_FONT_SIZE} label="Interface text size" onPick={(fontSize) => onDraft(patchDraftType(draft, { fontSize }))} />
+          <SizeSelect value={appearance.fontSize} min={MIN_FONT_SIZE} max={MAX_FONT_SIZE} label="Interface text size" onPick={(fontSize) => onChange({ fontSize })} />
         }
         custom={
-          draft.fontSans === "custom" ? (
+          appearance.fontSans === "custom" ? (
             <Input
               className="w-full"
-              value={draft.fontSansCustom}
+              value={appearance.fontSansCustom}
               placeholder="e.g. Helvetica Neue"
               aria-label="Custom interface font"
-              onChange={(event) => onDraft(patchDraftType(draft, { fontSansCustom: event.target.value }))}
+              onChange={(event) => onChange({ fontSansCustom: event.target.value })}
             />
           ) : undefined
         }
@@ -392,19 +412,19 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         title="Code font"
         hint="Code blocks, diffs, file previews, and the terminal."
         family={
-          <FontSelect value={draft.fontMono} items={MONO_LABEL} options={MONO_FONTS} onPick={(fontMono) => onDraft(patchDraftType(draft, { fontMono }))} label="Code font" />
+          <FontSelect value={appearance.fontMono} items={MONO_LABEL} options={MONO_FONTS} onPick={(fontMono) => onChange({ fontMono })} label="Code font" />
         }
         size={
-          <SizeSelect value={draft.fontMonoSize} min={MIN_MONO_FONT_SIZE} max={MAX_MONO_FONT_SIZE} label="Code text size" onPick={(fontMonoSize) => onDraft(patchDraftType(draft, { fontMonoSize }))} />
+          <SizeSelect value={appearance.fontMonoSize} min={MIN_MONO_FONT_SIZE} max={MAX_MONO_FONT_SIZE} label="Code text size" onPick={(fontMonoSize) => onChange({ fontMonoSize })} />
         }
         custom={
-          draft.fontMono === "custom" ? (
+          appearance.fontMono === "custom" ? (
             <Input
               className="w-full"
-              value={draft.fontMonoCustom}
+              value={appearance.fontMonoCustom}
               placeholder="e.g. SF Mono"
               aria-label="Custom code font"
-              onChange={(event) => onDraft(patchDraftType(draft, { fontMonoCustom: event.target.value }))}
+              onChange={(event) => onChange({ fontMonoCustom: event.target.value })}
             />
           ) : undefined
         }
@@ -422,15 +442,16 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
  * and a reader hunting for it under "Type" has already learnt that this pane's
  * grouping means nothing.
  */
-export function ShowThroughTool({ draft, onDraft }: DraftTool) {
+export function ShowThroughRow({ level, onChange, anchor }: { level: number; onChange: (next: number) => void; anchor?: string }) {
   return (
-    // A Row, and NOT the derived anchor: this same field is rendered a second
-    // time in the Window group, which is where search points at "Show-through"
+    // The SAME field is rendered twice — here under the backdrop it thins, and
+    // again in the Window group, which is where search points at "Show-through"
     // (settings-registry.ts). Two rows deriving one id would be two elements
     // claiming one anchor, and `document.getElementById` would answer whichever
-    // came first. One value, two honest homes, one destination.
+    // came first, so the backdrop's copy is stamped by hand. One value, two
+    // honest homes, one destination.
     <Row
-      id="settings-row-appearance-backdrop-show-through"
+      {...(anchor ? { id: anchor } : {})}
       label="Show-through"
       hint="How much of the backdrop reaches the canvas and the rail."
       control={
@@ -440,13 +461,13 @@ export function ShowThroughTool({ draft, onDraft }: DraftTool) {
             min={MIN_TRANSLUCENCY}
             max={MAX_TRANSLUCENCY}
             step={5}
-            value={draft.translucencyLevel}
-            aria-label="Draft translucency strength"
+            value={level}
+            aria-label="Show-through"
             title="How much of the backdrop shows through the canvas and the rail"
             className="w-36 accent-primary"
-            onChange={(event) => onDraft(patchDraftStrength(draft, Number(event.target.value)))}
+            onChange={(event) => onChange(Number(event.target.value))}
           />
-          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{draft.translucencyLevel}%</span>
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{level}%</span>
         </div>
       }
     />

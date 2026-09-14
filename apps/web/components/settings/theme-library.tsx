@@ -5,27 +5,20 @@
  *
  * A grid of cards, one per theme; each card carries two preview orbs (the
  * light and dark halves, painted from the theme's own canvas/chip/rail
- * values). Clicking a card LOADS THE THEME INTO THE DRAFT — both halves — and
- * clicking one orb loads only that half, so a pair can be mixed across themes
- * (Ember's day over Tide's night) without a second surface. Neither touches
- * the live stores: the studio previews the draft on the app, and Apply is what
- * wears it. The active rings still mark what you are actually WEARING, which
- * is exactly the distinction the rings are for.
+ * values). Clicking a card WEARS the theme on both halves, and clicking one orb
+ * wears only that half, so a pair can be mixed across themes (Ember's day over
+ * Tide's night) without a second surface.
  *
- * THE RINGS MARK WHAT YOU ARE EDITING, NOT WHAT YOU ARE WEARING. They used to
- * mark the worn pair, which is the one thing a reader can already see by
- * looking at the app. After loading Ember into the draft the grid went on
- * pointing at Telar, so the only question the grid could answer — "which of
- * these am I working on?" — was the one it got wrong. `holding` is the draft's
- * own provenance (matchThemeHalf); the worn theme keeps a quieter WORN chip,
- * because "installed" and "open in the editor" are different facts and the
- * pane now says both.
+ * ONE GESTURE, ONE MEANING (#471). There used to be two: a click LOADED the
+ * theme into a draft and a hover-revealed Wear button applied it, so the rings
+ * marked what you were editing while a separate WORN chip marked what the
+ * window had on — two facts the reader had to hold apart, for a draft that no
+ * longer exists. The rings mark the worn pair, and that is the only fact here.
  *
- * Editing colours happens in the studio's own palette tool, on the draft —
- * the old inline live editor is gone, because two colour editors with opposite
- * write models was the pane's worst confusion. The library keeps the jobs only
- * a library can do: duplicate, export, delete, import (Telar's format or a VS
- * Code *-color-theme.json).
+ * Editing colours happens in the palette rows above, which write the worn theme
+ * directly (`editActiveHalf` in lib/theme-palettes.ts). The library keeps the
+ * jobs only a library can do: duplicate, export, delete, import (Telar's format
+ * or a VS Code *-color-theme.json).
  */
 
 import { useRef, useState } from "react";
@@ -48,7 +41,7 @@ import { GroupStrip } from "./studio/tool-strip";
  */
 function ThemeOrb({ theme, mode, active, onUse }: { theme: ThemeDefinition; mode: "light" | "dark"; active: boolean; onUse: () => void }) {
   const half = concreteHalf(theme, mode);
-  const label = `Load ${theme.label}'s ${mode} half into the draft`;
+  const label = `Wear ${theme.label}'s ${mode} half`;
   return (
     <button
       type="button"
@@ -81,26 +74,22 @@ function downloadFile(filename: string, contents: string): void {
 
 function ThemeCard({
   theme,
-  active,
   worn,
-  lightActive,
-  darkActive,
-  onUse,
+  lightWorn,
+  darkWorn,
   onWear,
-  onUseHalf,
+  onWearHalf,
   onDuplicate,
   onExport,
   onRemove,
 }: {
   theme: ThemeDefinition;
-  active: boolean;
+  /** Both halves are wearing this theme. */
   worn: boolean;
-  lightActive: boolean;
-  darkActive: boolean;
-  onUse: () => void;
-  /** Wear this palette over the look you have on — Apply, from the card. */
+  lightWorn: boolean;
+  darkWorn: boolean;
   onWear: () => void;
-  onUseHalf: (mode: "light" | "dark") => void;
+  onWearHalf: (mode: "light" | "dark") => void;
   onDuplicate: () => void;
   onExport?: () => void;
   onRemove?: () => void;
@@ -109,40 +98,30 @@ function ThemeCard({
     <div
       className={cn(
         "group flex cursor-pointer items-center gap-2.5 rounded-lg p-2 ring-1 transition-colors",
-        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
+        worn ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
       )}
-      onClick={onUse}
+      onClick={onWear}
       role="button"
-      title={`Load ${theme.label} into the draft`}
-      aria-label={`Load ${theme.label} into the draft`}
-      aria-pressed={active}
+      title={`Wear ${theme.label}`}
+      aria-label={`Wear ${theme.label}`}
+      aria-pressed={worn}
       tabIndex={0}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onUse();
+          onWear();
         }
       }}
     >
       <div className="flex shrink-0 -space-x-2">
-        <ThemeOrb theme={theme} mode="light" active={lightActive} onUse={() => onUseHalf("light")} />
-        <ThemeOrb theme={theme} mode="dark" active={darkActive} onUse={() => onUseHalf("dark")} />
+        <ThemeOrb theme={theme} mode="light" active={lightWorn} onUse={() => onWearHalf("light")} />
+        <ThemeOrb theme={theme} mode="dark" active={darkWorn} onUse={() => onWearHalf("dark")} />
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-medium">
         <span className="truncate">{theme.label}</span>
-        {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
-        {worn && (
-          <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-muted-foreground/70 uppercase" title="The theme this window is wearing">
-            Worn
-          </span>
-        )}
+        {worn && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-        {!worn && (
-          <Button size="sm" variant="secondary" className="h-7" title={`Wear ${theme.label}'s colours now`} onClick={(event) => (event.stopPropagation(), onWear())}>
-            Wear
-          </Button>
-        )}
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
           <CopyIcon />
         </Button>
@@ -172,20 +151,13 @@ function ThemeCard({
 }
 
 export function ThemeLibrary({
-  onPick,
-  onPickHalf,
   onWear,
-  holding,
+  onWearHalf,
 }: {
-  /** Load a whole theme into the draft. */
-  onPick: (theme: ThemeDefinition) => void;
-  /** Load one half into the draft — the orb click. */
-  onPickHalf: (mode: "light" | "dark", theme: ThemeDefinition) => void;
-  /** Wear this palette over the current look, without the trip to Apply. */
+  /** Wear a whole theme — both halves. */
   onWear: (theme: ThemeDefinition) => void;
-  /** Which theme each half of the DRAFT currently holds, if any — what the
-   *  rings mark. Undefined halves mean "edited by hand, matching nothing". */
-  holding: { light?: string; dark?: string };
+  /** Wear one half of it — the orb click. */
+  onWearHalf: (mode: "light" | "dark", theme: ThemeDefinition) => void;
 }) {
   const { active, themes, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
   // The MESSAGE, not a flag: a VS Code file can fail for a reason worth
@@ -198,8 +170,8 @@ export function ThemeLibrary({
    * Telar's own format first, then VS Code's. Both are JSON objects, so the
    * order is the tiebreak: an export of ours never carries dotted workbench
    * keys, and a `*-color-theme.json` never carries our two halves. Either way
-   * the theme lands in the LIBRARY and is loaded into the draft — never worn
-   * directly.
+   * the theme lands in the LIBRARY and is then worn, which is the one road a
+   * palette reaches the window by.
    */
   const importFile = (raw: string): { error: string | false; theme?: ThemeDefinition } => {
     const imported = importTheme(raw);
@@ -249,7 +221,7 @@ export function ThemeLibrary({
           void file.text().then((raw) => {
             const outcome = importFile(raw);
             setImportError(outcome.error);
-            if (outcome.theme) onPick(outcome.theme);
+            if (outcome.theme) onWear(outcome.theme);
           });
         }}
       />
@@ -260,16 +232,14 @@ export function ThemeLibrary({
             <ThemeCard
               key={theme.id}
               theme={theme}
-              active={holding.light === theme.id && holding.dark === theme.id}
               worn={active.light === theme.id && active.dark === theme.id}
-              lightActive={holding.light === theme.id}
-              darkActive={holding.dark === theme.id}
-              onUse={() => onPick(theme)}
+              lightWorn={active.light === theme.id}
+              darkWorn={active.dark === theme.id}
               onWear={() => onWear(theme)}
-              onUseHalf={(mode) => onPickHalf(mode, theme)}
+              onWearHalf={(mode) => onWearHalf(mode, theme)}
               onDuplicate={() => {
                 const copy = duplicate(theme.id);
-                if (copy) onPick(copy);
+                if (copy) onWear(copy);
               }}
               {...(theme.builtIn
                 ? {}

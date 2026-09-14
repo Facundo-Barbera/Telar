@@ -252,8 +252,7 @@ function writeAppearance(patch: Partial<Appearance>): void {
   for (const listener of listeners) listener();
 }
 
-/** The stored appearance, read outside React — what the studio preview
- *  replays when a draft comes off. */
+/** The stored appearance, read outside React. */
 export function currentAppearance(): Appearance {
   return readAppearance();
 }
@@ -306,11 +305,9 @@ export function applyAppearance(appearance: Appearance): void {
  * A Look carries taste — the palette, the accent, the type, how much shows
  * through. It pointedly does NOT carry `translucent` (lib/looks.ts says why:
  * it is macOS-only, the shell owns the authoritative copy, and turning it on
- * rebuilds the window). So the studio's preview never writes this attribute,
- * and the provider must keep replaying it EVEN WHILE A DRAFT IS PAINTED —
- * otherwise flipping Translucency with a draft open asks the shell for a
- * vibrancy window and leaves the page opaque inside it, which looked exactly
- * like "the blur does not work until you press Apply".
+ * rebuilds the window). Split out from `applyAppearance` so that a caller
+ * wearing a whole LOOK writes everything except this, and the window's own
+ * property is never a side effect of trying a colour scheme.
  */
 export function applyWindowChrome(appearance: Appearance): void {
   const root = document.documentElement;

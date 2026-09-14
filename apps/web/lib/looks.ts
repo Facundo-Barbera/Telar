@@ -213,10 +213,19 @@ function captureTheme(): { light: ThemeHalf; dark: ThemeHalf } {
   return { light: concreteHalf(find(active.light), "light"), dark: concreteHalf(find(active.dark), "dark") };
 }
 
-/** The backdrop plus whatever payload its kind keeps elsewhere. A choice whose
- *  payload has gone missing captures as "none" rather than as a promise the
- *  Look cannot keep. */
-function captureBackdrop(): LookBackdrop {
+/**
+ * The backdrop plus whatever payload its kind keeps elsewhere. A choice whose
+ * payload has gone missing captures as "none" rather than as a promise the
+ * Look cannot keep.
+ *
+ * EXPORTED BECAUSE THE PANE EDITS IT DIRECTLY NOW (#471). The backdrop editors
+ * are controlled — a `LookBackdrop` in, a `LookBackdrop` out — and with the
+ * studio draft gone the value they are handed has to come from the live stores,
+ * which are four keys rather than one. This is the read that collapses them
+ * into the self-contained shape those editors already speak; `wearBackdrop`
+ * below is the write that takes one back apart.
+ */
+export function currentLookBackdrop(): LookBackdrop {
   const backdrop = parseBackdrop(readKey(BACKDROP_KEY));
   if (backdrop.kind === "none") return { kind: "none" };
   if (backdrop.kind === "image") {
@@ -253,7 +262,7 @@ export function captureLook(label: string): Look {
     id: newLookId(),
     label: label.trim().length > 0 ? label.trim() : "Untitled look",
     theme: captureTheme(),
-    backdrop: captureBackdrop(),
+    backdrop: currentLookBackdrop(),
     accent: appearance.accent,
     fontSans: appearance.fontSans,
     fontMono: appearance.fontMono,
@@ -332,7 +341,7 @@ export function applyLook(look: Look, theme: ThemeWriter, setAppearance: (patch:
   if (existing && sameDark) {
     theme.setActive(existing.id);
     setAppearance(lookAppearance(look));
-    return applyLookBackdrop(look.backdrop);
+    return wearBackdrop(look.backdrop);
   }
 
   // The embedded halves become a real library theme, so the Look is editable
@@ -343,12 +352,17 @@ export function applyLook(look: Look, theme: ThemeWriter, setAppearance: (patch:
 
   setAppearance(lookAppearance(look));
 
-  return applyLookBackdrop(look.backdrop);
+  return wearBackdrop(look.backdrop);
 }
 
-/** Split out because it is the only part that can fail, and the only part with
- *  an ordering rule worth stating on its own. */
-function applyLookBackdrop(backdrop: LookBackdrop): string | undefined {
+/**
+ * Split out because it is the only part that can fail, and the only part with
+ * an ordering rule worth stating on its own — and EXPORTED (#471) because the
+ * backdrop group writes it on its own now: choosing a gradient is a whole
+ * change of backdrop, not a patch to some larger value, and it is the same
+ * write whether it arrives from a Look or from the picker.
+ */
+export function wearBackdrop(backdrop: LookBackdrop): string | undefined {
   if (backdrop.kind === "none") {
     setBackdrop({ kind: "none" });
     return undefined;

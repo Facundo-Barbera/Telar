@@ -386,6 +386,26 @@ export function useThemeLibrary(): {
   setActive: (id: string) => void;
   setHalf: (mode: "light" | "dark", id: string) => void;
   saveCustom: (theme: ThemeDefinition) => void;
+  /** A theme the caller built (from a picture, from a file) into the library,
+   *  with an id minted here. Returns it so the caller can wear it. */
+  addCustom: (theme: Omit<ThemeDefinition, "id">) => ThemeDefinition;
+  /**
+   * EDIT THE PALETTE YOU ARE WEARING, with nothing in between (#471).
+   *
+   * The sixteen token rows used to write a studio draft and wait on Apply.
+   * There is no draft now, so an edit has to land on a real library theme —
+   * and which one is decided by the half you are editing, because the active
+   * selection is a PAIR.
+   *
+   * A BUILT-IN FORKS. The five built-ins are this build's own table, restated
+   * identically in every install; writing to one would make "Ember" mean
+   * something different on each machine and would have nowhere to be stored.
+   * So the first edit to a built-in half copies BOTH halves into a custom
+   * theme, wears it on that half, and lands the edit there — after which the
+   * half is wearing a custom theme and every later edit updates it in place,
+   * which is what keeps a colour-picker drag from breeding a theme per frame.
+   */
+  editActiveHalf: (mode: "light" | "dark", patch: Partial<ThemeHalf>) => void;
   removeCustom: (id: string) => void;
   /** Returns the copy so the caller can load it straight into the draft. */
   duplicate: (id: string) => ThemeDefinition | undefined;
@@ -403,6 +423,32 @@ export function useThemeLibrary(): {
     const { custom } = readState();
     const next = custom.some((entry) => entry.id === theme.id) ? custom.map((entry) => (entry.id === theme.id ? theme : entry)) : [...custom, theme];
     write({ custom: next });
+  }, []);
+
+  const addCustom = useCallback((theme: Omit<ThemeDefinition, "id">) => {
+    const made: ThemeDefinition = { id: newCustomThemeId(), ...theme };
+    write({ custom: [...readState().custom, made] });
+    return made;
+  }, []);
+
+  const editActiveHalf = useCallback((mode: "light" | "dark", patch: Partial<ThemeHalf>) => {
+    const current = readState();
+    const source = findTheme(current, current.active[mode]) ?? BUILT_IN_THEMES[0]!;
+    const edited: ThemeHalf = { ...concreteHalf(source, mode), ...patch };
+    if (!source.builtIn) {
+      write({ custom: current.custom.map((entry) => (entry.id === source.id ? { ...entry, [mode]: edited } : entry)) });
+      return;
+    }
+    // The fork — see the contract on `editActiveHalf` above. The OTHER half is
+    // copied concrete rather than left empty, so a copy of the identity theme
+    // ("telar", whose halves are deliberately blank) still paints a whole app.
+    const copy: ThemeDefinition = {
+      id: newCustomThemeId(),
+      label: `${source.label} edited`,
+      light: mode === "light" ? edited : concreteHalf(source, "light"),
+      dark: mode === "dark" ? edited : concreteHalf(source, "dark"),
+    };
+    write({ custom: [...current.custom, copy], active: { ...current.active, [mode]: copy.id } });
   }, []);
 
   const removeCustom = useCallback((id: string) => {
@@ -440,11 +486,13 @@ export function useThemeLibrary(): {
       setActive,
       setHalf,
       saveCustom,
+      addCustom,
+      editActiveHalf,
       removeCustom,
       duplicate,
       importTheme,
     }),
-    [state, setActive, setHalf, saveCustom, removeCustom, duplicate, importTheme],
+    [state, setActive, setHalf, saveCustom, addCustom, editActiveHalf, removeCustom, duplicate, importTheme],
   );
 }
 

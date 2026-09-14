@@ -10,11 +10,11 @@
  * tablist anywhere, and the Window rows carrying the anchors the search index
  * computes for them without ever rendering the pane.
  *
- * MOUNTED, NOT SERVER-RENDERED. Almost everything on this pane hangs off
- * `mounted` — the live look is photographed from the stores on the client, and
- * a server render deliberately holds every draft-fed group back to keep
- * hydration honest. `renderToStaticMarkup` would therefore assert that four of
- * the five groups are absent, which is the opposite of the claim.
+ * MOUNTED, NOT SERVER-RENDERED. The backdrop group reads payloads that live in
+ * localStorage, so it holds back to "nothing under the app" for the one render
+ * that happens before the stores can be read. `renderToStaticMarkup` would
+ * therefore assert against a pane in its pre-hydration state, which is not the
+ * pane this file is about.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -167,7 +167,7 @@ describe("the pane sits in the same reading column as every other", () => {
 
   test("Appearance is wrapped in the measure General is wrapped in", async () => {
     await renderShell("appearance", <AppearanceSection />);
-    const appearance = measureAround('[aria-label="Look name"]')?.className;
+    const appearance = measureAround('[id^="settings-row-"]')?.className;
 
     await renderShell(
       "general",
@@ -199,20 +199,45 @@ describe("the pane sits in the same reading column as every other", () => {
   });
 });
 
-describe("the masthead", () => {
-  test("rides the top of the scroller rather than scrolling away with the first group", () => {
-    // Apply and Discard sit here, and the pane below them is now five groups
-    // tall: a masthead that scrolled off left "is this saved?" with no answer
-    // on screen.
-    const name = host.querySelector('[aria-label="Look name"]');
-    const strip = name?.closest("div");
-    expect(strip?.className).toContain("sticky");
-    expect(strip?.className).toContain("top-0");
+/**
+ * EVERY CONTROL WRITES WHAT IT NAMES, AT ONCE — issue #471.
+ *
+ * The pane used to edit a DRAFT: a whole Look nobody was wearing, painted onto
+ * the document to simulate wearing it, gated behind an Apply button in a sticky
+ * masthead that also carried Discard, an undo arrow, a "Previewing" chip and a
+ * name field. The owner's complaint was that bar, and the answer was to delete
+ * the model behind it rather than to restyle it.
+ *
+ * WHAT IS GUARDED HERE IS THE ABSENCE. No individual control can show that
+ * there is no longer a pending state — each of them looks the same either way —
+ * so what is pinned is that the bar and its whole vocabulary are gone, and that
+ * the one thing it carried which is still a real act, "Save look", survived
+ * inside the group whose shelf it adds to.
+ */
+describe("there is no draft, and nothing to apply", () => {
+  test("the masthead's vocabulary is gone from the pane", () => {
+    for (const word of ["Apply", "Discard", "Previewing", "Undo"]) {
+      expect(host.textContent).not.toContain(word);
+    }
+    expect(host.querySelector('[aria-label="Look name"]')).toBeNull();
   });
 
-  test("still says whether the look is worn or being previewed", () => {
-    // Nothing about the write model moved in #399 — only where the groups are.
-    expect(host.textContent).toContain("Worn");
-    expect(host.textContent).toContain("Save look");
+  test("nothing on the pane is sticky any more", () => {
+    // The bar was the one sticky element here; a group is just a card.
+    expect(host.querySelector(".sticky")).toBeNull();
+  });
+
+  test("Save look stands in the Looks group, beside the shelf it adds to", () => {
+    const save = [...host.querySelectorAll("button")].find((button) => button.textContent === "Save look");
+    expect(save).toBeDefined();
+    // `SettingsGroup` draws its action on the caption line, outside the card —
+    // the same block that carries the group's own <h4>.
+    expect(save?.closest("section")?.querySelector("h4")?.textContent).toBe("Looks");
+  });
+
+  test("the colour scheme is a Window row now, not a masthead control", () => {
+    // Which half this window wears is a fact about the window, and it is also
+    // the half every colour control on the pane edits.
+    expect(host.querySelector("#settings-row-window-colour-scheme")).not.toBeNull();
   });
 });

@@ -6,7 +6,6 @@ import {
   DEFAULT_IMAGE_DIM,
   describeDraft,
   designSummary,
-  draftFromLook,
   draftGradientPair,
   draftScenePreset,
   draftSceneStack,
@@ -14,30 +13,17 @@ import {
   patchImageBackdrop,
   presetBackdrop,
   sceneBackdrop,
-  loadThemeHalfIntoDraft,
-  loadThemeIntoDraft,
   mergeDesignIntoDraft,
-  patchDraftAccent,
-  patchDraftHalf,
-  patchDraftStrength,
-  patchDraftToken,
-  patchDraftType,
   chatLabel,
   readStudioChats,
-  readStudioDraft,
-  replaceDraftBackdrop,
   scenePresetBackdrop,
-  setDraftLabel,
   STUDIO_CHAT_KEY,
-  STUDIO_DRAFT_KEY,
   writeStudioChats,
-  writeStudioDraft,
   type StudioDraft,
 } from "./studio-draft";
-import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "./appearance";
 import { MAX_BACKDROP_BLUR } from "./backdrop";
 import { BACKDROP_PRESETS, DEFAULT_CUSTOM_GRADIENT } from "./backdrop-presets";
-import { BUILT_IN_THEMES, concreteHalf, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
 const PRESET_ID = BACKDROP_PRESETS[0]!.id;
@@ -70,49 +56,6 @@ function design(overrides: Partial<DesignSuccess> = {}): DesignSuccess {
   };
 }
 
-describe("updaters are pure", () => {
-  test("patching a token touches one half and returns a new value", () => {
-    const before = draft();
-    const after = patchDraftToken(before, "light", "background", "#ffeedd");
-
-    expect(after).not.toBe(before);
-    expect(after.theme.light.background).toBe("#ffeedd");
-    // The other half, and the original, are untouched.
-    expect(after.theme.dark.background).toBe(TELAR_DARK.background);
-    expect(before.theme.light.background).toBe(TELAR_LIGHT.background);
-  });
-
-  test("patching a half replaces every token in it", () => {
-    const after = patchDraftHalf(draft(), "dark", { ...TELAR_DARK, foreground: "#00ff00" });
-    expect(after.theme.dark.foreground).toBe("#00ff00");
-    expect(after.theme.light).toEqual(TELAR_LIGHT);
-  });
-
-  test("label and accent write only themselves", () => {
-    expect(setDraftLabel(draft(), "Cedar").label).toBe("Cedar");
-    expect(patchDraftAccent(draft(), "amber").accent).toBe("amber");
-    expect(patchDraftAccent(draft(), "amber").theme).toEqual(draft().theme);
-  });
-
-  test("type patches clamp the font size and leave absent members alone", () => {
-    expect(patchDraftType(draft(), { fontSize: 99 }).fontSize).toBe(MAX_FONT_SIZE);
-    expect(patchDraftType(draft(), { fontSize: 2 }).fontSize).toBe(MIN_FONT_SIZE);
-    expect(patchDraftType(draft(), { fontSize: Number.NaN }).fontSize).toBe(14);
-
-    const fonts = patchDraftType(draft(), { fontSans: "inter", fontMonoCustom: "SF Mono" });
-    expect(fonts.fontSans).toBe("inter");
-    expect(fonts.fontMono).toBe("geist");
-    expect(fonts.fontMonoCustom).toBe("SF Mono");
-    expect(fonts.fontSize).toBe(14);
-  });
-
-  test("strength clamps to the appearance store's bounds", () => {
-    expect(patchDraftStrength(draft(), 500).translucencyLevel).toBe(100);
-    expect(patchDraftStrength(draft(), -20).translucencyLevel).toBe(0);
-    expect(patchDraftStrength(draft(), 55).translucencyLevel).toBe(55);
-  });
-});
-
 describe("the scene tool's one-layer backdrop", () => {
   test("a known preset becomes a scene the full composer could reopen", () => {
     const backdrop = scenePresetBackdrop(PRESET_ID, 80);
@@ -134,16 +77,16 @@ describe("the scene tool's one-layer backdrop", () => {
   });
 
   test("reading back only recognises a single gradient layer", () => {
-    const one = replaceDraftBackdrop(draft(), scenePresetBackdrop(PRESET_ID, 70)!);
+    const one = { ...draft(), backdrop: scenePresetBackdrop(PRESET_ID, 70)! };
     expect(draftScenePreset(one)).toEqual({ presetId: PRESET_ID, opacity: 70 });
 
     expect(draftScenePreset(draft())).toBeUndefined();
-    const stacked = replaceDraftBackdrop(draft(), {
-      kind: "scene",
+    const stacked: StudioDraft = { ...draft(), backdrop: {
+      kind: "scene" as const,
       scene: { layers: [{ type: "gradient", presetId: PRESET_ID, opacity: 100 }, { type: "gradient", presetId: PRESET_ID, opacity: 50 }] },
       images: {},
       resolved: { light: "linear-gradient(#fff, #000)", dark: "linear-gradient(#000, #fff)" },
-    });
+    } };
     expect(draftScenePreset(stacked)).toBeUndefined();
   });
 });
@@ -232,41 +175,7 @@ describe("the backdrop tool's constructors", () => {
   });
 });
 
-describe("sources load into the draft", () => {
-  test("a Look opens with its id intact, halves copied", () => {
-    const look = draft({ id: "look-kept", label: "Deep Sea" });
-    const opened = draftFromLook(look);
-    expect(opened.id).toBe("look-kept");
-    expect(opened.theme.light).toEqual(look.theme.light);
-    expect(opened.theme.light).not.toBe(look.theme.light);
-    // Editing the opened draft leaves the shelf's Look untouched.
-    const edited = patchDraftToken(opened, "light", "background", "#123456");
-    expect(edited.theme.light.background).toBe("#123456");
-    expect(look.theme.light.background).toBe(TELAR_LIGHT.background);
-  });
-
-  test("a theme loads both halves concrete and takes its label; the rest of the look stays", () => {
-    const ember = BUILT_IN_THEMES.find((theme) => theme.id === "ember")!;
-    const before = draft({ accent: "plum", fontSize: 17 });
-    const after = loadThemeIntoDraft(before, ember);
-    expect(after.label).toBe("Ember");
-    expect(after.theme.light).toEqual(concreteHalf(ember, "light"));
-    expect(after.theme.dark).toEqual(concreteHalf(ember, "dark"));
-    expect(after.accent).toBe("plum");
-    expect(after.fontSize).toBe(17);
-    expect(after.id).toBe(before.id);
-  });
-
-  test("an orb loads exactly one half", () => {
-    const ember = BUILT_IN_THEMES.find((theme) => theme.id === "ember")!;
-    const after = loadThemeHalfIntoDraft(draft(), "dark", ember);
-    expect(after.theme.dark).toEqual(concreteHalf(ember, "dark"));
-    expect(after.theme.light).toEqual(TELAR_LIGHT);
-    expect(after.label).toBe("Working draft");
-  });
-});
-
-describe("persistence", () => {
+describe("the chat transcripts survive navigation", () => {
   // The persistence block reads window.localStorage; the test provides one —
   // installed for THIS block only and torn down after, because a leaked global
   // `window` flips environment checks in every test file that runs later.
@@ -289,22 +198,6 @@ describe("persistence", () => {
     const host = globalThis as { window?: unknown };
     if (hadWindow) host.window = previousWindow;
     else delete host.window;
-  });
-
-  test("the draft round-trips with its id, and clearing removes the key", () => {
-    const kept = draft({ id: "look-persist", label: "Kept" });
-    writeStudioDraft(kept);
-    expect(readStudioDraft()).toEqual(kept);
-    writeStudioDraft(undefined);
-    expect(store.has(STUDIO_DRAFT_KEY)).toBe(false);
-    expect(readStudioDraft()).toBeUndefined();
-  });
-
-  test("garbage in storage degrades to no draft", () => {
-    store.set(STUDIO_DRAFT_KEY, "{not json");
-    expect(readStudioDraft()).toBeUndefined();
-    store.set(STUDIO_DRAFT_KEY, JSON.stringify({ id: "" }));
-    expect(readStudioDraft()).toBeUndefined();
   });
 
   test("a chat keeps only well-formed lines, and an empty list clears the key", () => {
@@ -368,7 +261,7 @@ describe("the chat's merge (three-way)", () => {
   test("only tokens the model moved land; the rest keep the current draft's values", () => {
     const snapshot = hexDraft();
     // The reader hand-edited the border while the model was thinking.
-    const current = patchDraftToken(snapshot, "light", "border", "#123456");
+    const current = { ...snapshot, theme: { ...snapshot.theme, light: { ...snapshot.theme.light, border: "#123456" } } };
     const after = mergeDesignIntoDraft(current, snapshot, echo({ light: { background: "#fdfaf6" } }));
 
     expect(after.theme.light.background).toBe("#fdfaf6"); // the model's change
@@ -379,7 +272,7 @@ describe("the chat's merge (three-way)", () => {
 
   test("an echoed label keeps the reader's title; a changed one lands", () => {
     const snapshot = hexDraft();
-    const renamed = setDraftLabel(snapshot, "My Deep Sea");
+    const renamed = { ...snapshot, label: "My Deep Sea" };
     expect(mergeDesignIntoDraft(renamed, snapshot, echo()).label).toBe("My Deep Sea");
     expect(mergeDesignIntoDraft(renamed, snapshot, echo({ label: "Cedar Dusk" })).label).toBe("Cedar Dusk");
   });
@@ -387,14 +280,14 @@ describe("the chat's merge (three-way)", () => {
   test("an accent lands only when it differs from what the model was shown", () => {
     const snapshot = hexDraft();
     // The reader picked plum mid-flight; the model echoed the snapshot's indigo.
-    const current = patchDraftAccent(snapshot, "plum");
+    const current: StudioDraft = { ...snapshot, accent: "plum" };
     expect(mergeDesignIntoDraft(current, snapshot, { ...echo(), accent: "indigo" }).accent).toBe("plum");
     expect(mergeDesignIntoDraft(current, snapshot, { ...echo(), accent: "amber" }).accent).toBe("amber");
   });
 
   test("type lands when offered and stays put when not", () => {
     const snapshot = hexDraft();
-    const before = patchDraftType(snapshot, { fontSans: "inter", fontSize: 16 });
+    const before: StudioDraft = { ...snapshot, fontSans: "inter", fontSize: 16 };
     const kept = mergeDesignIntoDraft(before, snapshot, echo());
     expect(kept.fontSans).toBe("inter");
     expect(kept.fontSize).toBe(16);
@@ -415,7 +308,7 @@ describe("the chat's merge (three-way)", () => {
   });
 
   test("keeping a backdrop keeps it; removing one clears it", () => {
-    const withScene = replaceDraftBackdrop(hexDraft(), scenePresetBackdrop(PRESET_ID, 100)!);
+    const withScene = { ...hexDraft(), backdrop: scenePresetBackdrop(PRESET_ID, 100)! };
     expect(mergeDesignIntoDraft(withScene, withScene, echo()).backdrop).toEqual(withScene.backdrop);
     expect(mergeDesignIntoDraft(withScene, withScene, { ...echo(), removeBackdrop: true }).backdrop).toEqual({ kind: "none" });
   });
@@ -430,7 +323,7 @@ describe("the chat's merge (three-way)", () => {
 
 describe("the chat's prompt", () => {
   test("the draft is serialised as hex, both halves, with its name and accent", () => {
-    const described = describeDraft(patchDraftAccent(draft({ label: "Cedar" }), "moss"));
+    const described = describeDraft(draft({ label: "Cedar", accent: "moss" }));
     expect(described).toContain("Name: Cedar");
     expect(described).toContain("Accent: moss");
     expect(described).toContain("Light half:");
@@ -442,7 +335,7 @@ describe("the chat's prompt", () => {
   });
 
   test("an image backdrop is described rather than dumped as base64", () => {
-    const described = describeDraft(replaceDraftBackdrop(draft(), { kind: "image", fit: "cover", blur: 0, dim: 0, image: DATA_URL }));
+    const described = describeDraft(draft({ backdrop: { kind: "image", fit: "cover", blur: 0, dim: 0, image: DATA_URL } }));
     expect(described).not.toContain(DATA_URL);
     expect(described).toContain("photograph");
   });

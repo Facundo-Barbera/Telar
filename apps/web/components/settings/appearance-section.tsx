@@ -1,115 +1,81 @@
 "use client";
 
 /**
- * APPEARANCE — one write model, and the app is the preview.
+ * APPEARANCE — every control writes what it names, at once.
  *
- * The previous studio interleaved two kinds of control: LIVE ones (the theme
- * library, the backdrop composer, wearing a Look) that retinted the app the
- * moment you touched them, and DRAFT ones (the colour rows, the chat, the
- * type) that painted a mock stage and waited on Apply. Two colour editors,
- * three copies of the preset grid and three Strength sliders later, the split
- * was the pane's whole difficulty. So now there is ONE RULE:
+ * THE ONE RULE, AND IT IS THE SHORT ONE NOW (#471):
  *
- *   EVERYTHING ON THIS PANE EDITS THE DRAFT. The only things that write the
- *   live stores are Apply, the colour scheme, and the desktop window group —
- *   the scheme because it is which half you are LOOKING AT rather than part
- *   of a look, the window group because it is a property of the machine.
+ *   TOUCH A CONTROL AND THE APP CHANGES. There is no draft, no Apply, no
+ *   Discard, no undo stack and no masthead. A theme pick is `setHalf`; a token
+ *   is `editActiveHalf`; an accent, a typeface, a size, the depth and the
+ *   show-through are `setAppearance`; a backdrop is `wearBackdrop`. Every one
+ *   of them is the same kind of write Translucency and Glass have always done
+ *   on this pane, and the same kind every other settings pane in this app does.
  *
- * AND THE APP IS THE PREVIEW. While a draft exists it is painted onto the
- * document itself (lib/studio-preview.ts) — hover states, text size, blur and
- * all sixteen tokens, judged on the real thing. Discard replays the stores and
- * the app snaps back. Nothing persists until Apply, so trying four ugly ideas
- * still costs nothing; you just get to SEE them properly now.
+ * WHAT THE DRAFT COST. The pane held a whole `Look` nobody was wearing, painted
+ * it onto the document to simulate wearing it, wrote it through to storage so
+ * it survived navigation, kept a coalescing undo history of it, and gated the
+ * one button that made it true. That machinery existed to answer a question the
+ * settings grammar does not ask anywhere else — "is this saved?" — and it
+ * answered it with a sticky bar of state chips above five groups of controls.
+ * Removing it removed the question.
  *
- * SOURCES LOAD INTO THE DRAFT. A theme card, a Look card, an import — clicking
- * one used to write the live stores; now it loads the palette (or the whole
- * look) into the draft, previewed instantly. That kills the old dead end where
- * the studio could only ever start from whatever was already live.
+ * SO WHAT HAPPENED TO THE THINGS THE MASTHEAD CARRIED?
  *
- * APPLY WEARS; SAVE SHELVES. Apply is `applyLook` and nothing else — it no
- * longer mints a shelf card per press. "Save look" is the explicit act, and
- * because a draft opened from a Look keeps its id, saving updates that card in
- * place instead of duplicating it.
+ *   The NAME FIELD named a draft. A card on the shelf is what has a name now,
+ *   and it is renamed on its own row.
+ *   SAVE LOOK moved into the Looks group, as a plain button beside the shelf it
+ *   adds to (looks-section.tsx). It photographs the live stores, which is what
+ *   saving means when there is nothing pending.
+ *   The COLOUR SCHEME moved into Window, where it belongs: which half this
+ *   window wears is a fact about the window, not part of a look. It is also the
+ *   half every colour control on this pane edits — the palette rows, the
+ *   gradient editor and the theme orbs all follow it, because a theme has two
+ *   halves precisely so the answer can differ.
+ *   UNDO is gone with the history. Nothing here destroys anything that is not
+ *   one click from being put back: the shelf keeps whole looks, the library
+ *   keeps whole palettes, and both are one click from being worn again.
  *
- * THE DRAFT SURVIVES NAVIGATION (written through to storage, restored on
- * mount) and EVERY EDIT IS UNDOABLE — a bounded history whose entries coalesce
- * while a slider is being dragged.
- *
- * THE PANE READS TOP TO BOTTOM AS THE WORK ITSELF: start from something (the
- * Looks shelf, which is never empty), change it, keep it (Apply or Save, in the
- * masthead).
- *
- * AND IT IS A SETTINGS PANE, NOT A STUDIO WITH TABS (#399). The four tools used
- * to be a `Tabs` strip over `Panel` boxes — the ONE pane in this app built that
- * way. Everything else here is stacked `SettingsGroup` cards with a title and a
- * sentence (inbox-section.tsx, browser-profiles-section.tsx), and the tabs cost
- * three things worth more than the vertical space they saved:
- *
- *   - THREE QUARTERS OF THE PANE WAS INVISIBLE. Somebody looking for the accent
- *     had to guess which of four words hid it, and a wrong guess looked like the
- *     setting was missing. Stacked groups answer "what can I change here?" by
- *     being on the page.
- *   - SETTINGS SEARCH COULD NOT LAND. A row behind a tab is a row that exists
- *     only after a click, so the registry's three Window rows carried a caveat
- *     saying the anchor was "one tab away" (settings-registry.ts). They are
- *     ordinary anchored rows now.
- *   - IT TAUGHT THE WRONG GRAMMAR. A reader who learns that panes have tabs
- *     goes looking for them on every other pane, where there are none.
+ * AND IT IS A SETTINGS PANE, NOT A STUDIO (#399). Stacked `SettingsGroup` cards
+ * with a title and a sentence, exactly like inbox-section.tsx and
+ * browser-profiles-section.tsx, in the order the work reads: start from
+ * something whole, then its colour, then its scene, then its type — and last
+ * the window itself, which is the only group that is not part of a look at all.
  *
  * WHO DRAWS WHICH GROUP. Looks and Backdrop own their own `SettingsGroup`, the
  * way every self-contained section on this shell does — their group action (the
- * import button, the scene picker) is theirs, and lifting it here would mean
- * lifting a file input's ref with it. Colour is composed HERE because it is two
- * components in one group (the palette editor and the library it comes from),
- * and Type and Window are plain groups of rows.
+ * Save and import buttons, the scene picker) is theirs, and lifting it here
+ * would mean lifting a file input's ref with it. Colour is composed HERE
+ * because it is two components in one group (the palette rows and the library
+ * they come from), and Type and Window are plain groups of rows.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Undo2Icon } from "lucide-react";
-import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { detachFromHost } from "@/lib/host-follow";
 import {
   applyLook,
-  LOOKS_FULL_MESSAGE,
-  LOOKS_QUOTA_MESSAGE,
-  lookThemeId,
-  newLookId,
-  upsertLook,
-  useLooks,
+  currentLookBackdrop,
+  wearBackdrop,
   readLooks as readLooksNow,
   writeLooks,
   type Look,
+  type LookBackdrop,
 } from "@/lib/looks";
-import {
-  draftFromLook,
-  loadThemeHalfIntoDraft,
-  loadThemeIntoDraft,
-  newDraftFromCurrent,
-  patchDraftHalf,
-  patchDraftStrength,
-  readStudioDraft,
-  replaceDraftBackdrop,
-  setDraftLabel,
-  writeStudioDraft,
-  type StudioDraft,
-  type StudioMode,
-} from "@/lib/studio-draft";
-import { isStarterLook } from "@/lib/starter-looks";
+import { useBackdrop } from "@/lib/backdrop";
+import type { StudioMode } from "@/lib/studio-draft";
 import { mergeById, readAppearanceHome } from "@/lib/appearance-home";
-import { clearPreview, previewLook } from "@/lib/studio-preview";
-import { matchThemeHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
+import { concreteHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition, type ThemeToken } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
 import { useTheme } from "@/components/theme-provider";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { BackdropTool } from "./studio/backdrop-tool";
 import { GroupStrip } from "./studio/tool-strip";
-import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
+import { ColourTool, ShowThroughRow, TypeTool } from "./studio/tools";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
 // external fact, present before React ran, and it never changes.
@@ -117,49 +83,31 @@ const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
-/** How long a gap between edits starts a NEW undo step. Inside it, edits
- *  coalesce — a colour-picker drag is one step, not ninety. */
-const UNDO_COALESCE_MS = 800;
-const MAX_UNDO = 50;
-
-/** How long after the last edit the draft is written through to storage. */
-const PERSIST_DEBOUNCE_MS = 400;
+/** Nothing under the app, for the one render that happens before the stores can
+ *  be read — the backdrop's payloads live in localStorage. */
+const NO_BACKDROP: LookBackdrop = { kind: "none" };
 
 export function AppearanceSection() {
   const { appearance, setAppearance } = useAppearance();
-  const { activeId, themes, saveCustom, setActive } = useThemeLibrary();
-  const looks = useLooks();
+  const themeLibrary = useThemeLibrary();
+  const { active, themes, setActive, setHalf, addCustom, editActiveHalf, saveCustom } = themeLibrary;
+  const { backdrop } = useBackdrop();
 
   const hasBridge = useSyncExternalStore(subscribeToNothing, bridgeIsPresent, noBridgeOnTheServer);
   // `supported` has to be ASKED (macOS or not), so the row waits for the
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
-
-  /** Undefined means "nothing drafted" — the pane shows the live truth. */
-  const [draft, setDraft] = useState<StudioDraft>();
   const [notice, setNotice] = useState<string>();
 
-  /** The undo stack. Each entry is the draft BEFORE an edit step; undefined
-   *  marks the clean state before the first fork. `undoDepth` mirrors its
-   *  length as state, because render must not read a ref. */
-  const history = useRef<Array<StudioDraft | undefined>>([]);
-  const [undoDepth, setUndoDepth] = useState(0);
-  const lastEditAt = useRef(0);
-
   const mounted = useSyncExternalStore(subscribeToNothing, () => true, () => false);
+
   /**
    * WHICH HALF YOU ARE LOOKING AT — and therefore editing.
    *
-   * This used to be a second, preview-only Light/Dark that sat in the masthead
-   * looking exactly like a colour-scheme switch while the real one hid in a
-   * tab called Window. Two controls, one of them a decoy, and the setting
-   * everybody actually reaches for was the one you could not find.
-   *
-   * So the scheme IS the half selector now. It reads from the theme store
-   * (which resolves `system` against the OS and notifies on change), which
-   * also means the answer stays right when evening arrives — the old sticky
-   * `pickedMode` existed to stop that, and a pane whose whole claim is "the
-   * app is the preview" should not be showing you a half your window is not
+   * The scheme IS the half selector. It reads from the theme store (which
+   * resolves `system` against the OS and notifies on change), so the answer
+   * stays right when evening arrives — and a pane whose whole claim is that the
+   * app is the preview must not be showing you a half your window is not
    * wearing.
    */
   const { theme } = useTheme();
@@ -232,204 +180,79 @@ export function AppearanceSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A draft left behind by the last visit — same id, same shelf card, same
-  // conversation. Restored once on mount; a one-shot setState here cannot
-  // cascade, and reading storage during render would break hydration.
-  useEffect(() => {
-    const kept = readStudioDraft();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (kept) setDraft(kept);
-  }, []);
-
-  // THE PREVIEW: the draft on the document, in the picked half; taken off when
-  // the draft goes, and when the pane unmounts (the draft itself survives in
-  // storage — only the paint is removed).
-  useEffect(() => {
-    if (draft) previewLook(draft);
-    else clearPreview();
-  }, [draft]);
-  useEffect(() => () => clearPreview(), []);
-
-  // Write-through, debounced: a slider drag is one write, not ninety.
-  useEffect(() => {
-    if (draft === undefined) return;
-    const timer = window.setTimeout(() => writeStudioDraft(draft), PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [draft]);
-
-  /** The live look, re-photographed whenever any store behind it moves. When
-   *  the worn theme came from a Look, the capture keeps that Look's id, so
-   *  "Save look" updates the card you are wearing rather than duplicating it. */
-  const live = useMemo(
-    () => {
-      if (!mounted) return undefined;
-      const worn = activeId ? themes.find((theme) => theme.id === activeId) : undefined;
-      const captured = newDraftFromCurrent(worn?.label ?? "Mixed look");
-      if (activeId?.startsWith("look-")) {
-        const lookId = activeId.slice("look-".length);
-        if (looks.some((look) => look.id === lookId)) return { ...captured, id: lookId };
-      }
-      return captured;
-    },
-    // The snapshots ARE the dependency even though the capture reads storage:
-    // each is a stable identity from its own store and changes exactly when
-    // that store is written. The rule can only see that they are unread.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mounted, appearance, activeId, themes, looks],
-  );
-
-  const current = draft ?? live;
-  const dirty = draft !== undefined;
-
-  /** WHAT THE PALETTE IN FRONT OF YOU ACTUALLY IS. Each half is matched back
-   *  against the library, so the pane can name the theme being edited instead
-   *  of leaving the sixteen rows anonymous — and so the grid's rings can mark
-   *  the theme you have OPEN rather than the one you are wearing. Undefined
-   *  means the half matches nothing, which is the whole signal for "this is
-   *  new work". */
-  const holding = useMemo(
-    () => ({
-      light: current ? matchThemeHalf(current.theme.light, themes, "light")?.id : undefined,
-      dark: current ? matchThemeHalf(current.theme.dark, themes, "dark")?.id : undefined,
-    }),
-    [current, themes],
-  );
-
-  /** WHAT APPLY WILL DO TO THE LIBRARY, said before you press it.
+  /**
+   * THE BACKDROP, COLLAPSED INTO THE ONE SHAPE ITS EDITORS SPEAK.
    *
-   *  Apply installs the draft's halves as a real theme keyed by the LOOK's id
-   *  (applyLook), which means it either mints one or overwrites the one a
-   *  previous Apply of this same draft made. Nothing said which — so editing a
-   *  built-in and applying quietly produced a second theme under the same
-   *  name, and the only way to find out was to look at the grid afterwards. */
-  const applyEffect = useMemo(() => {
-    if (!current) return undefined;
-    const id = lookThemeId(current);
-    return themes.some((theme) => theme.id === id) ? { verb: "Updates", label: current.label } : { verb: "New theme", label: current.label };
-  }, [current, themes]);
-
-  /** The palette's provenance in one phrase, for the panel header: one theme,
-   *  a pair mixed from two, or hand-edited work that is not yet a theme. */
-  const paletteSource = useMemo(() => {
-    const name = (id: string | undefined) => themes.find((theme) => theme.id === id)?.label;
-    const lightName = name(holding.light);
-    const darkName = name(holding.dark);
-    const shown = mode === "light" ? lightName : darkName;
-    if (shown) return shown;
-    return lightName || darkName ? "Edited" : "Not a saved theme";
-  }, [holding, themes, mode]);
-
-  /** Every draft write funnels here: history, then state. */
-  const edit = useCallback(
-    (next: StudioDraft) => {
-      setNotice(undefined);
-      const now = Date.now();
-      if (now - lastEditAt.current > UNDO_COALESCE_MS) {
-        history.current.push(draft);
-        if (history.current.length > MAX_UNDO) history.current.shift();
-        setUndoDepth(history.current.length);
-      }
-      lastEditAt.current = now;
-      setDraft(next);
-    },
-    [draft],
+   * The live backdrop is four storage keys (the choice, the resolved layers, an
+   * image, a scene); a `LookBackdrop` is all of them in one self-contained
+   * value, which is what the editors take and hand back. Re-read whenever the
+   * choice moves — `backdrop` is the store's own snapshot and changes exactly
+   * when something wrote it, including a Look worn from its card.
+   */
+  const backdropValue = useMemo(
+    () => (mounted ? currentLookBackdrop() : NO_BACKDROP),
+    // The snapshot IS the dependency even though the capture reads storage: it
+    // is a stable identity from its own store. The rule can only see it unread.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mounted, backdrop],
   );
 
-  const undo = useCallback(() => {
-    if (history.current.length === 0) return;
-    const previous = history.current.pop();
-    setUndoDepth(history.current.length);
-    lastEditAt.current = 0;
-    setDraft(previous);
-    if (previous === undefined) writeStudioDraft(undefined);
-  }, []);
+  /** The palette this window has on, on the half in front of you — concrete,
+   *  because the identity theme's halves are deliberately empty. */
+  const half = useMemo(() => {
+    const worn = themes.find((entry) => entry.id === active[mode]) ?? themes[0]!;
+    return concreteHalf(worn, mode);
+  }, [themes, active, mode]);
 
-  // Cmd/Ctrl+Z undoes a draft step — unless focus is in a text field, whose
-  // own undo must keep working.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "z" || event.shiftKey) return;
-      const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
-      event.preventDefault();
-      undo();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [undo]);
-
-  const discard = () => {
-    history.current = [];
-    setUndoDepth(0);
-    setDraft(undefined);
-    writeStudioDraft(undefined);
-    setNotice(undefined);
-  };
-
-  /** Wear the draft: every store written through applyLook, nothing shelved.
-   *  The preview effect clears itself once the draft goes, replaying the
-   *  stores — which now hold exactly what the preview was showing. */
-  const apply = () => {
-    if (!draft) return;
-    // A person choosing a look is the moment a remote window stops
-    // following the host's (lib/host-follow.ts). Every wear path says so.
-    detachFromHost();
-    const worn = applyLook(draft, { saveCustom, setActive, themes }, setAppearance);
-    history.current = [];
-    setUndoDepth(0);
-    setDraft(undefined);
-    writeStudioDraft(undefined);
-    setNotice(worn);
-  };
-
-  /** Shelve the draft (or, with nothing drafted, the live look). Same id →
-   *  same card: editing a saved Look updates it in place. */
-  const saveLook = () => {
-    // A starter is a recipe, not a card: shelving one mints a real id so it
-    // becomes yours, rather than writing a card under an id this build's
-    // table also claims.
-    const look = current && isStarterLook(current) ? { ...current, id: newLookId() } : current;
-    if (!look) return;
-    const next = upsertLook(looks, look);
-    if (next === undefined) {
-      setNotice(LOOKS_FULL_MESSAGE);
-      return;
-    }
-    setNotice(writeLooks(next) ? undefined : LOOKS_QUOTA_MESSAGE);
-  };
-
-  const openLook = (look: Look) => edit(draftFromLook(look));
+  /** The name of the palette on each half, for the strip — one theme, or a
+   *  pair mixed from two. */
+  const paletteSource = themes.find((entry) => entry.id === active[mode])?.label ?? "Telar";
 
   /**
-   * WEAR IT NOW — the same `applyLook` the masthead's Apply calls, reached from
-   * the card. It is a shortcut, not a second write model: there is still one
-   * function that puts an appearance on.
-   *
-   * WHATEVER WAS BEING EDITED GOES ONTO THE UNDO STACK first. A one-gesture
-   * shortcut must not be a one-gesture way to lose an hour of work, so ⌘Z
-   * brings the draft back, previewed, exactly as it was.
+   * WEAR A WHOLE LOOK — the palette, the scene, the accent, the type and the
+   * depth, in one write. This is the only thing on the pane that moves more
+   * than one axis, which is exactly what a Look is.
    */
-  const wear = useCallback(
-    (look: Look) => {
-      history.current.push(draft);
-      if (history.current.length > MAX_UNDO) history.current.shift();
-      setUndoDepth(history.current.length);
-      lastEditAt.current = 0;
-      detachFromHost();
-      const worn = applyLook(look, { saveCustom, setActive, themes }, setAppearance);
-      setDraft(undefined);
-      writeStudioDraft(undefined);
-      setNotice(worn);
-    },
-    [draft, saveCustom, setActive, setAppearance, themes],
-  );
+  const wear = (look: Look) => {
+    // A person choosing a look is the moment a remote window stops following
+    // the host's (lib/host-follow.ts). Every wear path says so.
+    detachFromHost();
+    setNotice(applyLook(look, themeLibrary, setAppearance));
+  };
 
-  /** A palette worn over the look you already have on — everything else about
-   *  the look is left alone, which is what makes a theme a component rather
-   *  than a whole appearance. */
-  const wearTheme = (theme: ThemeDefinition) => current && wear(loadThemeIntoDraft(current, theme));
-  const pickTheme = (theme: ThemeDefinition) => current && edit(loadThemeIntoDraft(current, theme));
-  const pickThemeHalf = (half: StudioMode, theme: ThemeDefinition) => current && edit(loadThemeHalfIntoDraft(current, half, theme));
+  const wearScene = (next: LookBackdrop) => {
+    detachFromHost();
+    setNotice(wearBackdrop(next));
+  };
+
+  const wearTheme = (next: ThemeDefinition) => {
+    detachFromHost();
+    setActive(next.id);
+  };
+
+  const wearThemeHalf = (side: StudioMode, next: ThemeDefinition) => {
+    detachFromHost();
+    setHalf(side, next.id);
+  };
+
+  /** A palette read out of a picture: into the library, then worn. No third
+   *  road to a colour — a theme is where a palette lives (#471). */
+  const wearImagePalette = (built: Omit<ThemeDefinition, "id">) => {
+    detachFromHost();
+    setActive(addCustom(built).id);
+  };
+
+  const editToken = (token: ThemeToken, value: string) => {
+    detachFromHost();
+    editActiveHalf(mode, { [token]: value });
+  };
+
+  /** Replace the other half with a copy of the one in front of you. */
+  const copyHalf = () => {
+    detachFromHost();
+    const other: StudioMode = mode === "light" ? "dark" : "light";
+    editActiveHalf(other, Object.fromEntries(THEME_TOKENS.map((token) => [token, half[token]])));
+  };
 
   const setTranslucent = (next: boolean) => {
     setAppearance({ translucent: next });
@@ -443,144 +266,59 @@ export function AppearanceSection() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* THE MASTHEAD — what you are editing, and what can be done with it.
-          A quiet title that finds its border under the cursor, the state as a
-          mono chip, actions on the right: a session's header, for a look.
-
-          AND IT STICKS (#399). It was the first thing in a short pane and
-          scrolled away with everything else; the pane is five stacked groups
-          now, so Apply and Discard were several screens above the slider that
-          had just been dragged — "is this saved?" with no answer in sight. It
-          rides the top of the scroller instead, which is where the state chip
-          belongs anyway: it is a fact about the whole pane, not about its
-          first group.
-
-          THE NEGATIVE MARGINS ARE THE SHELL'S OWN INSET, given back. The
-          content column pads `px-5 py-5` (settings-shell.tsx), and a strip
-          that stopped 20px short of each edge would let the groups slide
-          through the gap beside it. `bg-background md:bg-sidebar` is the
-          content island's own ground, so the strip is opaque against what
-          passes under it in both layouts. */}
-      <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-4 flex flex-wrap items-center gap-2 border-b border-border bg-background px-5 pt-5 pb-3 md:bg-sidebar">
-        <Input
-          className="h-8 max-w-64 flex-1 border-transparent bg-transparent font-heading text-base font-semibold tracking-tight shadow-none hover:border-border focus:border-border dark:bg-transparent"
-          value={current?.label ?? ""}
-          placeholder="Name this look"
-          aria-label="Look name"
-          disabled={!current}
-          onChange={(event) => current && edit(setDraftLabel(current, event.target.value))}
-        />
-        {dirty ? (
-          <span className="flex min-w-0 shrink items-center gap-2 font-mono text-3xs tracking-[0.08em] uppercase">
-            <span className="flex shrink-0 items-center gap-1.5 text-warning">
-              <span className="size-1.5 rounded-full bg-warning" />
-              Previewing
-            </span>
-            {applyEffect && (
-              <span
-                className="min-w-0 truncate text-muted-foreground"
-                title={`Apply installs these colours as a library theme — ${applyEffect.verb === "New theme" ? "a new one" : "replacing the one this draft made before"}, called “${applyEffect.label}”. Rename it on the left first if you want to keep the original.`}
-              >
-                · {applyEffect.verb} · {applyEffect.label}
-              </span>
-            )}
-          </span>
-        ) : (
-          <span className="shrink-0 font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          <ThemeControl />
-          {/* UNDO OUTLIVES THE DRAFT. Wearing a look from its card clears the
-              draft, and gating this button on `dirty` made the one gesture
-              that can discard work also hide the way back to it. It shows
-              whenever there is history, which is exactly when it can act. */}
-          {undoDepth > 0 && (
-            <Button size="sm" variant="ghost" title="Undo the last edit (⌘Z)" onClick={undo}>
-              <Undo2Icon /> Undo
-            </Button>
-          )}
-          {dirty && (
-            <Button size="sm" variant="ghost" onClick={discard}>
-              Discard
-            </Button>
-          )}
-          <Button size="sm" variant="outline" onClick={saveLook}>
-            Save look
-          </Button>
-          {dirty && (
-            <Button size="sm" onClick={apply}>
-              Apply
-            </Button>
-          )}
-        </div>
-      </div>
-
       {notice && <p className="mb-3 text-xs text-warning">{notice}</p>}
       {homeNotice && <p className="mb-3 text-xs text-warning">{homeNotice}</p>}
 
-      {/* THE GROUPS, IN READING ORDER: start from something, change its colour,
-          then its scene, then its type — and last the window itself, which is
-          the only group that is not part of a look at all. `SettingsGroup` puts
-          its own gap between them. */}
-      <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
+      <LooksSection onWear={wear} />
 
-      {current && (
-        <SettingsGroup
-          title="Colour"
-          description="The sixteen tokens this look paints with, and the library a palette comes from."
-        >
-          {/* The strip NAMES the palette. Sixteen anonymous colour rows could
-              not say whether you were editing Ember, a mix of two themes, or
-              something that exists nowhere but this draft. */}
-          <GroupStrip
-            label={`Palette · ${mode} · ${paletteSource}`}
-            count={THEME_TOKENS.length}
-            tone={holding[mode] ? "none" : "attention"}
+      <SettingsGroup
+        title="Colour"
+        description="The sixteen tokens this window paints with, and the library a palette comes from."
+      >
+        {/* The strip NAMES the palette. Sixteen anonymous colour rows could not
+            say whether you were editing Ember or something that exists nowhere
+            but this window. */}
+        <GroupStrip label={`Palette · ${mode} · ${paletteSource}`} count={THEME_TOKENS.length} />
+        <ColourTool half={half} mode={mode} onToken={editToken} onCopyHalf={copyHalf} />
+        <ThemeLibrary onWear={wearTheme} onWearHalf={wearThemeHalf} />
+      </SettingsGroup>
+
+      <BackdropTool
+        value={backdropValue}
+        mode={mode}
+        onChange={wearScene}
+        onThemeHalves={wearImagePalette}
+        footer={
+          <ShowThroughRow
+            anchor="settings-row-appearance-backdrop-show-through"
+            level={appearance.translucencyLevel}
+            onChange={(translucencyLevel) => setAppearance({ translucencyLevel })}
           />
-          <ColourTool draft={current} onDraft={edit} mode={mode} />
-          {/* The library is where a palette comes FROM: a card loads both
-              halves into the draft; an orb loads one. */}
-          <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
-        </SettingsGroup>
-      )}
+        }
+      />
 
-      {current && (
-        <BackdropTool
-          value={current.backdrop}
-          mode={mode}
-          onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
-          // A palette taken from the picture lands on the draft's two halves
-          // like any other edit — undoable, and never a new library entry.
-          // Only the halves: the look keeps the name it was given, because
-          // naming it was a separate decision.
-          onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
-          footer={<ShowThroughTool draft={current} onDraft={edit} />}
-        />
-      )}
+      <SettingsGroup title="Type" description="The accent, the two typefaces, and the sizes they run at.">
+        <TypeTool appearance={appearance} onChange={setAppearance} />
+      </SettingsGroup>
 
-      {current && (
-        <SettingsGroup title="Type" description="The accent, the two typefaces, and the sizes they run at.">
-          <TypeTool draft={current} onDraft={edit} />
-        </SettingsGroup>
-      )}
-
-      {/* THE WINDOW IS NOT A LOOK, so it is last and it says so. It lived under
-          "Type" for no reason anyone could reconstruct, which is the kind of
-          filing that teaches a reader the grouping is arbitrary. None of it
+      {/* THE WINDOW IS NOT A LOOK, so it is last and it says so. None of it
           travels in a Look: the scheme is which half THIS window wears, and
           translucency is a property of the machine — macOS only, stored by the
           shell, and turning it on rebuilds the window.
 
           HOW MUCH SHOWS THROUGH IS HERE TOO, though it is the one member of
           this group that DOES travel in a Look — it also lives with the
-          backdrop it thins. That is not the old duplication: what made two
-          sliders a bug was that they wrote DIFFERENT stores, and the live one
-          silently lost to the draft's copy during a preview. One value, two
-          honest homes. */}
+          backdrop it thins. One value, two honest homes; the anchor is this
+          one's, and the backdrop's copy is stamped by hand. */}
       <SettingsGroup
         title="Window"
         description="How this window itself is drawn. None of it travels in a look — it belongs to this machine."
       >
+        <Row
+          label="Colour scheme"
+          hint="Which half this window wears — and the half every colour control above edits."
+          control={<ThemeControl />}
+        />
         {hasBridge && windowSupported ? (
           <>
             <ToggleRow
@@ -608,30 +346,10 @@ export function AppearanceSection() {
         ) : (
           <p className="py-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
         )}
-        {current && (
-          <Row
-            label="Show-through"
-            hint="The desktop behind a translucent window, and the backdrop under the app."
-            control={
-              <div className="flex items-center gap-2.5">
-                <input
-                  type="range"
-                  min={MIN_TRANSLUCENCY}
-                  max={MAX_TRANSLUCENCY}
-                  step={5}
-                  value={current.translucencyLevel}
-                  aria-label="Show-through"
-                  className="w-36 accent-primary"
-                  onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
-                />
-                <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
-              </div>
-            }
-          />
-        )}
+        <ShowThroughRow level={appearance.translucencyLevel} onChange={(translucencyLevel) => setAppearance({ translucencyLevel })} />
         {/* DEPTH (#397): a property of this window's drawing, like everything
             else in this group; the control itself lives in depth-control.tsx. */}
-        {current && <DepthControl draft={current} onDraft={edit} />}
+        <DepthControl value={appearance.depth} onChange={(depth) => setAppearance({ depth })} />
       </SettingsGroup>
     </div>
   );

@@ -7,23 +7,18 @@
  * the translucency strength, captured together (lib/looks.ts states what is in
  * the bundle and why the desktop translucency TOGGLE is not).
  *
- * TWO GESTURES, TWO MEANINGS. Clicking a card SELECTS it — loaded into the
- * editor, previewed on the real app, nothing persisted. Hovering reveals WEAR,
- * which puts it on outright. The shelf used to offer only the first, so the
- * cheapest thing anyone wants to do here — "just put that one on" — cost a
- * click, a scan for the Apply button, and a second click. Wear keeps the pane's
- * one rule intact: it is Apply, reached from the card instead of the masthead.
+ * ONE GESTURE, ONE MEANING (#471). Clicking a card WEARS the look. It used to
+ * SELECT one — loaded into a draft, previewed, worn only on Apply — with Wear
+ * hidden behind a hover as the shortcut past all that. There is no draft, so
+ * there is nothing for a second gesture to mean: the cheapest thing anyone
+ * wants to do here is "put that one on", and it is now the only thing a click
+ * does. Import goes the same way: the file becomes a card and is worn.
  *
- * OPENING A LOOK IS A DRAFT EDIT, like everything else on the pane now:
- * clicking a card loads the whole Look into the studio draft, which the
- * preview paints on the app instantly — it LOOKS worn, but nothing persists
- * until Apply. The id rides along, so Save updates this card rather than
- * copying it. Import goes the same way: the file becomes a card and opens as
- * the draft, previewed rather than auto-worn.
- *
- * Saving lives in the pane header ("Save look") — one save path, fed by the
- * draft, instead of the old second button here that captured the live stores
- * behind the draft's back.
+ * SAVE LIVES HERE, on the group that holds the shelf. It photographs every
+ * appearance store as it stands (`captureLook`) and puts the result on the
+ * shelf — which is the whole of what saving means once nothing is pending. It
+ * was a masthead button fed by the draft; the draft is gone and the shelf is
+ * where a new card appears, so the button belongs beside it.
  *
  * THE SHELF IS NEVER EMPTY. Six STARTERS (lib/starter-looks.ts) stand after
  * whatever has been saved — built from the same themes and presets the pane
@@ -38,6 +33,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { useFollowHost } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
 import {
+  captureLook,
   lookFilename,
   lookThemeId,
   newLookId,
@@ -107,19 +103,14 @@ function LookStrip({ look }: { look: Look }) {
 function LookCard({
   look,
   active,
-  selected,
-  onOpen,
   onWear,
   onExport,
   onRemove,
 }: {
   look: Look;
-  /** Worn: the library is wearing the theme this Look installs. */
+  /** Worn: the window has this look on. */
   active: boolean;
-  /** Open in the editor: the draft in front of you came from this card. */
-  selected?: boolean;
-  onOpen: () => void;
-  /** Put it on now — Apply, without the trip to the masthead. */
+  /** Put it on. The card's only verb. */
   onWear: () => void;
   onExport?: () => void;
   onRemove?: () => void;
@@ -127,53 +118,32 @@ function LookCard({
   return (
     <div
       className={cn(
-        // A RANK, NOT A GRID: the shelf runs across the top of the editor,
-        // where it is a place to start from rather than a section to read.
-        // SELECTED AND WORN ARE DIFFERENT FACTS. Clicking a card loads it into
-        // the editor and previews it; wearing it is Apply. The shelf drew only
-        // one of those, so "the look I am working on" and "the look this window
-        // has on" were the same pixel — and after a click they disagree.
+        // A RANK, NOT A GRID: the shelf runs across the top of the pane, where
+        // it is a place to start from rather than a section to read.
         "group relative w-32 shrink-0 cursor-pointer rounded-lg p-1 ring-1 transition-colors",
-        selected ? "ring-2 ring-primary" : active ? "ring-2 ring-muted-foreground/40" : "ring-foreground/10 hover:bg-accent/50",
+        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
       )}
-      onClick={onOpen}
+      onClick={onWear}
       role="button"
-      title={`Open ${look.label}`}
-      aria-label={`Open ${look.label}`}
+      title={`Wear ${look.label}`}
+      aria-label={`Wear ${look.label}`}
       aria-pressed={active}
       tabIndex={0}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onOpen();
+          onWear();
         }
       }}
     >
       <LookThumb look={look} />
-      {/* WEAR sits ON the thumbnail, centred, revealed on hover: the card's
-          primary verb, where the eye already is. Export and delete stay in the
-          corner — they are about the file, not about wearing it. */}
-      {!active && (
-        <div className="pointer-events-none absolute inset-x-1 top-1 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" style={{ height: "calc(100% - 2.25rem)" }}>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="pointer-events-auto h-7 shadow-1"
-            title={`Wear ${look.label} now`}
-            onClick={(event) => (event.stopPropagation(), onWear())}
-          >
-            Wear
-          </Button>
-        </div>
-      )}
       <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
         <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
         {active && (
-          <span className="shrink-0 text-muted-foreground [&_svg]:size-3" title="Worn">
+          <span className="shrink-0 text-primary [&_svg]:size-3" title="Worn">
             <CheckIcon />
           </span>
         )}
-        {selected && <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-primary uppercase">Open</span>}
       </div>
       {(onExport || onRemove) && (
         <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -224,9 +194,9 @@ function LookCard({
  * once.
  *
  * DETACHED, THE ROW IS STILL A SOURCE. The published blob parses into a `Look`
- * — the same type a shelf card holds — so "Open" loads it into the draft like
- * an import or a card does: previewed on the real app, undoable, worn only on
- * Apply. Following, the look is already on; Open would preview what is worn.
+ * — the same type a shelf card holds — so "Wear" puts the host's look on like
+ * any card does, without resuming the follow. Following, the look is already
+ * on, so the button would do nothing and is not drawn.
  *
  * ONLY WHERE IT IS NOT A REFLECTION. The host publishes; showing the host its
  * own published look would be a card of what it is already wearing, and a
@@ -249,7 +219,7 @@ const HOST_LOOK_HINT: Record<"loading" | "empty" | "failed" | "invalid", string>
   invalid: "The host published something this build cannot read.",
 };
 
-function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
+function HostLookRow({ onWear }: { onWear: (look: Look) => void }) {
   const { mode, detach, follow } = useFollowHost();
   const following = mode === "follow";
   const [state, setState] = useState<HostLookState>({ status: "loading" });
@@ -317,8 +287,8 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
       control={
         <div className="flex items-center gap-2">
           {ready && !following && (
-            <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
-              Open
+            <Button size="sm" variant="outline" onClick={() => onWear(state.look)}>
+              Wear
             </Button>
           )}
           {!ready && (
@@ -357,11 +327,14 @@ const subscribeToNothing = () => () => {};
 const hostNow = () => isHostWindow();
 const hostOnTheServer = () => true;
 
-export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) => void; onWear: (look: Look) => void; openId?: string }) {
+export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
   const { activeId, active, themes } = useThemeLibrary();
+  /** What a fresh snapshot is called: the palette it was taken from, or the
+   *  honest "Mixed look" when the two halves disagree. */
+  const wornThemeLabel = themes.find((theme) => theme.id === activeId)?.label ?? "Mixed look";
   const { appearance } = useAppearance();
   const { backdrop } = useBackdrop();
   /**
@@ -419,8 +392,19 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
       setError(LOOKS_FULL_MESSAGE);
       return;
     }
-    // Shelved, then opened as the draft — previewed on the app, worn on Apply.
-    if (commit(next)) onOpen(look);
+    // Shelved, then worn: importing a look is asking to see it.
+    if (commit(next)) onWear(look);
+  };
+
+  /** A photograph of every appearance store, shelved. A fresh id every time —
+   *  Save means "keep this one too", never "overwrite the last one". */
+  const saveLook = () => {
+    const next = upsertLook(looks, captureLook(wornThemeLabel));
+    if (!next) {
+      setError(LOOKS_FULL_MESSAGE);
+      return;
+    }
+    commit(next);
   };
 
   return (
@@ -432,12 +416,17 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
     // a control that acts on the WHOLE group belongs.
     <SettingsGroup
       title="Looks"
-      description="Whole appearances — palette, scene, accent and type together. Click one to open it as a draft; hover to wear it outright."
+      description="Whole appearances — palette, scene, accent and type together. Click one to wear it."
       action={
         <div className="flex items-center gap-2">
           <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground/60 uppercase tabular-nums">
             {looks.length + STARTER_LOOKS.length}
           </span>
+          {/* SAVE IS A PLAIN BUTTON, and it acts on the whole group rather than
+              on any row in it — which is exactly what `action` is for. */}
+          <Button size="sm" variant="outline" title="Keep what the window is wearing as a card" onClick={saveLook}>
+            Save look
+          </Button>
           <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>
             <UploadIcon />
           </Button>
@@ -459,7 +448,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
         }}
       />
       {error && <p className="py-1.5 text-xs text-warning">{error}</p>}
-      {!isHost && <HostLookRow onOpen={onOpen} />}
+      {!isHost && <HostLookRow onWear={onWear} />}
       <div className="overflow-x-auto py-2">
         <div className="flex items-start gap-1.5">
           {looks.map((look) => (
@@ -467,28 +456,18 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
               key={look.id}
               look={look}
               active={worn(look)}
-              selected={openId === look.id}
-              onOpen={() => onOpen(look)}
               onWear={() => onWear(look)}
               onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
               onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
             />
           ))}
           {looks.length > 0 && <span className="mx-1 h-16 w-px shrink-0 self-center bg-border" />}
+          {/* A starter carries a STABLE id, so wearing Dusk twice updates the
+              one library theme it installs instead of breeding a second one
+              called Dusk. Save mints a fresh id, which is the moment a starter
+              stops being a recipe and becomes a card of your own. */}
           {STARTER_LOOKS.map((look) => (
-            <LookCard
-              key={look.id}
-              look={look}
-              active={worn(look)}
-              selected={openId === look.id}
-              onWear={() => onWear(look)}
-              // The starter's OWN id rides into the draft. It is stable, so
-              // opening Dusk twice and applying both updates one theme instead
-              // of breeding a second one called Dusk. The fresh id is minted at
-              // SAVE (appearance-section), which is the moment it stops being a
-              // starter and becomes a card of your own.
-              onOpen={() => onOpen(look)}
-            />
+            <LookCard key={look.id} look={look} active={worn(look)} onWear={() => onWear(look)} />
           ))}
         </div>
       </div>

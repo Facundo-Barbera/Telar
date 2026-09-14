@@ -1,39 +1,39 @@
 "use client";
 
 /**
- * THE BACKDROP TOOL — the whole scene editor, writing the DRAFT.
+ * THE BACKDROP TOOL — the whole scene editor, writing the backdrop store.
  *
- * This is the old settings-pane backdrop group (the four-way Scene control,
- * the preset gallery, the custom gradient editor, the image picker, the layer
- * composer) brought back with ONE thing changed everywhere: nothing writes a
- * store. Each editor is CONTROLLED — handed a `LookBackdrop`, handing a new
- * one back — and the pane folds that into the draft, which lib/studio-preview
- * paints on the real app. So the app behind this pane is still the preview it
- * always was; the difference is that Discard now takes it all back.
+ * The four-way Scene control, the preset gallery, the custom gradient editor,
+ * the image picker and the layer composer. Each editor is CONTROLLED — handed a
+ * `LookBackdrop`, handing a whole new one back — and the pane stores it at once
+ * (#471). The value in and the value out are the same shape they were when this
+ * tool edited a draft; what changed is that the pane no longer holds anything
+ * between the two.
  *
- * WHAT A HANDED-BACK BACKDROP MUST CONTAIN. A LookBackdrop is SELF-CONTAINED
- * by contract (see lib/looks.ts): the choice, the resolved CSS, and any payload
- * that lives nowhere else. That is why an image's data URL goes INTO the value
- * rather than into BACKDROP_IMAGE_KEY, and why a composed scene carries its own
- * layer images: a draft nobody has applied must not have already overwritten
- * what the reader is wearing. The constructors that build those values live in
- * lib/studio-draft.ts, where they can be tested without a DOM.
+ * WHY A WHOLE VALUE RATHER THAN A PATCH. A LookBackdrop is SELF-CONTAINED by
+ * contract (see lib/looks.ts): the choice, the resolved CSS the pre-paint script
+ * paints from, and any payload that lives nowhere else. An image's data URL and
+ * a composed scene's layer images therefore travel INSIDE the value, and reach
+ * their own storage keys in one ordered write (`wearBackdrop`) — payloads
+ * first, then the choice that points at them, so a quota refusal can never
+ * leave a choice pointing at pixels that were not stored. The constructors that
+ * build those values live in lib/studio-draft.ts, where they can be tested
+ * without a DOM.
  *
  * ONE LIGHT/DARK AUTHORITY. These editors used to carry their own half
  * pickers — the gradient editor had a Light/Dark Segmented of its own — which
- * meant two controls disagreeing about what "the dark half" meant. The pane's
- * header toggle is now the only one: `mode` says which half you are looking
- * at, the custom gradient editor edits THAT half, and both halves are still
- * stored because a backdrop choice is a pair and the scheme can flip under it.
- * The preset tiles stay split (light left, dark right) for the same reason:
- * one click sets both, so the tile should show both.
+ * meant two controls disagreeing about what "the dark half" meant. The colour
+ * scheme is now the only one: `mode` says which half you are looking at, the
+ * custom gradient editor edits THAT half, and both halves are still stored
+ * because a backdrop choice is a pair and the scheme can flip under it. The
+ * preset tiles stay split (light left, dark right) for the same reason: one
+ * click sets both, so the tile should show both.
  *
  * THE VIEW IS NOT THE VALUE. Flipping the Scene control to "Gradient" to
  * browse does not blank an image already in place — only "None" writes, and
  * the pickers write when something is actually chosen. The view follows the
- * value when the value changes from outside (undo, the chat drafting a
- * gradient), through the derived-state-during-render idiom rather than an
- * effect.
+ * value when the value changes from outside (a Look worn from its card),
+ * through the derived-state-during-render idiom rather than an effect.
  */
 
 import { useCallback, useRef, useState, type ReactNode } from "react";
@@ -350,16 +350,15 @@ const FIT_LABELS: Record<BackdropFit, string> = { cover: "Cover", fill: "Fill", 
 /**
  * A photograph under the app, and a theme out of it.
  *
- * The thumbnail is read straight off the draft — the data URL IS the value —
+ * The thumbnail is read straight off the value — the data URL IS the value —
  * so there is no storage round trip and no derived-state dance about whether
- * the picture and the choice agree. Fit, blur and dim are live: the draft is
- * painted on the app behind this pane, and a preview you have to confirm is a
- * worse version of looking at it.
+ * the picture and the choice agree. Fit, blur and dim are live, and a preview
+ * you have to confirm is a worse version of looking at the app itself.
  *
- * "Theme from image" hands the derived halves UP rather than saving a custom
- * theme, because on this pane a palette is something the draft wears, not
- * something the library gains. The row only appears when the pane offered
- * somewhere to put it.
+ * "Take colours" hands the derived halves UP rather than writing anything
+ * here: the pane puts them in the THEME LIBRARY and wears them, so a palette
+ * read out of a picture arrives by the one road every other palette arrives by
+ * (#471). The row only appears when the pane offered somewhere to put it.
  */
 function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onThemeHalves?: (theme: Omit<ThemeDefinition, "id">) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -525,12 +524,13 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
           {onThemeHalves && (
             <Row
               label="Palette from image"
+              hint="Saves a theme built from the picture's colours and wears it on both halves."
               control={
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy}
-                  title="Tint both halves of the draft with the picture's dominant colour"
+                  title="Read the picture's colours into a theme, and wear it"
                   onClick={() => void makeTheme()}
                 >
                   <PaletteIcon /> Take colours
