@@ -798,22 +798,29 @@ export function Composer({
   }, [trigger?.kind, paths, reading, checkout, sessionId, projectId]);
 
   /**
-   * READ ON THE FIRST `$` OR `/`, AND ONLY ON A SESSION THAT EXISTS.
+   * READ ON THE FIRST `$` OR `/`, FROM THE SESSION WHEN THERE IS ONE AND THE
+   * PROJECT WHEN THERE IS NOT.
    *
    * Same rule as the path listing above and the same reason: the engine may
    * have to ask the harness itself, which is a subprocess, and most messages
-   * contain neither sigil. A CANVAS ASKS NOTHING — there is no session to ask
-   * about yet, and the skills of a session that does not exist is not a
-   * question with an answer.
+   * contain neither sigil.
+   *
+   * A CANVAS USED TO ASK NOTHING, and that was #500 — `$` in a new session drew
+   * an empty menu until after the first turn, because the only endpoint was per
+   * session and a session that does not exist has no skills. But the PROJECT
+   * has them: its checkout is the one the new session will run in or copy, and
+   * its `.claude` is already on disk. So a canvas asks about the project, with
+   * the driver the canvas is currently offering — the answer depends on which
+   * harness is about to listen, and nothing has recorded that choice yet.
    */
   useEffect(() => {
     if (trigger?.kind !== "skill" && trigger?.kind !== "command") return;
-    if (skills || readingSkills || !sessionId) return;
+    if (skills || readingSkills || (!sessionId && !projectId)) return;
     const task = window.setTimeout(() => {
       setReadingSkills(true);
       void (async () => {
         try {
-          setSkillCache({ checkout, value: (await api.sessionSkills(sessionId)) });
+          setSkillCache({ checkout, value: sessionId ? await api.sessionSkills(sessionId) : await api.projectSkills(projectId!, menuDriver) });
         } catch {
           // Two empty lists read as "this provider offers none", which is the
           // honest answer when the engine could not be asked — and is what a
@@ -825,7 +832,7 @@ export function Composer({
       })();
     }, 0);
     return () => window.clearTimeout(task);
-  }, [trigger?.kind, skills, readingSkills, checkout, sessionId]);
+  }, [trigger?.kind, skills, readingSkills, checkout, sessionId, projectId, menuDriver]);
 
   const completions = useMemo<Completion[]>(() => {
     if (!trigger || dismissed) return [];

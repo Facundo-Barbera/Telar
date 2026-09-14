@@ -101,3 +101,27 @@ describe("nothing the stash adds is ever disabled", () => {
     expect(menu).not.toContain("disabled");
   });
 });
+
+/**
+ * #500 — `$` DREW NOTHING IN A FRESH SESSION.
+ *
+ * Asserted as source text for the reason the rest of this file is: the claim is
+ * about which branch one async effect takes, this app has no DOM harness, and
+ * the failure is silent — an empty menu looks exactly like a project with no
+ * skills. The engine side is covered for real in `provider-skills.test.ts`.
+ */
+describe("the skills menu has something to ask before a session exists", () => {
+  test("a canvas asks the project rather than returning early", () => {
+    // The bug was the guard: `!sessionId` returned, so the one composer that
+    // has no session — the canvas — never fetched at all.
+    const effect = composer.slice(composer.indexOf("trigger?.kind !== \"skill\""));
+    expect(effect.slice(0, effect.indexOf("}, ["))).toContain("!sessionId && !projectId");
+    expect(composer).toContain("api.projectSkills(projectId!, menuDriver)");
+  });
+
+  test("the session's own answer still wins when there is a session", () => {
+    // A worktree session's `.claude` is its own copy's, not the project root's.
+    const read = composer.indexOf("sessionId ? await api.sessionSkills(sessionId)");
+    expect(read).toBeGreaterThan(-1);
+  });
+});
