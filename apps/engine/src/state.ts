@@ -520,6 +520,34 @@ function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequ
 }
 
 /**
+ * ONE INDEX ROW PER TURN, NOT PER ELEMENT.
+ *
+ * `items.json` holds eight or more rows per turn, and an index with one entry
+ * each would grow with the conversation — which is the thing being fixed. The
+ * window chooses TURNS, so a turn's items only ever need one span between them,
+ * and on a 500-turn session that is the difference between an index of a few
+ * kilobytes and one of a hundred and sixty.
+ *
+ * A span may swallow rows belonging to other turns — nothing promises a turn's
+ * items are contiguous, only that they are written in creation order and
+ * usually are. The caller filters what it reads by `runId` regardless, so a
+ * generous span costs bytes and never correctness.
+ */
+function coalesceByKey(rows: Array<{ key: string; tag?: string }>, ranges: Array<{ start: number; end: number }>): DocumentIndex["rows"] {
+  const merged = new Map<string, DocumentIndex["rows"][number]>();
+  for (const [at, row] of rows.entries()) {
+    const range = ranges[at]!;
+    const known = merged.get(row.key);
+    if (!known) merged.set(row.key, { ...row, ...range });
+    else {
+      known.start = Math.min(known.start, range.start);
+      known.end = Math.max(known.end, range.end);
+    }
+  }
+  return [...merged.values()];
+}
+
+/**
  * WHICH ROWS A WINDOW HOLDS, decided from ids and states alone.
  *
  * Shared by the indexed read and the whole-document fallback so the two cannot
@@ -1605,7 +1633,7 @@ export class EngineStore {
     const bytes = Buffer.from(text, "utf8");
     const ranges = arrayElementRanges(bytes, property);
     const index: DocumentIndex = ranges && ranges.length === rows.length
-      ? { version: STATE_VERSION, length: bytes.length, rows: rows.map((row, at) => ({ ...row, ...ranges[at]! })) }
+      ? { version: STATE_VERSION, length: bytes.length, rows: coalesceByKey(rows, ranges) }
       // An absent index reads as a stale one — both mean "parse it whole" — so
       // a document that could not be indexed writes the unmatchable marker
       // rather than leaving the PREVIOUS document's index in place to be

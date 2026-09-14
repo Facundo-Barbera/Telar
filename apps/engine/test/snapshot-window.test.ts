@@ -267,6 +267,27 @@ test("a session with few requests carries all of them, open or settled", () => {
   expect(store.snapshotRequests("session_one")).toEqual([]);
 });
 
+test("the items index is one row per turn, not one per item", () => {
+  /**
+   * THE INDEX IS THE ONE DOCUMENT A TAIL READ STILL PARSES WHOLE, so it may not
+   * grow the way the document does. `items.json` holds eight or more rows per
+   * turn; an entry each would put the history back in the read by the side door
+   * — on a 500-turn session, a 160 KB index in front of a 247 KB answer.
+   */
+  const home = conversation("json", 12, 8);
+  const index = JSON.parse(fs.readFileSync(path.join(home, "sessions", "session_one", "items.index.json"), "utf8"));
+  expect(index.rows).toHaveLength(12);
+  expect(new Set(index.rows.map((row: { key: string }) => row.key)).size).toBe(12);
+
+  // …and a turn's span still covers every item it owns.
+  const store = open(home, "json");
+  const everyItem = store.items("session_one");
+  expect(everyItem).toHaveLength(12 * 8);
+  const window = open(home, "json").snapshotWindow("session_one", { limit: 2 });
+  expect(window.items).toEqual(everyItem.filter((item) => ["run_10", "run_11"].includes(item.runId)));
+  expect(window.items).toHaveLength(16);
+});
+
 /** The scanner the index is built with, on the two shapes it has to survive:
  *  pretty-printed and compact, both carrying text that is not ASCII. */
 test("array element ranges point at whole elements, in bytes", () => {
