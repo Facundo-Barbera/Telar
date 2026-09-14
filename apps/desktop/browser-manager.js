@@ -3627,6 +3627,117 @@ class DesktopBrowserManager {
     }
   }
 
+  /**
+   * THE COCKPIT'S OWN SCREENSHOT (#474) — the camera button in the address
+   * row, and the frozen frame the annotate overlay draws on.
+   *
+   * NOT `callTool("browser_take_screenshot")`, and the difference is WHOSE TAB
+   * IT IS. A tool call reads the AGENT's tab (`peekTarget`), waits behind that
+   * tab's queue and is refused while a credential interaction is open — all
+   * correct for an agent, and all wrong for a person pressing a camera on the
+   * page in front of them. This reads the tab THEY are looking at.
+   *
+   * AT THE TAB'S OWN SCALE, NEVER THE PANEL'S FIT SCALE. `screenshot` resolves
+   * to `captureIntrinsic`'s explicit scale-1 clip, so a page laid out at
+   * 1280×800 inside a 640px column comes back 1280×800 — not a third of one in
+   * the corner of a blank frame, which is what a plain capture under a fit
+   * scale returns (measured; see `captureIntrinsic`). The viewport travels with
+   * the image because the overlay draws ON it and has to know what a pixel is.
+   */
+  async capture(scopeKey, options = {}) {
+    const scope = this.requireScope(scopeKey);
+    if (!this.scopeTabs(scope).length) throw new Error("There is no page here to capture.");
+    const tab = await this.wakeTab(this.activeTab(scope));
+    // The same refusal every tool path wears: an extension's own pages are
+    // nobody's to photograph, least of all a password manager's unlock.
+    if (isProtectedUrl(tab.url)) throw new Error("That tab is showing an extension page. Telar does not capture extension pages.");
+    if (this.isBlank(tab)) throw new Error("There is no page loaded in this tab to capture.");
+    const fullPage = Boolean(options.fullPage);
+    const outcome = await this.screenshot(tab, { type: "png", fullPage });
+    const image = outcome.content?.find((entry) => entry.type === "image");
+    if (!image?.data) throw new Error("The page produced no frame to capture.");
+    const viewport = this.effectiveViewport(tab);
+    return {
+      data: image.data,
+      mimeType: image.mimeType,
+      url: tab.url,
+      title: tab.title,
+      fullPage,
+      width: viewport.width,
+      height: viewport.height,
+      ...(options.elements ? { elements: await this.elementBoxes(tab) } : {}),
+    };
+  }
+
+  /**
+   * WHAT THE ANNOTATE OVERLAY CAN PICK (#474): every element worth pointing
+   * at, with the rect it occupies in the SAME CSS pixels the capture above is
+   * measured in, and enough about it to name in a message — its role, its
+   * accessible name, and a selector that finds it again.
+   *
+   * GEOMETRY, WHICH IS WHY IT IS NOT `snapshot`. That one emits refs and text
+   * off the AX tree and carries no rects; the overlay hit-tests in the
+   * renderer while the native view is HIDDEN behind a frozen frame, so a
+   * per-hover round trip is not available to it either. One evaluate, taken at
+   * the same instant as the frame it is about, is both cheaper and truer than
+   * asking the live page where things are after it has been hidden.
+   *
+   * SMALLEST AREA FIRST, so a hit test can take the first box containing the
+   * point and get the innermost element rather than the <body> around it.
+   * Offscreen and zero-area elements never appear: nothing can be under the
+   * pointer that is not on screen.
+   */
+  async elementBoxes(tab) {
+    const debug = await this.ensureDebugger(tab);
+    const { result } = await debug.sendCommand("Runtime.evaluate", {
+      expression: `(() => {
+        const selectorFor = (el) => {
+          if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id);
+          const parts = [];
+          for (let node = el; node && node.nodeType === 1 && parts.length < 5; node = node.parentElement) {
+            const tag = node.localName;
+            if (node.id && document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) { parts.unshift('#' + CSS.escape(node.id)); break; }
+            const siblings = node.parentElement ? [...node.parentElement.children].filter((other) => other.localName === tag) : [tag];
+            parts.unshift(siblings.length > 1 ? tag + ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : tag);
+          }
+          return parts.join(' > ');
+        };
+        const nameOf = (el) => (
+          el.getAttribute('aria-label') ||
+          (el.labels && el.labels[0] && el.labels[0].textContent) ||
+          el.getAttribute('alt') ||
+          el.getAttribute('placeholder') ||
+          el.getAttribute('title') ||
+          (el.value && typeof el.value === 'string' ? el.value : '') ||
+          el.textContent ||
+          ''
+        ).replace(/\\s+/g, ' ').trim().slice(0, 120);
+        const roleOf = (el) => el.getAttribute('role') || el.localName;
+        const boxes = [];
+        for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) continue;
+          const style = getComputedStyle(el);
+          if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+          boxes.push({
+            role: roleOf(el),
+            name: nameOf(el),
+            selector: selectorFor(el),
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+          if (boxes.length >= 1500) break;
+        }
+        return boxes.sort((a, b) => a.width * a.height - b.width * b.height);
+      })()`,
+      returnByValue: true,
+    });
+    return Array.isArray(result?.value) ? result.value : [];
+  }
+
   /** Nothing loaded and nothing loading: the start page's case. */
   isBlank(tab) {
     const url = tab.view && !tab.view.webContents.isDestroyed?.() ? tab.view.webContents.getURL() || tab.url : tab.url;

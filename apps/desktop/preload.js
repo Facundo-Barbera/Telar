@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // and PROFILE-WIDE, so the main process refuses anyone but the cockpit's
     // own top frame — see the handler there.
     clearBrowsingData: (scopeKey, kind) => ipcRenderer.invoke("telar:browser:clear-data", { scopeKey, kind }),
+    // The camera button, and the frozen frame annotate mode draws on (#474).
+    // The human's ACTIVE tab at its own scale — not the agent's tab, and not
+    // the panel's fit scale. Cockpit-only, refused in the main process.
+    capture: (scopeKey, options) => ipcRenderer.invoke("telar:browser:capture", { scopeKey, ...(options || {}) }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
     setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
