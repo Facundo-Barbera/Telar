@@ -36,6 +36,22 @@ export type DriverRun = {
   runId?: string;
   prompt: string;
   /**
+   * A PERSON TYPED THIS PROMPT — no sending agent, no engine wake.
+   *
+   * The provider has one input channel and everything rides it: a human's
+   * words, a peer's notice, the engine's own wake. `framedTurnInput` already
+   * says which in PROSE, for the model to read; this is the same fact as a
+   * FLAG, for the provider's own provenance channel. The Claude CLI has one
+   * (`origin`) and honours exactly one value on it — see
+   * `docs/investigations/delivery-as-harness-input-2026-09-11.md` §1 — so
+   * without this a real person fails the SDK's own `isHuman` gate.
+   *
+   * ABSENT MEANS "THE DRIVER CLAIMS NOTHING", which is what a test and an older
+   * worker produce. Never defaulted to true: a wake stamped as a human decision
+   * is the one mistake this whole seam exists to prevent.
+   */
+  promptFromHuman?: boolean;
+  /**
    * WHICH SESSION THIS TURN BELONGS TO — the key the Claude driver holds its
    * live runtime under (see ./claude-runtime.ts). Without it every turn is an
    * island and nothing a turn leaves running can survive the turn's end,

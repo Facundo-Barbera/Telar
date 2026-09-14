@@ -442,6 +442,19 @@ const MAX_WAKE_LINE_CHARS = 240;
 
 const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped", "request_opened"];
 
+/**
+ * THE EVENTS THAT END A TURN — and so the only ones that may consume a
+ * one-shot subscription (#240).
+ *
+ * A `once` subscription means "wake me when the thing I am waiting for is
+ * OVER". A `request_opened` is not over: the target parked an approval and is
+ * still working, and a subscription spent on it left the coordinator to wait
+ * forever for a completion that had nowhere to land. An interim `result` is not
+ * over either — see `submitAgentTurn`, which no longer spends the subscription
+ * on one.
+ */
+const TERMINAL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped"];
+
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
  *  rather than written to disk and failing later inside `autoResolution`. */
 const RUNTIME_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "auto", "full-access"]);
@@ -7255,6 +7268,18 @@ export class EngineStore {
       sender = { sessionId: claimed.sessionId };
     }
     const intent = input.intent ?? "report";
+    /**
+     * IS ANYONE AWAITING THIS SENDER'S END? That question decides the DELIVERY
+     * of a `result` — awaited, it wakes; unawaited, it is passive activity.
+     *
+     * IT DOES NOT SPEND THE SUBSCRIPTION (#240). A worker routinely sends a
+     * result MID-TASK and keeps going; consuming the one-shot here meant the
+     * `turn_completed` that actually ended the errand had no subscription left
+     * to fire on, and the coordinator waited for an end that never came — twice
+     * in one day before this was found. Only a TERMINAL event removes a `once`
+     * now, in `fireSubscriptions`, which is the one place that knows a turn
+     * ended.
+     */
     const waiting = intent === "result" && sender.sessionId
       ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
       : undefined;
@@ -7290,9 +7315,6 @@ export class EngineStore {
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
     });
-    if (!result.replayed && waiting?.once) {
-      this.writeSubscriptions(this.readSubscriptions().filter((sub) => sub.id !== waiting.id));
-    }
     return result;
   }
 
@@ -8780,12 +8802,18 @@ export class EngineStore {
         continue;
       }
       if (subscriber.agentMessagesBlocked) continue;
-      // An explicit awaited result already delivered this run's outcome.
-      // Its later completion must not wake the same coordinator twice.
-      if (kind === "turn_completed" && this.turns(subscriberId).some((received) =>
-        received.agentIntent === "result" && received.agentDelivery === "wake" &&
-        received.sender?.sessionId === targetSessionId && received.agentSourceRunId === turn.runId
-      )) continue;
+      /**
+       * A RESULT AND A COMPLETION ARE TWO DIFFERENT FACTS (#240).
+       *
+       * This used to swallow the `turn_completed` of any run whose worker had
+       * already sent an awaited `result`, on the reading that the result WAS
+       * the run's outcome. It is not, and the engine cannot tell: a worker
+       * sends a result for the part it finished and keeps working, and the
+       * coordinator that was told "here is the analysis" still needs to hear
+       * "and the run has ended" before it acts. Suppressed, the errand simply
+       * never closed. The result says what was produced; the completion says
+       * the turn is over, and a coordinator gets both.
+       */
       const wakeReason: WakeReason = {
         kind,
         sessionId: targetSessionId,
@@ -8814,7 +8842,10 @@ export class EngineStore {
             wakeReason,
           });
         }
-        if (subscription.once) remove(subscription);
+        // ONLY AN ENDING SPENDS A ONE-SHOT — see `TERMINAL_WAKE_KINDS`. A
+        // `request_opened` says the target is waiting on someone, not that it
+        // is finished, and a subscription spent there never fired again.
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
       } catch (error) {
         // A full backlog or an ambiguous turn on the subscriber is that
         // session's own state, and a wake is not worth breaking it for. Said
@@ -8837,10 +8868,12 @@ export class EngineStore {
    * `./delegation-settling.ts`; this is where the engine reads the facts and
    * writes the answer.
    *
-   * BESIDE `fireSubscriptions` BECAUSE IT READS THE SAME SIGNAL. The dedupe a
-   * few lines above — `agentIntent === "result"` plus `agentSourceRunId` — is
-   * exactly "the coordinator already has this run's outcome", which is clause 2
-   * of the settle. Two folds over one fact, kept where a reader will see both.
+   * BESIDE `fireSubscriptions` BECAUSE IT READS THE SAME SIGNAL —
+   * `agentIntent === "result"` plus `agentSourceRunId`, "the coordinator
+   * already has this run's outcome", which is clause 2 of the settle. The wake
+   * above no longer folds that fact (#240: a result and a completion are two
+   * different facts to a coordinator); the settle still does, because "has this
+   * errand been reported on" is exactly the question it asks.
    * ---------------------------------------------------------------- */
 
   /**

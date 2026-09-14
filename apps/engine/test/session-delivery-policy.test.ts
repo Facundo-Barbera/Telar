@@ -39,17 +39,46 @@ test("a routine report never steers an already running coordinator", () => {
   expect(store.steerForWorker("worker_two")).toHaveLength(0);
   expect(store.turns("session_host").find(t => t.runId === "run_host")?.state).toBe("running");
 });
-test("an awaited result wakes once, consumes its subscription, and is not repeated at completion", () => {
+/**
+ * #240, SEEN TWICE IN ONE DAY: a worker sends a result MID-TASK — "here is the
+ * part I finished" — and keeps working. That result used to spend the
+ * coordinator's one-shot subscription AND suppress the run's `turn_completed`,
+ * so the errand never closed: the coordinator sat holding an interim answer,
+ * waiting for an end that had been thrown away twice over.
+ */
+test("an interim result does not spend the one-shot, and the completion that follows still wakes", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
   const input = { runId: "run_result", input: "finished", intent: "result" as const };
   const result = store.submitAgentTurn("session_host", input, proof);
   expect(result.turn.agentDelivery).toBe("wake");
-  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
+  // Still live: only an ENDING spends it.
+  expect(store.subscriptionsFor("session_host")).toHaveLength(1);
   expect(store.submitAgentTurn("session_host", input, proof).replayed).toBe(true);
   store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
-  expect(store.turns("session_host")).toHaveLength(1);
-  expect(store.claimTurn("session_host", "worker_two")?.runId).toBe("run_result");
+  // BOTH facts land, in order: what the worker produced, then that its run ended.
+  const received = store.turns("session_host");
+  expect(received).toHaveLength(2);
+  expect(received[0]).toMatchObject({ runId: "run_result", agentIntent: "result" });
+  expect(received[1]?.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_worker", runId: "run_source" });
+  // The terminal event is what spent it.
+  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
+});
+
+test("a parked request does not spend a one-shot — the target is waiting, not finished", () => {
+  const { store, proof } = setup();
+  store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
+  store.openRequest("session_worker", "run_source", proof.claimToken, {
+    requestId: "req_ask",
+    kind: "user_input",
+    detail: { kind: "user_input", prompt: "Wait or continue?", fields: [{ key: "choice", label: "Choice", kind: "choice", choices: ["Wait", "Continue"] }] },
+  });
+  expect(store.turns("session_host")[0]?.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_ask" });
+  expect(store.subscriptionsFor("session_host")).toHaveLength(1);
+  store.resolveRequest("session_worker", "req_ask", { decision: "accept" });
+  store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
+  expect(store.turns("session_host").at(-1)?.wakeReason).toMatchObject({ kind: "turn_completed" });
+  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
 });
 test("an unawaited result is passive; a blocker wakes but never overrides human Stop", () => {
   const { store, proof } = setup();
@@ -59,11 +88,12 @@ test("an unawaited result is passive; a blocker wakes but never overrides human 
   expect(() => store.submitAgentTurn("session_host", { runId: "run_again", input: "urgent", intent: "blocker" }, proof)).toThrow("stopped by its user");
   expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
 });
-test("persistent monitoring also suppresses duplicate completion after an explicit result", () => {
+test("persistent monitoring hears the completion too, and keeps its subscription", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: false });
   store.submitAgentTurn("session_host", { runId: "run_result", input: "finished", intent: "result" }, proof);
   store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "finished" });
+  // `once: false` is ongoing monitoring by definition — it survives either way.
   expect(store.subscriptionsFor("session_host")).toHaveLength(1);
-  expect(store.turns("session_host")).toHaveLength(1);
+  expect(store.turns("session_host")).toHaveLength(2);
 });

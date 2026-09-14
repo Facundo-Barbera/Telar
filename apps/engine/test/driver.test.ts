@@ -877,6 +877,96 @@ describe("a provider wait is a row, not silence", () => {
   });
 
   /**
+   * THE SILENCE NOBODY REPORTS — #263.
+   *
+   * A request that stalls before its response headers emits no frame on the SDK
+   * iterator and no line on the CLI's stderr for the whole stall (measured for
+   * #261: sixty seconds of nothing, unchanged with the CLI's byte and stream
+   * watchdog variables set). The engine can still say so, because it sees
+   * `system/status {status:"requesting"}` go out and `message_start` not come
+   * back. The stub below stalls between exactly those two frames.
+   */
+  describe("a request that stalls before its headers is a row, not a quiet turn", () => {
+    test("silence past the threshold opens a row, and the reply closes it", async () => {
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            // The stall: the pump is parked on a frame that is not coming.
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "assistant", message: { content: [{ type: "text", text: "late" }] } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const { sink, result } = run(driver);
+      await expect(result).resolves.toMatchObject({ text: "late" });
+      const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+      expect(started?.kind === "item.started" && started.item.detail.type === "provider_wait" && started.item.detail.wait.kind).toBe("no_response");
+      // The elapsed time is the row's whole content — it is all anyone knows.
+      const waitedMs =
+        started?.kind === "item.started" && started.item.detail.type === "provider_wait" ? started.item.detail.wait.waitedMs : undefined;
+      expect(waitedMs).toBeGreaterThanOrEqual(20);
+      expect(started?.kind === "item.started" && started.item.title).toMatch(/^The model has not answered after /);
+      // Bounded: the response beginning closes it, so the stall has an end.
+      const waitId = started?.kind === "item.started" ? started.item.id : "";
+      expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
+    });
+
+    test("a request that answers under the threshold produces no row at all", async () => {
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            yield { type: "stream_event", event: { type: "message_start" } };
+            yield { type: "assistant", message: { content: [{ type: "text", text: "prompt" }] } };
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 40 },
+      );
+      const { sink, result } = run(driver);
+      await result;
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+      // AND THE WATCH IS DISARMED, not merely beaten: a timer left standing
+      // would open a row about a silence that ended long before it fired.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait")).toBeFalse();
+    });
+
+    test("a retry's own account of the silence wins — the engine does not argue with the SDK", async () => {
+      // `api_retry` carries the provider's measured `waited_ms`. Two rows for
+      // one wait would be the engine second-guessing a better witness.
+      const driver = createClaudeDriver(
+        async () => ({
+          async *query() {
+            yield { type: "system", subtype: "status", status: "requesting" };
+            yield {
+              type: "system",
+              subtype: "api_retry",
+              attempt: 1,
+              max_retries: 3,
+              retry_delay_ms: 1_000,
+              error_status: null,
+              no_response: { waited_ms: 120_000 },
+            };
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            yield { type: "result", subtype: "success" };
+          },
+        }),
+        { providerSilenceMs: 20 },
+      );
+      const { sink, result } = run(driver);
+      await result;
+      const waits = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item.detail.wait] : []));
+      expect(waits).toHaveLength(1);
+      expect(waits[0]?.kind).toBe("api_retry");
+    });
+  });
+
+  /**
    * THE STUB IS THE WHOLE EVIDENCE, AND THAT IS STATED ON PURPOSE.
    *
    * The engine store has NEVER recorded a real `rate_limit` row — zero across
@@ -2205,6 +2295,71 @@ test("a HUMAN steer interrupts the running generation instead of queueing behind
   expect(heard).toEqual(["prompt", "stop, do this instead"]);
   // Partial text survives, and the new direction is what the turn answers.
   expect(resolved.text).toContain("new direction");
+});
+
+/**
+ * #241 — THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that
+ * works. The CLI drops every origin kind it does not recognise and persists
+ * exactly `{kind:"human"}` (measured — see
+ * docs/investigations/delivery-as-harness-input-2026-09-11.md §1). Telar sent
+ * none at all, so a real person failed the SDK's own `isHuman` gate along with
+ * every wake and peer report. The prose frames stay the load-bearing half; this
+ * is the cheap part that also works.
+ */
+describe("a person's message is stamped as one, and nothing else is", () => {
+  test("the turn's own prompt carries origin human only when a person typed it", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    await run(driver, { promptFromHuman: true }).result;
+    await run(driver, { promptFromHuman: false }).result;
+    // ABSENT IS NOT HUMAN. An older worker, or a test, claims nothing — a wake
+    // stamped as a person's decision is the one mistake this seam prevents.
+    await run(driver).result;
+    expect(seen.map((message) => message.origin)).toEqual([{ kind: "human" }, undefined, undefined]);
+  });
+
+  test("a steered batch is stamped when a person is in it, and not when it is only notices", async () => {
+    const seenFor = async (queued: Array<Parameters<SteerMailbox["push"]>[0]>) => {
+      const seen: Array<Record<string, unknown>> = [];
+      const driver = createClaudeDriver(async () => ({
+        async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+          // Two messages before answering — the turn is still "working" when
+          // the steer lands, which is the only way it is delivered mid-turn.
+          for await (const message of prompt) {
+            seen.push(message);
+            if (seen.length < 2) continue;
+            yield { type: "result", subtype: "success" };
+            return;
+          }
+        },
+      }) as never);
+      const steer = new SteerMailbox();
+      for (const message of queued) steer.push(message);
+      await run(driver, { steer }).result;
+      return seen;
+    };
+
+    expect((await seenFor(["typed by a person"]))[1]?.origin).toEqual({ kind: "human" });
+    expect(
+      (await seenFor([
+        { text: "a peer reports in", sender: { sessionId: "session_peer" } },
+        { text: "a session you follow finished", wakeReason: "completed" },
+      ]))[1]?.origin,
+    ).toBeUndefined();
+    // A MIXED BATCH IS THE PERSON'S. Someone typed, mid-turn; that is the same
+    // reading the interrupt below has always taken of the same batch.
+    expect(
+      (await seenFor([{ text: "a peer reports in", sender: { sessionId: "session_peer" } }, "and the person weighs in"]))[1]?.origin,
+    ).toEqual({ kind: "human" });
+  });
 });
 
 test("an AGENT report and an engine WAKE do NOT interrupt — a notice is not a change of direction", async () => {

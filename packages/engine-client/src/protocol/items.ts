@@ -180,7 +180,16 @@ export type PlanDetail = z.infer<typeof PlanDetail>;
  * floating in silence.
  */
 export const ProviderWaitDetail = z.object({
-  kind: z.enum(["api_retry", "rate_limit"]),
+  /**
+   * `no_response` is the wait NOBODY REPORTS — the engine's own reading, not the
+   * provider's. A request that stalls before its response headers emits no frame
+   * on the SDK iterator and no line on the CLI's stderr for the whole stall
+   * (measured: 60 s of silence), so the cockpit shows a quiet turn while the
+   * model is unreachable. The engine knows anyway, because it sees `requesting`
+   * go out and `message_start` not come back — see the silence watch in
+   * `apps/engine/src/driver.ts`.
+   */
+  kind: z.enum(["api_retry", "rate_limit", "no_response"]),
   /** `api_retry`: which attempt is about to be made, and out of how many. */
   attempt: z.number().int().positive().optional(),
   maxAttempts: z.number().int().nonnegative().optional(),
