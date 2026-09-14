@@ -23,13 +23,12 @@
  * content may be any width. Every caller that passes no slot draws exactly what
  * it drew before.
  *
- * ONE SLOT, NOT TWO. There was a `start` as well, added for Telar's
- * project-scope chip, which REPLACED the search glyph rather than sitting
- * beside it. #400 removed that chip and no caller passes a leading anything, so
- * the slot went with it: an unused prop on a shared primitive is a shape three
- * rails have to keep agreeing about for nobody's sake. `end` stays — Telar's ⌘K
- * hint and clear button live there, and the Spool and the settings nav pass
- * neither.
+ * TWO SLOTS, AND `start` REPLACES THE SEARCH GLYPH rather than sitting beside
+ * it — two marks at the head of one field is one too many. It was added for
+ * Telar's project-scope chip, deleted with that chip in #400, and is back for
+ * the multi-select project filter #470 puts in the same place; the Spool's rail
+ * and the settings nav pass neither slot and draw the bare glyph. `end` is
+ * where Telar's ⌘K hint and clear button live.
  */
 import { forwardRef } from "react";
 import { SearchIcon } from "lucide-react";
@@ -38,8 +37,8 @@ import { cn } from "@/lib/utils";
 
 export const SidebarSearchField = forwardRef<
   HTMLInputElement,
-  React.ComponentProps<typeof Input> & { end?: React.ReactNode }
->(function SidebarSearchField({ end, className, ...props }, ref) {
+  React.ComponentProps<typeof Input> & { start?: React.ReactNode; end?: React.ReactNode }
+>(function SidebarSearchField({ start, end, className, ...props }, ref) {
   return (
     <div
       className={cn(
@@ -51,7 +50,7 @@ export const SidebarSearchField = forwardRef<
         className,
       )}
     >
-      <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />
+      {start ?? <SearchIcon className="pointer-events-none size-3.5 shrink-0 text-sidebar-foreground/45" aria-hidden />}
       <Input
         ref={ref}
         {...props}
