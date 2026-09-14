@@ -100,8 +100,6 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-  /* Outside the proportional scale on purpose — see --control-radius below. */
-  --radius-control: var(--control-radius);
 }
 
 :root {
@@ -367,15 +365,25 @@
   --chart-4: oklch(0.56 0.13 120);
   --chart-5: oklch(0.56 0.095 192);
 
+  /* THE ONE AUTHORED RADIUS; every step in the @theme block above derives
+     from it.
+
+     There was a second — `--control-radius: 0.5rem`, bridged as
+     `--radius-control` — carrying a seven-line argument that a button, a chip
+     or a field has to hold 8px even if the containers are later rounded
+     harder. It shipped with ZERO call sites: `rounded-control` was never
+     written anywhere, and `rounded-md` happens to compute to the same 8px,
+     which is why nobody noticed for as long as it existed.
+
+     It is gone rather than adopted. Adopting it would have moved every
+     <Button> from 10px to 8px and every <Badge> from 16px to 8px — a visible
+     change to every control in the app, made to enforce a hierarchy the
+     shipped app already contradicts elsewhere (cards are drawn at 14px and
+     documented at 18px; see docs/investigations/design-system-2026-09-11.md
+     §(a)). Which way the radius doctrine should move is a taste call worth
+     seeing before committing, and shipping half of it inside a dead-token
+     cleanup would have pre-empted it. Deleting the name changes no pixel. */
   --radius: 0.625rem;
-  /* Two radii, because a button and a dialog are not the same object. --radius
-     is the container value the whole scale derives from. --control-radius is
-     authored rather than derived: on something the size of a button, a chip or
-     a field, 10px of corner starts eating the label, and the value has to hold
-     at 8px even if someone later rounds the containers harder. The hierarchy
-     this lands: 8px controls, 10px fields and popovers, 18px cards and
-     dialogs. */
-  --control-radius: 0.5rem;
 
   /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
      because there is no room above white, and lifts in dark because there is no
