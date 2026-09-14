@@ -99,6 +99,26 @@ func fixture(_ name: String) throws -> Data {
         #expect(live.assignments["child"]?.first?.scope == "the parser")
         // Outstanding: no outcome, not unresolved.
         #expect(live.assignments["child"]?.first?.outcome == nil)
+        // AND WHEN — the two stamps the Agents surface dates a row by (#390).
+        // `receivedAt` on an outstanding errand; `endedAt` only once it ends.
+        #expect(live.assignments["child"]?.first?.receivedAt == 1)
+        #expect(live.assignments["child"]?.first?.endedAt == nil)
+        let ended = try decode(#"""
+        {"sessions":[],"projects":[],
+         "assignments":{"child":[{"taskRunId":"run_1","fromSessionId":"coord","runId":"run_1","receivedAt":1739791245123,"scope":"the parser","outcome":"completed","endedAt":1739791309456}]}}
+        """#)
+        #expect(ended.assignments["child"]?.first?.receivedAt == 1739791245123)
+        #expect(ended.assignments["child"]?.first?.endedAt == 1739791309456)
+        #expect(ended.assignments["child"]?.first?.outcome == "completed")
+        // AN ENGINE THAT STAMPED NEITHER STILL HAS ITS ROW. The contract makes
+        // `receivedAt` required, and this build decodes it leniently anyway:
+        // through `Skippable` a missing required field does not cost a
+        // timestamp, it costs the whole relationship.
+        let undated = try decode(#"""
+        {"sessions":[],"projects":[],"assignments":{"child":[{"fromSessionId":"coord"}]}}
+        """#)
+        #expect(undated.assignments["child"]?.count == 1)
+        #expect(undated.assignments["child"]?.first?.receivedAt == nil)
 
         #expect(try decode(#"{"sessions":[],"projects":[]}"#).assignments.isEmpty)
         // A map this build cannot read costs the tree, never the list.
