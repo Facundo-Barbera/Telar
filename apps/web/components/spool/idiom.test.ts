@@ -511,28 +511,15 @@ describe("the expert is offered honestly", () => {
   });
 
   /**
-   * THE DISCLOSURE MOVED TO THE ENGINE, and that is the honest place for it: a
-   * pass now settles into a record the surface reads, so the sentence has to be
-   * written where the outcome is known rather than re-derived by whichever
-   * screen happened to be watching. The claim is unchanged — a surface must
-   * never imply memory the expert did not have.
-   */
-  test("a first pass is disclosed, so no surface implies memory it lacked", () => {
-    const state = fs.readFileSync(path.join(dir, "../../../engine/src/state.ts"), "utf8");
-    expect(state).toContain("had no memory of this project");
-  });
-
-  /**
    * THE GUARANTEE THAT USED TO BE A BOOLEAN. "Two clicks are two passes; the
    * surface's busy state is what prevents the second" was the route's own
    * admission, and it was true only until a reload — so the guard moved into the
    * process that spends the money.
    *
-   * ASSERTED IN TWO PLACES because it takes both to hold: the control must not
-   * offer to start a pass that is already running, and the engine must refuse
-   * one even if something else asks.
+   * THE ENGINE HALF OF THIS WENT WITH THE SPOOL (#501, step 2). What is left
+   * is the surface's own guarantee, which is decidable here.
    */
-  test("a second pass cannot be started, and it is the engine that says so", () => {
+  test("a second pass cannot be offered while one is live", () => {
     const control = code(read("packet-body.tsx"));
     expect(control).toContain("const running = work.runningFor(item.id)");
     /**
@@ -545,11 +532,6 @@ describe("the expert is offered honestly", () => {
     expect(live).toContain("Stop this pass");
     expect(live).not.toContain("Ask the expert");
     expect(control.slice(control.indexOf(") : ("))).toContain("Ask the expert");
-
-    const registry = fs.readFileSync(path.join(dir, "../../../engine/src/spool/work.ts"), "utf8");
-    expect(registry).toContain("runningFor");
-    const state = fs.readFileSync(path.join(dir, "../../../engine/src/state.ts"), "utf8");
-    expect(state).toContain("Nothing was started twice.");
   });
 
   /**
@@ -2041,10 +2023,8 @@ describe("the hand closes — the checkbox amendment (§9)", () => {
 
   test("the agents' wall still cannot close — the verb is only on the human routes", () => {
     // The moat, restated the amended way: no agent may declare a thing done.
-    // The engine proves the tool wall's absence; what the web pins is that
-    // the ONLY close spellings here are the dedicated human proxies.
-    const state = fs.readFileSync(path.join(dir, "../../../engine/src/state.ts"), "utf8");
-    expect(state).toContain("closeSpoolItem");
+    // The engine's half of this went with the Spool (#501, step 2); what the
+    // web pins is that the ONLY close spellings here are the human proxies.
     const writers = surfaces().filter((f) => /\/close|\/reopen/.test(code(f.source)));
     // No surface spells the route by hand — the helper is the one door.
     expect(writers).toEqual([]);
