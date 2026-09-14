@@ -373,6 +373,19 @@ struct LiveSessions: Decodable {
     /// WHAT TO ASK WITH NEXT TIME — the conditional read's cursor (#459). Nil
     /// from a Mac too old to count, which simply keeps every read a full one.
     var revision: Int?
+    /// HOW MANY SETTLED ROWS THIS ANSWER LEFT OUT (#457) — the size of the shelf
+    /// behind `?all=1`.
+    ///
+    /// The Mac answers the UNSETTLED rows by default, because it was folding and
+    /// serialising 291 of them every three seconds so that each device could put
+    /// 284 under a divider nobody had opened. This is the one integer that tells
+    /// this phone the list it holds is partial, and it is what the "Settled"
+    /// divider draws.
+    ///
+    /// NIL MEANS "YOU HAVE EVERYTHING", never "the shelf is empty" — a Mac whose
+    /// engine predates the filter sends every row, exactly as before, and the
+    /// phone bands them itself.
+    var settledCount: Int?
     /// NOTHING HAS MOVED SINCE THE CURSOR THIS PHONE SENT, so this answer
     /// carries no rows at all and the store keeps what it has.
     ///
@@ -382,13 +395,14 @@ struct LiveSessions: Decodable {
     /// never be confused with "this Mac has no conversations".
     var unchanged: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, unchanged }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, settledCount, unchanged }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         // A policy this build cannot read costs the window, never the list.
         inbox = try? c.decodeIfPresent(InboxPolicy.self, forKey: .inbox)
         revision = try? c.decodeIfPresent(Int.self, forKey: .revision)
+        settledCount = try? c.decodeIfPresent(Int.self, forKey: .settledCount)
         unchanged = (try? c.decode(Bool.self, forKey: .unchanged)) ?? false
         sessions = try c.decodeIfPresent([Skippable<Session>].self, forKey: .sessions)?.compactMap(\.value) ?? []
         projects = try c.decodeIfPresent([Skippable<ProjectRef>].self, forKey: .projects)?.compactMap(\.value) ?? []

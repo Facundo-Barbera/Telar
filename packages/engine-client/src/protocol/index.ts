@@ -7,6 +7,8 @@
  * Module map, in dependency order:
  *   common    ids, timestamps, providers, runtime modes, usage, raw payloads
  *   entities  Project, Session, Runtime, Turn — the durable things
+ *   settling  which sessions are asking for you — shared with the ENGINE, which
+ *             now decides it on the way out of `GET /v2/sessions/live` (#457)
  *   items     timeline rows; the data protocol v1 discarded
  *   requests  approvals and questions, plus the auto-resolution policy
  *   tasks     sub-agents, background work, Warp linkage
@@ -18,6 +20,7 @@
  */
 export * from "./common";
 export * from "./entities";
+export * from "./settling";
 export * from "./items";
 export * from "./requests";
 export * from "./tasks";

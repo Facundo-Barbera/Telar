@@ -273,6 +273,43 @@ function writeJson(response: http.ServerResponse, status: number, body: unknown,
   response.end(JSON.stringify(body));
 }
 
+/**
+ * THE LIVE LIST'S ETAG — the revision cursor (#462) spelled the way HTTP spells
+ * it, so a client that knows nothing about `?since=` still gets the cheap tick.
+ *
+ * THE MODE IS IN THE TAG, and that is what the query cursor could not do. A
+ * `?since=` earned against the unsettled list and spent against `?all=1` would
+ * be answered "unchanged" and leave a shelf empty, because the revision counts
+ * WRITES and does not move when a reader opens one — which is why the wide read
+ * refuses to be conditional on it. Two modes, two tags, and the wide read can
+ * be conditional too.
+ *
+ * WEAK, because the claim is semantic. Two answers at one revision carry the
+ * same rows; nothing here promises the same bytes, and `W/` is how that is said.
+ */
+function liveSessionsETag(revision: number, all: boolean): string {
+  return `W/"live-${revision}-${all ? "all" : "lean"}"`;
+}
+
+/**
+ * Does `If-None-Match` name this tag?
+ *
+ * WEAK COMPARISON, which is what RFC 9110 requires of `If-None-Match`: `W/"x"`
+ * and `"x"` match, and a client that stripped the prefix somewhere along the
+ * way is not punished for it. A list is a list — a browser may send back
+ * several — and `*` means "if you have anything at all", which here is always.
+ */
+function matchesETag(header: string | string[] | undefined, tag: string): boolean {
+  if (header === undefined) return false;
+  const bare = (value: string): string => value.trim().replace(/^W\//, "");
+  const wanted = bare(tag);
+  for (const entry of (Array.isArray(header) ? header : [header]).flatMap((value) => value.split(","))) {
+    const candidate = bare(entry);
+    if (candidate === "*" || candidate === wanted) return true;
+  }
+  return false;
+}
+
 async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -611,6 +648,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   } catch (error) { lock.release(); throw error; }
+  /**
+   * WHAT THE STORE SWEPT ON THE WAY UP — issue #457, step 4.
+   *
+   * Both sweeps delete things nothing can reach: command receipts past their
+   * week, and the JSON copy the sqlite import left behind once sqlite has owned
+   * the store for a week. On the dogfood home that was 299,323 receipts and
+   * 239 MB of backup, and the only evidence a person would otherwise have that
+   * a quarter of a gigabyte went away is that it is gone.
+   *
+   * ONE LINE, AND ONLY WHEN SOMETHING WENT. A daemon that printed "removed
+   * nothing" on every start would be training its reader to skip the line that
+   * matters. A backup still inside its week is deliberately silent too: it is
+   * not news, it is the ordinary state of a store migrated this week.
+   */
+  const swept = store.executionHousekeeping();
+  if (swept) {
+    const parts: string[] = [];
+    if (swept.receipts > 0) parts.push(`${swept.receipts.toLocaleString("en-US")} spent command receipts`);
+    if (swept.backup?.removed) {
+      const mb = (swept.backup.bytes / 1_000_000).toFixed(1);
+      const days = Math.floor(swept.backup.ageMs / 86_400_000);
+      parts.push(`the pre-SQLite JSON backup (${swept.backup.files.toLocaleString("en-US")} files, ${mb} MB, ${days} days old)`);
+    }
+    if (parts.length > 0) process.stdout.write(`Telar engine: removed ${parts.join(" and ")}\n`);
+  }
   /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
@@ -3467,10 +3529,47 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * `?full=1` IS THE ONE-RELEASE ESCAPE HATCH, for a client built against
        * the old shape — a paired Mac on last week's nightly, a script. It is not
        * a mode anything of ours asks for, and it is meant to be deleted.
+       *
+       * AND THE DEFAULT IS NOW THE UNSETTLED ROWS ALONE (#457). Re-measured on
+       * the owner's store after #459: 276 KB and 2.33 s per read, three seconds
+       * apart, per connected cockpit — for 291 sessions of which SEVEN were not
+       * settled. `?all=1` is the whole list and is what the cockpit's shelf
+       * sends when a reader opens it; `settledCount` rides the default answer so
+       * the shelf header that asks for them is drawn without them. The rule is
+       * the clients' own (`isShelved`), so the engine cannot drop a row a rail
+       * would have shown. `?full=1` is unfiltered, because its entire contract
+       * is "the old answer, verbatim".
        */
       if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
         if (url.searchParams.get("full") === "1") {
           writeJson(response, 200, store.liveSessions());
+          return;
+        }
+        const all = url.searchParams.get("all") === "1";
+        /**
+         * `If-None-Match` — THE SAME CONDITIONAL READ, SPELLED IN HEADERS.
+         *
+         * `?since=` (#462) is this in the body, and it stays: two proxy hops sit
+         * between this engine and a browser, and the cockpit's own route
+         * RE-COMPOSES the answer rather than streaming it, so a cursor a route
+         * handler can read is the thing that works everywhere. What the header
+         * adds is three things the body cursor cannot:
+         *
+         *   - A 304 HAS NO BODY AT ALL, against the cursor's sixty-odd bytes.
+         *   - THE WIDE READ CAN BE CONDITIONAL. The mode is inside the tag, so a
+         *     tag earned against the unsettled list simply does not match an
+         *     `?all=1` ask — where a `?since=` would have matched and answered
+         *     the shelf with "unchanged". See `liveSessionsETag`.
+         *   - IT IS THE STANDARD SPELLING, so a script, a cache or a client that
+         *     has never heard of `?since=` gets the cheap tick for free.
+         *
+         * BEFORE THE CURSOR, because it is the cheaper of the two and because a
+         * client sending both means both.
+         */
+        const etag = liveSessionsETag(store.sessionsRevision(), all);
+        if (matchesETag(request.headers["if-none-match"], etag)) {
+          response.writeHead(304, { etag, "cache-control": "no-store" });
+          response.end();
           return;
         }
         /**
@@ -3491,13 +3590,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          *
          * An unparseable cursor is not an error: it is a client that has no
          * useful cursor, which is exactly the full answer's case.
+         *
+         * `?all=1` IS NEVER CONDITIONAL, and that is a correctness rule rather
+         * than an oversight (#457). The revision counts WRITES, so it does not
+         * move when a reader opens the Settled shelf — a cursor earned against
+         * the default list, spent against `all=1`, would be answered "unchanged"
+         * and the shelf would stay empty for as long as nothing else happened on
+         * the machine. Making the wide ask always pay for itself is the version
+         * of this that cannot be got wrong: the shelf is opened by hand and for
+         * a moment, and the state this issue is about is the other one.
          */
         const since = Number(url.searchParams.get("since"));
-        if (Number.isSafeInteger(since) && since === store.sessionsRevision()) {
-          writeJson(response, 200, { revision: since, unchanged: true, daemonId });
+        if (!all && Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+          writeJson(response, 200, { revision: since, unchanged: true, daemonId }, { etag });
           return;
         }
-        writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
+        writeJson(response, 200, { ...store.liveSessionRows({ all }), daemonId }, { etag });
         return;
       }
       /**

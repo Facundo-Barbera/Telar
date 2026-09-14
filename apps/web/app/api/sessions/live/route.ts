@@ -37,11 +37,71 @@ export async function GET(request: Request) {
      * cheap read instead of two full ones, and the rare changed tick pays one
      * extra local round trip for it.
      */
-    const since = new URL(request.url).searchParams.get("since");
-    const live: LiveSessionsAnswer | LiveSessionsUnchanged =
-      since === null ? await client.liveSessions() : await client.liveSessionsSince(Number(since));
-    if (live.unchanged) return Response.json(live);
-    const { sessions, assignments, layout, daemonId, inbox, revision } = live;
+    /**
+     * `?all=1` IS PASSED THROUGH TOO (#457) — the shelf's ask.
+     *
+     * The engine answers only the unsettled rows by default; `all=1` is the
+     * whole list, and it is deliberately NOT conditional (see the engine's
+     * route), so a cursor sent beside it is ignored on both sides rather than
+     * answering the wide ask with a narrow "unchanged".
+     */
+    const query = new URL(request.url).searchParams;
+    const all = query.get("all") === "1";
+    const since = query.get("since");
+    /**
+     * `If-None-Match` IS FORWARDED, AND A 304 IS PASSED ON — issue #457.
+     *
+     * The engine's tag is the revision and the mode, and everything this route
+     * ADDS to the engine's answer moves with that same revision: writing the
+     * project registry bumps it, which is the assumption `?since=` has always
+     * made here (it returns `unchanged` without re-reading `listProjects()` for
+     * exactly that reason). So the engine's tag describes this composed body
+     * too, and forwarding it is sound under the premise the route already runs
+     * on rather than a new one.
+     *
+     * AND IT IS WHAT MAKES THE WIDE READ CHEAP. `?since=` refuses to be
+     * conditional against `?all=1` — the revision does not move when a reader
+     * opens a shelf, so a cursor would answer the wide ask with "unchanged" —
+     * but the mode is inside the ETag, so this one is safe for both.
+     */
+    const conditional = request.headers.get("if-none-match") ?? undefined;
+    /**
+     * THE CURSOR STILL ANSWERS FOR A CALLER THAT SENT ONE AND NO TAG. `?since=`
+     * is the older spelling and nothing is taken away from it; a caller that
+     * sends a tag gets the header path, which is cheaper (no body at all) and
+     * is the only one of the two that is safe against `?all=1`.
+     */
+    if (conditional === undefined && !all && since !== null) {
+      const live: LiveSessionsAnswer | LiveSessionsUnchanged = await client.liveSessionsSince(Number(since));
+      if (live.unchanged) return Response.json(live);
+      return compose(live);
+    }
+    /**
+     * EVERY OTHER READ GOES THROUGH THE TAG, INCLUDING THE UNCONDITIONAL FIRST
+     * ONE. Without that the answer would carry no `ETag`, the caller would have
+     * nothing to hand back, and the conditional path would never be entered at
+     * all — the cheap tick has to be reachable from a cold start.
+     */
+    const answer = await client.liveSessionsMatching({
+      ...(conditional === undefined ? {} : { etag: conditional }),
+      ...(all ? { all: true } : {}),
+    });
+    if (answer.notModified) {
+      return new Response(null, { status: 304, headers: { etag: answer.etag, "cache-control": "no-store" } });
+    }
+    return compose(answer, answer.etag);
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
+
+/** The engine's answer plus the project registry, minus what a loom owns —
+ *  named so the conditional path and the cursor path cannot compose it
+ *  differently. `etag` rides back out when the engine minted one. */
+async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Response> {
+  try {
+    const client = await engineClient();
+    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount } = live;
     const { projects } = await client.listProjects();
     // DETACHMENT (docs/loom-model-v1.md): same subtraction as the per-project
     // list — loom-owned sessions do not exist on ordinary surfaces, and this
@@ -77,6 +137,17 @@ export async function GET(request: Request) {
       // WHAT TO ASK WITH NEXT TIME. Absent from an engine too old to count, and
       // a rail that gets none simply keeps making full reads.
       ...(revision === undefined ? {} : { revision }),
+      // HOW BIG THE SHELF THIS ANSWER LEFT OUT IS (#457) — one integer, and the
+      // only thing that tells a rail the list it just received is partial.
+      // Absent from an engine that predates the filter, which reads as "you have
+      // everything" rather than as an empty shelf.
+      ...(settledCount === undefined ? {} : { settledCount }),
+    }, {
+      // THE ENGINE'S TAG, HANDED STRAIGHT BACK (#457) — so the caller's next
+      // `If-None-Match` is a tag this engine will recognise. Absent from an
+      // engine that predates it, and a caller with no tag simply goes on
+      // reading in full.
+      ...(etag === undefined ? {} : { headers: { etag, "cache-control": "no-store" } }),
     });
   } catch (error) {
     return engineErrorResponse(error);

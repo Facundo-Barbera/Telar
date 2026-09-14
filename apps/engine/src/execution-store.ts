@@ -55,6 +55,61 @@ const FLUSH_AFTER_MS = 200;
 const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RECEIPT_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * HOW LONG THE JSON THE IMPORT REPLACED IS KEPT — issue #457.
+ *
+ * `importLegacy` copies every document it reads into `execution-json-backup`
+ * before sqlite becomes the source of truth. That copy is an UNDO for a
+ * migration that went wrong, and its whole value is in the days right after it:
+ * a store that has been read and written through sqlite for a week has diverged
+ * from that copy completely, so restoring it would not recover the work — it
+ * would discard it. Measured on the dogfood home: 239 MB still sitting there
+ * months later, on a machine with a 735 MB database beside it.
+ *
+ * THE SAME WEEK THE RECEIPTS GET, and for a related reason: a week is far
+ * longer than anyone takes to notice a migration failed, and short enough that
+ * the copy does not become permanent.
+ */
+const LEGACY_BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** What the housekeeping on open actually removed, so the daemon can say so and
+ *  a test can hold it to it. Nothing here is otherwise observable. */
+export type ExecutionHousekeeping = {
+  /** Command receipts swept past their retention. */
+  receipts: number;
+  /** The migration backup, when there was one to consider. `removed: false`
+   *  means it is still inside its week. */
+  backup?: { removed: boolean; bytes: number; files: number; ageMs: number };
+};
+
+/** What a directory holds, in bytes and files — so a deletion can say what it
+ *  took. Tolerant by design: a tree being swept is a tree nothing else should
+ *  be touching, and an unreadable corner of it must not stop the sweep. */
+function directorySize(directory: string): { bytes: number; files: number } {
+  let bytes = 0;
+  let files = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return { bytes, files };
+  }
+  for (const entry of entries) {
+    const child = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      const inner = directorySize(child);
+      bytes += inner.bytes;
+      files += inner.files;
+    } else {
+      try {
+        bytes += fs.statSync(child).size;
+        files += 1;
+      } catch { /* vanished under us; it is not there to delete either */ }
+    }
+  }
+  return { bytes, files };
+}
+
 /** Only a bench or a test sets these; production runs the constants above.
  *  `flushCount: 1` is the behaviour before coalescing — every delta written
  *  where it was appended — which is what makes the two comparable.
@@ -67,6 +122,7 @@ export type ExecutionStoreOptions = {
   flushAfterMs?: number;
   now?: () => number;
   receiptRetentionMs?: number;
+  legacyBackupRetentionMs?: number;
 };
 
 /** One authoritative execution database; legacy files become a migration backup.
@@ -129,12 +185,22 @@ export class ExecutionStore {
   private readonly flushAfterMs: number;
   private readonly now: () => number;
   private readonly receiptRetentionMs: number;
+  private readonly legacyBackupRetentionMs: number;
   private pruneTimer?: ReturnType<typeof setInterval>;
+  /**
+   * WHAT THE HOUSEKEEPING ON OPEN REMOVED — issue #457, step 4.
+   *
+   * Read by the daemon, which says it out loud. Both sweeps delete things
+   * nothing can reach, so without a line in the log the only evidence a person
+   * has that 239 MB went away is that it is gone.
+   */
+  readonly housekeeping: ExecutionHousekeeping = { receipts: 0 };
   constructor(readonly root: string, options: ExecutionStoreOptions = {}) {
     this.flushCount = Math.max(1, options.flushCount ?? FLUSH_COUNT);
     this.flushAfterMs = Math.max(0, options.flushAfterMs ?? FLUSH_AFTER_MS);
     this.now = options.now ?? Date.now;
     this.receiptRetentionMs = Math.max(0, options.receiptRetentionMs ?? RECEIPT_RETENTION_MS);
+    this.legacyBackupRetentionMs = Math.max(0, options.legacyBackupRetentionMs ?? LEGACY_BACKUP_RETENTION_MS);
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
     this.db = process.versions.bun ? new native.Database(file) : new native.DatabaseSync(file);
@@ -180,7 +246,9 @@ export class ExecutionStore {
     atomicWrite(path.join(root, "execution-store.json"), { version: 1, backend: "sqlite" });
     // A previous binary must fail closed instead of reading stale JSON state.
     for (const sessionId of this.sessionIds()) this.fenceLegacy(sessionId);
-    this.pruneReceipts();
+    this.housekeeping.receipts = this.pruneReceipts();
+    const backup = this.sweepLegacyBackup();
+    if (backup) this.housekeeping.backup = backup;
     } catch (error) { this.db.close(); throw error; }
     // AFTER the constructor can still throw: a timer armed on a store that
     // failed to open would fire against a closed database. Never the reason a
@@ -209,6 +277,59 @@ export class ExecutionStore {
       removed = Number(this.statement("SELECT changes() AS count").get()?.count ?? 0);
     });
     return removed;
+  }
+
+  /**
+   * DROP THE JSON THE IMPORT REPLACED, ONCE SQLITE HAS OWNED THE STORE A WEEK.
+   *
+   * `importLegacy` keeps a copy of everything it read, as an undo for a
+   * migration that went wrong. That copy is worth having for the days after the
+   * migration and worthless after them: a store read and written through sqlite
+   * for a week has diverged from it completely, so restoring it would discard
+   * the week rather than recover it. On the dogfood home it was 239 MB, months
+   * old, beside a 735 MB database (#457).
+   *
+   * WHEN SQLITE TOOK OVER, FROM TWO SOURCES. `imported-at` is stamped by the
+   * import from this store's own clock and is the honest answer. A store
+   * migrated by an older build has no such row, so the BACKUP DIRECTORY'S OWN
+   * mtime stands in — it was created by that import and nothing writes to it
+   * afterwards. Falling back to "unknown, therefore keep" would mean the
+   * backlog this exists for is the one case it never reaches.
+   *
+   * IT DELETES ONE EXACT PATH and computes it rather than taking it, so there
+   * is no argument that can point this at anything else. Returns what went, so
+   * the daemon can say it and a test can hold it to it — a silent 239 MB
+   * deletion is the kind a person only learns about from its absence.
+   */
+  sweepLegacyBackup(): ExecutionHousekeeping["backup"] {
+    const backup = path.join(this.root, "execution-json-backup");
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(backup);
+    } catch {
+      return undefined;
+    }
+    if (!stat.isDirectory()) return undefined;
+    const { bytes, files } = directorySize(backup);
+    /**
+     * AN EMPTY BACKUP IS NOT A BACKUP, and it goes without a word.
+     *
+     * `importLegacy` used to create this directory before it knew whether it had
+     * anything to put in it, so every store born ON sqlite — which runs the
+     * import once and finds nothing — has an empty one. It is the migration's
+     * own litter, it preserves nothing, and reporting it would put "removed 0
+     * files, 0.0 MB" in the log of a machine that never migrated.
+     */
+    if (files === 0) {
+      fs.rmSync(backup, { recursive: true, force: true });
+      return undefined;
+    }
+    const stamped = this.statement("SELECT value FROM metadata WHERE key='imported-at'").get();
+    const importedAt = stamped ? Number(stamped.value) : stat.mtimeMs;
+    const ageMs = this.now() - (Number.isFinite(importedAt) ? importedAt : stat.mtimeMs);
+    if (ageMs < this.legacyBackupRetentionMs) return { removed: false, bytes, files, ageMs };
+    fs.rmSync(backup, { recursive: true, force: true });
+    return { removed: true, bytes, files, ageMs };
   }
   owns(file: string): boolean {
     const key = path.relative(this.root, file);
@@ -448,7 +569,10 @@ export class ExecutionStore {
   }
   private importLegacy(): void {
     const backup = path.join(this.root, "execution-json-backup");
-    fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
+    // NOT CREATED UNTIL THERE IS SOMETHING TO PUT IN IT (#457). This ran
+    // unconditionally, so every store born ON sqlite — which runs the import
+    // once and finds nothing to import — was left with an empty directory that
+    // then sat there for the life of the home. `copyToBackup` makes it.
     this.transaction("import", () => {
       for (const entry of fs.readdirSync(path.join(this.root, "sessions"), { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
@@ -481,11 +605,20 @@ export class ExecutionStore {
       for (const name of ["task-stops.json", "subscriptions.json"]) {
         const file = path.join(this.root, name);
         if (fs.existsSync(file)) {
+          // Made here rather than up front, for the reason stated above: the
+          // per-session copies make their own parents, and this is the only
+          // other thing that ever goes in.
+          fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
           if (!fs.existsSync(path.join(backup, name))) fs.copyFileSync(file, path.join(backup, name), fs.constants.COPYFILE_EXCL);
           this.write(file, JSON.parse(fs.readFileSync(file, "utf8")));
         }
       }
       this.db.prepare("INSERT INTO metadata(key,value) VALUES('imported','1')").run();
+      // WHEN SQLITE TOOK OVER, so the backup above can be aged honestly rather
+      // than from a directory mtime (#457). Written inside the same transaction
+      // as the marker beside it: a store that is "imported" with no date would
+      // be a store the sweep has to guess about.
+      this.db.prepare("INSERT INTO metadata(key,value) VALUES('imported-at',?)").run(String(this.now()));
     });
   }
 }

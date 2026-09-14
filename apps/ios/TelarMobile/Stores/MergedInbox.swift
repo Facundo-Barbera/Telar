@@ -67,6 +67,31 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: filter)
     }
 
+    /// HOW MANY SETTLED ROWS THE MACS ARE HOLDING BACK (#457), summed over the
+    /// ones being shown. Their live reads answer the unsettled rows alone until
+    /// somebody opens the shelf, so this is what draws the shelf that asks.
+    ///
+    /// Zero from a Mac that predates the filter — it sent every row, and
+    /// `sections.settled` already holds them.
+    var shelvedOnMacs: Int {
+        stores.reduce(0) { total, entry in
+            guard filter == nil || filter == entry.key else { return total }
+            return total + entry.value.shelvedOnMac
+        }
+    }
+
+    /// A reader opened the settled shelf: ask every Mac for its rows, now
+    /// rather than on the next tick — otherwise they open it and watch an empty
+    /// shelf for three seconds. Concurrently and per store, exactly like
+    /// `refresh` below, so one slow Mac does not hold the others' rows.
+    func showSettled() async {
+        await withTaskGroup(of: Void.self) { group in
+            for store in stores.values {
+                group.addTask { @MainActor in await store.showSettled() }
+            }
+        }
+    }
+
     var failures: [Failure] {
         order.compactMap { id in
             guard let store = stores[id], let message = store.lastError else { return nil }

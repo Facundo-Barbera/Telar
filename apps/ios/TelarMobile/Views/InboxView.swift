@@ -67,7 +67,13 @@ struct InboxView: View {
                     }
             }
 
-            if !inbox.sections.tail.isEmpty {
+            // THE SETTLED ROWS ARE NOT HERE UNTIL ASKED FOR (#457). The Mac
+            // answers the unsettled list — 7 rows rather than 291 — and says
+            // how many it kept; `shelvedOnMacs` is that count, and it is what
+            // keeps this divider on screen so there is something to tap.
+            // Snoozed rows are never withheld, so the tail is non-empty on its
+            // own whenever any are sleeping.
+            if !inbox.sections.tail.isEmpty || inbox.shelvedOnMacs > 0 {
                 SettledDivider()
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -87,19 +93,30 @@ struct InboxView: View {
                             .tint(Theme.textMuted)
                         }
                 }
-                if inbox.sections.tail.count > settledLimit {
+                /**
+                 THE ROWS THE MAC KEPT, ASKED FOR ON A TAP (#457).
+
+                 It sends the unsettled list and a count, so until this is
+                 pressed there is nothing to page through — which is why this
+                 sits above the "Show more" button rather than replacing it.
+                 Once the rows arrive the Mac keeps sending them and this is
+                 gone, and paging takes over as it always did.
+                 */
+                if inbox.shelvedOnMacs > 0 && inbox.sections.settled.isEmpty {
+                    Button {
+                        Task { await inbox.showSettled() }
+                    } label: {
+                        shelfButtonLabel("Show settled (\(inbox.shelvedOnMacs))")
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                } else if inbox.sections.tail.count > settledLimit {
                     Button {
                         settledLimit += 25
                     } label: {
-                        Text("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Theme.textMuted)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(Theme.border, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            )
+                        shelfButtonLabel("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
                     }
                     .buttonStyle(.plain)
                     .listRowBackground(Color.clear)
@@ -160,6 +177,20 @@ struct InboxView: View {
 
     private func hostName(_ id: HostID) -> String {
         settings.host(id)?.name ?? "Mac"
+    }
+
+    /// The dashed pill under the settled tail. Extracted when a second button
+    /// joined it (#457) so the two cannot drift apart visually.
+    @ViewBuilder private func shelfButtonLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Theme.textMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.border, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            )
     }
 
     private func failureLine(_ failure: MergedInbox.Failure) -> String {

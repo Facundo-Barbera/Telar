@@ -348,6 +348,20 @@ export type LiveSessionsAnswer = {
   daemonId?: string;
   inbox?: InboxPolicy;
   revision?: number;
+  /**
+   * HOW MANY ROWS THE DEFAULT ANSWER LEFT OUT — issue #457.
+   *
+   * The route answers only the UNSETTLED rows unless asked for `all`, so this is
+   * the size of the shelf the caller did not receive. It rides the default
+   * answer because the shelf's HEADER is drawn from it: without a count there is
+   * no "Settled (284)" to click, and so no way to ask for the rest.
+   *
+   * Absent from an engine that predates the filter, which a client must read as
+   * "this engine sent you everything" — not as an empty shelf. It is the same
+   * rule as the three fields above, and here it decides whether the caller may
+   * band the rows it holds or must ask again.
+   */
+  settledCount?: number;
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
@@ -1958,9 +1972,15 @@ export class EngineClient {
    * others without a second request or a connection of its own. Optional: an
    * engine older than the field says nothing, and a rail reads that as "keep
    * the copy I have" rather than "nobody has arranged anything".
+   *
+   * AND IT IS THE UNSETTLED ROWS UNLESS YOU ASK FOR ALL OF THEM (#457). On the
+   * owner's store that is 7 rows rather than 291 — the other 284 were folded and
+   * serialised every three seconds so each rail could put them on a shelf nobody
+   * had open. `all` is what a SHELF asks with; `settledCount` on the default
+   * answer is what draws the header that opens it.
    */
-  liveSessions(): Promise<LiveSessionsAnswer> {
-    return this.request("GET", "/v2/sessions/live");
+  liveSessions(options: { all?: boolean } = {}): Promise<LiveSessionsAnswer> {
+    return this.request("GET", options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live");
   }
 
   /**
@@ -1977,9 +1997,74 @@ export class EngineClient {
    * that redraws from a missing `sessions` key would empty its own rail once a
    * tick. An engine too old to count sends no `revision` and no `unchanged`, so
    * every read stays a full one and the caller is simply the old cockpit.
+   *
+   * ALWAYS THE DEFAULT LIST — the unsettled rows (#457) — and there is no `all`
+   * here on purpose. The revision counts writes, so it does not move when a
+   * reader opens the Settled shelf; a cursor earned against one list and spent
+   * against the other would be answered "unchanged" and the shelf would never
+   * fill. A caller that wants the whole list calls `liveSessions({ all: true })`
+   * and pays for it, which is the version of this that cannot be got wrong.
    */
   liveSessionsSince(since: number): Promise<(LiveSessionsAnswer & { unchanged?: false }) | LiveSessionsUnchanged> {
     return this.request("GET", `/v2/sessions/live?since=${encodeURIComponent(String(since))}`);
+  }
+
+  /**
+   * THE SAME LIST, CONDITIONAL ON AN ETAG — issue #457, step 3.
+   *
+   * `liveSessionsSince` is this in the body and it stays; this is the HTTP
+   * spelling, and it buys three things the body cursor cannot. A 304 carries no
+   * body at all. The MODE is inside the tag, so this is safe for `all: true` —
+   * a `?since=` earned against the unsettled list would have been answered
+   * "unchanged" against `?all=1` and left a shelf empty, which is why that
+   * combination is refused. And it is the standard spelling, so an intermediary
+   * that has never heard of `?since=` still does the right thing.
+   *
+   * ITS OWN ENVELOPE, not `request`'s, for the same reason `requestBytes` has
+   * one: `request` parses a JSON body on every path, and a 304 has none. Two
+   * routes with an unusual shape is not a reason to put a branch on all of them.
+   *
+   * NO `etag` MEANS AN UNCONDITIONAL READ, which is also what an engine too old
+   * to mint one leaves the caller with — it answers 200 with no tag, and a
+   * caller with nothing to hand back simply keeps reading in full.
+   */
+  async liveSessionsMatching(
+    options: { etag?: string; all?: boolean } = {},
+  ): Promise<{ notModified: true; etag: string } | (LiveSessionsAnswer & { notModified?: false; etag?: string })> {
+    const pathname = options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.discovery.token}`,
+          ...(options.etag === undefined ? {} : { "if-none-match": options.etag }),
+        },
+      });
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
+        operation: "liveSessionsMatching",
+        ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
+      });
+    }
+    const etag = response.headers.get("etag") ?? undefined;
+    // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none, and asking for
+    // one would turn the cheapest answer on this client into a parse failure.
+    if (response.status === 304) {
+      return { notModified: true, etag: etag ?? options.etag ?? "" };
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status, { operation: "liveSessionsMatching", transport: "malformed_response" });
+    }
+    if (!response.ok) {
+      const error = (payload as EngineErrorBody | null)?.error;
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status, { operation: "liveSessionsMatching" });
+    }
+    return { ...(payload as LiveSessionsAnswer), ...(etag === undefined ? {} : { etag }) };
   }
 
   createSession(input: {

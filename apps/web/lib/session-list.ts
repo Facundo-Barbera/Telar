@@ -37,7 +37,7 @@ import {
   type SessionAssignment,
   type SessionSettledBy,
 } from "@telar/engine-client";
-import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
+import { isShelved, isSnoozed, settlingActivityOf, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
 
 export const SESSION_PAGE_SIZE = 20;
@@ -255,19 +255,14 @@ export function toSidebarSession(
  * to hide it is a control that does nothing. `session-row.tsx` had its own
  * two-field version of this, which is exactly how that drift starts.
  *
- * `queued` COUNTS AS WORKING. It is not running yet, but a turn is on its way,
- * and settling a session that is about to answer you is the same mistake as
- * settling one mid-answer.
+ * NOW THE PROTOCOL'S, because the ENGINE folds it too (#457): it decides which
+ * rows leave `GET /v2/sessions/live` at all, so a fold that lived only in the
+ * cockpit would be half of a rule with the other half on the other side of the
+ * wire. Kept as a named re-export here — it takes `SidebarSession`, which the
+ * protocol cannot name, and every caller in this app says `settlingActivity`.
  */
 export function settlingActivity(session: SidebarSession): SettlingActivity {
-  return {
-    working: session.activity === "working" || session.activity === "queued",
-    waitingOnYou: session.activity === "blocked",
-    ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
-    // A failure is dated by when the turn ended, because that IS when it
-    // failed — the engine derives both from the same turn.
-    ...(session.lastTurnFailed ? { failed: true, ...(session.lastTurnEndedAt === undefined ? {} : { failedAt: session.lastTurnEndedAt }) } : {}),
-  };
+  return settlingActivityOf(session);
 }
 
 /**
@@ -358,8 +353,11 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
   // The pin, checked after the snooze and before the clock. `isSettled` already
   // answers false for it; naming it here is what gives it a band of its own.
   if (session.settledOverride === "active") return "pinned";
-  if (session.draft && !session.archived && session.settledOverride !== "settled") return "active";
-  return isSettled(session, activity, options) ? "settled" : "active";
+  // The shelf question, not the row question — and it is the PROTOCOL's now,
+  // because the engine asks the same one to decide which rows leave
+  // `/v2/sessions/live` at all (#457). The draft carve-out that used to sit
+  // here is inside it; see `isShelved`.
+  return isShelved(session, activity, options) ? "settled" : "active";
 }
 
 /** A session's identity across every Mac in the rail: two engines can mint

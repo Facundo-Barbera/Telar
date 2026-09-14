@@ -1334,7 +1334,18 @@ export class EngineWorker {
          * to be woken in — and the wall refuses to subscribe there.
          */
         self: { sessionId },
-        list: () => this.options.client.liveSessions(),
+        /**
+         * `all: true` SO THE TWO DEPLOYMENTS LIST THE SAME THING (#457).
+         *
+         * The live route's default became the UNSETTLED rows — right for a
+         * rail, wrong for a toolkit: `sessions_list` promises "every session
+         * that is alive on this engine right now", and the daemon's in-process
+         * build of this capability calls `store.liveSessions()`, which is
+         * unfiltered. Asking narrowly here would make the same tool answer
+         * differently depending on which door it came through, and hide from a
+         * model exactly the settled sessions it might be told to revive.
+         */
+        list: () => this.options.client.liveSessions({ all: true }),
         create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
         /**
          * SENT AS WHATEVER TURN IS LIVE WHEN THE CALL ARRIVES, PROVABLY. The

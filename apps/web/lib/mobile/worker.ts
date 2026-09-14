@@ -84,7 +84,11 @@ export function startMobilePushWorker(): void {
       const relay = relayConfig();
       const records = readPushRecords();
       if (records.length) {
-        const { sessions } = await (await engineClient()).liveSessions();
+        // ALL OF THEM (#457). The route's default is the unsettled rows, and a
+        // notification that is never sent is the worst failure this path has —
+        // so it reads the whole list rather than reasoning about which shelved
+        // session might still owe somebody a push.
+        const { sessions } = await (await engineClient()).liveSessions({ all: true });
         for (const record of records) {
           if (!paired.has(record.deviceId)) {
             if (relay) await revokeRelayDevice(relay, record.deviceId);
