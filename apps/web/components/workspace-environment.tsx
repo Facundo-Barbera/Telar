@@ -113,7 +113,7 @@ function BaseRefPicker({
       type="button"
       onClick={() => pick(refName)}
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
+        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
         pending.baseRef === refName && "bg-accent",
       )}
     >
@@ -152,7 +152,7 @@ function BaseRefPicker({
               type="button"
               onClick={() => pick("HEAD")}
               className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
                 (!pending.baseRef || pending.baseRef === "HEAD") && "bg-accent",
               )}
             >
@@ -193,7 +193,7 @@ function BaseRefPicker({
 
 /** One control in the strip: xs, ghost, its label hidden when the composer is
  *  narrow (a CONTAINER query — the foot must not consult the viewport). */
-const CONTROL = "flex h-6 min-w-0 items-center gap-1 rounded-md px-1.5 transition-colors hover:bg-muted/60 hover:text-foreground";
+const CONTROL = "flex h-6 min-w-0 items-center gap-1 rounded-md px-1.5 transition-colors outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Fifteen seconds: slow enough to be free, fast enough that the uncommitted
  *  count is not a lie by the time it is read. */
@@ -297,7 +297,7 @@ export function WhereThisLands({
             type="button"
             onClick={() => onEnvMode(mode)}
             className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
               (mode === "worktree") === willBeWorktree ? "bg-accent" : "hover:bg-accent/60",
             )}
           >
@@ -469,7 +469,7 @@ export function EnvironmentStrip({
                   <button
                     type="button"
                     onClick={onOpenChanges}
-                    className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors hover:bg-muted"
+                    className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <GitCommitHorizontalIcon className="size-4 shrink-0 text-muted-foreground" />
                     <span className="min-w-0 truncate">Files this session changed</span>

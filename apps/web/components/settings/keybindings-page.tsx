@@ -259,8 +259,8 @@ function ChordButton({
       aria-label={recording ? `Press the new chord for ${row.title}` : `Change the chord for ${row.title}`}
       className={
         recording
-          ? "rounded-md border border-dashed border-primary/60 bg-primary/5 px-2 py-1 text-[0.6875rem] text-primary"
-          : "rounded-md border border-transparent px-2 py-1 transition-colors hover:border-border hover:bg-muted/60"
+          ? "rounded-md border border-dashed border-primary/60 bg-primary/5 px-2 py-1 text-[0.6875rem] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          : "rounded-md border border-transparent px-2 py-1 transition-colors outline-none hover:border-border hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
       }
     >
       {recording ? "Press a chord…" : <Caps caps={row.caps} {...(row.through ? { through: row.through } : {})} />}

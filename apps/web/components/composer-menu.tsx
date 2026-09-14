@@ -103,7 +103,10 @@ export function ComposerMenu({
               // reason it carries the one thing you cannot land on.
               aria-disabled={completion.disabled ? true : undefined}
               // Prevented, not stopped: the editor must keep focus through the
-              // whole gesture or the pick has nowhere to land.
+              // whole gesture or the pick has nowhere to land. Which is also
+              // why this row carries no focus ring: it can never be the focused
+              // element, so `:focus-visible` would be dead CSS. `aria-selected`
+              // plus the `bg-accent` fill below IS the keyboard affordance.
               onMouseDown={(event) => event.preventDefault()}
               onMouseMove={() => {
                 if (index !== active) onActive(index);

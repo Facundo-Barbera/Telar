@@ -159,7 +159,7 @@ export function ProjectNoteEditor({
           aria-label={pinned ? "Unpin" : "Pin to the front"}
           title={pinned ? "Unpin" : "Pin to the front"}
           className={cn(
-            "flex size-6 items-center justify-center rounded-md transition-colors hover:bg-muted",
+            "flex size-6 items-center justify-center rounded-md transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
             pinned ? "text-foreground" : "text-muted-foreground",
           )}
         >
@@ -170,7 +170,7 @@ export function ProjectNoteEditor({
           onClick={() => void remove()}
           aria-label="Delete this note"
           title="Delete this note"
-          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Trash2Icon className="size-3.5" />
         </button>

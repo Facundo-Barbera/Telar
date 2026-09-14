@@ -237,7 +237,7 @@ function LobbyCard({
       onDrop={onRowDrop}
       onClick={() => onEnter(subject.key)}
       className={cn(
-        "flex w-full cursor-grab flex-col gap-1 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20 active:cursor-grabbing",
+        "flex w-full cursor-grab flex-col gap-1 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors outline-none hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
         insertPosition === "above" && "border-t-2 border-spool/60",
         insertPosition === "below" && "border-b-2 border-spool/60",
       )}
@@ -359,7 +359,7 @@ function LobbyRow({
       onDrop={onRowDrop}
       onClick={() => onEnter(subject.key)}
       className={cn(
-        "flex w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 py-1 text-left transition-colors hover:bg-muted/60 active:cursor-grabbing",
+        "flex w-full cursor-grab items-center gap-2 rounded-md border border-transparent px-2 py-1 text-left transition-colors outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
         insertPosition === "above" && "border-t-2 border-spool/60",
         insertPosition === "below" && "border-b-2 border-spool/60",
       )}
@@ -542,7 +542,7 @@ function LobbyNode({
           toggle(node.key);
         }}
         aria-label={collapsed ? "Expand" : "Collapse"}
-        className="flex shrink-0 items-center justify-center rounded p-0.5 hover:bg-muted"
+        className="flex shrink-0 items-center justify-center rounded p-0.5 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
       >
         <ChevronRightIcon
           className={cn("size-3 shrink-0 text-muted-foreground/50 transition-transform", !collapsed && "rotate-90")}
@@ -560,7 +560,7 @@ function LobbyNode({
             event.stopPropagation();
             onEnterArea(node.key);
           }}
-          className="min-w-0 flex-1 text-left"
+          className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className={containerTextClass(node.depth, node.ghost)}>{node.label}</span>
         </button>
@@ -699,7 +699,7 @@ function SmartTile({ label, count, hint, onClick }: { label: string; count: numb
     <button
       type="button"
       onClick={onClick}
-      className="flex flex-1 flex-col items-start gap-0.5 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors hover:ring-foreground/20"
+      className="flex flex-1 flex-col items-start gap-0.5 rounded-lg bg-card px-4 py-3 text-left shadow-1 ring-1 ring-foreground/10 transition-colors outline-none hover:ring-foreground/20 focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <span className="text-lg font-semibold tabular-nums text-foreground">{count}</span>
@@ -715,7 +715,7 @@ function SmartTile({ label, count, hint, onClick }: { label: string; count: numb
 function Breadcrumb({ path, onEnterLobby, onEnterArea }: { path: string[]; onEnterLobby: () => void; onEnterArea: NavigateArea }) {
   return (
     <nav className="mb-4 flex flex-wrap items-center gap-1 px-1 text-xs text-muted-foreground" aria-label="Breadcrumb">
-      <button type="button" onClick={onEnterLobby} className="rounded px-1 py-0.5 transition-colors hover:bg-muted/60 hover:text-foreground">
+      <button type="button" onClick={onEnterLobby} className="rounded px-1 py-0.5 transition-colors outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
         Lobby
       </button>
       {path.map((segment, idx) => {
@@ -723,7 +723,7 @@ function Breadcrumb({ path, onEnterLobby, onEnterArea }: { path: string[]; onEnt
         return (
           <span key={target} className="flex items-center gap-1">
             <span aria-hidden>/</span>
-            <button type="button" onClick={() => onEnterArea(target)} className="rounded px-1 py-0.5 transition-colors hover:bg-muted/60 hover:text-foreground">
+            <button type="button" onClick={() => onEnterArea(target)} className="rounded px-1 py-0.5 transition-colors outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
               {segment}
             </button>
           </span>
@@ -1154,7 +1154,7 @@ export function Lobby({
         <button
           type="button"
           onClick={() => setAdding({})}
-          className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors outline-none hover:border-spool/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           Add a task
         </button>

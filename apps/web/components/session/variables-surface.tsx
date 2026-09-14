@@ -66,7 +66,7 @@ export function VariablesSurface({ sessionId, active, embedded }: { sessionId?: 
         actions={
           <span className="flex items-center gap-1.5">
             {!embedded && <KernelPill state={kernel} />}
-            <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
+            <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
               <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
             </button>
           </span>
@@ -80,7 +80,7 @@ export function VariablesSurface({ sessionId, active, embedded }: { sessionId?: 
         <div className="min-h-0 flex-1 overflow-auto">
           {vars.map((row) => (
             <div key={row.name} className="border-b border-border/60">
-              <button type="button" onClick={() => void inspect(row.name)} className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/40", open === row.name && "bg-muted/40")}>
+              <button type="button" onClick={() => void inspect(row.name)} className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring", open === row.name && "bg-muted/40")}>
                 <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-foreground">{row.name}</span>
                 <span className="shrink-0 truncate font-mono text-[0.625rem] text-muted-foreground">{row.type}</span>
                 <span className="w-24 shrink-0 text-right font-mono text-[0.625rem] text-muted-foreground tabular-nums">

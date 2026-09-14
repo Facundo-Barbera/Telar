@@ -137,7 +137,7 @@ function preview(item: JournalItem): string {
 const failed = (item: JournalItem) => item.status === "failed";
 const running = (item: JournalItem) => item.status === "inProgress";
 
-const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
+const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * THE GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
@@ -219,7 +219,7 @@ function DiffBody({ diff }: { diff: string }) {
         <button
           type="button"
           aria-expanded={expanded}
-          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-[0.6875rem] text-muted-foreground outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => setExpanded((current) => !current)}
         >
           {expanded ? "Show less" : `Show all · ${total} lines`}
@@ -455,7 +455,7 @@ function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: J
       <div className={cn(ROW, "gap-2")}>
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           disabled={!body}
           aria-expanded={body ? open : undefined}
           onClick={() => setOpen((current) => !current)}
@@ -484,7 +484,7 @@ function AgentRow({ item, task, onOpen, onInsert }: { item: JournalItem; task: J
             type="button"
             onClick={() => onOpen(taskId)}
             title="Open in the Agents panel"
-            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground outline-none hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             Open ▸
           </button>
@@ -648,7 +648,7 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
     <div className="py-0.5" aria-label="Wake from another session">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
         disabled={!body}
         aria-expanded={body ? open : undefined}
         onClick={() => setOpen((current) => !current)}
@@ -1273,7 +1273,7 @@ export function TurnFailureRow({
           type="button"
           disabled={resuming}
           onClick={onResume}
-          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[0.6875rem] text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[0.6875rem] text-foreground transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         >
           {resuming ? "Resuming…" : "Resume now"}
         </button>

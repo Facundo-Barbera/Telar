@@ -120,7 +120,7 @@ export function LoomsNav() {
           <button
             type="button"
             onClick={() => setAcceptedOpen((v) => !v)}
-            className={cn(CAPTION, "flex w-full items-center gap-1 px-2 pb-1 text-left")}
+            className={cn(CAPTION, "flex w-full items-center gap-1 rounded-sm px-2 pb-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring")}
             aria-expanded={acceptedOpen}
           >
             <ChevronRightIcon className={cn("size-3 transition-transform", acceptedOpen && "rotate-90")} aria-hidden />

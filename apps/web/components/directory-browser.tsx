@@ -237,7 +237,7 @@ export function DirectoryBrowser({
           aria-label="Back"
           title="Back"
           onClick={onBack}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeftIcon className="size-4" />
         </button>
@@ -266,7 +266,7 @@ export function DirectoryBrowser({
           title={`${hidden ? "Hide" : "Show"} dotfolders (⌘.)`}
           aria-pressed={hidden}
           onClick={() => showHidden(!hidden)}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {hidden ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
         </button>
@@ -312,7 +312,7 @@ export function DirectoryBrowser({
 
       {unreachable && onFallback && (
         <div className="border-t px-3 py-2">
-          <button type="button" onClick={onFallback} className="text-[0.6875rem] underline underline-offset-2 hover:text-foreground">
+          <button type="button" onClick={onFallback} className="rounded-sm text-[0.6875rem] underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
             Choose a folder with the system picker instead
           </button>
         </div>
@@ -337,7 +337,7 @@ export function DirectoryBrowser({
           <button
             type="button"
             onClick={() => void bridge.reveal(listing.path)}
-            className="underline underline-offset-2 hover:text-foreground"
+            className="rounded-sm underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             Open in Finder
           </button>
@@ -347,7 +347,7 @@ export function DirectoryBrowser({
           onClick={submit}
           disabled={Boolean(busy) || !listing}
           className={cn(
-            "flex items-center gap-1.5 rounded-md bg-primary px-2 py-1 text-[0.6875rem] font-medium text-primary-foreground",
+            "flex items-center gap-1.5 rounded-md bg-primary px-2 py-1 text-[0.6875rem] font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
             "disabled:opacity-60",
           )}
         >
@@ -385,7 +385,7 @@ function DirectoryRow({
       onClick={onPick}
       onMouseMove={onHover}
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
         on ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
         entry.hidden && "opacity-70",
       )}

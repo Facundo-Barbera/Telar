@@ -626,7 +626,7 @@ export function ProjectPalettePages({
                 aria-label={backsTo === "projects" ? "Back to projects" : "Back"}
                 title={backsTo === "projects" ? "Back to projects" : "Back"}
                 onClick={goBack}
-                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ArrowLeftIcon className="size-4" />
               </button>
@@ -814,7 +814,7 @@ function CloneUrlPage({
           aria-label="Back to sources"
           title="Back to sources"
           onClick={onBack}
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeftIcon className="size-4" />
         </button>
@@ -908,7 +908,7 @@ export function PaletteRow({
       // the arrows never disagree about what is selected.
       onMouseMove={onHover}
       className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
         on ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
         dim && "opacity-60",
       )}
@@ -1003,7 +1003,7 @@ export function RegisteredToast({
         <button
           type="button"
           onClick={undo}
-          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs font-medium hover:bg-accent"
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs font-medium outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Undo2Icon className="size-3.5" />
           Undo
@@ -1013,7 +1013,7 @@ export function RegisteredToast({
         type="button"
         aria-label="Dismiss"
         onClick={onDismiss}
-        className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+        className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
       >
         <XIcon className="size-3.5" />
       </button>
