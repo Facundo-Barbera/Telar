@@ -753,27 +753,30 @@ code, pre, kbd, samp {
    through the `--sidebar-wash` indirection the @theme block explains, rather
    than re-derived from --background. Ratios are unchanged, so Telar's default
    look is pixel-identical; Ember's rail now frosts ember instead of grey. */
-/* ─── THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY (#399) ────────────
+/* ─── THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY (#399, #434) ──────
 
    `--translucency` is what the person asked for. `--wash-transparency` is what
-   this half can afford to give them, and they are the same number in dark only.
+   this half has to spend to deliver it, and they are the same number in dark
+   only.
 
-   WHY LIGHT GETS LESS. Transparency costs contrast, and the two halves do not
-   start from the same place: dark text on a near-white canvas is already the
-   narrower margin, and thinning that canvas mixes the DESKTOP into it — an
-   arbitrary photograph, usually brighter than the ink and never chosen to be
-   read against. The dark half thins toward black, which is where its own text
-   is not. So the identical ratio that reads as glass at 45% dark read as fog at
-   45% light: the slider was honest and the result was not.
+   LIGHT SPENDS MORE, AND THAT IS THE CORRECTION #434 MAKES. The first reading
+   of this was backwards. It looked like a contrast budget — thinning a
+   near-white canvas mixes in an arbitrary desktop, usually brighter than the
+   ink — so light was given LESS of the slider (0.6, then 0.85). Two rounds of
+   screenshots say the premise was wrong at the pixel level: the same alpha
+   does not buy the same amount of see-through in the two halves. A near-white
+   canvas over a darker desktop reads as FROST at the opacity where a
+   near-black one reads as GLASS, because the light canvas is the one making
+   the bigger difference to what is behind it. So the honest way to give the
+   two halves the same PERCEIVED depth is to spend more of the slider on light,
+   not less. #434 measured 1.0 on a real build and it still barely moved.
 
-   0.85, AND IT IS A TUNING, NOT A DERIVATION. The first cut was 0.6, chosen
-   on paper; on the nightly, side by side with dark at the same slider and under
-   the light material the shell now uses, 0.6 stacked with that material into a
-   near-solid pane — the owner's screenshot on 2026-09-13 showed dark as glass
-   and light as a sheet. 0.85 keeps light slightly more opaque than dark (the
-   contrast argument above still holds) without reading as a different feature.
-   Anyone re-tuning it moves both rules at once, which is the reason the number
-   is a variable rather than two hand-mixed ratios that could drift apart.
+   1.4 AND AN 85% CAP, BOTH TUNINGS. 1.4 is the overshoot that made light and
+   dark read alike at 45% and 65% side by side; the cap is a floor under
+   legibility at the top of the slider, where 1.4× would otherwise ask for
+   126% and erase the canvas entirely. Anyone re-tuning moves these two numbers
+   and nothing else — that is the whole reason this is one declaration rather
+   than two hand-mixed ratios that could drift apart.
 
    ONLY THE LIGHT HALF DECLARES ANYTHING. The two rules below read the slider
    THROUGH `--wash-transparency`, falling back to the slider itself — so the
@@ -783,7 +786,7 @@ code, pre, kbd, samp {
    (theme-provider.tsx), which is the same element both attributes are written
    on, so `:not(.dark)` is the light half of exactly this scene. */
 html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --wash-transparency: calc(var(--translucency, 45%) * 0.85);
+  --wash-transparency: min(calc(var(--translucency, 45%) * 1.4), 85%);
 }
 :is([data-telar-shell][data-translucent], [data-backdrop]) body {
   background-color: color-mix(in oklab, var(--background) calc(100% - var(--wash-transparency, var(--translucency, 45%))), transparent);
