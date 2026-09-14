@@ -21,6 +21,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CodeXmlIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, TriangleAlertIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
+import {
+  describePermissionDenial,
+  SitePermissionPrompt,
+  SitePermissionsPopover,
+  SiteSecurityIcon,
+  type PermissionAnswer,
+} from "@/components/browser-permission-prompt";
+import {
+  describePermissionKinds,
+  siteLabel,
+  type PermissionPrompt,
+  type SitePermissionKind,
+  type SitePermissionRecord,
+  type SitePermissionsBridge,
+} from "@/lib/desktop-site-permissions";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -212,7 +227,17 @@ export type DesktopBrowserBridge = {
    *  the answer happens inside the shell's own window, never here. */
   offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;
   onExtension?(listener: (status: DesktopExtensionStatus) => void): () => void;
-};
+  /**
+   * SITE PERMISSIONS (#422) — camera, microphone, notifications, location,
+   * clipboard and screen share. Every method is optional: an older shell installs
+   * no permission handlers at all, and this panel then draws no lock icon rather
+   * than a control that throws.
+   *
+   * The shape lives in `lib/desktop-site-permissions.ts`, which Settings reads
+   * too; it is spread in here so a caller of THIS bridge sees one object, the
+   * way `telarDesktop.browser` actually is.
+   */
+} & SitePermissionsBridge;
 
 /**
  * A TAB'S OWN MENU, and it reads like every browser's because it is the same
@@ -580,6 +605,23 @@ export function addressValue(url: string | undefined): string {
 }
 
 /**
+ * THE ORIGIN A PERMISSION BELONGS TO, or undefined where none can. A blank tab,
+ * a local file and an extension page hold nothing — `file:` has origin `null` in
+ * the spec, so every local file would otherwise share one bucket. The same rule
+ * the shell applies (site-permissions.js), said here so the lock icon is absent
+ * rather than showing an empty list.
+ */
+export function originOfUrl(url: string | undefined): string | undefined {
+  if (!url || url === "about:blank") return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * WHAT THE ADDRESS ROW SPENDS ON EVERYTHING THAT IS NOT THE ADDRESS.
  *
  * The row is one no-wrap flex line, so every control on it is width the input
@@ -588,13 +630,19 @@ export function addressValue(url: string | undefined): string {
  * TYPE into — collapsed to about 30px, which is the bug (#319).
  *
  * Measured in px off the row's own classes rather than guessed: back, forward,
- * reload and the profile mark are 22 each (`p-1` around a 14px glyph); the
- * viewport control is 26 icon-only (`px-1.5` around the same glyph); the
- * password control is 44 at its widest, which is the glyph with the warning mark
- * beside it; the row spends six 4px gaps between its seven children. Padding is
- * NOT counted — the observer below reads the content box.
+ * reload and the profile mark are 22 each (`p-1` around a 14px glyph); the LOCK
+ * is 18 (`p-0.5` around the same glyph); the viewport control is 26 icon-only
+ * (`px-1.5`); the password control is 44 at its widest, which is the glyph with
+ * the warning mark beside it; the row spends seven 4px gaps between its eight
+ * children. Padding is NOT counted — the observer below reads the content box.
+ *
+ * THE LOCK IS THE TIGHT ONE ON PURPOSE (#422). It is the only control this row
+ * has gained since #319, and at the width that issue was filed about (a 420px
+ * panel, 404px of content) the compact row clears the input floor by exactly
+ * nothing. At `p-1` it would be 4px short — so the site-permissions anchor wears
+ * the smallest padding on the row, and #319's acceptance still holds.
  */
-const ADDRESS_CONTROLS_COMPACT = 4 * 22 + 26 + 44 + 6 * 4;
+const ADDRESS_CONTROLS_COMPACT = 4 * 22 + 18 + 26 + 44 + 7 * 4;
 /**
  * The same row spelling its ONE labelled control out: "Fit panel" or a size
  * (+49).
@@ -619,6 +667,30 @@ export function addressInputRoom(rowWidth: number, labelled: boolean): number {
 /** Whether the row must drop its labels for the input to clear the floor. */
 export function addressRowCompact(rowWidth: number): boolean {
   return addressInputRoom(rowWidth, true) < ADDRESS_INPUT_FLOOR;
+}
+
+/**
+ * WHAT ONE SITE HOLDS IN THIS SESSION'S PROFILE, or nothing.
+ *
+ * A module function rather than a hook, because both of its callers close over
+ * values derived from the panel's own state and the compiler's
+ * preserve-memoization rule will not have a manual memo over those. It answers
+ * `[]` for every reason there is to have no answer — no shell, a blank tab, an
+ * unbound scope — so the lock popover says "has not asked for anything", which
+ * is true in all of them.
+ */
+async function readSitePermissionsFor(
+  bridge: DesktopBrowserBridge,
+  scopeKey: string,
+  origin: string | undefined,
+): Promise<SitePermissionRecord[]> {
+  if (!bridge.sitePermissions || !origin) return [];
+  try {
+    const answer = await bridge.sitePermissions({ scopeKey, origin });
+    return answer && "kinds" in answer && Array.isArray(answer.kinds) ? (answer.kinds as SitePermissionRecord[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Thrown by `bindNow` when the session scope changed while it awaited, so the
@@ -684,10 +756,27 @@ export function DesktopBrowserSurface({
    * a menu cannot be added here without joining the thing that hides the
    * native view underneath it (see `lib/native-view-overlay.ts`).
    */
-  const [openOverlay, setOpenOverlay] = useState<"profile" | "viewport" | null>(null);
+  const [openOverlay, setOpenOverlay] = useState<"profile" | "viewport" | "site" | null>(null);
   useNativeViewOverlay(openOverlay !== null);
   /** Which pane the profile menu shows: its list, or one of its two forms. */
   const [profilePane, setProfilePane] = useState<"menu" | "rename" | "new">("menu");
+  /**
+   * SITE PERMISSIONS (#422). The questions the shell is waiting on, the ones a
+   * person has waved away for now, what this session's profile remembers about
+   * the page in front of them, and the sentence for when macOS refuses a device
+   * after they said yes.
+   *
+   * DISMISSING IS NOT ANSWERING. A prompt covers the native view while it is up
+   * (see `useNativeViewOverlay` below), so Esc and a click outside have to put
+   * the page back — but the question is still open, the shell's own minute is
+   * still running, and the lock icon keeps a mark until it is answered or times
+   * out. That is what the omnibox icon does in every browser.
+   */
+  const [prompts, setPrompts] = useState<PermissionPrompt[]>([]);
+  const [dismissedPrompts, setDismissedPrompts] = useState<readonly string[]>([]);
+  const [sitePermissions, setSitePermissions] = useState<SitePermissionRecord[]>([]);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionDenial, setPermissionDenial] = useState<string>();
   const firstScopeRef = useRef(true);
   const partitionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -704,6 +793,12 @@ export function DesktopBrowserSurface({
     // the session you just arrived at.
     setOpenOverlay(null);
     setProfilePane("menu");
+    // A question belongs to the session that was asked it; arriving at another
+    // one must not show its prompt, and the shell still holds the original.
+    setPrompts([]);
+    setDismissedPrompts([]);
+    setSitePermissions([]);
+    setPermissionDenial(undefined);
   }, [scope, scopeKey, projectId]);
 
   // Typing an address is the human's hands on the tab BEFORE submit; the
@@ -718,6 +813,19 @@ export function DesktopBrowserSurface({
     void bridge.action(scopeKey, { action: "intent" }).then((next) => { if (scope.isCurrent(gen)) setState(next); }, () => undefined);
   }, [bridge, scope, scopeKey]);
   const activeTab = state?.tabs.find((tab) => tab.active);
+  /** The page's own origin — what a permission is scoped to. A blank tab, a
+   *  local file and an extension page have none, and hold none. */
+  const activeOrigin = originOfUrl(activeTab?.url);
+  /** This tab's open question, if it has one. A prompt with no tab (the shell
+   *  could not attribute it) is shown here rather than nowhere. */
+  const tabPrompt = prompts.find((prompt) => prompt.tabId === null || prompt.tabId === activeTab?.id);
+  const activePrompt = tabPrompt && !dismissedPrompts.includes(tabPrompt.requestId) ? tabPrompt : undefined;
+  /**
+   * A SECOND CLAIM ON THE NATIVE VIEW, and a separate one on purpose: the hook
+   * COUNTS claims, so a prompt appearing while the profile menu is open — and
+   * either one closing first — never reveals the page under the other.
+   */
+  useNativeViewOverlay(Boolean(activePrompt));
   // Advisory, per tab: the mark speaks about the tab you are LOOKING at.
   const [newProfileLabel, setNewProfileLabel] = useState("");
   const [newProfileAccount, setNewProfileAccount] = useState("");
@@ -817,7 +925,7 @@ export function DesktopBrowserSurface({
     bridge,
     scopeKey,
     hostRef,
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), activeTab?.sleeping].join("|"),
     viewportMode,
     overlayRef,
   );
@@ -878,6 +986,107 @@ export function DesktopBrowserSurface({
     },
     [refresh, scope],
   );
+
+  /**
+   * THE QUESTIONS THIS SESSION IS WAITING ON. A push arrives the moment a page
+   * asks; the read is the reconciler, and it is what makes three separate things
+   * work with no extra machinery — a panel that remounted mid-prompt finds it,
+   * a prompt the shell timed out after its minute disappears, and an answer that
+   * raced a push cannot leave a dead question on screen.
+   */
+  const readPrompts = useCallback(async () => {
+    if (!bridge.permissionPrompts) return;
+    const gen = scope.capture();
+    try {
+      const answer = await bridge.permissionPrompts(scopeKey);
+      if (scope.isCurrent(gen)) setPrompts(answer.prompts ?? []);
+    } catch {
+      // The shell mid-reload is not a reason to drop what is on screen.
+    }
+  }, [bridge, scope, scopeKey]);
+
+  useEffect(() => {
+    const unsubscribeRequest = bridge.onPermissionRequest?.((prompt) => {
+      if (prompt.scopeKey && prompt.scopeKey !== scopeKey) return;
+      setPrompts((current) => (current.some((open) => open.requestId === prompt.requestId) ? current : [...current, prompt]));
+    });
+    // macOS refused the device after the human allowed the site — the one
+    // failure the page cannot explain, because all it ever sees is
+    // NotAllowedError. It goes on the panel's own strip.
+    const unsubscribeDenied = bridge.onPermissionDenied?.((denial) => setPermissionDenial(describePermissionDenial(denial)));
+    const first = window.setTimeout(() => void readPrompts(), 0);
+    const timer = window.setInterval(() => void readPrompts(), 2_000);
+    return () => {
+      unsubscribeRequest?.();
+      unsubscribeDenied?.();
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [bridge, readPrompts, scopeKey]);
+
+  /**
+   * What this session's profile remembers about the page in front of the person.
+   * Re-read when the page changes and after every write.
+   *
+   * THE READ ITSELF IS A MODULE FUNCTION (`readSitePermissionsFor`), not a
+   * `useCallback`: it closes over `activeOrigin`, which is derived from `state`,
+   * and the compiler's preserve-memoization rule refuses a manual memo over that
+   * — the same reason `onKeys` below is a plain function. Freshness is guarded
+   * by the effect's own cancel flag here and by the scope stamp at the call
+   * sites, which is what the memo was doing anyway.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const task = window.setTimeout(() => {
+      void readSitePermissionsFor(bridge, scopeKey, activeOrigin).then((records) => {
+        if (!cancelled) setSitePermissions(records);
+      });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(task);
+    };
+  }, [bridge, scopeKey, activeOrigin]);
+
+  /**
+   * ANSWER ONE QUESTION. The prompt leaves the screen on the press rather than
+   * on the round trip — the shell ignores a second answer to the same request,
+   * so nothing can be double-answered, and a prompt that lingered while IPC
+   * settled would read as a button that did nothing.
+   */
+  // Plain functions, like `onKeys` below and for the same reason: both close
+  // over `activeOrigin`, which is derived from `state`, and the compiler's
+  // preserve-memoization rule will not accept a manual memo over that. The
+  // compiler memoizes them itself.
+  const answerPermission = async (requestId: string, answer: PermissionAnswer) => {
+    if (!bridge.answerPermission) return;
+    setPermissionBusy(true);
+    setPrompts((current) => current.filter((prompt) => prompt.requestId !== requestId));
+    try {
+      await bridge.answerPermission({ requestId, ...answer });
+    } catch {
+      // The shell timed it out, or went away. Either way the question is over;
+      // re-reading is what puts the truth back on screen.
+    } finally {
+      setPermissionBusy(false);
+      void readPrompts();
+      void readSitePermissionsFor(bridge, scopeKey, activeOrigin).then(setSitePermissions);
+    }
+  };
+
+  /** Take an answer back — one kind, or (with none) everything this site holds. */
+  const forgetPermission = async (kind?: SitePermissionKind) => {
+    if (!bridge.forgetSitePermission || !activeOrigin) return;
+    setPermissionBusy(true);
+    try {
+      await bridge.forgetSitePermission({ scopeKey, origin: activeOrigin, ...(kind ? { kind } : {}) });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "That site permission could not be forgotten.");
+    } finally {
+      setPermissionBusy(false);
+      void readSitePermissionsFor(bridge, scopeKey, activeOrigin).then(setSitePermissions);
+    }
+  };
 
   const openPasswordManager = useCallback(async () => {
     if (!bridge.openExtensionPopup) return;
@@ -1021,6 +1230,19 @@ export function DesktopBrowserSurface({
               // eslint-disable-next-line @next/next/no-img-element -- page-supplied favicon URL; nothing for next/image here
               <img src={tab.favicon} alt="" aria-hidden className="size-3 shrink-0 rounded-[2px]" />
             ) : null}
+            {/* A PAGE IN A BACKGROUND TAB IS ASKING FOR SOMETHING (#422). The
+                prompt is drawn over ITS tab's address bar, which you are not
+                looking at — so the strip says where the question is, the same
+                way it says where the agent is working. The shell's own minute
+                runs whether or not anyone comes to look. */}
+            {prompts.some((prompt) => prompt.tabId === tab.id) && !tab.active ? (
+              <span
+                title={`This page is asking to use your ${describePermissionKinds(prompts.find((prompt) => prompt.tabId === tab.id)!.kinds)}`}
+                className="flex shrink-0"
+              >
+                <span aria-label="Waiting for a permission answer" role="img" className="block size-1.5 rounded-full bg-primary" />
+              </span>
+            ) : null}
             {/* DevTools are open on this tab, in their own window (#423). The
                 strip is where a stray DevTools window is traced back to the
                 page it belongs to — and it is per tab, so two open at once
@@ -1107,6 +1329,80 @@ export function DesktopBrowserSurface({
         <button type="button" aria-label="Reload" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => void act({ action: "reload" })}>
           <RotateCwIcon className={cn("size-3.5", activeTab?.loading && "animate-spin text-primary")} />
         </button>
+        {/* ── the lock, and everything behind it ────────────────────────────
+            WHERE A BROWSER PUTS IT: at the head of the address, because it is
+            about the page the address names. It is the anchor for BOTH the
+            permission prompt (a question the page just asked) and the list of
+            what this site already holds — the same icon in Chrome, and for the
+            same reason: the place you are asked is the place you go back to.
+
+            ABSENT ON A PAGE THAT CAN HOLD NOTHING (a blank tab, a local file),
+            rather than present and empty. The prompt still shows if one somehow
+            arrives — a question with nowhere to be answered is worse. */}
+        {(activeOrigin || activePrompt) && bridge.sitePermissions ? (
+          <Popover
+            open={openOverlay === "site" || Boolean(activePrompt)}
+            onOpenChange={(open) => {
+              if (open) {
+                // Re-opening from the lock is how a waved-away question comes
+                // back — the shell is still waiting on it.
+                setDismissedPrompts([]);
+                setOpenOverlay("site");
+                return;
+              }
+              // Esc or a click outside: put the page back, keep the question.
+              if (activePrompt) setDismissedPrompts((current) => [...current, activePrompt.requestId]);
+              closeOverlay();
+            }}
+          >
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={
+                    activePrompt
+                      ? `${siteLabel(activePrompt.origin)} is asking for permission`
+                      : activeOrigin
+                        ? `Site permissions for ${siteLabel(activeOrigin)}`
+                        : "Site permissions"
+                  }
+                  title={activePrompt ? "This page is asking for permission" : "What this site is allowed to do"}
+                  // `p-0.5`, NOT the `p-1` its neighbours wear, and that is the
+                  // address row's budget talking: at the panel width #319 was
+                  // filed about (420px) the row clears the input floor by
+                  // exactly nothing, so the lock is the tightest icon button
+                  // this toolbar has. See ADDRESS_CONTROLS_COMPACT.
+                  className={cn(
+                    "relative shrink-0 rounded-md p-0.5 hover:bg-muted",
+                    tabPrompt ? "text-primary" : sitePermissions.some((record) => record.decision === "allow") ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                />
+              }
+            >
+              <SiteSecurityIcon origin={activeOrigin} />
+              {/* A question waved away is still a question. The mark is what
+                  says the lock is worth clicking again. */}
+              {tabPrompt && !activePrompt ? <span aria-hidden className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-primary" /> : null}
+            </PopoverTrigger>
+            <PopoverContent align="start" side="bottom" sideOffset={6} aria-label={activePrompt ? "Site permission request" : "Site permissions"} className="w-72">
+              {activePrompt ? (
+                <SitePermissionPrompt
+                  prompt={activePrompt}
+                  busy={permissionBusy}
+                  onAnswer={(answer) => void answerPermission(activePrompt.requestId, answer)}
+                />
+              ) : (
+                <SitePermissionsPopover
+                  origin={activeOrigin}
+                  records={sitePermissions}
+                  busy={permissionBusy}
+                  onForget={(kind) => void forgetPermission(kind)}
+                  onReset={() => void forgetPermission()}
+                />
+              )}
+            </PopoverContent>
+          </Popover>
+        ) : null}
         <input
           aria-label="Address"
           placeholder="Type an address"
@@ -1474,6 +1770,17 @@ export function DesktopBrowserSurface({
         <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[0.6875rem] text-destructive">
           <span className="min-w-0 flex-1 truncate">{extensionError}</span>
           <button type="button" onClick={() => setExtensionError(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-destructive/20">Dismiss</button>
+        </div>
+      )}
+      {/* macOS REFUSED THE DEVICE AFTER THE PERSON ALLOWED THE SITE — the one
+          failure the page cannot explain, because all it ever gets is
+          NotAllowedError. A warning rather than an error: nothing here is
+          broken, and the sentence names the pane that fixes it. */}
+      {permissionDenial && (
+        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-[0.6875rem] text-foreground">
+          <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-warning" />
+          <span className="min-w-0 flex-1">{permissionDenial}</span>
+          <button type="button" onClick={() => setPermissionDenial(undefined)} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Dismiss</button>
         </div>
       )}
 

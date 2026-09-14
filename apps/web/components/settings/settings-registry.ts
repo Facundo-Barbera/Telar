@@ -44,6 +44,7 @@
 
 import {
   BlocksIcon,
+  CameraIcon,
   CircleUserRoundIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -489,6 +490,25 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Logins you allowed agents to fill without asking again, one 1Password item each.",
             keywords: ["1password", "password", "credential", "autofill", "revoke", "vault", "integrations"],
             icon: KeyRoundIcon,
+          },
+        ],
+      },
+      {
+        /**
+         * THE GROUP IS INDEXED; THE SITES IN IT ARE NOT. Each row's title is an
+         * origin and its hint is a profile name — values, not copy, which is the
+         * rule at the top of this file. What IS indexed is the heading and the
+         * empty state, because "where do I turn the camera back off for that
+         * site" is exactly the question search exists for, and landing on this
+         * pane answers most of it.
+         */
+        title: "Site permissions",
+        rows: [
+          {
+            title: "Nothing decided yet",
+            hint: "Camera, microphone, notifications, location, clipboard and screen sharing, per site and per browser profile.",
+            keywords: ["camera", "microphone", "mic", "webcam", "notifications", "location", "geolocation", "clipboard", "screen share", "screen sharing", "permission", "permissions", "allow", "block", "revoke", "site"],
+            icon: CameraIcon,
           },
         ],
       },

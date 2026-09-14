@@ -233,6 +233,50 @@ describe("a --dev package is a separate app that cannot collide with the install
   });
 });
 
+describe("the packaged app can be granted the camera and the microphone", () => {
+  /**
+   * THE FAILURE THIS PREVENTS IS INVISIBLE IN A DEV CHECKOUT, which is what
+   * makes it this file's kind of invariant. A page in Telar's browser asks for
+   * the camera; the shell calls `systemPreferences.askForMediaAccess`; on a
+   * SIGNED build with no usage string and no device entitlement macOS refuses
+   * before any dialog can appear, `askForMediaAccess` answers false, and the
+   * page reports NotAllowedError — indistinguishable from a person saying no.
+   * That was #422's whole first bullet.
+   *
+   * BOTH HALVES, OR NEITHER WORKS. The entitlement is what lets a hardened
+   * process ask; the Info.plist string is what the dialog says, and macOS
+   * refuses to show a dialog it has no sentence for.
+   */
+  const plist = (name) => fs.readFileSync(path.join(__dirname, "build", name), "utf8");
+  const info = manifest.build.mac.extendInfo;
+
+  test("Info.plist carries a usage string for each device, in words a person is asked to agree to", () => {
+    for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"]) {
+      expect(typeof info[key]).toBe("string");
+      // Not a placeholder: this string IS the consent dialog's body.
+      expect(info[key].length).toBeGreaterThan(40);
+      expect(info[key]).toContain("Telar");
+    }
+    // The one that was already there is untouched — computer use still prompts.
+    expect(info.NSAppleEventsUsageDescription).toContain("Computer Use");
+  });
+
+  test("the hardened runtime is entitled to both devices, and so are the helpers that open them", () => {
+    for (const key of ["com.apple.security.device.camera", "com.apple.security.device.audio-input"]) {
+      expect(plist("entitlements.mac.plist")).toContain(`<key>${key}</key>`);
+      // The renderer helper is what actually captures; a grant that stops at
+      // the main process is a grant the capture never sees.
+      expect(plist("entitlements.mac.inherit.plist")).toContain(`<key>${key}</key>`);
+    }
+  });
+
+  test("the store the decisions live in is packaged with the module that reads it", () => {
+    expect(manifest.build.files).toContain("site-permissions.js");
+    const manager = fs.readFileSync(path.join(__dirname, "browser-manager.js"), "utf8");
+    expect(manager).toContain('require("./site-permissions")');
+  });
+});
+
 describe("the password-manager extension ships with what it needs", () => {
   test("the compat modules main.js requires are in build.files, and the library is a runtime dependency", () => {
     for (const file of ["extension-host.js", "extension-compat.js", "private-interaction.js"]) expect(manifest.build.files).toContain(file);

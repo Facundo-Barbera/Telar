@@ -114,6 +114,22 @@ describe("the row's markup is the budget's own claim", () => {
     expect(source).toContain('<IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />');
   });
 
+  /**
+   * THE LOCK IS THE ROW'S NEWEST CONTROL AND ITS TIGHTEST (#422).
+   *
+   * The site-permissions anchor is the only thing this row has gained since
+   * #319, and the budget above only survives it because it wears `p-0.5` rather
+   * than the `p-1` of every button beside it: at the 420px panel the issue was
+   * filed about, the compact row clears the input floor by EXACTLY nothing, and
+   * `p-1` would put it 4px short. A padding change here is a crushed address bar
+   * at that width, which is the bug, returning.
+   */
+  test("the site-permissions lock is the row's tightest button, which is what the budget assumes", () => {
+    expect(source).toContain('"relative shrink-0 rounded-md p-0.5 hover:bg-muted"');
+    expect(source).toContain("const ADDRESS_CONTROLS_COMPACT = 4 * 22 + 18 + 26 + 44 + 7 * 4;");
+    expect(addressInputRoom(420 - ADDRESS_ROW_PADDING, false)).toBe(ADDRESS_INPUT_FLOOR);
+  });
+
   test("the 1Password warning is a mark with the sentence in its tooltip, not a paragraph in the toolbar", () => {
     expect(source).toContain('<TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-destructive" />');
     // The sentence is still SAID — in the title and the accessible name, in
