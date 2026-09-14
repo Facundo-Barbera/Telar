@@ -961,9 +961,21 @@ html:not(.dark)[data-telar-shell][data-translucent] {
 
    One fixed div, first child of body, painted entirely from variables the
    init script and applyBackdrop write on <html>. Inset is negative so a
-   blurred image's soft edges bleed off-screen instead of vignetting. The
-   scrim (::after) dims toward the CANVAS colour, not black — dimming is
-   "more theme", so it works in both schemes and on any theme. */
+   layer's soft edges bleed off-screen instead of vignetting.
+
+   EACH COLOUR STATE HAS ITS OWN FOUR LISTS, AND THIS IS WHERE THEY ARE CHOSEN
+   BETWEEN (#471). Light and dark are two states of one composition with
+   genuinely separate layer stacks, so entry n of one can be an image where the
+   other's is a gradient — and `background-size/position/repeat` take one comma
+   entry per image, so one shared list cannot serve both. The init script writes
+   both states' variables and makes no decision; the `.dark` rule below is the
+   decision. That is what makes first paint correct with no flash, and what
+   keeps it correct when the OS flips scheme under a window set to `system`
+   with no script running at all.
+
+   THE `-dark` VARIABLES FALL BACK TO THE `-light` ONES so a composition whose
+   dark state is untouched paints its light stack rather than nothing — the
+   same courtesy --backdrop-dark has always done for the image list. */
 #app-backdrop {
   display: none;
 }
@@ -1008,19 +1020,15 @@ html:not(.dark)[data-telar-shell][data-translucent] {
   /* `none` is the honest fallback: the variables are written inline on <html>
      by lib/backdrop.ts, and until they are, there is no scene. */
   background-image: var(--backdrop-light, none);
-  background-size: var(--backdrop-size, cover);
-  background-position: var(--backdrop-position, center);
-  background-repeat: var(--backdrop-repeat, no-repeat);
-  filter: blur(var(--backdrop-blur, 0px));
+  background-size: var(--backdrop-size-light, cover);
+  background-position: var(--backdrop-position-light, center);
+  background-repeat: var(--backdrop-repeat-light, no-repeat);
 }
 .dark[data-backdrop] #app-backdrop {
   background-image: var(--backdrop-dark, var(--backdrop-light));
-}
-[data-backdrop] #app-backdrop::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-color: color-mix(in oklab, var(--background) var(--backdrop-dim, 0%), transparent);
+  background-size: var(--backdrop-size-dark, var(--backdrop-size-light, cover));
+  background-position: var(--backdrop-position-dark, var(--backdrop-position-light, center));
+  background-repeat: var(--backdrop-repeat-dark, var(--backdrop-repeat-light, no-repeat));
 }
 
 /* ─── A SCENE AND THE DESKTOP, TOGETHER ─────────────────────────────────────
