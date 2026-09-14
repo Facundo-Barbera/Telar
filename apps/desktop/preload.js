@@ -85,7 +85,7 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     setScopeProfile: (scopeKey, profileId) => ipcRenderer.invoke("telar:browser:set-scope-profile", { scopeKey, profileId }),
     extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
-    resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),
+    resumeFromPrivate: (options) => ipcRenderer.invoke("telar:browser:private-resume", { force: options?.force === true }),
     onExtension: (listener) => on("telar:browser:extension", listener),
     // SITE PERMISSIONS (#422): camera, microphone, notifications, location,
     // clipboard and screen share, asked with Telar's own prompt over the address

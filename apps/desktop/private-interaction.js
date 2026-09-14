@@ -23,8 +23,18 @@
  * agent's next mutation must re-observe — once the popup is closed AND a
  * focus-aware probe says no credential field is filled or focused. A person
  * only ever acts on the STUCK case (a page that will not answer the probe);
- * the normal flow needs no gesture. This class stays the mechanism: begin,
- * end, epoch, admit.
+ * the normal flow needs no gesture.
+ *
+ * WHICH PAGE IS ASKED IS THE MANAGER'S RULE, and it is narrow (#480): only a
+ * tab whose own preload REPORTED a credential field can hold the window open.
+ * A tab nobody reported cannot be the reason the browser is paused — asking it
+ * anyway is how one unrelated page with an unprobeable iframe once wedged every
+ * agent's tools in every session with no way out but killing Telar. The stuck
+ * case is now visible (a bar over the tab strip) and has a door: Resume
+ * re-probes, and Resume anyway is the person overruling a page that will not
+ * answer at all.
+ *
+ * This class stays the mechanism: begin, end, epoch, admit.
  */
 class PrivateInteraction {
   constructor(options = {}) {

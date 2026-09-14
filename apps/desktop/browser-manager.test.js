@@ -358,6 +358,8 @@ function makeHarness(options = {}) {
     ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
     ...(options.onCredentialEntryFinished ? { onCredentialEntryFinished: options.onCredentialEntryFinished } : {}),
+    ...(options.onPrivacyForced ? { onPrivacyForced: options.onPrivacyForced } : {}),
+    ...(options.stuckAfterMs !== undefined ? { stuckAfterMs: options.stuckAfterMs } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.sessions ? { sessionFor } : {}),
   });
@@ -1316,31 +1318,69 @@ describe("the credential boundary — private interaction gates every browser to
     expect(textOf(stale)).toContain("a private interaction ended");
   });
 
-  test("Resume asks EVERY frame of EVERY tab and fails closed: a filled iframe, a missing probe, or a throwing frame all refuse — even on a tab that never reported a field", async () => {
+  /**
+   * THE HOLDING TAB IS ASKED, FRAME BY FRAME — AND NOTHING ELSE IS (#480).
+   *
+   * Every frame of the tab that REPORTED a credential field still gets the
+   * question, because the field may be in the login iframe rather than the top
+   * document. What changed is who is asked at all: a tab the preload never
+   * named cannot be the reason the window has to stay open, and asking it was
+   * the wedge — one unrelated tab with an unprobeable frame held every agent's
+   * browser tools in every session until Telar was killed.
+   */
+  test("Resume asks every frame of the HOLDING tab: a filled iframe refuses, a frame with no probe vouches", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("a", "https://one.example");
     await manager.createTab("b", "https://two.example");
-    manager.privacy.begin("1Password", "a");
-    // Tab b never reported a credential field; its login iframe is filled.
-    views[1].webContents.probeAnswers = [false, true];
+    // Tab a is the one that reported a field; its login iframe is filled.
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = [false, true];
     expect((await manager.resumeFromPrivate()).refused).toContain("credential field is still in use");
-    // A frame whose probe is missing cannot vouch for itself.
-    views[1].webContents.probeAnswers = [false, null];
+    // A FRAME WITH NO PROBE VOUCHES. The preload never ran there (a cross-origin
+    // ad iframe, about:blank, the PDF viewer), so it cannot hold a field the
+    // preload would have reported — and treating it as a veto never cleared.
+    views[0].webContents.probeAnswers = [false, null];
+    expect((await manager.resumeFromPrivate()).private).toBe(false);
+    // A frame that throws (torn down mid-question) still refuses: it might.
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = [new Error("frame gone")];
     expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    // A frame that throws (torn down mid-question) is no better.
-    views[1].webContents.probeAnswers = [new Error("frame gone")];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    // A tab with no frames at all cannot answer either.
-    views[1].webContents.probeAnswers = [];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    views[1].webContents.probeAnswers = [false, false];
+    // Mid-navigation, with no frames at all, there is no field to hold.
+    views[0].webContents.probeAnswers = [];
+    expect((await manager.resumeFromPrivate()).private).toBe(false);
+  });
+
+  test("a tab that never reported a credential field cannot hold the window — whatever its frames say", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("a", "https://one.example");
+    await manager.createTab("b", "https://two.example");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = [false];
+    // Tab b is the bug, in all four of its shapes: a filled field the reporter
+    // never saw, a frame with no probe, a frame that throws, a wedged frame.
+    for (const answers of [[true], [false, null], [new Error("frame gone")], [false, "__hang__"], []]) {
+      views[1].webContents.probeAnswers = answers;
+      expect(await manager.credentialStatus()).toBe("clear");
+    }
+    expect((await manager.resumeFromPrivate()).private).toBe(false);
+  });
+
+  test("a held tab that navigates away stops holding — the page it reported is gone", async () => {
+    const { manager, views } = makeHarness();
+    const tab = await manager.createTab("s", "https://login.example");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    expect(manager.holdingTabs()).toHaveLength(1);
+    // The form submits and the browser commits the next document.
+    manager.noteNavigation(tab);
+    expect(manager.holdingTabs()).toHaveLength(0);
+    expect(await manager.credentialStatus()).toBe("clear");
     expect((await manager.resumeFromPrivate()).private).toBe(false);
   });
 
   test("a frame whose safety probe NEVER resolves refuses the resume with an actionable message — it does not hang", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "https://example.com");
-    manager.privacy.begin("1Password", "s");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
     // A background frame wedged so its executeJavaScript never settles.
     views[0].webContents.probeAnswers = [false, "__hang__"];
     const started = Date.now();
@@ -1501,8 +1541,12 @@ describe("hidden screenshots", () => {
 describe("the automatic credential lifecycle", () => {
   // Real (tiny) timers so the poll loop actually yields between iterations
   // instead of busy-spinning; the loop cadence is compressed to ~1ms.
-  function lifecycleHarness() {
-    return makeHarness({ lifecycle: true, wait: async () => new Promise((r) => setTimeout(r, 1)) });
+  // `stuckAfterMs: 1` collapses the real 3 s "unresponsive for long enough to
+  // be called stuck" window to the first failing poll, so these tests observe
+  // the transition rather than the delay. The delay itself is asserted on its
+  // own, below, with the shipped threshold left in place.
+  function lifecycleHarness(options = {}) {
+    return makeHarness({ lifecycle: true, stuckAfterMs: 1, wait: async () => new Promise((r) => setTimeout(r, 1)), ...options });
   }
   // Let a few poll cycles run and observe the result.
   const settle = async () => { await new Promise((r) => setTimeout(r, 40)); };
@@ -1605,6 +1649,118 @@ describe("the automatic credential lifecycle", () => {
     views[0].webContents.probeAnswers = [false];
     expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
     expect(manager.state("s").privacy.stuck).toBe(false);
+  });
+
+  /**
+   * THE BUG THIS ISSUE IS ABOUT (#480), as the owner met it: a sign-in in one
+   * tab, an ordinary second tab with a frame the preload never reached, and
+   * every agent's browser tools in every session wedged until Telar was killed.
+   * The sign-in finishes; the release must not be waiting on the other tab.
+   */
+  test("a tab that never reported a field does not block the release — whatever its frames do", async () => {
+    const { manager, views } = lifecycleHarness();
+    await manager.createTab("s1", "https://login.example");
+    await manager.createTab("s2", "https://unrelated.example");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    // The unrelated tab: an ad iframe with no probe, and a throttled background
+    // frame whose executeJavaScript never settles. Neither is the sign-in.
+    views[1].webContents.probeAnswers = [null, "__hang__"];
+    views[0].webContents.probeAnswers = [true];
+    await settle();
+    expect(manager.state("s1").privacy.private).toBe(true); // the real field holds
+    // The person signs in; the holding tab clears. The other tab is still just
+    // as unprobeable, and privacy ends anyway.
+    views[0].webContents.probeAnswers = [false];
+    expect(await until(() => manager.state("s1").privacy.private === false)).toBe(true);
+    expect(manager.state("s2").privacy.private).toBe(false);
+  });
+
+  test("a background tab whose probes time out does not block the release once the holding tab is clear", async () => {
+    const { manager, views } = lifecycleHarness();
+    await manager.createTab("s", "https://login.example");
+    await manager.createTab("s", "https://slow.example");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[1].webContents.probeAnswers = ["__hang__"];
+    views[0].webContents.probeAnswers = [false];
+    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
+    // And it never even looked wedged: the holding tab always answered.
+    expect(manager.state("s").privacy.stuck).toBe(false);
+  });
+
+  /**
+   * STUCK IS A DURATION. A page that has just submitted a form can miss one
+   * 750 ms probe without being wedged, and the banner saying "not answering" on
+   * that single miss is crying wolf. The shipped threshold is left in place
+   * here — that is the point of the test.
+   */
+  test("one slow poll does not say 'not answering'; an unbroken run of them does", async () => {
+    const { manager, views } = lifecycleHarness({ stuckAfterMs: 400 });
+    await manager.createTab("s", "https://login.example");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = ["__hang__"];
+    // Well inside the window: unresponsive, but not yet called stuck.
+    await settle();
+    expect(manager.state("s").privacy.stuck).toBe(false);
+    expect(manager.state("s").privacy.private).toBe(true);
+    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
+    // A single good answer resets the run — the next wedge starts from zero.
+    views[0].webContents.probeAnswers = [true];
+    expect(await until(() => manager.state("s").privacy.stuck === false)).toBe(true);
+    expect(manager.state("s").privacy.private).toBe(true);
+  });
+
+  /**
+   * THE WAY OUT, WHEN THE PROBE HAS NONE (#480). A page that will not answer
+   * cannot be cleared by asking it again; the person looking at it is the only
+   * remaining witness, and "kill Telar" is not a recovery. The forced path is
+   * still a real release — same epoch bump, same staleness — so nothing an
+   * agent decided under privacy survives it.
+   */
+  test("Resume anyway ends privacy over an unresponsive page, bumps the epoch, and is logged", async () => {
+    const forced = [];
+    const { manager, views } = lifecycleHarness({ onPrivacyForced: (entry) => forced.push(entry) });
+    await manager.createTab("s", "https://login.example");
+    await manager.callTool("s", "browser_snapshot", {});
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = ["__hang__"];
+    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
+    // The safe path is refused, which is what earns the second button.
+    const refused = await manager.resumeFromPrivate();
+    expect(refused.private).toBe(true);
+    expect(refused.refused).toContain("not responding to the safety check");
+    const epochBefore = manager.privacy.epoch;
+    const ended = await manager.resumeFromPrivate({ force: true });
+    expect(ended.private).toBe(false);
+    expect(ended.stuck).toBe(false);
+    expect(ended.refused).toBeUndefined();
+    expect(manager.privacy.epoch).toBeGreaterThan(epochBefore);
+    // Logged, with no address in it — tab ids and a moment.
+    expect(forced).toHaveLength(1);
+    expect(forced[0]).toMatchObject({ wasStuck: true });
+    expect(forced[0].tabIds).toEqual([manager.activeTab("s").id]);
+    expect(JSON.stringify(forced[0])).not.toContain("login.example");
+    // A real release: the agent's earlier snapshot no longer blesses the page.
+    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
+    expect(stale.isError).toBe(true);
+    expect(textOf(stale)).toContain("a private interaction ended");
+  });
+
+  test("the state names the page that holds the window, by host — never its full address", async () => {
+    const { manager, views } = lifecycleHarness();
+    await manager.createTab("s", "https://login.example/sso?token=super-secret");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
+    views[0].webContents.probeAnswers = [true];
+    const titled = manager.state("s").privacy.holding;
+    expect(titled).toHaveLength(1);
+    // A title when there is one — it is what the person reads in the strip.
+    expect(titled[0].label).toBe(manager.activeTab("s").title);
+    expect(JSON.stringify(titled)).not.toContain("super-secret");
+    // An untitled page falls back to the HOST, never the address: that query
+    // string is the sign-in's own token.
+    manager.activeTab("s").title = "";
+    const bare = manager.state("s").privacy.holding;
+    expect(bare[0].label).toBe("login.example");
+    expect(JSON.stringify(bare)).not.toContain("super-secret");
   });
 
   test("destroy stops the loop", async () => {
