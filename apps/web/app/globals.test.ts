@@ -162,6 +162,41 @@ describe("the translucency wash", () => {
     expect(optIn, "a rule must still make .app-ground transparent").toBeDefined();
     expect(optIn?.[2]).toContain("background-color: transparent");
   });
+
+  /**
+   * THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY — issue #399.
+   *
+   * Translucent light read as fog where translucent dark read as glass, because
+   * both halves thinned by the same percentage and only one of them was thinning
+   * toward a colour its own text is not. The fix is a factor on the light half
+   * alone, and the failure mode it replaces is silent: a future edit that
+   * collapses the two rules back into one produces a pane that still works and
+   * is simply unreadable in daylight.
+   */
+  test("the light half spends LESS of the slider than the dark half", () => {
+    const scale = code.match(/--wash-transparency:\s*calc\(\s*var\(--translucency[^)]*\)\s*\*\s*([0-9.]+)\s*\)/);
+    expect(scale, "the light half must scale --translucency").not.toBeNull();
+    expect(Number(scale?.[1])).toBeGreaterThan(0);
+    expect(Number(scale?.[1])).toBeLessThan(1);
+  });
+
+  test("only the light half declares it — dark takes the fallback, unchanged", () => {
+    // The dark half is byte-for-byte what it computed before #399, which is
+    // what makes this a light-mode repair rather than a retune of both.
+    const declarations = [...code.matchAll(/^([^\n{]*)\{[^}]*--wash-transparency\s*:/gm)].map(([, selector]) => selector.trim());
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]).toContain(":not(.dark)");
+  });
+
+  test("body and the rail read the scaled value, not the raw slider", () => {
+    // Scaling one and not the other is how the canvas and the rail start
+    // disagreeing about how transparent 45% is.
+    const body = washBlocks.find(([, selector]) => selector.trim().endsWith("body"));
+    const rail = washBlocks.find(([, , declarations]) => declarations.includes("--sidebar-wash"));
+    for (const rule of [body, rail]) {
+      expect(rule?.[2]).toContain("var(--wash-transparency,");
+    }
+  });
 });
 
 describe("the backdrop layer", () => {

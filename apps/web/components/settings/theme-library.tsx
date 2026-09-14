@@ -29,7 +29,7 @@
  */
 
 import { useRef, useState } from "react";
-import { CheckIcon, CopyIcon, DownloadIcon, SwatchBookIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import {
   concreteHalf,
   serializeTheme,
@@ -39,7 +39,7 @@ import {
 import { isVsCodeThemeFile, vsCodeThemeToDefinition } from "@/lib/vscode-theme-import";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { GroupStrip } from "./studio/tool-strip";
 
 /**
  * The orb: the theme's canvas with its chip and rail breathing at the edges
@@ -222,9 +222,12 @@ export function ThemeLibrary({
   };
 
   return (
-    <Panel>
-      <PanelHeader
-        icon={<SwatchBookIcon />}
+    // NO PANEL OF ITS OWN (#399). The library is the second half of the Colour
+    // group, and a card inside the group's card is the one shape the settings
+    // grammar cannot absorb. These are direct children of that card now, so the
+    // inset and the hairlines between them come from it.
+    <>
+      <GroupStrip
         label="Themes"
         count={themes.length}
         actions={
@@ -250,8 +253,8 @@ export function ThemeLibrary({
           });
         }}
       />
-      {importError && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{importError}</p>}
-      <PanelBody className="p-2">
+      {importError && <p className="py-1.5 text-xs text-warning">{importError}</p>}
+      <div className="py-2">
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
           {themes.map((theme) => (
             <ThemeCard
@@ -277,7 +280,7 @@ export function ThemeLibrary({
             />
           ))}
         </div>
-      </PanelBody>
-    </Panel>
+      </div>
+    </>
   );
 }
