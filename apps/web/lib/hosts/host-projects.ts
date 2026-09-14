@@ -27,6 +27,33 @@ export function projectsForHost(listing: HostProjects | undefined, hostId: strin
   return listing && listing.hostId === hostId ? listing.projects : [];
 }
 
+/**
+ * WHAT TO CALL A PROJECT IN A BREADCRUMB — and it is never its id (#204).
+ *
+ * An id is addressing, not a name: it is unreadable, and it is the SAME STRING
+ * on two Macs that registered different work, so a breadcrumb showing one says
+ * something that is true of no particular project. The reported symptom is
+ * exactly that — a header reading `project_9ab0…` while the composer waits on a
+ * session the other Mac holds.
+ *
+ * Three answers, and the third is the one that matters: when a host's registry
+ * has ANSWERED and does not hold this project, that is not a slow read, it is
+ * the wrong Mac. Saying so is how a mis-addressed row becomes visible instead
+ * of looking like a name that has not loaded.
+ */
+export function projectLabel(input: {
+  /** The name this host's registry gave it. */
+  name: string | undefined;
+  /** What that Mac calls itself, when it is not this one. */
+  hostName: string | undefined;
+  /** Whether the registry has answered at all. */
+  resolved: boolean;
+}): string {
+  if (input.name) return input.name;
+  if (!input.resolved) return "Loading…";
+  return input.hostName ? `No such project on ${input.hostName}` : "No such project";
+}
+
 export type HostProjectsHandle = {
   /** The Mac this cockpit is looking at. `"local"` for this one. */
   hostId: string;
