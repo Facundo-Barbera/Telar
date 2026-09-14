@@ -353,15 +353,28 @@ struct LiveSessions: Decodable {
     /// stale. Nil from a Mac whose engine predates the field, and the store then
     /// falls back to asking for it directly, on the same ration as before.
     var inbox: InboxPolicy?
+    /// WHAT TO ASK WITH NEXT TIME — the conditional read's cursor (#459). Nil
+    /// from a Mac too old to count, which simply keeps every read a full one.
+    var revision: Int?
+    /// NOTHING HAS MOVED SINCE THE CURSOR THIS PHONE SENT, so this answer
+    /// carries no rows at all and the store keeps what it has.
+    ///
+    /// CHECK IT BEFORE READING `sessions`. The two arrays below decode to empty
+    /// rather than throwing on an answer that omits them, which is what makes
+    /// this type read both shapes — and which is exactly why "unchanged" must
+    /// never be confused with "this Mac has no conversations".
+    var unchanged: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, unchanged }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         // A policy this build cannot read costs the window, never the list.
         inbox = try? c.decodeIfPresent(InboxPolicy.self, forKey: .inbox)
-        sessions = try c.decode([Skippable<Session>].self, forKey: .sessions).compactMap(\.value)
-        projects = try c.decode([Skippable<ProjectRef>].self, forKey: .projects).compactMap(\.value)
+        revision = try? c.decodeIfPresent(Int.self, forKey: .revision)
+        unchanged = (try? c.decode(Bool.self, forKey: .unchanged)) ?? false
+        sessions = try c.decodeIfPresent([Skippable<Session>].self, forKey: .sessions)?.compactMap(\.value) ?? []
+        projects = try c.decodeIfPresent([Skippable<ProjectRef>].self, forKey: .projects)?.compactMap(\.value) ?? []
         // A layout this build cannot read costs the arrangement, never the
         // list — the same tolerance `Skippable` gives the rows above.
         layout = try? c.decodeIfPresent(SidebarLayout.self, forKey: .layout)

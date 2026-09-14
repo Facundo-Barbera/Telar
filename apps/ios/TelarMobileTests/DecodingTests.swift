@@ -92,6 +92,38 @@ func fixture(_ name: String) throws -> Data {
         #expect(try decode(#"{"sessions":[],"projects":[],"inbox":"never"}"#).inbox == nil)
     }
 
+    /// THE CONDITIONAL READ (#459). A phone that hands back the revision it was
+    /// given gets sixty bytes and no rows when nothing has moved — which is
+    /// every three-second tick of an idle inbox, and most of what "the phone
+    /// crawls" (#457) was made of.
+    ///
+    /// `unchanged` IS NOT "THIS MAC HAS NO CONVERSATIONS", and that distinction
+    /// is the one thing this decoder must not blur: `sessions` is absent on such
+    /// an answer, and it decodes to empty so that ONE type reads both shapes.
+    /// The store checks the flag before it applies anything; these assertions
+    /// are what stop a later edit making the empty list look like an answer.
+    @Test func theLiveListCarriesACursorAndAnUnchangedAnswer() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8)) }
+
+        let full = try decode(#"{"sessions":[],"projects":[],"revision":1789362240258}"#)
+        #expect(full.revision == 1_789_362_240_258)
+        #expect(full.unchanged == false)
+
+        let quiet = try decode(#"{"unchanged":true,"revision":1789362240259,"daemonId":"d1"}"#)
+        #expect(quiet.unchanged)
+        #expect(quiet.revision == 1_789_362_240_259)
+        // No rows at all — and the store must keep the ones it has rather than
+        // reading this as an empty inbox.
+        #expect(quiet.sessions.isEmpty)
+        #expect(quiet.projects.isEmpty)
+
+        // A Mac too old to count says neither, and the phone then makes full
+        // reads forever — the old behaviour, which is the correct fallback.
+        let old = try decode(#"{"sessions":[],"projects":[]}"#)
+        #expect(old.revision == nil)
+        #expect(old.unchanged == false)
+    }
+
     /// THE ARRANGEMENT RIDES THE LIVE READ (#306) — and every part of it is
     /// optional, at both levels. The fixture predates the field, so this pins
     /// the tolerance the wire needs rather than the fixture's content: a Mac

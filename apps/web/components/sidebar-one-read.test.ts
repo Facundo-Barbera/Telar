@@ -48,6 +48,31 @@ describe("a rail's pass is one read per host", () => {
   });
 });
 
+describe("and that one read is conditional", () => {
+  test("the rail asks with the cursor it was given, and keeps its page when nothing moved", () => {
+    expect(loadHost).toContain("revisions.current.get(key)");
+    expect(loadHost).toContain("hostApi.liveSessionsSince(known)");
+    // "Unchanged" means KEEP WHAT YOU HAVE. A rail that redrew from the absent
+    // rows would blank itself once a tick, which is the one way this design can
+    // fail in a reader's face.
+    expect(loadHost).toContain("if (answer.unchanged)");
+    expect(loadHost).toContain("pages.current.get(key)");
+  });
+
+  test("a cursor is only kept while the engine offers one", () => {
+    // An engine too old to count sends no revision, and the rail then goes on
+    // making full reads rather than spending a stale cursor against it.
+    expect(loadHost).toContain("if (result.revision === undefined) revisions.current.delete(key)");
+    expect(loadHost).toContain("if (result.revision !== undefined) pages.current.set(key, page)");
+  });
+
+  test("the cursor is per host, so one Mac's number is never spent on another's", () => {
+    // Two Macs count independently; a cursor crossing hosts would look current
+    // against a revision that means something else entirely.
+    expect(loadHost).toContain("const key = host?.id ?? LOCAL_HOST;");
+  });
+});
+
 describe("the route forwards what the engine stamped", () => {
   const route = code(readFileSync(new URL("../app/api/sessions/live/route.ts", import.meta.url), "utf8"));
 
@@ -59,5 +84,17 @@ describe("the route forwards what the engine stamped", () => {
     expect(route).toContain("daemonId");
     expect(route).toContain("...(daemonId ? { daemonId } : {})");
     expect(route).toContain("...(inbox ? { inbox } : {})");
+  });
+
+  test("and it learns the conditional read rather than spending it on the engine's behalf", () => {
+    // This proxy re-composes rather than streams, so without this a browser's
+    // rail would pull the full list every tick while the phone — which reaches
+    // the engine verbatim through the hosts proxy — got the cheap answer.
+    expect(route).toContain('searchParams.get("since")');
+    expect(route).toContain("client.liveSessionsSince(Number(since))");
+    expect(route).toContain("if (live.unchanged) return Response.json(live)");
+    // An unchanged answer must not go on to fetch the registry either: writing
+    // it bumps the same revision, so it cannot have moved.
+    expect(route.indexOf("if (live.unchanged)")).toBeLessThan(route.indexOf("client.listProjects()"));
   });
 });

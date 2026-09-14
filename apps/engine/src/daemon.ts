@@ -3473,6 +3473,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, store.liveSessions());
           return;
         }
+        /**
+         * `?since=<revision>` — THE CONDITIONAL READ, and the reason this route
+         * stopped being the engine's largest cost (#459).
+         *
+         * A rail cannot be pushed to: there is no global event feed here, and a
+         * new long-lived connection is what #82 exists to avoid. So it still
+         * asks on a timer, and this makes the ask nearly free — a cursor that
+         * matches means nothing has been written since, and the answer is one
+         * integer instead of a fold over every session's queue, requests and
+         * tasks followed by 318 KB of rows.
+         *
+         * `daemonId` RIDES THE UNCHANGED ANSWER TOO. A rail that had not cached
+         * it (a fresh tab whose first read happened to be conditional) would
+         * otherwise have to go back to `/v2/health` for it — which is the
+         * request this route just absorbed.
+         *
+         * An unparseable cursor is not an error: it is a client that has no
+         * useful cursor, which is exactly the full answer's case.
+         */
+        const since = Number(url.searchParams.get("since"));
+        if (Number.isSafeInteger(since) && since === store.sessionsRevision()) {
+          writeJson(response, 200, { revision: since, unchanged: true, daemonId });
+          return;
+        }
         writeJson(response, 200, { ...store.liveSessionRows(), daemonId });
         return;
       }

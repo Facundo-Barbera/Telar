@@ -69,7 +69,7 @@ import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
-import type { Project } from "@telar/engine-client";
+import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -342,6 +342,16 @@ function SessionShelf({
 /** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
 type RemoteProject = Pick<Project, "id" | "name" | "icon" | "iconName"> & { hostId: string; hostName: string };
 
+/** One Mac's pass, composed — what `loadHost` returns and what an UNCHANGED
+ *  answer hands back untouched. Named so it can be held in a ref. */
+type HostPage = {
+  projects: Project[];
+  sessions: SidebarSession[];
+  daemonId?: string;
+  policy?: InboxPolicy;
+  layout?: SidebarLayout;
+};
+
 function SidebarBody() {
   const pathname = usePathname();
   // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`, the
@@ -458,6 +468,21 @@ function SidebarBody() {
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
+  /**
+   * THE CONDITIONAL READ'S TWO HALVES, per host (#459): the cursor that was
+   * handed back last time, and the page it described.
+   *
+   * REFS RATHER THAN STATE, because neither is rendered and both are written
+   * inside the read: putting them in state would re-render the rail once a tick
+   * to store a number nothing draws — which is most of what this issue is about.
+   * Keyed like the sidebar cache (`LOCAL_HOST` for this engine), so one Mac's
+   * cursor can never be spent against another's revision.
+   *
+   * A HOST THAT ANSWERS NO REVISION KEEPS NO ENTRY, so an engine too old to
+   * count simply goes on making full reads.
+   */
+  const revisions = useRef(new Map<string, number>());
+  const pages = useRef(new Map<string, HostPage>());
 
   // On a phone the rail is a sheet OVER the content, so following a link has to
   // close it — otherwise the destination is behind the thing you just used.
@@ -503,7 +528,34 @@ function SidebarBody() {
      * daemon id leaves that host's rows undeduplicated; no policy falls back to
      * the default window. Neither costs a row.
      */
-    const result = await hostApi.liveSessions();
+    /**
+     * AND THE READ IS CONDITIONAL (#459) — the half that actually took the
+     * engine off the floor.
+     *
+     * A rail cannot be pushed to. There is no global event feed on the engine,
+     * and #82 is the issue about NOT opening this cockpit's first long-lived
+     * connection — six per origin is all a browser has, and navigation needs
+     * them. So the timer below stays, and what changes is what a tick COSTS:
+     * hand back the revision from last time, and an engine with nothing new
+     * answers sixty bytes instead of folding over every session's queue,
+     * requests and tasks and sending back several hundred kilobytes of rows the
+     * rail is already drawing. On an idle cockpit that is every tick, forever.
+     *
+     * UNCHANGED MEANS "KEEP WHAT YOU HAVE", so the held page is returned
+     * verbatim and nothing re-renders. The fallback below is for the case that
+     * should not happen — a cursor with no page behind it — because answering
+     * an unchanged read with no rows would empty the rail.
+     */
+    const key = host?.id ?? LOCAL_HOST;
+    const known = revisions.current.get(key);
+    const answer = known === undefined ? await hostApi.liveSessions() : await hostApi.liveSessionsSince(known);
+    if (answer.unchanged) {
+      const held = pages.current.get(key);
+      if (held) return held;
+    }
+    const result = answer.unchanged ? await hostApi.liveSessions() : answer;
+    if (result.revision === undefined) revisions.current.delete(key);
+    else revisions.current.set(key, result.revision);
     const daemonId = result.daemonId;
     const policy = result.inbox;
     const names = new Map(result.projects.map((project) => [project.id, project.name]));
@@ -544,7 +596,7 @@ function SidebarBody() {
         session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
       ),
     );
-    return {
+    const page: HostPage = {
       projects: result.projects,
       sessions,
       ...(daemonId ? { daemonId } : {}),
@@ -554,6 +606,10 @@ function SidebarBody() {
       // mints. A remote Mac's own arrangement is of ITS rail, not of ours.
       ...(result.layout ? { layout: result.layout } : {}),
     };
+    // Held so the next unchanged answer has something to BE. Only alongside a
+    // revision: without one every read is a full one and nothing reads this.
+    if (result.revision !== undefined) pages.current.set(key, page);
+    return page;
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -681,6 +737,16 @@ function SidebarBody() {
    * SO THE CADENCE FOLLOWS WHAT IS ON SCREEN. Anything live and it tightens to
    * 3s; an entirely quiet list goes back to 10s, because then it is a list of
    * titles again and this is N+1 requests over the project list.
+   *
+   * AND THE TICK IS NOW NEARLY FREE (#459). The reason this stayed a timer is
+   * unchanged and worth restating: there is no global event feed on the engine
+   * to subscribe to, and #82 is the issue about NOT opening this cockpit's first
+   * long-lived connection — a browser has six per origin and navigation needs
+   * them. What changed is the cost. `loadHost` hands back the revision it was
+   * given, so a tick that finds nothing written costs sixty bytes and no fold,
+   * where it used to cost 318 KB and a pass over every session's queue. The
+   * cadence is therefore about LATENCY now — how soon a badge appears — rather
+   * than about how much the rail is willing to spend.
    */
   const anyLive = sessions.some((session) => session.activity !== "idle");
   useEffect(() => {

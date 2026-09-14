@@ -141,6 +141,77 @@ test("the shapes disagree about rows and about nothing else", () => {
   expect(lean.assignments).toEqual(full.assignments);
 });
 
+test("the revision moves when the list would, and not when only a transcript grows", () => {
+  const store = loadedStore(2);
+  const first = store.sessionsRevision();
+  // A read is a read: nothing about asking changes the answer.
+  store.liveSessionRows();
+  store.liveSessionRows();
+  expect(store.sessionsRevision()).toBe(first);
+
+  // Anything the fold reads moves it. Renaming a session is the cheapest proof:
+  // it writes `session.json`, which is a row.
+  store.updateSession(store.liveSessionRows().sessions[0]!.id, { title: "Renamed" });
+  expect(store.sessionsRevision()).toBeGreaterThan(first);
+
+  // And the answer carries the number a client should hand back.
+  const answer = store.liveSessionRows();
+  expect(answer.revision).toBe(store.sessionsRevision());
+});
+
+test("an unchanged answer costs almost nothing, which is the whole point", async () => {
+  const engineRoot = root();
+  const daemon = await startEngine({ models: stubModels, engineRoot });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    await client.registerProject({ id: "project_one", name: "One", root: engineRoot });
+    await client.createSession({ id: "session_one", projectId: "project_one" });
+
+    const first = await client.liveSessions();
+    const revision = first.revision;
+    expect(revision).toBeDefined();
+
+    /**
+     * THE IDLE TICK. A cockpit holding a current cursor is told to keep what it
+     * has — no rows, no projects, no fold over anything — and `daemonId` rides
+     * along so a rail that had not cached it still needs no second request.
+     */
+    const again = await client.liveSessionsSince(revision!);
+    expect(again.unchanged).toBe(true);
+    expect(again.revision).toBe(revision);
+    expect(again.daemonId).toBe(daemon.discovery.daemonId);
+    expect(again).not.toHaveProperty("sessions");
+    // Sixty-odd bytes against a store's worth of rows. Bounded loosely because
+    // the claim is the ORDER OF MAGNITUDE, not the byte.
+    expect(JSON.stringify(again).length).toBeLessThan(200);
+
+    // Something moves, and the next ask with the same cursor is a full answer
+    // again — with a new cursor on it.
+    await client.updateSession("session_one", { title: "Renamed" });
+    const moved = await client.liveSessionsSince(revision!);
+    expect(moved.unchanged).toBeUndefined();
+    expect((moved as { sessions: Array<{ title: string }> }).sessions[0]?.title).toBe("Renamed");
+    expect(moved.revision).toBeGreaterThan(revision!);
+
+    /**
+     * A CURSOR FROM A DEAD DAEMON IS NOT "UNCHANGED". The counter is in memory
+     * and seeded from the clock, so a client holding last week's number is told
+     * to re-read rather than handed a frozen rail — the one failure mode of a
+     * conditional read that a reader cannot see and cannot recover from.
+     */
+    const stale = await client.liveSessionsSince(1);
+    expect(stale.unchanged).toBeUndefined();
+    // And so is a cursor that is not a number at all.
+    const nonsense = await fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/sessions/live?since=soon`, {
+      headers: { authorization: `Bearer ${daemon.discovery.token}` },
+    });
+    expect(nonsense.status).toBe(200);
+    expect((await nonsense.json()) as { unchanged?: boolean }).not.toHaveProperty("unchanged");
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("`?full=1` serves the old shape over the wire, for one release", async () => {
   const engineRoot = root();
   const daemon = await startEngine({ models: stubModels, engineRoot });

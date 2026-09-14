@@ -111,6 +111,15 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// stamps this on every poll, so the extra request is never made.
     private var layoutReadAt: ContinuousClock.Instant?
     private var lastInboxData: Data?
+    /// THE CONDITIONAL READ'S CURSOR (#459) — the number this Mac handed back
+    /// last time, sent with the next ask so a tick with nothing behind it costs
+    /// sixty bytes instead of every row again.
+    ///
+    /// NIL MEANS ASK FOR EVERYTHING, which is the right answer in all three
+    /// cases that produce it: the first poll after this store was built, a Mac
+    /// too old to count, and a Mac that restarted and now counts from somewhere
+    /// else. One store is one Mac, so a cursor can never be spent on another's.
+    private var revision: Int?
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
         self.api = api
@@ -206,7 +215,36 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
 
     func refresh() async {
         do {
-            let live = try await api.liveSessions()
+            /**
+             THE CONDITIONAL READ (#459), and on a phone it is the whole game.
+
+             This poll runs every three seconds while anything is live, and on
+             the owner's Mac it was pulling 318 KB each time — then a second
+             full read straight after it, for the cache (`remember`). Handing
+             back the cursor turns a tick with nothing behind it into sixty
+             bytes and no work on the Mac at all, which is most of what "the
+             phone crawls" (#457) was made of.
+
+             UNCHANGED MEANS KEEP WHAT YOU HAVE. Returning before `apply` is
+             the point: those rows are the ones already on screen, and the
+             answer carries none to replace them with. The error state is
+             cleared first, because a tick that succeeded is a tick that
+             succeeded.
+             */
+            let live: LiveSessions
+            if let cursor = revision {
+                live = try await api.liveSessions(since: cursor)
+            } else {
+                live = try await api.liveSessions()
+            }
+            revision = live.revision
+            if live.unchanged {
+                lastError = nil
+                unauthorized = false
+                loaded = true
+                recordedAt = nil
+                return
+            }
             // THE WINDOW RIDES THE LIST NOW (#459), so the ask below is only for
             // a Mac whose engine predates the field — the same shape, and the
             // same reason, as the arrangement's fallback just after it.

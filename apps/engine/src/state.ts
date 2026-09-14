@@ -1527,6 +1527,45 @@ export class EngineStore {
   private writeDocument(file: string, value: unknown, mode?: number): void {
     if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
     else atomicWrite(file, value, mode);
+    // See `sessionsRevision`. After the write, so a revision a reader observes
+    // is never newer than the state it would read.
+    if (path.basename(file) !== "items.json") this.liveRevision += 1;
+  }
+
+  /**
+   * A NUMBER THAT CHANGES WHEN THE LIVE LIST WOULD — issue #459.
+   *
+   * The rail cannot be pushed to. There is no global event feed on this engine
+   * (journals are per session, and their ids are per session too), no SSE and no
+   * socket — and #82/#450 decided against adding the cockpit's FIRST long-lived
+   * connection, because six is all a browser has per origin. So the rail still
+   * asks on a timer, and the only thing left to fix is what the ask COSTS.
+   *
+   * This is that: a conditional read. `GET /v2/sessions/live?since=<revision>`
+   * answers `{ revision, unchanged: true }` — about sixty bytes and no fold at
+   * all — when nothing has been written since. On the owner's store that turns
+   * an idle cockpit's tick from 318 KB and a fold over 267 sessions' queues,
+   * requests and tasks into one integer comparison, several times a second,
+   * forever. An ETag by another name, spelled in the body because two proxy hops
+   * sit between this and a browser and neither forwards conditional headers.
+   *
+   * BUMPED ON EVERY DOCUMENT WRITE BUT ONE, which is deliberately the
+   * safe-by-default direction: over-bumping costs a re-read nobody needed, and
+   * under-bumping costs a rail that quietly stops moving. The exception is
+   * `items.json`, the one hot write — it is rewritten as an assistant streams,
+   * and nothing on this list is derived from it. An allowlist of the four
+   * documents the fold actually reads would be tighter and would be wrong the
+   * first time somebody adds a fifth.
+   *
+   * IN MEMORY, AND SEEDED FROM THE CLOCK. One writer, in this process, the same
+   * ground `queueCache` stands on. A restart starts from a new, larger number,
+   * so a client holding a cursor from the last daemon is told "changed" rather
+   * than being handed a false "unchanged" — the one failure mode that would show
+   * as a frozen rail.
+   */
+  private liveRevision = Date.now();
+  sessionsRevision(): number {
+    return this.liveRevision;
   }
   closeExecutionStore(): void { this.executionStore?.close(); }
   executeCommand<T>(command: string, action: () => T, commandId?: string): T {
@@ -6905,9 +6944,17 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
+    revision: number;
   } {
+    /**
+     * THE REVISION IS READ FIRST, so a write that lands mid-fold is reported by
+     * the NEXT read rather than swallowed by this one. Taken after would name a
+     * state this answer does not contain, and the client would hold a cursor
+     * that says it is up to date with rows it never received.
+     */
+    const revision = this.sessionsRevision();
     const full = this.liveSessions();
-    return { ...full, sessions: full.sessions.map(liveRow), inbox: this.getInboxPolicy() };
+    return { ...full, sessions: full.sessions.map(liveRow), inbox: this.getInboxPolicy(), revision };
   }
 
   turns(sessionId: string): Turn[] {

@@ -324,6 +324,46 @@ export type SessionBootstrap = SessionSnapshot & {
   subscriptions: Subscription[];
 };
 
+/**
+ * THE WHOLE OF WHAT A RAIL ASKS FOR IN ONE PASS — what `GET /v2/sessions/live`
+ * answers with.
+ *
+ * Everything beyond the rows and the projects is here because this is the read
+ * every rail already makes on its own cadence, so carrying it costs no request,
+ * no timer and no connection anywhere: the arrangement (#306), so a drag on one
+ * device reaches the others; the engine's identity and its settling window
+ * (#459), which used to be two more requests per host per tick; and the
+ * revision, which is what lets the NEXT ask be conditional.
+ *
+ * THE LAST THREE ARE OPTIONAL AT EVERY HOP, and absent must read as "this engine
+ * did not say" rather than as an answer. A missing `daemonId` leaves a host's
+ * rows undeduplicated; a missing `inbox` falls back to the default window; a
+ * missing `revision` keeps every read a full one. None of them costs a row.
+ */
+export type LiveSessionsAnswer = {
+  sessions: LiveSessionRow[];
+  projects: Array<{ id: string; name: string }>;
+  assignments?: Record<string, SessionAssignment[]>;
+  layout?: SidebarLayout;
+  daemonId?: string;
+  inbox?: InboxPolicy;
+  revision?: number;
+  /** The discriminant, present only so `unchanged` narrows this union in a
+   *  caller rather than needing a cast. Never sent on the wire. */
+  unchanged?: false;
+};
+
+/**
+ * NOTHING HAS MOVED SINCE THE CURSOR YOU HELD — the conditional read's other
+ * answer, and the one an idle cockpit gets every single time.
+ *
+ * A UNION, SO A CALLER CANNOT REACH `sessions` WITHOUT ASKING FIRST. That is the
+ * whole safety of the design: `unchanged` means "keep what you have", and a rail
+ * that redrew from a missing `sessions` key would blank itself once a tick. The
+ * type makes that a compile error rather than something to remember.
+ */
+export type LiveSessionsUnchanged = { unchanged: true; revision: number; daemonId?: string };
+
 /** The run surface hangs off the session that is asking — see `runStatus` for
  *  why a project-scoped answer lives under a session-scoped path. */
 function runBase(sessionId: string): string {
@@ -1919,20 +1959,27 @@ export class EngineClient {
    * engine older than the field says nothing, and a rail reads that as "keep
    * the copy I have" rather than "nobody has arranged anything".
    */
-  liveSessions(): Promise<{
-    sessions: LiveSessionRow[];
-    projects: Array<{ id: string; name: string }>;
-    assignments?: Record<string, SessionAssignment[]>;
-    layout?: SidebarLayout;
-    /** This engine's identity, so two reads that reached ONE engine fold into
-     *  one row set. Absent from an engine too old to stamp it; a rail then
-     *  leaves its hosts undeduplicated rather than dropping any. */
-    daemonId?: string;
-    /** The settling window these rows band by — the engine's own, because a
-     *  paired Mac's "72 hours" must not shelve what this Mac's "off" keeps. */
-    inbox?: InboxPolicy;
-  }> {
+  liveSessions(): Promise<LiveSessionsAnswer> {
     return this.request("GET", "/v2/sessions/live");
+  }
+
+  /**
+   * THE SAME LIST, CONDITIONALLY — issue #459, and the read a rail should make.
+   *
+   * A rail cannot be pushed to (no global event feed, and no new long-lived
+   * connection: see #82), so it still asks on a timer. This makes the ask nearly
+   * free: hand back the `revision` from last time and an engine with nothing to
+   * say answers `{ revision, unchanged: true }` — sixty bytes, no fold — instead
+   * of several hundred kilobytes of rows that are all identical to the ones the
+   * caller already has.
+   *
+   * `unchanged` MEANS "KEEP WHAT YOU HAVE", never "there is nothing". A caller
+   * that redraws from a missing `sessions` key would empty its own rail once a
+   * tick. An engine too old to count sends no `revision` and no `unchanged`, so
+   * every read stays a full one and the caller is simply the old cockpit.
+   */
+  liveSessionsSince(since: number): Promise<(LiveSessionsAnswer & { unchanged?: false }) | LiveSessionsUnchanged> {
+    return this.request("GET", `/v2/sessions/live?since=${encodeURIComponent(String(since))}`);
   }
 
   createSession(input: {
