@@ -956,7 +956,11 @@ function failLedgerWrite(match: string): () => void {
   };
 }
 
-const waitUntil = async (pred: () => boolean, ms = 2000): Promise<boolean> => {
+// 15 s, the bound the engine suite's `eventually`/`until` helpers carry, under
+// the 20 s bunfig ceiling: every caller waits for a condition it expects to
+// hold, so a healthy run leaves as soon as it does and only a loaded runner
+// ever spends the budget (#458).
+const waitUntil = async (pred: () => boolean, ms = 15_000): Promise<boolean> => {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (pred()) return true;
