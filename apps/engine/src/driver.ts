@@ -131,6 +131,9 @@ type SdkUserMessage = {
   /** The send's join key — echoed back as `user_message_uuid` on the reply
    *  it triggers. See `FeedMessage.uuid` in ./claude-runtime.ts. */
   uuid?: string;
+  /** Present only when a PERSON typed this message — see `FeedMessage.origin`
+   *  in ./claude-runtime.ts for why `human` is the only kind that lands. */
+  origin?: { kind: "human" };
 };
 
 /** The image types the Anthropic API accepts as an image block. Anything else
@@ -1195,6 +1198,7 @@ export function createClaudeDriver(
     stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
     async run({
       prompt,
+      promptFromHuman,
       sessionId,
       cwd,
       signal,
@@ -2561,12 +2565,16 @@ export function createClaudeDriver(
        */
       const turnUuid = crypto.randomUUID();
       if (persistent) {
-        // The turn begins as one message pushed into the open stream.
+        // The turn begins as one message pushed into the open stream. Stamped
+        // as the person's only when it IS the person's — see `promptFromHuman`
+        // on the contract, and `FeedMessage.origin` for why `human` is the only
+        // kind the CLI keeps.
         runtime.feed.push({
           type: "user",
           message: { role: "user", content: claudeInitialContent(prompt, attachments ?? []) },
           parent_tool_use_id: null,
           uuid: turnUuid,
+          ...(promptFromHuman ? { origin: { kind: "human" as const } } : {}),
         });
       }
 
@@ -2619,10 +2627,20 @@ export function createClaudeDriver(
               for (const message of queued) onSteered(message);
               const text = queued.map((message) => framedSteerText(message)).join("\n\n");
               const attachments = queued.flatMap((message) => message.attachments ?? []);
+              /**
+               * WHETHER A PERSON IS IN THIS BATCH — read BEFORE the push,
+               * because the push now carries it and the interrupt below reads
+               * the same answer. A batch that mixes a person's words with an
+               * agent's is the person's: the reason to honour it — someone
+               * typed, mid-turn — is present either way, and it is the same
+               * reading the interrupt has always taken.
+               */
+              const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
               runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(text, attachments) },
                 parent_tool_use_id: null,
+                ...(typedByAPerson ? { origin: { kind: "human" as const } } : {}),
               });
               /**
                * PUSHING IS NOT INTERRUPTING: the provider reads no further input
@@ -2634,7 +2652,6 @@ export function createClaudeDriver(
                * Only for words a PERSON typed: an agent report or engine wake is
                * a notice, not a change of direction.
                */
-              const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
               if (typedByAPerson && runtime.query.interrupt) {
                 // Armed BEFORE the await: the pump is concurrent and the result
                 // can land first. Disarmed only if the call itself refuses, which

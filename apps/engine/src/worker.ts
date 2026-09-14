@@ -1184,6 +1184,13 @@ export class EngineWorker {
     // opens its own turn here is framed exactly as one steered mid-turn is.
     // See ./attribution.ts.
     const prompt = framedTurnInput(claim.turn);
+    /**
+     * THE SAME FACT AS A FLAG, for a provider that has a provenance channel of
+     * its own — see `DriverRun.promptFromHuman`. The predicate is the steer
+     * path's, verbatim: a message with no sender and no wake behind it is the
+     * person's. Positive only — everything else claims nothing.
+     */
+    const promptFromHuman = claim.turn.sender === undefined && claim.turn.wakeReason === undefined;
     const claimToken = claim.turn.claim!.token;
     // THIS is the session's live claim from here until something replaces it.
     this.liveClaims.set(sessionId, { runId, claimToken });
@@ -1508,6 +1515,7 @@ export class EngineWorker {
       const result = await driver.run({
         runId,
         prompt,
+        promptFromHuman,
         sessionId,
         cwd,
         signal: controller.signal,

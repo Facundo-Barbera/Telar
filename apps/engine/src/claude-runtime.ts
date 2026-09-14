@@ -36,6 +36,18 @@ export type FeedMessage = {
    * end from a buffered stranger's.
    */
   uuid?: string;
+  /**
+   * THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that works.
+   *
+   * The CLI drops every origin kind it does not recognise and persists exactly
+   * `{kind:"human"}` (measured — `docs/investigations/delivery-as-harness-input-2026-09-11.md`
+   * §1, the `neutral.mjs` matrix). Telar sent none at all, so a real person's
+   * message failed the SDK's own `isHuman` gate along with every wake and peer
+   * report. Stamped ONLY for a human; absence is what every other sender gets,
+   * and the prose frames (`attribution.ts`) remain the load-bearing half —
+   * a dropped origin fails silently and open.
+   */
+  origin?: { kind: "human" };
 };
 
 /**

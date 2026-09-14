@@ -2207,6 +2207,71 @@ test("a HUMAN steer interrupts the running generation instead of queueing behind
   expect(resolved.text).toContain("new direction");
 });
 
+/**
+ * #241 — THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that
+ * works. The CLI drops every origin kind it does not recognise and persists
+ * exactly `{kind:"human"}` (measured — see
+ * docs/investigations/delivery-as-harness-input-2026-09-11.md §1). Telar sent
+ * none at all, so a real person failed the SDK's own `isHuman` gate along with
+ * every wake and peer report. The prose frames stay the load-bearing half; this
+ * is the cheap part that also works.
+ */
+describe("a person's message is stamped as one, and nothing else is", () => {
+  test("the turn's own prompt carries origin human only when a person typed it", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    await run(driver, { promptFromHuman: true }).result;
+    await run(driver, { promptFromHuman: false }).result;
+    // ABSENT IS NOT HUMAN. An older worker, or a test, claims nothing — a wake
+    // stamped as a person's decision is the one mistake this seam prevents.
+    await run(driver).result;
+    expect(seen.map((message) => message.origin)).toEqual([{ kind: "human" }, undefined, undefined]);
+  });
+
+  test("a steered batch is stamped when a person is in it, and not when it is only notices", async () => {
+    const seenFor = async (queued: Array<Parameters<SteerMailbox["push"]>[0]>) => {
+      const seen: Array<Record<string, unknown>> = [];
+      const driver = createClaudeDriver(async () => ({
+        async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+          // Two messages before answering — the turn is still "working" when
+          // the steer lands, which is the only way it is delivered mid-turn.
+          for await (const message of prompt) {
+            seen.push(message);
+            if (seen.length < 2) continue;
+            yield { type: "result", subtype: "success" };
+            return;
+          }
+        },
+      }) as never);
+      const steer = new SteerMailbox();
+      for (const message of queued) steer.push(message);
+      await run(driver, { steer }).result;
+      return seen;
+    };
+
+    expect((await seenFor(["typed by a person"]))[1]?.origin).toEqual({ kind: "human" });
+    expect(
+      (await seenFor([
+        { text: "a peer reports in", sender: { sessionId: "session_peer" } },
+        { text: "a session you follow finished", wakeReason: "completed" },
+      ]))[1]?.origin,
+    ).toBeUndefined();
+    // A MIXED BATCH IS THE PERSON'S. Someone typed, mid-turn; that is the same
+    // reading the interrupt below has always taken of the same batch.
+    expect(
+      (await seenFor([{ text: "a peer reports in", sender: { sessionId: "session_peer" } }, "and the person weighs in"]))[1]?.origin,
+    ).toEqual({ kind: "human" });
+  });
+});
+
 test("an AGENT report and an engine WAKE do NOT interrupt — a notice is not a change of direction", async () => {
   /**
    * The boundary of the interrupt above. Cutting a running answer for a peer's
