@@ -1481,6 +1481,64 @@ export function createClaudeDriver(
       /** Our reply's first frame has arrived (`user_message_uuid` = ours).
        *  Until then a sender-less turn is not ours; after, it is. */
       let ownTurnOpen = false;
+      /**
+       * Background work this turn knows about that has not ended — the shells,
+       * monitors and detached agents still alive inside the process.
+       *
+       * READ FROM THE ROWS, NOT COUNTED FROM `background_tasks_changed`. The
+       * rows are already the fold of every frame that spoke about a task (see
+       * `emitTask`), so a shell whose ending arrived as a notification rather
+       * than as a membership change is correctly absent here; counting the
+       * level signal instead would be a second, worse copy of state the fold
+       * already holds.
+       */
+      const liveBackgroundTasks = (): Array<TaskSeed & { id: string }> =>
+        [...knownTasks.entries()].flatMap(([id, task]) =>
+          isBackgroundWork(task) && !isTerminalTaskState(task.state) ? [{ ...task, id }] : [],
+        );
+
+      /**
+       * THE PROCESS IS GONE, AND SO IS EVERYTHING THAT WAS RUNNING INSIDE IT.
+       *
+       * Background work is the one thing the turn-end sweep deliberately leaves
+       * alone, because outliving its turn is exactly what backgrounding means —
+       * it keeps running in the live process and reports through the next
+       * turn's pump. That reasoning holds only WHILE THE PROCESS LIVES. When
+       * the CLI exits (a crash, a quit, the owner restarting Telar) those
+       * shells and monitors die with it, and a row left at `running` is then a
+       * claim about a process that no longer exists: `livenessOf` reads task
+       * state, so the session reports itself as still monitoring for ever, with
+       * no live stream left to correct it and nothing a human can stop.
+       *
+       * MEASURED AS THE TAIL OF #465 — five task ids (b3053dry9, bzzuxuedf,
+       * b25tzicb4, brheodr3w, bdj7jqyvf) that the NEXT session learned about
+       * only second-hand, as the model's own "didn't finish before the previous
+       * session ended". The rows close as `stopped` (the work was ended by
+       * something outside it, which is what `stopped` means) and the COUNT goes
+       * on the journal, so the loss is stated when it happens rather than
+       * inferred an hour later from a model's aside.
+       *
+       * EMITTED WHOLE RATHER THAN THROUGH `emitTask`, exactly as the turn-end
+       * sweep does: the row is already in hand, and `emitTask` would re-derive
+       * its id from an SDK task id that a row minted off a `tool_use` alone
+       * does not have — `taskIdFor(undefined, undefined)` invents one, which is
+       * a ghost row for a task the store already holds. Folding the ending back
+       * into `knownTasks` is what makes a second call (the stream ending and
+       * then throwing) say nothing the second time.
+       */
+      const reportLostBackgroundWork = (): void => {
+        const lost = liveBackgroundTasks();
+        if (lost.length === 0) return;
+        for (const task of lost) {
+          const ended: TaskSeed = { ...task, state: "stopped", failure: "the provider process ended before this background task reported back" };
+          knownTasks.set(task.id, ended);
+          emit({ kind: "task.completed", task: ended });
+        }
+        emit({
+          kind: "runtime.warning",
+          message: `the Claude process ended with ${lost.length} background task${lost.length === 1 ? "" : "s"} still running; ${lost.length === 1 ? "it was" : "they were"} lost with it`,
+        });
+      };
 
       const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
         if (toolUseId) return `task_${toolUseId}`;
@@ -2719,6 +2777,42 @@ export function createClaudeDriver(
         outstandingSteerCuts.delete(first);
         return true;
       };
+      /**
+       * THE CALLS THE CUT KILLED ARE OVER — AND SAYING SO IS WHAT LETS THE TURN
+       * EVER END AGAIN (#465).
+       *
+       * A steer is delivered by interrupting the CLI, which kills the in-flight
+       * response. A `Bash` the model had just called therefore never produces a
+       * `tool_result` — and `openTopLevelTools` only ever loses an id ON a
+       * tool_result. Left alone, that id sits in the set for the rest of the
+       * turn, with two consequences that compound: the end-turn grace above
+       * never arms (it requires an empty set, because a genuinely open call is
+       * exactly what a turn SHOULD wait for), and every later `result` whose
+       * `stop_reason` is null or `tool_use` trips `toolsStillRunning` and keeps
+       * the pump waiting. Nothing in the stream can ever clear it, so only a
+       * human pressing Stop ends the turn.
+       *
+       * That matches the measured session exactly: after the first steer landed
+       * at 05:56 UTC every turn ended as `turn.stopped` and not one as
+       * `turn.completed`, and the single turn that did complete was the first
+       * turn of a fresh process, before any steer.
+       *
+       * CLOSED AS FAILED, WITH THE REASON ON THE ROW, rather than silently
+       * dropped: the call really did not finish, and a spinner left on the
+       * transcript for the rest of the turn is the same lie told visually. The
+       * sub-agent rows are deliberately left to the turn-end sweep — a
+       * backgrounded agent's rows legitimately outlive the turn, and only the
+       * top-level set is what gates the turn's ending.
+       */
+      const closeCutTools = (): void => {
+        for (const useId of [...openTopLevelTools]) {
+          openTopLevelTools.delete(useId);
+          const open = openTools.get(useId);
+          if (!open) continue;
+          openTools.delete(useId);
+          emit({ kind: "item.completed", itemId: open.id, status: "failed", detail: withToolResult(open.detail, "cut by a steer") });
+        }
+      };
       if (persistent && steer) {
         void (async () => {
           for (;;) {
@@ -2863,6 +2957,12 @@ export function createClaudeDriver(
           if (step.done) {
             streamEnded = true;
             runtime.streamEnded = true;
+            // The process took its background work with it — see
+            // `reportLostBackgroundWork`. Flushed HERE rather than left to the
+            // post-loop flush, because a turn that ends this way usually ends
+            // by throwing and everything still in `pending` would go with it.
+            reportLostBackgroundWork();
+            await flush();
             break;
           }
           const message = step.value;
@@ -3171,6 +3271,10 @@ export function createClaudeDriver(
               // end. The words that caused it are already in the feed, so keep
               // pumping; the text streamed before the cut stays journalled.
               if (consumeSteerCut()) {
+                // …but the calls the interrupt killed ARE over, and leaving
+                // them open is what wedged every steered turn — see
+                // `closeCutTools`.
+                closeCutTools();
                 await flush();
                 continue;
               }
@@ -3631,7 +3735,23 @@ export function createClaudeDriver(
               if (idleRuntime.pendingStep === step) idleRuntime.pendingStep = undefined;
               if (result.done) {
                 idleRuntime.streamEnded = true;
+                /**
+                 * THE CASE THE TURN PUMP CANNOT SEE, and the common one once a
+                 * turn settles with its shells still alive: the process dies
+                 * BETWEEN turns, with nobody's turn open to fail. Nothing else
+                 * would ever close those rows — the turn that started them has
+                 * long since ended and deliberately left background work alone
+                 * — so the session would read as monitoring for ever.
+                 *
+                 * AFTER `endWake`, never before: it emits the wake-up's own
+                 * closing rows into THAT turn's sink and only then restores
+                 * `idleSink`. Reporting first would file a dead process's task
+                 * rows on a turn that is about to settle.
+                 */
                 await endWake({ failure: "the provider process ended" });
+                sink = idleSink;
+                reportLostBackgroundWork();
+                await flush();
                 return;
               }
               const item = result.value as SdkFrame;
@@ -3822,6 +3942,11 @@ export function createClaudeDriver(
             }
           } catch {
             await endWake({ failure: "the provider stream failed between turns" }).catch(() => undefined);
+            // A stream that threw is a process that is going away, with the
+            // same consequence for its shells — see `reportLostBackgroundWork`.
+            sink = idleSink;
+            reportLostBackgroundWork();
+            await flush().catch(() => undefined);
             runtimes.destroy(idleRuntime.sessionId);
           } finally {
             if (idleRuntime.idlePump?.stop === undefined || stopped) idleRuntime.idlePump = undefined;
