@@ -37,8 +37,6 @@ actor RecordingEngineAPI: EngineAPI {
         return eventPages.removeFirst()
     }
 
-    func sessionData(_ id: EngineID) async throws -> Data { fatalError("unused") }
-    func liveSessionsData() async throws -> Data { fatalError("unused") }
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data { fatalError("unused") }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }

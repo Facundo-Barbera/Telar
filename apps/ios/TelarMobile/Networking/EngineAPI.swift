@@ -29,13 +29,22 @@ protocol EngineAPI: Sendable {
     /// until something else happens over there. A 304 also carries no body at
     /// all, where the cursor's cheapest answer is sixty bytes.
     ///
-    /// `nil` BACK MEANS NOT MODIFIED: keep what you have. Distinct from a
+    /// `live == nil` MEANS NOT MODIFIED: keep what you have. Distinct from a
     /// `LiveSessions` with no rows, which would empty the list.
+    ///
+    /// AND IT CARRIES THE BYTES (#499), which is what the cache is written from
+    /// now. The store used to warm it with a SECOND full read of this same
+    /// route immediately after this one — 318 KB on the owner's Mac, for rows
+    /// it had just been handed. One read serves the screen and the cache.
+    ///
+    /// `since` IS THE LEGACY CURSOR, offered here so that path returns bytes
+    /// too. It is mutually exclusive with `etag` in every caller: only the
+    /// NARROW read may use a cursor, for the reason above.
     ///
     /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
     /// it (the test doubles) falls back to an unconditional read, which is also
     /// what a Mac too old to mint a tag leaves this phone with.
-    func liveSessions(matching etag: String?, all: Bool) async throws -> (live: LiveSessions?, etag: String?)
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead
     /// THE SAME READ, CONDITIONALLY (#459) — what the inbox poll should use.
     ///
     /// Hand back the `revision` from last time and a Mac with nothing new
@@ -49,12 +58,21 @@ protocol EngineAPI: Sendable {
     /// requirement is on the protocol rather than only in the extension.
     func liveSessions(since: Int) async throws -> LiveSessions
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
+    /// THE SAME READ, KEEPING THE BYTES (#499) — what the phone records for
+    /// when the Mac is away (SnapshotCache). The wire types decode only, so the
+    /// durable form is the cockpit's own JSON.
+    ///
+    /// ONE READ, NOT TWO. The sync engine used to hydrate a WINDOWED snapshot
+    /// for the screen and then fetch the same session UNWINDOWED — the whole
+    /// run, up to 4.5 MB — purely to warm that cache. The window the screen
+    /// asked for is the window the cache keeps, and it is the same answer, so
+    /// the second read is gone rather than merely shrunk.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW: a conformer that does not implement
+    /// it makes the plain read and reports no bytes, which simply leaves it
+    /// with nothing to record.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead
     func events(_ id: EngineID, after: Int) async throws -> EventPage
-    /// THE SAME TWO READS, AS BYTES — what the phone keeps for when the Mac is
-    /// away (SnapshotCache). The wire types decode only, so the durable form
-    /// is the cockpit's own JSON; these hand it over unparsed.
-    func sessionData(_ id: EngineID) async throws -> Data
-    func liveSessionsData() async throws -> Data
     /// The bytes behind `ProjectRef.icon`. `icon` rides as `?v=` so the
     /// cockpit's immutable cache header is honest; the route does not read it.
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data
@@ -139,6 +157,33 @@ struct SnapshotWindow: Sendable {
     }
 }
 
+/// ONE LIVE-LIST READ, SERVING BOTH THE SCREEN AND THE CACHE (#499).
+///
+/// The store used to poll this route and then immediately read it again,
+/// whole, to warm the phone's copy. `data` is why it no longer does: the
+/// cockpit's own bytes, kept exactly as they arrived, so the durable form
+/// stays the protocol's rather than a second encoding of it.
+struct LiveSessionsRead: Sendable {
+    /// NIL MEANS NOT MODIFIED — keep what you have. Never "there is nothing".
+    var live: LiveSessions?
+    /// What to send back as `If-None-Match` next time. Restated by the Mac on
+    /// a 304, so a caller that dropped it there would pay for a full read.
+    var etag: String?
+    /// The body as the Mac sent it. Nil on a 304 (there is no body) and from a
+    /// conformer that cannot hand its bytes over — both mean "nothing new to
+    /// record", never "record emptiness".
+    var data: Data?
+}
+
+/// The same bargain for one session's snapshot (#499): the window the screen
+/// asked for, and the bytes to record it with.
+struct SessionRead: Sendable {
+    var snapshot: SessionSnapshot
+    /// Nil from a conformer that cannot hand its bytes over; the cache then
+    /// keeps whatever it last held.
+    var data: Data?
+}
+
 extension EngineAPI {
     /// The unwindowed read older call sites mean.
     func session(_ id: EngineID) async throws -> SessionSnapshot {
@@ -179,9 +224,18 @@ extension EngineAPI {
 
     /// And likewise the conditional one: a conformer that cannot send a tag
     /// makes the unconditional read and reports no tag, so the caller never
-    /// has one to hand back and every read stays a full one.
-    func liveSessions(matching etag: String?, all: Bool) async throws -> (live: LiveSessions?, etag: String?) {
-        (try await liveSessions(all: all), nil)
+    /// has one to hand back and every read stays a full one. No bytes either,
+    /// which leaves it with nothing to record — the right answer, since the
+    /// alternative is recording a snapshot nobody can vouch for.
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
+        if let since { return LiveSessionsRead(live: try await liveSessions(since: since), etag: nil, data: nil) }
+        return LiveSessionsRead(live: try await liveSessions(all: all), etag: nil, data: nil)
+    }
+
+    /// And the session snapshot: a conformer that cannot hand its bytes over
+    /// still answers the screen, and simply records nothing.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
+        SessionRead(snapshot: try await session(id, window: window), data: nil)
     }
 }
 
@@ -474,8 +528,19 @@ struct HTTPEngineAPI: EngineAPI {
     ///
     /// THE TAG COMES BACK EVEN ON A 304, because the Mac restates it, and a
     /// caller that dropped it there would make the next tick a full read.
-    func liveSessions(matching etag: String?, all: Bool) async throws -> (live: LiveSessions?, etag: String?) {
-        var request = makeRequest(url("api/sessions/live", query: all ? [URLQueryItem(name: "all", value: "1")] : []))
+    ///
+    /// AND THE BYTES COME BACK WITH IT (#499). They are already in hand here;
+    /// handing them over is what let the store stop re-reading this whole route
+    /// a second time just to warm its cache.
+    ///
+    /// `since` IS THE LEGACY CURSOR, carried so that path keeps its bytes too.
+    /// Callers send one or the other, never both — a cursor is a number about
+    /// the Mac's store and cannot be spent on the wide list.
+    func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead {
+        var query: [URLQueryItem] = []
+        if all { query.append(URLQueryItem(name: "all", value: "1")) }
+        if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
+        var request = makeRequest(url("api/sessions/live", query: query))
         if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
         // The URL cache stays out of this: the tag bookkeeping is the store's
         // own, and a cache revalidating underneath it would answer from a copy
@@ -491,7 +556,7 @@ struct HTTPEngineAPI: EngineAPI {
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         let fresh = http?.value(forHTTPHeaderField: "Etag")
-        if status == 304 { return (nil, fresh ?? etag) }
+        if status == 304 { return LiveSessionsRead(live: nil, etag: fresh ?? etag, data: nil) }
         guard (200..<300).contains(status) else {
             if let body = try? JSONDecoder().decode(EngineErrorBody.self, from: data) {
                 throw EngineAPIError.engine(code: body.error.code, message: body.error.message, status: status)
@@ -503,30 +568,49 @@ struct HTTPEngineAPI: EngineAPI {
         guard let live = try? JSONDecoder().decode(LiveSessions.self, from: data) else {
             throw EngineAPIError.incompatible(status: status)
         }
-        return (live, fresh)
+        // NOT THE BYTES OF AN `unchanged` ANSWER. The cursor's cheap reply is a
+        // 200 carrying no rows, and recording it would replace the phone's copy
+        // with emptiness — the one thing the cache exists not to show.
+        return LiveSessionsRead(live: live, etag: fresh, data: live.unchanged ? nil : data)
     }
 
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
-        var query: [URLQueryItem] = []
-        if let window {
-            query.append(URLQueryItem(name: "turns", value: String(window.turns)))
-            if let before = window.before {
-                query.append(URLQueryItem(name: "before", value: before))
+        try await get("api/sessions/\(escape(id))", query: sessionQuery(window))
+    }
+
+    /// THE SAME READ, KEEPING THE BYTES (#499) — one request that answers the
+    /// screen and records the phone's copy.
+    ///
+    /// The window is whatever the caller asked for, so the cache holds exactly
+    /// what the transcript opened on. It used to hold the UNWINDOWED run — a
+    /// separate GET of up to 4.5 MB, fired straight after a hydrate that had
+    /// deliberately asked for ten turns.
+    func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
+        let (data, status) = try await raw(makeRequest(url("api/sessions/\(escape(id))", query: sessionQuery(window))))
+        // Decoded off the caller's executor, exactly as `perform` does it: every
+        // caller here is `@MainActor`, and a session's tool outputs are the
+        // largest parse this app makes.
+        let snapshot: SessionSnapshot = try await Task.detached(priority: .userInitiated) {
+            do {
+                return try JSONDecoder().decode(SessionSnapshot.self, from: data)
+            } catch {
+                throw EngineAPIError.incompatible(status: status)
             }
+        }.value
+        return SessionRead(snapshot: snapshot, data: data)
+    }
+
+    private func sessionQuery(_ window: SnapshotWindow?) -> [URLQueryItem] {
+        guard let window else { return [] }
+        var query = [URLQueryItem(name: "turns", value: String(window.turns))]
+        if let before = window.before {
+            query.append(URLQueryItem(name: "before", value: before))
         }
-        return try await get("api/sessions/\(escape(id))", query: query)
+        return query
     }
 
     func events(_ id: EngineID, after: Int) async throws -> EventPage {
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
-    }
-
-    func sessionData(_ id: EngineID) async throws -> Data {
-        try await raw(makeRequest(url("api/sessions/\(escape(id))")))
-    }
-
-    func liveSessionsData() async throws -> Data {
-        try await raw(makeRequest(url("api/sessions/live")))
     }
 
     func projectIcon(_ projectId: EngineID, icon: String) async throws -> Data {

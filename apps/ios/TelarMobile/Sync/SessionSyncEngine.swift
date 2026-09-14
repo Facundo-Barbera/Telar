@@ -90,6 +90,8 @@ enum SyncConnectionState: Equatable {
     /// The last snapshot bytes as the cockpit sent them, saved after a good
     /// read. Raw on purpose — see SnapshotCache.
     private var lastSnapshotData: Data?
+    /// The cache WRITE in flight, held only so the tests can wait for it.
+    private var recording: Task<Void, Never>?
 
     /// Whether "Load earlier turns" has anything to load.
     var hasOlderTurns: Bool { page?.more == true }
@@ -177,10 +179,11 @@ enum SyncConnectionState: Equatable {
         apply(folded, generation: foldGeneration)
     }
 
-    /// Tests: wait for the cache read and the fold in flight to land.
+    /// Tests: wait for the cache read, the fold in flight, and the cache write.
     func awaitPendingWork() async {
         await restoring?.value
         await folding?.value
+        await recording?.value
     }
 
     private func hydrate() async {
@@ -197,7 +200,7 @@ enum SyncConnectionState: Equatable {
             connection = .live
             recordedAt = nil
             backoff = .seconds(1)
-            remember()
+            remember(hydrated.snapshotData)
         } catch {
             fail(error)
         }
@@ -238,7 +241,7 @@ enum SyncConnectionState: Equatable {
             connection = .live
             recordedAt = nil
             backoff = .seconds(1)
-            if tail.snapshot != nil { remember() }
+            if tail.snapshot != nil { remember(tail.snapshotData) }
         } catch {
             fail(error)
         }
@@ -278,23 +281,28 @@ enum SyncConnectionState: Equatable {
     }
 
     /// Write the snapshot the last good read produced, AS THE COCKPIT SENT
-    /// IT. The wire types decode only, so the bytes come from a second GET of
-    /// the same record rather than from re-encoding a struct that has no
-    /// encoder — one small read after a hydrate or a queue-changing tail,
-    /// never per delta, and never on the hot path (it is detached).
-    private func remember() {
-        guard let cache else { return }
-        let api = self.api, id = sessionId
-        Task.detached(priority: .utility) { [weak self] in
-            guard let data = try? await api.sessionData(id) else { return }
-            await self?.store(data, in: cache)
-        }
-    }
-
-    private func store(_ data: Data, in cache: HostSnapshotCache) {
-        if data == lastSnapshotData { return }
+    /// IT. The wire types decode only, so the durable form is the cockpit's
+    /// own JSON rather than a re-encoding of a struct that has no encoder.
+    ///
+    /// THE READ THE SCREEN ALREADY MADE (#499). These bytes come from the
+    /// hydrate or the queue-changing tail that produced the snapshot on screen,
+    /// and they are WINDOWED — the ten turns that transcript opened on. It used
+    /// to be a second GET of the same session with no window at all: the whole
+    /// run, up to 4.5 MB on a long one, fetched purely to warm a cache the
+    /// windowed read had already paid for. The cached first frame is now
+    /// exactly the frame the reader last saw, which is also what it should
+    /// always have been.
+    ///
+    /// NIL MEANS NOTHING TO RECORD — a conformer that cannot hand its bytes
+    /// over. The copy already on disk stands.
+    ///
+    /// DETACHED because it is file I/O at the tail of a poll that runs on the
+    /// main actor while somebody is reading the transcript.
+    private func remember(_ data: Data?) {
+        guard let cache, let data, data != lastSnapshotData else { return }
         lastSnapshotData = data
-        cache.writeSession(sessionId, data)
+        let id = sessionId
+        recording = Task.detached(priority: .utility) { cache.writeSession(id, data) }
     }
 
     /// The session row is cheap and lands now; the fold is the cost and lands
