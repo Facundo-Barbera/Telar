@@ -14,7 +14,7 @@
  *     the same fenced routes every panel surface uses.
  *   - Not a browser. A URL belongs in `browser_tabs new`; this takes a path.
  *   - Not gated. Showing a person a file they could open themselves changes
- *     nothing and risks nothing, the same judgement the spool's verbs got.
+ *     nothing and risks nothing, the same judgement every other wall's verbs got.
  *
  * The capability is the seam (tool-kit.ts): the WORKER implements `open` —
  * fence the path inside the turn's checkout, confirm it exists, report a

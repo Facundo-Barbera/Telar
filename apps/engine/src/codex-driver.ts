@@ -701,7 +701,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                 /**
                  * THE `telar` WALL — the core toolkits and the migrated plugins,
                  * under the key they already ship under. This entry is what
-                 * makes `spool_*`, `ds_*`, `notebook_*`, `latex_*`, `run_*` and
+                 * makes `sessions_*`, `notes_*`, `ds_*`, `notebook_*`, `latex_*`, `run_*` and
                  * `display_*` exist on Codex at all; before it, no in-process
                  * `telar` server reached a Codex turn and none of them did.
                  *

@@ -6,7 +6,6 @@ import { clientDsCapability } from "./ds/client-capability";
 import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
-import { spoolTools, type SpoolCapability } from "./spool/tools";
 import { sessionsTools } from "./sessions-tools/tools";
 import { notesTools, type NotesCapability } from "./notes-tools/tools";
 import { dsTools } from "./ds/ds-tools";
@@ -43,41 +42,18 @@ type WorkerClient = Pick<
   | "ackSteer"
   // Shelve/unshelve only — never the whole `updateSession`. See `settleSession`.
   | "settleSession"
-  // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
-  // back over the same loopback socket as everything else here, which is what
-  // makes the toolkit identical in the embedded worker and the out-of-process
-  // one. See `SpoolCapability`.
-  | "spool"
-  | "spoolItem"
-  | "createSpoolItem"
-  | "updateSpoolItem"
-  | "consultSpoolExpert"
-  | "spoolMap"
-  | "openSpoolThread"
-  | "setSpoolThreadWaiting"
-  | "settleSpoolThread"
-  | "answerSpoolQuestion"
-  | "spoolFocus"
-  | "openSpoolFocus"
-  | "closeSpoolFocus"
-  | "reconcileSpoolLook"
-  | "setSpoolSubjectTerrain"
-  | "setSpoolSubjectIdentity"
-  | "setSpoolAperture"
-  | "setSpoolAreaCeiling"
-  | "spoolNotes"
-  | "createSpoolNote"
-  | "updateSpoolNote"
-  | "spoolSearch"
-  // The project notebook's verbs, same rule again. `projects` rides along
-  // because `notes_projects` is how a caller finds the id the others take.
+  // The project notebook's verbs. THE WORKER STILL HOLDS NO STORE HANDLE —
+  // these go back over the same loopback socket as everything else here, which
+  // is what makes the toolkit identical in the embedded worker and the
+  // out-of-process one. See `NotesCapability`. `projects` rides along because
+  // `notes_projects` is how a caller finds the id the others take.
   | "listProjects"
   | "projectNotes"
   | "projectNote"
   | "createProjectNote"
   | "updateProjectNote"
   | "deleteProjectNote"
-  // The `sessions` verbs. Same rule as the spool's above: no store handle,
+  // The `sessions` verbs. Same rule as the notebook's above: no store handle,
   // everything back over the loopback socket, so the toolkit is identical in
   // the embedded worker and the out-of-process one. See `SessionsCapability`.
   //
@@ -1309,27 +1285,25 @@ export class EngineWorker {
        * in-process registration (the `sessions` field below) and the socket
        * lease a Codex turn is pointed at.
        *
-       * UNSCOPED, unlike the spool, and that is not an oversight: there is no
-       * scope to apply. A session created here is a PEER of the one that
+       * UNSCOPED, unlike the notebook, and that is not an oversight: there is
+       * no scope to apply. A session created here is a PEER of the one that
        * asked — no parent, no child, no link recorded anywhere — so there is
        * nothing about this turn for the capability to be narrowed by, and
        * nothing counts how many it creates.
        *
-       * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
-       * do: the worker holds no store handle, and routing through the same
-       * HTTP surface the cockpit uses means there is exactly one
-       * implementation of every rule about a session, whichever door
-       * reached it.
+       * EVERY VERB GOES BACK THROUGH THE CLIENT: the worker holds no store
+       * handle, and routing through the same HTTP surface the cockpit uses
+       * means there is exactly one implementation of every rule about a
+       * session, whichever door reached it.
        *
        * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
-       * on the wall carries it — the same construction as the spool's
-       * `source: "session"`.
+       * on the wall carries it.
        */
       const sessionsCapability: SessionsCapability = {
         /**
          * THE ONE SCOPED THING ON THIS CAPABILITY: who is asking, so a
          * subscription can name the session to wake. Closed over the claim
-         * exactly as the spool's `project` is. The daemon's socket builds
+         * exactly as the notebook's `projectId` is. The daemon's socket builds
          * this same capability WITHOUT it — a chat client has no session
          * to be woken in — and the wall refuses to subscribe there.
          */
@@ -1394,7 +1368,8 @@ export class EngineWorker {
        * capability is absent rather than empty: a model told "there are no
        * notes" would report that as the truth.
        *
-       * EVERY VERB GOES BACK THROUGH THE CLIENT, the rule the spool's states:
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, the rule the sessions
+       * capability states:
        * the toolkit exercises the same routes the composer's foot does, so
        * there is exactly one implementation of every rule about a note —
        * including the `getProject` check that keeps an unknown id from minting
@@ -1417,7 +1392,7 @@ export class EngineWorker {
               }
             },
             // The toolkit's own handler declares `author: "session"`; the
-            // capability forwards it, exactly as the spool's `createNote` does.
+            // capability only forwards it.
             create: async (projectId, input) => (await this.options.client.createProjectNote(projectId, { ...input, author: "session" })).note,
             update: async (projectId, noteId, patch) => {
               try {
@@ -1464,16 +1439,9 @@ export class EngineWorker {
        * same change moves the driver's fingerprint, so the provider cold-starts
        * onto the new credential.
        */
-      /**
-       * Filled by the `driver.run` options below. The wall reads it at REQUEST
-       * time, after the run has been entered, so assigning it later is sound —
-       * and leaving it unset would give a Codex turn no `spool_*` at all.
-       */
-      let spoolCapability: SpoolCapability | undefined;
       const telarKey = [...(claim.plugins ?? [])].sort().join(",");
       let telarEntry = this.telarLeases.get(sessionId);
       const telarCapabilities: Record<string, unknown> = {
-        get spool() { return spoolCapability; },
         sessions: sessionsCapability,
         ...(notesCapability ? { notes: notesCapability } : {}),
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
@@ -1489,7 +1457,6 @@ export class EngineWorker {
           const box = { current: telarCapabilities };
           const lease = await this.options.telarSocket.bind(() =>
             collectTelarWall([
-              { name: "spool", build: spoolTools as never, capability: () => box.current.spool },
               { name: "sessions", build: sessionsTools as never, capability: () => box.current.sessions },
               { name: "notes", build: notesTools as never, capability: () => box.current.notes },
               { name: "ds", build: dsTools as never, capability: () => box.current.ds },
@@ -1570,65 +1537,6 @@ export class EngineWorker {
         // and with which credential. Spread on the same absent-means-absent
         // rule as everything above it.
         ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
-        /**
-         * THE SPOOL, SCOPED TO THIS TURN'S PROJECT.
-         *
-         * Assembled here, per run, because the scope IS the run's: `claim.project`
-         * is the project's own label, and it is what a spool item's `project`
-         * field is compared against. Absent leaves the capability unscoped, which
-         * is the project-less master's view — and the claim's own comment says
-         * why absence means that rather than "no items".
-         *
-         * EVERY VERB GOES BACK THROUGH THE CLIENT, so the toolkit exercises the
-         * same routes the queue does and there is exactly one implementation of
-         * every rule about an item.
-         */
-        spool: (spoolCapability = {
-          ...(claim.project ? { project: claim.project } : {}),
-          snapshot: () => this.options.client.spool(),
-          item: (id) =>
-            this.options.client.spoolItem(id).catch(() => null),
-          create: async (input) => (await this.options.client.createSpoolItem(input)).item,
-          update: async (id, patch) => (await this.options.client.updateSpoolItem(id, patch)).item,
-          consult: (id) => this.options.client.consultSpoolExpert(id),
-          // The work-state verbs, through the same client for the same reason:
-          // one implementation of every rule, already under test.
-          map: () => this.options.client.spoolMap(),
-          openThread: async (subject, input) => (await this.options.client.openSpoolThread(subject, input)).thread,
-          setWaiting: async (subject, threadId, waiting) =>
-            (await this.options.client.setSpoolThreadWaiting(subject, threadId, waiting)).thread,
-          settle: async (subject, threadId, answer) =>
-            (await this.options.client.settleSpoolThread(subject, threadId, answer)).thread,
-          answer: async (itemId, question, answer) =>
-            (await this.options.client.answerSpoolQuestion(itemId, question, answer)).item,
-          focus: () => this.options.client.spoolFocus(),
-          setFocus: async (input) => (await this.options.client.openSpoolFocus(input)).focus,
-          endFocus: async (id, end) => (await this.options.client.closeSpoolFocus(id, end)).focus,
-          // Loop 1's verbs reach every session the same way the rest do. The
-          // reconcile itself is the engine's — deterministic, pull-only — so a
-          // scoped session glancing at its own subject spends nothing and can
-          // start nothing.
-          look: async (subjectKey) => (await this.options.client.reconcileSpoolLook(subjectKey)).look,
-          setTerrain: async (subjectKey, terrain) =>
-            (await this.options.client.setSpoolSubjectTerrain(subjectKey, terrain)).subject,
-          setIdentity: async (subjectKey, patch) =>
-            (await this.options.client.setSpoolSubjectIdentity(subjectKey, patch)).subject,
-          // Chat and hand share one slot / one record: both of these go through
-          // the same routes the room's own controls PUT and PATCH, so there is
-          // exactly one implementation of the view and of the clamp.
-          setAperture: async (view) => (await this.options.client.setSpoolAperture(view)).aperture,
-          setAreaPermits: async (name, ceiling) =>
-            (await this.options.client.setSpoolAreaCeiling(name, ceiling)).area,
-          // The shelf and the search, through the same client for the same
-          // reason as everything above: one implementation of every rule.
-          // The toolkit's own handler declares `author: "session"` on create;
-          // the capability forwards it verbatim, exactly as `create.source`.
-          notes: async () => (await this.options.client.spoolNotes()).notes,
-          createNote: async (input) => (await this.options.client.createSpoolNote(input)).note,
-          updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
-          search: async (query, subject) =>
-            (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
-        }),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
         // The project notebook, hoisted above for the same reason. Absent on a
@@ -1640,8 +1548,8 @@ export class EngineWorker {
         /**
          * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
          * an HTTP call to the daemon, which owns the kernel — the worker holds
-         * no process and no store, exactly as with the spool. Absent on the
-         * claim means absent here, and the driver registers no toolkit.
+         * no process and no store, exactly as with everything above. Absent on
+         * the claim means absent here, and the driver registers no toolkit.
          */
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         // The compile door, same shape: HTTP to the daemon, which owns the jobs.

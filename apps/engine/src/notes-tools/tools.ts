@@ -1,7 +1,7 @@
 /**
  * THE `notes` TOOLKIT — the project notebook as a tool wall.
  *
- * Modelled on `../spool/tools.ts` and `../sessions-tools/tools.ts` down to the
+ * Modelled on `../sessions-tools/tools.ts` down to the
  * seams: a capability PORT, a wall built over it, `tool` arriving as an argument
  * so no test needs the provider SDK, and every rule about a note implemented
  * ONCE, in `../notes.ts`, rather than here.
@@ -13,7 +13,7 @@
  * `test/notes-socket.test.ts` asserts the two lists are equal.
  *
  * ── THE ONE DELETE ON ANY TELAR WALL, AND ITS FENCE ─────────────────────────
- * `sessions-tools/tools.ts` and the spool both refuse a delete on principle: an
+ * `sessions-tools/tools.ts` refuses a delete on principle: an
  * agent that could delete could erase another agent's work, or a person's. This
  * wall carries one anyway, because the notebook has no retire to fall back on —
  * a project note is a scratchpad, and a strip whose job is to stay short cannot
@@ -139,7 +139,7 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
         "something about this project — a command that works, a constraint, a decision — not for your own scratch notes " +
         "and not to log what you just did. The note is stamped as an agent's, permanently: that provenance never changes, " +
         "so a note you wrote stays marked as yours after the user rewrites every word of it. This is the project's own " +
-        "notebook, not the user's Spool shelf — cross-project knowledge belongs there (`spool_write_note`), not here.",
+        "notebook — the quick notes kept beside the code.",
       {
         projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to write to this one's."),
         title: z.string().optional().describe("What the note is about, in a few words. Required for a new note."),

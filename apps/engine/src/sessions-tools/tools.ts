@@ -1,7 +1,7 @@
 /**
  * The `sessions` toolkit — a session's only path to OTHER sessions.
  *
- * Modelled on `../spool/tools.ts` down to the seams: a capability PORT, a wall
+ * Built on the seams every Telar toolkit shares: a capability PORT, a wall
  * of tools built over it, `tool` arriving as an argument so no test needs an
  * SDK, and every rule about a session implemented ONCE, in the store, rather
  * than here.
@@ -70,7 +70,7 @@ import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, ProviderDrive
  * EVERY MEMBER IS A THIN MIRROR OF ONE `EngineStore` METHOD, and that is the
  * whole design: validation lives in the store, so the tool wall composes
  * sentences and never decides anything. The port exists for the same reason
- * `SpoolCapability` does — there are two worker deployments, the daemon's
+ * every other capability here does — there are two worker deployments, the daemon's
  * embedded one and `worker-main.ts`, and only one of them can reach the
  * filesystem store, so the worker builds this out of `EngineClient` calls while
  * the daemon's socket builds it out of `store.*` calls. Both land on the same
@@ -90,7 +90,7 @@ export type SessionsCapability = {
    * A NEW SESSION, WITH NO LINK TO THE CALLER.
    *
    * `origin: "session"` is stamped by the implementation of this member, never
-   * by a model argument — no shape below carries it — exactly as the spool's
+   * by a model argument — no shape below carries it, exactly as the notebook's
    * `source: "session"` is. Provenance a list can show; nothing counts it.
    */
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
@@ -314,7 +314,7 @@ const LIVE_TURN_STATES = new Set(["queued", "claimed", "running"]);
  * Build the toolkit.
  *
  * THE `tool` FACTORY ARRIVES AS AN ARGUMENT rather than being imported, the
- * same seam the spool and browser toolkits take: the provider SDK is loaded
+ * same seam the browser toolkit takes: the provider SDK is loaded
  * lazily on the first run, and a module that imported it at the top would pull
  * it into every unit test. `zod` is imported directly — it is the engine's own
  * dependency, not the provider's.

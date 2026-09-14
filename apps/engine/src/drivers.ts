@@ -72,14 +72,10 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
  * it. Claude deliberately KEEPS its in-process registration under `telar` —
  * one wall, two transports, and the wall itself is the shared piece.
  *
- * The SPOOL and WARP remain in-process Claude SDK servers, so CAP-12 ("items
- * are a Telar-wide substrate reachable from any session") is still TRUE FOR
- * CLAUDE SESSIONS ONLY. A Codex session cannot read or file the user's tasks.
- * It is not silently wrong — the model simply has no such tool and says so —
- * but it is not the contract either. Moving the spool onto a session-scoped
- * socket like the browser's is the remainder of stage I of
- * `docs/spool-port.md`, and it is deliberately not faked here — a Codex
- * session with a spool tool that did nothing would be worse than one without.
+ * WARP remains an in-process Claude SDK server, so a Codex session cannot fan
+ * out. It is not silently wrong — the model simply has no such tool and says
+ * so — and it is deliberately not faked here: a Codex session with a `warp`
+ * tool that did nothing would be worse than one without.
  */
 
 export function createDefaultDrivers(): DriverSelector {

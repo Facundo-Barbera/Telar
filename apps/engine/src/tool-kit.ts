@@ -1,5 +1,5 @@
 /**
- * The seam every Telar toolkit is built on. Lifted out of `spool/tools.ts` and
+ * The seam every Telar toolkit is built on. Lifted out of the first toolkit and
  * `sessions-tools/tools.ts`, where the same four lines were duplicated so that
  * neither imported the provider SDK — a rule this file keeps: nothing here
  * touches the SDK, so a unit test drives any toolkit with a fake factory.

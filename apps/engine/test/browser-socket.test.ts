@@ -5,7 +5,7 @@ import { BrowserToolSocket, type BrowserSocketCapability } from "../src/browser/
 
 /**
  * THE SOCKET IS DRIVEN OVER REAL HTTP, the way a provider subprocess drives it
- * — `spool-socket.test.ts` sets the pattern. The capability is a fake; what is
+ * — `sessions-socket.test.ts` sets the pattern. The capability is a fake; what is
  * under test is the transport, the per-lease auth, the gate and the state
  * reporting, which are exactly the parts that used to live in `driver.ts` and
  * now serve BOTH providers.
@@ -293,7 +293,7 @@ test("the socket serves ONE path — anything else is 404, even with a valid tok
   const socket = makeSocket(fakeCapability());
   const lease = await socket.bind({ scopeKey: "s" });
   const origin = new URL(lease.url).origin;
-  const other = await fetch(`${origin}/v2/spool/mcp`, {
+  const other = await fetch(`${origin}/v2/sessions/mcp`, {
     method: "POST",
     headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" },
     body: JSON.stringify(call("browser_snapshot")),

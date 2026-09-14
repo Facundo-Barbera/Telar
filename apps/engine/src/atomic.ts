@@ -2,12 +2,12 @@
  * The engine's one document write.
  *
  * EXTRACTED FROM `state.ts` RATHER THAN COPIED, and the reason is the shape of
- * the alternative: `spool/store.ts` needs this exact idiom, and `state.ts` will
- * import the spool store, so a spool module importing `state.ts` back would be a
- * cycle. The other option — a second inline `mkdir + tmp + rename` under
- * `spool/` — is how eight separate copies of this idiom accumulated in the
- * legacy tree, each free to drift on mode, on temp naming, or on whether it
- * cleans up after a failed write.
+ * the alternative: a store module that needs this exact idiom and is imported
+ * BY `state.ts` cannot reach back here for it without a cycle. The other option
+ * — a second inline `mkdir + tmp + rename` beside each one — is how eight
+ * separate copies of this idiom accumulated in the legacy tree, each free to
+ * drift on mode, on temp naming, or on whether it cleans up after a failed
+ * write.
  *
  * A UNIQUE TEMP FILE, NOT `<file>.tmp`. Two writers racing on one document would
  * otherwise share a temp path and interleave, and the rename would publish a

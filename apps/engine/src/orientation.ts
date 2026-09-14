@@ -5,7 +5,7 @@
  * it had was tool names (`mcp__telar__*`, `telar-browser`) and one MCP
  * instruction block about the browser — so "the browser" read as this Mac's
  * Chrome, "session" as the CLI's own history, and "the panel", "the rail",
- * "Spool", "Looks", "a surface" meant nothing at all. The confusion was
+ * "Looks", "a surface" meant nothing at all. The confusion was
  * structural: the harness never stated where the agent was, so every session
  * re-derived it from tool names or got it wrong. The owner's words for the
  * failure: "when I say browser I most of the time mean the Telar browser and
@@ -38,7 +38,7 @@ import path from "node:path";
 
 /** Bumped whenever the words below change. The skill's front matter carries it,
  *  so a file on disk says which release wrote it. */
-export const ORIENTATION_VERSION = 1;
+export const ORIENTATION_VERSION = 2;
 
 /** The skill's name, which is also its directory and the `$telar` a person or a
  *  model types. One constant so the writer, the remover and the preamble that
@@ -64,7 +64,7 @@ export const TELAR_ORIENTATION =
   '"The browser" is Telar\'s own integrated browser, driven by the `telar-browser` tools and sharing its tabs with them — not this Mac\'s Chrome or Safari, unless they say so outright. ' +
   'A "session" or "conversation" is a Telar session, reached through the `mcp__telar` tools, not this CLI\'s own history. ' +
   'The "panel" is the cockpit\'s right pane, the "rail" its list of sessions, and a "surface" one thing drawn in either; ' +
-  '"Spool" is their own desk of tasks and notes, "Looks" the cockpit\'s themes, and a "Warp" a fan-out of sub-agents. ' +
+  '"Looks" are the cockpit\'s themes, and a "Warp" a fan-out of sub-agents. ' +
   `The \`${TELAR_SKILL_NAME}\` skill has the detail. When one of these words could mean two things here, ask which.`;
 
 /**
@@ -74,7 +74,7 @@ export const TELAR_ORIENTATION =
  * toolkit with a recording factory and asserts that every name it reports
  * appears below — so a tool added, renamed or removed fails the suite instead
  * of leaving a reference that quietly lies. That test is the reason this is a
- * list rather than prose about "the spool verbs".
+ * list rather than prose about "the notebook verbs".
  *
  * THE FRONT MATTER CARRIES `telar:` — the marker `syncTelarSkill` checks before
  * it overwrites or deletes anything. A person who wrote their own `telar` skill
@@ -82,7 +82,7 @@ export const TELAR_ORIENTATION =
  */
 export const TELAR_SKILL = `---
 name: ${TELAR_SKILL_NAME}
-description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, Warps, the integrated browser's tab rules, and the Spool. Read this when a request uses a word like "the browser", "the panel", "a session", "Spool" or "a Look" and you are not certain it means what you would assume outside Telar.
+description: What Telar is and what its words mean — the cockpit's panel, rail and surfaces, sessions and how they are assigned and settled, Warps, the integrated browser's tab rules, and the project notebook. Read this when a request uses a word like "the browser", "the panel", "a session" or "a Look" and you are not certain it means what you would assume outside Telar.
 telar: generated v${ORIENTATION_VERSION}
 ---
 
@@ -97,8 +97,8 @@ agents. Everything below is about THIS app, not about the machine it runs on.
 - **The rail** — the left sidebar. Every live session, grouped by project.
   Settled ones are shelved out of it rather than deleted.
 - **The panel** — the right pane beside the conversation. It has tabs: the
-  files the session changed, the browser, the run output, the Spool, whatever
-  the session opened. \`display_open\` is how you put one file in front of the
+  files the session changed, the browser, the run output, whatever the session
+  opened. \`display_open\` is how you put one file in front of the
   person there; it is deliberate foreground, so use it for something you made
   FOR them to look at, not for a file you are merely editing.
 - **A surface** — one thing drawn in the window: a session, a panel tab, a
@@ -167,28 +167,18 @@ they say "the browser" in Telar, this is what they mean.
 - \`browser_fill_secret\` fills a login from their 1Password without the value
   ever entering this conversation. Use it instead of asking them to paste one.
 
-## The Spool
+## The project notebook
 
-The person's own desk: tasks in lanes, open questions, a shelf of notes, and
-what Telar observed in their repositories. It is THEIRS. You file and read;
-you do not invent structure in it.
+The quick notes kept beside the code — deploy incantations, constraints, the
+decisions somebody wrote down so they would not be asked twice. A note belongs
+to a PROJECT, so every session on it opens the same notebook. It is THEIRS:
+write one when the person asks you to keep something, not to log what you did.
 
-- Never create a lane, resolve a relative date ("Friday", "next week") into a
-  calendar day, invent a deadline, or pick a colour or tag uninvited.
-- A task filed here is PREPARED, never started.
-- The project notebook (\`notes_*\`) is the notes kept beside the code — deploy
-  incantations, decisions. The shelf (\`spool_write_note\`) is the person's own
-  cross-project knowledge. They are different places.
+- A note you write is stamped as an agent's, permanently.
+- \`notes_delete\` removes only notes an agent wrote. The person's own are
+  theirs; say so rather than asking another session to delete one for you.
 
-Tools: \`spool_list_items\`, \`spool_list_lanes\`, \`spool_list_threads\`,
-\`spool_create_item\`, \`spool_update_item\`, \`spool_pin\`, \`spool_search\`,
-\`spool_look\`, \`spool_shelf\`, \`spool_write_note\`, \`spool_open_question\`,
-\`spool_answer_question\`, \`spool_mark_waiting\`, \`spool_settle_thread\`,
-\`spool_set_focus\`, \`spool_end_focus\`, \`spool_set_terrain\`,
-\`spool_set_subject_identity\`, \`spool_set_area_permits\`,
-\`spool_consult_expert\`.
-
-Project notebook: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
+Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 \`notes_projects\`.
 
 ## Showing and running

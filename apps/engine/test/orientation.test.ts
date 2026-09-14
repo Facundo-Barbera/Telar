@@ -35,7 +35,6 @@ import {
 } from "../src/orientation";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../src/provider-skills";
 import { openCodeBriefings, openCodeConfigContent } from "../src/opencode/runtime";
-import { spoolTools } from "../src/spool/tools";
 import { sessionsTools } from "../src/sessions-tools/tools";
 import { notesTools } from "../src/notes-tools/tools";
 import { displayTools } from "../src/display/tools";
@@ -111,7 +110,7 @@ test("the preamble names every word that was being read wrong", () => {
    * own history, acts confidently on the wrong thing. A word dropped from the
    * paragraph is a word nobody is told about.
    */
-  for (const word of ["Telar", "browser", "telar-browser", "session", "panel", "rail", "Spool", "Looks", "Warp", "surface"]) {
+  for (const word of ["Telar", "browser", "telar-browser", "session", "panel", "rail", "Looks", "Warp", "surface"]) {
     expect(TELAR_ORIENTATION).toContain(word);
   }
   // It points at the depth rather than carrying it — see orientation.ts.
@@ -230,19 +229,16 @@ test("Claude's spawn options carry no orientation when the preamble is off", asy
   expect(withBrowser?.append).not.toContain(TELAR_ORIENTATION);
 });
 
-test("a Warp child and the Spool's canvas are not oriented, because neither is in the cockpit", () => {
+test("a Warp child is not oriented, because it is not in the cockpit", () => {
   /**
-   * Both are spawned OUTSIDE the turn contract, with a prompt that already
-   * states what they are and what they may do — a warp child through
-   * `createWarpSpawn`, the canvas through `structuredAgent`. Orienting them
-   * would be a paragraph about a window neither is sitting in, and the way
-   * that stays true is that neither path has a system-prompt seam at all.
+   * It is spawned OUTSIDE the turn contract, through `createWarpSpawn`, with a
+   * prompt that already states what it is and what it may do. Orienting it
+   * would be a paragraph about a window it is not sitting in, and the way that
+   * stays true is that the path has no system-prompt seam at all.
    */
-  for (const file of ["../src/warp/spawn.ts", "../src/agent.ts"]) {
-    const source = readFileSync(new URL(file, import.meta.url), "utf8");
-    expect(source).not.toContain("systemPrompt");
-    expect(source).not.toContain("orientation");
-  }
+  const source = readFileSync(new URL("../src/warp/spawn.ts", import.meta.url), "utf8");
+  expect(source).not.toContain("systemPrompt");
+  expect(source).not.toContain("orientation");
 });
 
 test("Codex's thread parameters carry the paragraph the same way, on start and on resume", () => {
@@ -276,7 +272,6 @@ function telarToolNames(): string[] {
     return null;
   };
   const capability = new Proxy({}, { get: () => () => undefined }) as never;
-  spoolTools(record, capability);
   sessionsTools(record, capability);
   notesTools(record, capability);
   displayTools(record, capability);

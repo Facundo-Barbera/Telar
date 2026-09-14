@@ -1,13 +1,11 @@
 /**
  * AN OUTWARD MCP SOCKET, WITHOUT THE WALL IT SERVES.
  *
- * The Spool built this shape first (`spool/socket.ts`, `docs/spool-loops.md`
- * §10.3): any LLM client the user owns reaches the SAME tool wall a Telar
- * session gets, over Streamable HTTP, behind a dedicated secret that is not the
- * engine's management token. The `sessions` toolkit wants exactly the same
- * thing, so the transport, the secret and the connect card live here and the
- * two sockets differ only in which wall they collect and what they call
- * themselves.
+ * Any LLM client the user owns reaches the SAME tool wall a Telar session
+ * gets, over Streamable HTTP, behind a dedicated secret that is not the
+ * engine's management token. Every outward wall wants exactly the same thing,
+ * so the transport, the secret and the connect card live here and the sockets
+ * differ only in which wall they collect and what they call themselves.
  *
  * EXTRACTED RATHER THAN COPIED, and the distinction is the point: a second
  * hand-written JSON-RPC loop would drift from the first the moment either was
@@ -40,7 +38,7 @@ export type SocketTool = {
 };
 
 /**
- * The seam every Telar toolkit already has: `spoolTools`/`sessionsTools` take
+ * The seam every Telar toolkit already has: `sessionsTools`/`notesTools` take
  * their `tool` factory as an argument precisely so a caller can decide what
  * "register" means. Here it means "remember", and the result is the wall's own
  * list with the wall's own handlers — the same seam the bare-harness tests use,
