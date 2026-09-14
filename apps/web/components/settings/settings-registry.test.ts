@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { searchSettings } from "@/lib/settings-search";
 import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registry";
@@ -16,10 +16,20 @@ import { SETTINGS_SEARCH_INDEX, SETTINGS_SEARCH_PAGES } from "./settings-registr
  * route contract.
  */
 const here = fileURLToPath(new URL(".", import.meta.url));
-const sources = readdirSync(here)
-  .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
-  .map((name) => readFileSync(`${here}${name}`, "utf8"))
-  .join("\n");
+
+/** EVERY .tsx UNDER THIS DIRECTORY, not just its top level. A pane's rows are
+ *  not all written in the file named after the pane — the appearance pane's
+ *  Show-through row is a component in `studio/`, and a flat read reported it
+ *  missing from a pane it is rendered on twice. */
+function paneSources(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = `${dir}${name}`;
+    if (statSync(path).isDirectory()) return paneSources(`${path}/`);
+    return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [readFileSync(path, "utf8")] : [];
+  });
+}
+
+const sources = paneSources(here).join("\n");
 const nav = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
 test("every indexed pane is a pane the shell can actually select", () => {

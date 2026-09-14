@@ -10,11 +10,11 @@
  * tablist anywhere, and the Window rows carrying the anchors the search index
  * computes for them without ever rendering the pane.
  *
- * MOUNTED, NOT SERVER-RENDERED. Almost everything on this pane hangs off
- * `mounted` — the live look is photographed from the stores on the client, and
- * a server render deliberately holds every draft-fed group back to keep
- * hydration honest. `renderToStaticMarkup` would therefore assert that four of
- * the five groups are absent, which is the opposite of the claim.
+ * MOUNTED, NOT SERVER-RENDERED. The backdrop group reads payloads that live in
+ * localStorage, so it holds back to "nothing under the app" for the one render
+ * that happens before the stores can be read. `renderToStaticMarkup` would
+ * therefore assert against a pane in its pre-hydration state, which is not the
+ * pane this file is about.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -64,9 +64,9 @@ function captions(): string[] {
 
 describe("the pane is a stack of settings groups", () => {
   test("every group is on the page at once, in reading order", () => {
-    // Start from something, change its colour, then its scene, then its type —
-    // and last the window, which is the only group that is not part of a look.
-    expect(captions()).toEqual(["Looks", "Colour", "Backdrop", "Type", "Window"]);
+    // Start from something whole, compose it, then its type, and last the
+    // window — the only group that is not part of a look.
+    expect(captions()).toEqual(["Looks", "Composer", "Type and surfaces", "Window"]);
   });
 
   test("there is no tab strip left anywhere on it", () => {
@@ -80,7 +80,22 @@ describe("the pane is a stack of settings groups", () => {
     // room for — a mono `WINDOW` chip cannot say that none of it travels in a
     // look.
     expect(host.textContent).toContain("None of it travels in a look");
-    expect(host.textContent).toContain("Whole appearances");
+    expect(host.textContent).toContain("A look is a whole composition");
+  });
+
+  /**
+   * THE COPY TEACHES ONE MODEL — the owner's "we have too many ways of selecting
+   * colour themes: themes, colours, looks", and then "themes should not exist".
+   * There is ONE noun left. The composer's own description says what a
+   * composition is, and the gallery's says a look is one saved.
+   */
+  test("there is no theme left to pick, only a composition and looks of it", () => {
+    expect(host.textContent).toContain("Light and dark are two states of one composition");
+    expect(host.textContent).toContain("A look is a whole composition");
+    // The vocabulary the model deleted, gone from the copy as well as the code.
+    expect(host.textContent).not.toContain("theme pair");
+    expect(host.textContent).not.toContain("Light theme");
+    expect(host.textContent).not.toContain("Backdrop");
   });
 });
 
@@ -94,7 +109,8 @@ describe("the rows settings search points at", () => {
     expect(ids).toContain("settings-row-appearance-window-translucency");
     expect(ids).toContain("settings-row-appearance-window-glass");
     expect(ids).toContain("settings-row-appearance-window-show-through");
-    expect(ids).toContain("settings-row-appearance-type-accent");
+    expect(ids).toContain("settings-row-appearance-type-and-surfaces-accent");
+    expect(ids).toContain("settings-row-appearance-composer-base");
   });
 
   test("the rows on the page derive the GROUP half of those ids", () => {
@@ -108,21 +124,242 @@ describe("the rows settings search points at", () => {
      * settings-registry.test.ts, against the same `settingsRowId`.
      *
      * Translucency and Glass need the macOS shell to exist at all, so they are
-     * not assertable in a browser tab; Show-through and Accent are, and they
-     * are enough to prove both groups supply their context.
+     * not assertable in a browser tab; the rest are.
      */
     expect(host.querySelector("#settings-row-window-show-through")).not.toBeNull();
-    expect(host.querySelector("#settings-row-type-accent")).not.toBeNull();
+    expect(host.querySelector("#settings-row-type-and-surfaces-accent")).not.toBeNull();
+    expect(host.querySelector("#settings-row-composer-base")).not.toBeNull();
   });
 
-  test("the backdrop's second Show-through does not claim the Window row's anchor", () => {
-    // ONE VALUE, TWO HONEST HOMES — and exactly one destination. Two rows
-    // deriving one id would make `getElementById` answer whichever came first,
-    // so the backdrop copy is stamped by hand.
+  test("no row claims an anchor twice", () => {
+    // Show-through used to be rendered in two groups, which made
+    // `getElementById` answer whichever came first. There is one now.
     const claimed = [...host.querySelectorAll('[id^="settings-row-"]')].map((row) => row.id);
     expect(new Set(claimed).size).toBe(claimed.length);
-    expect(claimed).toContain("settings-row-appearance-backdrop-show-through");
-    expect(claimed).toContain("settings-row-window-show-through");
+  });
+});
+
+/**
+ * THE GALLERY IS A LIST, AND IT IS THE ONLY PRESET SYSTEM — issue #471.
+ *
+ * It was a horizontal rank of 128px thumbnails inside a vertically-scrolling
+ * pane, with a separate LIBRARY of themes underneath answering an overlapping
+ * question. What is pinned is the shape that replaced both: no sideways
+ * scroller, a row per look carrying a line about what it holds, actions that are
+ * real buttons, and no second grid anywhere.
+ */
+/**
+ * A TABLE, BECAUSE THE LIST WAS TOO LONG — round three of #471. "The looks UI
+ * is too long; when you land on the looks you have to scroll a lot. We should
+ * use tables for this like we do in other interfaces." Ten built-ins have to
+ * fit a short window, which is what these assertions are actually about.
+ */
+describe("the Looks gallery reads as a table", () => {
+  /** The section `SettingsGroup` draws for the gallery, found by its caption. */
+  function looksGroup(): HTMLElement | null {
+    return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Looks") ?? null;
+  }
+
+  test("nothing in it scrolls, sideways or otherwise", () => {
+    expect(looksGroup()?.querySelector(".overflow-x-auto")).toBeNull();
+    // A scroll box inside a scrolling pane is the thing the table replaced.
+    expect(looksGroup()?.querySelector(".overflow-y-auto")).toBeNull();
+    expect([...(looksGroup()?.querySelectorAll("*") ?? [])].some((node) => /(^|\s)max-h-/.test(node.className ?? ""))).toBe(false);
+  });
+
+  test("it is one table with a row per look, headed by what the columns are", () => {
+    const table = looksGroup()?.querySelector("table");
+    expect(table).not.toBeNull();
+    expect([...(table?.querySelectorAll("thead th") ?? [])].map((cell) => cell.textContent)).toEqual(["Look", "Carries", "Actions"]);
+    // Ten built-ins (lib/built-in-looks.ts) and nothing saved on a fresh store.
+    expect(table?.querySelectorAll("tbody tr") ?? []).toHaveLength(10);
+  });
+
+  test("every default is a row of its own, with a Wear button on it", () => {
+    // None of them worn on a fresh store — except Telar, which IS the fresh
+    // store's composition, and whose Wear is therefore disabled.
+    const wears = [...(looksGroup()?.querySelectorAll("button") ?? [])].filter((button) => button.textContent === "Wear");
+    expect(wears.length).toBeGreaterThanOrEqual(9);
+  });
+
+  /** THE NAME IS THE ROW'S ACTION. Wearing is what a reader came here to do, so
+   *  it is the one control that is never behind a hover. */
+  test("a look's name wears it, and says so", () => {
+    const named = [...(looksGroup()?.querySelectorAll("tbody button") ?? [])].find((button) => button.textContent === "Dusk");
+    expect(named?.getAttribute("title")).toBe("Wear Dusk");
+  });
+
+  test("a row says what the look carries, not just what it is called", () => {
+    const text = looksGroup()?.textContent ?? "";
+    // A built-in says what it is in its own words; every look says its accent
+    // and its two faces.
+    expect(text).toContain("The app's own colours");
+    expect(text).toContain("Tide, under a dusk gradient");
+    expect(text).toContain("Geist / Geist Mono");
+  });
+
+  test("the defaults carry no rename, export or delete — there is no card yet", () => {
+    const labels = [...(looksGroup()?.querySelectorAll("button") ?? [])].map((button) => button.getAttribute("aria-label") ?? "");
+    expect(labels.filter((label) => label.startsWith("Rename "))).toEqual([]);
+    expect(labels.filter((label) => label.startsWith("Delete "))).toEqual([]);
+  });
+
+  test("the worn one is the one the window actually has on", () => {
+    // A fresh store is Telar's own composition, and exactly one row may claim
+    // it — an id test would mark none, and a colours-only test would mark the
+    // scenic looks built on the same base as well.
+    const worn = looksGroup()?.querySelectorAll('[title="The window has this look on"]') ?? [];
+    expect(worn).toHaveLength(1);
+  });
+});
+
+/**
+ * THE COMPOSER IS THE THEME — issue #471.
+ *
+ * "Gradient and theme are different things here. We inject the gradients over
+ * the theme, where I always thought that a gradient would be part of a theme.
+ * Themes should not exist." So the Colour group's two theme pickers and the
+ * Backdrop group's four-way mode picker are one group with one model: a base
+ * colour, a stack of layers over it, and the sixteen tokens folded away as
+ * OVERRIDES of what the base derived.
+ */
+describe("the Composer group", () => {
+  function composerGroup(): HTMLElement | null {
+    return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Composer") ?? null;
+  }
+
+  test("the light/dark switch is the first control, and it is a pair", () => {
+    const segments = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].map((button) => button.textContent);
+    expect(segments.slice(0, 2)).toEqual(["Light", "Dark"]);
+  });
+
+  test("the base leads, and the layers follow it", () => {
+    const group = composerGroup();
+    expect(group?.querySelector("#settings-row-composer-base")).not.toBeNull();
+    const html = group?.innerHTML ?? "";
+    expect(html.indexOf("Base")).toBeGreaterThan(-1);
+    expect(html.indexOf("Base")).toBeLessThan(html.indexOf("Layers"));
+  });
+
+  test("there is no mode picker: a gradient and an image are layer types", () => {
+    // The four-way None/Gradient/Image/Compose control is what the model
+    // deleted — three of its four kinds were the fourth with a hole in it.
+    const segments = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].map((button) => button.textContent);
+    expect(segments).not.toContain("Compose");
+    expect(segments).not.toContain("None");
+  });
+
+  test("an empty stack says so rather than writing a backdrop", () => {
+    // A fresh store has no layers, and arriving must not invent any.
+    expect(composerGroup()?.textContent).toContain("Nothing over the base");
+  });
+
+  test("the sixteen tokens sit behind a closed disclosure", () => {
+    const details = composerGroup()?.querySelector("details");
+    expect(details).not.toBeNull();
+    // Closed on arrival: they are the escape hatch you reach for after the base
+    // has answered, not the thing that greets you.
+    expect(details?.hasAttribute("open")).toBe(false);
+    expect(details?.querySelector("summary")?.textContent).toContain("Adjust colours");
+  });
+
+  test("every token row says where it paints, not just what it is called", () => {
+    // Rendered even while the disclosure is closed — `details` hides its
+    // content, it does not unmount it — which is what lets this assert the
+    // pairing rather than the folding.
+    const tokens = composerGroup()?.querySelector("details")?.textContent ?? "";
+    expect(tokens).toContain("The canvas the whole window sits on");
+    expect(tokens).toContain("Every hairline in the app");
+    expect(tokens).toContain("A rail row under the pointer");
+  });
+
+  /**
+   * GRADIENTS ARE AUTHORED, NOT PICKED — round three of #471. "It needs
+   * gradient customization. We give a lot of options; what if instead we let
+   * the user create them." There is one way to have a gradient now, and it is
+   * to build one; the eleven presets fill the editor and are then forgotten.
+   */
+  describe("a gradient layer", () => {
+    async function addGradient(): Promise<void> {
+      const add = [...(composerGroup()?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes("Gradient")) as
+        | HTMLButtonElement
+        | undefined;
+      await act(async () => {
+        add?.click();
+      });
+    }
+
+    test("there is one way to add one, and it opens its stops", async () => {
+      // "Gradient" beside "Custom" asked a reader to decide, before seeing
+      // anything, whether they were the sort of person who edits gradients.
+      const adders = [...(composerGroup()?.querySelectorAll("button") ?? [])].map((button) => button.textContent);
+      expect(adders.filter((text) => text?.includes("Gradient"))).toHaveLength(1);
+      expect(adders).not.toContain("Custom");
+
+      await addGradient();
+      expect(composerGroup()?.textContent).toContain("This gradient");
+      expect(composerGroup()?.textContent).toContain("Linear gradient");
+    });
+
+    test("every stop has a colour input, and the strip has a handle each", async () => {
+      await addGradient();
+      const colours = composerGroup()?.querySelectorAll('input[type="color"][aria-label^="Stop "]') ?? [];
+      const handles = [...(composerGroup()?.querySelectorAll("button") ?? [])].filter((button) =>
+        (button.getAttribute("aria-label") ?? "").match(/^Stop \d+, at \d+%$/),
+      );
+      // A fresh gradient opens on the two-stop default: one input and one
+      // draggable handle each, which is what "authored" is made of.
+      expect(colours).toHaveLength(2);
+      expect(handles).toHaveLength(2);
+      // …and the selected stop's own position and fade.
+      const labels = [...(composerGroup()?.querySelectorAll('input[type="range"]') ?? [])].map((input) => input.getAttribute("aria-label"));
+      expect(labels).toContain("Stop 1 position");
+      expect(labels).toContain("Stop 1 opacity");
+    });
+
+    test("the presets survive as chips that fill the editor, not as a kind", async () => {
+      await addGradient();
+      const chips = [...(composerGroup()?.querySelectorAll("button") ?? [])].filter((button) =>
+        (button.getAttribute("title") ?? "").startsWith("Fill these stops with "),
+      );
+      expect(chips.map((chip) => chip.textContent)).toContain("Dusk");
+      // Eleven starters, and picking one writes five stops into THIS layer
+      // rather than making it a Dusk-kind layer.
+      expect(chips).toHaveLength(11);
+      await act(async () => {
+        chips.find((chip) => chip.textContent === "Dusk")?.click();
+      });
+      expect(composerGroup()?.querySelectorAll('input[type="color"][aria-label^="Stop "]')).toHaveLength(5);
+      expect(composerGroup()?.textContent).not.toContain("Dusk gradient");
+    });
+
+    test("a radial gradient is centred rather than angled", async () => {
+      await addGradient();
+      const shape = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].find((button) => button.textContent === "Radial") as
+        | HTMLButtonElement
+        | undefined;
+      const angles = () => [...(composerGroup()?.querySelectorAll('input[type="range"]') ?? [])].map((input) => input.getAttribute("aria-label"));
+      expect(angles()).toContain("Gradient angle");
+      await act(async () => {
+        shape?.click();
+      });
+      // A slider that moves nothing is a bug report, so only ever one of the
+      // two is drawn.
+      expect(angles()).not.toContain("Gradient angle");
+      expect(angles()).toContain("Gradient centre X");
+      expect(angles()).toContain("Gradient centre Y");
+    });
+  });
+
+  test("a token follows the base until it is set, and says so", () => {
+    // The sparse override is the whole model: a value here is one somebody set
+    // BY HAND, and a fresh composition has none — so every revert is inert.
+    expect(composerGroup()?.textContent).toContain("Every colour here follows the base until you set it");
+    const reverts = [...(composerGroup()?.querySelectorAll("button") ?? [])].filter((button) =>
+      (button.getAttribute("aria-label") ?? "").startsWith("Revert "),
+    );
+    expect(reverts.length).toBe(16);
+    expect(reverts.every((button) => button.hasAttribute("disabled"))).toBe(true);
   });
 });
 
@@ -167,7 +404,7 @@ describe("the pane sits in the same reading column as every other", () => {
 
   test("Appearance is wrapped in the measure General is wrapped in", async () => {
     await renderShell("appearance", <AppearanceSection />);
-    const appearance = measureAround('[aria-label="Look name"]')?.className;
+    const appearance = measureAround('[id^="settings-row-"]')?.className;
 
     await renderShell(
       "general",
@@ -199,20 +436,45 @@ describe("the pane sits in the same reading column as every other", () => {
   });
 });
 
-describe("the masthead", () => {
-  test("rides the top of the scroller rather than scrolling away with the first group", () => {
-    // Apply and Discard sit here, and the pane below them is now five groups
-    // tall: a masthead that scrolled off left "is this saved?" with no answer
-    // on screen.
-    const name = host.querySelector('[aria-label="Look name"]');
-    const strip = name?.closest("div");
-    expect(strip?.className).toContain("sticky");
-    expect(strip?.className).toContain("top-0");
+/**
+ * EVERY CONTROL WRITES WHAT IT NAMES, AT ONCE — issue #471.
+ *
+ * The pane used to edit a DRAFT: a whole Look nobody was wearing, painted onto
+ * the document to simulate wearing it, gated behind an Apply button in a sticky
+ * masthead that also carried Discard, an undo arrow, a "Previewing" chip and a
+ * name field. The owner's complaint was that bar, and the answer was to delete
+ * the model behind it rather than to restyle it.
+ *
+ * WHAT IS GUARDED HERE IS THE ABSENCE. No individual control can show that
+ * there is no longer a pending state — each of them looks the same either way —
+ * so what is pinned is that the bar and its whole vocabulary are gone, and that
+ * the one thing it carried which is still a real act, "Save look", survived
+ * inside the group whose shelf it adds to.
+ */
+describe("there is no draft, and nothing to apply", () => {
+  test("the masthead's vocabulary is gone from the pane", () => {
+    for (const word of ["Apply", "Discard", "Previewing", "Undo"]) {
+      expect(host.textContent).not.toContain(word);
+    }
+    expect(host.querySelector('[aria-label="Look name"]')).toBeNull();
   });
 
-  test("still says whether the look is worn or being previewed", () => {
-    // Nothing about the write model moved in #399 — only where the groups are.
-    expect(host.textContent).toContain("Worn");
-    expect(host.textContent).toContain("Save look");
+  test("nothing on the pane is sticky any more", () => {
+    // The bar was the one sticky element here; a group is just a card.
+    expect(host.querySelector(".sticky")).toBeNull();
+  });
+
+  test("Save look stands in the Looks group, beside the shelf it adds to", () => {
+    const save = [...host.querySelectorAll("button")].find((button) => button.textContent === "Save look");
+    expect(save).toBeDefined();
+    // `SettingsGroup` draws its action on the caption line, outside the card —
+    // the same block that carries the group's own <h4>.
+    expect(save?.closest("section")?.querySelector("h4")?.textContent).toBe("Looks");
+  });
+
+  test("the colour scheme is a Window row now, not a masthead control", () => {
+    // Which half this window wears is a fact about the window, and it is also
+    // the half every colour control on the pane edits.
+    expect(host.querySelector("#settings-row-window-colour-scheme")).not.toBeNull();
   });
 });

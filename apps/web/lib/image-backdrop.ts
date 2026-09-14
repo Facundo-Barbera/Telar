@@ -1,13 +1,14 @@
 /**
  * IMAGE BACKDROPS — getting a photo small enough to LIVE IN localStorage.
  *
- * The backdrop store paints an image from a data URL (BACKDROP_IMAGE_KEY), and
- * the pre-paint init script reads that key synchronously before first frame.
- * That contract is what makes the size question sharp: the image is not a file
- * reference, it is a STRING sitting in a 5MB-ish origin-wide budget that the
- * theme cache, the session list and every other preference also draw on. A
- * 12MP phone photo is 8MB before base64 adds a third on top. So nothing gets
- * stored as picked — everything goes through the ladder below.
+ * An image LAYER of the composition paints from a data URL held in the
+ * composition's own image map. That is what makes the size question sharp: the
+ * image is not a file reference, it is a STRING sitting in a 5MB-ish origin-wide
+ * budget that the compiled stylesheet, the shelf of Looks, the session list and
+ * every other preference also draw on — and a composition may hold six of them
+ * per state. A 12MP phone photo is 8MB before base64 adds a third on top. So
+ * nothing gets stored as picked: everything goes through the ladder below, and
+ * lib/scene-composer.ts takes it one rung further for a layer.
  *
  * THE LADDER, not a single guess: quality 0.82 at 2048px is right for almost
  * every photo, but "almost" is the problem — a noisy image at that setting can
@@ -22,7 +23,6 @@
  * and the canvas code is left with nothing but drawing.
  */
 
-import { BACKDROP_IMAGE_KEY } from "./backdrop";
 
 /** The long edge a backdrop is worth storing at. A backdrop is seen behind
  *  frosted glass, usually blurred; past this it is bytes nobody looks at. */
@@ -169,43 +169,4 @@ export async function compressImageFile(file: File): Promise<string> {
   }
   close();
   throw new ImageBackdropError("too-large", "That image is too large to store, even shrunk.");
-}
-
-/**
- * Write the image BEFORE the choice (applyBackdrop reads this key and drops
- * the whole scene if it is missing). Returns false rather than throwing on a
- * full quota — and puts the PREVIOUS image back when it does, so a failed
- * replacement leaves the backdrop you already had rather than a blank app.
- */
-export function storeBackdropImage(dataUrl: string): boolean {
-  if (!dataUrl.startsWith("data:image/")) return false;
-  let previous: string | null = null;
-  try {
-    previous = window.localStorage.getItem(BACKDROP_IMAGE_KEY);
-  } catch {
-    return false; // Private browsing: nothing can be stored at all.
-  }
-  try {
-    window.localStorage.setItem(BACKDROP_IMAGE_KEY, dataUrl);
-    return true;
-  } catch {
-    try {
-      if (previous === null) window.localStorage.removeItem(BACKDROP_IMAGE_KEY);
-      else window.localStorage.setItem(BACKDROP_IMAGE_KEY, previous);
-    } catch {
-      // The restore can fail too (the quota is genuinely gone); the store's own
-      // "no image means no scene" guard keeps the app coherent either way.
-    }
-    return false;
-  }
-}
-
-/** Read back what is stored, for the preview and for theme extraction. */
-export function readBackdropImage(): string | null {
-  try {
-    const value = window.localStorage.getItem(BACKDROP_IMAGE_KEY);
-    return value && value.startsWith("data:image/") ? value : null;
-  } catch {
-    return null;
-  }
 }
