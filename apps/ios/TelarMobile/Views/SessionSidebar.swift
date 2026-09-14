@@ -555,7 +555,7 @@ struct SessionSidebar: View {
                     .tint(Theme.statusSky)
             } else {
                 Button { Task { await inbox.setSettled(row.id, true) } } label: { Label("Settle", systemImage: "checkmark") }
-                    .tint(Theme.textTertiary)
+                    .tint(Theme.textMuted)
                 Button { snoozing = row } label: { Label("Snooze", systemImage: "moon.zzz") }
                     .tint(Theme.statusAmber)
             }

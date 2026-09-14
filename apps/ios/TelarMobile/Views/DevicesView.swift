@@ -63,7 +63,7 @@ struct DevicesView: View {
                         SettingsCard {
                             if others.isEmpty {
                                 StatusBanner(
-                                    icon: "antenna.radiowaves.left.and.right", color: Theme.textMuted2,
+                                    icon: "antenna.radiowaves.left.and.right", color: Theme.textMuted,
                                     title: mine.isEmpty ? "No devices are paired." : "No other devices are paired.",
                                     detail: "Devices appear here as they pair from the Mac's Remote access panel."
                                 )
@@ -156,7 +156,7 @@ struct DevicesView: View {
         HStack(spacing: 12) {
             Image(systemName: platformSymbol(device.platform))
                 .font(.system(size: 17))
-                .foregroundStyle(Theme.textMuted2)
+                .foregroundStyle(Theme.textMuted)
                 .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -175,7 +175,7 @@ struct DevicesView: View {
                 }
                 Text(subtitle(device))
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.textMuted2)
+                    .foregroundStyle(Theme.textMuted)
                     .tabularNumbers()
             }
             Spacer(minLength: 8)

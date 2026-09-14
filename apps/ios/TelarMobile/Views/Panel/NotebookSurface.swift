@@ -172,7 +172,7 @@ struct NotebookSurface: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "text.book.closed").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
-            Text(path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted2).lineLimit(1).truncationMode(.head)
+            Text(path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
             Spacer(minLength: 4)
             // UNSAVED WORK IS VISIBLE. A debounced autosave with no sign of
             // itself is indistinguishable from one that is broken.
@@ -287,9 +287,9 @@ struct NotebookSurface: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted).disabled(running.contains(cell.id))
                     .accessibilityLabel("Run cell")
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textTertiary)
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 } else {
-                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                         .frame(width: 44, height: 44)
                 }
             }
@@ -709,11 +709,11 @@ struct ReadOnlyNotebookView: View {
                 switch cell.type {
                 case .code:
                     Text(cell.executionCount.map { "[\($0)]" } ?? "[ ]")
-                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textTertiary)
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 case .markdown:
-                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                    Image(systemName: "text.alignleft").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 case .raw, .unknown:
-                    Image(systemName: "doc.plaintext").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                    Image(systemName: "doc.plaintext").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 }
             }
             .frame(width: 44, alignment: .top)
