@@ -1,10 +1,11 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
+import { installNavigationMarks, isMeasuredHref, markNavigation, startNavigation } from "@/lib/perf-marks";
 
 /**
  * THE RAIL IS A SEPARATE CHUNK, because this file is in the ROOT LAYOUT and the
@@ -57,6 +58,28 @@ function isSettingsRoute(pathname: string): boolean {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const settings = isSettingsRoute(pathname);
+  /**
+   * THE CLOCK, FITTED WHERE EVERY ROUTE PASSES (#492).
+   *
+   * This is the one client component the whole cockpit renders, which makes it
+   * the only place `window.telarNavTimings()` can be promised from — a packaged
+   * build opened straight onto Settings used to have no reader at all, because
+   * the two components that fitted one (the front door, the cockpit) are not on
+   * that screen. See lib/perf-marks.ts.
+   *
+   * BOTH CALLS ARE IDEMPOTENT AND THAT IS THE POINT. `startNavigation` keeps
+   * the earlier stamp when a press already began this opening, so a cold load
+   * gets a clock without a click losing its own; and child effects run before
+   * parent ones, so on a conversation the cockpit's `commit` — the same commit,
+   * measured by the component that knows what landed in it — is still the one
+   * recorded, and this is a no-op.
+   */
+  useEffect(() => {
+    installNavigationMarks();
+    if (!isMeasuredHref(pathname)) return;
+    startNavigation(pathname, "route");
+    markNavigation("commit", pathname);
+  }, [pathname]);
   return (
     // `app-ground`: the wrapper is the GROUND — solid `bg-sidebar` in an
     // opaque window, transparent under the translucent shell so the body's

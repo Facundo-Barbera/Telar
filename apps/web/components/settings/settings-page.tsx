@@ -27,6 +27,7 @@ import dynamic from "next/dynamic";
 import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { markNavigation } from "@/lib/perf-marks";
 import { Badge } from "@/components/ui/badge";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { SETTINGS_SEARCH_INDEX } from "./settings-registry";
@@ -261,8 +262,25 @@ export function SettingsPage() {
     }
   }, []);
 
+  /**
+   * ...AND WHEN IT STOPPED ASSEMBLING ITSELF (#492).
+   *
+   * The app shell stamps `commit` — the route rendering at all — and this
+   * stamps `idle`, the two of them bracketing what "opening Settings" costs.
+   * There is no `transcript` phase: that stamp means a conversation's own rows
+   * landed, and this page has none, so it stays absent rather than being given
+   * a meaning it does not have.
+   *
+   * ON `load()` RESOLVING, NOT ON A PIECE OF STATE ARRIVING. `about` is set
+   * only when the engine answers, so an idle keyed to it would never fire on a
+   * machine whose daemon is down — the slowest arrival there is would be the
+   * one missing from the numbers. `load` settles either way, which is the
+   * honest reading of "this screen has what it is going to have".
+   */
   useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
+    const task = window.setTimeout(() => {
+      void load().then(() => markNavigation("idle", window.location.pathname));
+    }, 0);
     return () => window.clearTimeout(task);
   }, [load]);
 
