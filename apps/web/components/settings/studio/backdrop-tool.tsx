@@ -63,8 +63,8 @@ import {
   type StudioMode,
 } from "@/lib/studio-draft";
 import type { ThemeDefinition } from "@/lib/theme-palettes";
-import { Panel, PanelBody, PanelDivider, PanelHeader } from "@/components/ui/panel";
-import { Row, Segmented } from "../settings-shell";
+import { PanelDivider } from "@/components/ui/panel";
+import { Row, Segmented, SettingsGroup } from "../settings-shell";
 import { SceneEditor } from "./scene-editor";
 
 /** The contract every editor in this tool shares: a value in, a value out,
@@ -288,7 +288,7 @@ function GradientEditor({ value, onChange, mode }: BackdropEditor & { mode: Stud
   return (
     <>
       <PanelDivider label="Presets" />
-      <div className="px-3 pb-3">
+      <div className="pb-3">
         <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 xl:grid-cols-6">
           {BACKDROP_PRESETS.map((preset) => (
             <PresetCard
@@ -403,8 +403,8 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
 
   return (
     <>
-      {error && <p className="px-3 pt-2.5 text-xs text-warning">{error}</p>}
-      <div className="p-3">
+      {error && <p className="pt-2.5 text-xs text-warning">{error}</p>}
+      <div className="py-3">
         <input
           ref={fileInput}
           type="file"
@@ -475,7 +475,7 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
         </div>
       </div>
       {image && (
-        <div className="px-3">
+        <>
           <Row
             label="Fit"
             control={
@@ -538,7 +538,7 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
               }
             />
           )}
-        </div>
+        </>
       )}
     </>
   );
@@ -571,38 +571,43 @@ export function BackdropTool({
   }
 
   return (
-    <Panel>
-      <PanelHeader
-        icon={<ImageIcon />}
-        label="Scene"
-        actions={
-          <Segmented<SceneView>
-            value={view}
-            onChange={(next) => {
-              setView(next);
-              // Only None writes on its own; the pickers write when something
-              // is actually chosen, so browsing never blanks what is in place.
-              if (next === "none") onChange({ kind: "none" });
-            }}
-            options={[
-              { value: "none", label: "None" },
-              { value: "gradient", label: "Gradient" },
-              { value: "image", label: "Image" },
-              { value: "scene", label: "Compose" },
-            ]}
-          />
-        }
-      />
+    // THE TOOL OWNS ITS OWN GROUP (#399). It was a `Panel` in a pane built out
+    // of tabs; the pane is stacked `SettingsGroup` cards now, so the panel would
+    // be a card inside a card. The view picker moves to the caption line — it
+    // chooses what the WHOLE group edits, which is exactly what `action` is for.
+    <SettingsGroup
+      title="Backdrop"
+      description="What the canvas paints behind the app. It travels in the look."
+      action={
+        <Segmented<SceneView>
+          value={view}
+          onChange={(next) => {
+            setView(next);
+            // Only None writes on its own; the pickers write when something
+            // is actually chosen, so browsing never blanks what is in place.
+            if (next === "none") onChange({ kind: "none" });
+          }}
+          options={[
+            { value: "none", label: "None" },
+            { value: "gradient", label: "Gradient" },
+            { value: "image", label: "Image" },
+            { value: "scene", label: "Compose" },
+          ]}
+        />
+      }
+    >
       {view === "none" ? (
-        <PanelBody className="px-3 py-6 text-center text-xs text-muted-foreground">The canvas paints flat.</PanelBody>
+        <div className="py-6 text-center text-xs text-muted-foreground">The canvas paints flat.</div>
       ) : (
-        <PanelBody>
+        <div className="py-1">
           {view === "gradient" && <GradientEditor value={value} onChange={onChange} mode={mode} />}
           {view === "image" && <ImageEditor value={value} onChange={onChange} onThemeHalves={onThemeHalves} />}
           {view === "scene" && <SceneEditor value={value} onChange={onChange} />}
-        </PanelBody>
+        </div>
       )}
-      {footer && <div className="shrink-0 border-t border-border">{footer}</div>}
-    </Panel>
+      {/* The hairline between this and the editor above is the card's own —
+          see `SettingsGroup`. */}
+      {footer}
+    </SettingsGroup>
   );
 }

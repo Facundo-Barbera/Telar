@@ -1,42 +1,48 @@
 /**
- * BRAND MARKS FOR THE APPS THAT CAN OPEN A WORKSPACE.
+ * THE MARK FOR AN APP THAT CAN OPEN A WORKSPACE.
  *
  * The Open menu used to be fourteen rows wearing the same folder glyph, which
  * makes a list you READ every time instead of one you recognise. An editor is a
  * thing people know by its logo, so the row wears it and the split button's
  * left half wears the one you use.
  *
- * Inlined rather than depended on, exactly like provider-icon.tsx: ten marks do
- * not justify an icon package, and a path string is the whole asset. Every app
- * mark is from simple-icons (CC0-1.0, github.com/simple-icons/simple-icons) at
- * the slug and major version noted above it, unmodified, 24x24 and already
- * `fill=currentColor` — which is what lets one mark read in both themes. The
- * marks are the trademarks of their owners and appear here to name the app they
- * launch, which is the only thing this menu uses them for.
+ * ITS OWN ICON FIRST, A DRAWING OF IT SECOND (issue #398). macOS holds the real
+ * artwork for every installed app, and the shell reads it off the `.app` bundle
+ * and hands this component a PNG data URL (apps/desktop/workspace-openers.js).
+ * That is what the rows wear whenever the desktop app is what is drawing them:
+ * it is the icon the person already knows from their Dock, at a size the OS
+ * rendered rather than a 24-unit path scaled to 14px and anti-aliased into mush.
  *
- * `finder` IS THE ONE EXCEPTION, and is marked as such above it: simple-icons
- * carries no Finder mark, and Finder is the row this menu opens by default
- * (#384), so it is the one entry that most needs to be recognised without
- * reading. Drawn here as the face's own geometry — the split panel, the two
- * eyes, the smile — rather than copied from Apple's artwork.
+ * THE VECTOR MARKS ARE THE FALLBACK, for the two places no bitmap can reach: a
+ * browser tab, which has no shell to ask, and a session on another Mac, whose
+ * apps are not this machine's. Every one is from simple-icons (CC0-1.0,
+ * github.com/simple-icons/simple-icons) at the slug and major version noted
+ * above it, unmodified, 24x24 and already `fill=currentColor` — which is what
+ * lets one mark read in both themes. The marks are the trademarks of their
+ * owners and appear here to name the app they launch, which is the only thing
+ * this menu uses them for.
  *
  * AN APP WITH NO MARK GETS THE NEUTRAL GLYPH, NEVER A NEIGHBOUR'S — the same
  * rule connection-icon.tsx states for model providers. Nova, TextMate and
  * Ghostty are in the shell's opener table with no `icon`, because simple-icons
  * carries no CC0 mark for them; borrowing a similar-looking logo would be a
- * small lie told every time the menu opens.
+ * small lie told every time the menu opens. FINDER IS NOW ONE OF THEM: this
+ * file used to carry a hand-drawn Finder face — the split panel, two eyes, a
+ * smile — which is a drawing OF a logo rather than the logo, and therefore
+ * exactly the look-alike that rule forbids. It is gone. Finder's real icon
+ * arrives as a bitmap like every other app's, and where no bitmap can (a
+ * browser tab) the row draws the neutral folder glyph and says "Reveal in
+ * Finder" in words.
  */
 import { FolderOpenIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const MARKS: Record<string, string> = {
-  // Finder — NOT from simple-icons (it carries none); drawn here. The rounded
-  // panel with its hole wound the other way, the divider down the middle, two
-  // eyes and the smile, in that order.
-  reveal:
-    "M6 2.5h12A3.5 3.5 0 0 1 21.5 6v12a3.5 3.5 0 0 1-3.5 3.5H6A3.5 3.5 0 0 1 2.5 18V6A3.5 3.5 0 0 1 6 2.5zM6.3 4.5a1.8 1.8 0 0 0-1.8 1.8v11.4a1.8 1.8 0 0 0 1.8 1.8h11.4a1.8 1.8 0 0 0 1.8-1.8V6.3a1.8 1.8 0 0 0-1.8-1.8zM11.5 4.5h1v15h-1zM9.65 9.5a1.15 1.15 0 1 1-2.3 0 1.15 1.15 0 0 1 2.3 0zM16.65 9.5a1.15 1.15 0 1 1-2.3 0 1.15 1.15 0 0 1 2.3 0zM15.8 13.4q-3.8 5-7.6 0 3.8 2 7.6 0z",
-  // visualstudiocode@11
+  // visualstudiocode@11 — simple-icons REMOVED this mark after v11, so it is
+  // pinned to the last release that carried it rather than tracking @latest.
+  // It is still Microsoft's own published mark, and on the desktop the row
+  // wears VS Code's real icon anyway; this is the browser-tab fallback.
   vscode: "M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z",
   // cursor@15
   cursor: "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23",
@@ -52,22 +58,91 @@ const MARKS: Record<string, string> = {
   intellij: "M0 0v24h24V0zm3.723 3.111h5v1.834h-1.39v6.277h1.39v1.834h-5v-1.834h1.444V4.945H3.723zm11.055 0H17v6.5c0 .612-.055 1.111-.222 1.556-.167.444-.39.777-.723 1.11-.277.279-.666.557-1.11.668a3.933 3.933 0 0 1-1.445.278c-.778 0-1.444-.167-1.944-.445a4.81 4.81 0 0 1-1.279-1.056l1.39-1.555c.277.334.555.555.833.722.277.167.611.278.945.278.389 0 .721-.111 1-.389.221-.278.333-.667.333-1.278zM2.222 19.5h9V21h-9z",
   // pycharm@15
   pycharm: "M7.833 6.666v-.055c0-1-.667-1.5-1.778-1.5H4.389v3.055h1.723c1.111 0 1.721-.666 1.721-1.5zM0 0v24h24V0H0zm2.223 3.167h4c2.389 0 3.833 1.389 3.833 3.445v.055c0 2.278-1.778 3.5-4.001 3.5H4.389v2.945H2.223V3.167zM11.277 21h-9v-1.5h9V21zm4.779-7.777c-2.944.055-5.111-2.223-5.111-5.057C10.944 5.333 13.056 3 16.111 3c1.889 0 3 .611 3.944 1.556l-1.389 1.61c-.778-.722-1.556-1.111-2.556-1.111-1.658 0-2.873 1.375-2.887 3.084.014 1.709 1.174 3.083 2.887 3.083 1.111 0 1.833-.445 2.61-1.167l1.39 1.389c-.999 1.112-2.166 1.779-4.054 1.779z",
-  // xcode@15
+  // xcode@15 — the densest mark in this table by a wide margin, and the one the
+  // issue named as unreadable below 20px. simple-icons publishes no outline
+  // variant of it and drawing a simplified one here would be exactly the
+  // look-alike the module note forbids, so it stays as published: on the
+  // desktop Xcode's row wears its real icon, and this is what a browser tab
+  // gets. `shapeRendering="geometricPrecision"` below is what keeps its thin
+  // strokes from being snapped into each other.
   xcode: "M19.06 5.3327c.4517-.1936.7744-.2581 1.097-.1936.5163.1291.7744.5163.968.7098.1936.3872.9034.7744 1.2261.8389.2581.0645.7098-.6453 1.0325-1.2906.3227-.5808.5163-1.3552.4517-1.5488-.0645-.1936-.968-.5808-1.1616-.5808-.1291 0-.3872.1291-.8389.0645-.4517-.0645-.9034-.5808-1.1616-.968-.4517-.6453-1.097-1.0325-1.6778-1.3552-.6453-.3227-1.3552-.5163-2.065-.6453-1.0325-.2581-2.065-.4517-3.0975-.3227-.5808.0645-1.2906.1291-1.8069.3227-.0645 0-.1936.1936-.0645.1936s.5808.0645.5808.0645-.5807.1292-.5807.2583c0 .1291.0645.1291.1291.1291.0645 0 1.4842-.0645 2.065 0 .6453.1291 1.3552.4517 1.8069 1.2261.7744 1.4197.4517 2.7749.2581 3.2266-.968 2.1295-8.6472 15.2294-9.0344 16.1328-.3873.9034-.5163 1.4842.5807 2.065s1.6778.3227 2.0005-.0645c.3872-.5163 7.0339-17.1654 9.2925-18.2624zm-3.6138 8.7117h1.5488c1.0325 0 1.2261.5163 1.2261.7098.0645.5163-.1936 1.1616-1.2261 1.1616h-.968l.7744 1.2906c.4517.7744.2581 1.1616 0 1.4197-.3872.3872-1.2261.3872-1.6778-.4517l-.9034-1.5488c-.6453 1.4197-1.2906 2.9684-2.065 4.7753h4.0009c1.9359 0 3.5492-1.6133 3.5492-3.5492V6.5588c-.0645-.1291-.1936-.0645-.2581 0-.3872.4517-1.4842 2.0004-4.001 7.4856zm-9.8087 8.0019h-.3227c-2.3231 0-4.1945-1.8714-4.1945-4.1945V7.0105c0-2.3231 1.8714-4.1945 4.1945-4.1945h9.3571c-.1936-.1936-.968-.5163-1.7423-.4517-.3227 0-.968.1291-1.3552-.1291-.3872-.3227-.3227-.5163-.9034-.5163H4.9277c-2.6458 0-4.7753 2.1295-4.7753 4.7753v11.7447c0 2.6458 2.1295 4.7753 4.4527 4.7108.6452 0 .8388-.5162 1.0324-.9034zM20.4152 6.9459v10.9058c0 2.3231-1.8714 4.1945-4.1945 4.1945H11.897s-.3872 1.0325.8389 1.0325h3.8719c2.6458 0 4.7753-2.1295 4.7753-4.7753V8.8173c.0646-.9034-.7098-1.4842-.9679-1.8714zm-18.5851.0646v10.8413c0 1.9359 1.6133 3.5492 3.5492 3.5492h.5808c0-.0645.7744-1.4197 2.4522-4.2591.1936-.3872.4517-.7744.7098-1.2261H4.4114c-.5808 0-.9034-.3872-.968-.7098-.1291-.5163.1936-1.1616.9034-1.1616h2.3877l3.033-5.2916s-.7098-1.2906-.9034-1.6133c-.2582-.4517-.1291-.9034.129-1.1615.3872-.3872 1.0325-.5808 1.6778.4517l.2581.3872.2581-.3872c.5808-.8389.968-.7744 1.2906-.7098.5163.1291.8389.7098.3872 1.6133L8.864 14.0444h1.3552c.4517-.7744.9034-1.5488 1.3552-2.3877-.0645-.3227-.1291-.7098-.0645-1.0325.0645-.5163.3227-.968.6453-1.3552l.3872.6453c1.2261-2.1295 2.1295-3.9364 2.3877-4.6463.1291-.3872.3227-1.1616.1291-1.8069H5.3794c-2.0005.0001-3.5493 1.6134-3.5493 3.5494zM4.605 17.7872c0-.0645.7744-1.4197.7744-1.4197 1.2261-.3227 1.8069.4517 1.8714.5163 0 0-.8389 1.4842-1.097 1.7423s-.5808.3227-.9034.2581c-.5164-.129-.839-.6453-.6454-1.097z",
   // iterm2@15
   iterm: "M24 5.359v13.282A5.36 5.36 0 0 1 18.641 24H5.359A5.36 5.36 0 0 1 0 18.641V5.359A5.36 5.36 0 0 1 5.359 0h13.282A5.36 5.36 0 0 1 24 5.359m-.932-.233A4.196 4.196 0 0 0 18.874.932H5.126A4.196 4.196 0 0 0 .932 5.126v13.748a4.196 4.196 0 0 0 4.194 4.194h13.748a4.196 4.196 0 0 0 4.194-4.194zm-.816.233v13.282a3.613 3.613 0 0 1-3.611 3.611H5.359a3.613 3.613 0 0 1-3.611-3.611V5.359a3.613 3.613 0 0 1 3.611-3.611h13.282a3.613 3.613 0 0 1 3.611 3.611M8.854 4.194v6.495h.962V4.194zM5.483 9.493v1.085h.597V9.48q.283-.037.508-.133.373-.165.575-.448.208-.284.208-.649a.9.9 0 0 0-.171-.568 1.4 1.4 0 0 0-.426-.388 3 3 0 0 0-.544-.261 32 32 0 0 0-.545-.209 1.8 1.8 0 0 1-.426-.216q-.164-.12-.164-.284 0-.223.179-.351.18-.126.485-.127.344 0 .575.105.239.105.5.298l.433-.5a2.3 2.3 0 0 0-.605-.433 1.6 1.6 0 0 0-.582-.159v-.968h-.597v.978a2 2 0 0 0-.477.127 1.2 1.2 0 0 0-.545.411q-.194.268-.194.634 0 .335.164.56.164.224.418.38a4 4 0 0 0 .552.262q.291.104.545.209.261.104.425.238a.39.39 0 0 1 .165.321q0 .225-.187.359-.18.134-.537.134-.381 0-.717-.134a4.4 4.4 0 0 1-.649-.351l-.388.589q.209.173.477.306.276.135.575.217.191.046.373.064",
 };
 
 /**
- * The mark for one opener `icon` id, or the neutral folder glyph for an app
- * this file has no mark for.
+ * The corner radius a macOS app icon's own squircle sits at, as a fraction of
+ * the full 1024pt canvas — the artwork is inset from that canvas, so the number
+ * is the body's 185/824 measured back against the whole thing, not against the
+ * body. Rounded to whole pixels at draw time, because a fractional radius is
+ * the sort of thing that makes one edge of a 14px square look softer than the
+ * other three.
  */
-export function OpenerIcon({ icon, className }: { icon?: string | undefined; className?: string }) {
-  const shared = cn("size-3.5 shrink-0", className);
+const SQUIRCLE = 0.18;
+
+export function OpenerIcon({
+  icon,
+  iconDataUrl,
+  size = 14,
+  className,
+}: {
+  /** The vendored vector mark's id, for when there is no bitmap. */
+  icon?: string | undefined;
+  /** The app's REAL icon, as the shell read it off the `.app` bundle. */
+  iconDataUrl?: string | undefined;
+  /** WHOLE PIXELS, always. The row that draws this decides how big it is, and
+   *  the icon is authoritative about honouring it: the size lands as an inline
+   *  style so a container's `[&_svg]:size-4` cannot scale a 14px mark to 16 and
+   *  put every edge on a half-pixel. */
+  size?: number;
+  className?: string;
+}) {
+  const box = { width: size, height: size };
+  if (iconDataUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- a 32px data URL the shell read off a local .app bundle; there is nothing for next/image to fetch or optimise
+      <img
+        src={iconDataUrl}
+        alt=""
+        aria-hidden
+        width={size}
+        height={size}
+        className={cn("shrink-0", className)}
+        style={{
+          ...box,
+          /* The BROWSER'S filter, named rather than inherited. These are 32px
+             PNGs shown at 14–20px, so the resample is a downscale and smooth is
+             exactly what it should be; `pixelated` here — which a global
+             `image-rendering` rule elsewhere could otherwise impose — would
+             alias every diagonal in a Dock icon into a staircase. */
+          imageRendering: "auto",
+          /* A 1px-inset rounded mask, so a squircle icon and a full-bleed one
+             end up the same silhouette in a column of rows. The inset trims the
+             anti-aliased fringe macOS bakes into the bitmap's outer pixel,
+             which at this size reads as a grey halo. */
+          clipPath: `inset(1px round ${Math.round(size * SQUIRCLE)}px)`,
+        }}
+      />
+    );
+  }
   const mark = icon ? MARKS[icon] : undefined;
-  if (!mark) return <FolderOpenIcon className={shared} />;
+  if (!mark) return <FolderOpenIcon className={cn("shrink-0", className)} style={box} aria-hidden />;
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={shared} aria-hidden>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      /* A 24-unit mark landing on a 14px box puts almost every edge between two
+         device pixels. `geometricPrecision` tells the rasteriser to keep the
+         curve rather than snap it to the grid — which is what stops Xcode's
+         hairlines from merging and iTerm's nested rounded rects from losing
+         one. */
+      shapeRendering="geometricPrecision"
+      className={cn("shrink-0", className)}
+      style={box}
+      aria-hidden
+    >
       <path d={mark} />
     </svg>
   );

@@ -105,7 +105,7 @@ export const MAX_LOOKS = 12;
  *  pointedly not `translucent` or `frost` (see the header). */
 export type LookAppearance = Pick<
   Appearance,
-  "accent" | "fontSans" | "fontMono" | "fontSansCustom" | "fontMonoCustom" | "fontSize" | "fontMonoSize" | "translucencyLevel"
+  "accent" | "fontSans" | "fontMono" | "fontSansCustom" | "fontMonoCustom" | "fontSize" | "fontMonoSize" | "translucencyLevel" | "depth"
 >;
 
 /* ---------------------------------------------------------- total parsing */
@@ -262,6 +262,7 @@ export function captureLook(label: string): Look {
     fontSize: appearance.fontSize,
     fontMonoSize: appearance.fontMonoSize,
     translucencyLevel: appearance.translucencyLevel,
+    depth: appearance.depth,
   };
 }
 
@@ -297,6 +298,7 @@ export function lookAppearance(look: Look): LookAppearance {
     fontSize: look.fontSize,
     fontMonoSize: look.fontMonoSize,
     translucencyLevel: look.translucencyLevel,
+    depth: look.depth,
   };
 }
 

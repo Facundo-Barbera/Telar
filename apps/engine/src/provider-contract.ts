@@ -146,6 +146,24 @@ export type DriverRun = {
   /** Latency over quality, where the provider offers it. Claude-only. */
   fastMode?: boolean;
   /**
+   * WHAT THIS AGENT IS TOLD ABOUT WHERE IT IS — the orientation paragraph,
+   * already resolved by the engine (see `orientation.ts` and
+   * `AgentOrientation`). Injected once per turn through the SAME seam each
+   * driver uses for `BROWSER_BRIEFING` / `RUN_BRIEFING`.
+   *
+   * THE TEXT, NOT A FLAG, and it arrives on the claim: the words and the
+   * decision to use them are both the engine's, and a driver handed a boolean
+   * would be a second place either lives. ABSENT MEANS INJECT NOTHING — the
+   * person turned it off, or the worker is older than this field, or it is a
+   * test. Never a default paragraph invented here.
+   *
+   * A WARP CHILD DOES NOT GET ONE, and neither does the spool's canvas: both
+   * are spawned outside this contract with a prompt that already states what
+   * they are and what they may do. Orienting them a second time would be a
+   * paragraph about a cockpit neither of them is sitting in.
+   */
+  orientation?: string;
+  /**
    * Files the human attached to THIS message, already on disk.
    *
    * The engine wrote them and owns the paths; a driver reads them and decides

@@ -1,0 +1,8 @@
+[test]
+# 20 s, not bun's default 5 s. The engine suite starts a real daemon, a worker
+# and child processes per test; on the shared CI Mac mini two Verify runs plus
+# a nightly build routinely push a 3 s test past 5 s. The `eventually`/`until`
+# helpers in test/*.test.ts carry the matching wall-clock bound (15 s) so a
+# wait can outlast a loaded runner without outlasting this ceiling. A genuine
+# hang still fails, twenty seconds later instead of five.
+timeout = 20000

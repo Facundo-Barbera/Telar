@@ -76,7 +76,16 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
   return {
     dispose() { for (const entry of runtimes.values()) { clearTimeout(entry.idle); entry.runtime.close(); } runtimes.clear(); },
     async run(input) {
-      const identity = JSON.stringify([input.cwd, input.binaryPath, input.providerInstanceId, input.env]);
+      /**
+       * `orientation` IS PART OF THE SERVER'S IDENTITY, and it has to be: the
+       * briefings are baked into `OPENCODE_CONFIG_CONTENT` when the process
+       * starts, so a reused server keeps the instructions file it was spawned
+       * with. Without this, switching the toggle off would leave every live
+       * OpenCode session still reading Telar's paragraph — which is the one
+       * thing "off" must not mean. Same rule as the Claude driver's
+       * fingerprint; a changed identity restarts the server.
+       */
+      const identity = JSON.stringify([input.cwd, input.binaryPath, input.providerInstanceId, input.env, input.orientation ?? null]);
       let owned = runtimes.get(input.sessionId);
       if (!owned || owned.identity !== identity || owned.runtime.closed) {
         owned?.runtime.close();

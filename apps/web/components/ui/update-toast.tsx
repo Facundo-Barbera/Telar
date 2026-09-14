@@ -66,7 +66,7 @@ export function UpdateToast({
         // and a caption that ate a click on what is underneath it would be a
         // worse bug than the one it explains.
         "pointer-events-none absolute bottom-full right-0 z-50 mb-2 w-max max-w-56 rounded-md border border-border",
-        "bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md",
+        "bg-popover px-2 py-1 text-xs text-popover-foreground shadow-3",
         "animate-in fade-in-0 slide-in-from-bottom-1",
         className,
       )}

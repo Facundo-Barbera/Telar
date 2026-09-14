@@ -3,8 +3,13 @@
 // The app sidebar, ported from the frozen app's components/app-sidebar.tsx.
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
-// wordmark; a search field wearing its ⌘K hint and a new-session button beside
-// it; a project scope dropdown with an add-project button; then the five bands —
+// wordmark; a search field wearing its ⌘K hint, with reveal / add-project /
+// new-conversation in one pill beside it; then the five bands —
+//
+// NO PROJECT FILTER ANYWHERE IN THAT HEAD (#400). There was a scope dropdown on
+// a row of its own, then the same menu as a chip inside the field; both were a
+// second way to do what the collapsible project groups below already do, and
+// only one of them could be left switched on by accident.
 //
 //   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
 //             in the rail: a conversation you started writing and did not send
@@ -50,14 +55,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  CheckIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
-  FolderGit2Icon,
   FolderOpenIcon,
   FolderPlusIcon,
   FoldVerticalIcon,
-  SlidersHorizontalIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
@@ -73,7 +74,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
-import { useCommandKeys } from "@/lib/use-command-keys";
+import { useCommandHandlers, useCommandKeys } from "@/lib/use-command-keys";
 import { workspaceOpener } from "@/lib/workspace-open";
 import { DraftRow } from "@/components/session/draft-row";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
@@ -122,13 +123,15 @@ import {
   PINNED_ROW_SCOPE,
   PROJECT_GROUP_MIME,
   SESSION_ROW_MIME,
+  railJumpSlots,
   railRowsForCommandKeys,
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
-import { ProjectPalette, type NewConversationTarget, type PalettePage } from "@/components/project-palette";
+import { CommandPalette, type CommandPalettePage } from "@/components/command-palette";
+import type { NewConversationTarget } from "@/components/project-palette";
 import { Button } from "@/components/ui/button";
+import { KeyHint } from "@/components/ui/key-hint";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -136,14 +139,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
 import { cn } from "@/lib/utils";
 
@@ -178,6 +173,11 @@ const APP_SIDEBAR_RESIZABLE = {
 const subscribeNothing = () => () => {};
 const serverNoBridge = () => undefined;
 
+/**
+ * ⌘B ON THE COLLAPSE TRIGGER while ⌘ is held — issue #401. The hint sits beside
+ * the glyph rather than inside `SidebarTrigger`: the primitive is shared with
+ * the Spool's rail and the panel, and only THIS one is what `toggle-rail` binds.
+ */
 function TelarSidebarHeader() {
   return (
     // The inset is measured from the island's edge, never less than the 8px
@@ -188,6 +188,7 @@ function TelarSidebarHeader() {
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(8px,var(--titlebar-inset))] md:h-[var(--titlebar-band-height)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
+        <KeyHint command="toggle-rail" />
         {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
             their routes and data but are not offered from the main rail. */}
         <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
@@ -282,7 +283,6 @@ function SessionShelf({
   onShowMore,
   limit,
   activeSessionId,
-  showProject,
   renderedAt,
   bandFor,
   onRefresh,
@@ -296,7 +296,6 @@ function SessionShelf({
   onShowMore?: () => void;
   limit?: number;
   activeSessionId?: string;
-  showProject: boolean;
   renderedAt: number;
   /** The list's own banding — one function, so a shelf cannot band a row
    *  differently from the list that put it there (a paired Mac's row is
@@ -315,7 +314,7 @@ function SessionShelf({
               key={sessionKey(session)}
               session={session}
               active={sessionKey(session) === activeSessionId}
-              showProject={showProject}
+              showProject
               // A SHELF IS OFF THE LIST — history behind you or work deferred
               // ahead of you — so its rows give their space back, one dim line
               // each. See session-row.tsx for the two volumes.
@@ -377,7 +376,6 @@ function SidebarBody() {
   // enough to produce a hydration mismatch and force React to regenerate the
   // whole persistent sidebar. Refresh this clock only when sidebar data does.
   const [renderedAt, setRenderedAt] = useState(0);
-  const [scope, setScope] = useState<string>();
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
@@ -433,23 +431,31 @@ function SidebarBody() {
    */
   const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
   /**
-   * THE PROJECT PALETTE, and which of its two pages is up.
+   * THE COMMAND PALETTE, which page of it is up, and what it opens looking for.
    *
-   * ONE PIECE OF STATE FOR BOTH, because they are one surface: New conversation
-   * (the button, ⌘N) opens the Projects page, Add project (the header's pill, the
-   * empty-space menu) opens Sources, and the palette itself walks between them.
-   * They were two dialogs with two flags, which is how the rail ended up able to
-   * have a register form open behind a project picker.
+   * ONE PIECE OF STATE FOR ALL THREE PAGES, because they are one surface (#402):
+   * ⌘K opens the list, New conversation walks to Projects, Add project walks to
+   * Sources, and the palette walks between them. They were two dialogs with two
+   * flags once, which is how the rail ended up able to have a register form open
+   * behind a project picker.
+   *
+   * `query` IS THE HANDOFF FROM THE RAIL'S FIELD. The field stays a filter over
+   * the rows in front of you; ⌘K carries whatever is in it into the palette, so
+   * a search that turned out to be a bigger question than the rail can answer
+   * does not have to be typed twice.
    */
-  const [palette, setPalette] = useState<{ open: boolean; page: PalettePage }>({ open: false, page: "projects" });
-  const openPalette = (page: PalettePage) => setPalette({ open: true, page });
+  const [palette, setPalette] = useState<{ open: boolean; page: CommandPalettePage; query: string }>({
+    open: false,
+    page: "root",
+    query: "",
+  });
+  const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });
   /** Each Mac's own settling window, read with its rows — keyed like the
    *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
   const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
   /** An away Mac's remembered rows, dimmed under its retry line. Filled by
    *  `loadAll` from the sidebar cache; empty for a host never read. */
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
-  const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
   const loadAllRunning = useRef(false);
 
@@ -673,21 +679,23 @@ function SidebarBody() {
     return () => window.clearInterval(timer);
   }, [loadAll, anyLive]);
 
-  const projectIds = projects.map((project) => project.id);
-  const selectedScope = scope && projectIds.includes(scope) ? scope : undefined;
-  const selectedProject = projects.find((project) => project.id === selectedScope);
-  // The unscoped rail ALWAYS names each row's project — even with one project
-  // registered. A previous cut hid it for a single project ("the same word
-  // repeated is not information"), and it read as a bug every time: a row with
-  // no project line looks unfiled, and the human checking "did this land in the
-  // right project" gets no answer. Scoping to a project is the one state where
-  // the name is genuinely redundant — the header already says it.
-  const showProject = !selectedScope;
-
+  /**
+   * THE RAIL ALWAYS NAMES EACH ROW'S PROJECT — even with one registered. A
+   * previous cut hid it for a single project ("the same word repeated is not
+   * information"), and it read as a bug every time: a row with no project line
+   * looks unfiled, and the human checking "did this land in the right project"
+   * gets no answer.
+   *
+   * IT USED TO BE CONDITIONAL, on a per-project filter this rail no longer has
+   * (#400). Scoped to one project the name was genuinely redundant — the chip
+   * said it — and with the chip gone there is no state in which it is, so the
+   * flag went with it. A row inside a project GROUP still passes `false`: that
+   * header names the project one line above, which is the same argument and
+   * the reason `SessionRow` keeps the prop.
+   */
   const activeSessionId = activeSessionFromPathname(pathname);
   const list = deriveSessionList({
     sessions,
-    ...(selectedScope ? { projectId: selectedScope } : {}),
     query,
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
@@ -856,7 +864,6 @@ function SidebarBody() {
   const openCanvasProject = canvasProjectFromPathname(pathname);
   const needle = query.trim().toLocaleLowerCase();
   const draftRows = drafts
-    .filter((draft) => (selectedScope ? draft.projectId === selectedScope : true))
     .filter((draft) => (needle ? draft.text.toLocaleLowerCase().includes(needle) : true))
     .map((draft) => ({ ...draft, projectName: projects.find((project) => project.id === draft.projectId)?.name }))
     .filter((draft) => draft.projectName !== undefined);
@@ -883,32 +890,53 @@ function SidebarBody() {
    */
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
-  useCommandKeys(grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9), {
+  const jumpRows = grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9);
+  /**
+   * THE SAME ROWS, AS THE NUMBERS THEY WEAR while ⌘ is held — issue #401.
+   *
+   * Derived from `jumpRows` rather than alongside it, which is the only
+   * arrangement in which the hint on a row and the key that fires it cannot
+   * disagree: one array, read twice, so a folded group or a shelf is skipped by
+   * both or by neither.
+   */
+  const jumpSlots = railJumpSlots(jumpRows);
+  const jumpSlotFor = (key: string) => jumpSlots.get(key);
+  /** Spread rather than passed, because most rows have no slot and the prop is
+   *  optional — the same shape every other optional prop in this file takes. */
+  const jumpProp = (key: string) => {
+    const slot = jumpSlots.get(key);
+    return slot === undefined ? {} : { jumpSlot: slot };
+  };
+  const run = useCommandKeys(jumpRows, {
     // ⌘N ASKS RATHER THAN GUESSES — unless there is nothing to ask about. The
     // table's destination for this binding is "/", which resolves a project and
     // opens its canvas; the palette replaced that guess. `newConversation`
     // below is the one place that decides between palette and canvas, so the
     // key and the button cannot disagree about what New conversation means.
     "new-conversation": () => newConversation(),
-    // The rail's own two: its search field and its collapse. Both used to be
-    // hand-rolled window listeners here (⌘K) and inside the sidebar primitive
-    // (⌘B), which is precisely why neither appeared on the keybindings pane and
-    // neither could be changed. One registry, one dispatcher.
-    "search-sessions": () => searchInput.current?.focus(),
+    // The same verb with the guess taken out: always the list. It is the
+    // palette's "New conversation in…" row, and the row and the command are one
+    // thing because the row IS the command.
+    "new-conversation-in": () => openPalette("projects"),
+    "add-project": () => openPalette("sources"),
+    /**
+     * ⌘K IS THE PALETTE NOW (#402), AND IT TOGGLES. It used to put the cursor
+     * in the field beside it, which could find a conversation and nothing else;
+     * the field keeps doing exactly that on its own, and this opens the surface
+     * that can also find a command or a project — carrying the field's text in
+     * so a half-typed search is not lost. Pressing it again closes what it
+     * opened, because a key that only opens is a key you have to reach for
+     * Escape after.
+     */
+    "search-sessions": () =>
+      setPalette((current) => (current.open ? { ...current, open: false } : { open: true, page: "root", query })),
+    // The rail's own collapse. It used to be a hand-rolled listener inside the
+    // sidebar primitive, which is precisely why it appeared on no keybindings
+    // pane and could not be changed. One registry, one dispatcher.
     "toggle-rail": () => toggleSidebar(),
   });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
-
-  const resetPaging = () => {
-    setSessionLimit(SESSION_PAGE_SIZE);
-    setSettledLimit(SETTLED_PAGE_SIZE);
-  };
-
-  const selectScope = (next?: string) => {
-    setScope(next);
-    resetPaging();
-  };
 
   /**
    * OPENS A CANVAS; DOES NOT CREATE A SESSION.
@@ -934,7 +962,6 @@ function SidebarBody() {
    * carries its host; the guess carries it too.
    */
   const composerTarget: { projectId: string; hostId?: string } | undefined = (() => {
-    if (selectedScope) return { projectId: selectedScope };
     const active = sessions.find((session) => sessionKey(session) === activeSessionId);
     if (active?.projectId) return { projectId: active.projectId, ...(active.hostId ? { hostId: active.hostId } : {}) };
     const recent = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt).find((session) => session.projectId);
@@ -1006,123 +1033,69 @@ function SidebarBody() {
   /**
    * WHICH FOLDER THE FINDER BUTTON WOULD SHOW.
    *
-   * The scoped project when there is one, and otherwise the rail's own existing
-   * guess — the project you are reading, then the one you touched last — which
-   * is what `New conversation` already acts on when nothing is scoped. Two
-   * different ideas of "the project at hand" in one header would be worse than
-   * one guess named in a tooltip, which is what the button's `title` does.
+   * THE RAIL'S OWN GUESS — the project you are reading, then the one you touched
+   * last — which is what `New conversation` already acts on. It used to prefer
+   * the scoped project ahead of that guess; with the scope chip gone (#400) the
+   * guess is the whole answer, and it is named in the button's `title` so the
+   * reader never has to infer which folder is about to open.
    *
    * THIS MAC'S PROJECTS ONLY. A paired Mac's checkout is on that Mac; revealing
    * a same-named path here would show somebody the wrong folder, which is the
    * refusal `workspaceOpenBlocker` makes everywhere else.
    */
   const revealProject = (() => {
-    const local = selectedProject ?? (composerTarget && !composerTarget.hostId ? projects.find((project) => project.id === composerTarget.projectId) : undefined);
+    const local = composerTarget && !composerTarget.hostId ? projects.find((project) => project.id === composerTarget.projectId) : undefined;
     return local?.root ? { name: local.name, root: local.root } : undefined;
   })();
 
   /**
-   * THE PROJECT FILTER, INSIDE THE FIELD IT NARROWS.
+   * THE RAIL'S ANSWER TO TWO COMMANDS ABOUT "THE PROJECT YOU ARE IN" — and it
+   * is deliberately the BOTTOM of the stack rather than an override.
    *
-   * It was a row of its own under the search field — "All projects ▾" and a lone
-   * `+` — which spent a whole line of a narrow rail on a control most cockpits
-   * never change. A chip in the field is the same menu at a quarter of the cost,
-   * and it sits where a reader looks when they want fewer rows.
+   * `bindCommands` keeps a stack per command and the newest binder wins, so a
+   * session's own Reveal button (session/open-workspace-button.tsx) outranks
+   * this one while that session is open and this is what answers everywhere
+   * else. Passed as overrides, the rail would have shadowed it — and ⌘O inside
+   * a conversation would have opened the rail's guess instead of the workspace
+   * you were looking at.
    *
-   * ABSENT ON A COCKPIT WITH ONE PROJECT, unchanged from #361: "All projects"
-   * and "that one project" select the same rows, so the chip would be furniture
-   * — and here it would also be furniture eating the width of the field.
+   * NEITHER IS BOUND WHEN THERE IS NOTHING TO OPEN, which is what keeps the
+   * palette honest: it lists a command only when something can run it, so
+   * "Reveal in Finder" is absent from a browser tab rather than present and
+   * inert.
    */
-  const scopeChip =
-    pickerTargets.length > 1 ? (
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <button
-              type="button"
-              aria-label={selectedProject ? `Filtering by ${selectedProject.name} — change` : "Filter by project"}
-              title={selectedProject ? `Filtering by ${selectedProject.name}` : "Filter by project"}
-              className="flex h-6 max-w-[9rem] shrink-0 items-center gap-1 rounded px-1 text-xs text-sidebar-foreground/70 hover:bg-sidebar-accent"
-            />
+  const reveal = revealBridge && revealProject ? () => void revealBridge.reveal(revealProject.root) : undefined;
+  const localProjectId = composerTarget && !composerTarget.hostId ? composerTarget.projectId : undefined;
+  useCommandHandlers(
+    {
+      ...(reveal ? { "reveal-in-finder": reveal } : {}),
+      ...(localProjectId
+        ? {
+            "project-settings": () => {
+              onNavigate();
+              router.push(projectSettingsHref(localProjectId));
+            },
           }
-        >
-          {selectedProject ? (
-            <ProjectAvatar
-              name={selectedProject.name}
-              projectId={selectedProject.id}
-              {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
-              {...(selectedProject.iconName ? { iconName: selectedProject.iconName } : {})}
-              size={14}
-            />
-          ) : (
-            <FolderGit2Icon className="size-3.5" />
-          )}
-          {/* THE NAME ONLY WHEN THERE IS ONE TO SAY. Unscoped, the chip is two
-              small glyphs and the field keeps its width for typing; "All
-              projects" spelled out inside a search box is a label competing
-              with a placeholder. */}
-          {selectedProject && <span className="truncate">{selectedProject.name}</span>}
-          <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-64">
-          <DropdownMenuGroup>
-            {/* NO CAPTION. It read "Session scope" — the internal name for what
-                this menu does, over a list whose first row is "All projects" and
-                whose rest are project names. A menu of verbs and nouns says what
-                it is by being read. */}
-            <DropdownMenuItem onClick={() => selectScope()}>
-              <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
-              All projects
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            {projects.map((project) => (
-              <div key={project.id} className="flex items-center">
-                <DropdownMenuItem className="min-w-0 flex-1" onClick={() => selectScope(project.id)}>
-                  <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
-                  <ProjectAvatar
-                    name={project.name}
-                    projectId={project.id}
-                    {...(project.icon ? { icon: project.icon } : {})}
-                    {...(project.iconName ? { iconName: project.iconName } : {})}
-                    size={14}
-                  />
-                  <span className="truncate">{project.name}</span>
-                </DropdownMenuItem>
-                {/* THIS project's settings. It went to the retired `/projects`
-                    table — a glyph beside one project's name that showed you all
-                    of them. */}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Settings for ${project.name}`}
-                  title={`Project settings for ${project.name}`}
-                  onClick={() => {
-                    onNavigate();
-                    router.push(projectSettingsHref(project.id));
-                  }}
-                >
-                  <SlidersHorizontalIcon />
-                </Button>
-              </div>
-            ))}
-            {selectedProject && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => {
-                    onNavigate();
-                    router.push(projectSettingsHref(selectedProject.id));
-                  }}
-                >
-                  <SlidersHorizontalIcon />
-                  Project settings
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    ) : undefined;
+        : {}),
+    },
+    [Boolean(reveal), localProjectId],
+  );
+
+  /**
+   * NO PROJECT-SCOPE CHIP — issue #400.
+   *
+   * #395 folded the old "All projects ▾" row into the search field as a chip,
+   * which was a smaller version of a control the rail should not have had at
+   * all: the collapsible project groups already answer "fewer rows", and they
+   * answer it without hiding the rest of the list behind a menu a reader can
+   * leave set and forget. A filter inside a search box is furniture on top of
+   * that. Its one non-filter verb — the gear beside each project — lives on the
+   * group header's own menu (`project-group.tsx`), which is where a per-project
+   * verb belongs.
+   *
+   * The three verbs at the field's right (reveal, add project, new
+   * conversation) stay exactly as #395 built them.
+   */
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -1151,16 +1124,27 @@ function SidebarBody() {
 
   return (
     <>
-      {/* MOUNTED WITH THE RAIL, not inside the button: ⌘N opens it from
+      {/* MOUNTED WITH THE RAIL, not inside the button: ⌘K and ⌘N open it from
           anywhere in the cockpit, and the rail is the one component alive on
           every route. It renders into a portal, so its place here is about
-          lifetime rather than layout. */}
-      <ProjectPalette
+          lifetime rather than layout.
+
+          THE RAIL IS WHAT FEEDS IT. The projects and the conversations it
+          searches are the ones already in hand — so the palette costs no read of
+          its own, and can never offer a row the rail does not have. */}
+      <CommandPalette
         open={palette.open}
         page={palette.page}
+        query={palette.query}
         onOpenChange={(open) => setPalette((current) => ({ ...current, open }))}
         targets={pickerTargets}
-        onChoose={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        sessions={sessions}
+        onRun={run}
+        onChooseProject={(target) => startSession({ projectId: target.id, ...(target.hostId ? { hostId: target.hostId } : {}) })}
+        onOpenSession={(session) => {
+          onNavigate();
+          router.push(sessionHref(session));
+        }}
         onRegistered={() => void loadAll()}
       />
       <TelarSidebarHeader />
@@ -1187,7 +1171,6 @@ function SidebarBody() {
         <div className="px-2 pb-2 pt-3">
           <div className="flex items-center gap-1.5">
             <SidebarSearchField
-              ref={searchInput}
               className="min-w-0 flex-1"
               value={query}
               onChange={(event) => {
@@ -1208,7 +1191,6 @@ function SidebarBody() {
               aria-expanded={Boolean(query)}
               aria-controls="sidebar-session-results"
               aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
-              {...(scopeChip ? { start: scopeChip } : {})}
               end={
                 query ? (
                   <button
@@ -1223,7 +1205,17 @@ function SidebarBody() {
                     <XIcon className="size-3.5" />
                   </button>
                 ) : (
-                  <kbd className="pointer-events-none shrink-0 font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
+                  /* THE ONE HINT THAT IS ALWAYS ON — and it now promises the
+                     PALETTE rather than this field (#402). The field filters
+                     what is in front of you as you type; ⌘K opens the surface
+                     that also searches commands and projects, carrying whatever
+                     is in here with it. Same key, a bigger question.
+
+                     It was a hardcoded `⌘K`, which lied the moment somebody
+                     rebound the command; #401 makes it read the live keymap like
+                     every other hint, and `always` keeps the affordance since
+                     the beginning rather than hiding it behind a held key. */
+                  <KeyHint command="search-sessions" always />
                 )
               }
             />
@@ -1235,13 +1227,19 @@ function SidebarBody() {
               and a lone `+`. It spent a whole line of a narrow rail on a filter
               most cockpits never change, and it put the two things you press
               most (add a project, start a conversation) on different rows at
-              opposite ends. The filter moved INTO the field as a chip, where it
-              belongs: it narrows the same list the field narrows.
+              opposite ends. The filter moved into the field as a chip and then
+              went altogether (#400) — the project groups below already narrow
+              the list, and they do it without a mode to leave set.
 
               THE PILL IS ONE BORDER AROUND THREE BUTTONS rather than three
               loose glyphs, because they are one cluster of verbs about the rail
               and the space beside the field is not theirs to float in.
             */}
+            {/* EACH VERB IS A COMMAND, PRESSED (#402). The buttons used to do
+                the work themselves — reach for the bridge, set the palette's
+                state — which is how a button and its chord come to mean two
+                slightly different things. They ask the dispatcher now, exactly
+                as the keyboard and the palette's own rows do. */}
             <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5">
               {/* HIDDEN IN A BROWSER TAB, never disabled: `workspaceOpenBlocker`
                   is the one place that decides whether a folder can be opened
@@ -1255,7 +1253,7 @@ function SidebarBody() {
                   disabled={!revealProject}
                   aria-label="Reveal in Finder"
                   title={revealProject ? `Reveal ${revealProject.name} in Finder` : "Reveal in Finder — choose a project first"}
-                  onClick={() => revealProject && void revealBridge.reveal(revealProject.root)}
+                  onClick={() => run("reveal-in-finder")}
                 >
                   <FolderOpenIcon />
                 </Button>
@@ -1265,7 +1263,7 @@ function SidebarBody() {
                 size="icon-sm"
                 aria-label="Add project"
                 title="Add project"
-                onClick={() => openPalette("sources")}
+                onClick={() => run("add-project")}
               >
                 <FolderPlusIcon />
               </Button>
@@ -1281,7 +1279,7 @@ function SidebarBody() {
                 size="icon-sm"
                 aria-label="New conversation"
                 title={soleTarget ? `New conversation in ${soleTarget.name}` : "New conversation — choose the project"}
-                onClick={newConversation}
+                onClick={() => run("new-conversation")}
               >
                 <MessageSquarePlusIcon />
               </Button>
@@ -1318,7 +1316,7 @@ function SidebarBody() {
                   projectName={draft.projectName}
                   text={draft.text}
                   active={draft.projectId === openCanvasProject}
-                  showProject={showProject}
+                  showProject
                   onNavigate={onNavigate}
                   onDiscard={() => discardDraft(draft.projectId)}
                 />
@@ -1351,11 +1349,12 @@ function SidebarBody() {
                   key={sessionKey(session)}
                   session={session}
                   active={sessionKey(session) === activeSessionId}
-                  showProject={showProject}
+                  showProject
                   variant="card"
                   band={bandFor(session)}
                   renderedAt={renderedAt}
                   onRefresh={() => void loadAll()}
+                  {...jumpProp(sessionKey(session))}
                 />
               ))}
             </SidebarGroupContent>
@@ -1437,7 +1436,7 @@ function SidebarBody() {
                     key={sessionKey(session)}
                     session={session}
                     active={sessionKey(session) === activeSessionId}
-                    showProject={showProject}
+                    showProject
                     variant="card"
                     band="pinned"
                     renderedAt={renderedAt}
@@ -1447,6 +1446,7 @@ function SidebarBody() {
                     // here. Only in the banded view — a search flattens the
                     // rail, and a position inside an answer means nothing.
                     {...(grouped ? { drag: pinnedRowDrag(sessionKey(session)) } : {})}
+                    {...jumpProp(sessionKey(session))}
                   />
                 ))}
                 {/*
@@ -1479,7 +1479,7 @@ function SidebarBody() {
               (list.flat || !(list.settledCount || list.snoozedCount || list.pinned.length)) ? (
               <SidebarEmpty
                 icon={MessageSquareIcon}
-                title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
+                title={query ? "No sessions found" : "No sessions yet"}
                 detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : grouped ? (
@@ -1526,6 +1526,9 @@ function SidebarBody() {
                     // against this group's own drawn keys — which is what makes
                     // a row from another group a drop this one refuses.
                     rowDrag={rowDrag(group.key, group.sessions.map((session) => sessionKey(session)))}
+                    // Whose row wears which number, worked out once for the
+                    // whole rail — see `jumpSlots`.
+                    jumpSlot={jumpSlotFor}
                     {...(root ? { root } : {})}
                     places={places}
                     // The `+` beside the header, as a menu row: one canvas
@@ -1552,7 +1555,7 @@ function SidebarBody() {
                   key={sessionKey(session)}
                   session={session}
                   active={sessionKey(session) === activeSessionId}
-                  showProject={showProject}
+                  showProject
                   // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
                   // asked, so every row in it is equally relevant and density
                   // beats detail — cards would make ten matches a scroll.
@@ -1567,6 +1570,10 @@ function SidebarBody() {
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
                   onRefresh={() => void loadAll()}
+                  // A search flattens the rail and ⌘1..⌘9 count the results, so
+                  // the numbers follow them here rather than staying on rows
+                  // that are no longer where they were.
+                  {...jumpProp(sessionKey(session))}
                 />
               ))
             )}
@@ -1600,7 +1607,7 @@ function SidebarBody() {
                       key={sessionKey(session)}
                       session={session}
                       active={sessionKey(session) === activeSessionId}
-                      showProject={showProject}
+                      showProject
                       variant="slim"
                       band={bandFor(session)}
                       renderedAt={renderedAt}
@@ -1657,8 +1664,7 @@ function SidebarBody() {
               open={snoozedOpen}
               onToggle={() => setSnoozedOpen((open) => !open)}
               {...(activeSessionId ? { activeSessionId } : {})}
-              showProject={showProject}
-              renderedAt={renderedAt}
+                            renderedAt={renderedAt}
               bandFor={bandFor}
               onRefresh={() => void loadAll()}
             />
@@ -1679,8 +1685,7 @@ function SidebarBody() {
               onShowMore={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
               limit={settledLimit}
               {...(activeSessionId ? { activeSessionId } : {})}
-              showProject={showProject}
-              renderedAt={renderedAt}
+                            renderedAt={renderedAt}
               bandFor={bandFor}
               onRefresh={() => void loadAll()}
             />

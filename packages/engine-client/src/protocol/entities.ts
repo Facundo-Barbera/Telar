@@ -923,6 +923,39 @@ export const DEFAULT_INBOX_POLICY: InboxPolicy = {
 };
 
 /**
+ * WHETHER TELAR MAY TELL AN AGENT WHERE IT IS — the two things the engine
+ * authors and puts in front of a provider, each with its own switch.
+ *
+ * ITS OWN DOCUMENT, ON `InboxPolicy`'s OWN INSTRUCTION: a field belongs there
+ * only if it decides what the inbox shows, and neither of these decides
+ * anything about a list. Same environment scope, and for the sharper version of
+ * the reason stated there — this decides what every session on the machine is
+ * told, so a per-browser copy would mean one engine injecting a paragraph some
+ * of its clients had turned off.
+ *
+ * BOTH DEFAULT ON. The orientation exists because its absence was a bug, not a
+ * feature somebody opts into; the switches exist because a person is entitled
+ * to refuse text Telar wrote into their agent's context, and refusing must be
+ * one click rather than a config file.
+ *
+ * WHAT IS NOT COVERED BY IT: the per-surface briefings (`BROWSER_BRIEFING`,
+ * `RUN_BRIEFING`). Those say how to drive a capability the session actually
+ * has — a tool contract — rather than what the app around it is called, and
+ * turning off orientation must not silently break the browser.
+ */
+export const AgentOrientation = z.object({
+  /** The paragraph, injected once per turn through each driver's existing
+   *  briefing seam. See `apps/engine/src/orientation.ts`. */
+  preamble: z.boolean(),
+  /** The `telar` skill, written into each provider's skills directory. Off
+   *  removes the file rather than merely stopping it being refreshed. */
+  skill: z.boolean(),
+});
+export type AgentOrientation = z.infer<typeof AgentOrientation>;
+
+export const DEFAULT_AGENT_ORIENTATION: AgentOrientation = { preamble: true, skill: true };
+
+/**
  * WHAT A SESSION IS CREATED WITH WHEN NOBODY SAID — the standing answer to a
  * question the composer otherwise asks on every new conversation.
  *

@@ -377,11 +377,16 @@ export function EnvironmentStrip({
 
   return (
     <div className="mx-3 -mt-px">
-      {/* --shadow-tint rather than raw black, and `bg-muted/25` now actually
-          lands at 25% of the theme's muted: the wash used to hand this element
-          a token already at 72% alpha, which multiplied the strip down to 18%
-          and dissolved it over a backdrop. See globals.css. */}
-      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-[0.6875rem] text-muted-foreground shadow-[0_8px_24px_-20px_var(--shadow-tint)]">
+      {/* `shadow-1` — a RESTING surface (globals.css's elevation ladder). It
+          hangs off the bottom of the composer, so it is attached to the page
+          rather than floating over it, and it takes the rung below the bar it
+          hangs from. Was a hand-written arbitrary value in --shadow-tint;
+          right ink, private numbers.
+
+          `bg-muted/25` lands at 25% of the theme's muted: the wash used to
+          hand this element a token already at 72% alpha, which multiplied the
+          strip down to 18% and dissolved it over a backdrop. */}
+      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-[0.6875rem] text-muted-foreground shadow-1">
         {choosing && onEnvMode ? (
           <WhereThisLands
             projectId={projectId}

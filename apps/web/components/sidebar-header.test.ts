@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 
 /**
  * THE RAIL'S HEAD IS ONE LINE NOW — a search field with three verbs in a pill at
- * its right, and the project filter folded into the field as a chip.
+ * its right, and NO project filter anywhere in it.
  *
  * It was two lines: the field with a lone New-conversation button, then a whole
  * second row holding "All projects ▾" and a lone `+`. That row spent a line of a
  * narrow rail on a control most cockpits never change, and it put the two things
- * pressed most on different rows at opposite ends.
+ * pressed most on different rows at opposite ends. #395 folded the filter into
+ * the field as a chip; #400 removed the filter itself — the collapsible project
+ * groups already answer "fewer rows", so both the row and the chip were
+ * furniture around a control the rail does not need.
  *
  * PINNED AGAINST SOURCE, like the palette's own keyboard rules: this markup
  * renders inside a sidebar provider with a router, a command registry and four
@@ -29,7 +32,6 @@ const header = sidebar.slice(sidebar.indexOf("<SidebarSearchField"), sidebar.ind
 
 describe("the rail's header is one row", () => {
   test("the separate All-projects row is gone", () => {
-    // Its menu survives — as the chip's, below — but the ROW does not.
     expect(header).not.toContain('"All projects"');
     expect(header).not.toContain("min-w-0 flex-1\" />}");
   });
@@ -43,14 +45,18 @@ describe("the rail's header is one row", () => {
     expect(pill).toContain('className="flex shrink-0 items-center gap-0.5 rounded-lg border border-sidebar-border/60 p-0.5"');
   });
 
-  test("each verb is the control it already was, not a second implementation", () => {
-    // Add project opens the palette's Sources page — the same page the rail's
-    // empty-space menu opens, so `chooseDirectory` still has one caller.
-    expect(header).toContain('onClick={() => openPalette("sources")}');
-    // New conversation still goes through the one place that decides between
-    // the palette and a canvas.
-    expect(header).toContain("onClick={newConversation}");
+  test("each verb is a COMMAND, pressed — not a second implementation of one", () => {
+    // #402: a button that reached for the bridge or set the palette's state
+    // itself is how a button and its chord come to mean two slightly different
+    // things. All three ask the dispatcher the keyboard asks.
+    expect(header).toContain('onClick={() => run("reveal-in-finder")}');
+    expect(header).toContain('onClick={() => run("add-project")}');
+    expect(header).toContain('onClick={() => run("new-conversation")}');
+    // And the dispatcher is the rail's own, so "New conversation" still goes
+    // through the one place that decides between the palette and a canvas.
+    expect(sidebar).toContain("const run = useCommandKeys(jumpRows, {");
     expect(sidebar).toContain('"new-conversation": () => newConversation(),');
+    expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
   });
 });
 
@@ -73,49 +79,72 @@ describe("Reveal in Finder", () => {
   test("it reveals THIS Mac's project, never a paired Mac's same-named path", () => {
     const pick = sidebar.slice(sidebar.indexOf("const revealProject = (() => {"));
     expect(pick.slice(0, 400)).toContain("!composerTarget.hostId");
-    // And the guess it falls back to is the rail's own, not a second idea of
-    // "the project at hand" — named in the button's tooltip either way.
-    expect(pick.slice(0, 400)).toContain("selectedProject ??");
     expect(header).toContain("`Reveal ${revealProject.name} in Finder`");
   });
-});
 
-describe("the project filter is a chip inside the field it narrows", () => {
-  test("the chip goes in the field's start slot", () => {
-    expect(header).toContain("{...(scopeChip ? { start: scopeChip } : {})}");
-  });
-
-  test("it is absent on a cockpit with one project, exactly as the row was", () => {
-    // #361: "All projects" and "that one project" select the same rows, so the
-    // control would be furniture — and here it would also eat the field's width.
-    expect(sidebar).toContain("const scopeChip =\n    pickerTargets.length > 1 ? (");
-  });
-
-  test("it carries the whole menu the row carried — scope, per-project settings, clear", () => {
-    const chip = sidebar.slice(sidebar.indexOf("const scopeChip ="), sidebar.indexOf("const handleSearchKeyDown"));
-    expect(chip).toContain("onClick={() => selectScope()}");
-    expect(chip).toContain("onClick={() => selectScope(project.id)}");
-    expect(chip).toContain("projectSettingsHref(project.id)");
-    expect(chip).toContain("All projects");
-  });
-
-  test("unscoped, the chip is two glyphs — a label inside a search box competes with its placeholder", () => {
-    const chip = sidebar.slice(sidebar.indexOf("const scopeChip ="), sidebar.indexOf("const handleSearchKeyDown"));
-    expect(chip).toContain("{selectedProject && <span className=\"truncate\">{selectedProject.name}</span>}");
+  test("the guess is the rail's OWN, with no scoped project ahead of it", () => {
+    // #400: the chip that set a scope is gone, so "the project at hand" has
+    // exactly one meaning here — the one `New conversation` already acts on.
+    const pick = sidebar.slice(sidebar.indexOf("const revealProject = (() => {"));
+    expect(pick.slice(0, 400)).not.toContain("selectedProject");
   });
 });
 
-describe("the shared field grew a start slot without forking", () => {
-  test("the chrome moved to the row, so something of unknown width can sit inside", () => {
+describe("there is no project filter in the rail — #400", () => {
+  /** The chip and every code path it was the only way to reach. The rail's
+   *  collapsible project groups are the "fewer rows" control now. */
+  test("the chip, its menu and its state are gone from the source", () => {
+    for (const dead of ["scopeChip", "selectScope", "selectedScope", "selectedProject", "setScope", "Filter by project"]) {
+      expect(sidebar).not.toContain(dead);
+    }
+  });
+
+  test("nothing is handed to a leading slot the field no longer has", () => {
+    expect(header).not.toContain("start:");
+    expect(header).not.toContain("start=");
+  });
+
+  test("the rail always names a row's project, with no flag left to say otherwise", () => {
+    // `showProject` was `!selectedScope`, so with no scope it is always true and
+    // a derived boolean that cannot vary is worse than the literal.
+    expect(sidebar).not.toContain("const showProject =");
+    expect(sidebar).not.toContain("showProject={showProject}");
+    // The prop itself survives on SessionRow: a row INSIDE a project group
+    // passes false, because the group header names the project one line up.
+    expect(readFileSync(new URL("./session/project-group.tsx", import.meta.url), "utf8")).toContain("showProject={false}");
+  });
+
+  test("the empty rail has one answer, not a scoped one", () => {
+    // Below the header slice, in the list's own empty state: the third arm read
+    // "No sessions in this project" and nothing could put the rail in it.
+    expect(sidebar).toContain('title={query ? "No sessions found" : "No sessions yet"}');
+  });
+
+  test("per-project settings stayed reachable — on the group header's own menu", () => {
+    // It lived in the chip's menu as a gear beside each project name. The group
+    // header already carried the same row, which is why the chip could go
+    // without taking the verb with it.
+    const group = readFileSync(new URL("./session/project-group.tsx", import.meta.url), "utf8");
+    expect(group).toContain("Project settings");
+    expect(group).toContain("onProjectSettings");
+  });
+});
+
+describe("the shared field has one slot, and it is the trailing one", () => {
+  test("the chrome is on the row, not the input — the reason a slot can hold anything", () => {
     // The absolute icon over a full-width Input with a hand-counted pl-7/pr-10
-    // works for two things of fixed width and for nothing else; a chip's width
-    // is a project's name.
-    expect(field).toContain("start ?? <SearchIcon");
+    // works for two things of fixed width and for nothing else.
     expect(field).not.toContain("pl-7");
     expect(field).not.toContain("pr-10");
   });
 
-  test("a caller that passes neither slot draws what it drew before", () => {
+  test("the leading slot went with the chip that was its only caller", () => {
+    // #400. The glyph is unconditional again; no rail passes a `start`.
+    expect(field).toContain("<SearchIcon");
+    expect(field).not.toContain("start");
+  });
+
+  test("a caller that passes no slot draws what it drew before", () => {
     // The Spool's rail and the settings nav pass no `start`; the glyph, the
     // height and the hover treatment are unchanged for them.
     expect(field).toContain("h-8 min-w-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2");

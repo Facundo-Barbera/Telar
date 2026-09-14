@@ -28,8 +28,10 @@ struct JournalItem: Identifiable, Equatable {
     var text: String {
         if !streamedText.isEmpty { return streamedText }
         switch item.detail {
-        case .assistantMessage(let text), .reasoning(let text), .userMessage(let text):
+        case .assistantMessage(let text), .reasoning(let text):
             return text
+        case .userMessage(let message):
+            return message.text
         default:
             return ""
         }
@@ -167,8 +169,10 @@ struct JournalTurn: Identifiable, Equatable {
     /// message produced an empty right-aligned bubble.
     var isProviderStarted: Bool { origin == "provider" }
 
-    /// A peer HANDING WORK OVER is the reason this session is doing anything,
-    /// so it reads as a message. A peer TALKING stays collapsed.
+    /// A peer HANDING WORK OVER rather than talking. A fact about the turn, not
+    /// a switch on how it draws: every peer message is the collapsed notice row
+    /// now, and the intent is its label — a task rendered in full let a peer
+    /// decide how much of someone else's prose sat in this conversation.
     var isAgentTask: Bool { isFromAgent && agentIntent == "task" }
 
     /// An open `context_compaction` item — the provider squeezing right now.

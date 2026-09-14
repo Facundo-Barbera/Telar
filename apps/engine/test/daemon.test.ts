@@ -5,6 +5,7 @@ import path from "node:path";
 import { EngineClient, EngineClientError, TELAR_DARK, TELAR_LIGHT, type PublishedAppearance } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import { stubModels } from "./stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -31,7 +32,7 @@ afterEach(async () => {
 });
 
 test("daemon is authenticated, loopback-only, and discovers a typed engine client", async () => {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   expect(daemon.discovery.host).toBe("127.0.0.1");
   expect(fs.statSync(daemon.store.paths.engine).mode & 0o777).toBe(0o600);
@@ -51,7 +52,7 @@ test("daemon is authenticated, loopback-only, and discovers a typed engine clien
 });
 
 test("the API rejects an unregistered worker and then durably schedules a claimable turn", async () => {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -72,7 +73,7 @@ test("the API rejects an unregistered worker and then durably schedules a claima
 test("the authenticated API settles an interrupted run and takes a fresh one with no gesture in between", async () => {
   // This route used to require an explicit discard before the session would
   // take new work. There is nothing to discard now — a restart is a stop.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -99,7 +100,7 @@ test("a read receipt crosses the API as a turn name, and refuses everything else
   // THE ROUTE EXISTS SO EVERY CLIENT AGREES. The desktop shell, a browser tab
   // and a paired phone all read the same session, so which answer has been
   // seen cannot live in one of them.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -129,7 +130,7 @@ test("a read receipt crosses the API as a turn name, and refuses everything else
 
 test("lease expiry is pruned without another worker control request", async () => {
   let time = 0;
-  const daemon = await startEngine({ engineRoot: root(), now: () => time, workerLeaseMs: 5, workerPruneIntervalMs: 1 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), now: () => time, workerLeaseMs: 5, workerPruneIntervalMs: 1 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -146,7 +147,7 @@ test("lease expiry is pruned without another worker control request", async () =
 });
 
 test("attachments upload as raw bytes, ride the turn, and the browser answers even with no browser", async () => {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ name: "One", root: "/tmp" });
@@ -188,7 +189,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
 
 test("MCP servers are environment-scoped and survive a daemon restart", async () => {
   const stateRoot = root();
-  const first = await startEngine({ engineRoot: stateRoot });
+  const first = await startEngine({ models: stubModels, engineRoot: stateRoot });
   daemons.push(first);
   const client = new EngineClient(first.discovery);
   await client.saveMcpServer({ id: "linear", label: "Linear", spec: { transport: "http", url: "https://mcp.linear.app" } });
@@ -203,7 +204,7 @@ test("MCP servers are environment-scoped and survive a daemon restart", async ()
 
   // Written beside projects.json rather than into a session, so a tool
   // configured once is still configured after a restart.
-  const second = await startEngine({ engineRoot: stateRoot });
+  const second = await startEngine({ models: stubModels, engineRoot: stateRoot });
   daemons.push(second);
   const reconnected = new EngineClient(second.discovery);
   await expect(reconnected.listMcpServers()).resolves.toEqual({
@@ -213,7 +214,7 @@ test("MCP servers are environment-scoped and survive a daemon restart", async ()
 });
 
 test("the provider registry answers with its probe, and never with a secret", async () => {
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     // Injected so the suite never depends on which CLIs happen to be installed
     // on the machine running it.
@@ -280,6 +281,7 @@ function publishedLook(label: string): PublishedAppearance {
       fontSize: 17,
       fontMonoSize: 13,
       translucencyLevel: 50,
+      depth: "soft",
     },
   };
 }
@@ -289,7 +291,7 @@ test("the appearance mailbox round-trips a published look, caches it, and answer
   // only way a paired phone can learn it. The daemon deliberately understands
   // nothing about the payload — see EngineStore.setAppearance — while the
   // CLIENT parses it, because the blob crossed a trust boundary to get here.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const url = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance`;
@@ -364,7 +366,7 @@ test("an oversize appearance is refused before the engine buffers it", async () 
   // sharing this daemon after the refusal would wait on a connection that is
   // never coming back. Nothing follows it here; the engine's own state is
   // checked in-process instead.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const url = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance`;
 
@@ -386,7 +388,7 @@ test("a structured completion validates its request before spending a harness", 
   // depend on which CLI is installed and on a network round trip. What belongs
   // to the daemon is the guard in front of that child, and every case below
   // fails before anything is spawned.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
@@ -403,7 +405,7 @@ test("a structured completion validates its request before spending a harness", 
 });
 
 test("the appearance home is served, written and refuses what is not an image", async () => {
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const base = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance/home`;
   const auth = { authorization: `Bearer ${daemon.discovery.token}` };
@@ -447,7 +449,7 @@ test("DELETE on a project unregisters it, and refuses while a turn is in flight"
   // The wire half of the settings row: a DELETE on the REGISTRATION. The
   // checkout is a temporary directory here and is asserted intact afterwards —
   // this route must never be able to reach into somebody's repository.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const checkout = root();
@@ -486,7 +488,7 @@ test("the inbox route carries the delegation grace, and `null` over the wire is 
   // rather than one is exactly what this asserts: patching either leaves the
   // other alone, so turning the delegation settling off cannot quietly change
   // how long a quiet conversation stays in the list.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
 
@@ -519,7 +521,7 @@ test("POST /v2/projects/clone clones and registers in one request, with git stub
    *  unfiltered log would count reads this test says nothing about. */
   const argv: string[][] = [];
   const clones = () => argv.filter((args) => args[0] === "clone");
-  const daemon = await startEngine({
+  const daemon = await startEngine({ models: stubModels,
     engineRoot: root(),
     git: (_cwd, args) => {
       argv.push(args);
@@ -563,7 +565,7 @@ test("the gitignore write has a DELETE that undoes it, and takes back only its o
   // Adding a project ignores Telar's files WITHOUT asking now — the switch in
   // the old Register dialog became a default — so the toast's Undo needs a
   // route, and that route must not reach a rule somebody wrote themselves.
-  const daemon = await startEngine({ engineRoot: root() });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const checkout = root();

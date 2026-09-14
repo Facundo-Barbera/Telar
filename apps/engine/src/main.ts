@@ -1,5 +1,6 @@
 import { startEngine } from "./daemon";
 import { hydrateHostPath } from "./host-path";
+import { providerSkillRoots } from "./provider-skills";
 
 /**
  * BEFORE ANYTHING RESOLVES A BINARY, and therefore the first statement here.
@@ -34,7 +35,12 @@ const embeddedWorker = process.env.TELAR_EMBEDDED_WORKER?.trim() !== "0";
 // Usage page after an update finds the transcripts already read (usage.ts).
 // Here and not in `startEngine`, like the PATH repair above: a process
 // decision, not one every test's daemon should be making.
-const daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000,
+// The `telar` skill is installed into each provider's own skills directory on
+// start (and removed when the toggle is off). Passed from here rather than
+// defaulted inside `startEngine` for the reason the two decisions above are:
+// writing into `~/.claude/skills` is a thing a process does, not a thing every
+// test's daemon should do to the developer's home directory.
+const daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000, skillRoots: providerSkillRoots(),
   executionStorage: process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite" });
 process.stdout.write(
   `Telar engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +

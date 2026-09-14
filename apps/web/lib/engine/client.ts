@@ -40,6 +40,7 @@ import type {
   LatexToolchain,
   ManagedTectonic,
   InboxPolicy,
+  AgentOrientation,
   EnvMode,
   SessionDefaults,
   SidebarLayout,
@@ -74,6 +75,7 @@ import type {
   RequestDecision,
   RuntimeMode,
   Session,
+  SessionBootstrap,
   SessionSnapshot,
   SnapshotWindow,
   Turn,
@@ -89,6 +91,9 @@ import type {
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { pathnameFetcher } from "@/lib/hosts/client";
+// Type-only, like `Channel` above: `lib/fs-dirs.ts` reads the filesystem and
+// must not follow into the browser bundle.
+import type { DirectoryListing } from "@/lib/fs-dirs";
 import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
 // Type-only, like `Channel` above: the store reads the filesystem and must not
 // follow into the browser bundle.
@@ -182,6 +187,22 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  the folder from the URL. `owner/repo` is expanded by the engine. */
     cloneProject: (input: { url: string; parent: string; name?: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects/clone", input),
+    /**
+     * The folders inside one folder, for the Add-project browser — the same
+     * route the phone's browser drills through (app/api/fs/route.ts).
+     *
+     * No `path` means the ANSWERING machine's home, which on a remote screen is
+     * the paired Mac's: this fetcher follows the address bar
+     * (lib/hosts/client.ts), so the browser lists the disk the project is
+     * actually being registered on. `hidden` opts in to dotfolders.
+     */
+    fsDirs: (input: { path?: string; hidden?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (input.path) query.set("path", input.path);
+      if (input.hidden) query.set("hidden", "1");
+      const search = query.toString();
+      return request<DirectoryListing>(fetcher, "GET", search ? `/api/fs?${search}` : "/api/fs");
+    },
     updateProject: (
       projectId: string,
       patch: {
@@ -246,6 +267,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
     setInbox: (patch: { autoSettleAfterHours?: number | null; settleDelegatedAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Whether Telar may tell an agent where it is — the preamble and the
+     *  `telar` skill. One answer for every client of this engine. */
+    orientation: () => request<{ orientation: AgentOrientation; text: string }>(fetcher, "GET", "/api/orientation"),
+    setOrientation: (patch: { preamble?: boolean; skill?: boolean }) =>
+      request<{ orientation: AgentOrientation; text: string }>(fetcher, "PATCH", "/api/orientation", patch),
     /** What a new session is built with when nobody said — see
      *  `SessionDefaults`. One answer for every client of this engine. */
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
@@ -479,6 +505,18 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     // arriving and a local re-declaration only hides it.
     session: (sessionId: string, window?: SnapshotWindow) =>
       request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`),
+    /**
+     * THE WHOLE OPENING IN ONE READ (#407) — snapshot, journal from its cursor,
+     * and this session's subscriptions.
+     *
+     * `session` + `events` cannot be issued together: the journal's `after` IS
+     * the snapshot's answer, so opening a conversation paid two SERIAL round
+     * trips through this adapter before a transcript could be folded. Kept
+     * beside `session` rather than replacing it — the paging path asks for a
+     * window whose cursor it already holds and wants none of this.
+     */
+    sessionBootstrap: (sessionId: string, window?: SnapshotWindow) =>
+      request<SessionBootstrap>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`),
     /** Rename, change the model, or change what the session may do without
      *  asking. The model must belong to the session's provider instance — the
      *  engine rejects anything else, because a turn is routed by that instance

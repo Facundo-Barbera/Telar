@@ -236,7 +236,7 @@ function FileMenuItems({
           <ContextMenuSeparator />
           <ContextMenuItem onClick={() => files.reveal!(path, "file")}>Reveal in Finder</ContextMenuItem>
           <ContextMenuItem onClick={() => files.open!(path, "file")}>
-            <OpenerIcon icon={files.openIcon} />
+            <OpenerIcon icon={files.openIcon} iconDataUrl={files.openIconDataUrl} />
             {files.openLabel}
           </ContextMenuItem>
         </>

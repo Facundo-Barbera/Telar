@@ -86,11 +86,15 @@ test("a turn stored before notices existed keeps the sender label it always had"
   expect(html).toContain("agent · session …456789");
 });
 
-test("a task still renders in full, notice or no notice", () => {
+test("a task collapses like every other peer message, its scope on the header", () => {
+  // It used to render in full. A peer does not decide how much of someone
+  // else's prose sits in this conversation: the notice's first line and the
+  // scope are the row, and the instruction opens on tap.
   const html = render({ ...machine, agentIntent: "task", agentNotice: NOTICE, prompt: "Rewrite the parser", assignmentScope: "packages/core" });
-  expect(html).toContain("Rewrite the parser");
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain(">Task<");
   expect(html).toContain("packages/core");
-  expect(html).toContain('aria-label="Task from another session"');
+  expect(html).not.toContain("Rewrite the parser");
 });
 
 test("human steering into a machine turn remains visible", () => {

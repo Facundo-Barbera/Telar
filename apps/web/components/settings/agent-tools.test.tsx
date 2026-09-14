@@ -18,6 +18,8 @@ const probe = (over: Partial<ComputerUseStatus> = {}) =>
 const permissions = readFileSync(new URL("./permissions-section.tsx", import.meta.url), "utf8");
 const mcp = readFileSync(new URL("./mcp-section.tsx", import.meta.url), "utf8");
 const logins = readFileSync(new URL("./browser-logins-section.tsx", import.meta.url), "utf8");
+const orientation = readFileSync(new URL("./orientation-section.tsx", import.meta.url), "utf8");
+const pane = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
 
 test("the probe states each say something different, and a failure is not 'checking'", () => {
   // The regression this pins: once the request rejected, `checking` went false
@@ -112,4 +114,37 @@ test("adding is progressive, and closes once one lands", () => {
 test("remembered logins' empty state is a row on the same grid, not a loose paragraph", () => {
   expect(logins).toContain('<Row label="No remembered logins"');
   expect(logins).not.toContain("None. Telar asks before every credential fill");
+});
+
+test("orientation leads the pane, because it is what Telar does before you have said anything", () => {
+  // The two groups under it decide what an agent may REACH; this decides what
+  // it is TOLD, which is the first thing somebody auditing Telar looks for.
+  const tools = pane.slice(pane.indexOf('active === "tools"'));
+  expect(tools.indexOf("<OrientationSection />")).toBeLessThan(tools.indexOf("<McpSection />"));
+});
+
+test("the disclosure shows the engine's own paragraph, never a copy kept in the cockpit", () => {
+  /**
+   * THE DRIFT THIS FORBIDS. A second copy of the preamble in this file would
+   * be right until the first edit on the engine side — and a paired Mac may be
+   * running a different release entirely, so a hard-coded paragraph could
+   * disagree with what is actually injected on the machine being configured.
+   */
+  expect(orientation).toContain("setText(answer.text)");
+  expect(orientation).toContain("{text ||");
+  expect(orientation).not.toContain("You are running inside Telar");
+});
+
+test("both switches move independently, and each is one patch", () => {
+  // `preamble` and `skill` are separate questions: patching one must not
+  // re-decide the other, which is what a single combined write would do.
+  expect(orientation).toContain("save({ preamble: next })");
+  expect(orientation).toContain("save({ skill: next })");
+});
+
+test("the text stays readable with the switch off", () => {
+  // "What would you inject?" is a fair question to ask BEFORE turning it back
+  // on, so the disclosure is not nested under the preamble's own state.
+  const disclosure = orientation.slice(orientation.indexOf("Show the text"));
+  expect(disclosure).not.toContain("policy.preamble &&");
 });

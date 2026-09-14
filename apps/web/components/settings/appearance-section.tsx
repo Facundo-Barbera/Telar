@@ -36,16 +36,36 @@
  * while a slider is being dragged.
  *
  * THE PANE READS TOP TO BOTTOM AS THE WORK ITSELF: start from something (the
- * Looks shelf, which is never empty), change it (one of four tools, each
- * getting the whole width), keep it (Apply or Save, in the masthead). The
- * designer is the fourth TOOL rather than a permanent half of the screen —
- * welding it in place cost every other tool half its measure, and a pane where
- * two unrelated things always shout at once is the noise this rebuild set out
- * to delete.
+ * Looks shelf, which is never empty), change it, keep it (Apply or Save, in the
+ * masthead).
+ *
+ * AND IT IS A SETTINGS PANE, NOT A STUDIO WITH TABS (#399). The four tools used
+ * to be a `Tabs` strip over `Panel` boxes — the ONE pane in this app built that
+ * way. Everything else here is stacked `SettingsGroup` cards with a title and a
+ * sentence (inbox-section.tsx, browser-profiles-section.tsx), and the tabs cost
+ * three things worth more than the vertical space they saved:
+ *
+ *   - THREE QUARTERS OF THE PANE WAS INVISIBLE. Somebody looking for the accent
+ *     had to guess which of four words hid it, and a wrong guess looked like the
+ *     setting was missing. Stacked groups answer "what can I change here?" by
+ *     being on the page.
+ *   - SETTINGS SEARCH COULD NOT LAND. A row behind a tab is a row that exists
+ *     only after a click, so the registry's three Window rows carried a caveat
+ *     saying the anchor was "one tab away" (settings-registry.ts). They are
+ *     ordinary anchored rows now.
+ *   - IT TAUGHT THE WRONG GRAMMAR. A reader who learns that panes have tabs
+ *     goes looking for them on every other pane, where there are none.
+ *
+ * WHO DRAWS WHICH GROUP. Looks and Backdrop own their own `SettingsGroup`, the
+ * way every self-contained section on this shell does — their group action (the
+ * import button, the scene picker) is theirs, and lifting it here would mean
+ * lifting a file input's ref with it. Colour is composed HERE because it is two
+ * components in one group (the palette editor and the library it comes from),
+ * and Type and Window are plain groups of rows.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ImageIcon, MonitorIcon, PaletteIcon, TypeIcon, Undo2Icon } from "lucide-react";
+import { Undo2Icon } from "lucide-react";
 import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { detachFromHost } from "@/lib/host-follow";
@@ -83,11 +103,12 @@ import { ThemeControl } from "@/components/theme-control";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
-import { Row, Segmented, Tabs, ToggleRow } from "./settings-shell";
+import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { BackdropTool } from "./studio/backdrop-tool";
+import { GroupStrip } from "./studio/tool-strip";
 import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
@@ -95,8 +116,6 @@ import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
-
-type Tab = "colour" | "backdrop" | "type" | "window";
 
 /** How long a gap between edits starts a NEW undo step. Inside it, edits
  *  coalesce — a colour-picker drag is one step, not ninety. */
@@ -116,7 +135,6 @@ export function AppearanceSection() {
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
 
-  const [tab, setTab] = useState<Tab>("colour");
   /** Undefined means "nothing drafted" — the pane shows the live truth. */
   const [draft, setDraft] = useState<StudioDraft>();
   const [notice, setNotice] = useState<string>();
@@ -424,11 +442,26 @@ export function AppearanceSection() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* THE MASTHEAD — what you are editing, and what can be done with it.
           A quiet title that finds its border under the cursor, the state as a
-          mono chip, actions on the right: a session's header, for a look. */}
-      <div className="flex flex-wrap items-center gap-2">
+          mono chip, actions on the right: a session's header, for a look.
+
+          AND IT STICKS (#399). It was the first thing in a short pane and
+          scrolled away with everything else; the pane is five stacked groups
+          now, so Apply and Discard were several screens above the slider that
+          had just been dragged — "is this saved?" with no answer in sight. It
+          rides the top of the scroller instead, which is where the state chip
+          belongs anyway: it is a fact about the whole pane, not about its
+          first group.
+
+          THE NEGATIVE MARGINS ARE THE SHELL'S OWN INSET, given back. The
+          content column pads `px-5 py-5` (settings-shell.tsx), and a strip
+          that stopped 20px short of each edge would let the groups slide
+          through the gap beside it. `bg-background md:bg-sidebar` is the
+          content island's own ground, so the strip is opaque against what
+          passes under it in both layouts. */}
+      <div className="sticky top-0 z-10 -mx-5 -mt-5 mb-4 flex flex-wrap items-center gap-2 border-b border-border bg-background px-5 pt-5 pb-3 md:bg-sidebar">
         <Input
           className="h-8 max-w-64 flex-1 border-transparent bg-transparent font-heading text-base font-semibold tracking-tight shadow-none hover:border-border focus:border-border dark:bg-transparent"
           value={current?.label ?? ""}
@@ -482,157 +515,124 @@ export function AppearanceSection() {
         </div>
       </div>
 
-      {notice && <p className="text-xs text-warning">{notice}</p>}
-      {homeNotice && <p className="text-xs text-warning">{homeNotice}</p>}
+      {notice && <p className="mb-3 text-xs text-warning">{notice}</p>}
+      {homeNotice && <p className="mb-3 text-xs text-warning">{homeNotice}</p>}
 
-      <>
-        <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
+      {/* THE GROUPS, IN READING ORDER: start from something, change its colour,
+          then its scene, then its type — and last the window itself, which is
+          the only group that is not part of a look at all. `SettingsGroup` puts
+          its own gap between them. */}
+      <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
 
-        {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
-            The designer used to be welded to the left half of this pane, which
-            cost every other tool half its measure — that is what squeezed the
-            scene composer's rows into a column of one word each. It is a TOOL
-            like the others: you go to it, and while you are not there the
-            palette and the scene get the whole page. */}
-        <div className="flex min-w-0 flex-col gap-3">
-          <Tabs<Tab>
-            value={tab}
-            onChange={setTab}
-            options={[
-              { value: "colour", label: <><PaletteIcon className="size-3.5" /> Colour</> },
-              { value: "backdrop", label: <><ImageIcon className="size-3.5" /> Backdrop</> },
-              { value: "type", label: <><TypeIcon className="size-3.5" /> Type</> },
-              { value: "window", label: <><MonitorIcon className="size-3.5" /> Window</> },
-            ]}
+      {current && (
+        <SettingsGroup
+          title="Colour"
+          description="The sixteen tokens this look paints with, and the library a palette comes from."
+        >
+          {/* The strip NAMES the palette. Sixteen anonymous colour rows could
+              not say whether you were editing Ember, a mix of two themes, or
+              something that exists nowhere but this draft. */}
+          <GroupStrip
+            label={`Palette · ${mode} · ${paletteSource}`}
+            count={THEME_TOKENS.length}
+            tone={holding[mode] ? "none" : "attention"}
           />
+          <ColourTool draft={current} onDraft={edit} mode={mode} />
+          {/* The library is where a palette comes FROM: a card loads both
+              halves into the draft; an orb loads one. */}
+          <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
+        </SettingsGroup>
+      )}
 
-          {tab === "colour" && current && (
-            <>
-              <Panel>
-                {/* The header NAMES the palette. Sixteen anonymous colour rows
-                    could not say whether you were editing Ember, a mix of two
-                    themes, or something that exists nowhere but this draft. */}
-                <PanelHeader
-                  icon={<PaletteIcon />}
-                  label={`Palette · ${mode} · ${paletteSource}`}
-                  count={THEME_TOKENS.length}
-                  tone={holding[mode] ? "none" : "attention"}
-                />
-                <PanelBody>
-                  <ColourTool draft={current} onDraft={edit} mode={mode} />
-                </PanelBody>
-              </Panel>
-              {/* The library is where a palette comes FROM: a card loads both
-                  halves into the draft; an orb loads one. */}
-              <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
-            </>
-          )}
+      {current && (
+        <BackdropTool
+          value={current.backdrop}
+          mode={mode}
+          onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
+          // A palette taken from the picture lands on the draft's two halves
+          // like any other edit — undoable, and never a new library entry.
+          // Only the halves: the look keeps the name it was given, because
+          // naming it was a separate decision.
+          onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
+          footer={<ShowThroughTool draft={current} onDraft={edit} />}
+        />
+      )}
 
-          {tab === "backdrop" && current && (
-            <BackdropTool
-              value={current.backdrop}
-              mode={mode}
-              onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
-              // A palette taken from the picture lands on the draft's two halves
-              // like any other edit — undoable, and never a new library entry.
-              // Only the halves: the look keeps the name it was given, because
-              // naming it was a separate decision.
-              onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
-              footer={<ShowThroughTool draft={current} onDraft={edit} />}
+      {current && (
+        <SettingsGroup title="Type" description="The accent, the two typefaces, and the sizes they run at.">
+          <TypeTool draft={current} onDraft={edit} />
+        </SettingsGroup>
+      )}
+
+      {/* THE WINDOW IS NOT A LOOK, so it is last and it says so. It lived under
+          "Type" for no reason anyone could reconstruct, which is the kind of
+          filing that teaches a reader the grouping is arbitrary. None of it
+          travels in a Look: the scheme is which half THIS window wears, and
+          translucency is a property of the machine — macOS only, stored by the
+          shell, and turning it on rebuilds the window.
+
+          HOW MUCH SHOWS THROUGH IS HERE TOO, though it is the one member of
+          this group that DOES travel in a Look — it also lives with the
+          backdrop it thins. That is not the old duplication: what made two
+          sliders a bug was that they wrote DIFFERENT stores, and the live one
+          silently lost to the draft's copy during a preview. One value, two
+          honest homes. */}
+      <SettingsGroup
+        title="Window"
+        description="How this window itself is drawn. None of it travels in a look — it belongs to this machine."
+      >
+        {hasBridge && windowSupported ? (
+          <>
+            <ToggleRow
+              label="Translucency"
+              hint="Rebuilds the window."
+              checked={appearance.translucent}
+              onCheckedChange={setTranslucent}
             />
-          )}
-
-          {tab === "type" && current && (
-            <Panel>
-              <PanelHeader icon={<TypeIcon />} label="Type" />
-              <PanelBody>
-                <TypeTool draft={current} onDraft={edit} />
-              </PanelBody>
-            </Panel>
-          )}
-
-          {/* THE WINDOW IS NOT A LOOK, so it is not a look tool. It lived under
-              "Type" for no reason anyone could reconstruct, which is the kind of
-              filing that teaches a reader the grouping is arbitrary. None of it
-              travels in a Look: the scheme is which half THIS window wears, and
-              translucency is a property of the machine — macOS only, stored by
-              the shell, and turning it on rebuilds the window.
-
-              HOW MUCH SHOWS THROUGH IS NOT HERE, though it reads like it should
-              be. It is the one member of this group that DOES travel in a Look,
-              so it is a draft control and lives with the backdrop it thins. Two
-              sliders for one value is the confusion this pane was rebuilt to
-              delete — and the draft's copy wins the preview anyway, so the live
-              one silently did nothing while a draft was open. */}
-          {tab === "window" && current && (
-            <Panel>
-              <PanelHeader icon={<MonitorIcon />} label="Window" />
-              {/* px-3: `Row` carries no horizontal padding — right for a flat
-                  settings group, wrong against a panel border. */}
-              <PanelBody className="px-3">
-                {hasBridge && windowSupported ? (
-                  <>
-                    <ToggleRow
-                      label="Translucency"
-                      hint="Rebuilds the window."
-                      checked={appearance.translucent}
-                      onCheckedChange={setTranslucent}
-                    />
-                    {appearance.translucent && (
-                      <Row
-                        label="Glass"
-                        control={
-                          <Segmented<Frost>
-                            value={appearance.frost}
-                            onChange={setFrost}
-                            options={[
-                              { value: "blur", label: "Blur" },
-                              { value: "clear", label: "Clear" },
-                            ]}
-                          />
-                        }
-                      />
-                    )}
-                  </>
-                ) : (
-                  <p className="pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
-                )}
-                {/* SHOW-THROUGH IS HERE TOO, and that is not the old duplication.
-                    What made two sliders a bug was that they wrote DIFFERENT
-                    stores — the live one silently lost to the draft's copy during
-                    a preview. This is the same draft field rendered in the second
-                    place a reader looks for it: it governs the desktop behind a
-                    translucent window AND the wash over a backdrop, so it has two
-                    honest homes and exactly one value. */}
-                <Row
-                  label="Show-through"
-                  hint="The desktop behind a translucent window, and the backdrop under the app."
-                  control={
-                    <div className="flex items-center gap-2.5">
-                      <input
-                        type="range"
-                        min={MIN_TRANSLUCENCY}
-                        max={MAX_TRANSLUCENCY}
-                        step={5}
-                        value={current.translucencyLevel}
-                        aria-label="Show-through"
-                        className="w-36 accent-primary"
-                        onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
-                      />
-                      <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
-                    </div>
-                  }
+            {appearance.translucent && (
+              <Row
+                label="Glass"
+                control={
+                  <Segmented<Frost>
+                    value={appearance.frost}
+                    onChange={setFrost}
+                    options={[
+                      { value: "blur", label: "Blur" },
+                      { value: "clear", label: "Clear" },
+                    ]}
+                  />
+                }
+              />
+            )}
+          </>
+        ) : (
+          <p className="py-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
+        )}
+        {current && (
+          <Row
+            label="Show-through"
+            hint="The desktop behind a translucent window, and the backdrop under the app."
+            control={
+              <div className="flex items-center gap-2.5">
+                <input
+                  type="range"
+                  min={MIN_TRANSLUCENCY}
+                  max={MAX_TRANSLUCENCY}
+                  step={5}
+                  value={current.translucencyLevel}
+                  aria-label="Show-through"
+                  className="w-36 accent-primary"
+                  onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
                 />
-              </PanelBody>
-            </Panel>
-          )}
-
-          {/* THE DESIGNER GETS THE ROOM A CONVERSATION NEEDS. As one panel among
-              the theme tools it was a 24rem box with a strip at the bottom; it is
-              the only tab you TALK to, so it takes the height the window has left
-              rather than a number picked to sit politely beside a colour grid. */}
-          </div>
-      </>
+                <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
+              </div>
+            }
+          />
+        )}
+        {/* DEPTH (#397): a property of this window's drawing, like everything
+            else in this group; the control itself lives in depth-control.tsx. */}
+        {current && <DepthControl draft={current} onDraft={edit} />}
+      </SettingsGroup>
     </div>
   );
 }

@@ -32,11 +32,14 @@
  *   - ROWS BUILT FROM DATA — one per MCP server, per paired device, per
  *     provider login, per other Mac. Their titles are values, not copy, and a
  *     stale index of them would be worse than none.
- *   - THE APPEARANCE STUDIO'S OWN TOOLS (looks, themes, palette, type). That
- *     pane bypasses `Row` and `SettingsGroup` entirely — survey item #4 is the
- *     port — so there are no anchors to aim at yet. Its three real rows live
- *     behind the studio's Window tab and are indexed with that caveat: choosing
- *     one lands on Appearance, and the row it named is one tab away.
+ *   - THE APPEARANCE STUDIO'S GALLERIES AND EDITORS (the looks shelf, the theme
+ *     grid, the sixteen colour swatches, the scene composer, the two font
+ *     fields). The pane is stacked `SettingsGroup` cards now rather than a
+ *     `Tabs` strip over panels (#399), so its rows ARE anchored and the "one
+ *     tab away" caveat is gone — but a gallery is not a `Row` and a colour
+ *     swatch's title is a token name, which is the "rows built from data" rule
+ *     two bullets up. What is indexed is the fields: the Window group, and the
+ *     accent.
  */
 
 import {
@@ -53,6 +56,7 @@ import {
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  LayersIcon,
   LockIcon,
   MonitorIcon,
   PaletteIcon,
@@ -300,8 +304,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     icon: PaletteIcon,
     groups: [
       {
-        // The studio's Window tool. No group wraps these — they sit in a Panel —
-        // so their ids are pane and label only, which is what `Row` derives there.
+        // ORDINARY ANCHORED ROWS NOW (#399). This pane used to be a `Tabs`
+        // strip over panels, so these three existed only after a click and the
+        // index carried a caveat saying the row was "one tab away". The pane is
+        // stacked `SettingsGroup` cards, the heading is real, and the group is
+        // half the anchor — `settings-row-appearance-window-translucency`.
+        title: "Window",
         rows: [
           {
             title: "Translucency",
@@ -316,6 +324,27 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             keywords: ["opacity", "wallpaper", "backdrop"],
             icon: MonitorIcon,
           },
+          {
+            title: "Depth",
+            hint: "How far raised surfaces — cards, the composer, menus — sit off the page.",
+            keywords: ["shadow", "elevation", "flat", "soft", "deep", "raised"],
+            icon: LayersIcon,
+          },
+        ],
+      },
+      {
+        // THE ONE ROW OF THE TYPE GROUP THAT IS A ROW. The rest of that group is
+        // two font fields with a specimen under each — not `Row`s, because a
+        // specimen has nowhere to live in one — so they carry no anchor to aim
+        // at, per the rule at the top of this file.
+        title: "Type",
+        rows: [
+          {
+            title: "Accent",
+            hint: "The one hue that means a person acted — buttons, links, the caret.",
+            keywords: ["colour", "color", "highlight", "primary", "hue"],
+            icon: PaletteIcon,
+          },
         ],
       },
     ],
@@ -328,6 +357,12 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
      * binding is added or renamed. One entry for the pane, whose title is the
      * group heading the pane actually draws — and the pane is one card, so
      * arriving on it puts every binding on screen anyway.
+     *
+     * THE COMMAND PALETTE IS FOUND HERE TOO (#402), and by keyword rather than
+     * by a row of its own: every one of its actions IS a binding this pane
+     * already draws, ⌘K included, so a row called "Command palette" would be a
+     * second name for the card underneath it. The words are what somebody types
+     * when they want to change ⌘K, or to find out what it is now bound to.
      */
     id: "keybindings",
     label: "Keybindings",
@@ -337,8 +372,22 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         rows: [
           {
             title: "Keyboard shortcuts",
-            hint: "Every chord this app answers to, and what each one does.",
-            keywords: ["shortcut", "hotkey", "chord", "accelerator", "binding", "cmd", "command key", "keyboard"],
+            hint: "Every chord this app answers to, and what each one does — the same list the command palette runs.",
+            keywords: [
+              "shortcut",
+              "hotkey",
+              "chord",
+              "accelerator",
+              "binding",
+              "cmd",
+              "command key",
+              "keyboard",
+              "command palette",
+              "palette",
+              "cmd k",
+              "go to file",
+              "quick open",
+            ],
             icon: KeyboardIcon,
           },
         ],
@@ -528,6 +577,47 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
     label: "Agent tools",
     icon: WrenchIcon,
     groups: [
+      {
+        /**
+         * FIRST ON THE PANE AND FIRST HERE. The keywords are the words a person
+         * uses when they are not looking for a feature but auditing one —
+         * "prompt", "system prompt", "what do you inject", "preamble" — because
+         * that is what brings anybody to this group. "Telar" itself is a
+         * keyword: it is the only group in Settings whose subject is the app's
+         * own voice.
+         */
+        title: "Telar orientation",
+        rows: [
+          {
+            title: "Tell agents they are inside Telar",
+            hint: "One paragraph per turn saying what Telar's words mean — the browser, a session, the panel, the rail, Spool, Looks.",
+            keywords: [
+              "orientation",
+              "preamble",
+              "system prompt",
+              "prompt",
+              "context",
+              "inject",
+              "briefing",
+              "instructions",
+              "telar",
+            ],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Show the text",
+            hint: "The exact paragraph this engine injects, read from the engine itself.",
+            keywords: ["preamble", "prompt", "text", "reveal", "audit", "what does it say"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Install the telar skill",
+            hint: "A SKILL.md in each provider's skills directory with the detail: the panel, Warps, assignment and settling, browser tabs, the Spool's verbs.",
+            keywords: ["skill", "SKILL.md", "claude", "codex", "opencode", "docs", "reference", "telar"],
+            icon: SparklesIcon,
+          },
+        ],
+      },
       {
         /**
          * NAVIGATE-ONLY SINCE THE FORM BECAME PROGRESSIVE (#357). "Add a

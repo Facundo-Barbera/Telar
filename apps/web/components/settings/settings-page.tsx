@@ -31,6 +31,7 @@ import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
+import { OrientationSection } from "./orientation-section";
 import { IntegrationsPage } from "./integrations-page";
 import { KeybindingsPage } from "./keybindings-page";
 import { ProjectsPage } from "./projects-page";
@@ -296,8 +297,13 @@ export function SettingsPage() {
 
       {active === "integrations" && <IntegrationsPage />}
 
+      {/* ORIENTATION LEADS THE PANE. The two groups under it decide what an
+          agent may REACH; this decides what it is TOLD before anyone has said
+          anything, which is the first thing a person auditing "what does Telar
+          do to my agent" is looking for. */}
       {active === "tools" && (
         <>
+          <OrientationSection />
           <McpSection />
           <PermissionsSection />
         </>

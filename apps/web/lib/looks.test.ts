@@ -38,6 +38,7 @@ function look(overrides: Partial<Look> = {}): Look {
     fontSize: 15,
     fontMonoSize: 12,
     translucencyLevel: 70,
+    depth: "deep",
     ...overrides,
   };
 }
@@ -161,10 +162,23 @@ describe("parseLook", () => {
   });
 
   test("unrecognised enum members fall to the appearance defaults", () => {
-    const parsed = parseLook({ id: "a", label: "L", accent: "chartreuse", fontSans: "comic", fontMono: 7 });
+    const parsed = parseLook({ id: "a", label: "L", accent: "chartreuse", fontSans: "comic", fontMono: 7, depth: "abyssal" });
     expect(parsed?.accent).toBe(DEFAULT_APPEARANCE.accent);
     expect(parsed?.fontSans).toBe(DEFAULT_APPEARANCE.fontSans);
     expect(parsed?.fontMono).toBe(DEFAULT_APPEARANCE.fontMono);
+    expect(parsed?.depth).toBe(DEFAULT_APPEARANCE.depth);
+  });
+
+  // A Look written before the elevation ladder existed has no `depth` at all,
+  // and it has to open wearing the ladder the app already had rather than
+  // being refused or coming back flat.
+  test("a Look from before the ladder wears soft", () => {
+    expect(parseLook({ id: "a", label: "L" })?.depth).toBe("soft");
+  });
+
+  test("carries a depth it recognises", () => {
+    expect(parseLook({ id: "a", label: "L", depth: "flat" })?.depth).toBe("flat");
+    expect(parseLook({ id: "a", label: "L", depth: "deep" })?.depth).toBe("deep");
   });
 
   test("numbers are clamped into the ranges their controls allow", () => {
@@ -284,6 +298,9 @@ describe("wearing", () => {
       fontSize: 15,
       fontMonoSize: 12,
       translucencyLevel: 70,
+      // Depth IS taste — it means the same thing in a browser tab as in a
+      // desktop window — so unlike `translucent` it rides along.
+      depth: "deep",
     });
   });
 });

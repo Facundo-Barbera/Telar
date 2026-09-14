@@ -48,8 +48,10 @@ import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, prob
 import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
+import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./secrets/login-grants";
-import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./session-bootstrap";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier, type StoppedClaim } from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { bundledPlugins } from "./plugins/bundled";
 import { PluginHost } from "./plugins/host";
@@ -155,6 +157,18 @@ export type EngineDaemonOptions = {
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
+  /**
+   * Where the `telar` skill is written, and removed from — normally each
+   * provider's own skills directory (`providerSkillRoots()`).
+   *
+   * ABSENT MEANS NOWHERE, AND THAT IS WHAT EVERY TEST GETS. Installing a file
+   * into `~/.claude/skills` is a thing a PROCESS does on start, not a thing a
+   * library call should do — the same rule `main.ts` already states for the
+   * PATH repair and the usage-cache warm, and here it is sharper: a suite that
+   * constructs forty daemons must not write forty times into the developer's
+   * home directory. `main.ts` passes the real roots.
+   */
+  skillRoots?: readonly string[];
   asyncGit?: AsyncGitRunner;
   /** The MUTATING git, for the same reason `gh` is injected: a route test that
    *  drives `POST /v2/projects/clone` must never reach somebody's network — or
@@ -429,6 +443,24 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
+/**
+ * `?turns=N[&before=runId]` — the newest N settled turns plus everything
+ * unsettled, or the whole session when absent (the read a client older than the
+ * window still makes). Shared by the snapshot route and `/bootstrap`, so the
+ * two cannot disagree about what a window means or which inputs are rejected.
+ */
+function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
+  const raw = url.searchParams.get("turns");
+  const before = url.searchParams.get("before") ?? undefined;
+  if (raw === null) {
+    if (before !== undefined) throw new HttpError(400, "invalid_request", "before needs turns");
+    return undefined;
+  }
+  const turns = Number(raw);
+  if (!Number.isSafeInteger(turns) || turns < 1) throw new HttpError(400, "invalid_request", "turns must be a positive integer");
+  return { turns, ...(before === undefined ? {} : { before }) };
+}
+
 type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
@@ -548,10 +580,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * store is built long before the worker is, and the store is what rings it.
    */
   let wakeEmbeddedWorker: (() => void) | undefined;
+  /**
+   * THE OTHER HALF OF THE DOORBELL, and the one a Stop needs (#409). The nudge
+   * above only un-backs-off an idle worker; this hands over the exact claims a
+   * Stop just killed, so the abort happens in the same tick as the request
+   * rather than on whatever heartbeat comes next. Set and retired by the same
+   * generation fence as `wakeEmbeddedWorker`.
+   */
+  let cancelEmbeddedClaims: ((cancellations: StoppedClaim[]) => void) | undefined;
   let store: EngineStore;
   try {
   store = new EngineStore(root, options.now, {
     onQueueChanged: () => wakeEmbeddedWorker?.(),
+    onTurnsStopped: (cancellations) => cancelEmbeddedClaims?.(cancellations),
     executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
@@ -570,6 +611,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   } catch (error) { lock.release(); throw error; }
+  /**
+   * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
+   * away. Run once on start and again on every PATCH of the toggle.
+   *
+   * NOT AWAITED BY THE CALLER ON START, and never fatal: a provider that is not
+   * installed has no directory to write into, and an engine that refused to
+   * start over a missing `~/.codex` would be trading the whole app for a
+   * reference file. `syncTelarSkill` reports per-root outcomes rather than
+   * throwing, and rewrites only when the content hash moved — see
+   * ./orientation.ts for why an unconditional rewrite would be harmful.
+   */
+  const skillRoots = options.skillRoots ?? [];
+  const syncOrientationSkill = (policy = store.getAgentOrientation()): Promise<unknown> =>
+    skillRoots.length ? syncTelarSkill({ install: policy.skill, roots: skillRoots }).catch(() => []) : Promise.resolve([]);
+  void syncOrientationSkill();
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
@@ -1164,6 +1220,35 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("settleDelegatedAfterHours" in input ? { settleDelegatedAfterHours: input.settleDelegatedAfterHours } : {}),
           }),
         });
+        return;
+      }
+      /**
+       * WHETHER TELAR MAY TELL AN AGENT WHERE IT IS — see `AgentOrientation`.
+       * A document of the environment, like the inbox rule above and for the
+       * sharper version of its reason: this decides what every session on the
+       * machine is told, so it cannot live in one client's storage.
+       *
+       * THE PATCH RE-SYNCS THE SKILL BEFORE IT ANSWERS. "Off" has to mean the
+       * file is GONE, not that it stops being refreshed — someone switching
+       * this off is saying they want nothing of Telar's in their agent's
+       * context, and a stale `SKILL.md` would still be read.
+       */
+      if (url.pathname === "/v2/orientation" && (request.method === "GET" || request.method === "PATCH")) {
+        // THE WORDS RIDE THE ANSWER. "Show the text" in Settings has to show
+        // what THIS engine injects, not a second copy of the paragraph kept in
+        // the cockpit — a paired Mac may be running a different release, and a
+        // disclosure that could disagree with the injection is worse than none.
+        if (request.method === "GET") {
+          writeJson(response, 200, { orientation: store.getAgentOrientation(), text: TELAR_ORIENTATION });
+          return;
+        }
+        const input = await body(request);
+        const orientation = store.setAgentOrientation({
+          ...("preamble" in input ? { preamble: input.preamble } : {}),
+          ...("skill" in input ? { skill: input.skill } : {}),
+        });
+        await syncOrientationSkill(orientation);
+        writeJson(response, 200, { orientation, text: TELAR_ORIENTATION });
         return;
       }
       /**
@@ -3559,63 +3644,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const session = sessionPath(url.pathname);
       if (session) {
         if (request.method === "GET" && session.tail === "") {
-          // `?turns=N[&before=runId]` windows the snapshot to the newest N
-          // settled turns (plus everything unsettled). Absent, the whole
-          // session — the read a client older than the window still makes.
-          const turnsParam = url.searchParams.get("turns");
-          const limit = turnsParam === null ? undefined : Number(turnsParam);
-          if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-            throw new HttpError(400, "invalid_request", "turns must be a positive integer");
-          }
-          const before = url.searchParams.get("before") ?? undefined;
-          if (before !== undefined && limit === undefined) {
-            throw new HttpError(400, "invalid_request", "before needs turns");
-          }
-          // READ FIRST. The snapshot below is what the client renders; the
-          // cursor says which events it already reflects. A cursor read
-          // after the snapshot could name an event whose effect the
-          // snapshot does not carry, and the client would skip it forever.
-          // Read before, the worst case is one event replayed onto a
-          // snapshot that already has it — which the fold is built for.
-          const cursor = store.eventCursor(session.sessionId);
-          const window =
-            limit === undefined
-              ? {
-                  turns: store.turns(session.sessionId),
-                  items: store.items(session.sessionId),
-                  // On the snapshot rather than behind its own route: a
-                  // background task outlives its turn, so "is this session
-                  // still working" must be answerable from the FIRST fetch of
-                  // a cold session, before any event has streamed.
-                  tasks: store.tasks(session.sessionId),
-                  requests: store.requests(session.sessionId),
-                }
-              : store.snapshotWindow(session.sessionId, { limit, ...(before === undefined ? {} : { before }) });
-          /**
-           * AN OPEN ITEM CARRIES WHAT IT HAS STREAMED (#214).
-           *
-           * `detail` is only filled in when an item closes, so without this a
-           * client opening mid-reply — a remount, a surface switch, a live
-           * reload — saw an empty row and then only the text that arrived after
-           * it looked. Bounded by the SAME cursor written above, so the prefix
-           * and the tail meet exactly: never a gap, and any overlap is rejected
-           * by the watermark that travels with it.
-           */
-          const items = window.items.map((item) => {
-            if (item.status !== "inProgress") return item;
-            const prefix = store.openItemPrefix(session.sessionId, item.id, cursor);
-            return prefix ? { ...item, ...prefix } : item;
-          });
-          writeJson(response, 200, {
-            cursor,
-            session: store.getSession(session.sessionId),
-            ...window,
-            items,
-            // Folded over the WHOLE queue, not the window above: a client
-            // paging its transcript must not have to guess at a carrier it
-            // cannot see. See `sessionAssignments`.
-            assignments: store.sessionAssignments(session.sessionId),
-          });
+          writeJson(response, 200, sessionSnapshot(store, session.sessionId, snapshotWindowParam(url)));
+          return;
+        }
+        /**
+         * ONE READ TO OPEN A CONVERSATION (#407) — the snapshot, the journal
+         * from its cursor, and this session's subscriptions.
+         *
+         * The two reads it replaces were strictly SERIAL: the journal's `after`
+         * is the snapshot's own cursor, so the second request could not be sent
+         * until the first had come back, and a cockpit paid the full
+         * browser → cockpit route → engine round trip twice before it could
+         * paint a transcript. The engine holds both halves at one instant, so
+         * it can answer both at once. The fold is `session-bootstrap.ts`;
+         * `GET /v2/sessions/:id` above goes through the same one, so the two
+         * cannot drift.
+         */
+        if (request.method === "GET" && session.tail === "/bootstrap") {
+          writeJson(response, 200, sessionBootstrap(store, session.sessionId, snapshotWindowParam(url)));
           return;
         }
         if (request.method === "GET" && session.tail === "/events") {
@@ -4294,6 +4340,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // wrapper below hands it back when this one is retired.
           const wakeThisGeneration = () => worker.wake();
           wakeEmbeddedWorker = wakeThisGeneration;
+          const cancelThisGeneration = (cancellations: StoppedClaim[]) => worker.cancelClaims(cancellations);
+          cancelEmbeddedClaims = cancelThisGeneration;
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
           worker.stop = async (reason) => {
@@ -4303,6 +4351,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // Same fence for the doorbell: a retired generation must not keep
             // receiving nudges, and must not silence its replacement's.
             if (wakeEmbeddedWorker === wakeThisGeneration) wakeEmbeddedWorker = undefined;
+            if (cancelEmbeddedClaims === cancelThisGeneration) cancelEmbeddedClaims = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
              * exempt from. That is the FENCE: a late request carrying the dead

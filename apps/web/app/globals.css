@@ -106,13 +106,21 @@
   --app-font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --app-font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* The canvas sits a half-step off white so a card can BE white and actually
+  /* The canvas sits a REAL step off white so a card can BE white and actually
      read as raised. Telar once shipped --background and --card both at
-     oklch(1 0 0), which is why light mode had no elevation anywhere. The
+     oklch(1 0 0), which is why light mode had no elevation anywhere; 0.992 was
+     the first fix and it was not enough — a white card on it cleared 1.02:1,
+     which is not a step, it is a rounding error. At 0.975 the same card clears
+     1.075:1 and the elevation ladder below has something to cast onto. The
      neutral spine carries a zinc tint — hue 286, chroma never above 0.016 —
      because a chroma-0 light UI reads cold and clinical, and 0.016 is small
-     enough that tokens used at partial opacity compose the same way. */
-  --background: oklch(0.992 0 0);
+     enough that tokens used at partial opacity compose the same way.
+
+     EVERY FILL UNDER THE CANVAS CAME DOWN WITH IT (--secondary, --muted,
+     --accent, --sidebar, --sidebar-accent), because each was tuned as a ratio
+     AGAINST the canvas rather than as an absolute lightness; the ratios below
+     are the ones that were documented, re-measured after the move. */
+  --background: oklch(0.975 0.002 286);
   --foreground: oklch(0.274 0.006 286);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.274 0.006 286);
@@ -127,22 +135,29 @@
   --primary: oklch(0.488 0.16 264);
   --primary-foreground: oklch(1 0 0);
 
-  /* 0.96, not 0.985. Badge and Button render `secondary` as `bg-secondary` on a
-     base class with a transparent border and no shadow, so the fill IS the
-     whole chip — at 0.985 it was a two-level step off the canvas and read as
-     loose body text rather than a chip. 0.96 puts it at 1.10:1 off the canvas,
-     one notch lighter than --accent so a resting chip still sits above a hover
-     surface. */
-  --secondary: oklch(0.96 0.002 286);
+  /* Badge and Button render `secondary` as `bg-secondary` on a base class with
+     a transparent border and no shadow, so the fill IS the whole chip — too
+     close to the canvas and it reads as loose body text rather than a chip.
+     THE NUMBER THAT MATTERS IS THE RATIO, NOT THE LIGHTNESS: 1.10:1 off the
+     canvas, one notch lighter than --accent so a resting chip still sits above
+     a hover surface. It was 0.96 against a 0.992 canvas; it is 0.943 against a
+     0.975 one, and the ratio is unchanged at 1.099:1. */
+  --secondary: oklch(0.943 0.002 286);
   --secondary-foreground: oklch(0.274 0.006 286);
-  --muted: oklch(0.967 0.001 286);
+  --muted: oklch(0.952 0.001 286);
   /* 0.525 is a floor, not a round number. --muted-foreground is the app's
      heaviest token by an order of magnitude and has to clear 4.5:1 on the
      quietest surface it lands on — a hovered sidebar row — which it does at
-     4.61:1. One notch lighter and every quiet label in the app fails AA on
-     hover. */
+     4.51:1. One notch lighter and every quiet label in the app fails AA on
+     hover.
+
+     THIS FLOOR IS WHAT CAPS THE RAIL'S HOVER. Lowering the canvas pulled every
+     fill down with it, and --sidebar-accent could not follow all the way: at
+     0.938 the hover is 4.51:1 under this text and there is nothing left. So
+     the rail's hover step narrowed (1.084:1 → 1.052:1) rather than this token
+     moving. Legibility outranks a crisper hover. */
   --muted-foreground: oklch(0.525 0.016 286);
-  --accent: oklch(0.955 0.002 286);
+  --accent: oklch(0.939 0.002 286);
   --accent-foreground: oklch(0.21 0.006 286);
 
   /* Five states, one token each, every one tuned as TEXT on the quietest
@@ -158,9 +173,17 @@
      moving toward 235: that would buy distance from --success but lose more to
      --primary, and 225-235 fall outside sRGB at this lightness.
 
-     /15 is the deepest tint any of them carries as a text backing and it clears
-     4.5:1 on canvas, card and popover in both themes. If you need a deeper fill
-     than /15, it is a solid and it takes `text-background`, not `text-X`.
+     /15 is the deepest tint any of them carries as a text backing. IN DARK it
+     clears 4.5:1 on canvas, card and popover with room to spare (4.77–7.64).
+     IN LIGHT IT DOES NOT, AND DID NOT BEFORE THIS CANVAS MOVED: measured as
+     text on its own /15 tint, light ran 4.28–5.00 on the canvas and 4.37–5.11
+     on card and popover — three of the six ramps were already short of 4.5.
+     Lowering the canvas costs another ~0.20 on the canvas case (now 4.09–4.77);
+     card and popover are unchanged, because --card and --popover did not move.
+     The ramps themselves are deliberately left alone here: they are five
+     semantic colours used far beyond this one backing, and re-tuning them is
+     its own change with its own evidence. If you need a deeper fill than /15,
+     it is a solid and it takes `text-background`, not `text-X`.
 
      Do not add a sixth ramp. New state colours go on this vocabulary. */
   --info: oklch(0.51 0.09 215);
@@ -252,17 +275,29 @@
   --tint-pink: oklch(0.56 0.16 350);
   --tint-purple: oklch(0.56 0.16 295);
 
+  /* HELD AT 0.92 WHILE THE CANVAS CAME DOWN, which costs it contrast there
+     (1.24:1 → 1.18:1) and that is the point of this whole change rather than a
+     casualty of it: the hairline was carrying elevation on its own because
+     nothing cast a shadow, and the ladder below now does that job. Against a
+     CARD — where most borders in the app actually sit — it is unmoved at
+     1.27:1. Darkening it to chase the old canvas ratio would put the wireframe
+     back. */
   --border: oklch(0.92 0.004 286);
   /* --input is far darker than --border deliberately. --border is the hairline
      the base layer puts on EVERY element; pushed to 3:1 it would draw a box
      around the whole app. --input marks a control boundary, where WCAG 1.4.11
-     does ask for 3:1, so it sits at 3.12:1 against a card.
+     does ask for 3:1, so it sits at 3.30:1 against a card.
 
-     That 3:1 is a claim about three surfaces, not all of them: canvas 3.05,
-     card and popover 3.12. It does NOT hold on --sidebar (2.87), --muted
-     (2.83), --secondary (2.98) or --accent (2.73). Nest a field in one of those
+     IT HAD TO FOLLOW THE CANVAS DOWN. At 0.66 it cleared 3.05:1 on a 0.992
+     canvas and only 2.89:1 on a 0.975 one — a field resting on the canvas
+     would have dropped under the 3:1 this token exists to promise. 0.645
+     restores it.
+
+     That 3:1 is a claim about three surfaces, not all of them: canvas 3.07,
+     card and popover 3.30. It does NOT hold on --sidebar (2.90), --muted
+     (2.87), --secondary (2.80) or --accent (2.76). Nest a field in one of those
      and it needs its own border. */
-  --input: oklch(0.66 0.008 286);
+  --input: oklch(0.645 0.008 286);
   --ring: var(--primary);
 
   /* WHAT A MODAL PUTS THE APP BEHIND. Dialog and Sheet both shipped
@@ -287,9 +322,35 @@
      theme it smudges, and it cannot pick up a tint the rest of the surface
      carries. Light mixes the theme's ink toward its canvas; dark deepens the
      theme's canvas past its own floor, because a shadow in dark mode is
-     "darker than the room", not "black". Both carry their alpha, so call sites
-     stay one arbitrary value: `shadow-[0_18px_60px_-30px_var(--shadow-tint)]`. */
+     "darker than the room", not "black". Both carry their alpha, so the whole
+     ladder below is mixed from this ONE ink and nothing else ever names a
+     shadow colour. */
   --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--foreground) 92%, var(--background)));
+
+  /* ─── THE ELEVATION LADDER: THE PER-HALF DIALS ─────────────────────────────
+
+     The RUNGS (--shadow-1/2/3) are one shared shape, written once in the
+     @theme block after .dark. THESE THREE NUMBERS ARE WHAT A HALF TUNES, and
+     they are why one shape can serve both:
+
+       --shadow-lift      how far the ambient layer travels. A multiplier on
+                          every offset, blur and spread in that layer, so a
+                          half can flatten the ladder without restating it.
+       --shadow-ink       how much of --shadow-tint the ambient layer carries.
+       --shadow-ring-ink  …and the tight contact layer directly under the edge.
+
+     LIGHT IS AMBIENT-LED. There is nowhere to go above white, so a card rises
+     by the soft shadow it drops onto a canvas that is finally dark enough to
+     take one; the contact line stays a whisper so edges do not read as drawn.
+
+     DARK IS THE OPPOSITE and the comment on --shadow-tint above says why: a
+     shadow on a dark canvas is darker than the room, and 24px of "slightly
+     darker than near-black" is invisible. So dark spends almost all of its ink
+     on the contact ring — the thing that actually separates two dark surfaces —
+     and keeps only a trace of ambient. */
+  --shadow-lift: 1;
+  --shadow-ink: 26%;
+  --shadow-ring-ink: 11%;
 
   /* The anchor plus four even 72-degree steps, all at one lightness so no
      series reads as "more" than another. Deliberately NOT the status tokens: a
@@ -314,15 +375,18 @@
 
   /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
      because there is no room above white, and lifts in dark because there is no
-     room below the base. Everything else derives from the core tokens so the
-     rail cannot drift out of family. --sidebar-accent is the one value the rail
-     authors for itself, because a row hover has to read against 0.972, not the
-     canvas. */
-  --sidebar: oklch(0.972 0.001 286);
+     room below the base. It keeps the step it was tuned with — 1.06:1 under the
+     canvas — rather than the lightness it had, so it came down with everything
+     else. Everything else derives from the core tokens so the rail cannot drift
+     out of family. --sidebar-accent is the one value the rail authors for
+     itself, because a row hover has to read against 0.955, not the canvas —
+     and it is pinned by --muted-foreground's AA floor rather than by taste
+     (see that token). */
+  --sidebar: oklch(0.955 0.002 286);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.945 0.003 286);
+  --sidebar-accent: oklch(0.938 0.003 286);
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
@@ -417,6 +481,13 @@
   --overlay: color-mix(in oklab, transparent 45%, var(--background));
   --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--background) 45%, oklch(0 0 0)));
 
+  /* The ladder's dials, flipped: mostly the contact ring, a trace of ambient,
+     and half the travel. See :root for what each one does and why this half
+     wants the opposite balance. */
+  --shadow-lift: 0.5;
+  --shadow-ink: 9%;
+  --shadow-ring-ink: 38%;
+
   --chart-1: oklch(0.74 0.13 264);
   --chart-2: oklch(0.74 0.15 336);
   --chart-3: oklch(0.74 0.15 48);
@@ -433,6 +504,105 @@
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
+}
+
+/* ─── THE ELEVATION LADDER ───────────────────────────────────────────────────
+
+   THREE RUNGS AND ONE INK. Before this, 38 call sites wore Tailwind's stock
+   `shadow-sm`, popovers wore stock `shadow-md`, and four surfaces carried
+   hand-written arbitrary values — five vocabularies for one idea, none of
+   which could follow a theme, and (the stock ones) none of which could pick up
+   --shadow-tint at all. So: three named rungs, every one of them mixed from
+   --shadow-tint, and nothing anywhere else names a shadow colour.
+
+     --shadow-1  A RESTING SURFACE. Cards, settings groups, the rail's own
+                 island, a selected tab. It is ON the page.
+     --shadow-2  SOMETHING THAT FLOATS OVER THE PAGE but belongs to it — the
+                 composer, the panel, a pinned strip, a scroll-to-bottom pill.
+     --shadow-3  SOMETHING THE PAGE IS BEHIND. Popovers, menus, dialogs,
+                 sheets, toasts.
+
+   EACH RUNG IS TWO LAYERS, and that is what makes it read as depth rather than
+   as a grey halo. A TIGHT CONTACT layer sits directly under the edge and says
+   the surface is touching something; a SOFT AMBIENT layer, far larger and
+   pulled in by a negative spread, is the room light it interrupts. A single
+   blurred layer can do one job or the other, never both.
+
+   THE SHAPE IS SHARED, THE BALANCE IS THEMED. The geometry below is written
+   once; --shadow-lift, --shadow-ink and --shadow-ring-ink (in :root and .dark)
+   are what make light ambient-led and dark ring-led. See those blocks.
+
+   WHY THE RUNGS LIVE IN @theme RATHER THAN IN :root. Tailwind v4 turns a
+   `--shadow-*` theme key into a utility that goes through the same
+   `--tw-shadow` composition the stock ones use, and that composition is the
+   only reason `shadow-1 ring-1` and `shadow-none` still do what they say —
+   all three write the one box-shadow property, and Tailwind's variables are
+   what let them share it. A hand-rolled `@utility shadow-1 { box-shadow: … }`
+   would silently win over any `ring-*` beside it.
+
+   SO `--shadow-1/2/3` ARE BUILD NAMES, NOT DOCUMENT VARIABLES. Tailwind
+   inlines a shadow theme key into the utility (it has to, to substitute
+   `--tw-shadow-color` per layer) and emits no `:root` declaration for it,
+   `inline` or not. THE DOCUMENT TOKENS ARE THE THREE BELOW — --shadow-ring,
+   --shadow-ambient and --shadow-float — and a one-off call site that genuinely
+   needs its own geometry should reach for those rather than invent a colour:
+   `shadow-[0_2px_8px_-4px_var(--shadow-ambient)]` still rides the ink, the
+   theme and the Depth setting. */
+:root {
+  /* WHAT THE DEPTH SETTING MOVES — `data-depth` on <html>, written pre-paint by
+     APPEARANCE_INIT_SCRIPT (lib/appearance.ts) and kept in step by
+     applyAppearance. Pure MULTIPLIERS on the half's own dials, never absolute
+     values: "deep" has to mean the same thing to a light theme and a dark one,
+     and those two want very different shadows.
+
+     `soft` is the default and has no block, exactly like `indigo` and `geist`
+     above: the tokens as authored ARE soft.
+
+     FLAT ZEROES BOTH, which leaves the contact ring alone and switches the
+     ambient layer off entirely — not merely shrinks it. At lift 0 the ambient
+     layer would still be a zero-sized shadow sitting exactly behind the box,
+     and a surface painted at less than full alpha (`bg-card/95`) would show it
+     through as a faint bruise. Zeroing the ink as well is what makes "flat"
+     actually flat. */
+  --depth-lift: 1;
+  --depth-ink: 1;
+
+  /* The three values the rungs are written in terms of. Declared here rather
+     than inside @theme because they read the half's dials, and .dark has to be
+     able to move those without restating the ladder.
+
+     TRANSPARENT IS WRITTEN FIRST FOR THE REASON --overlay GIVES, and it is not
+     hypothetical here: the build emits `--shadow-ring: transparent` followed by
+     an `@supports (color: color-mix(…))` block carrying the real value, so the
+     FIRST colour in the mix is literally what an engine without color-mix
+     paints. With the ink first, that engine would draw every card, menu and
+     dialog in the app with a fully opaque near-black shadow. This way it draws
+     no shadow, which is a look rather than a failure. The percentages are
+     therefore the COMPLEMENT — `transparent 74%` is 26% ink. */
+  --shadow-float: calc(var(--shadow-lift) * var(--depth-lift));
+  --shadow-ring: color-mix(in oklab, transparent calc(100% - var(--shadow-ring-ink)), var(--shadow-tint));
+  --shadow-ambient: color-mix(in oklab, transparent calc(100% - var(--shadow-ink) * var(--depth-ink)), var(--shadow-tint));
+}
+
+[data-depth="flat"] {
+  --depth-lift: 0;
+  --depth-ink: 0;
+}
+[data-depth="deep"] {
+  --depth-lift: 1.5;
+  --depth-ink: 1.6;
+}
+
+@theme {
+  --shadow-1:
+    0 1px 1px -1px var(--shadow-ring),
+    0 calc(2px * var(--shadow-float)) calc(6px * var(--shadow-float)) calc(-4px * var(--shadow-float)) var(--shadow-ambient);
+  --shadow-2:
+    0 1px 2px -1px var(--shadow-ring),
+    0 calc(8px * var(--shadow-float)) calc(24px * var(--shadow-float)) calc(-14px * var(--shadow-float)) var(--shadow-ambient);
+  --shadow-3:
+    0 2px 4px -2px var(--shadow-ring),
+    0 calc(18px * var(--shadow-float)) calc(48px * var(--shadow-float)) calc(-26px * var(--shadow-float)) var(--shadow-ambient);
 }
 
 /* ─── ACCENTS — the anchor hue as a setting ──────────────────────────────────
@@ -583,11 +753,40 @@ code, pre, kbd, samp {
    through the `--sidebar-wash` indirection the @theme block explains, rather
    than re-derived from --background. Ratios are unchanged, so Telar's default
    look is pixel-identical; Ember's rail now frosts ember instead of grey. */
+/* ─── THE TWO HALVES DO NOT SPEND THE SLIDER THE SAME WAY (#399) ────────────
+
+   `--translucency` is what the person asked for. `--wash-transparency` is what
+   this half can afford to give them, and they are the same number in dark only.
+
+   WHY LIGHT GETS LESS. Transparency costs contrast, and the two halves do not
+   start from the same place: dark text on a near-white canvas is already the
+   narrower margin, and thinning that canvas mixes the DESKTOP into it — an
+   arbitrary photograph, usually brighter than the ink and never chosen to be
+   read against. The dark half thins toward black, which is where its own text
+   is not. So the identical ratio that reads as glass at 45% dark read as fog at
+   45% light: the slider was honest and the result was not.
+
+   0.6, AND IT IS A TUNING, NOT A DERIVATION. It is the factor at which the
+   default 45% lands the light canvas at the same legibility the dark one has
+   there (73% opaque against 55%). Anyone re-tuning it moves both rules at once,
+   which is the reason the number is a variable rather than two hand-mixed
+   ratios that could drift apart.
+
+   ONLY THE LIGHT HALF DECLARES ANYTHING. The two rules below read the slider
+   THROUGH `--wash-transparency`, falling back to the slider itself — so the
+   dark half sets nothing, takes the fallback, and computes byte-for-byte what
+   it computed before this rule existed. Light is the exception and says so in
+   one place. `.dark` is the class the theme provider toggles on <html>
+   (theme-provider.tsx), which is the same element both attributes are written
+   on, so `:not(.dark)` is the light half of exactly this scene. */
+html:not(.dark):is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --wash-transparency: calc(var(--translucency, 45%) * 0.6);
+}
 :is([data-telar-shell][data-translucent], [data-backdrop]) body {
-  background-color: color-mix(in oklab, var(--background) calc(100% - var(--translucency, 45%)), transparent);
+  background-color: color-mix(in oklab, var(--background) calc(100% - var(--wash-transparency, var(--translucency, 45%))), transparent);
 }
 :is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--translucency, 45%)), transparent);
+  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--wash-transparency, var(--translucency, 45%))), transparent);
 }
 /* THE OPT-IN IS A CLASS, NOT A CLASS NAME. This used to also match
    `.bg-background\/65` and `.bg-background\/80` — the utilities the two

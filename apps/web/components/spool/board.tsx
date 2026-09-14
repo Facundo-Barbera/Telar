@@ -97,7 +97,7 @@ function Card({
         event.stopPropagation();
         onDropBefore(item.id);
       }}
-      className="cursor-grab rounded-lg bg-card px-3 py-2 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
+      className="cursor-grab rounded-lg bg-card px-3 py-2 shadow-1 ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
     >
       {/* THE CARD'S OWN CONTEXT MENU — drag stays on THIS `<li>` (draggable,
           onDragStart/onDragOver/onDrop above are untouched); only the card's

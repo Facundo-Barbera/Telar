@@ -119,7 +119,7 @@ test("the mouse and the arrows never disagree about what Enter would take", () =
 
 test("choosing closes before it navigates, and opening starts from a blank query on the asked-for page", () => {
   const choose = source.slice(source.indexOf("const choose ="));
-  expect(choose.slice(0, 220)).toContain("onOpenChange(false)");
+  expect(choose.slice(0, 220)).toContain("onClose()");
   const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
   expect(fresh.slice(0, 260)).toContain("setPage(openOn);");
   expect(fresh.slice(0, 260)).toContain('setQuery("");');
@@ -195,29 +195,40 @@ test("ordinary words are not mistaken for URLs", () => {
   expect(cloneRequest("/Users/someone/code/telar")).toBeUndefined();
 });
 
-test("a clone row with nothing to clone asks for the URL instead of doing nothing", () => {
-  expect(source).toContain("Paste the repository URL");
+test("a clone row with nothing to clone opens the URL page instead of scolding the reader", () => {
+  // It used to answer with a sentence telling you to go and type in the field
+  // you had just left — a dead Enter key dressed up as guidance. Now the row
+  // walks to a page with a field on it, which is T3's shape.
+  expect(source).toContain('go(clone ? "clone-parent" : "clone-url");');
+  expect(source).toContain("Enter a Git clone URL and press Enter to continue");
+  // And a URL already in the search field skips that page, because the reader
+  // has already answered the question.
+  expect(source).toContain("const clone = cloneRequest(query);");
 });
 
 test("Backspace goes back ONLY on an empty field", () => {
   // The field is the title, so Backspace is a text key first — taking it while
-  // somebody deletes a typo would throw their page away mid-word.
-  expect(source).toContain('if (event.key === "Backspace" && page === "sources" && query === "") {');
-  expect(source).toContain('go("projects");');
+  // somebody deletes a typo would throw their page away mid-word. The rule
+  // itself is `paletteBack`, shared with the command palette that embeds these
+  // pages, and pinned in lib/command-palette.test.ts.
+  expect(source).toContain('if (event.key === "Backspace" && paletteBack(list, query, backRoot)) {');
+  expect(source).toContain("goBack();");
 });
 
-test("the legend names Backspace only on the page that has a back", () => {
+test("the legend names Backspace only on a page that has a back", () => {
   expect(source).toContain("↑↓</kbd> Navigate");
   expect(source).toContain("Enter</kbd> Select");
   expect(source).toContain("Esc</kbd> Close");
   const legend = source.slice(source.indexOf("Backspace</kbd> Back") - 200, source.indexOf("Backspace</kbd> Back"));
-  expect(legend).toContain('page === "sources" &&');
+  expect(legend).toContain('page === "sources" || onBack');
 });
 
 test("the Sources page always has a back, and the Projects page has a door", () => {
   // Both entry points converge here, and Projects is a legitimate place to
-  // arrive at from either.
-  expect(source).toContain('aria-label="Back to projects"');
+  // arrive at from either — which is what `backRoot` says when there is nowhere
+  // further to go than these pages.
+  expect(source).toContain('const backRoot: PalettePage = onBack ? openOn : "projects";');
+  expect(source).toContain('backsTo === "projects" ? "Back to projects" : "Back"');
   expect(source).toContain('title="Add a project…"');
   // The door is a ROW, so the arrows reach it — `count` above already counts it.
   expect(source).toContain('if (at >= matches.length) go("sources");');
@@ -245,8 +256,66 @@ test("the two ways in share one after-the-fact path", () => {
   // what they ignore and what they report.
   expect(source).toContain("await settle((await api.registerProject(");
   expect(source).toContain("await settle((await api.cloneProject(");
-  // And the clone asks where to put it rather than inventing a code folder.
-  expect(source).toContain('chooseDirectory({ title: "Choose the folder to clone into" })');
+  // And the clone still asks where to put it rather than inventing a code
+  // folder — it is the browser page that asks now, not a Finder sheet.
+  expect(source).toContain('actionLabel={page === "local" ? "Add" : "Clone here"}');
+});
+
+/* ─── the three pages that replaced the Finder sheet ──────────────────────── */
+
+test("the source rows walk to a page instead of opening a native dialog", () => {
+  // `dialog.showOpenDialog` leaves the palette, has none of its keyboard, and
+  // from a browser tab or a paired Mac opens where nobody is looking.
+  expect(source).toContain("<DirectoryBrowser");
+  expect(source).toContain('go("local");');
+  // Every page the palette can be ON, including the ones you can only walk to.
+  expect(source).toContain('type Page = PalettePage | "local" | "clone-url" | "clone-parent";');
+});
+
+test("the exported page type still names only the two lists, for the command palette to reuse", () => {
+  // `page` is a prop the rail and ⌘N pass; the browser and the URL field are
+  // not destinations anything outside this file should be able to name.
+  expect(source).toContain('export type PalettePage = "projects" | "sources";');
+});
+
+test("the palette's own keys stop at the list pages", () => {
+  // Backspace goes UP in a folder browser. Left unguarded, the palette's rule
+  // would have sent it back to Projects instead.
+  expect(source).toContain('if (page !== "projects" && page !== "sources") return;');
+});
+
+test("every page is named for a screen reader, from a map rather than a five-deep ternary", () => {
+  expect(source).toContain("const PAGE_TITLES: Record<Page, string> = {");
+  expect(source).toContain("const PAGE_SENTENCES: Record<Page, string> = {");
+  // The name belongs to the PAGE, so it is drawn by the pages rather than set on
+  // the dialog around them: on the command palette that dialog is not even ours,
+  // and it outlives whichever of its pages is up.
+  expect(source).toContain('<DialogTitle className="sr-only">{PAGE_TITLES[page]}</DialogTitle>');
+  expect(source).toContain('<DialogDescription className="sr-only">{PAGE_SENTENCES[page]}</DialogDescription>');
+});
+
+test("the native picker survives as the fallback for an unreachable engine", () => {
+  // The listing crosses HTTP; `chooseDirectory` goes through the shell's own
+  // IPC and keeps working when the adapter does not.
+  expect(source).toContain("const pickWithSystem = (title: string, then: (path: string) => void) => {");
+  expect(source).toContain("onFallback={() =>");
+  expect(source).toContain('"Choose a project folder for Telar"');
+  expect(source).toContain('"Choose the folder to clone into"');
+});
+
+test("the clone URL outlives the page that asked for it", () => {
+  // Two pages: one asks for the URL, the next picks the parent. A URL held on
+  // the first would be gone by the time the clone runs.
+  expect(source).toContain("const [cloneUrl, setCloneUrl] = useState<string>();");
+  expect(source).toContain("api.cloneProject({ url: cloneUrl, parent })");
+  // And a fresh opening does not carry the last one's URL.
+  const fresh = source.slice(source.indexOf("if (open !== wasOpen) {"));
+  expect(fresh.slice(0, 320)).toContain("setCloneUrl(undefined);");
+});
+
+test("the URL page refuses junk with a sentence rather than walking on", () => {
+  expect(source).toContain("That is not a clone URL.");
+  expect(source).toContain("const takeCloneUrl = (typed: string) => {");
 });
 
 /* ─── the rail ────────────────────────────────────────────────────────────── */
@@ -254,8 +323,9 @@ test("the two ways in share one after-the-fact path", () => {
 test("the rail has one New-conversation control, and ⌘N opens the same thing", () => {
   // It used to be two: a plain button, and — only with a Mac paired — a menu.
   // Both now go through `newConversation`, which is the single place that
-  // decides between the palette and a canvas.
-  expect(sidebar).toContain("onClick={newConversation}");
+  // decides between the palette and a canvas — and since #402 the button asks
+  // for it by pressing the command rather than calling it.
+  expect(sidebar).toContain('onClick={() => run("new-conversation")}');
   expect(sidebar).toContain('"new-conversation": () => newConversation(),');
 });
 
@@ -277,8 +347,10 @@ test("the palette is offered every project the rail already reads, this Mac's fi
 
 test("the register dialog is gone, and every way in is the palette's Sources page", () => {
   // Two dialogs with two flags is how the rail ended up able to have a register
-  // form open behind a project picker.
+  // form open behind a project picker. One piece of state still, now that the
+  // command palette's own list is a third page of the same surface.
   expect(sidebar).not.toContain("RegisterProjectDialog");
-  expect(sidebar).toContain('const openPalette = (page: PalettePage) => setPalette({ open: true, page });');
+  expect(sidebar).toContain('const openPalette = (page: CommandPalettePage, seed = "") => setPalette({ open: true, page, query: seed });');
   expect(sidebar).toContain('onClick={() => openPalette("sources")}');
+  expect(sidebar).toContain('"add-project": () => openPalette("sources"),');
 });

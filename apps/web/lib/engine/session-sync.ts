@@ -1,12 +1,18 @@
 // IMPORTED, NOT RE-DECLARED. This file used to carry its own structural copy of
 // the snapshot shape, which typechecked happily while the engine grew a field it
 // never learned about — `tasks` was invisible here for exactly that reason.
-import type { EngineEvent, Item, SessionSnapshot, SnapshotPage, SnapshotWindow, Task, Turn } from "@telar/engine-client";
+import type { EngineEvent, Item, SessionBootstrap, SessionSnapshot, SnapshotPage, SnapshotWindow, Subscription, Task, Turn } from "@telar/engine-client";
 import { journalCursor } from "./journal";
 
 export type SessionSyncApi = {
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot>;
   events(sessionId: string, after: number): Promise<{ events: EngineEvent[] }>;
+  /**
+   * The one-read opening (#407). OPTIONAL, and that is not politeness: a
+   * REMOTE host may be running an engine older than the route, and the two-call
+   * path below is the honest fallback rather than a 404 on every switch.
+   */
+  sessionBootstrap?(sessionId: string, window?: SnapshotWindow): Promise<SessionBootstrap>;
 };
 
 /**
@@ -21,7 +27,13 @@ export type SessionSyncApi = {
 export const INITIAL_TURNS = 10;
 export const OLDER_PAGE_TURNS = 20;
 
-export type HydratedSession = SessionSnapshot & { events: EngineEvent[]; cursor: number };
+export type HydratedSession = SessionSnapshot & {
+  events: EngineEvent[];
+  cursor: number;
+  /** Present only from the one-read opening — the engine folded it beside the
+   *  snapshot. Absent on the fallback path, where nothing asked for it. */
+  subscriptions?: Subscription[];
+};
 
 /** Every event that changes the durable queue needs its companion snapshot. */
 const QUEUE_CHANGING_EVENTS = new Set<EngineEvent["type"]>([
@@ -72,6 +84,22 @@ export async function hydrateSession(
   sessionId: string,
   window?: SnapshotWindow,
 ): Promise<HydratedSession> {
+  /**
+   * ONE READ WHERE THE ENGINE OFFERS ONE (#407). The two calls below are
+   * SERIAL by construction — the tail's `after` is the snapshot's own cursor —
+   * so opening a conversation cost two full round trips through the cockpit's
+   * route handlers before a transcript could be folded. `/bootstrap` answers
+   * both from the same instant, with the same overlap-never-gap guarantee.
+   */
+  if (api.sessionBootstrap) {
+    const { events, subscriptions, ...snapshot } = await api.sessionBootstrap(sessionId, window);
+    return {
+      ...snapshot,
+      events,
+      subscriptions,
+      cursor: Math.max(snapshot.cursor ?? 0, journalCursor(events)),
+    };
+  }
   const snapshot = await api.session(sessionId, window);
   const from = snapshot.cursor ?? journalCursor((await api.events(sessionId, 0)).events);
   const tail = await api.events(sessionId, from);
@@ -123,7 +151,24 @@ export async function loadOlderTurns(api: SessionSyncApi, sessionId: string, bef
  */
 export function mergeRows<T>(older: T[], fresh: T[], id: (row: T) => string): T[] {
   const carried = new Set(fresh.map(id));
-  return [...older.filter((row) => !carried.has(id(row))), ...fresh];
+  const merged = [...older.filter((row) => !carried.has(id(row))), ...fresh];
+  /**
+   * A MERGE THAT CHANGED NOTHING HANDS BACK WHAT IT WAS GIVEN (#407).
+   *
+   * The cockpit tails once a second and merges the answer into state whether or
+   * not the answer moved — and the quiet answer is the SAME row objects, because
+   * no companion snapshot was fetched. A fresh array of identical rows is still
+   * a new value to `useState`, so every quiet second re-rendered the cockpit and
+   * re-folded its whole transcript to arrive back where it started. Returning
+   * `older` makes React's own bail-out do the work.
+   *
+   * Identity, not equality: these rows come off `JSON.parse`, so two structurally
+   * equal rows from two reads are correctly different and a deep compare would
+   * only be a slower way to reach the same answer.
+   */
+  if (merged.length !== older.length) return merged;
+  for (let index = 0; index < merged.length; index += 1) if (merged[index] !== older[index]) return merged;
+  return older;
 }
 
 /**

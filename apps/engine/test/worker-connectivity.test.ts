@@ -7,6 +7,7 @@ import { startEngine } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
+import { stubModels } from "./stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -616,7 +617,7 @@ test("a lost settlement response is retried as ITSELF, against the real engine s
    * does commit and the retry really does meet the engine's own conflict.
    */
   const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-")));
-  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 5_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home, workerLeaseMs: 5_000 });
   try {
     const client = new EngineClient(daemon.discovery);
     const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -678,7 +679,7 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
    * succeeding throughout, and the endpoint then recovers.
    */
   const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-late-")));
-  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);
     const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -780,7 +781,7 @@ test("a REVOKED pre-settlement fault revokes the worker even when the settle the
    * so the worker carried on under a credential the engine had refused.
    */
   const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-revoked-")));
-  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);
     const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -828,7 +829,7 @@ test("a settlement is NEVER forgotten on a retry count: >20 rounds, then the end
    * result, asserted against the STORE, not against a diagnostic name.
    */
   const home = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-forever-")));
-  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home, workerLeaseMs: 60_000 });
   try {
     const client = new EngineClient(daemon.discovery);
     const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

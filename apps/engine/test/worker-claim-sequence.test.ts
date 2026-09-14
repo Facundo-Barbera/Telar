@@ -6,6 +6,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
+import { stubModels } from "./stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -45,7 +46,7 @@ afterEach(async () => {
 });
 
 async function engine(options: { onWorkerRetired?: (workerId: string) => void } = {}) {
-  const daemon = await startEngine({ engineRoot: home(), workerLeaseMs: 60_000, ...options });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home(), workerLeaseMs: 60_000, ...options });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -194,7 +195,7 @@ test("a claim delivered AFTER stop never executes, and its token cannot start a 
 
 test("a claim waiting behind authorization cannot allocate after its worker retires", async () => {
   let time = 0;
-  const daemon = await startEngine({ engineRoot: home(), now: () => time, workerLeaseMs: 1000 });
+  const daemon = await startEngine({ models: stubModels, engineRoot: home(), now: () => time, workerLeaseMs: 1000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

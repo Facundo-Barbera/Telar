@@ -29,7 +29,7 @@
  */
 import { Fragment, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ChevronDownIcon, ExternalLinkIcon } from "lucide-react";
-import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpener } from "@/lib/workspace-open";
+import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
 import {
   preferredOpenerSnapshot,
   remembersOpener,
@@ -45,6 +45,7 @@ import { useCommandHandlers } from "@/lib/use-command-keys";
 import { OpenerIcon } from "@/components/session/opener-icon";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupSeparator } from "@/components/ui/button-group";
+import { KeyHint } from "@/components/ui/key-hint";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export function OpenWorkspaceButton({
@@ -57,7 +58,10 @@ export function OpenWorkspaceButton({
   hostLabel?: string | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const [openers, setOpeners] = useState<WorkspaceOpener[]>();
+  /** THE WHOLE ANSWER, not just its list: Finder's own icon rides beside the
+   *  openers rather than in them (#398), because the reveal row is built by
+   *  `workspaceOpenerEntries` rather than by the shell's table. */
+  const [answer, setAnswer] = useState<WorkspaceOpenersAnswer>();
   const [error, setError] = useState<string>();
   /** The preference lives outside React, so it is READ THROUGH THE STORE rather
    *  than copied into state in an effect: the server has no `localStorage`, and
@@ -76,8 +80,8 @@ export function OpenWorkspaceButton({
     let live = true;
     void bridge
       .openers()
-      .then((answer) => live && setOpeners(answer.openers))
-      .catch(() => live && setOpeners([]));
+      .then((found) => live && setAnswer(found))
+      .catch(() => live && setAnswer({ openers: [] }));
     return () => {
       live = false;
     };
@@ -133,8 +137,8 @@ export function OpenWorkspaceButton({
 
   if (!bridge && typeof window !== "undefined" && !(window as { telarDesktop?: unknown }).telarDesktop) return null;
 
-  const entries = workspaceOpenerEntries({ openers: openers ?? [], preferred });
-  const primary = openers === undefined ? undefined : workspaceOpenerPrimary(entries);
+  const entries = workspaceOpenerEntries({ openers: answer?.openers ?? [], preferred, revealIconDataUrl: answer?.revealIconDataUrl });
+  const primary = answer === undefined ? undefined : workspaceOpenerPrimary(entries);
   const primaryLabel = primary ? workspaceOpenerPrimaryLabel(entries) : "Open";
 
   const act = (entry: WorkspaceOpenerEntry) => {
@@ -191,7 +195,7 @@ export function OpenWorkspaceButton({
             // the accessible name, which is the one place the logo says nothing.
             aria-label={primary ? primaryLabel : "Open this session's folder"}
           >
-            <OpenerIcon icon={primary?.icon} />
+            <OpenerIcon icon={primary?.icon} iconDataUrl={primary?.iconDataUrl} />
             <span>Open</span>
           </Button>
           <ButtonGroupSeparator />
@@ -207,7 +211,7 @@ export function OpenWorkspaceButton({
       <PopoverContent align="end" side="bottom" sideOffset={6} className="max-h-[min(24rem,70vh)] w-72 flex-col gap-0 overflow-y-auto rounded-xl p-1">
         {blocker ? (
           <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{blocker}</p>
-        ) : openers === undefined ? (
+        ) : answer === undefined ? (
           <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Looking for installed apps…</p>
         ) : (
           <>
@@ -218,13 +222,21 @@ export function OpenWorkspaceButton({
                   <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{entry.label}</p>
                 ) : (
                   <button type="button" title={entry.path} onClick={() => act(entry)} className={row}>
-                    <OpenerIcon icon={entry.icon} />
+                    <OpenerIcon icon={entry.icon} iconDataUrl={entry.iconDataUrl} />
                     <span className="min-w-0 flex-1 truncate">{entry.label}</span>
                     {/* Only the PREFERRED row can carry one, and the chord this
-                        control has (⌘O, on the reveal row) is not that row —
-                        so nothing is handed down and this renders nothing.
-                        Settings › Keybindings is where ⌘O is taught. */}
+                        control has (⌘O, on the reveal row) is not that row — so
+                        nothing is handed down and this renders nothing. */}
                     {entry.shortcut && <span className="shrink-0 text-[0.6875rem] tracking-widest text-muted-foreground">{entry.shortcut}</span>}
+                    {/* ⌘O WHERE ⌘O ACTUALLY GOES — issue #401. The chord is
+                        bound above, on this control, and it reveals: so the cap
+                        rides the REVEAL row while ⌘ is held rather than the Open
+                        half, which launches whichever editor you last picked.
+                        Settings › Keybindings taught this and nothing else did.
+                        Absent when the command is unbound, and absent when this
+                        control cannot act — `canReveal` is the same condition
+                        that decides whether the key does anything at all. */}
+                    {entry.kind === "reveal" && canReveal && <KeyHint command="reveal-in-finder" />}
                   </button>
                 )}
               </Fragment>

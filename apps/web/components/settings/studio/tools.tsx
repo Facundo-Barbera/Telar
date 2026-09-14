@@ -39,6 +39,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Row } from "../settings-shell";
 import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";
 
 export type DraftTool = { draft: StudioDraft; onDraft: (next: StudioDraft) => void };
@@ -67,18 +68,21 @@ const ACCENT_LABEL: Record<Accent, string> = {
   violet: "Violet",
 };
 
-/** A labelled block. The label sits in the left column and the control in the
- *  right, so the tool reads as a list of decisions rather than a wall — and
- *  there is nowhere for a paragraph to grow. What a control does is said by
- *  the control; anything that genuinely needs a sentence gets a `title`. */
-function ToolBlock({ title, children }: { title?: string; children: React.ReactNode }) {
-  if (!title) return <div className="px-3 py-2.5">{children}</div>;
-  return (
-    <div className="flex items-center gap-4 border-b border-border px-3 py-2 last:border-b-0">
-      <span className="w-32 shrink-0 text-xs font-medium">{title}</span>
-      <div className="flex min-w-0 flex-1 justify-end">{children}</div>
-    </div>
-  );
+/**
+ * An unlabelled block of tool content.
+ *
+ * IT OWNS NO HORIZONTAL PADDING AND NO HAIRLINE ANY MORE (#399). Both came from
+ * the `Panel` these tools used to be mounted in; they live in a `SettingsGroup`
+ * card now, which supplies the inset to its direct children and divides them
+ * itself — the same contract `Row` has always had (settings-shell.tsx says so).
+ * Keeping the old `px-3` here would simply have added 12px inside the card's 16.
+ *
+ * The LABELLED form is gone with the panel: a labelled block with a control on
+ * the right is a `Row`, which is what Accent and Show-through are now — and a
+ * Row is also a search destination, which a hand-rolled strip never was.
+ */
+function ToolBlock({ children }: { children: React.ReactNode }) {
+  return <div className="py-2.5">{children}</div>;
 }
 
 /* ------------------------------------------------------------- colours */
@@ -216,7 +220,10 @@ function TypeField({
   children: React.ReactNode;
 }) {
   return (
-    <div className="border-b border-border px-3 py-3 last:border-b-0">
+    // No inset and no hairline of its own — the group card supplies both (see
+    // `ToolBlock`). This is a Row's anatomy with a specimen under it rather than
+    // a Row, because the specimen is the point and Row has nowhere to put it.
+    <div className="py-3">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
         <div className="min-w-40 flex-1">
           <div className="text-xs font-medium">{title}</div>
@@ -331,9 +338,11 @@ function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: A
 export function TypeTool({ draft, onDraft }: DraftTool) {
   return (
     <>
-      <ToolBlock title="Accent">
-        <AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />
-      </ToolBlock>
+      <Row
+        label="Accent"
+        hint="The one hue that means a person acted — buttons, links, the caret."
+        control={<AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />}
+      />
 
       <TypeField
         title="Interface font"
@@ -395,21 +404,31 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
  */
 export function ShowThroughTool({ draft, onDraft }: DraftTool) {
   return (
-    <ToolBlock title="Show-through">
-      <div className="flex items-center gap-2.5">
-        <input
-          type="range"
-          min={MIN_TRANSLUCENCY}
-          max={MAX_TRANSLUCENCY}
-          step={5}
-          value={draft.translucencyLevel}
-          aria-label="Draft translucency strength"
-          title="How much of the backdrop shows through the canvas and the rail"
-          className="w-36 accent-primary"
-          onChange={(event) => onDraft(patchDraftStrength(draft, Number(event.target.value)))}
-        />
-        <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{draft.translucencyLevel}%</span>
-      </div>
-    </ToolBlock>
+    // A Row, and NOT the derived anchor: this same field is rendered a second
+    // time in the Window group, which is where search points at "Show-through"
+    // (settings-registry.ts). Two rows deriving one id would be two elements
+    // claiming one anchor, and `document.getElementById` would answer whichever
+    // came first. One value, two honest homes, one destination.
+    <Row
+      id="settings-row-appearance-backdrop-show-through"
+      label="Show-through"
+      hint="How much of the backdrop reaches the canvas and the rail."
+      control={
+        <div className="flex items-center gap-2.5">
+          <input
+            type="range"
+            min={MIN_TRANSLUCENCY}
+            max={MAX_TRANSLUCENCY}
+            step={5}
+            value={draft.translucencyLevel}
+            aria-label="Draft translucency strength"
+            title="How much of the backdrop shows through the canvas and the rail"
+            className="w-36 accent-primary"
+            onChange={(event) => onDraft(patchDraftStrength(draft, Number(event.target.value)))}
+          />
+          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{draft.translucencyLevel}%</span>
+        </div>
+      }
+    />
   );
 }

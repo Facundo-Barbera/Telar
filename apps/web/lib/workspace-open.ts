@@ -32,16 +32,24 @@ import {
 } from "@/lib/workspace-opener-preference";
 
 /** One installed app that can open a folder, as the shell discovered it.
- *  `icon` names a brand mark the renderer carries (components/session/opener-icon.tsx);
- *  absent on an app we have no mark for, which draws the neutral glyph. */
-export type WorkspaceOpener = { id: string; label: string; path: string; icon?: string };
+ *  `iconDataUrl` is the app's OWN icon, read off its `.app` bundle by the main
+ *  process (#398) — that is what the rows wear whenever there is one. `icon`
+ *  names the vendored vector mark the renderer falls back to
+ *  (components/session/opener-icon.tsx); absent on an app we have no mark for,
+ *  which draws the neutral glyph. */
+export type WorkspaceOpener = { id: string; label: string; path: string; icon?: string; iconDataUrl?: string };
+
+/** What the shell answers when asked for the list. `revealIconDataUrl` is
+ *  Finder's own icon: the reveal row is built by the renderer rather than by
+ *  the opener table, so its bitmap arrives beside the list rather than in it. */
+export type WorkspaceOpenersAnswer = { openers: WorkspaceOpener[]; revealIconDataUrl?: string };
 
 export type WorkspaceOpenAnswer = { ok: boolean; error?: string };
 
 export type WorkspaceOpenBridge = {
   /** Absent on a shell too old to enumerate; the caller falls back to the
    *  system default rather than showing an empty menu. */
-  openers?: () => Promise<{ openers: WorkspaceOpener[] }>;
+  openers?: () => Promise<WorkspaceOpenersAnswer>;
   open: (path: string, openerId?: string) => Promise<WorkspaceOpenAnswer>;
   reveal: (path: string) => Promise<WorkspaceOpenAnswer>;
   /** The same two verbs for ONE FILE. Optional for the same reason `openers`
@@ -124,11 +132,14 @@ export type WorkspaceFileMenu = {
   openLabel: string;
   /** The brand mark id for `OpenerIcon`; absent draws the neutral glyph. */
   openIcon?: string;
+  /** The app's own icon, when the shell could read one (#398). Preferred over
+   *  `openIcon`, which is the vector fallback. */
+  openIconDataUrl?: string;
 };
 
 export function useWorkspaceFileMenu(input: { workspacePath?: string | undefined; hostId?: string | undefined }): WorkspaceFileMenu {
   const { workspacePath, hostId } = input;
-  const [openers, setOpeners] = useState<WorkspaceOpener[]>();
+  const [answer, setAnswer] = useState<WorkspaceOpenersAnswer>();
   const bridge = workspaceOpener();
   /** A shell that can act on a file at all. Both verbs or neither: a menu with
    *  one of the pair is a menu that half-works. */
@@ -154,14 +165,14 @@ export function useWorkspaceFileMenu(input: { workspacePath?: string | undefined
     let live = true;
     void bridge
       .openers()
-      .then((answer) => live && setOpeners(answer.openers))
-      .catch(() => live && setOpeners([]));
+      .then((found) => live && setAnswer(found))
+      .catch(() => live && setAnswer({ openers: [] }));
     return () => {
       live = false;
     };
   }, [able, bridge]);
 
-  const entries = workspaceOpenerEntries({ openers: openers ?? [], preferred });
+  const entries = workspaceOpenerEntries({ openers: answer?.openers ?? [], preferred, revealIconDataUrl: answer?.revealIconDataUrl });
   const primary = workspaceOpenerPrimary(entries);
   /**
    * WHAT PRESSING IT COSTS WHEN IT FAILS, named rather than faked: nothing.
@@ -187,5 +198,6 @@ export function useWorkspaceFileMenu(input: { workspacePath?: string | undefined
       : {}),
     openLabel: primary ? workspaceOpenerPrimaryLabel(entries) : "Open in the default app",
     ...(primary?.icon ? { openIcon: primary.icon } : {}),
+    ...(primary?.iconDataUrl ? { openIconDataUrl: primary.iconDataUrl } : {}),
   };
 }

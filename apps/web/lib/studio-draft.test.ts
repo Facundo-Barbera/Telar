@@ -58,6 +58,7 @@ function draft(overrides: Partial<StudioDraft> = {}): StudioDraft {
     fontSize: 14,
     fontMonoSize: 13,
     translucencyLevel: 40,
+    depth: "soft",
     ...overrides,
   };
 }

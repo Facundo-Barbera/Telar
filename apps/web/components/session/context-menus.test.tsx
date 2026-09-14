@@ -161,7 +161,7 @@ describe("the rail's empty space composes a third list", () => {
     // The `+`'s own palette page — so `chooseDirectory` is still called from
     // exactly one place in the app, and it is not this file.
     expect(menu).toContain('onClick={() => openPalette("sources")}');
-    expect(source).toContain("const openPalette = (page: PalettePage)");
+    expect(source).toContain("const openPalette = (page: CommandPalettePage, seed = \"\")");
     expect(source).not.toContain("chooseDirectory");
     // The fold verbs act on the groups AS DRAWN, which is the rule
     // `foldedAfter` states and `session-groups.test.ts` pins.

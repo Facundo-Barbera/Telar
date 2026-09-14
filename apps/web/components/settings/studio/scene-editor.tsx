@@ -429,7 +429,7 @@ export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange
           its control in a fixed one — hand it three buttons and the label
           collapses to a ribbon of one word per line. What the stack is gets
           said by the stack; the counters say how much room is left. */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border py-2">
         <span className="flex items-center gap-1.5 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">
           <LayersIcon className="size-3.5" />
           Layers
@@ -462,9 +462,9 @@ export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange
           </Button>
         </div>
       </div>
-      {(error || busy) && <p className={cn("px-3 pt-2 text-xs", error ? "text-warning" : "text-muted-foreground")}>{error || "Working…"}</p>}
+      {(error || busy) && <p className={cn("pt-2 text-xs", error ? "text-warning" : "text-muted-foreground")}>{error || "Working…"}</p>}
       {picking && (
-        <div className="px-3 pb-1">
+        <div className="pb-1">
           {/* The same grid the base uses, minus None: adding a layer of
               nothing is what NOT adding a layer already is. */}
           <PresetGrid value={null} onPick={addGradient} />
@@ -534,7 +534,7 @@ export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange
         </div>
       </div>
       <PanelDivider label="Under everything" />
-      <div className="px-3 pb-3">
+      <div className="pb-3">
         <PresetGrid value={baseId} withNone onPick={(presetId) => apply(setSceneBase(scene, presetId), images)} />
       </div>
     </>
