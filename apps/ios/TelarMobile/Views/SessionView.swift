@@ -455,7 +455,16 @@ struct SessionView: View {
         .onChange(of: panel.generation) {
             // A file opened from a chip or a `display.opened` event: make
             // sure the panel is showing and the sidebar has made room.
-            if panel.isOpen { syncSidebar(open: true) }
+            //
+            // THE RAISE BELONGS HERE TOO, not only on `isOpen`. A panel the
+            // model already calls open flips nothing for that watcher to fire
+            // on, so at a compact width — where the panel is a push and not a
+            // column — the agent's file landed in a panel that never came up.
+            // `generation` goes up on every open, which is the one signal that
+            // survives the panel already being open.
+            guard panel.isOpen else { return }
+            raisePanel(true)
+            syncSidebar(open: true)
         }
         .onChange(of: store.sync.displayOpens.count) { watchDisplayOpens() }
         .navigationTitle(store.sync.session?.title ?? "Session")
