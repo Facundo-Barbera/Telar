@@ -3,7 +3,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
-const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress } = require("./browser-manager");
+const { DesktopBrowserManager, managerForScope, normalizeUrl, looksLikeAddress, zoomStep, ZOOM_STEPS } = require("./browser-manager");
 
 class FakeDebugger extends EventEmitter {
   constructor() {
@@ -67,6 +67,10 @@ class FakeWebContents extends EventEmitter {
     this.inspected = [];
     this.edits = [];
     this.downloads = [];
+    // The options menu's page-level verbs (#473): which reloads were asked
+    // for, and the zoom factor the menu reads back.
+    this.reloads = [];
+    this.zoomFactor = 1;
     this.navigationHistory = {
       canGoBack: () => false,
       canGoForward: () => false,
@@ -141,7 +145,23 @@ class FakeWebContents extends EventEmitter {
     this.emit("did-stop-loading");
   }
 
-  reload() {}
+  reload() {
+    this.reloads.push("reload");
+  }
+
+  // "Hard reload" is a DIFFERENT call, not a flag on the same one — recorded
+  // separately so a test can tell a cache bypass from an ordinary reload.
+  reloadIgnoringCache() {
+    this.reloads.push("reload-ignoring-cache");
+  }
+
+  setZoomFactor(factor) {
+    this.zoomFactor = factor;
+  }
+
+  getZoomFactor() {
+    return this.zoomFactor;
+  }
 
   // DevTools, as much of them as the manager touches (#423). `inspected` is
   // the point "Inspect" aimed them at.
@@ -208,11 +228,86 @@ class FakeView {
   }
 }
 
+/**
+ * A tab's own window (#473), as much of one as `openPreview` touches: a
+ * `contentView` to re-parent the view into, a content size for the rect, the
+ * two events the manager listens for, and a `destroy` that emits `closed` the
+ * way Electron's does — which is what makes "the person closed the window" a
+ * thing a test can do.
+ */
+class FakePreviewWindow {
+  constructor(options = {}) {
+    this.options = options;
+    this.destroyed = false;
+    this.focused = 0;
+    this.children = new Set();
+    this.listeners = new Map();
+    this.contentView = {
+      addChildView: (view) => this.children.add(view),
+      removeChildView: (view) => this.children.delete(view),
+    };
+  }
+
+  getContentSize() {
+    return [this.options.width, this.options.height];
+  }
+
+  on(event, listener) {
+    const bound = this.listeners.get(event) || [];
+    bound.push(listener);
+    this.listeners.set(event, bound);
+    return this;
+  }
+
+  emit(event) {
+    for (const listener of this.listeners.get(event) || []) listener();
+  }
+
+  focus() {
+    this.focused += 1;
+  }
+
+  isDestroyed() {
+    return this.destroyed;
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.emit("closed");
+  }
+}
+
 function makeHarness(options = {}) {
   const views = [];
   const messages = [];
   const waits = [];
   const children = new Set();
+  // Every window `openPreview` opened, newest last.
+  const previewWindows = [];
+  // Per partition, the Chromium session "Clear cookies"/"Clear cache" reach.
+  // OPT-IN (options.sessions): handing every test a live session would send
+  // them all through `preparePartition`'s permission install.
+  const sessions = new Map();
+  const sessionFor = (partition) => {
+    if (!sessions.has(partition)) {
+      sessions.set(partition, {
+        partition,
+        storageCleared: [],
+        cachesCleared: 0,
+        async clearStorageData(input) { this.storageCleared.push(input); },
+        async clearCache() { this.cachesCleared += 1; },
+        // `preparePartition` installs the #422 handlers on any session it can
+        // reach; accepted and ignored, so this stays a fixture for clearing
+        // rather than a second permissions harness.
+        setPermissionRequestHandler() {},
+        setPermissionCheckHandler() {},
+        setDisplayMediaRequestHandler() {},
+        setDevicePermissionHandler() {},
+      });
+    }
+    return sessions.get(partition);
+  };
   let nextId = 1;
   // The one Electron seam the page context menu needs (#423): the native Menu
   // it pops, and the clipboard "Copy Link" writes to. Every built menu is kept
@@ -227,6 +322,13 @@ function makeHarness(options = {}) {
         menus.push(menu);
         return menu;
       },
+    },
+    // The one more Electron seam the options menu needs (#473).
+    BrowserWindow: class extends FakePreviewWindow {
+      constructor(windowOptions) {
+        super(windowOptions);
+        previewWindows.push(this);
+      }
     },
   });
   const window = {
@@ -257,6 +359,7 @@ function makeHarness(options = {}) {
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
     ...(options.onCredentialEntryFinished ? { onCredentialEntryFinished: options.onCredentialEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
+    ...(options.sessions ? { sessionFor } : {}),
   });
   // Most tests do not care about profiles; a scope auto-binds the explicit
   // `none` profile on first tab so they exercise the rest of the manager.
@@ -272,7 +375,7 @@ function makeHarness(options = {}) {
   // pass `lifecycle: true` and drive it with a manual clock; the rest keep the
   // old explicit model (privacy ends via resumeFromPrivate/autoRelease).
   if (!options.lifecycle) manager.ensureAutoRelease = () => {};
-  return { children, clipboard, manager, menus, messages, views, waits };
+  return { children, clipboard, manager, menus, messages, previewWindows, sessions, views, waits };
 }
 
 /** Fire a real right-click on a tab's page and return the rows Chromium's menu
@@ -3078,5 +3181,240 @@ describe("view-source: is the one non-web scheme the tabs render", () => {
     expect(() => normalizeUrl("view-source:file:///etc/passwd")).toThrow("only views the source of http and https");
     expect(() => normalizeUrl("view-source:view-source:https://example.com/")).toThrow("only views the source of http and https");
     expect(() => normalizeUrl("view-source:not a url")).toThrow("only views the source of http and https");
+  });
+});
+
+/**
+ * THE OPTIONS MENU'S OWN VERBS (#473).
+ *
+ * The panel gained one `⋯` menu holding what a browser keeps behind one:
+ * hard reload, DevTools, a window of its own, appearance, zoom, the profile,
+ * and clearing this profile's cookies or cache. DevTools already had #423's
+ * tests above; the rest are here.
+ *
+ * ALL OF THEM ARE THE HUMAN'S, which is why they live on `action` beside
+ * `toggle-devtools` rather than in `performAction`: zoom and appearance change
+ * what the page lays out as, and an agent's snapshot then describes a layout
+ * nobody asked it to choose.
+ */
+describe("the browser's options menu", () => {
+  test("the zoom ladder is Chromium's, and it stops at both ends", () => {
+    expect(zoomStep(1, "in")).toBe(1.1);
+    expect(zoomStep(1, "out")).toBe(0.9);
+    expect(zoomStep(1, "reset")).toBe(1);
+    // A factor BETWEEN rungs lands on the next real one either way, so a zoom
+    // set by the page (or by an older ladder) still steps sensibly.
+    expect(zoomStep(1.2, "in")).toBe(1.25);
+    expect(zoomStep(1.2, "out")).toBe(1.1);
+    // Clamped: the ends are rungs, not a wrap-around and not an error.
+    expect(zoomStep(ZOOM_STEPS.at(-1), "in")).toBe(ZOOM_STEPS.at(-1));
+    expect(zoomStep(ZOOM_STEPS[0], "out")).toBe(ZOOM_STEPS[0]);
+    // Reset from anywhere is 1, including from a factor off the ladder.
+    expect(zoomStep(3.7, "reset")).toBe(1);
+    expect(() => zoomStep(1, "sideways")).toThrow("Unknown zoom direction");
+  });
+
+  test("zoom walks the ladder on the page itself, and the panel reads it back", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const wc = views[0].webContents;
+
+    await manager.action("session-a", { action: "zoom", direction: "in" });
+    expect(wc.getZoomFactor()).toBe(1.1);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1.1);
+
+    await manager.action("session-a", { action: "zoom", direction: "in" });
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1.25);
+    await manager.action("session-a", { action: "zoom", direction: "reset" });
+    expect(wc.getZoomFactor()).toBe(1);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(1);
+  });
+
+  test("a zoomed tab is still zoomed after it is hibernated and woken", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const tab = manager.scopeTabs("session-a")[0];
+    await manager.action("session-a", { action: "zoom", direction: "out" });
+    expect(views[0].webContents.getZoomFactor()).toBe(0.9);
+
+    // A new WebContents starts at 1; the geometry pipeline is what puts the
+    // tab's own factor back, the same way it re-applies the viewport.
+    manager.requestHibernate(tab);
+    await manager.wakeTab(tab);
+    await manager.applyGeometry(tab);
+    expect(views.at(-1).webContents.getZoomFactor()).toBe(0.9);
+    expect(manager.state("session-a").tabs[0].zoom).toBe(0.9);
+  });
+
+  test("hard reload is a cache bypass, not the ordinary reload with a flag", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const wc = views[0].webContents;
+
+    await manager.action("session-a", { action: "reload" });
+    await manager.action("session-a", { action: "hard-reload" });
+    expect(wc.reloads).toEqual(["reload", "reload-ignoring-cache"]);
+    // Both are the human's hand on the tab, so an agent defers.
+    expect(manager.state("session-a").tabs[0].controller).toBe("human");
+  });
+
+  test("appearance emulates prefers-color-scheme, and system clears the override", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const debug = views[0].webContents.debugger;
+    const media = () => debug.commands.filter((entry) => entry.method === "Emulation.setEmulatedMedia");
+
+    // A FRESH PAGE EMULATES NOTHING, which is what "system" already means:
+    // asserting it would be a round trip to change nothing.
+    expect(media()).toEqual([]);
+
+    await manager.action("session-a", { action: "appearance", scheme: "dark" });
+    expect(media().at(-1).params).toEqual({ features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    expect(manager.state("session-a").tabs[0].colorScheme).toBe("dark");
+
+    await manager.action("session-a", { action: "appearance", scheme: "system" });
+    // Now there IS something to clear, so the empty feature list is sent.
+    expect(media().at(-1).params).toEqual({ features: [] });
+    expect(manager.state("session-a").tabs[0].colorScheme).toBe("system");
+
+    await expect(manager.action("session-a", { action: "appearance", scheme: "sepia" })).rejects.toThrow("Unknown appearance");
+  });
+
+  test("appearance is re-applied to a tab's NEW WebContents, not lost with the old one", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    const tab = manager.scopeTabs("session-a")[0];
+    await manager.action("session-a", { action: "appearance", scheme: "dark" });
+
+    manager.requestHibernate(tab);
+    await manager.wakeTab(tab);
+    await manager.applyGeometry(tab);
+    const media = views.at(-1).webContents.debugger.commands.filter((entry) => entry.method === "Emulation.setEmulatedMedia");
+    expect(media.at(-1).params).toEqual({ features: [{ name: "prefers-color-scheme", value: "dark" }] });
+  });
+
+  describe("a tab in a window of its own", () => {
+    /** A visible scope with one page and a real panel rect — the state a
+     *  person is looking at when they reach for "open a separate window". */
+    async function shown() {
+      const harness = makeHarness();
+      await harness.manager.createTab("session-a", "https://example.com");
+      harness.manager.setBounds("session-a", { x: 0, y: 0, width: 900, height: 600 });
+      await harness.manager.setVisible("session-a", true);
+      return harness;
+    }
+
+    test("the LIVE view moves out of the cockpit — a preview is the tab, not a copy of it", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      expect(children.has(views[0])).toBe(true);
+
+      await manager.action("session-a", { action: "preview" });
+      const window = previewWindows.at(-1);
+      // One page, one place: out of the cockpit's tree and into the new
+      // window's. A second WebContents would be a different page.
+      expect(views).toHaveLength(1);
+      expect(children.has(views[0])).toBe(false);
+      expect(window.children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(true);
+    });
+
+    test("it is sized to the page's own viewport and fills its window", async () => {
+      const { manager, previewWindows, views } = await shown();
+      // Fit mode adopted the 900×600 stage before the preview.
+      expect(manager.state("session-a").tabs[0].viewport).toMatchObject({ width: 900, height: 600 });
+
+      await manager.action("session-a", { action: "preview" });
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(previewWindows.at(-1).options).toMatchObject({ width: 900, height: 600, useContentSize: true });
+      expect(views[0].visible).toBe(true);
+      expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 900, height: 600 });
+    });
+
+    test("the panel neither places nor hides a previewed tab — its own window would go blank", async () => {
+      const { manager, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+
+      // Every path that hides a view for the panel's sake: another scope
+      // becoming visible, this one being taken away, a fresh bounds publish.
+      await manager.setVisible("session-a", false);
+      manager.setBounds("session-a", { x: 0, y: 0, width: 400, height: 300 });
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(views[0].visible).toBe(true);
+      // And it keeps ITS OWN viewport rather than adopting a stage it left.
+      expect(manager.state("session-a").tabs[0].viewport).toMatchObject({ width: 900, height: 600 });
+    });
+
+    test("closing the window is how the tab comes back", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      const window = previewWindows.at(-1);
+
+      window.destroy(); // the person clicked the window's own close button
+      expect(children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(false);
+      await manager.applyGeometry(manager.scopeTabs("session-a")[0]);
+      expect(views[0].bounds).toEqual({ x: 0, y: 0, width: 900, height: 600 });
+    });
+
+    test("the panel can bring it back too, and asking twice only focuses the window", async () => {
+      const { children, manager, previewWindows, views } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      await manager.action("session-a", { action: "preview" });
+      expect(previewWindows).toHaveLength(1);
+      expect(previewWindows[0].focused).toBe(1);
+
+      await manager.action("session-a", { action: "end-preview" });
+      expect(previewWindows[0].isDestroyed()).toBe(true);
+      expect(children.has(views[0])).toBe(true);
+      expect(manager.state("session-a").tabs[0].preview).toBe(false);
+    });
+
+    test("closing the TAB takes its window with it — never a window addressing nothing", async () => {
+      const { manager, previewWindows } = await shown();
+      await manager.action("session-a", { action: "preview" });
+      manager.closeTab("session-a", 0, "human");
+      expect(previewWindows[0].isDestroyed()).toBe(true);
+    });
+
+    test("an agent cannot open a window over the person's screen", async () => {
+      const { manager, previewWindows } = await shown();
+      await expect(manager.performAction("session-a", { action: "preview" })).rejects.toThrow("Unknown desktop browser action");
+      expect(previewWindows).toHaveLength(0);
+    });
+  });
+
+  describe("clearing this profile's cookies and cache", () => {
+    test("the scope is the PARTITION — the whole identity, which is what the panel's confirm says", async () => {
+      const { manager, sessions } = makeHarness({ sessions: true });
+      await manager.createTab("session-a", "https://example.com");
+      const partition = manager.scopeTabs("session-a")[0].partition;
+
+      expect(await manager.clearBrowsingData("session-a", "cookies")).toMatchObject({ ok: true, kind: "cookies", partition });
+      expect(sessions.get(partition).storageCleared).toEqual([{ storages: ["cookies"] }]);
+      expect(sessions.get(partition).cachesCleared).toBe(0);
+
+      expect(await manager.clearBrowsingData("session-a", "cache")).toMatchObject({ ok: true, kind: "cache", partition });
+      expect(sessions.get(partition).cachesCleared).toBe(1);
+      // The cookies call is not repeated by the cache one.
+      expect(sessions.get(partition).storageCleared).toHaveLength(1);
+    });
+
+    test("it refuses what it cannot do rather than reporting a clear that did not happen", async () => {
+      const { manager } = makeHarness({ sessions: true });
+      manager.declareProfile("session-a", "none");
+      // No tab: there is no partition to name, so there is nothing to clear.
+      await expect(manager.clearBrowsingData("session-a", "cookies")).rejects.toThrow("no tab here");
+
+      await manager.createTab("session-a", "https://example.com");
+      await expect(manager.clearBrowsingData("session-a", "history")).rejects.toThrow("Unknown browsing data");
+    });
+
+    test("with no Chromium session to reach it says so — never a silent success", async () => {
+      // The default harness injects no `sessionFor`, which is the unit layer's
+      // "there is no Electron here".
+      const { manager } = makeHarness();
+      await manager.createTab("session-a", "https://example.com");
+      await expect(manager.clearBrowsingData("session-a", "cookies")).rejects.toThrow("no Chromium session");
+    });
   });
 });

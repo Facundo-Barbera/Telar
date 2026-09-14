@@ -19,7 +19,27 @@
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, CodeXmlIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, TriangleAlertIcon, UserRoundIcon, XIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CodeXmlIcon,
+  EllipsisIcon,
+  FlipHorizontalIcon,
+  KeyRoundIcon,
+  Loader2Icon,
+  MinusIcon,
+  MonitorSmartphoneIcon,
+  MoonIcon,
+  PlusIcon,
+  RotateCwIcon,
+  SquareArrowOutUpRightIcon,
+  TriangleAlertIcon,
+  UserRoundIcon,
+  XIcon,
+} from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import {
   describePermissionDenial,
@@ -39,7 +59,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
+import { describeViewport, fitViewport, resizeByDrag, resizeByKey, sizeFromFields, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { onNativeViewOverlay, useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { useCommandHandlers } from "@/lib/use-command-keys";
@@ -77,6 +97,16 @@ export type DesktopBrowserTab = {
   /** The tab's own intrinsic viewport, which preset it is (if any), and
    *  whether it is fixed or follows the panel. */
   viewport?: { width: number; height: number; preset: ViewportPresetKey | null; mode?: ViewportMode };
+  /** The page zoom the options menu's − / + walk (#473). A page-level factor,
+   *  not the presentation scale the panel fits a fixed viewport with. */
+  zoom?: number;
+  /** What this tab emulates for `prefers-color-scheme`; "system" is no
+   *  override at all. */
+  colorScheme?: "light" | "dark" | "system";
+  /** THIS TAB IS IN A WINDOW OF ITS OWN (#473), so the panel draws no page
+   *  for it. Not a second copy — the live view was moved there, which is why
+   *  the panel has nothing to show until it comes back. */
+  preview?: boolean;
   /** WHICH IDENTITY this tab is signed into. A tab opened before the session's
    *  profile was switched keeps its own — it is not silently re-pointed — and
    *  the strip says so rather than letting it look like the current one. */
@@ -221,6 +251,15 @@ export type DesktopBrowserBridge = {
    * never reaches `shell.openExternal` and never gets to say what may.
    */
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * CLEAR THIS TAB'S PROFILE — its cookies, or its cache (#473).
+   *
+   * PARTITION-WIDE, not per site: a Chromium session is cleared whole, and
+   * the menu says so rather than offering a row that reads like one site's.
+   * Optional because an older shell installs no handler; the rows are hidden
+   * rather than offered and refused.
+   */
+  clearBrowsingData?(scopeKey: string, kind: "cookies" | "cache"): Promise<{ ok: boolean; kind: string; partition: string; profile?: string | null }>;
   /** The EXPLICIT login-offer fallback (AUTH-001): open the shell's trusted
    *  offer window about this session's current page — for a sign-in Telar
    *  never saw, or an automatic offer that was dismissed. Opening only asks;
@@ -533,28 +572,6 @@ function useHostSize(hostRef: RefObject<HTMLDivElement | null>): { width: number
 }
 
 /**
- * Whether the address row is too narrow to spell its controls out.
- *
- * MEASURED, not a media query: the panel's width is its own — the window can be
- * wide while this column is narrow because the conversation took the
- * difference — so the only width that answers the question is this row's. Only
- * the boolean is state, so a drag across the whole range re-renders twice.
- */
-function useCompactAddressRow(rowRef: RefObject<HTMLElement | null>): boolean {
-  const [compact, setCompact] = useState(false);
-  useEffect(() => {
-    const row = rowRef.current;
-    if (!row) return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) setCompact(addressRowCompact(entry.contentRect.width));
-    });
-    observer.observe(row);
-    return () => observer.disconnect();
-  }, [rowRef]);
-  return compact;
-}
-
-/**
  * The frame, rails and readout around the fitted page. The SAME fit
  * arithmetic the shell applies to the native view (`fitViewport` over the
  * stage), so what is drawn here and the pixels the view shows are one rect.
@@ -599,6 +616,24 @@ function DeviceFrame({ viewport, mode, hostSize, preview, onPreview, onCommit, r
 const menuRow =
   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50";
 
+/**
+ * WHAT THE PAGE IS TOLD TO PREFER (#473) — the three answers
+ * `prefers-color-scheme` can be given, in the order a browser's own menu puts
+ * them. "System" is not a third colour: it is the override taken off, so the
+ * page reads whatever it would have read with nobody emulating anything.
+ */
+export const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; label: string }> = [
+  { key: "light", label: "Light" },
+  { key: "dark", label: "Dark" },
+  { key: "system", label: "System" },
+];
+
+/** The zoom readout: a whole percentage, and never a bare "NaN%" for a tab
+ *  whose factor has not arrived yet. */
+export function zoomLabel(factor: number | undefined): string {
+  return `${Math.round((Number.isFinite(factor) && factor ? factor : 1) * 100)}%`;
+}
+
 /** The address a human sees: the page's URL, or empty on the blank tab. */
 export function addressValue(url: string | undefined): string {
   return !url || url === "about:blank" ? "" : url;
@@ -625,34 +660,30 @@ export function originOfUrl(url: string | undefined): string | undefined {
  * WHAT THE ADDRESS ROW SPENDS ON EVERYTHING THAT IS NOT THE ADDRESS.
  *
  * The row is one no-wrap flex line, so every control on it is width the input
- * does not get. At the right panel's default (~510px) the labelled controls
- * cost more than the row has and the input — the only thing on the row you can
- * TYPE into — collapsed to about 30px, which is the bug (#319).
+ * does not get. At the right panel's default (~510px) the controls once cost
+ * more than the row had and the input — the only thing on the row you can TYPE
+ * into — collapsed to about 30px, which is the bug (#319).
  *
  * Measured in px off the row's own classes rather than guessed: back, forward,
  * reload and the profile mark are 22 each (`p-1` around a 14px glyph); the LOCK
- * is 18 (`p-0.5` around the same glyph); the viewport control is 26 icon-only
- * (`px-1.5`); the password control is 44 at its widest, which is the glyph with
- * the warning mark beside it; the row spends seven 4px gaps between its eight
- * children. Padding is NOT counted — the observer below reads the content box.
+ * is 18 (`p-0.5` around the same glyph); the password control is 44 at its
+ * widest, which is the glyph with the warning mark beside it; the `⋯` is 22;
+ * the row spends seven 4px gaps between its eight children. Padding is NOT
+ * counted — the observer reads the content box.
  *
- * THE LOCK IS THE TIGHT ONE ON PURPOSE (#422). It is the only control this row
- * has gained since #319, and at the width that issue was filed about (a 420px
- * panel, 404px of content) the compact row clears the input floor by exactly
- * nothing. At `p-1` it would be 4px short — so the site-permissions anchor wears
- * the smallest padding on the row, and #319's acceptance still holds.
- */
-const ADDRESS_CONTROLS_COMPACT = 4 * 22 + 18 + 26 + 44 + 7 * 4;
-/**
- * The same row spelling its ONE labelled control out: "Fit panel" or a size
- * (+49).
+ * NOTHING ON THIS ROW WRITES ITSELF OUT ANY MORE, which is why there is one
+ * number here rather than a compact one and a labelled one. #319's answer was
+ * to drop labels before width, and the two controls that had them are gone:
+ * the profile became a glyph (#366) and the viewport moved off this row
+ * entirely into the device toolbar (#473). A control that wants words back
+ * wants that mechanism back with it — it is in this file's history.
  *
- * THE PROFILE USED TO BE THE OTHER ONE, and its `max-w-28` label was the single
- * most expensive thing on the row at +116. It is a glyph now (#366) — never
- * written out, so never a label the row has to buy back — and that is why 510px
- * keeps the viewport's words where it used to drop them.
+ * THE LOCK IS THE TIGHT ONE ON PURPOSE (#422). At the width #319 was filed
+ * about (a 420px panel, 404px of content) the row clears the input floor by
+ * 4px; at `p-1` the lock would spend exactly that. So the site-permissions
+ * anchor wears the smallest padding on the row.
  */
-const ADDRESS_CONTROLS_LABELLED = ADDRESS_CONTROLS_COMPACT + 49;
+export const ADDRESS_CONTROLS = 4 * 22 + 18 + 44 + 22 + 7 * 4;
 /** The row's own `px-2`, which the content box the observer reports excludes. */
 export const ADDRESS_ROW_PADDING = 16;
 /** Under this the address bar is a decoration rather than a place to type a
@@ -660,13 +691,8 @@ export const ADDRESS_ROW_PADDING = 16;
 export const ADDRESS_INPUT_FLOOR = 200;
 
 /** What is left for the address input on a row of `rowWidth` content px. */
-export function addressInputRoom(rowWidth: number, labelled: boolean): number {
-  return rowWidth - (labelled ? ADDRESS_CONTROLS_LABELLED : ADDRESS_CONTROLS_COMPACT);
-}
-
-/** Whether the row must drop its labels for the input to clear the floor. */
-export function addressRowCompact(rowWidth: number): boolean {
-  return addressInputRoom(rowWidth, true) < ADDRESS_INPUT_FLOOR;
+export function addressInputRoom(rowWidth: number): number {
+  return rowWidth - ADDRESS_CONTROLS;
 }
 
 /**
@@ -756,10 +782,28 @@ export function DesktopBrowserSurface({
    * a menu cannot be added here without joining the thing that hides the
    * native view underneath it (see `lib/native-view-overlay.ts`).
    */
-  const [openOverlay, setOpenOverlay] = useState<"profile" | "viewport" | "site" | null>(null);
+  const [openOverlay, setOpenOverlay] = useState<"profile" | "options" | "device" | "site" | null>(null);
   useNativeViewOverlay(openOverlay !== null);
   /** Which pane the profile menu shows: its list, or one of its two forms. */
   const [profilePane, setProfilePane] = useState<"menu" | "rename" | "new">("menu");
+  /**
+   * WHICH PANE THE `⋯` MENU SHOWS. Its rows, the appearance submenu, or one of
+   * the two confirms — because "Clear cookies" signs a whole profile out, and a
+   * row that does that on one press is not a row, it is a trap.
+   */
+  const [optionsPane, setOptionsPane] = useState<"menu" | "appearance" | "cookies" | "cache">("menu");
+  /** A clear in flight, so the confirm's button cannot be pressed twice. */
+  const [clearing, setClearing] = useState(false);
+  /**
+   * The device toolbar's two size fields while they are being typed into.
+   * Undefined = show the tab's own numbers.
+   *
+   * IT CARRIES THE TAB IT WAS TYPED FOR, rather than being reset when the tab
+   * changes: a half-typed "10" shown as the next tab's width would be this
+   * toolbar misreporting a page, and a draft is the only state here that
+   * could outlive what it describes.
+   */
+  const [sizeDraft, setSizeDraft] = useState<{ tabId: string; width: string; height: string }>();
   /**
    * SITE PERMISSIONS (#422). The questions the shell is waiting on, the ones a
    * person has waved away for now, what this session's profile remembers about
@@ -793,6 +837,8 @@ export function DesktopBrowserSurface({
     // the session you just arrived at.
     setOpenOverlay(null);
     setProfilePane("menu");
+    setOptionsPane("menu");
+    setSizeDraft(undefined);
     // A question belongs to the session that was asked it; arriving at another
     // one must not show its prompt, and the shell still holds the original.
     setPrompts([]);
@@ -829,19 +875,26 @@ export function DesktopBrowserSurface({
   // Advisory, per tab: the mark speaks about the tab you are LOOKING at.
   const [newProfileLabel, setNewProfileLabel] = useState("");
   const [newProfileAccount, setNewProfileAccount] = useState("");
-  /** A custom viewport size being typed into the viewport menu. */
-  const [customSize, setCustomSize] = useState("");
   /** Shut whichever menu is open, back on its list pane for next time. */
   const closeOverlay = () => {
     setOpenOverlay(null);
     setProfilePane("menu");
+    setOptionsPane("menu");
   };
+  /** The draft, but only while it is still this tab's. */
+  const draftSize = sizeDraft && sizeDraft.tabId === activeTab?.id ? sizeDraft : undefined;
   /** A rail drag in progress — shown live, committed on release. */
   const [dragPreview, setDragPreview] = useState<{ width: number; height: number }>();
   const hostSize = useHostSize(hostRef);
-  /** The toolbar's labels come off before the address bar does — see #319. */
-  const compactRow = useCompactAddressRow(addressRowRef);
+  /**
+   * THE DEVICE TOOLBAR IS THE FIXED VIEWPORT (#473) — it is shown exactly
+   * while the tab has one, and turning it off puts the tab back in fit mode.
+   * Derived rather than stored, so the toggle cannot drift from what the page
+   * is actually doing, and so a tab remembers its own answer across a session
+   * switch the way the shell already remembers its mode.
+   */
   const viewportMode: ViewportMode = activeTab?.viewport?.mode ?? "fit";
+  const deviceToolbar = viewportMode === "fixed";
 
   /**
    * WHILE A MENU IS OPEN ANYWHERE IN THE RIGHT PANEL, THIS VIEW IS DOWN.
@@ -925,7 +978,7 @@ export function DesktopBrowserSurface({
     bridge,
     scopeKey,
     hostRef,
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), activeTab?.sleeping].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), activeTab?.sleeping, activeTab?.preview].join("|"),
     viewportMode,
     overlayRef,
   );
@@ -985,6 +1038,30 @@ export function DesktopBrowserSurface({
       }
     },
     [refresh, scope],
+  );
+
+  /**
+   * CLEAR THIS PROFILE'S COOKIES OR CACHE (#473) — confirmed in the menu, not
+   * on the press. The shell clears the whole partition; the confirm pane says
+   * so in those words, and this only runs once the person has read it.
+   */
+  const clearData = useCallback(
+    async (kind: "cookies" | "cache") => {
+      if (!bridge.clearBrowsingData) return;
+      const gen = scope.capture();
+      setClearing(true);
+      try {
+        await bridge.clearBrowsingData(scopeKey, kind);
+        if (!scope.isCurrent(gen)) return;
+        setActionError(undefined);
+      } catch (error) {
+        if (!scope.isCurrent(gen)) return;
+        setActionError(error instanceof Error ? error.message : `Those ${kind} could not be cleared.`);
+      } finally {
+        setClearing(false);
+      }
+    },
+    [bridge, scope, scopeKey],
   );
 
   /**
@@ -1142,6 +1219,26 @@ export function DesktopBrowserSurface({
    * command exactly while it can answer it.
    */
   useCommandHandlers(activeTab ? { "toggle-devtools": () => void act({ action: "toggle-devtools" }) } : {}, [Boolean(activeTab)]);
+
+  /**
+   * THE DEVICE TOOLBAR'S TWO FIELDS, COMMITTED. A draft that is not two
+   * numbers is dropped back to what the tab actually is rather than applied —
+   * an empty field on the way to a new number must not resize anything, and
+   * the host's own limits do the clamping either way (`clampViewport` is the
+   * same arithmetic).
+   *
+   * A plain function, like `onKeys` below and for the same reason: it closes
+   * over `activeTab`, which is derived from `state`, and the compiler's
+   * preserve-memoization rule will not take a manual memo over that.
+   */
+  const commitSize = () => {
+    const viewport = activeTab?.viewport;
+    if (!draftSize || !viewport || !activeTab) return;
+    setSizeDraft(undefined);
+    const next = sizeFromFields(draftSize.width, draftSize.height);
+    if (!next || (next.width === viewport.width && next.height === viewport.height)) return;
+    void act({ action: "resize", index: activeTab.index, width: next.width, height: next.height });
+  };
 
   /**
    * Browser keys, panel-local: Cmd/Ctrl+T new, Cmd/Ctrl+W close, Cmd/Ctrl+1-9
@@ -1303,10 +1400,10 @@ export function DesktopBrowserSurface({
       </div>
 
       {/* ── address row ───────────────────────────────────────────────────
-          THE ADDRESS IS WHAT THIS ROW IS FOR. Everything else on it gives up
-          its label before the input gives up its width (`compactRow`), because
-          a 30px address bar is a control you cannot use at all where an
-          unlabelled glyph is one you can still read by its tooltip. */}
+          THE ADDRESS IS WHAT THIS ROW IS FOR, and everything else on it is a
+          glyph — a 30px address bar is a control you cannot use at all, where
+          an unlabelled glyph is one you can still read by its tooltip (#319).
+          See ADDRESS_CONTROLS for what the row may spend. */}
       <form
         ref={addressRowRef}
         className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
@@ -1417,89 +1514,6 @@ export function DesktopBrowserSurface({
           }}
           onBlur={() => setDraft(undefined)}
         />
-        {/* THE VIEWPORT (item 11). The page lays out for its OWN size — the
-            standard 1280×800, a preset, or a size typed here — whatever the
-            column's width; the panel scales the presentation to fit. The
-            agent sees the same page (its snapshot and clicks are in this
-            size) and can change it too, through browser_resize. */}
-        {activeTab?.viewport ? (
-          <Popover open={openOverlay === "viewport"} onOpenChange={(open) => (open ? setOpenOverlay("viewport") : closeOverlay())}>
-            <PopoverTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label={`Viewport: ${describeViewport(activeTab.viewport, viewportMode)}`}
-                  title={`Viewport ${describeViewport(activeTab.viewport, viewportMode)}${state?.presentation && state.presentation.scale < 1 ? ` · shown at ${Math.round(state.presentation.scale * 100)}%` : ""}`}
-                  className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-3xs text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
-                >
-                  <ScalingIcon className="size-3.5 shrink-0" />
-                  {/* The size is in the label and in the title; on a narrow row
-                      only the title has room for it. */}
-                  {!compactRow && <span>{viewportMode === "fit" ? "Fit panel" : `${activeTab.viewport.width}×${activeTab.viewport.height}`}</span>}
-                  {!compactRow && viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
-                </button>
-              }
-            />
-            <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Viewport size" className="w-60 gap-0 p-1">
-              {/* FIT PANEL: the page's size follows the panel (scale 1, no
-                  letterbox) while it is shown, and keeps the last shown size
-                  while hidden so an agent working in the background sees the
-                  layout the human last did. Fixed keeps the size where it is. */}
-              <button
-                type="button"
-                aria-pressed={viewportMode === "fit"}
-                title="Follow the panel's size"
-                onClick={() => void act({ action: "resize", index: activeTab.index, mode: viewportMode === "fit" ? "fixed" : "fit" })}
-                className={cn(menuRow, viewportMode === "fit" && "text-foreground")}
-              >
-                <CheckIcon className={cn("size-3.5 shrink-0", viewportMode === "fit" ? "opacity-100" : "opacity-0")} />
-                <span className="min-w-0 flex-1">Fit panel</span>
-              </button>
-              <div aria-hidden className="my-1 h-px bg-border" />
-              {VIEWPORT_PRESETS.map((preset) => {
-                const on = viewportMode === "fixed" && activeTab.viewport?.preset === preset.key;
-                return (
-                  <button
-                    key={preset.key}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => void act({ action: "resize", index: activeTab.index, preset: preset.key })}
-                    className={cn(menuRow, on && "text-foreground")}
-                  >
-                    <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">{preset.label}</span>
-                    <span className="shrink-0 font-mono text-3xs text-muted-foreground">{preset.width}×{preset.height}</span>
-                  </button>
-                );
-              })}
-              <div aria-hidden className="my-1 h-px bg-border" />
-              <form
-                className="flex items-center gap-1 px-1 pb-0.5"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const parsed = parseViewportInput(customSize);
-                  if (!parsed) return;
-                  setCustomSize("");
-                  void act({ action: "resize", index: activeTab.index, width: parsed.width, height: parsed.height });
-                }}
-              >
-                <input
-                  aria-label="Custom viewport size"
-                  placeholder="e.g. 1024×768"
-                  value={customSize}
-                  onChange={(event) => setCustomSize(event.target.value)}
-                  // A portal's events still bubble through the REACT tree, so
-                  // the panel's browser chords would read what is typed here.
-                  onKeyDown={(event) => event.stopPropagation()}
-                  className="h-6 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-2xs outline-none focus:border-ring"
-                />
-                <Button type="submit" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-2xs" disabled={!parseViewportInput(customSize)}>
-                  Set
-                </Button>
-              </form>
-            </PopoverContent>
-          </Popover>
-        ) : null}
         {/* WHICH IDENTITY THIS SESSION BROWSES AS. Always visible when the
             shell knows: a person with several accounts should never have to
             guess which one a page was loaded with. */}
@@ -1754,7 +1768,305 @@ export function DesktopBrowserSurface({
             {describeExtensionHealth(extension).tone === "error" ? <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-destructive" /> : null}
           </button>
         ) : null}
+        {/* ── the options menu (#473) ───────────────────────────────────────
+            ONE `⋯` AT THE RIGHT END, where every browser keeps its tools.
+            What used to be spread across this row, the viewport popover and
+            the tab's own menu is behind this: reloading past the cache, the
+            debugger, a window of its own, the device toolbar, appearance,
+            zoom, which identity this is, and clearing what that identity
+            holds.
+
+            IT TAKES THE NATIVE VIEW DOWN WHILE IT IS OPEN, like every menu in
+            this panel — `openOverlay` is the single state that says so, and
+            joining it is the whole point of there being one. */}
+        <Popover
+          open={openOverlay === "options"}
+          onOpenChange={(open) => (open ? setOpenOverlay("options") : closeOverlay())}
+        >
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Browser options"
+                title="Browser options"
+                className="flex shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+              >
+                <EllipsisIcon className="size-3.5 shrink-0" />
+              </button>
+            }
+          />
+          <PopoverContent align="end" side="bottom" sideOffset={6} aria-label="Browser options" className="w-64 gap-0 p-1">
+            {optionsPane === "menu" ? (
+              <>
+                <button type="button" disabled={!activeTab} onClick={() => { closeOverlay(); void act({ action: "hard-reload" }); }} className={cn(menuRow, "pl-9")}>
+                  Hard reload
+                </button>
+                {/* The #423 path, said from here as well as from ⌥⌘I. The row
+                    names the direction it will go, because the tab strip's
+                    glyph is the only other place this is visible. */}
+                <button type="button" disabled={!activeTab} onClick={() => { closeOverlay(); void act({ action: "toggle-devtools" }); }} className={cn(menuRow, "pl-9")}>
+                  {activeTab?.devtools ? "Close DevTools" : "Open DevTools"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!activeTab}
+                  title={
+                    activeTab?.preview
+                      ? "Put this tab back in the panel."
+                      : "Move this tab into a window of its own. The panel has nothing to show meanwhile — it is the same page, not a copy."
+                  }
+                  onClick={() => { closeOverlay(); void act({ action: activeTab?.preview ? "end-preview" : "preview" }); }}
+                  className={cn(menuRow, "pl-9")}
+                >
+                  <span className="min-w-0 flex-1">{activeTab?.preview ? "Bring back from separate window" : "Open separate preview window"}</span>
+                  {!activeTab?.preview && <SquareArrowOutUpRightIcon aria-hidden className="size-3 shrink-0" />}
+                </button>
+                {/* THE DEVICE TOOLBAR IS THE FIXED VIEWPORT. Off is fit mode,
+                    which is why this is one toggle and not a toggle plus a
+                    mode — see `deviceToolbar`. */}
+                <button
+                  type="button"
+                  aria-pressed={deviceToolbar}
+                  disabled={!activeTab?.viewport}
+                  title="Lay the page out at a chosen size instead of following the panel."
+                  onClick={() => {
+                    if (!activeTab) return;
+                    closeOverlay();
+                    void act({ action: "resize", index: activeTab.index, mode: deviceToolbar ? "fit" : "fixed" });
+                  }}
+                  className={cn(menuRow, deviceToolbar && "text-foreground")}
+                >
+                  <CheckIcon className={cn("size-3.5 shrink-0", deviceToolbar ? "opacity-100" : "opacity-0")} />
+                  <span className="min-w-0 flex-1">Show device toolbar</span>
+                </button>
+                <button type="button" disabled={!activeTab} onClick={() => setOptionsPane("appearance")} className={cn(menuRow, "pl-9")}>
+                  <span className="min-w-0 flex-1">Appearance</span>
+                  <span className="shrink-0 text-3xs text-muted-foreground">{APPEARANCES.find((entry) => entry.key === (activeTab?.colorScheme ?? "system"))?.label}</span>
+                  <ChevronRightIcon aria-hidden className="size-3 shrink-0" />
+                </button>
+                <div aria-hidden className="my-1 h-px bg-border" />
+                {/* ZOOM IS A ROW, not three rows: − and + step the same number
+                    the middle reads out, and the readout is the reset. */}
+                <div className="flex items-center gap-1 px-2 py-1">
+                  <span className="min-w-0 flex-1 text-[0.75rem] text-muted-foreground">Zoom</span>
+                  <button
+                    type="button"
+                    aria-label="Zoom out"
+                    disabled={!activeTab}
+                    onClick={() => void act({ action: "zoom", direction: "out" })}
+                    className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-50"
+                  >
+                    <MinusIcon className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Reset zoom to 100%. Currently ${zoomLabel(activeTab?.zoom)}.`}
+                    title="Reset to 100%"
+                    disabled={!activeTab}
+                    onClick={() => void act({ action: "zoom", direction: "reset" })}
+                    className="w-12 shrink-0 rounded-md py-1 text-center font-mono text-3xs text-foreground hover:bg-accent/60 disabled:opacity-50"
+                  >
+                    {zoomLabel(activeTab?.zoom)}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Zoom in"
+                    disabled={!activeTab}
+                    onClick={() => void act({ action: "zoom", direction: "in" })}
+                    className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-50"
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </button>
+                </div>
+                {state?.profile && bridge.setScopeProfile ? (
+                  <>
+                    <div aria-hidden className="my-1 h-px bg-border" />
+                    {/* The profile's own menu is where identities are chosen;
+                        this row says which one you are in and opens it, so the
+                        glyph on the row above is not the only way in. */}
+                    <button type="button" onClick={() => { closeOverlay(); setOpenOverlay("profile"); }} className={cn(menuRow, "pl-9")}>
+                      <span className="min-w-0 flex-1 truncate">Profile: {state.profile.label}</span>
+                      <IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />
+                    </button>
+                  </>
+                ) : null}
+                {bridge.clearBrowsingData && activeTab ? (
+                  <>
+                    <button type="button" onClick={() => setOptionsPane("cookies")} className={cn(menuRow, "pl-9")}>
+                      Clear cookies…
+                    </button>
+                    <button type="button" onClick={() => setOptionsPane("cache")} className={cn(menuRow, "pl-9")}>
+                      Clear cache…
+                    </button>
+                  </>
+                ) : null}
+              </>
+            ) : optionsPane === "appearance" ? (
+              <>
+                <button type="button" onClick={() => setOptionsPane("menu")} className={cn(menuRow, "text-foreground")}>
+                  <ChevronLeftIcon aria-hidden className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">Appearance</span>
+                </button>
+                <div aria-hidden className="my-1 h-px bg-border" />
+                {APPEARANCES.map((entry) => {
+                  const on = (activeTab?.colorScheme ?? "system") === entry.key;
+                  return (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => { closeOverlay(); void act({ action: "appearance", scheme: entry.key }); }}
+                      className={cn(menuRow, on && "text-foreground")}
+                    >
+                      <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                      <span className="min-w-0 flex-1">{entry.label}</span>
+                    </button>
+                  );
+                })}
+                {/* Said plainly: this is what the PAGE is told, not what Telar
+                    or the OS is set to. A site with no dark stylesheet looks
+                    the same either way, and that is not this control failing. */}
+                <p className="px-2 pt-1.5 pb-1 text-3xs leading-snug text-muted-foreground">
+                  What this page is told to prefer. It changes nothing about Telar&apos;s own appearance.
+                </p>
+              </>
+            ) : (
+              /* THE CONFIRM, AND IT NAMES THE WHOLE OF WHAT IT DOES. The shell
+                 clears the tab's PARTITION — every site this identity is signed
+                 into, not the one in front of you — so the sentence leads with
+                 the profile and names the page as what you will notice first. */
+              <div className="flex flex-col gap-1.5 p-1.5">
+                <p className="text-[0.75rem] font-medium">
+                  {optionsPane === "cookies" ? "Clear cookies" : "Clear cache"} for {state?.profile?.label ?? "this profile"}?
+                </p>
+                <p className="text-3xs leading-snug text-muted-foreground">
+                  {optionsPane === "cookies"
+                    ? `This signs ${state?.profile?.label ?? "this profile"} out of every site it is signed into, ${activeOrigin ? siteLabel(activeOrigin) : "this page"} included. Tabs already open stay open; they just stop being signed in.`
+                    : `This empties the cached files ${state?.profile?.label ?? "this profile"} holds for every site, ${activeOrigin ? siteLabel(activeOrigin) : "this page"} included. Nothing is signed out.`}
+                </p>
+                <div className="flex justify-end gap-1">
+                  <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-2xs" onClick={() => setOptionsPane("menu")}>
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={clearing}
+                    className="h-6 px-2 text-2xs"
+                    onClick={() => {
+                      const kind = optionsPane === "cookies" ? "cookies" : "cache";
+                      closeOverlay();
+                      void clearData(kind);
+                    }}
+                  >
+                    {optionsPane === "cookies" ? "Clear cookies" : "Clear cache"}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
       </form>
+      {/* ── the device toolbar (#473) ─────────────────────────────────────
+          THE VIEWPORT CONTROL, MOVED OFF THE ADDRESS ROW. It used to be a
+          popover behind a glyph up there, which is where "Fit panel" was said
+          and where the address bar's width went. Here it is a row of its own,
+          shown exactly while the tab HAS a fixed viewport — turning it off in
+          the options menu is what puts the tab back in fit mode, so there is
+          one fact and not a toggle that can disagree with it.
+
+          A ROW, NOT A PORTAL, for the toolbar itself: it changes the panel's
+          LAYOUT, so the native view is pushed down rather than covered (see
+          `lib/native-view-overlay.ts`). The preset MENU inside it is a portal,
+          and joins `openOverlay` like every other menu here. */}
+      {deviceToolbar && activeTab?.viewport ? (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1" aria-label="Device toolbar">
+          <MonitorSmartphoneIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          <Popover open={openOverlay === "device"} onOpenChange={(open) => (open ? setOpenOverlay("device") : closeOverlay())}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Device: ${describeViewport(activeTab.viewport, "fixed")}`}
+                  className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+                >
+                  <span>{VIEWPORT_PRESETS.find((preset) => preset.key === activeTab.viewport?.preset)?.label ?? "Custom"}</span>
+                  <ChevronRightIcon aria-hidden className="size-3 shrink-0 rotate-90" />
+                </button>
+              }
+            />
+            <PopoverContent align="start" side="bottom" sideOffset={6} aria-label="Device preset" className="w-52 gap-0 p-1">
+              {VIEWPORT_PRESETS.map((preset) => {
+                const on = activeTab.viewport?.preset === preset.key;
+                return (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => { closeOverlay(); void act({ action: "resize", index: activeTab.index, preset: preset.key }); }}
+                    className={cn(menuRow, on && "text-foreground")}
+                  >
+                    <CheckIcon className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+                    <span className="min-w-0 flex-1">{preset.label}</span>
+                    <span className="shrink-0 font-mono text-3xs text-muted-foreground">{preset.width}×{preset.height}</span>
+                  </button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
+          {/* THE TWO NUMBERS, TYPEABLE. Committed on submit or blur rather
+              than per keystroke — a page relaid out at "1" on the way to
+              "1024" is a page that reflowed for nothing. */}
+          <form
+            className="flex shrink-0 items-center gap-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              commitSize();
+            }}
+          >
+            <input
+              aria-label="Viewport width"
+              inputMode="numeric"
+              value={draftSize?.width ?? String(activeTab.viewport.width)}
+              onChange={(event) => setSizeDraft({ tabId: activeTab.id, width: event.target.value, height: draftSize?.height ?? String(activeTab.viewport!.height) })}
+              // A portal's events bubble through the REACT tree, so the panel's
+              // browser chords would otherwise read what is typed here.
+              onKeyDown={(event) => event.stopPropagation()}
+              onBlur={commitSize}
+              className="h-6 w-14 rounded-md border border-border bg-background px-1.5 text-center font-mono text-2xs outline-none focus:border-ring"
+            />
+            <span aria-hidden className="text-3xs text-muted-foreground">×</span>
+            <input
+              aria-label="Viewport height"
+              inputMode="numeric"
+              value={draftSize?.height ?? String(activeTab.viewport.height)}
+              onChange={(event) => setSizeDraft({ tabId: activeTab.id, width: draftSize?.width ?? String(activeTab.viewport!.width), height: event.target.value })}
+              onKeyDown={(event) => event.stopPropagation()}
+              onBlur={commitSize}
+              className="h-6 w-14 rounded-md border border-border bg-background px-1.5 text-center font-mono text-2xs outline-none focus:border-ring"
+            />
+          </form>
+          <button
+            type="button"
+            aria-label="Rotate the viewport"
+            title="Swap width and height"
+            onClick={() => {
+              setSizeDraft(undefined);
+              void act({ action: "resize", index: activeTab.index, width: activeTab.viewport!.height, height: activeTab.viewport!.width });
+            }}
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <FlipHorizontalIcon className="size-3.5" />
+          </button>
+          {/* WHAT THE PANEL IS ACTUALLY SHOWING IT AT. A page laid out at
+              1440 in a 500px column is drawn at about a third, and the person
+              deserves to know that before they judge a layout by it. */}
+          <span className="ml-auto shrink-0 font-mono text-3xs text-muted-foreground" title="How much the panel is scaling the page down to fit">
+            {Math.round((state?.presentation?.scale ?? 1) * 100)}%
+          </span>
+        </div>
+      ) : null}
       {/* A GENUINE BROWSER-ACTION FAILURE on this scope, surfaced rather than
           swallowed by the silent refresh (which hid real toolbar errors).
           Dismissible; it also clears on the next successful action. */}
@@ -1795,7 +2107,7 @@ export function DesktopBrowserSurface({
             coordinates; drawn here relative to the host so a phone-sized
             page in a wide panel reads as a phone, not as a page with odd
             margins. Pointer-transparent — the native view is on top. */}
-        {viewportMode === "fixed" && activeTab?.viewport && addressValue(activeTab.url) !== "" && !activeTab.sleeping && hostSize ? (
+        {viewportMode === "fixed" && activeTab?.viewport && addressValue(activeTab.url) !== "" && !activeTab.sleeping && !activeTab.preview && hostSize ? (
           <DeviceFrame
             viewport={activeTab.viewport}
             mode={viewportMode}
@@ -1814,12 +2126,24 @@ export function DesktopBrowserSurface({
             <MoonIcon className="mr-1.5 size-3.5" /> Remembered page — loading…
           </div>
         )}
+        {/* THE TAB IS IN A WINDOW OF ITS OWN (#473), so there is nothing here
+            to draw — the live view was MOVED, not copied. Said rather than
+            left as an empty grey box, with the way back on it. */}
+        {activeTab?.preview && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-xs text-muted-foreground">
+            <SquareArrowOutUpRightIcon aria-hidden className="size-4" />
+            <p>This tab is open in a window of its own.</p>
+            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-2xs" onClick={() => void act({ action: "end-preview" })}>
+              Bring it back
+            </Button>
+          </div>
+        )}
         {/* THE START PAGE — no tabs, or a blank active tab. DOM, under
             nothing: the shell hides the native view of a blank tab so this
             can be read and clicked (browser-manager isBlank). Opening a
             site navigates the blank tab in place; with no tab at all it
             opens one. */}
-        {bound && state && ((state.tabs.length === 0) || (activeTab && !activeTab.sleeping && addressValue(activeTab.url) === "" && !activeTab.loading)) && (
+        {bound && state && ((state.tabs.length === 0) || (activeTab && !activeTab.sleeping && !activeTab.preview && addressValue(activeTab.url) === "" && !activeTab.loading)) && (
           <BrowserStartPage
             scopeKey={scopeKey}
             onOpen={(url) => void act(activeTab && addressValue(activeTab.url) === "" ? { action: "navigate", url } : { action: "new", url })}

@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // The tab strip's "Open in system browser". http/https only, decided in
     // the main process — see the handler there.
     openExternal: (url) => ipcRenderer.invoke("telar:browser:open-external", { url }),
+    // The options menu's "Clear cookies" / "Clear cache" (#473). Destructive
+    // and PROFILE-WIDE, so the main process refuses anyone but the cockpit's
+    // own top frame — see the handler there.
+    clearBrowsingData: (scopeKey, kind) => ipcRenderer.invoke("telar:browser:clear-data", { scopeKey, kind }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
     setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),

@@ -46,6 +46,26 @@ export function clampViewport(size: ViewportSize): ViewportSize {
 }
 
 /**
+ * THE DEVICE TOOLBAR'S TWO FIELDS, READ AS A SIZE (#473).
+ *
+ * Undefined for anything that is not yet a size, which is the whole point:
+ * the fields commit on submit and on blur, and "1" on the way to "1024" — or
+ * an emptied field on the way to anything — must relayout nothing. A negative
+ * or absurd number is not refused but clamped, the same as every other way
+ * into a viewport, because the host would clamp it regardless and a field
+ * that silently did nothing would read as broken.
+ */
+export function sizeFromFields(width: string, height: string): ViewportSize | undefined {
+  const w = width.trim();
+  const h = height.trim();
+  if (!w || !h) return undefined;
+  // `Number` on its own accepts "1e3", " 12 " and "0x10"; a size a person
+  // typed into a numeric field is digits.
+  if (!/^\d+$/.test(w) || !/^\d+$/.test(h)) return undefined;
+  return clampViewport({ width: Number(w), height: Number(h) });
+}
+
+/**
  * A size a person typed — "1024x768", "1024 × 768", "1024,768" — clamped to
  * what the host accepts. Undefined for anything that is not two numbers.
  */
