@@ -14,14 +14,15 @@
 // — translucent light was never a lighter version of translucent dark, it was a
 // dark frost with a pale sheet over it.
 //
-// WHY "sidebar" FOR THE LIGHT HALF. macOS offers three materials that take a
-// light appearance cleanly: "popover", "sidebar" and "under-window". The last
-// is the milkiest — that is why "hud" was chosen for dark in the first place
-// (main.js says so) — and "popover" is tuned for a small floating box rather
-// than a window-sized ground. "sidebar" is the material the system itself puts
-// behind a full-height light surface that still has to be read against, which
-// is exactly this window. The two constants are named so swapping one is a
-// one-line change if the nightly says otherwise.
+// WHY "fullscreen-ui" FOR THE LIGHT HALF. The first pick was "sidebar", and
+// the nightly said otherwise: side by side with dark at the same slider, light
+// read as a near-solid pane — "sidebar" is one of the MOST opaque materials
+// macOS offers (it is built to keep a source list readable over anything), so
+// almost no desktop came through. "fullscreen-ui" is the clearest material that
+// still takes a light appearance ("hud" is dark by construction), which is the
+// same reason "hud" won for dark. "popover" is tuned for a small floating box,
+// "under-window" is the milkiest. The two constants are named so swapping one
+// is a one-line change if the next nightly says otherwise.
 //
 // NOT A DARK/LIGHT PAIR OF THE SAME MATERIAL, because macOS does not offer one:
 // the materials are distinct recipes, and the scheme is what selects between
@@ -31,7 +32,7 @@
 const DARK_MATERIAL = "hud";
 
 /** The light-appearance material a full-height ground reads cleanest on. */
-const LIGHT_MATERIAL = "sidebar";
+const LIGHT_MATERIAL = "fullscreen-ui";
 
 /**
  * The material this window should wear, or `null` for no vibrancy layer at all.
