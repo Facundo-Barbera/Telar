@@ -16,18 +16,27 @@
  * of this list (lib/built-in-looks.ts), and the composer below is what a look
  * is made of.
  *
- * A LIST, NOT A STRIP. It was an `overflow-x-auto` rank of thumbnails running
- * off the right edge of the pane, which cost three things a settings pane cannot
- * afford: looks past the fourth were INVISIBLE until you thought to scroll
- * sideways inside a vertically-scrolling page; a 128px card had room for a
- * picture and a truncated name and nothing else; and the actions hid behind a
- * hover, which is not a thing a keyboard or a touchscreen has.
+ * A TABLE, NOT A STACK OF CARDS (#471). It was a strip of thumbnails, then a
+ * stack of full-height `Row`s — and the owner ran the build: "the looks UI is
+ * too long; when you land on the looks you have to scroll a lot. We should use
+ * tables for this like we do in other interfaces." Ten built-ins as rows with a
+ * 56px thumbnail and a control column was most of a screen before a reader got
+ * to the composer that the whole pane is actually about. A person looking at a
+ * list of looks is COMPARING them, which is what columns are for — the same
+ * reasoning remote-section.tsx's device table already lives under.
  *
- * ONE GESTURE, ONE MEANING. Clicking a row WEARS the look. It used to SELECT one
- * — loaded into a draft, previewed, worn only on Apply — with Wear hidden behind
- * a hover as the shortcut past all that. There is no draft, so there is nothing
- * for a second gesture to mean. Import goes the same way: the file becomes a
- * card and is worn.
+ * SO THE ROW IS THREE CELLS: what it looks like and what it is called, what it
+ * carries in one phrase, and what you can do to it. Ten rows fit in about 320px,
+ * which is the number the ask was actually about.
+ *
+ * ONE GESTURE, ONE MEANING. The NAME wears the look — it is the row's primary
+ * action and the only one that is always visible, because wearing is the thing
+ * you came here to do. The other three (rename, export, delete) sit in a
+ * trailing cell that appears on hover or focus: they act on a card you already
+ * own, so they can wait to be reached for, and `group-focus-within` is what
+ * keeps them reachable by keyboard rather than by pointer alone.
+ *
+ * Import goes the same way as wearing: the file becomes a card and is worn.
  *
  * SAVE LIVES HERE, on the group that holds the list. It photographs both
  * appearance stores as they stand (`captureLook`) — which is the whole of what
@@ -124,13 +133,16 @@ function LookStrip({ look }: { look: Look }) {
 }
 
 /**
- * ONE LOOK, AS A ROW.
+ * ONE LOOK, AS A TABLE ROW.
  *
- * The thumbnail is the avatar (`LookStrip`, the same one the host row wears),
- * the label is the name, the hint is what the bundle carries, and the controls
- * are the four things you can do to a card: wear it, rename it, export it,
- * delete it. Nothing hides behind a hover — the strip's actions did, and a
- * hover is not an affordance a keyboard or a touchscreen has.
+ * The thumbnail is small on purpose — 40px wide, an aspect-video sliver — which
+ * is what lets ten of these fit a short window. It is still the real compiled
+ * tile (look-thumb.tsx), not a swatch: at that size it says "dark, with a
+ * gradient" and that is the whole job.
+ *
+ * THE NAME IS THE WEAR BUTTON. It reads as a name and behaves as the row's
+ * action, which is the one thing every reader wants from this list. When the
+ * look is already on it is inert and the Worn mark says why.
  *
  * RENAMING IS INLINE, and it is the only editing a Look supports: everything
  * else about a look is changed by wearing it and moving the controls below,
@@ -170,19 +182,18 @@ function LookRow({
   };
 
   return (
-    // No `id`: the label is a component, so `Row` derives no anchor — and an
-    // anchor spliced from a look's own id would be one that moves with data,
-    // which is exactly what settings-shell.tsx warns against.
-    <Row
-      label={
+    <tr className="group border-b border-border/60 align-middle last:border-0">
+      <td className="py-1.5 pr-3 pl-4">
         <span className="flex items-center gap-2.5">
-          <LookStrip look={look} />
+          <span className="w-10 shrink-0">
+            <LookThumb look={look} />
+          </span>
           {renaming ? (
             <Input
               autoFocus
               value={draftName}
               aria-label={`Rename ${look.label}`}
-              className="h-7 w-44"
+              className="h-6 w-40 px-1.5 text-xs"
               onChange={(event) => setDraftName(event.target.value)}
               onBlur={commitRename}
               onKeyDown={(event) => {
@@ -197,23 +208,33 @@ function LookRow({
               }}
             />
           ) : (
-            <span className="min-w-0 truncate">{look.label}</span>
+            <button
+              type="button"
+              disabled={worn}
+              // No title when worn: the mark beside it already says so, and two
+              // elements claiming "the window has this on" is two claims.
+              {...(worn ? {} : { title: `Wear ${look.label}` })}
+              onClick={onWear}
+              className="min-w-0 truncate text-left font-medium decoration-dotted underline-offset-2 hover:underline disabled:cursor-default disabled:no-underline"
+            >
+              {look.label}
+            </button>
+          )}
+          {worn && (
+            <span className="shrink-0 font-mono text-4xs tracking-[0.08em] text-primary uppercase" title="The window has this look on">
+              Worn
+            </span>
           )}
         </span>
-      }
-      hint={summary}
-      {...(worn
-        ? {
-            status: (
-              <span className="font-mono text-4xs tracking-[0.08em] text-primary uppercase" title="The window has this look on">
-                Worn
-              </span>
-            ),
-          }
-        : {})}
-      control={
-        <div className="flex items-center gap-0.5">
-          <Button size="sm" variant={worn ? "ghost" : "secondary"} disabled={worn} title={`Wear ${look.label}`} onClick={onWear}>
+      </td>
+      <td className="py-1.5 pr-3 text-muted-foreground">
+        <span className="block truncate">{summary}</span>
+      </td>
+      <td className="py-1.5 pr-4">
+        {/* HOVER OR FOCUS, and focus is the half that matters: the buttons stay
+            in the tab order at opacity 0, so reaching one reveals the set. */}
+        <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <Button size="sm" variant="ghost" disabled={worn} title={`Wear ${look.label}`} onClick={onWear}>
             Wear
           </Button>
           {onRename && (
@@ -236,14 +257,14 @@ function LookRow({
             </Button>
           )}
           {onRemove && (
-            // WHAT DELETING DOES NOT DESTROY. A look is a bundle of references —
-            // removing the card takes the bundle off the shelf and leaves the
-            // theme it names in the library, and the window keeps whatever it
-            // has on. Said here, where the hand is, rather than nowhere.
+            // WHAT DELETING DOES NOT DESTROY. Removing the card takes the
+            // composition off the shelf; the window keeps whatever it has on,
+            // and the built-ins below are a table this build rebuilds every
+            // load. Said here, where the hand is, rather than nowhere.
             <Button
               size="icon-sm"
               variant="ghost"
-              title="Take this look off the shelf. Its theme stays in the library, and the window keeps what it has on."
+              title="Take this look off the shelf. The window keeps what it has on."
               aria-label={`Delete ${look.label}`}
               onClick={onRemove}
             >
@@ -251,8 +272,8 @@ function LookRow({
             </Button>
           )}
         </div>
-      }
-    />
+      </td>
+    </tr>
   );
 }
 
@@ -512,30 +533,62 @@ export function LooksSection({ onWear }: { onWear: (look: Look) => void }) {
         }}
       />
       {error && <p className="py-1.5 text-xs text-warning">{error}</p>}
+      {/* THE HOST STAYS A ROW, not a table row. It is not a card on the shelf:
+          it is a SOURCE with a follow switch and four different things it can
+          say about itself, and squeezing that into three columns headed
+          Look/Carries/Actions would be a table lying about what its rows are. */}
       {!isHost && <HostLookRow onWear={onWear} />}
-      {looks.map((look) => (
-        <LookRow
-          key={look.id}
-          look={look}
-          summary={lookSummary(look)}
-          worn={worn(look)}
-          onWear={() => onWear(look)}
-          onRename={(label) => {
-            const next = upsertLook(looks, { ...look, label });
-            if (next) commit(next);
-          }}
-          onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
-          onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
-        />
-      ))}
-      {/* THE DEFAULTS, AFTER WHAT YOU SAVED. They are a table this build
-          rebuilds every load, not cards — wearing one copies its composition
-          into the live store and installs nothing, and Save is what mints a
-          card of your own from whatever is on. Which is also why a default has
-          no rename, export or delete: there is nothing of yours to act on. */}
-      {BUILT_IN_LOOKS.map((look) => (
-        <LookRow key={look.id} look={look} summary={lookSummary(look)} worn={worn(look)} onWear={() => onWear(look)} />
-      ))}
+      {/* `-mx-4` because the group pads its direct children and the cells do
+          their own padding — the same bleed remote-section.tsx's table uses.
+          NO `max-h`: the point of the table is that ten looks fit without
+          scrolling, and a scroll box inside a scrolling pane would put that
+          back. */}
+      <div className="-mx-4">
+        <table className="w-full border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b border-border/60 text-2xs font-normal tracking-wide text-muted-foreground uppercase">
+              <th scope="col" className="py-1.5 pr-3 pl-4 font-normal">
+                Look
+              </th>
+              <th scope="col" className="py-1.5 pr-3 font-normal">
+                Carries
+              </th>
+              {/* The actions column is headed by nothing: its contents are
+                  invisible until reached for, and a heading over empty space
+                  would be the one thing on the row that never goes away. */}
+              <th scope="col" className="py-1.5 pr-4 font-normal">
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {looks.map((look) => (
+              <LookRow
+                key={look.id}
+                look={look}
+                summary={lookSummary(look)}
+                worn={worn(look)}
+                onWear={() => onWear(look)}
+                onRename={(label) => {
+                  const next = upsertLook(looks, { ...look, label });
+                  if (next) commit(next);
+                }}
+                onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
+                onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
+              />
+            ))}
+            {/* THE DEFAULTS, AFTER WHAT YOU SAVED. They are a table this build
+                rebuilds every load, not cards — wearing one copies its
+                composition into the live store and installs nothing, and Save is
+                what mints a card of your own from whatever is on. Which is also
+                why a default has no rename, export or delete: there is nothing
+                of yours to act on. */}
+            {BUILT_IN_LOOKS.map((look) => (
+              <LookRow key={look.id} look={look} summary={lookSummary(look)} worn={worn(look)} onWear={() => onWear(look)} />
+            ))}
+          </tbody>
+        </table>
+      </div>
     </SettingsGroup>
   );
 }

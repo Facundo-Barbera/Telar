@@ -148,21 +148,45 @@ describe("the rows settings search points at", () => {
  * scroller, a row per look carrying a line about what it holds, actions that are
  * real buttons, and no second grid anywhere.
  */
-describe("the Looks gallery reads as a list", () => {
+/**
+ * A TABLE, BECAUSE THE LIST WAS TOO LONG — round three of #471. "The looks UI
+ * is too long; when you land on the looks you have to scroll a lot. We should
+ * use tables for this like we do in other interfaces." Ten built-ins have to
+ * fit a short window, which is what these assertions are actually about.
+ */
+describe("the Looks gallery reads as a table", () => {
   /** The section `SettingsGroup` draws for the gallery, found by its caption. */
   function looksGroup(): HTMLElement | null {
     return [...host.querySelectorAll("section")].find((section) => section.querySelector("h4")?.textContent === "Looks") ?? null;
   }
 
-  test("nothing in it scrolls sideways", () => {
+  test("nothing in it scrolls, sideways or otherwise", () => {
     expect(looksGroup()?.querySelector(".overflow-x-auto")).toBeNull();
+    // A scroll box inside a scrolling pane is the thing the table replaced.
+    expect(looksGroup()?.querySelector(".overflow-y-auto")).toBeNull();
+    expect([...(looksGroup()?.querySelectorAll("*") ?? [])].some((node) => /(^|\s)max-h-/.test(node.className ?? ""))).toBe(false);
+  });
+
+  test("it is one table with a row per look, headed by what the columns are", () => {
+    const table = looksGroup()?.querySelector("table");
+    expect(table).not.toBeNull();
+    expect([...(table?.querySelectorAll("thead th") ?? [])].map((cell) => cell.textContent)).toEqual(["Look", "Carries", "Actions"]);
+    // Ten built-ins (lib/built-in-looks.ts) and nothing saved on a fresh store.
+    expect(table?.querySelectorAll("tbody tr") ?? []).toHaveLength(10);
   });
 
   test("every default is a row of its own, with a Wear button on it", () => {
-    // Ten built-ins (lib/built-in-looks.ts), none of them worn on a fresh store
-    // — except Telar, which IS the fresh store's composition.
+    // None of them worn on a fresh store — except Telar, which IS the fresh
+    // store's composition, and whose Wear is therefore disabled.
     const wears = [...(looksGroup()?.querySelectorAll("button") ?? [])].filter((button) => button.textContent === "Wear");
     expect(wears.length).toBeGreaterThanOrEqual(9);
+  });
+
+  /** THE NAME IS THE ROW'S ACTION. Wearing is what a reader came here to do, so
+   *  it is the one control that is never behind a hover. */
+  test("a look's name wears it, and says so", () => {
+    const named = [...(looksGroup()?.querySelectorAll("tbody button") ?? [])].find((button) => button.textContent === "Dusk");
+    expect(named?.getAttribute("title")).toBe("Wear Dusk");
   });
 
   test("a row says what the look carries, not just what it is called", () => {
