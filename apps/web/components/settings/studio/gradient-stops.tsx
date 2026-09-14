@@ -12,9 +12,18 @@
  * THE STOP STRIP IS THE CONTROL. A gradient is a thing you look at, so the
  * primary affordance is the gradient itself: click the ramp to add a stop where
  * you clicked, drag a handle to move one. Under it sits a colour input per
- * stop, and under that the position and fade of whichever stop you last
+ * stop, and under that the colour, position and fade of whichever stop you last
  * touched. The numbers are still there — a slider is how you get a stop to
  * exactly 50% — but nobody has to read them to work.
+ *
+ * COLOUR IS A CONTROL, NOT A SWATCH YOU HAPPEN TO BE ABLE TO CLICK (#471). The
+ * first cut of this editor put an `<input type="color">` behind each stop's
+ * swatch and stopped there, which meant the only way to set a colour was to
+ * open the operating system's colour dialog and the only way to know that was
+ * to try clicking. The selected stop now carries a real field — a large swatch,
+ * a hex input that also reads `oklch(...)`, and an eyedropper where the browser
+ * has one — and under it the colours already in play, because most stops want a
+ * colour this app is wearing rather than a new one.
  *
  * ONE GRADIENT, NOT A PAIR. This carried two specs and a Light/Dark toggle of
  * its own back when a custom gradient was a backdrop KIND answering for both
@@ -28,10 +37,19 @@
  * state.
  */
 
-import { useRef, useState } from "react";
-import { MinusIcon, PlusIcon } from "lucide-react";
+import { useRef, useState, useSyncExternalStore } from "react";
+import { MinusIcon, PipetteIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { normaliseColourText } from "@/lib/colour-field";
+import {
+  colourChips,
+  recentColoursSnapshot,
+  rememberStopColour,
+  serverRecentColoursSnapshot,
+  subscribeRecentColours,
+  type ColourChip,
+} from "@/lib/recent-colours";
 import {
   composeGradient,
   GRADIENT_LIMITS,
@@ -44,6 +62,24 @@ import {
 } from "@/lib/gradient-starters";
 import type { CompositionMode } from "@/lib/composition";
 import { Segmented } from "../settings-shell";
+import { HexField } from "./hex-field";
+
+/**
+ * The screen-wide colour picker, where there is one. Chromium has it; nothing
+ * else does yet, and the button is hidden rather than disabled where it is
+ * missing — a control that explains why it cannot work is worse than no control
+ * on a pane this dense.
+ */
+type EyeDropperApi = { open: (options?: { signal?: AbortSignal }) => Promise<{ sRGBHex: string }> };
+declare global {
+  interface Window {
+    EyeDropper?: new () => EyeDropperApi;
+  }
+}
+
+const subscribeToNothing = () => () => {};
+const eyeDropperIsPresent = () => typeof window !== "undefined" && "EyeDropper" in window;
+const noEyeDropperOnTheServer = () => false;
 
 function clamp(value: number, range: { min: number; max: number }): number {
   return Math.min(range.max, Math.max(range.min, Math.round(value)));
@@ -175,12 +211,15 @@ function StopColours({
   stops,
   selected,
   onSelect,
-  onChange,
+  onColour,
+  onSettle,
 }: {
   stops: readonly GradientStop[];
   selected: number;
   onSelect: (index: number) => void;
-  onChange: (index: number, next: GradientStop) => void;
+  onColour: (index: number, colour: string) => void;
+  /** The drag through the OS dialog is over — see `GradientStops`. */
+  onSettle: (colour: string) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -194,9 +233,10 @@ function StopColours({
             value={/^#[0-9a-fA-F]{6}$/.test(stop.color) ? stop.color : "#000000"}
             onChange={(event) => {
               onSelect(index);
-              onChange(index, { ...stop, color: event.target.value });
+              onColour(index, event.target.value);
             }}
             onFocus={() => onSelect(index)}
+            onBlur={(event) => onSettle(event.target.value)}
             aria-label={`Stop ${index + 1} colour`}
             className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
           />
@@ -207,29 +247,140 @@ function StopColours({
   );
 }
 
-/** Where the selected stop sits and how opaque it is. The numbers are the exact
- *  answer the strip's drag approximates — and the only way to say 50%. */
+/**
+ * THE COLOURS ALREADY IN PLAY, one click each.
+ *
+ * Fixed chips first and always in the same place, then what this session has
+ * touched — lib/recent-colours.ts owns that order and the cap, and the reasons.
+ * A chip is a `<button>` rather than a swatch with a handler because it is one:
+ * it has a name, it is reachable by keyboard, and its title says what it is.
+ */
+function RecentColours({ chips, onPick }: { chips: readonly ColourChip[]; onPick: (colour: string) => void }) {
+  if (chips.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Colours already in play">
+      {chips.map((chip) => (
+        <button
+          key={`${chip.label}-${chip.color}`}
+          type="button"
+          title={`Use ${chip.label === chip.color ? chip.color : `${chip.label} (${chip.color})`}`}
+          aria-label={`Use ${chip.label}`}
+          onClick={() => onPick(chip.color)}
+          className="size-4 shrink-0 rounded-full ring-1 ring-inset ring-foreground/20 transition-transform hover:scale-110"
+          style={{ background: chip.color }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * THE SELECTED STOP'S COLOUR — the swatch, the value, and the screen.
+ *
+ * Three ways in, because they answer three different questions. The swatch is
+ * the OS dialog, for choosing a colour you have not got yet. The hex field is
+ * for a colour you HAVE got, in whatever notation you copied it in — including
+ * the `oklch(...)` the token rows one group up are written in. The eyedropper
+ * is for a colour that is on your screen and nowhere else: a screenshot, a
+ * photograph, another window.
+ */
+function StopColourField({
+  colour,
+  onColour,
+  onSettle,
+}: {
+  colour: string;
+  onColour: (colour: string) => void;
+  onSettle: (colour: string) => void;
+}) {
+  // Whether the browser has one is an external fact, true before React ran and
+  // never changing — the same idiom (and the same reason) as the appearance
+  // pane's own "is there a desktop shell?". The server says no, so hydration
+  // agrees with it and the button appears on the client's first paint.
+  const hasEyeDropper = useSyncExternalStore(subscribeToNothing, eyeDropperIsPresent, noEyeDropperOnTheServer);
+
+  const hex = normaliseColourText(colour) ?? "#000000";
+  const pick = async () => {
+    const EyeDropper = window.EyeDropper;
+    if (!EyeDropper) return;
+    try {
+      const picked = normaliseColourText((await new EyeDropper().open()).sRGBHex);
+      if (picked) {
+        onColour(picked);
+        onSettle(picked);
+      }
+    } catch {
+      // Dismissed with Escape, which is a cancel rather than a failure.
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 text-2xs" onBlur={() => onSettle(colour)}>
+      <span className="w-10 shrink-0 text-muted-foreground">Colour</span>
+      {/* "Selected stop" rather than "Stop 3": the strip above already has a
+          `Stop 3 colour` input, and two controls answering to the same name is
+          worse for a screen reader than a name that says which one this is.
+          Which stop it belongs to is the heading immediately above it. */}
+      <input
+        type="color"
+        value={hex}
+        aria-label="Selected stop colour"
+        onChange={(event) => onColour(event.target.value)}
+        className="size-7 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+      />
+      <HexField value={hex} label="Selected stop" live className="min-w-0 flex-1" onCommit={onColour} />
+      {hasEyeDropper && (
+        <Button size="icon-sm" variant="ghost" className="shrink-0 text-muted-foreground" title="Pick a colour from the screen" aria-label="Pick a colour from the screen" onClick={() => void pick()}>
+          <PipetteIcon />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** What the selected stop IS: its colour, where it sits, and how opaque it is.
+ *  The numbers are the exact answer the strip's drag approximates — and the
+ *  only way to say 50%. */
 function StopControls({
   stop,
   index,
   removable,
+  chips,
   onChange,
+  onColour,
+  onSettle,
   onRemove,
 }: {
   stop: GradientStop;
   index: number;
   removable: boolean;
+  chips: readonly ColourChip[];
   onChange: (next: GradientStop) => void;
+  onColour: (colour: string) => void;
+  onSettle: (colour: string) => void;
   onRemove: () => void;
 }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg bg-muted/40 p-2.5">
       <div className="flex items-center gap-2 text-2xs">
-        <span className="text-muted-foreground">Stop {index + 1}</span>
-        <code className="min-w-0 flex-1 truncate font-mono text-3xs text-muted-foreground/70">{stop.color}</code>
+        <span className="min-w-0 flex-1 text-muted-foreground">Stop {index + 1}</span>
         <Button size="icon-sm" variant="ghost" disabled={!removable} title="Remove this stop" aria-label={`Remove stop ${index + 1}`} onClick={onRemove}>
           <MinusIcon />
         </Button>
+      </div>
+      <StopColourField colour={stop.color} onColour={onColour} onSettle={onSettle} />
+      {/* Under the field it fills, and indented to its column, so the row reads
+          as part of the colour control rather than as a fourth thing. */}
+      <div className="flex pl-12">
+        <RecentColours
+          chips={chips}
+          onPick={(colour) => {
+            // Deliberate, and already a colour — worth remembering at once
+            // rather than waiting for a gesture that has already ended.
+            onColour(colour);
+            onSettle(colour);
+          }}
+        />
       </div>
       <label className="flex items-center gap-2 text-2xs">
         <span className="w-10 shrink-0 text-muted-foreground">At</span>
@@ -264,6 +415,7 @@ function StopControls({
 export function GradientStops({
   spec,
   mode,
+  colours,
   onChange,
   onClose,
 }: {
@@ -271,6 +423,9 @@ export function GradientStops({
   /** Which colour state this layer belongs to — the half a starter chip fills
    *  from, and the half its swatch shows. */
   mode: CompositionMode;
+  /** The app's own colours, which the chip row always offers: the base of each
+   *  state and the accent this window is wearing. */
+  colours: { light: string; dark: string; accent: string };
   onChange: (next: CustomGradientSpec) => void;
   onClose: () => void;
 }) {
@@ -278,6 +433,22 @@ export function GradientStops({
   const patch = (changes: Partial<CustomGradientSpec>) => onChange({ ...spec, ...changes });
   const at = Math.min(selected, spec.stops.length - 1);
   const stop = spec.stops[at];
+
+  const recent = useSyncExternalStore(subscribeRecentColours, recentColoursSnapshot, serverRecentColoursSnapshot);
+  const chips = colourChips({ ...colours, recent });
+
+  const setColour = (index: number, colour: string) => {
+    patch({ stops: spec.stops.map((entry, position) => (position === index ? { ...entry, color: colour } : entry)) });
+  };
+
+  /**
+   * REMEMBERED WHEN THE GESTURE ENDS, not while it is happening. A native
+   * colour dialog fires `change` continuously as the cursor moves through it,
+   * and a hex field that updates the stop live does the same per keystroke —
+   * either would fill a list of eight with eight shades of one drag. So the
+   * stop moves as you go and the memory takes the colour you stopped on.
+   */
+  const settle = (colour: string) => rememberStopColour(colour);
 
   return (
     <div className="rounded-xl bg-card ring-1 ring-foreground/10">
@@ -313,12 +484,7 @@ export function GradientStops({
         </div>
 
         <StopStrip spec={spec} selected={at} onSelect={setSelected} onChange={onChange} />
-        <StopColours
-          stops={spec.stops}
-          selected={at}
-          onSelect={setSelected}
-          onChange={(index, next) => patch({ stops: spec.stops.map((entry, position) => (position === index ? next : entry)) })}
-        />
+        <StopColours stops={spec.stops} selected={at} onSelect={setSelected} onColour={setColour} onSettle={settle} />
 
         <div className="grid gap-3 sm:grid-cols-[1fr_1fr]">
           <div className="flex flex-col gap-2.5">
@@ -401,6 +567,9 @@ export function GradientStops({
               stop={stop}
               index={at}
               removable={spec.stops.length > MIN_GRADIENT_STOPS}
+              chips={chips}
+              onColour={(colour) => setColour(at, colour)}
+              onSettle={settle}
               onChange={(next) => patch({ stops: spec.stops.map((entry, index) => (index === at ? next : entry)) })}
               onRemove={() => {
                 setSelected(Math.max(0, at - 1));

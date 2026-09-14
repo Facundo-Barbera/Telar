@@ -44,6 +44,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ChevronRightIcon } from "lucide-react";
+import { accentPrimary } from "@/lib/accent-colours";
 import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { detachFromHost } from "@/lib/host-follow";
@@ -228,7 +229,15 @@ export function AppearanceSection() {
           <PaletteStrip half={compositionHalf(composition, "dark")} label="Dark" current={mode === "dark"} />
         </div>
 
-        <LayerStack layers={state.layers} images={images} mode={mode} onChange={(layers, next) => compose(setLayers(mode, layers, next))} />
+        {/* The stop editor offers the app's own colours before the OS dialog:
+            both bases, and the accent in the state being edited. */}
+        <LayerStack
+          layers={state.layers}
+          images={images}
+          mode={mode}
+          colours={{ light: composition.light.base, dark: composition.dark.base, accent: accentPrimary(appearance.accent, mode) }}
+          onChange={(layers, next) => compose(setLayers(mode, layers, next))}
+        />
 
         <Row
           label="Match the other state"

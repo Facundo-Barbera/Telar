@@ -264,11 +264,17 @@ export function LayerStack({
   layers,
   images,
   mode,
+  colours,
   onChange,
 }: {
   layers: readonly SceneLayer[];
   images: Record<string, string>;
   mode: CompositionMode;
+  /** Forwarded to the stop editor, which offers them as stop colours: the base
+   *  of each state and the accent. The stack itself has no use for them — it is
+   *  the pane that knows the composition, and a gradient row is where they are
+   *  needed. */
+  colours: { light: string; dark: string; accent: string };
   /** Both together, always: a layer and the picture it names move as one, so
    *  the composition can never hold a stack whose images belong to another
    *  arrangement. */
@@ -456,6 +462,7 @@ export function LayerStack({
                 <GradientStops
                   spec={layer.spec}
                   mode={mode}
+                  colours={colours}
                   onChange={(spec) => write(setGradientSpec(scene, index, spec).layers)}
                   onClose={() => setOpen(null)}
                 />

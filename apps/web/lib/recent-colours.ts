@@ -121,9 +121,14 @@ export function serverRecentColoursSnapshot(): readonly string[] {
   return EMPTY;
 }
 
-/** Tests only: the list is a module-level session record with no way back to
- *  empty, which is right for the app and wrong for a test file. */
+/**
+ * Tests only: the list is a module-level session record with no way back to
+ * empty, which is right for the app and wrong for a test file.
+ *
+ * SILENT ON PURPOSE. It is called between mounts to set up a fresh one, and a
+ * test file that shares this module with another file's still-mounted tree
+ * would otherwise be re-rendering somebody else's component from its setup.
+ */
 export function forgetRecentColours(): void {
   recent = EMPTY;
-  for (const listener of listeners) listener();
 }
