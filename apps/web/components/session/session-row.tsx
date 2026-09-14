@@ -392,7 +392,42 @@ export function SessionRow({
    * exactly that. The countdown is the same one t3 puts on its snoozed rows,
    * and it takes the timestamp's place rather than sitting beside it.
    */
-  const statusSlot = session.draft ? (
+  /**
+   * THE CHECKOUT BEFORE ANYTHING ELSE — issue #496.
+   *
+   * `git worktree add` runs in the background now, so a worktree session exists
+   * for a few seconds before the directory it works in does. It outranks every
+   * other status because it outranks them in fact: nothing can be working,
+   * queued or blocked in a checkout that is not there, and the engine holds the
+   * session's turns until it is.
+   *
+   * A FAILURE SHOWS GIT'S OWN FIRST LINE rather than a word of ours. "Setup
+   * failed" would tell a reader only that they are stuck; `fatal: Unable to
+   * create '.git/index.lock'` tells them what to do about it. The rest of the
+   * stderr rides in `title`, because the slot is one line and git's is not.
+   */
+  const statusSlot = session.preparation ? (
+    <span
+      className={`inline-flex min-w-0 shrink items-center gap-1 text-2xs font-medium ${
+        session.preparation.state === "failed" ? "text-warning" : "text-muted-foreground"
+      } ${yieldOnHover}`}
+      title={session.preparation.error}
+    >
+      {session.preparation.state === "preparing" ? (
+        <>
+          <CircleDashedIcon className="size-3 animate-spin [animation-duration:3s]" />
+          <span role="status">Preparing</span>
+        </>
+      ) : (
+        <>
+          <CircleDotIcon className="size-3 shrink-0" />
+          <span role="status" className="truncate">
+            {session.preparation.error?.split("\n")[0]?.trim() || "Worktree setup failed"}
+          </span>
+        </>
+      )}
+    </span>
+  ) : session.draft ? (
     <span className={`shrink-0 text-2xs text-sidebar-foreground/45 ${yieldOnHover}`}>Draft</span>
   ) : snoozing && session.snoozedUntil !== undefined ? (
     <span className={`inline-flex shrink-0 items-center gap-1 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
