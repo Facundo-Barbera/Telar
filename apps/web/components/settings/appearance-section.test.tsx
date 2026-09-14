@@ -273,6 +273,84 @@ describe("the Composer group", () => {
     expect(tokens).toContain("A rail row under the pointer");
   });
 
+  /**
+   * GRADIENTS ARE AUTHORED, NOT PICKED — round three of #471. "It needs
+   * gradient customization. We give a lot of options; what if instead we let
+   * the user create them." There is one way to have a gradient now, and it is
+   * to build one; the eleven presets fill the editor and are then forgotten.
+   */
+  describe("a gradient layer", () => {
+    async function addGradient(): Promise<void> {
+      const add = [...(composerGroup()?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes("Gradient")) as
+        | HTMLButtonElement
+        | undefined;
+      await act(async () => {
+        add?.click();
+      });
+    }
+
+    test("there is one way to add one, and it opens its stops", async () => {
+      // "Gradient" beside "Custom" asked a reader to decide, before seeing
+      // anything, whether they were the sort of person who edits gradients.
+      const adders = [...(composerGroup()?.querySelectorAll("button") ?? [])].map((button) => button.textContent);
+      expect(adders.filter((text) => text?.includes("Gradient"))).toHaveLength(1);
+      expect(adders).not.toContain("Custom");
+
+      await addGradient();
+      expect(composerGroup()?.textContent).toContain("This gradient");
+      expect(composerGroup()?.textContent).toContain("Linear gradient");
+    });
+
+    test("every stop has a colour input, and the strip has a handle each", async () => {
+      await addGradient();
+      const colours = composerGroup()?.querySelectorAll('input[type="color"][aria-label^="Stop "]') ?? [];
+      const handles = [...(composerGroup()?.querySelectorAll("button") ?? [])].filter((button) =>
+        (button.getAttribute("aria-label") ?? "").match(/^Stop \d+, at \d+%$/),
+      );
+      // A fresh gradient opens on the two-stop default: one input and one
+      // draggable handle each, which is what "authored" is made of.
+      expect(colours).toHaveLength(2);
+      expect(handles).toHaveLength(2);
+      // …and the selected stop's own position and fade.
+      const labels = [...(composerGroup()?.querySelectorAll('input[type="range"]') ?? [])].map((input) => input.getAttribute("aria-label"));
+      expect(labels).toContain("Stop 1 position");
+      expect(labels).toContain("Stop 1 opacity");
+    });
+
+    test("the presets survive as chips that fill the editor, not as a kind", async () => {
+      await addGradient();
+      const chips = [...(composerGroup()?.querySelectorAll("button") ?? [])].filter((button) =>
+        (button.getAttribute("title") ?? "").startsWith("Fill these stops with "),
+      );
+      expect(chips.map((chip) => chip.textContent)).toContain("Dusk");
+      // Eleven starters, and picking one writes five stops into THIS layer
+      // rather than making it a Dusk-kind layer.
+      expect(chips).toHaveLength(11);
+      await act(async () => {
+        chips.find((chip) => chip.textContent === "Dusk")?.click();
+      });
+      expect(composerGroup()?.querySelectorAll('input[type="color"][aria-label^="Stop "]')).toHaveLength(5);
+      expect(composerGroup()?.textContent).not.toContain("Dusk gradient");
+    });
+
+    test("a radial gradient is centred rather than angled", async () => {
+      await addGradient();
+      const shape = [...(composerGroup()?.querySelectorAll("button[aria-pressed]") ?? [])].find((button) => button.textContent === "Radial") as
+        | HTMLButtonElement
+        | undefined;
+      const angles = () => [...(composerGroup()?.querySelectorAll('input[type="range"]') ?? [])].map((input) => input.getAttribute("aria-label"));
+      expect(angles()).toContain("Gradient angle");
+      await act(async () => {
+        shape?.click();
+      });
+      // A slider that moves nothing is a bug report, so only ever one of the
+      // two is drawn.
+      expect(angles()).not.toContain("Gradient angle");
+      expect(angles()).toContain("Gradient centre X");
+      expect(angles()).toContain("Gradient centre Y");
+    });
+  });
+
   test("a token follows the base until it is set, and says so", () => {
     // The sparse override is the whole model: a value here is one somebody set
     // BY HAND, and a fresh composition has none — so every revert is inert.

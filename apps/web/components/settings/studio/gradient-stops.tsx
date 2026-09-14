@@ -11,9 +11,10 @@
  *
  * THE STOP STRIP IS THE CONTROL. A gradient is a thing you look at, so the
  * primary affordance is the gradient itself: click the ramp to add a stop where
- * you clicked, drag a handle to move one, and the colour and fade of whichever
- * stop is selected sit underneath. The numbers are still there — a slider is
- * how you get a stop to exactly 50% — but nobody has to read them to work.
+ * you clicked, drag a handle to move one. Under it sits a colour input per
+ * stop, and under that the position and fade of whichever stop you last
+ * touched. The numbers are still there — a slider is how you get a stop to
+ * exactly 50% — but nobody has to read them to work.
  *
  * ONE GRADIENT, NOT A PAIR. This carried two specs and a Light/Dark toggle of
  * its own back when a custom gradient was a backdrop KIND answering for both
@@ -161,9 +162,53 @@ function StopStrip({
   );
 }
 
-/** What the selected stop is: its colour, where it sits, and how opaque it is.
- *  Three controls for one stop rather than three columns for five of them — a
- *  table of fifteen inputs is a spreadsheet, not an editor. */
+/**
+ * A COLOUR INPUT PER STOP, under the strip and in the strip's own order.
+ *
+ * The handles cannot be colour inputs themselves — a pointer-down on an
+ * `<input type="color">` opens the OS picker, which is the same gesture a drag
+ * starts with — so the colours sit in a row beneath, each aligned to the stop it
+ * belongs to by position in the list. Touching one also SELECTS that stop, so
+ * the sliders below are about whatever you last touched.
+ */
+function StopColours({
+  stops,
+  selected,
+  onSelect,
+  onChange,
+}: {
+  stops: readonly GradientStop[];
+  selected: number;
+  onSelect: (index: number) => void;
+  onChange: (index: number, next: GradientStop) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {sortedForDisplay(stops).map(({ stop, index }) => (
+        <span
+          key={index}
+          className={cn("flex items-center gap-1 rounded-md p-0.5 pr-1.5 ring-1 ring-foreground/10", selected === index && "ring-2 ring-primary")}
+        >
+          <input
+            type="color"
+            value={/^#[0-9a-fA-F]{6}$/.test(stop.color) ? stop.color : "#000000"}
+            onChange={(event) => {
+              onSelect(index);
+              onChange(index, { ...stop, color: event.target.value });
+            }}
+            onFocus={() => onSelect(index)}
+            aria-label={`Stop ${index + 1} colour`}
+            className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+          />
+          <code className="font-mono text-3xs text-muted-foreground/70">{stop.position}%</code>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Where the selected stop sits and how opaque it is. The numbers are the exact
+ *  answer the strip's drag approximates — and the only way to say 50%. */
 function StopControls({
   stop,
   index,
@@ -181,13 +226,6 @@ function StopControls({
     <div className="flex flex-col gap-2 rounded-lg bg-muted/40 p-2.5">
       <div className="flex items-center gap-2 text-2xs">
         <span className="text-muted-foreground">Stop {index + 1}</span>
-        <input
-          type="color"
-          value={/^#[0-9a-fA-F]{6}$/.test(stop.color) ? stop.color : "#000000"}
-          onChange={(event) => onChange({ ...stop, color: event.target.value })}
-          aria-label={`Stop ${index + 1} colour`}
-          className="size-6 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
-        />
         <code className="min-w-0 flex-1 truncate font-mono text-3xs text-muted-foreground/70">{stop.color}</code>
         <Button size="icon-sm" variant="ghost" disabled={!removable} title="Remove this stop" aria-label={`Remove stop ${index + 1}`} onClick={onRemove}>
           <MinusIcon />
@@ -275,6 +313,12 @@ export function GradientStops({
         </div>
 
         <StopStrip spec={spec} selected={at} onSelect={setSelected} onChange={onChange} />
+        <StopColours
+          stops={spec.stops}
+          selected={at}
+          onSelect={setSelected}
+          onChange={(index, next) => patch({ stops: spec.stops.map((entry, position) => (position === index ? next : entry)) })}
+        />
 
         <div className="grid gap-3 sm:grid-cols-[1fr_1fr]">
           <div className="flex flex-col gap-2.5">
