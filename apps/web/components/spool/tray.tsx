@@ -43,6 +43,7 @@ import type {
 } from "@telar/engine-client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { cardSurface } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -689,7 +690,10 @@ function PacketFace({
       {(detail.tally.files > 0 || detail.tally.mockups > 0) && (
         <section>
           <SectionLabel>Gathered along the way</SectionLabel>
-          <div className="flex items-center gap-4 rounded-xl bg-card p-3 text-xs text-muted-foreground shadow-1 ring-1 ring-foreground/10">
+          {/* The card shape from `cardSurface`, not hand-rolled: this strip was
+              a letter-perfect restatement of the `Card` primitive's radius,
+              fill and ring, which is how a fourth card came to exist. */}
+          <div className={`flex items-center gap-4 p-3 text-xs text-muted-foreground shadow-1 ${cardSurface()}`}>
             <span className="flex items-center gap-1.5">
               <FileTextIcon className="size-3.5 shrink-0" />
               <span className="font-mono tabular-nums">{detail.tally.files}</span> file
