@@ -115,7 +115,7 @@ import { cn } from "@/lib/utils";
 function SessionLiveMark({ live }: { live: boolean | null }) {
   if (!live) return null;
   // Quiet text, never a badge — §13.2's own wording for a live session.
-  return <span className="shrink-0 text-[0.6875rem] text-muted-foreground/70">session running</span>;
+  return <span className="shrink-0 text-2xs text-muted-foreground/70">session running</span>;
 }
 
 /** THE RAIL'S OWN CEILING VOCABULARY, PORTED — the same four levels
@@ -368,7 +368,7 @@ function LobbyRow({
       <span className="min-w-0 flex-1 truncate text-sm text-foreground">{subject.name}</span>
       <SessionLiveMark live={subject.sessionLive} />
       {subject.needsYou > 0 && (
-        <span className="shrink-0 text-[0.6875rem] tabular-nums text-muted-foreground">{subject.needsYou}</span>
+        <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">{subject.needsYou}</span>
       )}
     </button>
   );
@@ -565,7 +565,7 @@ function LobbyNode({
           <span className={containerTextClass(node.depth, node.ghost)}>{node.label}</span>
         </button>
       )}
-      {ceiling && <span className="shrink-0 text-[0.6875rem] text-muted-foreground/50">ceiling: {ceiling}</span>}
+      {ceiling && <span className="shrink-0 text-2xs text-muted-foreground/50">ceiling: {ceiling}</span>}
       {collapsed ? (
         <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
           {collapsedRollupLine(rollup.subjects, rollup.needs)}
@@ -703,7 +703,7 @@ function SmartTile({ label, count, hint, onClick }: { label: string; count: numb
     >
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <span className="text-lg font-semibold tabular-nums text-foreground">{count}</span>
-      <span className="text-[0.6875rem] text-muted-foreground/70">{hint}</span>
+      <span className="text-2xs text-muted-foreground/70">{hint}</span>
     </button>
   );
 }

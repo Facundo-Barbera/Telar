@@ -191,7 +191,7 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
   }, [served, pendingOrder]);
 
   if (!catalogue || !overlay) {
-    return <p className="text-[0.8125rem] text-muted-foreground">{error ?? `Asking ${label}…`}</p>;
+    return <p className="text-xs-plus text-muted-foreground">{error ?? `Asking ${label}…`}</p>;
   }
 
   const move = (id: string, direction: -1 | 1) => {
@@ -219,9 +219,9 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
   return (
     <div className="space-y-3">
       <div className="space-y-1">
-        <p className="text-[0.8125rem] text-muted-foreground">{modelCountLine(models, label)}</p>
+        <p className="text-xs-plus text-muted-foreground">{modelCountLine(models, label)}</p>
         {/* The provider's own words when it could not answer — never a paraphrase. */}
-        {catalogue.message && <p className="text-[0.8125rem] text-warning">{catalogue.message}</p>}
+        {catalogue.message && <p className="text-xs-plus text-warning">{catalogue.message}</p>}
       </div>
 
       <div className="divide-y divide-border/60 rounded-lg border border-border/70">
@@ -243,10 +243,10 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
               >
                 <StarIcon className={cn("size-3.5", starred && "fill-current")} />
               </button>
-              <span className={cn("min-w-0 truncate text-[0.8125rem]", model.hiddenByUser && "line-through")}>{model.label}</span>
-              <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[0.625rem] text-muted-foreground">{model.id}</code>
-              {model.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
-              {added && <span className="shrink-0 text-[0.625rem] text-muted-foreground">added by you</span>}
+              <span className={cn("min-w-0 truncate text-xs-plus", model.hiddenByUser && "line-through")}>{model.label}</span>
+              <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{model.id}</code>
+              {model.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
+              {added && <span className="shrink-0 text-3xs text-muted-foreground">added by you</span>}
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
@@ -294,7 +294,7 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
           );
         })}
         {models.length === 0 && (
-          <p className="px-2.5 py-3 text-[0.8125rem] text-muted-foreground">
+          <p className="px-2.5 py-3 text-xs-plus text-muted-foreground">
             {label} did not report any models. You can still add one below.
           </p>
         )}
@@ -311,14 +311,14 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
             onKeyDown={(event) => event.key === "Enter" && add()}
             placeholder={instance.driver === "claude" ? "claude-fable-5-1" : "gpt-6.7-codex-ultra-preview"}
             aria-label="Model id to add"
-            className="h-8 text-[0.8125rem]"
+            className="h-8 text-xs-plus"
           />
           <Button size="sm" variant="outline" className="h-8 shrink-0 px-2 text-xs" disabled={busy} onClick={add}>
             <PlusIcon className="size-3.5" />
             Add
           </Button>
         </div>
-        {error && <p className="text-[0.8125rem] text-destructive">{error}</p>}
+        {error && <p className="text-xs-plus text-destructive">{error}</p>}
         {/* The sentence that keeps this honest. */}
         <p className="text-[0.75rem] leading-snug text-muted-foreground/80">
           Telar never invents models. An id here is sent to {label} exactly as typed, and a harness that does not have it

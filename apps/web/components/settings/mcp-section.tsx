@@ -143,7 +143,7 @@ function ServerRow({
             {/* Said out loud, because in the desktop app the consent screen is
                 in a DIFFERENT WINDOW and this one looks like nothing happened. */}
             {awaiting ? (
-              <span className="text-[0.6875rem] text-muted-foreground">Finish signing in, in your browser…</span>
+              <span className="text-2xs text-muted-foreground">Finish signing in, in your browser…</span>
             ) : (
               (action === "connect" || action === "reconnect") && (
                 <Button type="button" size="sm" variant="outline" className="h-7 text-xs" disabled={busy} onClick={() => void signIn()}>
@@ -158,7 +158,7 @@ function ServerRow({
                 className={cn("size-2 shrink-0 rounded-full", HEALTH_DOT[status.health])}
               />
             )}
-            <Badge variant="outline" className="font-mono text-[0.625rem]">
+            <Badge variant="outline" className="font-mono text-3xs">
               {server.id}
             </Badge>
             {/* Off is a state, not deletion — a server that is failing should be
@@ -188,7 +188,7 @@ function ServerRow({
       {configuring && (
         <div className="space-y-2 rounded-md bg-muted/20 px-3 py-2">
           {status && (status.connected || status.requiresOAuth) && (
-            <p className="text-[0.6875rem] leading-snug text-muted-foreground">
+            <p className="text-2xs leading-snug text-muted-foreground">
               {signInSummary(status)}
               {status.scope && (
                 <>
@@ -199,7 +199,7 @@ function ServerRow({
             </p>
           )}
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[0.6875rem] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               The id cannot change — every timeline row that already named{" "}
               <code className="font-mono">mcp__{server.id}__*</code> would be orphaned. Remove it and add it again instead.
             </p>
@@ -239,7 +239,7 @@ function ServerRow({
               </Button>
             </div>
           </div>
-          {error && <p className="text-[0.6875rem] text-destructive">{error}</p>}
+          {error && <p className="text-2xs text-destructive">{error}</p>}
         </div>
       )}
     </>
@@ -331,11 +331,11 @@ function AddServerForm({ scope, onAdded, onClose }: { scope: McpScope; onAdded: 
           aria-label={transport === "stdio" ? "Command" : "URL"}
           className="font-mono text-sm"
         />
-        <p className="text-[0.6875rem] leading-snug text-muted-foreground">
+        <p className="text-2xs leading-snug text-muted-foreground">
           The id becomes the server&rsquo;s name to the provider, so its tools arrive as <code className="font-mono">mcp__{id.trim() || "id"}__*</code>.
           Letters, numbers, dashes and underscores. Cannot be changed later.
         </p>
-        {error && <p className="text-[0.6875rem] text-destructive">{error}</p>}
+        {error && <p className="text-2xs text-destructive">{error}</p>}
         <div className="flex items-center gap-2">
           <Button type="button" size="sm" disabled={busy || !id.trim() || !target.trim()} onClick={() => void save()}>
             Add server

@@ -323,8 +323,8 @@ function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }
         )}
       </span>
       <span className="flex min-w-0 flex-col">
-        <span className="max-w-40 truncate text-[0.6875rem] font-medium leading-tight">{file.name}</span>
-        <span className="text-[0.625rem] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
+        <span className="max-w-40 truncate text-2xs font-medium leading-tight">{file.name}</span>
+        <span className="text-3xs leading-tight text-muted-foreground">{fileSize(file.size)}</span>
       </span>
       <button
         type="button"
@@ -369,13 +369,13 @@ function ComposerBanner({
         {icon}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium">{title}</p>
-          <p className="truncate text-[0.6875rem] text-muted-foreground">{detail}</p>
+          <p className="truncate text-2xs text-muted-foreground">{detail}</p>
         </div>
         {action && actionLabel && (
           <button
             type="button"
             onClick={action}
-            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-[0.6875rem] font-medium transition-colors hover:bg-accent"
+            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-2xs font-medium transition-colors hover:bg-accent"
           >
             {actionLabel}
           </button>
@@ -1237,7 +1237,7 @@ export function Composer({
           A stash that quietly refused is a paragraph the person thinks they
           still have. */}
       {note && (
-        <div className="flex items-start gap-1.5 rounded-lg bg-destructive/10 px-2 py-1.5 text-[0.6875rem] leading-snug text-destructive">
+        <div className="flex items-start gap-1.5 rounded-lg bg-destructive/10 px-2 py-1.5 text-2xs leading-snug text-destructive">
           <TriangleAlertIcon aria-hidden className="mt-px size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">{note}</span>
           <button type="button" aria-label="Dismiss" onClick={() => setNote(undefined)} className="shrink-0 rounded p-0.5">
@@ -1394,7 +1394,7 @@ export function Composer({
               swallow the drop it is describing. */}
           {dropping && (
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-3.5 z-10 flex justify-center">
-              <span className="rounded-full border border-ring/50 bg-card px-2.5 py-0.5 text-[0.6875rem] font-medium text-foreground shadow-1">
+              <span className="rounded-full border border-ring/50 bg-card px-2.5 py-0.5 text-2xs font-medium text-foreground shadow-1">
                 {dropping === "reference" ? "Drop to reference it in your message" : "Drop to add it to your message"}
               </span>
             </div>
@@ -1641,7 +1641,7 @@ export function Composer({
                 // The WORD, not a glyph. "ESC" names the key the user just
                 // pressed and the key that will finish the job, which no icon
                 // can say.
-                <span className="text-[0.625rem] leading-none font-semibold tracking-tight">ESC</span>
+                <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
               ) : busy ? (
                 <SquareIcon className="size-4" />
               ) : sending ? (

@@ -13,14 +13,14 @@ export function CellOutputView({ output, sessionId, onOpenImage }: { output: Cel
   switch (output.kind) {
     case "text":
       return (
-        <pre className={cn("m-0 whitespace-pre-wrap break-words px-3 py-1 font-mono text-[0.6875rem] leading-[1.5]", output.stream === "stderr" ? "text-warning" : output.stream === "result" ? "text-foreground" : "text-foreground/80")}>
+        <pre className={cn("m-0 whitespace-pre-wrap break-words px-3 py-1 font-mono text-2xs leading-[1.5]", output.stream === "stderr" ? "text-warning" : output.stream === "result" ? "text-foreground" : "text-foreground/80")}>
           {output.text}
           {output.truncated && <span className="text-muted-foreground"> … truncated</span>}
         </pre>
       );
     case "error":
       return (
-        <pre className="m-0 whitespace-pre-wrap break-words bg-destructive/10 px-3 py-1.5 font-mono text-[0.6875rem] leading-[1.5] text-destructive">
+        <pre className="m-0 whitespace-pre-wrap break-words bg-destructive/10 px-3 py-1.5 font-mono text-2xs leading-[1.5] text-destructive">
           {output.ename}: {output.evalue}
           {"\n"}
           {output.traceback.map(stripAnsi).join("\n")}
@@ -28,7 +28,7 @@ export function CellOutputView({ output, sessionId, onOpenImage }: { output: Cel
       );
     case "image": {
       const src = output.attachmentId ? attachmentUrl(sessionId, output.attachmentId) : output.dataB64 ? `data:${output.mediaType};base64,${output.dataB64}` : undefined;
-      if (!src) return <p className="px-3 py-1 text-[0.6875rem] text-muted-foreground">[image]</p>;
+      if (!src) return <p className="px-3 py-1 text-2xs text-muted-foreground">[image]</p>;
       return (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -44,7 +44,7 @@ export function CellOutputView({ output, sessionId, onOpenImage }: { output: Cel
     case "html":
       return <HtmlOutput html={output.html} truncated={output.truncated} />;
     case "json":
-      return <pre className="m-0 whitespace-pre-wrap px-3 py-1 font-mono text-[0.6875rem] leading-[1.5]">{JSON.stringify(output.value, null, 2)}</pre>;
+      return <pre className="m-0 whitespace-pre-wrap px-3 py-1 font-mono text-2xs leading-[1.5]">{JSON.stringify(output.value, null, 2)}</pre>;
     case "clear":
       return null;
   }
@@ -53,7 +53,7 @@ export function CellOutputView({ output, sessionId, onOpenImage }: { output: Cel
 function DataframeTable({ output }: { output: Extract<CellOutput, { kind: "dataframe" }> }) {
   return (
     <div className="mx-3 my-1.5 max-h-80 overflow-auto rounded border border-border">
-      <table className="w-max min-w-full border-collapse font-mono text-[0.6875rem] tabular-nums">
+      <table className="w-max min-w-full border-collapse font-mono text-2xs tabular-nums">
         <thead className="sticky top-0 bg-muted">
           <tr>
             {output.columns.map((column, index) => (
@@ -76,7 +76,7 @@ function DataframeTable({ output }: { output: Extract<CellOutput, { kind: "dataf
           ))}
         </tbody>
       </table>
-      <p className="border-t border-border bg-muted/40 px-2 py-0.5 text-[0.625rem] text-muted-foreground">
+      <p className="border-t border-border bg-muted/40 px-2 py-0.5 text-3xs text-muted-foreground">
         {output.shape[0]} × {output.shape[1]}{output.truncated ? " · preview" : ""}
       </p>
     </div>
@@ -103,7 +103,7 @@ function HtmlOutput({ html, truncated }: { html: string; truncated?: boolean }) 
           if (doc) setHeight(Math.min(480, Math.max(40, doc.body.scrollHeight + 8)));
         }}
       />
-      {truncated && <p className="text-[0.625rem] text-muted-foreground">truncated</p>}
+      {truncated && <p className="text-3xs text-muted-foreground">truncated</p>}
     </div>
   );
 }

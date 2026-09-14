@@ -151,7 +151,7 @@ export function ProjectNoteEditor({
         rows={8}
         className="w-full resize-none rounded-md border border-border/60 bg-transparent px-2 py-1.5 font-mono text-xs leading-relaxed outline-none placeholder:font-sans placeholder:text-muted-foreground focus:border-ring"
       />
-      {error && <p className="px-1.5 text-[0.6875rem] text-destructive">{error}</p>}
+      {error && <p className="px-1.5 text-2xs text-destructive">{error}</p>}
       <div className="flex items-center gap-1 border-t border-border/60 pt-1.5">
         <button
           type="button"
@@ -174,7 +174,7 @@ export function ProjectNoteEditor({
         >
           <Trash2Icon className="size-3.5" />
         </button>
-        <span className="ml-auto flex items-center gap-1.5 text-[0.625rem] text-muted-foreground">
+        <span className="ml-auto flex items-center gap-1.5 text-3xs text-muted-foreground">
           {saving && <Loader2Icon className="size-3 animate-spin" />}
           {/* WHO WROTE IT, when it was not the reader. Provenance is stamped
               once and never changes, so a note an agent kept stays marked as

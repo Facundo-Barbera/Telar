@@ -48,7 +48,7 @@ export const ACTOR_META: Record<SpoolActor, { Icon: typeof UserIcon; label: stri
  *  header's register, one level up), uppercase, wide tracking. One tone up
  *  from meta so a section can be found at a glance, still below the bands. */
 export function SectionLabel({ children }: { children: ReactNode }) {
-  return <h2 className="mb-2 text-[0.6875rem] font-medium tracking-[0.12em] text-muted-foreground/80 uppercase">{children}</h2>;
+  return <h2 className="mb-2 text-2xs font-medium tracking-[0.12em] text-muted-foreground/80 uppercase">{children}</h2>;
 }
 
 /**
@@ -78,7 +78,7 @@ export function BornAs({ item, dense = false }: { item: SpoolItem; dense?: boole
       {item.fixed && (
         <>
           {item.raw && (
-            <div className="my-2 flex items-center gap-2 pl-3 text-[0.6875rem] text-muted-foreground/60">
+            <div className="my-2 flex items-center gap-2 pl-3 text-2xs text-muted-foreground/60">
               <MoveRightIcon className="size-3.5 rotate-90" />
               fixed
             </div>
@@ -126,7 +126,7 @@ export function ProposedApproach({ item }: { item: SpoolItem }) {
       <div className="rounded-xl bg-card shadow-1 ring-1 ring-foreground/10">
         {item.openQuestions && item.openQuestions.length > 0 && (
           <div className="border-b border-border/70 p-3">
-            <p className="mb-2 text-[0.6875rem] text-muted-foreground">
+            <p className="mb-2 text-2xs text-muted-foreground">
               It could not answer {item.openQuestions.length === 1 ? "this" : "these"} alone.
             </p>
             <ul className="space-y-1.5">
@@ -148,7 +148,7 @@ export function ProposedApproach({ item }: { item: SpoolItem }) {
           </p>
         )}
       </div>
-      <p className="mt-1.5 text-[0.625rem] leading-relaxed text-muted-foreground/60">
+      <p className="mt-1.5 text-3xs leading-relaxed text-muted-foreground/60">
         An agent wrote this and nobody has looked. It changes nothing on its own.
       </p>
     </section>
@@ -180,7 +180,7 @@ function TimelineNode({
         <Icon className="size-2.5 text-muted-foreground" />
       </span>
       <div className="min-w-0 text-xs">
-        <p className="font-mono text-[0.625rem] text-muted-foreground/60 tabular-nums">
+        <p className="font-mono text-3xs text-muted-foreground/60 tabular-nums">
           {at} · {label}
           {/* THE HONESTY MARKER: one word saying an agent wrote this and nobody
               has looked. It is not the faintest thing on the node, which is
@@ -197,7 +197,7 @@ export function RipeningTimeline({ item }: { item: SpoolItem }) {
   const timeline = item.timeline ?? [];
   if (timeline.length === 0) {
     return (
-      <p className="font-mono text-[0.625rem] text-muted-foreground/60">
+      <p className="font-mono text-3xs text-muted-foreground/60">
         {item.captured} · {item.provenance}
       </p>
     );
@@ -304,7 +304,7 @@ export function ExpertControl({
               call that says "Read reconciliation.ts" is one you can tell is on
               the right track. `n` counts rather than estimating — there is no
               total to be a percentage of. */}
-          <p className="mt-1 truncate pl-5.5 font-mono text-[0.625rem] text-muted-foreground">
+          <p className="mt-1 truncate pl-5.5 font-mono text-3xs text-muted-foreground">
             {running.step ? `${running.step.n} · ${describeWork(running)}` : describeWork(running)}
           </p>
         </div>
@@ -314,7 +314,7 @@ export function ExpertControl({
           Ask the expert
         </Button>
       )}
-      <p className="text-[0.625rem] leading-relaxed text-muted-foreground/60">
+      <p className="text-3xs leading-relaxed text-muted-foreground/60">
         {item.project
           ? `The ${item.project} expert rewrites the brief and remembers what it learned. It changes nothing else.`
           : "An expert belongs to a project. File this item into one first."}
@@ -323,7 +323,7 @@ export function ExpertControl({
           a variable this component happened to be holding — so it survives a
           navigation and a reload, which is the whole point. */}
       {(refusal ?? (settled && settled.state !== "done" ? settled.note : null)) && (
-        <p className="rounded-lg bg-muted/60 px-2 py-1.5 text-[0.6875rem] leading-relaxed text-muted-foreground">
+        <p className="rounded-lg bg-muted/60 px-2 py-1.5 text-2xs leading-relaxed text-muted-foreground">
           {refusal ?? settled?.note}
         </p>
       )}

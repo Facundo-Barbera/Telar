@@ -28,6 +28,33 @@
      instead of to whatever the browser picks. */
   --font-sans: var(--app-font-sans);
   --font-mono: var(--app-font-mono);
+  /* THE SUB-12px RAMP, WHICH THIS APP HAS ALWAYS HAD AND NEVER NAMED.
+     528 `text-[…]` utilities sat on exactly four steps below Tailwind's
+     `text-xs`, so the scale was real, consistently applied, and invisible to
+     anyone reading globals.css looking for it.
+
+     Rem, not px, because `lib/appearance.ts` sets `html { font-size }` between
+     13 and 18px and the whole app is meant to follow the reader's slider.
+     Values are the ones already in the tree, so nothing moves at the 16px
+     default.
+
+     NAMED `{n}xs` AND NOT `xxs`, AND THAT IS NOT A STYLE PREFERENCE:
+     tailwind-merge sorts `text-*` into its font-size group only when the
+     suffix passes its t-shirt-size test, and `4xs`/`3xs`/`2xs` pass where
+     `xxs` does not. A `text-xxs` would land in the TEXT-COLOUR group instead,
+     so `cn("text-xxs", "text-muted-foreground")` would silently drop the size
+     and the caption would render at 16px. `xs-plus` has the same problem and
+     is registered explicitly in lib/utils.ts, which is the only reason it is
+     safe to write.
+
+     No `--text-*--line-height` on any of them ON PURPOSE. The arbitrary
+     utilities these replace set font-size alone and inherited their leading;
+     giving the tokens a line-height here would re-space 528 call sites in a
+     rename. */
+  --text-4xs: 0.5625rem; /* 9px  */
+  --text-3xs: 0.625rem;  /* 10px */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-xs-plus: 0.8125rem; /* 13px — between text-xs and text-sm */
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);

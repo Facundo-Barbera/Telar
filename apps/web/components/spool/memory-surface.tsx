@@ -83,7 +83,7 @@ function Fact({ fact, scope, onChanged }: { fact: SpoolMemoryFact; scope?: strin
       <p className={cn("text-xs leading-relaxed", fact.retired ? "text-muted-foreground/50 line-through" : "text-foreground")}>
         {fact.text}
       </p>
-      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.625rem] text-muted-foreground/60">
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-3xs text-muted-foreground/60">
         <span title={KIND[fact.kind].hint}>{KIND[fact.kind].label}</span>
         {/* PROVENANCE, which the old blob could not carry: every fact wore the
             timestamp of the most recent pass, including one learned long before. */}
@@ -97,7 +97,7 @@ function Fact({ fact, scope, onChanged }: { fact: SpoolMemoryFact; scope?: strin
       </div>
 
       {fact.retired && (
-        <p className="mt-1 text-[0.625rem] leading-relaxed text-muted-foreground/60">
+        <p className="mt-1 text-3xs leading-relaxed text-muted-foreground/60">
           Drained {fact.retired.at} — {fact.retired.why}
         </p>
       )}
@@ -108,7 +108,7 @@ function Fact({ fact, scope, onChanged }: { fact: SpoolMemoryFact; scope?: strin
             <Button
               variant="ghost"
               size="sm"
-              className="h-6 px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground"
+              className="h-6 px-1.5 text-3xs text-muted-foreground hover:text-foreground"
               disabled={busy}
               onClick={() => void judge({ reviewed: true })}
             >
@@ -119,7 +119,7 @@ function Fact({ fact, scope, onChanged }: { fact: SpoolMemoryFact; scope?: strin
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground"
+            className="h-6 px-1.5 text-3xs text-muted-foreground hover:text-foreground"
             disabled={busy}
             onClick={() => setAsking(true)}
           >
@@ -158,7 +158,7 @@ function Fact({ fact, scope, onChanged }: { fact: SpoolMemoryFact; scope?: strin
         </div>
       )}
 
-      {error && <p className="mt-1 text-[0.625rem] leading-relaxed text-destructive">{error}</p>}
+      {error && <p className="mt-1 text-3xs leading-relaxed text-destructive">{error}</p>}
     </li>
   );
 }
@@ -192,7 +192,7 @@ export function MemorySurface() {
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 border-b border-border px-3 py-2">
-        <p className="text-[0.6875rem] leading-relaxed text-muted-foreground/70">
+        <p className="text-2xs leading-relaxed text-muted-foreground/70">
           What it has learned. Nothing here is deleted — draining keeps the note and the reason, and takes it out of
           what the experts read.
         </p>
@@ -204,14 +204,14 @@ export function MemorySurface() {
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
             <BrainIcon className="size-5 text-muted-foreground/40" />
             <p className="text-xs text-muted-foreground/60">Nothing remembered yet.</p>
-            <p className="max-w-52 text-[0.6875rem] leading-relaxed text-muted-foreground/50">
+            <p className="max-w-52 text-2xs leading-relaxed text-muted-foreground/50">
               An expert writes here the first time it reads something on a subject.
             </p>
           </div>
         )}
         {groups.map((group) => (
           <section key={group.key} className="mb-2">
-            <p className="px-2 pt-1 pb-1 text-[0.625rem] font-medium tracking-wider text-muted-foreground/70 uppercase">
+            <p className="px-2 pt-1 pb-1 text-3xs font-medium tracking-wider text-muted-foreground/70 uppercase">
               {group.label}
             </p>
             <ul className="space-y-0.5">

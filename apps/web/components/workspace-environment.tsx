@@ -119,7 +119,7 @@ function BaseRefPicker({
     >
       <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate font-mono text-xs">{refName}</span>
-      {badge && <span className="shrink-0 text-[0.625rem] text-muted-foreground/60">{badge}</span>}
+      {badge && <span className="shrink-0 text-3xs text-muted-foreground/60">{badge}</span>}
     </button>
   );
 
@@ -163,12 +163,12 @@ function BaseRefPicker({
             {currentBranch && currentBranch !== defaultBase && row(currentBranch, "current")}
           </>
         )}
-        {locals.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">Local</p>}
+        {locals.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-3xs font-medium uppercase tracking-wide text-muted-foreground">Local</p>}
         {locals.map((ref) => row(ref.name, ref.head ? "current" : undefined))}
-        {remotes.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">Origin</p>}
+        {remotes.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-3xs font-medium uppercase tracking-wide text-muted-foreground">Origin</p>}
         {remotes.map((ref) => row(ref.name, "remote"))}
         {filtered.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No matching refs.</p>}
-        {hiddenCount > 0 && <p className="px-2 py-1.5 text-[0.625rem] text-muted-foreground">{hiddenCount} more — search to find them.</p>}
+        {hiddenCount > 0 && <p className="px-2 py-1.5 text-3xs text-muted-foreground">{hiddenCount} more — search to find them.</p>}
       </div>
       {/* The new-branch name rides WITH whichever base is chosen; empty means
           the engine derives a telar/ name as before. */}
@@ -386,7 +386,7 @@ export function EnvironmentStrip({
           `bg-muted/25` lands at 25% of the theme's muted: the wash used to
           hand this element a token already at 72% alpha, which multiplied the
           strip down to 18% and dissolved it over a backdrop. */}
-      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-[0.6875rem] text-muted-foreground shadow-1">
+      <div className="flex min-h-8 w-full items-center gap-1 rounded-b-xl border border-t-0 border-border/60 bg-muted/25 px-2 text-2xs text-muted-foreground shadow-1">
         {choosing && onEnvMode ? (
           <WhereThisLands
             projectId={projectId}
@@ -429,7 +429,7 @@ export function EnvironmentStrip({
                 <ChevronDownIcon className="size-3 shrink-0" />
               </PopoverTrigger>
               <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
-                <p className="px-2 pb-1 pt-1 text-[0.6875rem] font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</p>
+                <p className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</p>
                 <div className="rounded-xl bg-muted/35 p-1">
                   {branch && (
                     <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
@@ -457,7 +457,7 @@ export function EnvironmentStrip({
                 {/* Prose only when something is WRONG. The ordinary cases were a
                     paragraph restating what the rows above already show. */}
                 {(!reachable || (git && !git.repository)) && (
-                  <p className="px-2 pt-2 text-[0.6875rem] text-muted-foreground">
+                  <p className="px-2 pt-2 text-2xs text-muted-foreground">
                     {!reachable ? "The engine did not answer — this may be out of date." : "Not a git repository."}
                   </p>
                 )}
@@ -484,7 +484,7 @@ export function EnvironmentStrip({
         {/* --warning, the app's "a person has to move" colour: uncommitted work
             is not a failure, it is something you may want to deal with. */}
         {dirty > 0 && (
-          <span className="ml-auto shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning">{dirty} changed</span>
+          <span className="ml-auto shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-3xs font-medium text-warning">{dirty} changed</span>
         )}
       </div>
     </div>

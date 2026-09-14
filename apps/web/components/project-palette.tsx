@@ -668,7 +668,7 @@ export function ProjectPalettePages({
                 projects"), not what you are looking at — and with two pages
                 behind one field, "which list is this" is a real question a
                 reader can now arrive at from either side. T3 captions both. */}
-            <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">
+            <p aria-hidden className="px-2 pt-1 pb-1.5 text-2xs font-medium text-muted-foreground">
               {page === "sources" ? "Sources" : "Projects"}
             </p>
             {page === "projects" ? (
@@ -734,7 +734,7 @@ export function ProjectPalettePages({
                     mono={source.hint.startsWith("Clone ")}
                     badge={
                       source.setupRequired ? (
-                        <span className="shrink-0 rounded border px-1.5 py-0.5 text-[0.625rem] text-muted-foreground">Setup Required</span>
+                        <span className="shrink-0 rounded border px-1.5 py-0.5 text-3xs text-muted-foreground">Setup Required</span>
                       ) : undefined
                     }
                   />
@@ -744,7 +744,7 @@ export function ProjectPalettePages({
           </div>
 
           {notice && (
-            <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+            <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
               {notice}
             </p>
           )}
@@ -754,7 +754,7 @@ export function ProjectPalettePages({
               once something says the whole keyboard works here. Backspace joins
               it only on the page that HAS a back — a legend that names a key
               which does nothing is worse than a shorter legend. */}
-          <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+          <div className="flex items-center gap-4 border-t px-3 py-2 text-2xs text-muted-foreground">
             <span>
               <kbd className="font-sans">↑↓</kbd> Navigate
             </span>
@@ -843,12 +843,12 @@ function CloneUrlPage({
       </p>
 
       {notice && (
-        <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+        <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
           {notice}
         </p>
       )}
 
-      <div className="flex items-center gap-4 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+      <div className="flex items-center gap-4 border-t px-3 py-2 text-2xs text-muted-foreground">
         <span>
           <kbd className="font-sans">Enter</kbd> Continue
         </span>
@@ -920,10 +920,10 @@ export function PaletteRow({
           {badge}
         </span>
         {hint && (
-          <span className={cn("block truncate text-[0.6875rem] text-muted-foreground", mono && "font-mono")}>{hint}</span>
+          <span className={cn("block truncate text-2xs text-muted-foreground", mono && "font-mono")}>{hint}</span>
         )}
       </span>
-      {key9 !== undefined && <kbd className="shrink-0 font-sans text-[0.625rem] text-muted-foreground/60">⌘{key9}</kbd>}
+      {key9 !== undefined && <kbd className="shrink-0 font-sans text-3xs text-muted-foreground/60">⌘{key9}</kbd>}
       {trailing}
     </button>
   );

@@ -78,7 +78,7 @@ export function ComposerMenu({
       // sits directly above that bar and should sit a rung above it too.
       className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-3 backdrop-blur-xl"
     >
-      <div className="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</div>
+      <div className="px-3 pt-2 pb-1 text-3xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</div>
       {completions.length === 0 ? (
         <p className="px-3 pb-3 text-xs text-muted-foreground">{loading ? "Reading…" : emptyText}</p>
       ) : (
@@ -90,7 +90,7 @@ export function ComposerMenu({
                 menu's subject and already carry its title, so they do not get
                 a second label saying so. */}
             {completion.group && completion.group !== completions[index - 1]?.group && (
-              <div className="px-2 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+              <div className="px-2 pt-2 pb-1 text-3xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                 {completion.group}
               </div>
             )}

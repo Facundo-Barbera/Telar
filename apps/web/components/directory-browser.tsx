@@ -273,7 +273,7 @@ export function DirectoryBrowser({
       </div>
 
       <div ref={rows} id="directory-browser-entries" role="listbox" aria-label="Directories" className="max-h-80 overflow-y-auto p-1.5">
-        <p aria-hidden className="px-2 pt-1 pb-1.5 text-[0.6875rem] font-medium text-muted-foreground">
+        <p aria-hidden className="px-2 pt-1 pb-1.5 text-2xs font-medium text-muted-foreground">
           Directories
         </p>
         {loading && entries.length === 0 && (
@@ -298,21 +298,21 @@ export function DirectoryBrowser({
           />
         ))}
         {listing?.truncated && (
-          <p className="px-2 py-2 text-[0.6875rem] text-muted-foreground">
+          <p className="px-2 py-2 text-2xs text-muted-foreground">
             Only the first folders are listed. Type a path to go straight to one.
           </p>
         )}
       </div>
 
       {(error ?? notice) && (
-        <p className="border-t px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground" role="status">
+        <p className="border-t px-3 py-2 text-2xs leading-snug text-muted-foreground" role="status">
           {error ?? notice}
         </p>
       )}
 
       {unreachable && onFallback && (
         <div className="border-t px-3 py-2">
-          <button type="button" onClick={onFallback} className="rounded-sm text-[0.6875rem] underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+          <button type="button" onClick={onFallback} className="rounded-sm text-2xs underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
             Choose a folder with the system picker instead
           </button>
         </div>
@@ -320,7 +320,7 @@ export function DirectoryBrowser({
 
       {/* THE LEGEND IS THE FEATURE, as on the palette's other pages: ⌘Enter is
           not a key anybody guesses, and it is the one that finishes the job. */}
-      <div className="flex items-center gap-3 border-t px-3 py-2 text-[0.6875rem] text-muted-foreground">
+      <div className="flex items-center gap-3 border-t px-3 py-2 text-2xs text-muted-foreground">
         <span>
           <kbd className="font-sans">↑↓</kbd> Navigate
         </span>
@@ -347,7 +347,7 @@ export function DirectoryBrowser({
           onClick={submit}
           disabled={Boolean(busy) || !listing}
           className={cn(
-            "flex items-center gap-1.5 rounded-md bg-primary px-2 py-1 text-[0.6875rem] font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "flex items-center gap-1.5 rounded-md bg-primary px-2 py-1 text-2xs font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
             "disabled:opacity-60",
           )}
         >

@@ -125,7 +125,7 @@ export function LoomGraph({ loomId }: { loomId: string }) {
           x={labelSide === "left" ? x - 16 : x + 14}
           y={cy + 3.5}
           textAnchor={labelSide === "left" ? "end" : "start"}
-          className={`text-[0.625rem] ${emphasis ? "fill-foreground font-medium" : "fill-foreground/80"}`}
+          className={`text-3xs ${emphasis ? "fill-foreground font-medium" : "fill-foreground/80"}`}
         >
           {node.label.length > 26 ? `${node.label.slice(0, 26)}…` : node.label}
         </text>
@@ -219,7 +219,7 @@ export function LoomGraph({ loomId }: { loomId: string }) {
                       />
                     ) : null}
                     {/* The strand's name, at its birth. */}
-                    <text x={x + 14} y={y(first.row) - 14} className="fill-muted-foreground text-[0.625rem] font-medium">
+                    <text x={x + 14} y={y(first.row) - 14} className="fill-muted-foreground text-3xs font-medium">
                       {strand.title.length > 24 ? `${strand.title.slice(0, 24)}…` : strand.title}
                       {strand.tier ? `  · ${strand.tier}` : ""}
                     </text>
@@ -255,7 +255,7 @@ export function LoomGraph({ loomId }: { loomId: string }) {
                   const label = fmtAgo(node.at);
                   if (i > 0 && fmtAgo(all[i - 1].at) === label) return null;
                   return (
-                    <text key={`t-${node.id}`} x={8} y={y(node.row) + 3} className="fill-muted-foreground text-[0.5625rem] tabular-nums">
+                    <text key={`t-${node.id}`} x={8} y={y(node.row) + 3} className="fill-muted-foreground text-4xs tabular-nums">
                       {label}
                     </text>
                   );

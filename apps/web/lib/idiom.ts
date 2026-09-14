@@ -16,7 +16,7 @@
  * it could only fail AFTER a rail had already drifted, and the fix it asked
  * for was to paste the string a fourth time.
  *
- * 10px, semibold, uppercase, tracking-wider is the newer of the two
+ * `text-3xs` (10px), semibold, uppercase, tracking-wider is the newer of the two
  * section-caption treatments this app has shipped; the rail's band labels used
  * to sit at 11px, regular weight, sentence case — a difference between two
  * "small grey word beside a rule" treatments with no reason beyond having been
@@ -29,4 +29,4 @@
  * string.
  */
 export const CAPTION =
-  "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+  "text-3xs font-semibold uppercase tracking-wider text-sidebar-foreground/45";
