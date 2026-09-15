@@ -102,12 +102,24 @@ export type BrowserToolName = z.infer<typeof BrowserToolName>;
 
 export type BrowserToolDefinition = {
   name: BrowserToolName;
-  /** Written for the model, not for a human reader. It is the only thing that
-   *  tells an agent when this tool is the right one, so it names the situation
-   *  rather than describing the parameters. */
+  /**
+   * Written for the model, not for a human reader. It is the only thing that
+   * tells an agent when this tool is the right one, so it names the situation
+   * rather than describing the parameters.
+   *
+   * UNDER 350 BYTES, ENFORCED BY A TEST (#515). Every description here is in
+   * the context of every session that can browse, whether or not it ever opens
+   * a page — sixteen tools' worth of prose, paid for on every turn. Anything
+   * that needs more than a couple of sentences of reasoning belongs in this
+   * file's header or in the `telar` skill, where a model reads it once and
+   * only when it is relevant.
+   */
   description: string;
   input: z.ZodObject;
 };
+
+/** The ceiling `BROWSER_TOOLS` is held to. */
+export const BROWSER_DESCRIPTION_MAX_BYTES = 350;
 
 const EMPTY = z.object({});
 
@@ -148,13 +160,13 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_list_tabs",
     description:
-      "List the tabs currently open in Telar's integrated browser without changing them. Each is marked (current) if it is the tab the human is looking at and \"yours\" if it is the one your calls act on — these are often different, which is how you can work in a background tab while they read something else. Use this first when the user refers to a visible page, and to pick a tabId.",
+      "List the tabs open in Telar's integrated browser, changing none. (current) marks the tab the human is looking at, \"yours\" the one your calls act on — often different, which is how you work in the background. Use it when the user refers to a visible page, and to pick a tabId.",
     input: EMPTY,
   },
   {
     name: "browser_tabs",
     description:
-      "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens a tab and moves you into it; \"select\" moves you to an existing one. Neither changes what the human is looking at — you get your own tab, in the background. List tabs before acting when more than one is open.",
+      "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens one and moves you into it, \"select\" moves you to an existing one; neither changes what the human is looking at. List tabs first when more than one is open.",
     input: z.object({
       action: z.enum(["list", "new", "close", "select"]),
       // Tabs are addressed positionally by Playwright MCP, so a fractional or
@@ -166,7 +178,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_navigate",
     description:
-      "Navigate to an http or https URL — in the tab you are working in, or the tabId you name. Does not change what the human is looking at. Also opens local files from this session's checkout as file:// URLs (an HTML page you built, a PDF you downloaded) — files elsewhere on the machine are refused. To put a file IN FRONT of the human rather than browse it yourself, use display_open instead.",
+      "Navigate to an http or https URL, in the tab you are working in or the tabId you name. Does not change what the human is looking at. file:// URLs work only inside this session's checkout. To put a file IN FRONT of the human rather than browse it yourself, use display_open.",
     input: z.object({ url: z.url(), ...tabId }),
   },
   {
@@ -177,10 +189,23 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_snapshot",
     description:
-      "Read the accessibility snapshot of the tab you are working in, or the tabId you name. Use its exact target refs for interactions.",
+      "Read the accessibility snapshot of the tab you are working in, or the tabId you name. Use its exact target refs for interactions. The answer is capped at 16 KB: on a large page pass target (a ref from the last snapshot) to read one region, or depth to stop at a level.",
     input: z.object({
+      /** A ref from THIS tab's last snapshot: renders that node's subtree
+       *  instead of the document. Refs are re-minted by every snapshot, so a
+       *  ref from an older one is refused by name rather than widened. */
       target: z.string().optional(),
+      /** Levels below the root of what is rendered — `{target, depth: 1}` is
+       *  "that node and its children". */
       depth: z.number().int().nonnegative().optional(),
+      /**
+       * Accepted and INERT, on both backends. Element rectangles come from a
+       * separate CDP measurement the snapshot path does not make; the panel's
+       * own picker asks for them by another route. Kept in the schema so a
+       * call that passes it is not a validation error (#515 keeps every
+       * argument accepted), and left undefined rather than defaulted to true
+       * so nothing reads a promise into it.
+       */
       boxes: z.boolean().optional(),
       ...tabId,
     }),
@@ -239,7 +264,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_resize",
     description:
-      "Change the viewport of the tab you are working in (or the tabId you name) — the size the page lays out for, independent of how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the size of the panel the human is looking at (mode \"fixed\" returns to a stable size). Take a fresh browser_snapshot afterwards.",
+      "Change the viewport of the tab you are working in, or the tabId you name — the size the page lays out for, not how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the human's panel (\"fixed\" to stop). Snapshot again afterwards.",
     input: z
       .object({
         preset: z.enum(["default", "laptop", "tablet", "phone"]).optional(),
@@ -265,18 +290,25 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_console_messages",
-    description: "Read console messages from the tab you are working in, or the tabId you name.",
+    description:
+      "Read console messages from the tab you are working in, or the tabId you name. level is a floor and defaults to info; pass all for the quieter ones too. The answer is capped at 6 KB and the newest lines are the ones kept — raise level to see further back.",
     input: z.object({
+      /** A FLOOR, not an exact match: "warning" answers warnings and errors. */
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
+      /** Every level, whatever `level` says. */
       all: z.boolean().optional(),
       ...tabId,
     }),
   },
   {
     name: "browser_network_requests",
-    description: "Read network requests from the tab you are working in, or the tabId you name.",
+    description:
+      "Read network requests from the tab you are working in, or the tabId you name. The answer is capped at 6 KB and the newest rows are the ones kept — pass filter, a substring of the URL, to ask about one endpoint rather than the whole page.",
     input: z.object({
+      /** Accepted and INERT: the host records every request and has never
+       *  classified them. Kept accepted so no existing call breaks (#515). */
       static: z.boolean().default(false),
+      /** A plain substring of the URL. */
       filter: z.string().optional(),
       ...tabId,
     }),
@@ -284,7 +316,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_fill_secret",
     description:
-      "Fill login fields on the current page from the user's 1Password, without ever seeing the values. Pass snapshot refs and say what each field is (username/password/otp); a human approves and picks the item, Telar fills it, and the secret never enters this conversation. Use this instead of asking the user to paste a password.",
+      "Fill login fields from the user's 1Password without ever seeing the values. Pass snapshot refs and say what each field is (username/password/otp); a human approves and picks the item, and the secret never enters this conversation. Use this rather than asking them to paste a password.",
     input: z.object({
       fields: z
         .array(
