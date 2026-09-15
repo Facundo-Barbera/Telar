@@ -30,6 +30,7 @@ import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
 import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
+import { newSessionId } from "@/lib/session-mutations";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { hostFromPathname, hostFetcher, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
@@ -1976,7 +1977,7 @@ export function SessionCockpit({
     if (browserDraftFlight.current) return browserDraftFlight.current;
     const origin = window.location.pathname;
     if (browserDraftIdentity.current?.path !== origin) {
-      browserDraftIdentity.current = { path: origin, id: `session_${crypto.randomUUID().replaceAll("-", "")}` };
+      browserDraftIdentity.current = { path: origin, id: newSessionId() };
     }
     const id = browserDraftIdentity.current.id;
     // Keep both requests on the originating host if navigation changes mid-flight.
@@ -2543,14 +2544,53 @@ export function SessionCockpit({
        */
       let target = sessionId ?? browserTarget;
       if (!target) {
+        /**
+         * THE ID IS MINTED HERE, AND THE ADDRESS MOVES BEFORE THE ENGINE
+         * ANSWERS — issue #495.
+         *
+         * WHAT WAS INSTANT AND WHAT WAS NOT. The composer empties the moment you
+         * press Send, and then the conversation sat on `/sessions/new` for a
+         * whole round trip — a worktree cut, a document written — before the URL
+         * became its own. Reload in that window and the message was gone; copy
+         * the address and it addressed a canvas.
+         *
+         * A CLIENT-MINTED ID IS THE INSTANT PART, NOT A FAKE ROW. Nothing is
+         * invented: this is the id the session WILL have, because the engine
+         * takes a caller's id and answers a repeat of the same create with the
+         * session it already stored (apps/engine/test/session-create-id.test.ts
+         * pins both, so a double-click is a silent no-op rather than a second
+         * worktree). The rail is deliberately left to its own poll — a row for a
+         * session that may yet fail to exist is exactly the fake row this
+         * approach avoids.
+         *
+         * THE SCREEN DOES NOT MOVE YET. `sessionId` reads `createdSessionId`,
+         * which is still unset — so `fresh` stays true, nothing is hydrated and
+         * nothing is polled until the record actually exists. What changes is
+         * the address, and what it costs if the create fails is one line below.
+         */
+        const id = newSessionId();
+        const canvas = window.location.pathname;
+        window.history.replaceState(null, "", sessionHref({ id, projectId, hostId }));
         const created = await api.createSession(projectId, {
+          id,
           title: text.replace(/\s+/g, " ").slice(0, 80),
           driver: draftDriver,
           envMode: draftEnvMode,
           ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
           ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
+        }).catch((cause: unknown) => {
+          // THE ADDRESS GOES BACK. The catch below gives the words and the files
+          // back and puts the refusal in the composer; a URL left naming a
+          // session that was never created would survive all of that and 404 on
+          // the next reload.
+          window.history.replaceState(null, "", canvas);
+          throw cause;
         });
+        // RECONCILED, NOT ASSUMED. The engine honours a caller's id, and this is
+        // what makes that a fact about this run rather than a fact about the
+        // test suite.
         target = created.session.id;
+        if (target !== id) window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
         // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
         // an effort chosen must still write that effort — which is exactly the
         // case that used to fall through this `if` and vanish.
@@ -2589,7 +2629,8 @@ export function SessionCockpit({
         setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);
-        window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
+        // THE ADDRESS IS ALREADY THIS SESSION'S — written before the create went
+        // out, and reconciled against the id the engine answered with (#495).
       }
       /**
        * ATTACHMENTS UPLOAD AT SEND, NOT AT PICK.

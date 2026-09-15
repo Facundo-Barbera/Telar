@@ -160,6 +160,30 @@ export function withTitle(row: SidebarSession, title: string, at: number = Date.
 }
 
 /**
+ * AN ID FOR A SESSION THAT DOES NOT EXIST YET — issue #495.
+ *
+ * WHAT IT BUYS. Creating a conversation is the one mutation with nothing to be
+ * optimistic ABOUT: there is no row to patch, because there is no session. What
+ * a client CAN have in advance is the id — and with it the address, so the URL
+ * is the conversation's own from the moment Send is pressed rather than a round
+ * trip later. Reload inside that window and you are in the conversation; copy
+ * the address and it addresses the conversation.
+ *
+ * NOT A FAKE ROW, AND THAT IS THE RULE. Nothing is inserted into the rail on a
+ * guess: the rail's own poll adds the row when the session exists, and a create
+ * that fails leaves nothing behind to retract.
+ *
+ * THE ENGINE'S OWN SHAPE, because it is the same id either way — `createSession`
+ * generates exactly this when a caller supplies none, and `assertId` is what
+ * both have to satisfy. Re-emitting one is a silent no-op on the engine, which
+ * is what makes a double-click harmless; see
+ * apps/engine/test/session-create-id.test.ts.
+ */
+export function newSessionId(): string {
+  return `session_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+/**
  * A ROW'S REQUESTS GO TO THE ROW'S MAC. The rail draws a paired Mac's sessions
  * beside the local ones, and every verb on one of them must land on the engine
  * that owns it. A bare `fetch("/api/sessions/…")` reaches THIS Mac's engine
