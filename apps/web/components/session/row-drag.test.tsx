@@ -53,7 +53,7 @@ const drag = {
 const render = (over: Partial<React.ComponentProps<typeof SessionRow>> = {}) =>
   renderToStaticMarkup(
     <SidebarProvider>
-      <SessionRow session={session} active={false} showProject={false} variant="card" band="active" renderedAt={0} onRefresh={noop} {...over} />
+      <SessionRow session={session} active={false} showProject={false} variant="card" band="active" renderedAt={0} onRowChanged={noop} {...over} />
     </SidebarProvider>,
   );
 
