@@ -1058,6 +1058,41 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
+/**
+ * THE ONE DESIGNATED COORDINATOR CONVERSATION — experimental, off by default,
+ * and the whole of what "Main session" is (#522).
+ *
+ * IT DESIGNATES, IT DOES NOT CREATE A KIND. A main session is an ORDINARY
+ * session: the same `createSession` path, the same project and model
+ * conventions, the same rail row underneath, the same tools behind the same
+ * gate. What being main adds is a briefing at the prompt seam and an entry near
+ * the top of the rail. Being main widens no permission and no tool.
+ *
+ * SAME ENVIRONMENT SCOPE AS THE DOCUMENTS ABOVE, and for `AgentOrientation`'s
+ * own reason: this decides what one session on this machine is TOLD, and a
+ * per-browser copy would mean a desktop shell and a phone disagreeing about
+ * which conversation that is.
+ *
+ * `sessionId` OUTLIVES `enabled`, DELIBERATELY. Disabling keeps the id, so
+ * re-enabling designates the conversation that was already main rather than
+ * minting a second one — the requirement that enable, disable, re-enable and a
+ * restart can never leave two. The engine still checks the session EXISTS
+ * before reusing it; a conversation somebody deleted is not a designation.
+ */
+export const MainSession = z.object({
+  /** Off out of the box. Every user who never opens the setting sees exactly
+   *  the Telar they had: no rail entry, no briefing, no document. */
+  enabled: z.boolean(),
+  /** Which conversation is main. Absent means none has been designated yet —
+   *  a distinct state from "designated and switched off". */
+  sessionId: Id.optional(),
+});
+export type MainSession = z.infer<typeof MainSession>;
+
+/** Off, and nothing designated — what this engine did before the document
+ *  existed, which is what an install that never opens Settings keeps doing. */
+export const DEFAULT_MAIN_SESSION: MainSession = { enabled: false };
+
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;

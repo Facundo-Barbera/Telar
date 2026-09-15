@@ -282,6 +282,22 @@ export const WorkerClaim = z.object({
    * every session did before this existed.
    */
   orientation: z.string().min(1).optional(),
+  /**
+   * THE COORDINATOR BRIEFING, ALREADY RESOLVED — see `MainSession` and
+   * `apps/engine/src/main-session/briefing.ts`.
+   *
+   * THE TEXT, NOT THE FLAG, for the reason `orientation` above gives: the
+   * decision ("is this machine's main session switched on, and is this the
+   * session it names") and the words are both the engine's, and a worker handed
+   * either half would be a second place one of them lives. It is decided at
+   * CLAIM TIME, so the worker never re-reads the setting and a turn already in
+   * flight finishes with the briefing it started with.
+   *
+   * ABSENT MEANS INJECT NOTHING — the switch is off, this is not the designated
+   * session, or the worker is older than this field. Which is what every session
+   * did before this existed, and what every session but one still does.
+   */
+  mainBriefing: z.string().min(1).optional(),
   turn: Turn,
 });
 export type WorkerClaim = z.infer<typeof WorkerClaim>;
