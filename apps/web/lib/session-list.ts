@@ -35,6 +35,7 @@ import {
   type LiveSessionRow,
   type SessionActivity,
   type SessionAssignment,
+  type SessionPreparation,
   type SessionSettledBy,
 } from "@telar/engine-client";
 import { isShelved, isSnoozed, settlingActivityOf, type SettlingActivity, type SettlingOptions } from "./session-settling";
@@ -119,6 +120,12 @@ export type SidebarSession = {
   contextTokens?: number;
   workspacePath: string;
   worktreeBranch?: string;
+  /**
+   * The checkout is still being cut, or could not be — `Session.preparation`,
+   * carried through unchanged. Absent means ready, which is every row but a
+   * worktree session's first few seconds. See `SessionPreparation`.
+   */
+  preparation?: SessionPreparation;
   /** The project checkout's current branch, for a LOCAL session — which has no
    *  branch of its own because it runs on the project's own checkout. Derived
    *  per project by the engine, not stored. */
@@ -230,6 +237,7 @@ export function toSidebarSession(
     ...(typeof session.usage?.contextUsed === "number" ? { contextTokens: session.usage.contextUsed } : {}),
     workspacePath: session.workspace.path,
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),
+    ...(session.preparation === undefined ? {} : { preparation: session.preparation }),
     ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
     ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
     ...(session.settledBy ? { settledBy: session.settledBy } : {}),

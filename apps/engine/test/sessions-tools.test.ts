@@ -23,6 +23,7 @@
  *   · every one of these tools denied to a warp child.
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { worktreeReady } from "./worktree-ready";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -210,8 +211,11 @@ describe("creating a session", () => {
     // Branch slugs come from the WORK, not the machinery (d3e615b):
     // `telar/<title-slug>-<id6>` when the session has a usable title.
     expect(created.json!.branch).toBe(`telar/port-the-parser-${id.replace(/^session_/, "").slice(0, 6)}`);
-    // A REAL CHECKOUT, on disk, off the real repository.
+    // A REAL CHECKOUT, on disk, off the real repository — once the background
+    // cut lands (#496). The tool answered before it did, which is the point.
     const session = store.getSession(id);
+    expect(session.preparation).toMatchObject({ state: "preparing" });
+    await worktreeReady(store, id);
     expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);
     // CREATING STARTS NOTHING. The note says so and the queue agrees.
     expect(store.turns(id)).toEqual([]);
@@ -278,11 +282,14 @@ describe("there is no cap on creation", () => {
     expect(create).toContain("no cap");
   });
 
-  test("a refused create leaves NO worktree behind", () => {
+  test("a refused create leaves NO worktree behind", async () => {
     // A refusal for any reason must not leave a checkout lying on disk. The
     // one refusal that remains is a project that does not exist.
     const { store, projectId } = engine();
-    store.createSession({ projectId, envMode: "worktree", origin: "session" });
+    const made = store.createSession({ projectId, envMode: "worktree", origin: "session" });
+    // The directory the count is taken against is made by the background cut,
+    // so wait for the first one before counting (#496).
+    await worktreeReady(store, made.id);
     const worktrees = path.join(store.paths.root, "worktrees");
     const before = fs.readdirSync(worktrees).length;
     expect(() => store.createSession({ projectId: "project_nope", envMode: "worktree", origin: "session" })).toThrow();
@@ -397,6 +404,7 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
+    await worktreeReady(store, id);
     fs.writeFileSync(path.join(store.getSession(id).workspace.path, "new-file.txt"), "written by the session\n");
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });

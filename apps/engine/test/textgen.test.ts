@@ -6,6 +6,7 @@ import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
 import { derivedBranchFor, EngineStateError, EngineStore } from "../src/state";
 import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "../src/textgen";
+import { worktreeReady } from "./worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -109,15 +110,18 @@ describe("text generation policy", () => {
 });
 
 describe("refreshWorktreeBranchFromTitle", () => {
-  function worktreeSession(title: string): { store: EngineStore; id: string } {
+  /** The cut runs behind the create now (#496), and a branch rename needs the
+   *  checkout it renames in. */
+  async function worktreeSession(title: string): Promise<{ store: EngineStore; id: string }> {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
     store.registerProject({ id: "project_one", name: "One", root: repo() });
     const session = store.createSession({ id: "session_abcdef123456", projectId: "project_one", envMode: "worktree", title });
+    await worktreeReady(store, session.id);
     return { store, id: session.id };
   }
 
-  test("a generated title renames the engine-cut branch, on disk and on the record", () => {
-    const { store, id } = worktreeSession("please fix the queue refill race in the work");
+  test("a generated title renames the engine-cut branch, on disk and on the record", async () => {
+    const { store, id } = await worktreeSession("please fix the queue refill race in the work");
     store.updateSession(id, { title: "Queue refill race" });
     expect(store.refreshWorktreeBranchFromTitle(id)).toBe("telar/queue-refill-race-abcdef");
     const session = store.getSession(id);
@@ -127,8 +131,8 @@ describe("refreshWorktreeBranchFromTitle", () => {
     expect(head).toBe("telar/queue-refill-race-abcdef");
   });
 
-  test("declines when nothing would change, and never twice", () => {
-    const { store, id } = worktreeSession("same title");
+  test("declines when nothing would change, and never twice", async () => {
+    const { store, id } = await worktreeSession("same title");
     expect(store.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
   });
 });
