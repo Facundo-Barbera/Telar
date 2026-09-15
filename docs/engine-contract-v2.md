@@ -24,12 +24,6 @@ capability-aggregation mode currently called Ultras.
 
 ### Out of scope, deliberately
 
-**Looms, weaves, the verifier, and the acceptance gate.** They need a rework of
-their own and are not modelled here. `packages/core`'s loom/weave/verifier code
-stays frozen and unmounted. The contract below must not grow a `loom` entity as
-a side effect — when looms return they arrive as a layer *over* this stream, not
-a parallel one beside it.
-
 **Workspace queue/lanes/packets.** Deferred to its own pass, on top of v2.
 
 **Visual design.** The Codex app is the visual reference; that is a separate
@@ -257,9 +251,8 @@ reachable and keeps it reachable for the next toolkit.
 ## 7. Warp — the aggregation mode formerly called Ultras
 
 **Decided: Ultras becomes Warp.** In weaving, the warp is the set of parallel
-threads held under tension on the loom, through which the weft passes. It is
-semantically exact for a parallel fan-out, it is native to Telar's vocabulary,
-and it does not collide with `loom`, `weave` or `thread`, which are all taken.
+threads held under tension on a loom, through which the weft passes. It is
+semantically exact for a parallel fan-out and native to Telar's vocabulary.
 "Ultra" had drifted into model-tier and thinking-budget vocabulary and read as
 an intensity setting rather than a structure.
 

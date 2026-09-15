@@ -1,8 +1,8 @@
 # docs
 
 **Current direction (2026-08):** [`vision-2026-08.md`](vision-2026-08.md) — docs as
-the interface, looms as workers, verification as the gate, and environment leasing
-as the scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
+the interface, verification as the gate, and environment leasing as the
+scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
 (implemented by `packages/env`). A visual summary lives in [`artifacts/`](artifacts/).
 
 Fresh documentation is being written here. What is already in this directory is
@@ -19,16 +19,18 @@ reasoning to these pages, so deleting one silently strips the explanation for
 code that is still shipping. Supersede them by rewriting rather than by dropping
 the file — and when you do, update the citing comment in the same change.
 
-**Five rows left this table in #501 step 3.** `session-profile-port.md`,
-`weave-contracts.md`, `workspace-item-schema-design.md`, `integration-architecture.md`
-and `deferred-work.md` were kept because `packages/core` cited them —
-`src/session-profile.ts`, `src/weave-contracts.ts`, `src/workspace/schema.ts`,
-`test/invariants.test.ts` (INV-1, the accept-tool moat) and `src/ultra/wake.ts`.
-That package was deleted with the Loom engine, so no live source cites those five
-any more and the rule above no longer holds them here. They are still on disk;
-#501 step 5 is the doc sweep that decides each one (the issue names
-`workspace-item-schema-design.md` as reviewed, not dropped blindly).
+**Five rows left this table in #501 step 3**, when `packages/core` — the only
+source that cited them — was deleted with the Loom engine. Step 5 ruled on each:
 
-Note that source comments also cite pages that are **already** gone (chiefly
-`docs/loom-model.md` and `docs/loom-orchestrator.md`). Those predate this
-cleanup; they were archived long before it, and nothing here restored them.
+- **Deleted**, because their cited module went too: `weave-contracts.md`
+  (`src/weave-contracts.ts`) and `session-profile-port.md`
+  (`src/session-profile.ts`, `workspace/store.ts`).
+- **Kept, uncited**: `workspace-item-schema-design.md` (the issue asked for it
+  to be reviewed, not dropped blindly), `integration-architecture.md` and
+  `deferred-work.md`. The last two are dated records rather than live
+  rationale, which is why the rule above no longer has to hold them here.
+
+The Spool's and the Loom's own pages (`spool-definition.md`, `spool-loops.md`,
+`spool-port.md`, `loom-model-v1.md`) were deleted with those two surfaces.
+Everything removed is in git history if the reasoning is ever wanted; nothing
+here cites any of it.

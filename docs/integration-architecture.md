@@ -19,7 +19,7 @@ server plus its own native surfaces (a `contextBridge`-exposed in-window browser
 auto-update) — it forks the built `apps/web` standalone server as a child
 process and points a `BrowserWindow` at `http://127.0.0.1:<port>`. There is no
 separate application database and no remote Telar service that any of the three
-parts talk to for their own operation — all loom/project state is still files
+parts talk to for their own operation — all project state is still files
 under `TELAR_HOME` (default `~/.telar`). The one cloud component that does
 exist, `workers/updates-proxy`, is infrastructure for shipping the desktop app
 to itself (auto-update), not part of the cockpit's own request path — see
@@ -63,11 +63,11 @@ topology.
 
 | From | To | Type | Details |
 |---|---|---|---|
-| `apps/web` route handlers | `packages/core` (`@telar/core`) | In-process function calls via `workspace:*` import | `@telar/core` has no server/RPC boundary — it is a library. `apps/web/next.config.ts` sets `transpilePackages: ["@telar/core"]`, so core's TypeScript source is compiled alongside the app, not pre-built. Every one of the ~56 files under `apps/web/app/api/**/route.ts` imports named exports from `@telar/core` (e.g. `startLoom`, `getLoom`, `acceptLoom`, `listAccounts`) and calls them directly inside `GET`/`POST` handlers. No route sets `export const runtime = "edge"` — core depends on `node:fs`/`node:child_process`, so it requires the default Node.js runtime. Six server-side `lib/` modules also value-import `@telar/core`: `lib/server/doctor.ts`, `lib/server/git-tab.ts`, `lib/loom-mcp.ts`, `lib/ultra-mcp.ts`, `lib/titles.ts`, and `lib/mcp-oauth-pending.ts` (`lib/permissions.ts` and `lib/session-log.ts` import nothing from core — they resolve `TELAR_HOME` independently). `apps/web/instrumentation.ts` dynamically imports `@telar/core` in `register()`, guarded by `process.env.NEXT_RUNTIME !== "nodejs"`, specifically to keep it out of edge/client bundles. Beyond the `app/api/**/route.ts` handlers, `@telar/core` runs in-process in only two server components — `app/looms/plan/[project]/page.tsx` and `app/projects/[name]/sessions/[id]/page.tsx` (both call `getProject`/`listAccounts` directly) — a deep scan of `apps/web` counted 8 static runtime (value) import sites of `@telar/core` outside `app/api/**` and tests — the two server components above plus the six `lib/` modules listed earlier — plus `instrumentation.ts`'s guarded dynamic import, against roughly 40 type-only import sites across `"use client"` components/pages. This split is enforced by a repo convention, self-documented in ~10 files (e.g. `components/common/loom-notifications.tsx`, `components/looms/blocked-escalation.tsx`, `components/looms/utils.ts`, `components/projects/git-tab.tsx`, `components/session/session-view.tsx`) as the **"CLIENT-BUNDLE RULE"**: any `"use client"` file needing a `@telar/core` shape must `import type` only, never a value import, keeping core's Node-only internals (`fs`, `child_process`, the agent SDK) out of the browser bundle. |
+| `apps/web` route handlers | `packages/core` (`@telar/core`) | In-process function calls via `workspace:*` import | `@telar/core` has no server/RPC boundary — it is a library. `apps/web/next.config.ts` sets `transpilePackages: ["@telar/core"]`, so core's TypeScript source is compiled alongside the app, not pre-built. Every one of the ~56 files under `apps/web/app/api/**/route.ts` imports named exports from `@telar/core` (e.g. `listAccounts`) and calls them directly inside `GET`/`POST` handlers. No route sets `export const runtime = "edge"` — core depends on `node:fs`/`node:child_process`, so it requires the default Node.js runtime. Four server-side `lib/` modules also value-import `@telar/core`: `lib/server/doctor.ts`, `lib/server/git-tab.ts`, `lib/titles.ts`, and `lib/mcp-oauth-pending.ts` (`lib/permissions.ts` and `lib/session-log.ts` import nothing from core — they resolve `TELAR_HOME` independently). `apps/web/instrumentation.ts` dynamically imports `@telar/core` in `register()`, guarded by `process.env.NEXT_RUNTIME !== "nodejs"`, specifically to keep it out of edge/client bundles. Beyond the `app/api/**/route.ts` handlers, `@telar/core` runs in-process in only one server component — `app/projects/[name]/sessions/[id]/page.tsx` (it calls `getProject`/`listAccounts` directly) — a deep scan of `apps/web` counted 8 static runtime (value) import sites of `@telar/core` outside `app/api/**` and tests — the two server components above plus the six `lib/` modules listed earlier — plus `instrumentation.ts`'s guarded dynamic import, against roughly 40 type-only import sites across `"use client"` components/pages. This split is enforced by a repo convention, self-documented in ~10 files (e.g. `components/projects/git-tab.tsx`, `components/session/session-view.tsx`) as the **"CLIENT-BUNDLE RULE"**: any `"use client"` file needing a `@telar/core` shape must `import type` only, never a value import, keeping core's Node-only internals (`fs`, `child_process`, the agent SDK) out of the browser bundle. |
 | `apps/desktop` (`main.js`) | `apps/web` (standalone server) | Node `fork()` of a child process, plain HTTP polling for readiness | `startServer(port)` in [../apps/desktop/main.js](../apps/desktop/main.js) resolves `server.js` from the Next standalone build (`<resourcesPath>/standalone/apps/web/server.js` packaged, `apps/web/.next-desktop/standalone/apps/web/server.js` in a dev checkout) and `fork()`s it with `PORT`, `HOSTNAME=127.0.0.1`, `NODE_ENV=production` in its env, `execArgv: ["--require", server-preload.js]`, and an `"ipc"` stdio channel. Port is stabilized across launches via `<userData>/server-port.json` (falls back to a fresh free port if the persisted one is taken) so the renderer's `localStorage`-scoped UI state survives restarts. `waitForServer()` polls `GET http://127.0.0.1:<port>/` every 250ms up to a 30s timeout, accepting any `2xx`–`4xx` as "up". `server-preload.js` ([../apps/desktop/server-preload.js](../apps/desktop/server-preload.js)) is `--require`'d into the forked server (not the renderer) and registers `process.on("disconnect", () => process.exit(0))`, so if the Electron main process dies for any reason the child self-exits instead of orphaning its listen socket against `~/.telar`. |
 | `scripts/telar` (repo-root launcher, not part of any app) | a *separate* checkout at `~/Projects/personal/telar-stable/apps/web` | Detached `spawn()` of `bun run start`, plus `open <url>` | [../scripts/telar](../scripts/telar) is a standalone Bun CLI (not built into either app) that manages a long-lived, detached copy of the *stable* cockpit at `~/Projects/personal/telar-stable` (configurable via `~/.telar/launcher/config.json`). `start()` ensures `bun install` and a fresh `bun run build` have run (tracked via `built-commit`), then `spawn("bun", ["run", "start"], { cwd: .../apps/web, env: { PORT: cfg.port } })` detached, writes a PID file under `~/.telar/launcher/`, and calls `open http://localhost:<port>`. This is a dev-convenience launcher for the *default-branch cockpit*, unrelated to the desktop app's build/packaging pipeline. |
 | `scripts/build-desktop.sh` (repo-root) | `apps/desktop/build-app.sh`, `electron-builder`, `apps/desktop/install-app.sh` | Orchestrates a reproducible build from a pristine `git worktree` snapshot | [../scripts/build-desktop.sh](../scripts/build-desktop.sh) fetches `origin`, verifies the target ref is reachable from an `origin/*` branch, snapshots it into a fresh `git worktree add --detach` (so uncommitted local changes never leak into a shipped build), `bun install --frozen-lockfile`, runs `apps/desktop/build-app.sh` (which runs `next build` with `NEXT_OUTPUT=standalone NEXT_DIST_DIR=.next-desktop`, bundles the engine daemon into `apps/engine/dist/engine.mjs`, and hand-copies the Agent SDK's JavaScript and the `@playwright/mcp` CLI beside it — the SDK's native binary is deliberately not shipped), stamps `build-info.json`, packages via `bunx electron-builder --dir`, and smoke-tests the packaged `.app` (`Contents/MacOS/Telar --smoke`) before atomically swapping it into the output directory. |
-| `packages/core` (`engine.ts`) | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | In-process SDK call: `query()` | `engine.ts`'s `agent()` is documented as "one `query()` forced through a typed result tool" — every LLM turn is schema-forced via a zod-typed `emit_result` tool built with `createSdkMcpServer`/`tool()`. Capability walls are enforced via `restrictTools` (hard-restricts the SDK's available built-in tools, required because `permissionMode: "bypassPermissions"` doesn't gate availability by itself) plus explicit `disallowedTools`. `apps/web/app/api/chat/route.ts` also calls the SDK directly for interactive chat turns (streaming ~17 named SSE event types), separately from core's `agent()` calls used inside loom execution. |
+| `packages/core` (`engine.ts`) | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | In-process SDK call: `query()` | `engine.ts`'s `agent()` is documented as "one `query()` forced through a typed result tool" — every LLM turn is schema-forced via a zod-typed `emit_result` tool built with `createSdkMcpServer`/`tool()`. Capability walls are enforced via `restrictTools` (hard-restricts the SDK's available built-in tools, required because `permissionMode: "bypassPermissions"` doesn't gate availability by itself) plus explicit `disallowedTools`. `apps/web/app/api/chat/route.ts` also calls the SDK directly for interactive chat turns (streaming ~17 named SSE event types), separately from core's own `agent()` calls. |
 | `packages/core` (`mcp.ts`, `mcp-oauth.ts`) | Per-project MCP servers | MCP protocol over HTTP/SSE, gated by a from-scratch OAuth 2.1 client | `mcp-oauth.ts` ([../packages/core/src/mcp-oauth.ts](../packages/core/src/mcp-oauth.ts)) implements RFC 8707-aware discovery, a client-identity ladder (CIMD → DCR → manual), PKCE, and token/refresh handling; every network call takes an injectable `fetchImpl` (defaults to `globalThis.fetch`). Records persist as `McpOAuthRecord`s under `TELAR_HOME`. The default OAuth redirect origin is hardcoded to `http://localhost:3131` (`DEFAULT_REDIRECT_PATH = "/api/mcp/oauth/callback"`). `resolveProjectMcpServers`/`refreshProjectMcpAuth` (`mcp.ts`) merge a project's configured MCP servers into an `agent()` call's `extraMcpServers`, surfaced to the model as `mcp__<name>__*` tools. |
 | `packages/core` (`verifier.ts`, `critic.ts`) | `playwright-mcp` (packaged into `apps/desktop`) | Spawns the `@playwright/mcp` CLI as an MCP server, merged into a **read-only, capability-walled** verifier `agent()` call | `resolvePlaywrightMcpBin()` ([../packages/core/src/verifier.ts](../packages/core/src/verifier.ts)) resolution order: explicit option → `TELAR_PLAYWRIGHT_MCP_BIN` env var → walk-up search from a start dir (`apps/web/node_modules/@playwright/mcp/cli.js`, `node_modules/@playwright/mcp/cli.js`, `node_modules/.bin/playwright-mcp`, bun's hoisted `.bun` store) → bare `"playwright-mcp"` on `PATH` as a last resort. `apps/desktop/main.js` sets `TELAR_PLAYWRIGHT_MCP_BIN` to the bundled `playwright-mcp/node_modules/@playwright/mcp/cli.js` in packaged builds (unless the user already set it) because a Finder-launched app has no usable `PATH`. `critic.ts`'s `runPanel` passes this resolved bin into the verifier's `extraMcpServers`. The verifier `agent()` call sets `restrictTools: true` so its read-only guarantee ("the verifier cannot edit code") is enforced by SDK-level tool unavailability, not just a denylist. |
 | `apps/web` (`app/api/doctor/route.ts`, `lib/server/doctor.ts`) | Local machine binaries (`bun`, `git`, `gh`, `claude`, `codex`) and Playwright's Chromium cache | Read-only `execFile`/`fs.existsSync` probes | `runDoctor()` ([../apps/web/lib/server/doctor.ts](../apps/web/lib/server/doctor.ts)) never runs a real login/OAuth flow, never reads a credential file's contents, and never prints a token — it checks binary presence/version, `gh auth status` (account name only), each registered account's on-disk login liveness, Chromium's install state for the verifier, and which `TELAR_HOME` is active. |
@@ -101,75 +101,14 @@ dashboard's own git integration, which would not show up as a workflow file.
 
 ## Data Flow
 
-Traced for the canonical path — create a loom → orchestrate/build → verify →
-human accept — across layers:
-
-1. **Create.** The cockpit UI `POST`s to `apps/web/app/api/looms/route.ts`
-   ([../apps/web/app/api/looms/route.ts](../apps/web/app/api/looms/route.ts)),
-   which validates the body (`kind`, `prompt`, optional `acceptanceCriteria`,
-   `maxAttempts`, `target`) and calls `startLoom(input, { accounts, policy })`
-   from `@telar/core`'s `dispatcher.ts` **synchronously in the same request**.
-   `startLoom` creates and persists the `Loom` record, then — for the common
-   "no scoping needed" fast path — kicks off `runWeaveWiring(...)` as a
-   **fire-and-forget promise** (`.catch(onFailure).finally(...)`, never
-   `await`ed by the route) before returning the queued loom to the client.
-   The HTTP response therefore returns immediately; execution continues in the
-   background inside the same Next.js server process.
-2. **Orchestrate/build.** `dispatchExecution` in
-   [../packages/core/src/dispatcher.ts](../packages/core/src/dispatcher.ts)
-   routes every loom — single or multi-thread epic — through `runWeave`
-   ("UNIVERSAL ROUTING": a non-woven loom gets a deterministic single-subgoal
-   charter, weave-of-one). The weaver's tick loop (`tick.ts`) is pure control
-   flow over injected state; each subgoal's actual work happens in
-   `executor.ts`'s `executeLoom`, which isolates a thread's edits into a
-   fresh `git worktree` under `<TELAR_HOME>/worktrees/` ([../packages/core/src/vcs.ts](../packages/core/src/vcs.ts))
-   and drives one or more `agent()` calls (Claude Agent SDK `query()`) against
-   it, gated by `runGates`/`runBuildFanout`.
-3. **Verify.** After a build attempt, `executor.ts` runs the verifier/critic
-   panel (`critic.ts`, `panel.ts`) — a `restrictTools: true` `agent()` call
-   with the `playwright-mcp` server merged in for browser-driven checks — which
-   judges the attempt read-only against acceptance criteria / the verification
-   contract and never edits code. A failing-but-repairable verdict feeds the
-   bounded auto-repair loop (`repair-guard.ts`, `decideRepairContinuation`);
-   an unrepairable or exhausted verdict lands the loom in `needs-review` or
-   `blocked`.
-4. **Observe.** Throughout steps 2–3, `appendEvent`/`saveLoom` write to
-   per-loom files under `<TELAR_HOME>/looms/<id>/` (state JSON + an append-only
-   event log). `apps/web/app/api/looms/[id]/events/route.ts`
-   ([../apps/web/app/api/looms/[id]/events/route.ts](../apps/web/app/api/looms/[id]/events/route.ts))
-   serves this as SSE: on connect it sends the full `Loom` snapshot plus every
-   event from line 0, then polls the event log every 400ms (`POLL_MS`),
-   streaming new events (`ev`), state changes (`run`), and a terminal `end`
-   once the loom reaches a terminal state (`done`, `needs-review`, `halted`,
-   `failed`, `skipped`) and the log is drained. The cockpit UI holds this SSE
-   connection open to render live loom progress ("god-view"). Outside that
-   detail view there is no push channel between server-held state and client
-   views: list/index pages (dashboard, looms index, project hub, sidebar)
-   reconcile via plain `fetch()` polling (3–10s, gated on "anything in
-   flight") plus a single global `window.dispatchEvent(new
-   Event("telar:refresh"))` convention — every mutating action fires it, and
-   every list/page listens via `window.addEventListener("telar:refresh",
-   load)` — this is the app's de facto cache-invalidation bus (no SWR/React
-   Query, no server actions).
-5. **Accept.** A loom reaching `ready` (or another non-`done` state, as an
-   audited override) is closed only by a human action:
-   `apps/web/app/api/looms/[id]/accept/route.ts`
-   ([../apps/web/app/api/looms/[id]/accept/route.ts](../apps/web/app/api/looms/[id]/accept/route.ts))
-   calls `acceptLoom(id, "you", { override, missing })` — the acceptor
-   identity `"you"` is server-fixed, never client-supplied. A clean accept of
-   `ready` needs no body; accepting any other non-`done` state requires
-   `{override: true, missing}` naming what's unmet, or `acceptLoom` throws
-   (surfaced as a 400). There is no agent-callable accept anywhere in the
-   codebase (see Failure Modes & Boundaries).
-
 **State persistence.** Everything server-side is filesystem-backed under
 `TELAR_HOME` (`process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar")`,
-resolved independently in `packages/core/src/manifest.ts`, `looms.ts`, and
+resolved independently in `packages/core/src/manifest.ts` and
 mirrored in `apps/web/lib/permissions.ts`/`session-log.ts`): the project
-registry, per-loom state/events/spec-bundles, accounts/secrets/MCP-OAuth
+registry, accounts/secrets/MCP-OAuth
 records, `~/.telar/launcher/` (the `scripts/telar` launcher's own PID/log/config,
 a separate namespace), and `<TELAR_HOME>/worktrees/` (git worktrees minted per
-thread attempt, never inside the user's actual repo). Two additional
+isolated unit of work, never inside the user's actual repo). Two additional
 higher-precedence per-project tiers exist for environment-lane config: a
 human-accepted `<project-root>/.telar/servers.yaml` (gitignored, untracked, takes
 precedence) over a committable `<project-root>/servers.yaml` ([../packages/core/src/servers.ts](../packages/core/src/servers.ts)).
@@ -181,7 +120,7 @@ The `TELAR_HOME` env var is how test suites, `apps/web`'s `dev` script
 
 | Service | Used by | Purpose | Auth | Notes |
 |---|---|---|---|---|
-| Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | `packages/core/src/engine.ts` (`agent()`), `apps/web/app/api/chat/route.ts` | All LLM-driven work: weaver/build/verify agent turns, interactive chat | Whatever the SDK/CLI's own login resolves (per-account, via `packages/core/src/accounts.ts`/`login.ts`) | Native binary is a runtime `createRequire(...).resolve(...)` dependency the desktop build must hand-copy into the standalone bundle (Next's static tracing drops it); `--smoke` in `apps/desktop/main.js` executes `claude --version` to prove the bundled binary works. |
+| Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | `packages/core/src/engine.ts` (`agent()`), `apps/web/app/api/chat/route.ts` | All LLM-driven work: agent turns, interactive chat | Whatever the SDK/CLI's own login resolves (per-account, via `packages/core/src/accounts.ts`/`login.ts`) | Native binary is a runtime `createRequire(...).resolve(...)` dependency the desktop build must hand-copy into the standalone bundle (Next's static tracing drops it); `--smoke` in `apps/desktop/main.js` executes `claude --version` to prove the bundled binary works. |
 | Codex app-server | `apps/web/lib/codex-app-server.ts`, `app/api/chat/route.ts` | Alternate agent backend bridged into the same chat SSE contract | External `codex` CLI binary on PATH | Probed (not required) by `apps/web/lib/server/doctor.ts`'s binary checks (`codex`, remedy `npm i -g @openai/codex`). |
 | Per-project MCP servers | `packages/core/src/mcp.ts`, `mcp-oauth.ts` | Extra tools surfaced to agent runs (`mcp__<name>__*`) | Telar-owned OAuth 2.1 client (`mcp-oauth.ts`): discovery, CIMD/DCR/manual client-identity ladder, PKCE, token/refresh; redirect origin derives from the initiating request (fallback `http://localhost:3131`), path `/api/mcp/oauth/callback` | Records persisted under `TELAR_HOME`; every token/discovery call goes through an injectable `fetchImpl`, never a bare global `fetch`, for testability. |
 | `@playwright/mcp` (Playwright MCP CLI) | `packages/core/src/verifier.ts`, `critic.ts` | Gives the read-only verifier a real browser to drive (snapshot-based judgment, since `verify_*` tools may not exist in the pinned `@playwright/mcp` version) | None (local subprocess, no external network beyond whatever the target app under test serves) | A `devDependency` of `apps/web` in the repo (so Next's output tracing drops it from `standalone`); `apps/desktop`'s build materializes it into `Resources/playwright-mcp/node_modules` via `extraResources`, and `main.js` points `TELAR_PLAYWRIGHT_MCP_BIN` at it in packaged builds. |
@@ -201,25 +140,6 @@ a local single-user tool that trusts its caller by design.
 
 **Trust boundaries.**
 
-- **Verifier is structurally read-only.** The verifier/critic `agent()` call
-  sets `restrictTools: true` (`engine.ts`), which hard-restricts the SDK's
-  *available* built-in tools rather than merely denylisting them — necessary
-  because under `permissionMode: "bypassPermissions"` an `allowedTools` filter
-  alone does not gate availability. This is enforced by construction for the
-  verifier specifically; the builder path opts out (keeps the full preset)
-  because it needs write access.
-- **Accept is human-only, and cannot be reached by an agent.** No route or
-  MCP tool lets a model call `acceptLoom`. `apps/web/lib/loom-mcp.ts` (the
-  in-process MCP server exposed to planning/steering chat sessions) documents
-  this explicitly: "No tool here sets a loom's state/verdict/acceptance." Its
-  one mutation, `start_loom`, is still gated by a `PreToolUse` hook in
-  `apps/web/app/api/chat/route.ts` that force-routes `mcp__loom__start_loom`
-  and `answer_blocked` back through an interactive permission card **in every
-  `permissionMode`** (including `bypassPermissions`/`acceptEdits`) — the
-  code's own comments call this the "moat guard." The acceptor identity
-  passed to `acceptLoom` (`"you"`) is hardcoded server-side in
-  `app/api/looms/[id]/accept/route.ts`, never read from the request body, so a
-  model cannot forge who approved a commit.
 - **No auth layer at the HTTP boundary.** `apps/web` has no middleware,
   session, or API-key check on any of its ~56 route files — the trust
   boundary is "whoever can reach this local HTTP server," which in the
@@ -243,15 +163,6 @@ a local single-user tool that trusts its caller by design.
 
 **What happens when the server dies.**
 
-- **Mid-flight looms are never silently completed.** `apps/web/instrumentation.ts`'s
-  `register()` hook runs `reconcileStuckLooms()` from `@telar/core` once, on
-  every server boot (guarded to the Node.js runtime only), and logs the
-  recovered count. The underlying pure reconciler (`packages/core/src/runner/recover.ts`)
-  is exhaustive over `WorkUnitState` and its stated moat is: **no branch ever
-  returns a terminal success** — a stranded `running`/`verifying` loom is
-  marked `halted` (human-resumable) at worst, a `queued`/`preparing` loom is
-  safely re-queued/resumed, and anything already awaiting a human
-  (`blocked`, `needs-review`, `ready`, `charter-review`) is left alone.
 - **The desktop server child dies with its parent.** `server-preload.js`
   registers `process.on("disconnect", () => process.exit(0))` on the forked
   Next server; since the fork uses an `"ipc"` stdio channel, any death of the
@@ -270,7 +181,5 @@ a local single-user tool that trusts its caller by design.
   (never restarted — treated as tolerate-while-editing or escalate).
 - **Server crash mid-agent-turn**: because `agent()` calls are plain SDK
   `query()` invocations with no independent persistence of partial output,
-  a killed server process loses any turn that hadn't yet reached a
-  `saveLoom`/`appendEvent` checkpoint; recovery on next boot falls back to
-  `reconcileStuckLooms()`'s per-state table above, not to resuming
-  mid-turn.
+  a killed server process loses any turn that hadn't yet reached an
+  `appendEvent` checkpoint; there is no resuming mid-turn.

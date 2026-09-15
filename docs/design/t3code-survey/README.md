@@ -409,7 +409,7 @@ Ranked. Each is independently shippable.
   T3's *row* grammar, not its grouped-card chrome.
 - **The scope-selector Projects page as a wholesale replacement.** T3 has one machine and a project
   list. Telar has paired Macs, remote iPhone/iPad clients, plugins that contribute their own
-  sections, an inbox, a spool and warps. A single page with two scope selectors would collapse three
+  sections, an inbox and warps. A single page with two scope selectors would collapse three
   axes into two. Take the *inert-row-explains-itself* pattern (#4) and the *divergence* pattern (#7);
   keep the separate project settings page.
 - **T3's provider master/detail wholesale.** Telar's providers are accounts across hosts, not one
