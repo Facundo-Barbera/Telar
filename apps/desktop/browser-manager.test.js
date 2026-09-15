@@ -723,6 +723,51 @@ describe("DesktopBrowserManager", () => {
     ).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
   });
 
+  test("snapshot narrows to a ref's subtree, and refuses a ref it never minted", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+
+    // The ref has to be resolved against the PREVIOUS snapshot's refs, which
+    // the next render clears — the one ordering subtlety in `snapshot`.
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot"))).toContain('button "Count 0" [ref=e1]');
+    const narrowed = await manager.callTool("session-a", "browser_snapshot", { target: "e1" });
+    expect(narrowed.isError).toBeUndefined();
+    // Only the addressed subtree, with the ref minted fresh inside it.
+    expect(textOf(narrowed)).toContain('button "Count 0" [ref=e1]');
+    // The page header stays (it says WHERE the region is); the document root
+    // above the addressed node does not.
+    expect(textOf(narrowed)).toContain("Page: Fixture");
+    expect(textOf(narrowed)).not.toContain("- RootWebArea");
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot"))).toContain("- RootWebArea");
+    // The ref still works afterwards: the re-mint is what keeps it usable.
+    expect((await manager.callTool("session-a", "browser_click", { target: "e1" })).isError).toBeUndefined();
+
+    // A ref from no snapshot is named, not quietly widened to the document.
+    await manager.callTool("session-a", "browser_snapshot");
+    const unknown = await manager.callTool("session-a", "browser_snapshot", { target: "e404" });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("Unknown browser target e404");
+  });
+
+  test("snapshot depth stops at a level; console level is a floor the host now honours", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+
+    // depth 0 is the root alone — the button is one level down.
+    const shallow = await manager.callTool("session-a", "browser_snapshot", { depth: 0 });
+    expect(textOf(shallow)).toContain("Fixture");
+    expect(textOf(shallow)).not.toContain("Count 0");
+    expect(textOf(await manager.callTool("session-a", "browser_snapshot", { depth: 1 }))).toContain("Count 0");
+
+    const tab = manager.scopeTabs(manager.requireScope("session-a"))[0];
+    tab.console.push({ level: "debug", text: "chatter" }, { level: "error", text: "boom" });
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { level: "error" }))).toBe("[error] boom");
+    // The schema has defaulted to "info" since the tool shipped; the host used
+    // to answer with everything regardless.
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { level: "info" }))).not.toContain("chatter");
+    expect(textOf(await manager.callTool("session-a", "browser_console_messages", { all: true }))).toContain("chatter");
+  });
+
   test("returns a bounded tool error for stale accessibility refs", async () => {
     const { manager } = makeHarness();
     await manager.createTab("session-a", "about:blank");
