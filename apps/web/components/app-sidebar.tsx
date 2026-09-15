@@ -116,6 +116,7 @@ import {
   type SessionBand,
   type SidebarSession,
 } from "@/lib/session-list";
+import { applyRowChange, type SessionRowChange, type SessionRowChanged } from "@/lib/session-mutations";
 import { hostFetcher } from "@/lib/hosts/client";
 import { projectPlaces } from "@/lib/hosts/project-places";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
@@ -299,7 +300,7 @@ function SessionShelf({
   activeSessionId,
   renderedAt,
   bandFor,
-  onRefresh,
+  onRowChanged,
 }: {
   label: string;
   count: number;
@@ -315,7 +316,7 @@ function SessionShelf({
    *  differently from the list that put it there (a paired Mac's row is
    *  banded by that Mac's clock; see `windowFor`). */
   bandFor: (session: SidebarSession) => SessionBand;
-  onRefresh: () => void;
+  onRowChanged: SessionRowChanged;
 }) {
   if (count === 0) return null;
   return (
@@ -335,7 +336,7 @@ function SessionShelf({
               variant="slim"
               band={bandFor(session)}
               renderedAt={renderedAt}
-              onRefresh={onRefresh}
+              onRowChanged={onRowChanged}
             />
           ))}
           {hasMore && onShowMore && (
@@ -812,6 +813,37 @@ function SidebarBody() {
       loadAllRunning.current = false;
     }
   }, [loadHost]);
+
+  /**
+   * ONE ROW CHANGED — THE RAIL'S HALF OF #495, and what `onRefresh` used to be.
+   *
+   * WHAT IT REPLACED. Every mutation on every row called `onRefresh`, and this
+   * rail answered it with `loadAll()`: `hosts()`, then one live read PER PAIRED
+   * MAC, to learn one field of one session the mutation's own response already
+   * carried. Pin, settle, snooze, rename and delete each cost that fan-out,
+   * which is the whole of "pin/settle take a while for the app to react".
+   *
+   * BOTH COPIES, AND THE SECOND ONE IS NOT OPTIONAL. `sessions` is what the
+   * list derives from; `pages.current` is what a NOT-MODIFIED answer hands back
+   * verbatim (#457/#459). Patching only the first would leave the held page
+   * carrying the row as it was — so a poll already in flight when the mutation
+   * landed, answered 304 against a tag minted before the write, would put the
+   * stale row straight back and the settle would appear to bounce.
+   *
+   * THE LIST IS THE POLL'S BUSINESS, STILL. This changes what a row LOOKS like
+   * and nothing about what the rail CONTAINS: no row is inserted, the bands are
+   * re-derived from the patched row on the next render, and anything else that
+   * moved on the machine arrives on the tick that was happening anyway.
+   */
+  const onRowChanged = useCallback((change: SessionRowChange) => {
+    setSessions((rows) => applyRowChange(rows, change));
+    for (const [key, page] of pages.current) {
+      const next = applyRowChange(page.sessions, change);
+      if (next.length !== page.sessions.length || next.some((row, index) => row !== page.sessions[index])) {
+        pages.current.set(key, { ...page, sessions: next });
+      }
+    }
+  }, []);
 
   /**
    * OPEN OR CLOSE THE SHELF, AND FETCH WHAT IT NEEDS.
@@ -1555,7 +1587,7 @@ function SidebarBody() {
                   variant="card"
                   band={bandFor(session)}
                   renderedAt={renderedAt}
-                  onRefresh={() => void loadAll()}
+                  onRowChanged={onRowChanged}
                   {...jumpProp(sessionKey(session))}
                 />
               ))}
@@ -1642,7 +1674,7 @@ function SidebarBody() {
                     variant="card"
                     band="pinned"
                     renderedAt={renderedAt}
-                    onRefresh={() => void loadAll()}
+                    onRowChanged={onRowChanged}
                     // THE BAND IS ITS OWN SCOPE: pinned rows arrange among
                     // themselves, and unpinning is what takes a row out of
                     // here. Only in the banded view — a search flattens the
@@ -1727,7 +1759,7 @@ function SidebarBody() {
                     {...(activeSessionId ? { activeSessionId } : {})}
                     renderedAt={renderedAt}
                     bandFor={bandFor}
-                    onRefresh={() => void loadAll()}
+                    onRowChanged={onRowChanged}
                     dragging={draggingGroup === group.key}
                     insert={groupInsert?.key === group.key ? groupInsert.position : null}
                     onDragStart={onGroupDragStart(group.key)}
@@ -1782,7 +1814,7 @@ function SidebarBody() {
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
-                  onRefresh={() => void loadAll()}
+                  onRowChanged={onRowChanged}
                   // A search flattens the rail and ⌘1..⌘9 count the results, so
                   // the numbers follow them here rather than staying on rows
                   // that are no longer where they were.
@@ -1824,7 +1856,7 @@ function SidebarBody() {
                       variant="slim"
                       band={bandFor(session)}
                       renderedAt={renderedAt}
-                      onRefresh={() => void loadAll()}
+                      onRowChanged={onRowChanged}
                     />
                   ))}
                 </div>
@@ -1879,7 +1911,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
                             renderedAt={renderedAt}
               bandFor={bandFor}
-              onRefresh={() => void loadAll()}
+              onRowChanged={onRowChanged}
             />
             <SessionShelf
               label="Settled"
@@ -1912,7 +1944,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
                             renderedAt={renderedAt}
               bandFor={bandFor}
-              onRefresh={() => void loadAll()}
+              onRowChanged={onRowChanged}
             />
           </>
         )}

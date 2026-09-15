@@ -37,6 +37,7 @@ import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectPlace } from "@/lib/hosts/project-places";
 import type { ProjectGroup as Group, RailJumpSlot } from "@/lib/session-groups";
 import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import type { SessionRowChanged } from "@/lib/session-mutations";
 import { workspaceOpenBlocker, workspaceOpener, type WorkspaceOpenersAnswer } from "@/lib/workspace-open";
 import {
   preferredOpenerSnapshot,
@@ -108,7 +109,7 @@ function useProjectFolder(place: Pick<ProjectPlace, "hostId" | "hostName">, root
       : (entries.find((entry) => entry.preferred && entry.kind === "opener") ?? entries.find((entry) => entry.kind === "opener"));
 
   /** The shell's refusal is reported, never swallowed — this rail has no error
-   *  surface of its own, which is the argument `runSessionPatch` makes for the
+   *  surface of its own, which is the argument `mutateRow` makes for the
    *  same alert one file over. */
   const act = (entry: WorkspaceOpenerEntry | "reveal") => {
     if (blocker || !bridge || !root) return;
@@ -174,7 +175,7 @@ export function ProjectGroupSection({
   activeSessionId,
   renderedAt,
   bandFor,
-  onRefresh,
+  onRowChanged,
   dragging,
   insert,
   onDragStart,
@@ -201,7 +202,10 @@ export function ProjectGroupSection({
   /** The rail's own banding — a paired Mac's row is banded by that Mac's
    *  clock, and the group must not re-derive it with this Mac's. */
   bandFor: (session: SidebarSession) => SessionBand;
-  onRefresh: () => void;
+  /** ONE ROW CHANGED — forwarded, never called here (#495). A group draws rows;
+   *  the rail owns the list they belong to, and a mutation inside a group is
+   *  still a mutation on one row of the rail's list. */
+  onRowChanged: SessionRowChanged;
   /** This group is the one being carried. */
   dragging: boolean;
   /** Where the carried group would land relative to this one, while over it. */
@@ -516,7 +520,7 @@ export function ProjectGroupSection({
                 variant="slim"
                 band={bandFor(session)}
                 renderedAt={renderedAt}
-                onRefresh={onRefresh}
+                onRowChanged={onRowChanged}
                 drag={rowDrag(key)}
                 {...(slot === undefined ? {} : { jumpSlot: slot })}
               />

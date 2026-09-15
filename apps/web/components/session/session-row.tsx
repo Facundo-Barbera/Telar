@@ -39,12 +39,14 @@ import {
   PinIcon,
   UndoIcon,
 } from "lucide-react";
+import type { LiveSessionRow } from "@telar/engine-client";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
-import { SessionInboxMenu, SessionRowContextMenu, patchSession, runSessionPatch, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
+import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
+import { mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "@/lib/session-mutations";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
 import type { RailJumpSlot } from "@/lib/session-groups";
 import { Button } from "@/components/ui/button";
@@ -198,7 +200,7 @@ export function SessionRow({
   searchable = false,
   searchSelected = false,
   renderedAt,
-  onRefresh,
+  onRowChanged,
   drag,
   jumpSlot,
 }: {
@@ -234,7 +236,18 @@ export function SessionRow({
   searchable?: boolean;
   searchSelected?: boolean;
   renderedAt: number;
-  onRefresh: () => void;
+  /**
+   * THIS ROW CHANGED, AND HERE IT IS — issue #495, and it used to be
+   * `onRefresh: () => void`.
+   *
+   * The old name was the whole problem. It said "something happened" and left
+   * the rail to work out what, which it did by reading everything again: the
+   * pairing book, then one live read PER PAIRED MAC, for a settle that touched
+   * one field of one session. Every verb below now applies to this row at once
+   * and hands back the record the engine answered with — see
+   * `lib/session-mutations.ts` for the three states each one passes through.
+   */
+  onRowChanged: SessionRowChanged;
   /**
    * DRAG TO REORDER, WHEN THE BAND AROUND THIS ROW ARRANGES ITSELF. Absent in
    * search results, in the shelves and in "Needs you" — a list that is an
@@ -302,18 +315,27 @@ export function SessionRow({
    * do not reads as broken, not as principled.
    */
   const unsettles = settledByDecision || band === "settled";
+  /** One optimistic mutation on THIS row, spelled once for the four buttons
+   *  below. See `lib/session-mutations.ts` for the three states it passes
+   *  through and for why none of them reads the list. */
+  const mutate = (after: SidebarSession, send: () => Promise<LiveSessionRow>) =>
+    void mutateRow({ before: session, after: { row: after }, send, onRowChanged });
   const unsettle = () =>
     // TWO PATCHES, ONE REPORTED OUTCOME. If the first refusal went unreported
     // the second would run against a session that never took the override, and
     // the row would sit there unchanged with nothing said.
-    runSessionPatch(async () => {
+    mutate(withSettling(session, null), async () => {
       // A drift-settled session has no override to clear, and clearing nothing
       // writes nothing — so nothing would change. Setting an override first makes
       // the clearing patch a real change, and a real change stamps `updatedAt`,
       // which is what actually restarts the inactivity clock.
+      //
+      // THE ROW SETTLES ON THE SECOND ANSWER (#495). The first is a pinned state
+      // nobody asked for and nothing should draw; returning it would flash this
+      // row through the pinned band on its way back to the list.
       if (!settledByDecision) await patchSession(session, { settledOverride: "active" });
-      await patchSession(session, { settledOverride: null });
-    }, onRefresh);
+      return patchSession(session, { settledOverride: null });
+    });
 
   // Deleting the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
@@ -334,14 +356,18 @@ export function SessionRow({
     setRenaming(true);
   };
 
-  const commitRename = async () => {
+  const commitRename = () => {
     const next = draft.trim();
     setRenaming(false);
     // An unchanged or empty name is a cancel, not a write — the engine would
     // reject the empty one anyway, and a no-op PATCH writes no event but still
     // costs a round trip and a refresh of every surface.
     if (!next || next === session.title) return;
-    await runSessionPatch(() => patchSession(session, { title: next.slice(0, 120) }), onRefresh);
+    const title = next.slice(0, 120);
+    // THE NAME IS ON THE ROW BEFORE THE FIELD CLOSES. Renaming is the mutation
+    // where the old reload was most visible — you typed a title, the field
+    // reverted to the old one, and a beat later the new one arrived.
+    mutate(withTitle(session, title), () => patchSession(session, { title }));
   };
 
   if (renaming) {
@@ -351,11 +377,11 @@ export function SessionRow({
           ref={input}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => void commitRename()}
+          onBlur={commitRename}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              void commitRename();
+              commitRename();
             } else if (event.key === "Escape") {
               event.preventDefault();
               setRenaming(false);
@@ -619,7 +645,7 @@ export function SessionRow({
     // The same fold the settle button beside it uses, drift included.
     settled: unsettles,
     onRename: beginRename,
-    onDone: onRefresh,
+    onRowChanged,
     onLeave: leaveIfActive,
   };
 
@@ -789,7 +815,8 @@ export function SessionRow({
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void (unsettles ? unsettle() : runSessionPatch(() => patchSession(session, { settledOverride: "settled" }), onRefresh));
+                if (unsettles) unsettle();
+                else mutate(withSettling(session, "settled"), () => patchSession(session, { settledOverride: "settled" }));
               }}
             >
               {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
@@ -824,7 +851,7 @@ export function SessionRow({
               aria-label="Wake session now"
               title="Wake now"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: null }), onRefresh)}
+              onClick={() => mutate(withSnooze(session, null), () => patchSession(session, { snoozedUntil: null }))}
             >
               <AlarmClockIcon />
             </Button>
@@ -851,7 +878,9 @@ export function SessionRow({
                   {snoozePresets(new Date(renderedAt)).map((preset) => (
                     <DropdownMenuItem
                       key={preset.id}
-                      onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: preset.until }), onRefresh)}
+                      onClick={() =>
+                        mutate(withSnooze(session, preset.until), () => patchSession(session, { snoozedUntil: preset.until }))
+                      }
                     >
                       <span className="flex-1">{preset.label}</span>
                       <span className="font-mono text-3xs tabular-nums text-muted-foreground/60">{preset.when}</span>

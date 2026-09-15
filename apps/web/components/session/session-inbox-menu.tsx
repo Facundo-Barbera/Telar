@@ -37,9 +37,18 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MoreHorizontalIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { projectSettingsHref } from "@/lib/project-settings-link";
-import { canvasHref, type SidebarSession } from "@/lib/session-list";
+import { canvasHref, sessionKey, type SidebarSession } from "@/lib/session-list";
+import {
+  deleteSession,
+  mutateRow,
+  patchSession,
+  withSettling,
+  withSnooze,
+  type SessionRowChange,
+  type SessionRowChanged,
+} from "@/lib/session-mutations";
 import { sessionLink } from "@/lib/session-link";
 import { desktopApp } from "@/lib/desktop-app";
 import { type SettlingActivity } from "@/lib/session-settling";
@@ -50,73 +59,10 @@ import {
   type SessionActionTarget,
 } from "@/lib/session-action-menu";
 
-/**
- * A ROW'S REQUESTS GO TO THE ROW'S MAC. The rail draws a paired Mac's
- * sessions beside the local ones, and every verb on one of them must land on
- * the engine that owns it. A bare `fetch("/api/sessions/…")` reaches THIS
- * Mac's engine whatever the row says — which is a 404 at best, and at worst
- * settles a local session that happens to share the id.
- */
-export function sessionFetch(session: Pick<SidebarSession, "hostId">, path: string, init?: RequestInit): Promise<Response> {
-  return hostFetcher(session.hostId ?? LOCAL_HOST_ID)(path, init);
-}
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { dropdownSessionMenuParts, SessionActionContextMenu, SessionActionMenuItems } from "./session-action-menu";
-
-/**
- * One PATCH, one shape. Both verbs are the same call with different fields,
- * which is what keeps "settle" and "snooze" from drifting into two protocols.
- *
- * A FAILED PATCH IS A FAILURE NOW. This used to `await` the response and throw
- * the result away, so an engine that refused — or was not there — produced a
- * menu that closed, a row that did not change, and no way to tell "it did
- * nothing" from "it worked and the list has not caught up". Pinning is a
- * decision a person made on purpose; silently losing one is the same class of
- * bug as clearing it on the next turn.
- */
-export async function patchSession(
-  session: Pick<SidebarSession, "id" | "hostId">,
-  patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null; title?: string },
-): Promise<void> {
-  const response = await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!response.ok) throw new Error(await patchFailureMessage(response));
-}
-
-async function patchFailureMessage(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { error?: { message?: string } } | null;
-    if (payload?.error?.message) return payload.error.message;
-  } catch {
-    // A non-JSON body is a proxy or a dead socket; the status is all there is.
-  }
-  return response.status === 0 ? "The engine is not answering." : `The engine refused (${response.status}).`;
-}
-
-/**
- * Run one of these verbs and TELL THE TRUTH ABOUT WHAT HAPPENED.
- *
- * The refresh runs either way, which is the important half: on failure it
- * repaints the row from the engine, so what is on screen is what is stored
- * rather than what was clicked. The alert is the second half, and it is an
- * alert because this rail has no error surface of its own — a toast system
- * introduced for this would be a larger change than the bug. It fires only on
- * a real refusal, so nobody who is not already stuck sees one.
- */
-export async function runSessionPatch(action: () => Promise<void>, onRefresh?: () => void): Promise<void> {
-  try {
-    await action();
-  } catch (cause) {
-    window.alert(cause instanceof Error ? cause.message : "The engine refused that change.");
-  } finally {
-    onRefresh?.();
-  }
-}
 
 /**
  * THE RAIL'S PROJECTION, FOLDED INTO WHAT THE MENU READS. Nine fields rather
@@ -165,7 +111,14 @@ export type SessionRowMenuProps = {
   active?: boolean;
   /** Switches the row into its inline editor. The row owns that state. */
   onRename?: () => void;
-  onDone?: () => void;
+  /**
+   * ONE ROW CHANGED, AND HERE IT IS — issue #495. This was `onDone`, a bare
+   * "something happened, go and read everything again", and the rail answered
+   * it with `loadAll()`: the pairing book plus one live read per paired Mac,
+   * per click. Every verb below now hands back the row the engine answered
+   * with, and the rail patches that row in place.
+   */
+  onRowChanged?: SessionRowChanged;
   onLeave?: () => void;
 };
 
@@ -174,25 +127,31 @@ export type SessionRowMenuProps = {
  * on which Mac. Shared by the `⋯` and the right-click menu so the two cannot
  * bind the same label to different behaviour.
  */
-function useSessionRowMenu({ session, activity = {}, now, settled, active, onRename, onDone, onLeave }: SessionRowMenuProps): {
+function useSessionRowMenu({ session, activity = {}, now, settled, active, onRename, onRowChanged, onLeave }: SessionRowMenuProps): {
   items: SessionActionItem[];
   busy: boolean;
 } {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
 
-  // `onDone` is the list's refresh, and it runs on the failure path too — see
-  // `runSessionPatch`, whose reasoning this shares: after a refusal the row
-  // must show what the engine stored, not what the menu item promised.
-  const run = async (action: () => Promise<unknown>) => {
+  /**
+   * ONE OPTIMISTIC MUTATION, WITH THE SPINNER STILL ON THE `⋯` — issue #495.
+   *
+   * The row moves before the request is sent (`mutateRow` hands `after` over
+   * first), so the busy flag is no longer what tells a person the click landed
+   * — it is what stops a second click stacking a second patch on top of the
+   * first while the round trip is out.
+   *
+   * A ROW WITH NO LISTENER STILL WRITES. `onRowChanged` is optional because the
+   * cockpit header renders this same definition without a list behind it; the
+   * mutation runs either way, and only the repaint is skipped.
+   */
+  const mutate = async (after: SessionRowChange, send: Parameters<typeof mutateRow>[0]["send"]) => {
     if (busy) return;
     setBusy(true);
     try {
-      await action();
-    } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : "The engine refused that change.");
+      await mutateRow({ before: session, after, send, onRowChanged: onRowChanged ?? (() => {}) });
     } finally {
-      onDone?.();
       setBusy(false);
     }
   };
@@ -211,22 +170,26 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
     // handler is what the definition gates the item on.
     ...(shell?.openWindow ? { openWindow: (href: string) => void shell.openWindow!(href) } : {}),
     newSession: ({ projectId, hostId, baseRef }) => router.push(canvasHref(projectId, hostId, baseRef ? { baseRef } : undefined)),
-    pin: (pinned) => void run(() => patchSession(session, { settledOverride: pinned ? "active" : null })),
+    pin: (pinned) =>
+      void mutate({ row: withSettling(session, pinned ? "active" : null) }, () =>
+        patchSession(session, { settledOverride: pinned ? "active" : null }),
+      ),
     settle: (next) =>
-      void run(async () => {
-        if (next) {
-          await patchSession(session, { settledOverride: "settled" });
-          return;
-        }
+      void mutate({ row: withSettling(session, next ? "settled" : null) }, async () => {
+        if (next) return patchSession(session, { settledOverride: "settled" });
         // TWO PATCHES, AND THE FIRST IS NOT A NO-OP. A drift-settled session has
         // no override to clear, and clearing nothing writes nothing — so nothing
         // would change. Setting an override first makes the clearing patch a real
         // change, and a real change stamps `updatedAt`, which is what actually
         // restarts the inactivity clock. Same two-step as the row's own button.
+        //
+        // THE SECOND ANSWER IS THE ONE THE ROW SETTLES ON (#495): the first is a
+        // state nothing should ever draw, and returning it would flash the row
+        // through "pinned" on its way back to the list.
         if (session.settledOverride !== "settled") await patchSession(session, { settledOverride: "active" });
-        await patchSession(session, { settledOverride: null });
+        return patchSession(session, { settledOverride: null });
       }),
-    snooze: (until) => void run(() => patchSession(session, { snoozedUntil: until })),
+    snooze: (until) => void mutate({ row: withSnooze(session, until) }, () => patchSession(session, { snoozedUntil: until })),
     rename: () => onRename?.(),
     copy: (text) => void copyToClipboard(text),
     projectSettings: ({ projectId }) => router.push(projectSettingsHref(projectId)),
@@ -238,7 +201,20 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
       // no restore anywhere in this app.
       if (!window.confirm(`Delete "${name}"?`)) return;
       if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
-      void run(() => sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
+      /**
+       * THE ROW GOES AT ONCE AND COMES BACK IF THE ENGINE REFUSES — #495.
+       *
+       * Deleting is the one verb here whose optimistic state is an ABSENCE, so
+       * `after` is never drawn: `mutateRow` hands it over, the engine answers
+       * nothing, and the change becomes a `removed`. A refusal — a turn in
+       * flight is the common one — puts the row back exactly as it was.
+       *
+       * LEAVING THE VIEW WAITS FOR THE ANSWER. The survivor rule keeps the open
+       * session's row visible while the URL names it, so navigating before the
+       * delete lands would be navigating away from a conversation that might
+       * still be there.
+       */
+      void mutate({ removed: sessionKey(session) }, () => deleteSession(session)).then(() => {
         if (active) onLeave?.();
       });
     },

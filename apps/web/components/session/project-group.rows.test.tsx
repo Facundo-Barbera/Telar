@@ -53,7 +53,7 @@ function renderGroup(sessions: SidebarSession[]): string {
         onNavigate={() => {}}
         renderedAt={0}
         bandFor={() => "active"}
-        onRefresh={() => {}}
+        onRowChanged={() => {}}
         dragging={false}
         insert={null}
         onDragStart={() => {}}
