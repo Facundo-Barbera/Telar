@@ -929,15 +929,10 @@ function createWindow(url) {
   const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
-    // A credential entry FINISHED in some tab (metadata only — the capture is
-    // an address, an identity and a moment). The offer flow decides whether to
+    // A login entry FINISHED in some tab (metadata only — the capture is an
+    // address, an identity and a moment). The offer flow decides whether to
     // ask "may agents use this login here?" — login-offer-window.js.
-    onCredentialEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
-    // A PERSON OVERRULED THE CREDENTIAL PROBE (#480) — "Resume anyway" on a
-    // sign-in page that would not answer. Tab ids and a moment, never an
-    // address: enough to reconstruct what happened, nothing that is a secret.
-    onPrivacyForced: (forced) =>
-      logShell("info", `browser: privacy ended by hand over ${forced.tabIds.length} unresponsive tab(s)${forced.wasStuck ? " (stuck)" : ""}`),
+    onLoginEntryFinished: (capture) => requireLoginOffer().entryFinished(capture),
     // Recent sites are PER PROFILE, not per project: two projects sharing an
     // identity share its history, which is what sharing an identity means.
     onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
@@ -1050,7 +1045,6 @@ function startExtensionHost(win, manager, partition) {
   if (!wanted || SMOKE) return null;
   const ses = session.fromPartition(partition);
   const host = new ExtensionHost(ses, {
-    privacy: manager.privacy,
     window: win,
     tabs: {
       // chrome.tabs.create from THIS partition's extension: a human tab in a
@@ -1266,15 +1260,14 @@ ipcMain.handle("telar:browser:remove-suggestion", (event, input) => {
   requireBrowserSuggestions().remove(manager.activeProfile(input.scopeKey)?.id, input.url);
 });
 ipcMain.handle("telar:browser:state", (event, scopeKey) => requireBrowserManager(event).state(scopeKey));
-// The password manager's toolbar button. Opening its popup BEGINS a private
-// interaction; only a human's Resume ends it.
+// The password manager's toolbar button. Opening its popup pauses nothing.
 // Status is PER SCOPE now: each project's session has its own partition and
 // its own 1Password host. Creating the host on the first status poll lets the
 // extension preload while the human looks, before any tab navigates.
 ipcMain.handle("telar:browser:extension-status", (event, scopeKey) => {
   const manager = requireBrowserManager(event);
   const host = manager.hostForScope(scopeKey);
-  if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet.", privacy: manager.privacy.state() };
+  if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet." };
   // Carry the partition so the renderer can keep only this scope's status and
   // ignore another project's host pushes.
   let partition; try { partition = manager.partitionOf(scopeKey); } catch { partition = undefined; }
@@ -1370,19 +1363,6 @@ ipcMain.handle("telar:browser:assign-project-profile", (event, input) => {
 });
 ipcMain.handle("telar:browser:set-scope-profile", (event, input) =>
   requireBrowserManager(event).setScopeProfile(input?.scopeKey, input?.profileId),
-);
-/**
- * END THE PRIVATE WINDOW BY HAND (#480). Plain Resume re-runs the safety probe
- * and is refused unless the holding page answers clean. `force` is the banner's
- * second button, offered only after that refusal: the person is asserting the
- * sign-in is over on a page that will not say so itself.
- *
- * The flag is read as an EXACT `true` rather than trusted for its truthiness —
- * this is renderer input, and the difference between the two paths is the whole
- * credential boundary.
- */
-ipcMain.handle("telar:browser:private-resume", (event, input) =>
-  requireBrowserManager(event).resumeFromPrivate({ force: input?.force === true }),
 );
 /**
  * SITE PERMISSIONS (#422) — the answer to a prompt, the prompts still open, and
@@ -1532,14 +1512,15 @@ ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
   return requireLoginOffer().explicitOffer(capture);
 });
 
-// A tab preload heard a human's hands in the page; all we hold is the sender.
-ipcMain.on("telar:browser:credential-field", (event, detail) => {
+// A tab preload saw a value land in a login field — the login offer's only
+// trigger. All we hold is the sender.
+ipcMain.on("telar:browser:login-entry", (event, detail) => {
   try {
     // EVERY WINDOW'S HOST IS ASKED, because the sender is a native TAB — it is
-    // not any window's own renderer, so there is nothing to resolve it by. Both
-    // methods look the webContents up in their own tabs and no-op on a stranger,
+    // not any window's own renderer, so there is nothing to resolve it by. The
+    // method looks the webContents up in its own tabs and no-ops on a stranger,
     // so asking the wrong one costs a lookup and never a false report.
-    for (const manager of browserManagers) manager.noteCredentialFieldFromWebContents(event.sender, detail || {});
+    for (const manager of browserManagers) manager.noteLoginEntryFromWebContents(event.sender, detail || {});
   } catch {
     // A report from a view mid-teardown must not crash the shell.
   }

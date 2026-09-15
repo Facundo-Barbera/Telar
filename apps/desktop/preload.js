@@ -73,8 +73,6 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
-    // The password manager: its status, its toolbar popup, and the human's
-    // explicit resume from a private interaction.
     // Per-project browser profile: the cockpit binds a session's scope to its
     // project before showing the panel, so a human-opened tab lands in the
     // right cookie jar even before the first agent turn.
@@ -93,7 +91,6 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     setScopeProfile: (scopeKey, profileId) => ipcRenderer.invoke("telar:browser:set-scope-profile", { scopeKey, profileId }),
     extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
-    resumeFromPrivate: (options) => ipcRenderer.invoke("telar:browser:private-resume", { force: options?.force === true }),
     onExtension: (listener) => on("telar:browser:extension", listener),
     // SITE PERMISSIONS (#422): camera, microphone, notifications, location,
     // clipboard and screen share, asked with Telar's own prompt over the address

@@ -1,6 +1,6 @@
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
-const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
+const { isProtectedUrl } = require("./protected-urls");
 const { ProfileRegistry, requireProjectKey } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
 const { captureEntry } = require("./login-offer");
@@ -200,26 +200,6 @@ const HUMAN_ACTIVE_MS = 1_500;
  *  answered with "the human is still interacting" — never an indefinite lock. */
 const DEFER_MAX_MS = 5_000;
 const DEFER_POLL_MS = 100;
-/** How long ONE frame's credential-safety probe may take before the resume
- *  treats it as unresponsive (fails closed with an actionable message). A
- *  responsive page answers in a few ms; a wedged background frame must not
- *  hang the resume — that was the never-clearing-banner bug. */
-const CREDENTIAL_PROBE_TIMEOUT_MS = 750;
-/** Distinguishes a probe that timed out from one that answered. */
-const PROBE_TIMEOUT = Symbol("probe-timeout");
-const BLOCKING_CREDENTIAL_SELECTOR = 'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[autocomplete="one-time-code"]';
-/** How often the automatic-release loop re-checks whether the credential
- *  interaction is over. Short enough to feel immediate after a submit. */
-const AUTO_RELEASE_POLL_MS = 300;
-/** The whole cross-tab credential probe is bounded to this, independent of
- *  how many tabs/frames it must ask (they run in parallel). */
-const CREDENTIAL_STATUS_BUDGET_MS = 1_500;
-/** How long the HOLDING tab may go on failing to answer before the window is
- *  called STUCK and the banner offers a way out (#480). A single slow poll is
- *  ordinary — a page that has just submitted a form is busy — so one timeout
- *  must not flip the wording to "not responding". Privacy is kept either way:
- *  stuck names a recovery, it never releases anything. */
-const PRIVACY_STUCK_AFTER_MS = 3_000;
 
 function humanActiveOn(tab, index) {
   return `The human is interacting with tab ${index} — ${tab.title || tab.url || "untitled"} — right now. Wait a moment and look again (snapshot or screenshot), or work in another tab.`;
@@ -737,40 +717,24 @@ class DesktopBrowserManager {
     // The shell forwards these to the engine journal (browser.control.changed)
     // and the renderer hears them through the ordinary state push.
     this.onControlChanged = dependencies.onControlChanged || null;
-    /** `(scopeKey, url)` after a SUCCESSFUL top-level http(s) navigation,
-     *  outside a private interaction — what feeds the start page's recent
-     *  sites. Never an extension page, never a failed load, never a URL
-     *  seen while a person signs in. */
+    /** `(scopeKey, url)` after a SUCCESSFUL top-level http(s) navigation —
+     *  what feeds the start page's recent sites. Never an extension page,
+     *  never a failed load. */
     this.onVisited = dependencies.onVisited || null;
-    // Credential field events are protected independently of extension chrome.
-    this.privacy = dependencies.privacy || new PrivateInteraction({ now: this.now, onChange: (state) => this.onPrivacyChange(state) });
-    // Only actual credential entry starts the automatic protection lifecycle.
+    /** Extension surfaces that are open (popup, extension window), by id.
+     *  Tracked for the leak diagnostics only: an open popup pauses nothing. */
     this.uiHolds = new Map(); // id → reason (popup, extension window)
-    this.credentialHold = false;
     /**
      * THE LOGIN OFFER'S CAPTURE (AUTH-001, #195; login-offer.js). When a value
      * lands in a credential field, the page's ADDRESS, the tab's IDENTITY and
      * the moment are recorded here — metadata only, and IMMUTABLE: a redirect
      * after sign-in must not broaden what a later grant names, so nothing ever
-     * rewrites a held capture. Handed to `onCredentialEntryFinished` when the
-     * automatic release decides the entry is over; the offer flow re-checks it
-     * again at confirmation time.
+     * rewrites a held capture. Handed to `onLoginEntryFinished` when the tab
+     * that reported it navigates away; the offer flow re-checks it again at
+     * confirmation time.
      */
     this.heldLoginCapture = null;
-    this.onCredentialEntryFinished = dependencies.onCredentialEntryFinished || null;
-    /** A person ended the private window by hand over a page that would not
-     *  answer the safety probe (`resumeFromPrivate({ force: true })`). Told to
-     *  the shell log rather than a session journal: privacy is GLOBAL — it has
-     *  no scopeKey (`privacy.begin(reason, null)`) — so there is no one
-     *  session whose transcript this belongs in. */
-    this.onPrivacyForced = dependencies.onPrivacyForced || null;
-    this.holdRevision = 0;
-    this.privacyStuck = false;
-    /** When the holding tab first failed to answer, or null while it is
-     *  answering — see `autoReleaseLoop`. */
-    this.unresponsiveSince = null;
-    this.stuckAfterMs = Number.isFinite(dependencies.stuckAfterMs) ? dependencies.stuckAfterMs : PRIVACY_STUCK_AFTER_MS;
-    this._autoReleaseRunning = false;
+    this.onLoginEntryFinished = dependencies.onLoginEntryFinished || null;
     this._disposed = false;
     /** One inventory walk per turn of the event loop — see `persist`. */
     this._persistScheduled = false;
@@ -1253,21 +1217,6 @@ class DesktopBrowserManager {
     this.window.webContents.send("telar:browser:permission-denied", { origin: context.origin, kinds: context.kinds, reason: context.reason });
   }
 
-  /** Privacy began or ended. On BEGIN every tab's captured console and
-   *  network log is dropped: a line captured a moment before the popup
-   *  opened may already be part of the sign-in (a redirect URL with a
-   *  token, a form's own logging), and nothing captured before is worth
-   *  more than what it could leak. */
-  onPrivacyChange(state) {
-    if (state.private) {
-      for (const tab of this.tabs) {
-        tab.console = [];
-        tab.network = [];
-      }
-    }
-    this.emitPrivacy();
-  }
-
   /** Push fresh state to every scope with tabs — what a change to the profile
    *  REGISTRY (a rename, a new default) needs, since it is not scoped to one
    *  session but every panel shows it. */
@@ -1275,231 +1224,16 @@ class DesktopBrowserManager {
     for (const scope of new Set([...this.tabs.map((tab) => tab.scopeKey), ...this.scopeProfiles.keys()])) this.emitState(scope);
   }
 
-  emitPrivacy() {
-    const scopes = new Set(this.tabs.map((tab) => tab.scopeKey));
-    for (const scope of scopes) this.emitState(scope);
-    if (!scopes.size && !this.window.isDestroyed()) this.window.webContents.send("telar:browser:privacy", this.privacyState());
-  }
-
-  /** The privacy state the renderer reads: the epoch boundary, whether the
-   *  automatic release is stuck (the holding page would not answer) so the UI
-   *  can show a specific recovery instead of a bare spinner, and WHICH tabs
-   *  hold it — the banner has to name the page a person is being asked to
-   *  reload, which may be in another session's browser (#480).
-   *
-   *  A HOST, NEVER THE FULL ADDRESS: a sign-in URL carries tokens in its query,
-   *  and naming the page must not be how one of them leaves the shell. */
-  privacyState() {
-    const holding = this.holdingTabs().map((tab) => ({ id: tab.id, label: tab.title || parseUrl(tab.url)?.host || "a sign-in page" }));
-    return { ...this.privacy.state(), stuck: this.privacyStuck, holding };
-  }
-
-  // ── automatic credential lifecycle ──────────────────────────────────────
-
-  /** Track extension windows without pausing the browser. */
+  /** An extension surface opened (popup, extension window). Tracked by id so
+   *  the leak diagnostics can count them; nothing about the browser pauses. */
   addUiHold(id, reason) {
     const key = String(id);
-    if (!this.uiHolds.has(key)) {
-      this.uiHolds.set(key, reason || "1Password");
-      this.holdRevision += 1;
-      // Extension chrome is not a page tool target. Opening it does not
-      // pause unrelated tabs or require a manual handoff.
-    }
+    if (!this.uiHolds.has(key)) this.uiHolds.set(key, reason || "1Password");
   }
 
-  /** Closing extension chrome does not require page probes or Resume. */
+  /** That surface closed. */
   removeUiHold(id) {
-    const key = String(id);
-    if (this.uiHolds.delete(key)) {
-      this.holdRevision += 1;
-      if (!this.uiHolds.size) this.blurEmptyCredentialFocus().catch(() => {});
-    }
-  }
-
-  async blurEmptyCredentialFocus() {
-    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
-    await Promise.all(live.map(async (tab) => {
-      const wc = tab.view.webContents;
-      const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
-      await Promise.all(frames.map((frame) => frame.executeJavaScript(
-        `(() => {
-          const active = document.activeElement;
-          if (!(active instanceof HTMLInputElement)) return false;
-          if (!active.matches(${JSON.stringify(BLOCKING_CREDENTIAL_SELECTOR)})) return false;
-          if (active.value.length > 0) return false;
-          active.blur();
-          return true;
-        })()`,
-        true,
-      ).catch(() => false)));
-    }));
-  }
-
-  /** A credential field was focused, typed, or filled: hold privacy until a
-   *  clean, focus-aware probe says the entry is over. */
-  noteCredentialHold(reason) {
-    this.credentialHold = true;
-    this.holdRevision += 1;
-    this.privacy.begin(reason || "credentials", null);
-    this.ensureAutoRelease();
-    this.emitPrivacy();
-  }
-
-  /** Start the release loop if it is not already running. Catches its own
-   *  failures, and — the race guard — if privacy is still active when the loop
-   *  exits (a hold/credential event landed as it was finishing), restarts it,
-   *  so an active window can never be left with no loop watching it. */
-  ensureAutoRelease() {
-    if (this._autoReleaseRunning || this._disposed) return;
-    this._autoReleaseRunning = true;
-    void this.autoReleaseLoop()
-      .catch(() => {})
-      .finally(() => {
-        this._autoReleaseRunning = false;
-        if (!this._disposed && this.privacy.isActive()) this.ensureAutoRelease();
-      });
-  }
-
-  /**
-   * Poll until it is SAFE to end privacy. Safe = the
-   * cross-tab probe says no blocking field is filled or focused, with the
-   * `holdRevision` unchanged across the probe (so a fill or a popup that
-   * arrived mid-probe re-arms the wait). A probe that cannot answer marks the
-   * interaction stuck and keeps it private — it never releases on a timeout.
-   */
-  async autoReleaseLoop() {
-    while (!this._disposed && this.privacy.isActive()) {
-      await this.wait(AUTO_RELEASE_POLL_MS);
-      if (this._disposed || !this.privacy.isActive()) break;
-      const rev = this.holdRevision;
-      const status = await this.credentialStatus();
-      // Something changed during the probe (a fill, a new popup): re-check.
-      if (this.holdRevision !== rev) continue;
-      if (status === "clear") { this.autoRelease(); break; }
-      // "active" (typing/filled) or "unresponsive" (probe stuck): stay private.
-      // STUCK IS A DURATION, NOT AN EVENT (#480): a page that has just
-      // submitted a form can miss one 750 ms probe without being wedged, and
-      // flipping the banner's wording on that single miss cries wolf. Only an
-      // UNBROKEN run of them past the threshold earns the word — and either
-      // way the window stays open, because neither answer is "clear".
-      if (status === "unresponsive") {
-        if (this.unresponsiveSince === null) this.unresponsiveSince = this.now();
-        this.setPrivacyStuck(this.now() - this.unresponsiveSince >= this.stuckAfterMs);
-      } else {
-        this.unresponsiveSince = null;
-        this.setPrivacyStuck(false);
-      }
-    }
-  }
-
-  /** End the private window: clear the credential hold, bump every tab's
-   *  generation (so in-flight agent reads are stale), and bump the epoch (so
-   *  results decided under privacy are discarded on return). */
-  autoRelease() {
-    this.credentialHold = false;
-    this.privacyStuck = false;
-    this.unresponsiveSince = null;
-    for (const tab of this.tabs) {
-      tab.generation += 1;
-      tab.staleReason = "a private interaction ended";
-      tab.credentialFieldsAt = undefined;
-    }
-    this.privacy.end();
-    // THE ENTRY IS OVER (which is NOT proof the sign-in succeeded — the offer
-    // is phrased as a permission question, login-offer.js). Hand the captured
-    // metadata to the offer flow, once: the held capture is consumed here so
-    // the next entry starts clean.
-    const capture = this.heldLoginCapture;
-    this.heldLoginCapture = null;
-    if (capture && this.onCredentialEntryFinished) {
-      try {
-        this.onCredentialEntryFinished(capture);
-      } catch {
-        // The offer must never break the release path under it.
-      }
-    }
-  }
-
-  setPrivacyStuck(value) {
-    if (this.privacyStuck === value) return;
-    this.privacyStuck = value;
-    this.emitPrivacy();
-  }
-
-  /**
-   * THE TABS THAT HOLD — the ones whose own preload reported a credential
-   * field (#480). A tab that never reported one vouches for itself by that
-   * silence: the report is what opened the window in the first place, so a
-   * tab the reporter never named cannot be the reason it has to stay open.
-   *
-   * Asking EVERY tab was the wedge. One unrelated tab with an ad iframe the
-   * preload never reached, or a background tab Chromium throttled past the
-   * probe's 750 ms, answered "cannot vouch" — and held every agent's browser
-   * tools in every session, forever, over a sign-in in a different window.
-   */
-  holdingTabs() {
-    return this.tabs.filter((tab) => tab.credentialFieldsAt !== undefined && tab.view && !tab.view.webContents.isDestroyed());
-  }
-
-  /**
-   * The credential state across the HOLDING tabs, probed IN PARALLEL under one
-   * overall budget so the check does not grow with tab count.
-   * Returns "clear" | "active" | "unresponsive".
-   */
-  async credentialStatus() {
-    const holders = this.holdingTabs();
-    // Nothing reported a field, or the tab that did has closed: there is
-    // nothing left to wait for.
-    if (holders.length === 0) return "clear";
-    const deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS;
-    const results = await Promise.all(holders.map((tab) => this.tabHoldsCredentials(tab, deadline)));
-    if (results.includes("active")) return "active";
-    if (results.includes("unresponsive")) return "unresponsive";
-    return "clear";
-  }
-
-  /**
-   * The human's EXPLICIT recovery, kept for the stuck case (the automatic
-   * lifecycle handles the normal flow). Ends privacy only if the page is
-   * clean now; otherwise returns an actionable refusal. Never releases while
-   * a blocking field is filled/focused or a probe will not answer.
-   *
-   * `force` IS THE PERSON OVERRULING THE PROBE (#480) — the second button, on
-   * the banner, reached only after the ordinary Resume has been refused. The
-   * probe's job is to keep an agent from reading a page mid-sign-in; when the
-   * page will not answer at all, the only remaining witness to whether that
-   * sign-in is over is the person looking at it, and they must not have to
-   * kill the app to say so. It is logged, because a boundary somebody stepped
-   * over by hand is worth a line even when stepping over it was right.
-   */
-  async resumeFromPrivate(options = {}) {
-    if (options.force) {
-      const forced = { at: this.now(), tabIds: this.holdingTabs().map((tab) => tab.id), wasStuck: this.privacyStuck };
-      this.autoRelease();
-      if (this.onPrivacyForced) {
-        try {
-          this.onPrivacyForced(forced);
-        } catch {
-          // A log's failure is not the human's recovery.
-        }
-      }
-      return this.privacyState();
-    }
-    const rev = this.holdRevision;
-    const status = await this.credentialStatus();
-    // Same guard as the auto loop: a popup or a fill that arrived DURING the
-    // probe must not be bypassed by a result decided before it.
-    if (this.holdRevision !== rev) {
-      return { ...this.privacyState(), refused: "A credential interaction is still in progress. Try again in a moment." };
-    }
-    if (status !== "clear") {
-      const message = status === "unresponsive"
-        ? "A sign-in page is not responding to the safety check. Reload or close it, then try again."
-        : "A credential field is still in use. Submit or clear it, or leave the page, then try again.";
-      return { ...this.privacyState(), refused: message };
-    }
-    this.autoRelease();
-    return this.privacyState();
+    this.uiHolds.delete(String(id));
   }
 
   /** Whether a human has touched this tab within HUMAN_ACTIVE_MS. */
@@ -1586,21 +1320,18 @@ class DesktopBrowserManager {
   }
 
   /**
-   * THE PAGE REPORTED A CREDENTIAL FIELD IN USE — focus on, or a value
-   * landing in, a password/OTP/username field (browser-tab-preload.js).
-   * That is a private interaction whether it came from the toolbar, an
-   * inline suggestion, or the human's own typing: begin privacy here, and
-   * remember which tab, so Resume can check it is safe.
+   * A VALUE LANDED IN A LOGIN FIELD — typed, pasted, or filled by the password
+   * manager (browser-tab-preload.js). The ONLY thing this drives is the login
+   * offer: nothing is paused, nothing is refused, and no agent tool notices.
+   *
+   * The origin is the TAB's top-level address at this moment — the same address
+   * a fill's grant matching reads (secret-fill.ts uses originOf(tab.url)) —
+   * captured now so a redirect cannot move it. `captureEntry` refuses non-web
+   * schemes and missing identity.
    */
-  noteCredentialFieldFromWebContents(webContents, detail = {}) {
+  noteLoginEntryFromWebContents(webContents, detail = {}) {
     const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
     if (!tab) return;
-    tab.credentialFieldsAt = this.now();
-    // AN ENTRY (typed or filled — never mere focus) is what the login offer
-    // may later ask about. The origin is the TAB's top-level address at this
-    // moment — the same address a fill's grant matching reads (secret-fill.ts
-    // uses originOf(tab.url)) — captured now so a redirect cannot move it.
-    // `captureEntry` refuses focus, non-web schemes and missing identity.
     const capture = captureEntry({
       kind: detail.kind,
       origin: tab.url,
@@ -1609,10 +1340,30 @@ class DesktopBrowserManager {
       tabUid: tab.id,
       at: this.now(),
     });
-    if (capture) this.heldLoginCapture = capture;
-    // A credential HOLD, cleared only by a clean focus-aware probe — not by
-    // any close event. The automatic loop ends privacy when the entry is over.
-    this.noteCredentialHold(detail.kind === "fill" ? "credentials filled" : "credential entry");
+    if (!capture) return;
+    this.heldLoginCapture = capture;
+    // Which tab is mid-entry, so the navigation off it can close the entry.
+    tab.loginEntryAt = this.now();
+  }
+
+  /**
+   * THE ENTRY IS OVER (which is NOT proof the sign-in succeeded — the offer is
+   * phrased as a permission question, login-offer.js). Leaving the page a
+   * credential was typed into is what ends it: a form submit navigates, and a
+   * page the person walked away from is not one to ask about any more.
+   *
+   * Consumed ONCE — the held capture is cleared here so the next entry starts
+   * clean and one sign-in raises one question.
+   */
+  finishLoginEntry() {
+    const capture = this.heldLoginCapture;
+    this.heldLoginCapture = null;
+    if (!capture || !this.onLoginEntryFinished) return;
+    try {
+      this.onLoginEntryFinished(capture);
+    } catch {
+      // The offer must never break the navigation path under it.
+    }
   }
 
   /**
@@ -1637,77 +1388,24 @@ class DesktopBrowserManager {
     });
   }
 
-  /**
-   * Whether a tab still has an ACTIVE credential interaction — a blocking
-   * field (password/current-password/new-password/one-time-code) that is
-   * filled OR focused-while-empty (the human is about to type). Asked through
-   * the preload's own probe; values are never read.
-   *
-   * Returns "clear" | "active" | "unresponsive". EVERY FRAME of the holding
-   * tab is asked, IN PARALLEL. A frame that ANSWERS "filled or focused" is what
-   * keeps the window open; a frame that will not answer at all is
-   * "unresponsive", which also keeps it open but says something different to
-   * the person (#480). Per-frame probes are bounded and the whole tab is
-   * bounded by `deadline`, so the check never hangs.
-   *
-   * A FRAME WITH NO PROBE VOUCHES. `null` means the preload never ran in that
-   * frame — a cross-origin ad iframe, `about:blank`, the PDF viewer, an
-   * extension frame. A frame the preload never reached cannot contain a field
-   * the preload would have reported, so treating it as "cannot vouch" bought
-   * no safety and was the other half of the wedge: an ad iframe on the sign-in
-   * page kept the window open forever after the person had signed in.
-   */
-  async tabHoldsCredentials(tab, deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS) {
-    // No document, no fields: a hibernated tab holds nothing.
-    if (!tab.view || tab.view.webContents.isDestroyed()) return "clear";
-    const wc = tab.view.webContents;
-    const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
-    // Mid-navigation, between documents: there is no field in a page that is
-    // not there. The hold itself is dropped on the commit (`noteNavigation`).
-    if (!frames.length) return "clear";
-    const answers = await Promise.all(frames.map((frame) => this.probeFrame(frame, deadline).catch(() => PROBE_TIMEOUT)));
-    // A REAL ANSWER OUTRANKS A SILENT ONE: a frame saying "filled" is the
-    // interaction itself, and must not be reported as a page that is merely slow.
-    if (answers.some((answer) => answer === true)) return "active";
-    // A frame that timed out or threw mid-question could still hold one.
-    if (answers.includes(PROBE_TIMEOUT)) return "unresponsive";
-    return "clear";
-  }
-
-  /** Ask one frame's entry-active probe, bounded by both the per-frame timeout
-   *  and the overall `deadline`. Resolves to a boolean, null (no probe), or the
-   *  PROBE_TIMEOUT sentinel. */
-  probeFrame(frame, deadline = this.now() + CREDENTIAL_PROBE_TIMEOUT_MS) {
-    const probe = frame.executeJavaScript(
-      "typeof globalThis.__telarCredentialEntryActive === 'function' ? globalThis.__telarCredentialEntryActive() : null",
-      true,
-    );
-    const budget = Math.max(0, Math.min(CREDENTIAL_PROBE_TIMEOUT_MS, deadline - this.now()));
-    let timer;
-    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(PROBE_TIMEOUT), budget); });
-    return Promise.race([probe, timeout]).finally(() => clearTimeout(timer));
-  }
-
-  /** A navigation committed: the page the agent observed is gone — and with
-   *  it any credential field that page reported, so this tab stops holding the
-   *  private window (#480). The next document reports for itself if it has one
-   *  (an OTP step, a second factor) and the window re-opens on that report. */
+  /** A navigation committed: the page the agent observed is gone. If a login
+   *  value had landed in that page, leaving it is what ends the entry — the
+   *  offer is asked here, once. The next document speaks for itself (an OTP
+   *  step, a second factor) and raises its own entry if it has one. */
   noteNavigation(tab) {
     tab.generation += 1;
     tab.staleReason = "the page navigated";
-    if (tab.credentialFieldsAt !== undefined) {
-      tab.credentialFieldsAt = undefined;
-      // The set of holders changed under the probe in flight: re-arm the wait
-      // rather than let a result decided before this commit end the window.
-      this.holdRevision += 1;
+    if (tab.loginEntryAt !== undefined) {
+      tab.loginEntryAt = undefined;
+      this.finishLoginEntry();
     }
   }
 
   /** A committed top-level navigation → `onVisited`, if it is one worth
    *  remembering: http(s), not an error page (status < 400; Electron reports
-   *  0 for a non-HTTP/failed commit), and not during a private interaction. */
+   *  0 for a non-HTTP/failed commit). */
   noteVisited(tab, url, httpResponseCode) {
-    if (!this.onVisited || this.privacy.isActive()) return;
+    if (!this.onVisited) return;
     if (typeof httpResponseCode === "number" && (httpResponseCode === 0 || httpResponseCode >= 400)) return;
     let parsed;
     try { parsed = new URL(String(url || "")); } catch { return; }
@@ -1745,9 +1443,6 @@ class DesktopBrowserManager {
   checkpoint(action) {
     const { tab } = action;
     const index = () => Math.max(0, this.scopeTabs(tab.scopeKey).indexOf(tab));
-    // The credential boundary, between steps: a fill or a slow type must
-    // not continue into a private interaction that began under it.
-    if (this.privacy.isActive() || this.privacy.epoch !== action.privacyEpoch) throw new Error(`Stopped: ${this.privacy.refusal()}`);
     if (action.cancelled) throw new Error("Stopped: this action timed out.");
     if (!this.tabs.includes(tab)) throw new Error("The tab was closed.");
     if (action.ticket !== tab.ticket) throw new Error("Stopped: a later action on this tab has started.");
@@ -1903,7 +1598,6 @@ class DesktopBrowserManager {
       })(),
       screenshot: null,
       error: null,
-      privacy: this.privacyState(),
       version: this.version,
     };
   }
@@ -2287,9 +1981,9 @@ class DesktopBrowserManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a
-        // credential field inside an iframe is reported and probed. Despite
-        // the name this enables no Node in any frame: sandbox stays on.
+        // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a login
+        // form inside an iframe reports its entry. Despite the name this
+        // enables no Node in any frame: sandbox stays on.
         nodeIntegrationInSubFrames: true,
         // The human-input reporter (see browser-tab-preload.js) — how a click
         // in the page becomes a control-model takeover in the main process.
@@ -3449,9 +3143,6 @@ class DesktopBrowserManager {
     if (!debug.isAttached()) debug.attach("1.3");
     if (!tab.debuggerListenersBound) {
       debug.on("message", (_event, method, params) => {
-        // NOTHING IS CAPTURED DURING A PRIVATE INTERACTION: a console line or
-        // a request URL made while a person signs in is theirs, not the log's.
-        if (this.privacy.isActive()) return;
         if (method === "Runtime.consoleAPICalled") {
           // Each ARGUMENT is bounded before the join, so a single huge one
           // cannot build a huge intermediate on its way to being truncated.
@@ -3909,10 +3600,10 @@ class DesktopBrowserManager {
    * row, and the frozen frame the annotate overlay draws on.
    *
    * NOT `callTool("browser_take_screenshot")`, and the difference is WHOSE TAB
-   * IT IS. A tool call reads the AGENT's tab (`peekTarget`), waits behind that
-   * tab's queue and is refused while a credential interaction is open — all
-   * correct for an agent, and all wrong for a person pressing a camera on the
-   * page in front of them. This reads the tab THEY are looking at.
+   * IT IS. A tool call reads the AGENT's tab (`peekTarget`) and waits behind
+   * that tab's queue — both correct for an agent, and both wrong for a person
+   * pressing a camera on the page in front of them. This reads the tab THEY
+   * are looking at.
    *
    * AT THE TAB'S OWN SCALE, NEVER THE PANEL'S FIT SCALE. `screenshot` resolves
    * to `captureIntrinsic`'s explicit scale-1 clip, so a page laid out at
@@ -4076,7 +3767,7 @@ class DesktopBrowserManager {
            * addresses a tab by its index in this list (`tabAt`), so closing a
            * tab renumbers the ones after it and an index captured a moment ago
            * can name a different page. Callers that must act on the SAME tab
-           * they inspected — the credential path — compare this instead.
+           * they inspected — the login path — compare this instead.
            */
           const meta = [`tab=${tab.id}`, `controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
           /**
@@ -4107,27 +3798,7 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
-    // THE CREDENTIAL BOUNDARY FIRST. Reads and mutations alike, every scope:
-    // the partition is shared, so a person's sign-in in one session is not
-    // another session's page to read. The interaction is managed
-    // automatically (no manual Resume in the normal flow), so a call arriving
-    // while it is open gets an ACTIONABLE, RETRIABLE status — not a terminal
-    // unexplained failure — and the loop clears the window shortly after the
-    // person finishes.
-    if (this.privacy.isActive()) return this.privacyBusyResult();
-    const epochAtStart = this.privacy.epoch;
-    const outcome = await this.callToolInner(scope, name, args);
-    return this.privacy.admit(outcome, epochAtStart);
-  }
-
-  /** The result a tool call gets while a credential interaction is open:
-   *  retriable and specific. When the automatic release is stuck (a probe will
-   *  not answer) it names the recovery instead of promising an auto-clear. */
-  privacyBusyResult() {
-    const text = this.privacyStuck
-      ? "The browser is waiting on a sign-in page that is not responding. Tools resume automatically once that page is reloaded or closed, and the person can resume them from the banner over the browser panel — ask them if this persists."
-      : "A person is signing in or handling credentials. Browser tools are paused and resume automatically when they finish — retry in a moment.";
-    return { content: [{ type: "text", text: `Error: ${text}` }], isError: true, retriable: true };
+    return this.callToolInner(scope, name, args);
   }
 
   async callToolInner(scope, name, args) {
@@ -4222,8 +3893,6 @@ class DesktopBrowserManager {
       if (this.now() >= deadline) return errorResult(new Error(humanActiveOn(tab, index())));
       await this.wait(DEFER_POLL_MS);
     }
-    // Queued behind a deferral: privacy may have begun meanwhile.
-    if (this.privacy.isActive()) return this.privacyBusyResult();
     if (!this.tabs.includes(tab)) return errorResult(new Error(`Browser tab ${index()} was closed.`));
     // A deliberate navigation or tab-set change LEAVES the current page; it
     // does not act on it, so it needs no fresh view of it. Everything that
@@ -4236,7 +3905,7 @@ class DesktopBrowserManager {
     }
     const generationAtStart = tab.generation;
     tab.interruptedAt = undefined;
-    const action = { tab, ticket: this.nextTicket(tab), generation: generationAtStart, startedAt: this.now(), cancelled: false, privacyEpoch: this.privacy.epoch };
+    const action = { tab, ticket: this.nextTicket(tab), generation: generationAtStart, startedAt: this.now(), cancelled: false };
     tab.agentBusy += 1;
     this.lastAgentInputAt.set(scope, this.now());
     this.journalControl(tab, "agent");

@@ -283,7 +283,7 @@ describe("the packaged app can be granted the camera and the microphone", () => 
 
 describe("the password-manager extension ships with what it needs", () => {
   test("the compat modules main.js requires are in build.files, and the library is a runtime dependency", () => {
-    for (const file of ["extension-host.js", "extension-compat.js", "private-interaction.js"]) expect(manifest.build.files).toContain(file);
+    for (const file of ["extension-host.js", "extension-compat.js", "protected-urls.js"]) expect(manifest.build.files).toContain(file);
     // A devDependency is pruned from the packaged app; the library must be a
     // real dependency, like electron-updater.
     expect(manifest.dependencies["electron-chrome-extensions"]).toBeDefined();
