@@ -72,6 +72,38 @@ const shape = (note: ProjectNote) => ({
   author: note.author,
 });
 
+/**
+ * HOW MUCH OF A BODY A LISTING SHOWS — issue #515.
+ *
+ * 120 characters is enough to tell two notes apart and to recognise the one you
+ * were looking for; it is deliberately not enough to work from, because a
+ * notebook of thirty runbooks handed over whole is thirty runbooks spent out of
+ * the caller's context to answer "which notes are there".
+ */
+const PREVIEW_CHARS = 120;
+
+/**
+ * One note in a LISTING: what it is, whose it is, and enough of it to choose.
+ *
+ * `notes_list` used to carry every body, and its own description said so —
+ * "Bodies ride along, so this is usually the only call you need." That was
+ * true of a notebook with three notes in it and false of every larger one,
+ * and the failure mode was silent: the answer looked complete because it was.
+ * `bodyChars` is what makes the abridgement legible, and `notes_read` is one
+ * call away.
+ */
+const listShape = (note: ProjectNote) => ({
+  id: note.id,
+  title: note.title,
+  ...(note.pinned ? { pinned: true } : {}),
+  author: note.author,
+  updated: note.updated.at,
+  bodyChars: note.body.length,
+  ...(note.body.length > 0
+    ? { preview: note.body.length <= PREVIEW_CHARS ? note.body : `${note.body.slice(0, PREVIEW_CHARS)}…` }
+    : {}),
+});
+
 /** The projectId a tool call means: the one it named, else the turn's own. The
  *  refusal names both halves so a caller on the socket learns what to pass. */
 function resolveProject(capability: NotesCapability, named: unknown): string | undefined {
@@ -101,16 +133,26 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_list",
-      "The project's notebook — the quick notes kept beside the code: what the deploy incantation is, what the reviewer " +
-        "keeps asking for, the decisions somebody wrote down so they would not be asked twice. Pinned first, then the " +
-        "user's own order. Bodies ride along, so this is usually the only call you need. Inside a Telar session the " +
-        "project is implied; omit it.",
+      "The project's notebook — the quick notes kept beside the code: deploy incantations, constraints, decisions " +
+        "somebody wrote down so they would not be asked twice. Pinned first, then the user's own order. Titles and the " +
+        "first 120 characters of each; `notes_read` gives one whole. Inside a Telar session the project is implied; omit it.",
       { projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to read this one's.") },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
         if (!projectId) return err(NO_PROJECT);
         try {
-          return json((await capability.list(projectId)).map(shape));
+          const notes = await capability.list(projectId);
+          const abridged = notes.filter((note) => note.body.length > PREVIEW_CHARS).length;
+          return json({
+            notes: notes.map(listShape),
+            count: notes.length,
+            note:
+              notes.length === 0
+                ? "This project's notebook is empty."
+                : abridged > 0
+                  ? `${abridged} of these are longer than the preview — read one whole with notes_read(noteId).`
+                  : "Every body is short enough to be here in full.",
+          });
         } catch (error) {
           return err(failure(error));
         }
@@ -119,8 +161,8 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_read",
-      "One note in full, by id, from whichever project holds it. `notes_list` already carries bodies — reach for this when " +
-        "you were handed a bare note id (a chat reference, an earlier tool result) and do not know its project.",
+      "One note in full, by id, from whichever project holds it. `notes_list` carries only a preview, so this is how you " +
+        "read a body — and how you reach a note you hold by bare id, from a chat reference or an earlier tool result.",
       { noteId: z.string().describe("The note id, as `notes_list` reports it.") },
       async (args) => {
         try {
@@ -137,9 +179,7 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
       "notes_write",
       "Write a note into a project's notebook, or edit one you can already see. Use it when the user ASKS you to keep " +
         "something about this project — a command that works, a constraint, a decision — not for your own scratch notes " +
-        "and not to log what you just did. The note is stamped as an agent's, permanently: that provenance never changes, " +
-        "so a note you wrote stays marked as yours after the user rewrites every word of it. This is the project's own " +
-        "notebook — the quick notes kept beside the code.",
+        "and not to log what you just did. Stamped as an agent's, permanently: editing never changes that.",
       {
         projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to write to this one's."),
         title: z.string().optional().describe("What the note is about, in a few words. Required for a new note."),
