@@ -149,7 +149,7 @@ struct Subscription: Codable, Equatable, Identifiable {
 
 struct Session: Codable, Identifiable, Equatable {
     var id: EngineID
-    /// Absent is a positive statement (the Spool's project-less master chat),
+    /// Absent is a positive statement (a session that belongs to no project),
     /// not an error.
     var projectId: EngineID?
     var title: String
