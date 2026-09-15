@@ -1309,17 +1309,20 @@ export class EngineWorker {
          */
         self: { sessionId },
         /**
-         * `all: true` SO THE TWO DEPLOYMENTS LIST THE SAME THING (#457).
+         * THE CALLER'S CHOICE, AND THE SAME ONE THROUGH EITHER DOOR (#457 then
+         * #515).
          *
-         * The live route's default became the UNSETTLED rows — right for a
-         * rail, wrong for a toolkit: `sessions_list` promises "every session
-         * that is alive on this engine right now", and the daemon's in-process
-         * build of this capability calls `store.liveSessions()`, which is
-         * unfiltered. Asking narrowly here would make the same tool answer
-         * differently depending on which door it came through, and hide from a
-         * model exactly the settled sessions it might be told to revive.
+         * This was pinned to `all: true` because the daemon's in-process build
+         * called `store.liveSessions()`, which is unfiltered: asking narrowly
+         * here would have made one tool answer differently depending on which
+         * door it came through. Both sides now take the argument — the daemon
+         * through `store.liveSessionRows({ all })`, this through the route's
+         * own `?all=1` — so the parity holds at every setting instead of at the
+         * widest one, and the default stops folding a 323-row shelf nobody
+         * asked for. `settledCount` rides the narrow answer so the wall can say
+         * what it left out.
          */
-        list: () => this.options.client.liveSessions({ all: true }),
+        list: (options) => this.options.client.liveSessions({ all: options?.settled === true }),
         create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
         /**
          * SENT AS WHATEVER TURN IS LIVE WHEN THE CALL ARRIVES, PROVABLY. The
@@ -1341,7 +1344,21 @@ export class EngineWorker {
           const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, ...proof } });
           return { turn: accepted.turn, replayed: accepted.replayed };
         },
-        read: async (id, after) => (await this.options.client.events(id, after)).events,
+        read: async (id, after, options) => (await this.options.client.events(id, after, options?.limit)).events,
+        /**
+         * THE JOURNAL'S END, FROM THE NARROWEST READ THAT CARRIES IT (#515).
+         *
+         * `SessionSnapshot.cursor` is the last event id and is stamped BEFORE
+         * the snapshot's own rows, which is exactly the guarantee a tail read
+         * wants. `turns: 1` is what keeps paying for it cheap: the windowed
+         * snapshot folds one turn rather than the 685 an unwindowed one would,
+         * and every field but `cursor` is dropped on the floor here.
+         *
+         * An engine too old to stamp it sends nothing, and `?? 0` makes the
+         * wall's tail read cover the whole journal — the behaviour it had
+         * before this existed, rather than a wrong end.
+         */
+        cursor: async (id) => (await this.options.client.session(id, { turns: 1 })).cursor ?? 0,
         status: async (id) => {
           const snapshot = await this.options.client.session(id);
           return { session: snapshot.session, turns: snapshot.turns };

@@ -77,6 +77,44 @@ describe("whose project is meant", () => {
   });
 });
 
+/**
+ * ── A LISTING IS NOT A DOWNLOAD (#515) ──────────────────────────────────────
+ *
+ * `notes_list` used to hand over every body, and its own description said so:
+ * "Bodies ride along, so this is usually the only call you need." True of three
+ * notes and false of thirty, with no way for a caller to tell which it had —
+ * the answer looked complete because it was. A preview plus a character count
+ * makes the abridgement legible, and `notes_read` is one call away.
+ */
+describe("listing does not carry bodies", () => {
+  test("a long body becomes a marked preview with its real length beside it", async () => {
+    const body = "The deploy incantation is long. ".repeat(40);
+    const wall = build({ self: { projectId: "p1" }, list: async () => [note({ body })] });
+    const answer = await wall.call("notes_list");
+    const listed = JSON.parse(answer.text) as { notes: Array<{ preview: string; bodyChars: number; title: string }>; count: number };
+    expect(listed.count).toBe(1);
+    expect(listed.notes[0]!.title).toBe("Deploy");
+    expect(listed.notes[0]!.bodyChars).toBe(body.length);
+    // 120 characters and a marker — never the body, and never a silent cut.
+    expect(listed.notes[0]!.preview).toBe(`${body.slice(0, 120)}…`);
+    expect(answer.text).not.toContain(body);
+    // And the caller is told the call that gets the rest.
+    expect(answer.text).toContain("notes_read");
+  });
+
+  test("a body that fits is shown whole, with no marker to mislead", async () => {
+    const wall = build({ self: { projectId: "p1" }, list: async () => [note({ body: "bun run ship" })] });
+    const listed = JSON.parse((await wall.call("notes_list")).text) as { notes: Array<{ preview: string }> };
+    expect(listed.notes[0]!.preview).toBe("bun run ship");
+  });
+
+  test("notes_read is what still carries a body whole", async () => {
+    const body = "x".repeat(5_000);
+    const wall = build({ self: { projectId: "p1" }, read: async () => ({ note: note({ body }), projectId: "p1" }) });
+    expect(JSON.parse((await wall.call("notes_read", { noteId: "n-1" })).text).body).toBe(body);
+  });
+});
+
 describe("writing", () => {
   test("a new note needs a title; an edit does not", async () => {
     const wall = build({ self: { projectId: "p1" } });

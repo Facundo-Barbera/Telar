@@ -51,14 +51,32 @@
  *     another name, and `warp/spawn.ts` already denies a warp child the ability
  *     to fan out; these tools join the list it already keeps.
  *
- * ── NO CAP, AND WHY ─────────────────────────────────────────────────────────
+ * ── NO CAP ON CREATION, AND WHY ─────────────────────────────────────────────
  * There used to be a live-session budget in `EngineStore.createSession`, and
  * it was removed when a session was allowed to ORCHESTRATE many: an agent
  * driving ten worktrees is the use, not the abuse. What bounds creation now is
  * the person — archive and delete are theirs and nobody else's — and the
- * prose of `sessions_create`, which is the only voice this wall has on a
- * question no count can settle. See `Session.origin`, which still says who
- * asked.
+ * telar skill, which is the only voice this wall has on a question no count can
+ * settle. See `Session.origin`, which still says who asked.
+ *
+ * ── BUT EVERY ANSWER IS CAPPED, AND THAT IS NEW (#515) ──────────────────────
+ * The paragraph above used to have a companion that said this wall needed no
+ * bound on what it RETURNED either, because "the live set is small in practice
+ * — bounded by nothing but the person's own tidiness". It was measured and it
+ * was wrong by two orders of magnitude: 334 sessions, of which 323 were shelved
+ * out of the list the person was actually looking at, folded into one 142,703-
+ * character `sessions_list` that spent a 256k model's entire context. A
+ * `sessions_status` on a working session was 80,755 characters of turn list to
+ * answer "is it finished yet". A `sessions_read` handed back the FIRST fifty
+ * events of a journal holding 61,933.
+ *
+ * The rule those three share: an answer's size was a property of the engine's
+ * history rather than of the question asked. So every tool here now bounds what
+ * it returns by its own shape — a page, a count of turns, a fold — states the
+ * bound in the answer, and names the argument that lifts it. `tool-kit.ts`'s
+ * `bounded` sits under all of them as the backstop. No behaviour was removed:
+ * every argument that worked before still works, and every old answer is still
+ * reachable by asking for it.
  */
 import crypto from "node:crypto";
 import { z } from "zod";
@@ -84,8 +102,22 @@ export type SessionsCapability = {
    *  ROWS, NOT WHOLE RECORDS (#459): the route behind the out-of-process
    *  deployment sends `LiveSessionRow`, and `summarise` below reads nothing
    *  else. A full `Session` is assignable to one, so the daemon's own
-   *  `store.liveSessions()` still satisfies this. */
-  list(): Promise<{ sessions: LiveSessionRow[]; projects: Array<{ id: string; name: string }> }>;
+   *  `store.liveSessions()` still satisfies this.
+   *
+   *  `settled` IS THE SHELF, AND IT IS OPTIONAL AT THIS SEAM (#515). Absent
+   *  means the unsettled rows — the list a person actually has open, and 11 of
+   *  334 on the owner's store. Both deployments answer it with the rule the
+   *  clients already share (`isShelved`, via the store's own `liveSessionRows`
+   *  and the route's `?all=1`), so neither writes a second fold. An
+   *  implementation that ignores the argument is still type-correct and simply
+   *  answers wide; the wall states in the answer what it actually got. */
+  list(options?: { settled?: boolean }): Promise<{
+    sessions: LiveSessionRow[];
+    projects: Array<{ id: string; name: string }>;
+    /** How many rows the unsettled answer left out, when the source counted
+     *  them. Absent is "this source did not say", never "the shelf is empty". */
+    settledCount?: number;
+  }>;
   /**
    * A NEW SESSION, WITH NO LINK TO THE CALLER.
    *
@@ -97,9 +129,22 @@ export type SessionsCapability = {
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
    *  tool call cannot double-submit. */
   send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{ turn: Turn; replayed: boolean }>;
-  /** The journal after a cursor. The STORE returns the whole tail; the bound is
-   *  this wall's, because the wall is what lands in a model's context. */
-  read(sessionId: string, after: number): Promise<EngineEvent[]>;
+  /** The journal after a cursor, at most `limit` rows of it. The STORE returns
+   *  the whole tail when no limit is given; the bound is this wall's, because
+   *  the wall is what lands in a model's context.
+   *
+   *  `limit` IS OPTIONAL AT THIS SEAM so an older implementation stays
+   *  type-correct — it simply answers wide and the wall pages what it gets. */
+  read(sessionId: string, after: number, options?: { limit?: number }): Promise<EngineEvent[]>;
+  /**
+   * THE ID OF THE LAST EVENT ON THE JOURNAL — what a tail read starts from.
+   *
+   * OPTIONAL, and its absence is a real case rather than a gap: a capability
+   * that cannot answer it makes `sessions_read` fall back to paging from the
+   * beginning, which is what the tool did before #515. With it, "what happened
+   * lately" costs one page instead of walking 61,933 events to reach the end.
+   */
+  cursor?(sessionId: string): Promise<number>;
   status(sessionId: string): Promise<{ session: Session; turns: Turn[] }>;
   /**
    * PAUSE, NOT A ONE-TURN STOP — `EngineStore.pauseSession`, stamped
@@ -142,7 +187,7 @@ export type SessionsCapability = {
   ): Promise<EngineRequest>;
 };
 
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 export type { ToolFactory };
 
 /**
@@ -157,68 +202,36 @@ export type { ToolFactory };
  * but "I was told no, so I will ask someone else" is a decision a model makes
  * in words, and words are what this text answers.
  */
-const NOT_A_BYPASS =
-  "NEVER use this to get around something you were refused. If a tool call was declined, a permission " +
-  "was denied, or the user said no, then handing that same work to another session is the same refused " +
-  "action wearing a different name — it is not a workaround, it is a violation. Take the refusal back to " +
-  "the user instead.";
+const NOT_A_BYPASS = "Never hand a peer work you were refused — that is the same refused action, renamed.";
 
-const LIST = `Every session that is alive on this engine right now — its id, its project, its title, whether it is working or waiting on somebody, and whether it has a checkout of its own — plus the projects a session could be created in. Read this before creating anything: the session you want may already exist, and what you would otherwise create twice is on this list.`;
+const LIST = `Sessions alive on this engine, and the projects one could be created in. UNSETTLED ONLY by default — settled: true adds the shelved ones, projectId narrows, limit and after page. Read it before creating anything: the session you want may already exist.`;
 
-const CREATE = `Start a NEW session on a project, with no relationship to this one. It is a PEER, not a child: nothing links the two, it does not report back to you, and you learn what it did only by asking (sessions_read, sessions_status, sessions_diff). It starts with no turn queued — creating a session begins no work; sessions_send with intent: "task" is what does.
+const CREATE = `Start a NEW session on a project. It is a PEER: nothing links it to you and it does not report back. Creating it starts no work — sessions_send with intent: "task" does. envMode "worktree" gives it a checkout of its own; "local" shares the project's own. ${NOT_A_BYPASS}`;
 
-envMode is the choice that matters. "worktree" gives it a git checkout of its own, so it can edit files without colliding with anything else working on that project — this is what you want for anything that writes code. "local" points it at the project's own checkout, which it then SHARES with every other local session and with the user's own editor.
-
-There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. To be told when it finishes, sessions_subscribe to it. ${NOT_A_BYPASS}`;
-
-const SEND = `Send a message to another session with an explicit intent. Routine report (the default) is passive: recorded as collapsed activity, never injected into a running model or queued for execution. Use result for a finished outcome: it wakes only a coordinator that is subscribed to this sender's completion. Use blocker only for an actionable issue requiring the recipient's intervention. Use task to explicitly assign new work, not to relay progress or acknowledgements. Task, awaited result, and blocker may steer a running recipient. A human Stop blocks all these until the human sends a new message.
-
-THE RECIPIENT IS HANDED A NOTICE, NOT YOUR TEXT. Like a wake, what reaches its model is one short line — that you sent it, which run holds it, how many characters it is, and its opening (its first paragraph for a task or a blocker) — plus the sessions_read call that fetches the whole thing. Your message is stored complete and is read in full whenever the recipient decides it is worth the context. So: put the point in the FIRST LINE, because that line is what gets read every time; and still say everything needed, because sessions cannot see each other's conversations and a recipient that fetches gets only what you wrote.
-
-Do not acknowledge acknowledgements or send duplicate checkpoints alongside automatic completion notices. ${NOT_A_BYPASS}`;
+const SEND = `Send a message to another session. intent: report (the default) is passive; result wakes a subscribed coordinator; blocker asks for intervention; task assigns work. The recipient is handed a NOTICE naming sessions_read, not your text — so lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, the run and what happened — so you can end your turn now and be woken later rather than polling.
+const SUBSCRIBE = `Be WOKEN when a session finishes a turn, fails, is stopped, or parks a request. The wake is a real turn in YOUR session, so you can end this one rather than poll. It is a PING, not a report: it names the session and run and the sessions_read call that fetches the outcome. One-shot by default; once: false monitors until you unsubscribe.`;
 
-A WAKE IS A PING, NOT A REPORT — and so is every message a peer sends you. It carries no result body and no request payload — only what happened, to which session and which run, because it lands in your context whether or not you need the detail. It names the call that fetches it: sessions_read(sessionId, runId). Read it when it matters and skip it when it does not. A parked request is the same: the notice gives its id, kind and a short title, and the fields you would answer from are one read away. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
-
-events narrows what wakes you (default: all four). Subscriptions are one-shot by default: the first matching wake removes them. Subscribe only when awaiting a concrete result or blocker. Explicit once: false opts into ongoing monitoring; unsubscribe when the task is done. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
-
-const UNSUBSCRIBE = `Stop being woken by a session. Takes the subscription id sessions_subscribe returned (sessions_subscriptions lists them). Any wakes from that session still waiting in your queue are withdrawn too, so unsubscribing is how you stop a pile-up, not only future noise. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
+const UNSUBSCRIBE = `Stop being woken by a session. Takes the id sessions_subscribe returned (sessions_subscriptions lists them). Wakes from it still waiting in your queue are withdrawn too. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
 
 const SUBSCRIPTIONS = `Every subscription this session holds: which sessions will wake it, for which events, and whether once. Read this before subscribing again, and to find an id for sessions_unsubscribe.`;
 
-const REQUESTS = `What a session is WAITING on: its open requests — a question it asked (with the fields and choices), a command, a file change or a tool call it wants approved. Each carries the id sessions_resolve_request takes. A request is a question to a HUMAN by default; you are seeing it because you subscribed or asked, and answering it is you taking responsibility for the answer.
+const REQUESTS = `What a session is WAITING on: its open requests — a question, a command, a file change or a tool call it wants approved — each with the id sessions_resolve_request takes. A request is a question to a HUMAN by default, and answering it is you taking responsibility. A secret pick is listed by origin only.`;
 
-A secret-access request is listed by its origin only, with no candidates: choosing a vault item is the user's alone, and sessions_resolve_request refuses it.`;
+const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf: accept, acceptForSession, or decline; answers fills a question's fields. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused here. ${NOT_A_BYPASS}`;
 
-const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. decision is accept, acceptForSession (accept this and every later request of the same kind in that session), or decline; answers fills a question's fields, keyed exactly as sessions_requests listed them. Recorded as answered BY A SESSION, never as the user's own decision.
+const READ = `What a session has done. By default the LATEST page of its journal — from: "start" reads from the beginning, after: <cursor> walks forward, mode: "summary" folds it to a line per turn. runId answers ONE turn: its events, its answer, and a peer's message in full (long ones slice on resultAfter / messageAfter). Never assume a page is the whole story.`;
 
-Accepting an approval on another session's behalf is you taking responsibility for it. Never accept what you were yourself refused. Only answer a question you actually know the answer to; decline, or leave it for the user, otherwise. A secret-access request cannot be answered here at all. ${NOT_A_BYPASS}`;
+const STATUS = `Whether a session is doing anything: working, waiting on a person, or idle; how many turns it has taken and how the most recent ones ended. The cheap question — ask it before sessions_read when all you need is "is it finished yet". It changes nothing.`;
 
-const READ = `Read what a session has done since a point in its journal: its messages, its tool calls, its answers. Pass no cursor to start from the beginning and the cursor you got back to continue — that is how you follow a session as it works.
+const STOP = `Stop a session's work now: the running turn ends where it stands and anything queued behind it is settled rather than started. Nothing is undone — what it already wrote stays written, and a command it had already run may have finished. It is then IDLE, not paused: the next message runs normally. Use it when a session is going somewhere wrong.`;
 
-ONE RUN, DIRECTLY: pass \`runId\` and you get that turn's own events and its final answer, without paging the journal to find them. This is what a wake notice names — a wake carries no result body, so \`sessions_read(sessionId, runId)\` is how you fetch the outcome it is telling you about, and only when you actually want it.
+const SETTLE = `Shelve a session out of the active list — the sidebar's Settle button — or bring it back with settled: false. It stays live and resumable, nothing is deleted, and any new message lifts it back. Housekeeping, not acceptance: it says nothing about whether the work was good, and archive and delete stay the user's.`;
 
-AND IT IS WHAT AN AGENT-MESSAGE NOTICE NAMES. A peer's \`sessions_send\` reaches you as a short line, not as its text; call this with YOUR OWN sessionId and the runId that notice gave you, and the \`message\` field is the peer's message in full, exactly as sent. Read it before acting on a task or a blocker — the notice carries the opening paragraph only.
-
-PAGING WITHIN A RUN: \`after\` works with \`runId\` and walks that run's events. The answer rides the first page only, so continuations do not repeat it; a long answer is read in slices with \`resultAfter\`, and every reply says how many characters there are in total, whether more remain, and the exact next call. \`message\` slices the same way on \`messageAfter\`, independently of the answer. The slices are verbatim — concatenated they are the text, with nothing trimmed or marked inside them.
-
-THE ANSWER IS BOUNDED and a transcript is not: you may get a page rather than everything, and the result says so and gives you the cursor to ask for the next one. Never assume a page is the whole story; if "more" is true, there is more.`;
-
-const STATUS = `Whether a session is doing anything: what it is (working, waiting on a person, idle), what its recent turns are and how each ended, and whether anything is running right now. This is the cheap question — ask it before sessions_read when all you need to know is "is it finished yet". It costs nothing to call and it changes nothing.`;
-
-const STOP = `Stop a session's work now: its running turn ends where it stands, and anything queued behind it — messages, wakes, your own sends — is settled as stopped rather than started. The work already done is kept and stays in the transcript; nothing is undone, nothing is deleted, and nothing claims to have been rolled back. A turn that had already written files or run commands may well have finished doing so: stopping it does not reverse that, and the transcript says only that it stopped.
-
-THE SESSION IS THEN IDLE, NOT PAUSED. There is no latch and no resume — the next message anyone sends is new work and runs normally, continuing the same provider conversation. So this is not a way to park a session or hold its backlog for a human: it is the same Stop the person's own button does. Use it when a session is going somewhere wrong and should stop going there.`;
-
-const SETTLE = `Shelve a session — move it out of the active list into Settled, the way the sidebar's Settle button does — or bring it back with settled: false. Use it on a session you started once it has finished and you have read what you needed: a settled session is still live and resumable, nothing is deleted, and any new message (yours or a wake) lifts it back into the list. You may settle your own session as your last act. This is housekeeping, not acceptance: it says nothing about whether the work was good, and it archives nothing — archive and delete stay the user's.`;
-
-const DIFF = `What a session has changed in its checkout since it started — the files, and the shape of the change. A session with a worktree of its own shows exactly what it did there; a "local" session shows what has happened in the project's own checkout, which may include work that is not its own.
-
-READ-ONLY, AND IT IS NOT AN ACCEPTANCE. Nothing here merges, pushes, lands or approves anything, and there is no tool that does: whether a session's work is good enough to keep is a human's decision, made somewhere else. Reporting on a diff is your job; declaring it done is not.`;
+const DIFF = `What a session has changed in its checkout since it started — the files, and the shape of the change. A "local" session's checkout is shared, so its diff may include work that is not its own. READ-ONLY AND NOT AN ACCEPTANCE: nothing here merges, pushes or approves anything, and no tool does — that is a human's decision, made elsewhere.`;
 
 /**
  * ── THE BOUND ON `sessions_read`, AND WHY IT IS TWO NUMBERS ─────────────────
@@ -236,11 +249,74 @@ READ-ONLY, AND IT IS NOT AN ACCEPTANCE. Nothing here merges, pushes, lands or ap
  * minutes as its whole life.
  */
 const MAX_EVENTS = 50;
-const MAX_EVENT_CHARS = 24_000;
+/** Lowered from 24 KB (#515): a page is a look at a journal, not a download of
+ *  one, and 24 KB of it was a sixth of a small model's window for one call. */
+const MAX_EVENT_CHARS = 12_000;
 const MAX_STRING_CHARS = 2_000;
 /** A run-scoped read hands over the turn's answer whole, up to this. Larger
  *  than the per-string clamp on purpose: this IS what the caller asked for. */
 const MAX_RESULT_CHARS = 8_000;
+/**
+ * A RUN-SCOPED READ'S EVENT PAGE, which is smaller than a journal page and not
+ * by accident (#515). A caller naming a `runId` came for the TURN — what it was
+ * asked and what it concluded — and the events are context around that. The
+ * budget goes where the caller pointed.
+ */
+const MAX_RUN_EVENT_CHARS = 6_000;
+/**
+ * THE ONE ANSWER ALLOWED PAST THE TOOLKIT'S DEFAULT BACKSTOP, and the reason is
+ * a contract rather than a preference.
+ *
+ * A run read may carry an 8,000-character answer slice AND an 8,000-character
+ * message slice, and both are VERBATIM: concatenated across calls they are the
+ * text exactly as it was written, with nothing trimmed or marked inside them.
+ * `bounded`'s marker would be a silent edit in the middle of that guarantee —
+ * it clips the JSON, not the slice, so a caller reassembling from offsets would
+ * splice a truncation into the text and never know. So this answer gets a
+ * budget above the sum of what it may legitimately be asked for, and every part
+ * of it stays self-describing: two slices with their own offsets and totals,
+ * and an event page bounded at `MAX_RUN_EVENT_CHARS`.
+ */
+const MAX_RUN_ANSWER_CHARS = 24_000;
+/** A summary line's share of a turn's answer. Enough to know what it concluded;
+ *  never enough to be mistaken for the answer, which `runId` hands over. */
+const MAX_SUMMARY_RESULT_CHARS = 300;
+/** How many turns `mode: "summary"` describes, and its ceiling. The same
+ *  numbers `sessions_status` uses, for the same reason. */
+const SUMMARY_TURNS_DEFAULT = 5;
+const SUMMARY_TURNS_MAX = 20;
+/**
+ * HOW FAR BACK A TAIL READ REACHES to find the last page.
+ *
+ * The journal is keyed on event id, so "the end" is `cursor - window` read
+ * forward — there is no backwards read at either seam and adding one would mean
+ * a new route, a new store method and a new client call for a window this size.
+ * 200 is the events route's own page (#494), so this costs exactly one page
+ * wherever it runs, and the events it finds are trimmed to `MAX_EVENTS` from the
+ * END. Ids are dense in practice; where they are not, the read simply reaches a
+ * little less far back, which the answer states rather than hides.
+ */
+const TAIL_WINDOW = 200;
+/** One widening, for a journal whose ids are sparse enough that the first
+ *  window came back nearly empty. One and not a loop: a second miss means the
+ *  ids are sparse beyond anything a page size can chase, and the honest answer
+ *  is the short page plus the cursor to walk with. */
+const TAIL_WINDOW_WIDE = 1_000;
+
+/**
+ * WHAT ONE PIECE OF AN ANSWER WILL ACTUALLY COST, measured the way it will
+ * actually be written.
+ *
+ * `json` pretty-prints at two spaces, so sizing a page against compact JSON
+ * understated every budget here by around a third — a 24 KB page emitted 31 KB,
+ * and a "12 KB" one emitted 15. A budget that does not mean what it says is
+ * worse than a larger honest one, because it is the number the description and
+ * the tests quote. Still approximate by the wrapper's own indent, which adds a
+ * little per line; approximate and conservative beats wrong by 30%.
+ */
+function measure(value: unknown): number {
+  return JSON.stringify(value, null, 2)?.length ?? 0;
+}
 
 /** One event, with any oversized string inside it clamped and MARKED. Recursive
  *  because the payloads nest (an item's detail, a turn's observations) and a
@@ -266,17 +342,22 @@ function clamp(value: unknown): unknown {
  * which is the exact failure a bounded read exists to avoid: silent loss that
  * looks like completeness.
  */
-export function pageEvents(events: readonly EngineEvent[]): { page: unknown[]; cursor: number; more: boolean } {
+export function pageEvents(
+  events: readonly EngineEvent[],
+  options: { limit?: number; chars?: number } = {},
+): { page: unknown[]; cursor: number; more: boolean } {
+  const limit = options.limit ?? MAX_EVENTS;
+  const budget = options.chars ?? MAX_EVENT_CHARS;
   const page: unknown[] = [];
   let cursor = 0;
   let chars = 0;
   for (const event of events) {
-    if (page.length >= MAX_EVENTS) return { page, cursor, more: true };
+    if (page.length >= limit) return { page, cursor, more: true };
     const trimmed = clamp(event);
-    const size = JSON.stringify(trimmed)?.length ?? 0;
+    const size = measure(trimmed);
     // The FIRST event is always let through whatever it costs: a page of zero
     // with `more: true` is a caller that can never advance.
-    if (page.length > 0 && chars + size > MAX_EVENT_CHARS) return { page, cursor, more: true };
+    if (page.length > 0 && chars + size > budget) return { page, cursor, more: true };
     page.push(trimmed);
     chars += size;
     cursor = event.id;
@@ -284,9 +365,213 @@ export function pageEvents(events: readonly EngineEvent[]): { page: unknown[]; c
   return { page, cursor, more: false };
 }
 
+/**
+ * THE SAME PAGE, FILLED FROM THE END — issue #515.
+ *
+ * "What has this session been doing" is a question about the end of a journal,
+ * and the tool answered it from the beginning: a caller looking at a session
+ * with 61,933 events got its first fifty, every time, with 1,238 pages between
+ * them and anything current. Filling backwards is the whole fix, and it is a
+ * separate function rather than a flag because the CURSOR means the opposite
+ * thing here — it is where the page ENDS, which is where a caller resumes.
+ *
+ * `earlier` IS WHAT CAME BEFORE THE PAGE, when the window held more than fit.
+ * A caller that wants the turn before this one asks with `after` below it.
+ */
+function pageEventsFromEnd(
+  events: readonly EngineEvent[],
+  options: { limit?: number; chars?: number } = {},
+): { page: unknown[]; cursor: number; from: number; earlier: boolean } {
+  const limit = options.limit ?? MAX_EVENTS;
+  const budget = options.chars ?? MAX_EVENT_CHARS;
+  const page: unknown[] = [];
+  let chars = 0;
+  let earlier = false;
+  let from = 0;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (page.length >= limit) {
+      earlier = true;
+      break;
+    }
+    const trimmed = clamp(event);
+    const size = measure(trimmed);
+    if (page.length > 0 && chars + size > budget) {
+      earlier = true;
+      break;
+    }
+    page.unshift(trimmed);
+    chars += size;
+    from = event.id;
+  }
+  return { page, cursor: events.at(-1)?.id ?? 0, from, earlier };
+}
+
+/**
+ * THE EVENTS NOBODY READS, DROPPED BEFORE THEY ARE PAGED — issue #515.
+ *
+ * A journal carries two classes of row that exist for the engine rather than
+ * for a reader, and together they are most of it:
+ *
+ *   · `usage.updated` — a token count restated after every item. It is what
+ *     draws a meter, and no caller of this tool has a meter.
+ *   · A request the POLICY opened and resolved in the same instant — a tool
+ *     call that was allowed by a standing rule. Both halves say only "the
+ *     engine permitted something it was always going to permit". A request a
+ *     PERSON or a SESSION resolved is kept, always: that is a decision somebody
+ *     made, and it is exactly what a caller auditing a peer came to read.
+ *
+ * `verbose: true` keeps everything. The filter is about what a page spends its
+ * budget on, never about what the journal holds — nothing here is deleted, and
+ * the answer says how many rows it passed over.
+ */
+/**
+ * THE END OF A JOURNAL, FOUND WITHOUT WALKING IT.
+ *
+ * `cursor` is the last event id, so the last page is `cursor - window` read
+ * FORWARD — one page's cost wherever this runs, against 61,933 events and
+ * 38.5 MB to reach the same rows by paging from zero.
+ *
+ * A CAPABILITY WITHOUT `cursor` STILL WORKS, and pays what it always paid: the
+ * whole tail, filled from the end rather than the start. Keeping that path is
+ * what lets the seam stay optional for an implementation that has no cheap way
+ * to answer it.
+ */
+async function tailEvents(
+  capability: SessionsCapability,
+  sessionId: string,
+  limit: number,
+): Promise<{ events: EngineEvent[]; from: number; reached: boolean }> {
+  const cursor = capability.cursor ? await capability.cursor(sessionId) : 0;
+  /**
+   * A CURSOR OF ZERO IS "NO CURSOR", and both readings of it want the same
+   * thing. An empty journal costs nothing to read whole; an engine too old to
+   * stamp one leaves the wall exactly where it was before this existed. What
+   * neither may do is take `0 - window` as the end of the journal — that would
+   * page the FIRST rows and call them the latest, which is the one answer worse
+   * than the slow one.
+   */
+  if (cursor <= 0) return { events: await capability.read(sessionId, 0), from: 0, reached: true };
+  let events: EngineEvent[] = [];
+  let from = 0;
+  // ONE WIDENING AND NO MORE — see `TAIL_WINDOW_WIDE`. `from === 0` means the
+  // window already reaches the journal's start, so a wider one finds nothing.
+  for (const window of [TAIL_WINDOW, TAIL_WINDOW_WIDE]) {
+    from = Math.max(0, cursor - window);
+    events = await capability.read(sessionId, from, { limit: window });
+    if (from === 0 || events.length >= limit) break;
+  }
+  return { events, from, reached: from === 0 };
+}
+
+/** How many item titles one summarised turn may list. A turn that ran two
+ *  hundred tools is described by its first dozen and a count; the rest is what
+ *  `mode: "events"` is for. */
+const MAX_SUMMARY_TITLES = 12;
+
+/**
+ * A SESSION'S RECENT TURNS AS SENTENCES RATHER THAN EVENTS — issue #515.
+ *
+ * "What has this peer been doing" is answerable in a few hundred bytes a turn:
+ * what it was asked, what it did, what it concluded. A page of raw events
+ * answers the same question in twelve kilobytes and leaves the reader to fold
+ * it. This is the fold, done once, here.
+ *
+ * TITLES COME FROM THE EVENTS IN HAND, never from a second read. A turn older
+ * than the page's window is still summarised — its input and its answer live on
+ * the TURN — and simply lists no items; the answer says so rather than implying
+ * the turn did nothing.
+ */
+function summariseTurns(turns: readonly Turn[], events: readonly EngineEvent[], wanted: number) {
+  const titles = new Map<string, string[]>();
+  for (const event of events) {
+    if (event.type !== "item.completed") continue;
+    const item = (event as { item?: { runId?: string; title?: string } }).item;
+    if (!item?.runId || !item.title) continue;
+    const held = titles.get(item.runId) ?? [];
+    if (!held.includes(item.title)) held.push(item.title);
+    titles.set(item.runId, held);
+  }
+  return turns.slice(-wanted).map((turn) => {
+    const did = titles.get(turn.runId) ?? [];
+    const answer = turn.resultText ?? "";
+    return {
+      runId: turn.runId,
+      sequence: turn.sequence,
+      state: turn.state,
+      ...(turn.origin === "session" ? { from: "session" as const, ...(turn.agentIntent ? { intent: turn.agentIntent } : {}) } : {}),
+      // THE FIRST LINE OF WHAT IT WAS ASKED. A turn's input is the one thing
+      // that says what it was FOR, and its first line is how a sender was told
+      // to write it — see `agentNotice`.
+      asked: firstLine(turn.input),
+      ...(did.length > 0 ? { did: did.slice(0, MAX_SUMMARY_TITLES) } : {}),
+      ...(did.length > MAX_SUMMARY_TITLES ? { didMore: did.length - MAX_SUMMARY_TITLES } : {}),
+      ...(answer
+        ? {
+            answered: answer.slice(0, MAX_SUMMARY_RESULT_CHARS),
+            resultChars: answer.length,
+          }
+        : {}),
+      ...(turn.failure ? { failure: turn.failure } : {}),
+    };
+  });
+}
+
+/** The first line with anything on it, clamped. A summary line that ran to a
+ *  paragraph would be the thing summarising exists to avoid. */
+function firstLine(text: string): string {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    return trimmed.length <= MAX_SUMMARY_RESULT_CHARS ? trimmed : `${trimmed.slice(0, MAX_SUMMARY_RESULT_CHARS)}…`;
+  }
+  return "";
+}
+
+/**
+ * A `turn.accepted` WITHOUT THE COPY OF THE BODY THE ANSWER ALREADY CARRIES.
+ *
+ * Marked rather than deleted: an event with a field silently missing is an
+ * event a reader cannot trust, and the line names the field that holds the
+ * text. Everything else on the event — who sent it, which intent, when it was
+ * accepted — is untouched, because that is what the event is FOR.
+ */
+function withoutDuplicateBody(event: EngineEvent): EngineEvent {
+  if (event.type !== "turn.accepted") return event;
+  const turn = (event as { turn?: Record<string, unknown> }).turn;
+  if (!turn || typeof turn.input !== "string") return event;
+  return {
+    ...event,
+    turn: {
+      ...turn,
+      input: `[the message body is the \`message\` field of this answer, ${String(turn.input).length} characters here]`,
+      ...(typeof turn.agentNotice === "string" ? { agentNotice: "[the notice this session was handed; its body is the `message` field]" } : {}),
+    },
+  } as EngineEvent;
+}
+
+function readable(event: EngineEvent): boolean {
+  if (event.type === "usage.updated") return false;
+  if (event.type === "request.opened") {
+    const request = (event as { request?: { state?: string; resolvedBy?: string } }).request;
+    return !(request?.state === "resolved" && request.resolvedBy === "policy");
+  }
+  if (event.type === "request.resolved") return (event as { resolvedBy?: string }).resolvedBy !== "policy";
+  return true;
+}
+
 /** A session as a caller should read it — the fields a person scans a sidebar
- *  for, and nothing about who created it, because nothing records that. */
-function summarise(session: LiveSessionRow, projects: Map<string, string>) {
+ *  for, and nothing about who created it, because nothing records that.
+ *
+ *  `state` AND `driver` ARE NOT HERE, and their absence is the point (#515).
+ *  Every row on a LIVE list has `state: "active"` — `foldLiveSessions` drops
+ *  the others before this sees them — so the key was 334 copies of a constant.
+ *  `driver` is the same shape of nothing on an engine running one provider, so
+ *  the LIST states it ONCE for the whole answer and puts it back on the row
+ *  only when the rows actually disagree. `summariseOne` below is the single-row
+ *  caller, where "the rows disagree" has no meaning and the field is simply
+ *  reported. */
+function summarise(session: LiveSessionRow, projects: Map<string, string>, options: { driver?: boolean } = {}) {
   return {
     id: session.id,
     // ABSENT IS THE PROJECT-LESS MASTER, said out loud rather than left blank:
@@ -294,10 +579,9 @@ function summarise(session: LiveSessionRow, projects: Map<string, string>) {
     project: session.projectId ? (projects.get(session.projectId) ?? session.projectId) : "no project",
     ...(session.projectId ? { projectId: session.projectId } : {}),
     title: session.title,
-    state: session.state,
     envMode: session.envMode,
     activity: session.activity,
-    driver: session.driver,
+    ...(options.driver ? { driver: session.driver } : {}),
     // The branch, when it has one of its own. It is what a human will look for
     // when they come to review the work, so a report that omits it is harder
     // to act on than one that names it.
@@ -306,9 +590,85 @@ function summarise(session: LiveSessionRow, projects: Map<string, string>) {
   };
 }
 
+/** One session, described on its own — `sessions_create` and `sessions_status`,
+ *  where there is no set for a field to be constant across and every fact is
+ *  worth its bytes. */
+function summariseOne(session: LiveSessionRow, projects: Map<string, string>) {
+  return { ...summarise(session, projects, { driver: true }), state: session.state };
+}
+
+/**
+ * HOW MANY ROWS ONE `sessions_list` MAY ANSWER WITH.
+ *
+ * 50 is a list a model can actually read and act on; the measured answer at
+ * that size is under 4 KB against 142 KB for the 334 rows the wall used to fold
+ * unasked. The MAX is what stops a caller from asking for the old cost back in
+ * one call — a caller that genuinely wants them all pages, and the answer hands
+ * it the cursor to do it with.
+ */
+const LIST_LIMIT_DEFAULT = 50;
+const LIST_LIMIT_MAX = 200;
+/**
+ * AND A BYTE BUDGET BESIDE THE ROW COUNT, for the reason `pageEvents` gives:
+ * one number cannot bound this. A row is mostly its title, and a title is
+ * whatever a person or an agent typed — fifty of them are usually 4 KB and
+ * could be forty. Whichever bound is reached first ends the page, and `more`
+ * carries the cursor either way.
+ */
+const LIST_CHARS = 10_000;
+
+/**
+ * THE THREE LISTS THAT ARE NOT `sessions_list` AND ARE JUST AS UNBOUNDED.
+ *
+ * The issue named the three big tools; the budget test found these behind them,
+ * and found them the same way — by having 200 of something. A session waiting
+ * on 200 questions, an orchestrator holding 200 subscriptions, and a branch
+ * that touched 500 files all produced answers past the `bounded` backstop,
+ * which clips CHARACTERS: the caller got JSON with its tail cut off rather than
+ * a short list. Each is a normal thing to have.
+ *
+ * So each fills to a budget and states its total. The numbers are small because
+ * these answers are read to DECIDE something — which request to answer, which
+ * file to look at — and a decision is made from the first screen of a list or
+ * not at all.
+ */
+const REQUESTS_LIMIT = 20;
+const REQUESTS_CHARS = 8_000;
+const SUBSCRIPTIONS_LIMIT = 40;
+const SUBSCRIPTIONS_CHARS = 6_000;
+const DIFF_FILES_LIMIT = 100;
+const DIFF_FILES_CHARS = 8_000;
+const DIFF_COMMITS_LIMIT = 30;
+const DIFF_COMMITS_CHARS = 4_000;
+
 /** The turn states a caller means by "is anything running". Named once so the
  *  status tool and its own `running` flag cannot disagree. */
 const LIVE_TURN_STATES = new Set(["queued", "claimed", "running"]);
+
+/**
+ * HOW MANY TURNS `sessions_status` MAY DESCRIBE (#515).
+ *
+ * The capability hands over the whole queue — `store.turns(sessionId)`, every
+ * turn the session has ever taken — and the wall used to render all of them:
+ * 685 turns, 80,755 characters, to answer "is it finished yet". Five is what
+ * that question actually needs, and the ones that are RUNNING are never among
+ * the ones dropped (see below), so the answer cannot go quiet about live work
+ * just because a session has been busy for a week.
+ */
+const STATUS_TURNS_DEFAULT = 5;
+const STATUS_TURNS_MAX = 20;
+
+/** One turn as a status line: what it was, how it ended, and nothing it said.
+ *  The text of a turn is `sessions_read`'s job and is where the bytes are. */
+function turnLine(turn: Turn) {
+  return {
+    runId: turn.runId,
+    sequence: turn.sequence,
+    state: turn.state,
+    ...(turn.completedAt === undefined ? {} : { endedAt: turn.completedAt }),
+    ...(turn.failure ? { failure: turn.failure } : {}),
+  };
+}
 
 /**
  * Build the toolkit.
@@ -321,20 +681,96 @@ const LIVE_TURN_STATES = new Set(["queued", "claimed", "running"]);
  */
 export function sessionsTools(tool: ToolFactory, capability: SessionsCapability): unknown[] {
   return [
+    /**
+     * ── WHY THIS TOOL HAS ARGUMENTS NOW (#515) ──────────────────────────────
+     *
+     * It used to have none, and the comment here said there was nothing a
+     * caller could usefully narrow because "the live set is small in practice —
+     * bounded by nothing but the person's own tidiness". Measured: 334 rows,
+     * 142,703 characters, one call, a 256k agent's entire context. The premise
+     * was the person's tidiness and the person was not tidy, which is not a
+     * fault of theirs — 323 of those rows were SETTLED, shelved out of the list
+     * they were looking at, and the wall folded every one of them anyway.
+     *
+     * So the default is now the list a person actually has open, and the three
+     * narrowings a caller genuinely wants are arguments. Nothing was removed:
+     * `settled: true` is the old answer, paged.
+     */
     tool(
       "sessions_list",
       LIST,
-      // NO ARGUMENTS. There is nothing a caller could usefully narrow that the
-      // engine does not already know, and the live set is small in practice —
-      // bounded by nothing but the person's own tidiness.
-      {},
-      async () => {
-        const { sessions, projects } = await capability.list();
+      {
+        settled: z
+          .boolean()
+          .optional()
+          .describe("Include settled (shelved) sessions too. Default false — the list a person actually has open."),
+        projectId: z.string().optional().describe("Only this project's sessions, by id from `projects`."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(LIST_LIMIT_MAX)
+          .optional()
+          .describe(`How many rows. Default ${LIST_LIMIT_DEFAULT}, max ${LIST_LIMIT_MAX}.`),
+        after: z.number().int().min(0).optional().describe("Skip this many rows — the cursor a previous answer's `more` hands back."),
+      },
+      async (args) => {
+        const settled = args.settled === true;
+        const wantedProject = typeof args.projectId === "string" && args.projectId.trim() ? args.projectId.trim() : undefined;
+        const limit =
+          typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1
+            ? Math.min(args.limit, LIST_LIMIT_MAX)
+            : LIST_LIMIT_DEFAULT;
+        const after = typeof args.after === "number" && Number.isSafeInteger(args.after) && args.after >= 0 ? args.after : 0;
+        const answer = await capability.list({ settled });
+        const { sessions, projects } = answer;
         const names = new Map(projects.map((project) => [project.id, project.name]));
+        /**
+         * THE PROJECT FILTER IS THE WALL'S, not a second store query. The shelf
+         * is the store's rule and has to be — it decides which documents are
+         * read at all — but "only this project" is a predicate over rows the
+         * caller already paid for, and pushing it down would mean a second
+         * narrowing path per deployment for no read saved.
+         */
+        const matching = wantedProject ? sessions.filter((session) => session.projectId === wantedProject) : sessions;
+        const window = matching.slice(after, after + limit);
+        // ONE DRIVER FOR THE WHOLE ANSWER IS A FACT ABOUT THE ANSWER, not a
+        // field on every row: 50 copies of "claude" tell a reader nothing that
+        // one line at the top does not. Rows carry it when they disagree.
+        const drivers = new Set(window.map((session) => session.driver));
+        const perRowDriver = drivers.size > 1;
+        const { rows } = fillWithin(window, (session) => summarise(session, names, { driver: perRowDriver }), {
+          limit,
+          chars: LIST_CHARS,
+        });
+        const page = window.slice(0, rows.length);
+        const more = after + page.length < matching.length;
         return json({
-          sessions: sessions.map((session) => summarise(session, names)),
+          sessions: rows,
+          ...(drivers.size === 1 ? { driver: [...drivers][0] } : {}),
+          total: matching.length,
+          ...(after > 0 ? { after } : {}),
+          more,
+          ...(more ? { next: after + page.length } : {}),
+          /**
+           * THE SHELF IS COUNTED EVEN THOUGH IT IS NOT HERE. A caller told only
+           * "11 sessions" on an engine holding 334 would report that as the
+           * truth; the count is the one integer that makes the omission legible
+           * and names the argument that lifts it.
+           */
+          ...(!settled && typeof answer.settledCount === "number" && answer.settledCount > 0 ? { settledNotShown: answer.settledCount } : {}),
           projects: projects.map((project) => ({ id: project.id, name: project.name })),
-          ...(sessions.length === 0 ? { note: "No sessions are live on this engine." } : {}),
+          ...(matching.length === 0
+            ? {
+                note: wantedProject
+                  ? `No ${settled ? "" : "unsettled "}sessions on project "${wantedProject}".`
+                  : settled
+                    ? "No sessions are live on this engine."
+                    : "No unsettled sessions. Settled ones are still live and resumable — ask with settled: true.",
+              }
+            : more
+              ? { note: `Rows ${after}–${after + page.length} of ${matching.length}. Continue with sessions_list(after: ${after + page.length}).` }
+              : {}),
           ...(projects.length === 0
             ? { note2: "No projects are registered, so nothing can be created — the user registers a project themselves." }
             : {}),
@@ -384,7 +820,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         }
         const names = new Map<string, string>();
         return json({
-          ...summarise(session, names),
+          ...summariseOne(session, names),
           note:
             session.workspace.mode === "worktree"
               ? `Created with a checkout of its own on branch ${session.workspace.branch}. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`
@@ -446,7 +882,33 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .int()
           .min(0)
           .optional()
-          .describe("Continue from a cursor a previous read returned. Leave it off to start at the beginning of the journal."),
+          .describe("Continue forward from a cursor a previous read returned. Leave it off for the LATEST page."),
+        from: z
+          .enum(["start", "end"])
+          .optional()
+          .describe('"start" pages from the beginning of the journal; "end" (the default) is the latest page. Ignored when `after` is given.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_EVENTS)
+          .optional()
+          .describe(`How many events on the page. Default and max ${MAX_EVENTS}; the byte budget may return fewer.`),
+        verbose: z
+          .boolean()
+          .optional()
+          .describe("Keep token-usage rows and policy-resolved request pairs, which are dropped by default. Requests a person or a session answered are never dropped."),
+        mode: z
+          .enum(["events", "summary"])
+          .optional()
+          .describe('"summary" answers with one line per recent turn — its first line, what it did, and the opening of its answer — instead of raw events.'),
+        turns: z
+          .number()
+          .int()
+          .min(1)
+          .max(SUMMARY_TURNS_MAX)
+          .optional()
+          .describe(`With mode: "summary": how many recent turns. Default ${SUMMARY_TURNS_DEFAULT}, max ${SUMMARY_TURNS_MAX}.`),
         runId: z
           .string()
           .min(1)
@@ -467,17 +929,42 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
-        const after = typeof args.after === "number" && Number.isSafeInteger(args.after) && args.after >= 0 ? args.after : 0;
+        const askedAfter = typeof args.after === "number" && Number.isSafeInteger(args.after) && args.after >= 0 ? args.after : undefined;
+        const after = askedAfter ?? 0;
         const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
+        const verbose = args.verbose === true;
+        const limit =
+          typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1 ? Math.min(args.limit, MAX_EVENTS) : MAX_EVENTS;
         const resultAfter =
           typeof args.resultAfter === "number" && Number.isSafeInteger(args.resultAfter) && args.resultAfter >= 0 ? args.resultAfter : undefined;
         const messageAfter =
           typeof args.messageAfter === "number" && Number.isSafeInteger(args.messageAfter) && args.messageAfter >= 0 ? args.messageAfter : undefined;
+        /**
+         * WHICH END OF THE JOURNAL THIS READ IS ABOUT — issue #515.
+         *
+         * An explicit `after` is a continuation and always wins: a caller
+         * walking forward from a cursor it was handed must not be silently
+         * teleported to the end. `runId` scopes to one turn, which has its own
+         * beginning worth having. Everything else — the bare call, which is the
+         * one a model makes when it wants to know what a peer has been doing —
+         * reads the END, because that is what the question meant. `from:
+         * "start"` is the old behaviour, kept and named.
+         */
+        const wantsTail = askedAfter === undefined && runId === undefined && args.from !== "start";
         let events: EngineEvent[];
+        let tailReached = true;
         try {
-          // `after` is a journal cursor either way: with `runId` it walks THAT
-          // run's events, which is what a second page of the same run needs.
-          events = await capability.read(sessionId, after);
+          if (wantsTail) {
+            const found = await tailEvents(capability, sessionId, limit);
+            events = found.events;
+            tailReached = found.reached;
+          } else {
+            // `after` is a journal cursor either way: with `runId` it walks THAT
+            // run's events, which is what a second page of the same run needs.
+            // A run's events are scattered through the journal, so a run-scoped
+            // read cannot be limited at this seam — it is filtered below.
+            events = await capability.read(sessionId, after, runId === undefined ? { limit: TAIL_WINDOW } : undefined);
+          }
         } catch (error) {
           return err(`Could not read "${sessionId}": ${failure(error)}`);
         }
@@ -494,14 +981,15 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            * rides the FIRST page (`after: 0`) or an explicit `resultAfter` — and
            * a long one is read whole in slices rather than clipped away.
            */
-          const mine = events.filter((event) => event.runId === runId);
+          const scoped = events.filter((event) => event.runId === runId);
+          const mine = verbose ? scoped : scoped.filter(readable);
+          const quiet = scoped.length - mine.length;
           let turn: Turn | undefined;
           try {
             turn = (await capability.status(sessionId)).turns.find((candidate) => candidate.runId === runId);
           } catch {
             turn = undefined;
           }
-          const { page, cursor, more } = pageEvents(mine);
           // NOT TRIMMED. The slices are meant to concatenate into the answer
           // exactly as the turn wrote it, and a trim would silently drop
           // leading or trailing whitespace that belongs to it — the one edit a
@@ -531,6 +1019,24 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
            * something the caller already has.
            */
           const body = turn?.origin === "session" && turn.sender ? turn.input : "";
+          /**
+           * AND IT IS SENT ONCE — issue #515.
+           *
+           * The same 3,809 characters used to land three times in one answer:
+           * as `message`, again inside the `turn.accepted` event's `input`, and
+           * a third time as the `agentNotice` on that same event. 34,669 bytes
+           * for a turn whose actual content was under four thousand.
+           *
+           * `message` is the copy that is WHOLE and sliceable, so it is the one
+           * that stays; the event's two are replaced by a line naming where the
+           * text went. Only for a turn an AGENT sent — a person's words live
+           * nowhere but that event, and stripping them would delete the only
+           * record of what was asked.
+           */
+          const { page, cursor, more } = pageEvents(body.length > 0 ? mine.map(withoutDuplicateBody) : mine, {
+            limit,
+            chars: MAX_RUN_EVENT_CHARS,
+          });
           const wantsMessage = body.length > 0 && (messageAfter !== undefined || after === 0);
           const messageFrom = Math.min(messageAfter ?? 0, body.length);
           const messageSlice = wantsMessage ? body.slice(messageFrom, messageFrom + MAX_RESULT_CHARS) : "";
@@ -582,6 +1088,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             cursor: page.length > 0 ? cursor : after,
             more,
             events: page,
+            // Said, not silent: a caller comparing this page against the
+            // transcript would otherwise read the gap as lost events.
+            ...(quiet > 0 ? { quietEvents: quiet } : {}),
             note: turn === undefined
               ? `No turn ${runId} on this session. Its events, if any, are above; sessions_status lists the turns this session has.`
               : continuation.length > 0
@@ -593,30 +1102,106 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
                     ? `That run's events and its whole answer (${answer.length} characters). Nothing else was needed.${messageNote}`
                     : `That run's events. Its answer (${answer.length} characters) is not on this page — ask with resultAfter: 0.${messageNote}`
                   : `That run's events. It ended with no answer text.${messageNote}`,
+          },
+          // See `MAX_RUN_ANSWER_CHARS`: the verbatim slices in this answer may
+          // not be clipped by a backstop that knows nothing about them.
+          MAX_RUN_ANSWER_CHARS);
+        }
+        const kept = verbose ? events : events.filter(readable);
+        const quiet = events.length - kept.length;
+        /**
+         * ── A SESSION'S RECENT WORK, FOLDED (#515) ──────────────────────────
+         *
+         * The turns come from `status`, not from the events, so a summary
+         * describes turns older than the page's window; the events in hand
+         * supply what each turn DID. A capability that cannot answer `status`
+         * has no turns to summarise and says so rather than returning an empty
+         * list a caller would read as "this session has done nothing".
+         */
+        if (args.mode === "summary") {
+          const wanted =
+            typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
+              ? Math.min(args.turns, SUMMARY_TURNS_MAX)
+              : SUMMARY_TURNS_DEFAULT;
+          let turns: Turn[];
+          try {
+            turns = (await capability.status(sessionId)).turns;
+          } catch (error) {
+            return err(`Could not summarise "${sessionId}": ${failure(error)}`);
+          }
+          const summary = summariseTurns(turns, kept, wanted);
+          return json({
+            sessionId,
+            mode: "summary",
+            turnCount: turns.length,
+            turns: summary,
+            cursor: events.at(-1)?.id ?? 0,
+            note:
+              turns.length === 0
+                ? "This session has taken no turns."
+                : `The last ${summary.length} of ${turns.length} turns. "did" lists what a turn's items were called, for turns inside the page this read covered. For a turn's whole answer or its events, call sessions_read with its runId; for raw events, mode: "events".`,
           });
         }
-        const { page, cursor, more } = pageEvents(events);
+        /**
+         * ONE SHAPE FROM BOTH DIRECTIONS, so the answer below is written once.
+         * A tail page is at the END: nothing is ahead of it (`more: false`) and
+         * `earlier` is what says something is behind — the mirror of a forward
+         * page, where `more` is ahead and everything behind was already read.
+         */
+        const paged = wantsTail
+          ? (() => {
+              const tail = pageEventsFromEnd(kept, { limit });
+              return { page: tail.page, cursor: tail.cursor, from: tail.from, more: false, earlier: tail.earlier || !tailReached };
+            })()
+          : (() => {
+              const forward = pageEvents(kept, { limit });
+              return { page: forward.page, cursor: forward.cursor, from: after, more: forward.more, earlier: false };
+            })();
+        const { page, cursor, more } = paged;
         return json({
           sessionId,
-          from: after,
-          // The cursor is the last event ON THE PAGE — see `pageEvents`.
+          from: paged.from,
+          // The cursor is the last event ON THE PAGE for a forward read, and the
+          // journal's end for a tail one — either way it is where a caller that
+          // wants what happens NEXT resumes from.
           cursor: page.length > 0 ? cursor : after,
+          // Forward: rows remain past this page. Tail: this IS the end, so
+          // nothing is ahead and `earlier` says whether anything is behind.
           more,
+          ...(wantsTail ? { earlier: paged.earlier } : {}),
+          ...(quiet > 0 ? { quietEvents: quiet } : {}),
           events: page,
-          note: more
-            ? `This is a PAGE, not the whole journal: ${page.length} of ${events.length} events waiting past cursor ${after}. Call sessions_read again with after: ${cursor} for the next page. Long strings inside an event are clamped and marked where that happened.`
-            : page.length === 0
-              ? "Nothing has happened past that cursor yet."
-              : "Everything past that cursor, in one page. Long strings inside an event are clamped and marked where that happened.",
+          note: wantsTail
+            ? page.length === 0
+              ? "This session's journal is empty."
+              : `The LATEST ${page.length} events${paged.earlier ? " — there is more behind them" : " (the whole journal)"}. Poll for what happens next with sessions_read(after: ${cursor}); read from the beginning with from: "start"; get a turn-by-turn fold with mode: "summary". Long strings inside an event are clamped and marked where that happened.`
+            : more
+              ? `A PAGE, not the whole journal: ${page.length} events past cursor ${after}, with more behind them. Call sessions_read again with after: ${cursor}. Long strings inside an event are clamped and marked where that happened.`
+              : page.length === 0
+                ? "Nothing has happened past that cursor yet."
+                : "Everything past that cursor, in one page. Long strings inside an event are clamped and marked where that happened.",
         });
       },
     ),
     tool(
       "sessions_status",
       STATUS,
-      { sessionId: z.string().min(1).describe("The session to ask about, from sessions_list.") },
+      {
+        sessionId: z.string().min(1).describe("The session to ask about, from sessions_list."),
+        turns: z
+          .number()
+          .int()
+          .min(1)
+          .max(STATUS_TURNS_MAX)
+          .optional()
+          .describe(`How many of the most recent turns to describe. Default ${STATUS_TURNS_DEFAULT}, max ${STATUS_TURNS_MAX}. Live turns are always included.`),
+      },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
+        const wanted =
+          typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
+            ? Math.min(args.turns, STATUS_TURNS_MAX)
+            : STATUS_TURNS_DEFAULT;
         let answer: { session: Session; turns: Turn[] };
         try {
           answer = await capability.status(sessionId);
@@ -625,17 +1210,30 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         }
         const { session, turns } = answer;
         const live = turns.filter((turn) => LIVE_TURN_STATES.has(turn.state));
+        /**
+         * THE RECENT ONES, AND EVERY LIVE ONE WHEREVER IT SITS.
+         *
+         * A queue is not strictly chronological at its head: a message can be
+         * queued behind a turn that is still running, so the last N by position
+         * is not always the N that matter. Taking the tail AND unioning the live
+         * turns means the one thing this tool exists to report — "something is
+         * running" — can never be the thing the bound dropped.
+         */
+        const withLive = turns.slice(-wanted);
+        for (const turn of live) if (!withLive.some((candidate) => candidate.runId === turn.runId)) withLive.push(turn);
+        withLive.sort((left, right) => left.sequence - right.sequence);
+        const dropped = turns.length - withLive.length;
         return json({
-          ...summarise(session, new Map()),
+          ...summariseOne(session, new Map()),
           // THE DIRECT ANSWER TO THE QUESTION THIS TOOL IS FOR, said as a
           // boolean rather than left to be inferred from a list of states.
           running: live.length > 0,
-          turns: turns.map((turn) => ({
-            runId: turn.runId,
-            sequence: turn.sequence,
-            state: turn.state,
-            ...(turn.failure ? { failure: turn.failure } : {}),
-          })),
+          // THE TOTAL IS STATED WHETHER OR NOT THE LIST IS COMPLETE. A caller
+          // handed five rows of a 685-turn session and no count will report
+          // five as the session's whole life.
+          turnCount: turns.length,
+          turns: withLive.map(turnLine),
+          ...(dropped > 0 ? { turnsNotShown: dropped } : {}),
           note:
             session.activity === "blocked"
               ? "It is WAITING ON A PERSON — a request is open and only a human can answer it. Nothing you send will unblock it."
@@ -721,17 +1319,41 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ...(diff.base ? { base: diff.base } : { baseUnknown: true }),
           linesAdded: diff.linesAdded,
           linesRemoved: diff.linesRemoved,
-          commits: diff.commits.map((commit) => ({ sha: commit.shortSha, subject: commit.subject })),
-          files: diff.files.map((file) => ({
-            path: file.path,
-            status: file.status,
-            ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
-            // Absent rather than zero: git counts neither a binary nor an
-            // untracked file, and `+0` here would be a fabrication.
-            ...(file.linesAdded === undefined ? {} : { linesAdded: file.linesAdded }),
-            ...(file.linesRemoved === undefined ? {} : { linesRemoved: file.linesRemoved }),
-            ...(file.binary ? { binary: true } : {}),
-          })),
+          ...(() => {
+            /**
+             * THE TOTALS ARE THE REVIEW; THE LISTS ARE THE DETAIL. A branch
+             * that touched 500 files is a normal branch and an unbounded
+             * answer, so each list fills to a budget and says how long it
+             * really was — `linesAdded` and `linesRemoved` above are the whole
+             * change either way, and they are what a reader judges the size by.
+             */
+            const commits = fillWithin(diff.commits, (commit) => ({ sha: commit.shortSha, subject: commit.subject }), {
+              limit: DIFF_COMMITS_LIMIT,
+              chars: DIFF_COMMITS_CHARS,
+            });
+            const files = fillWithin(
+              diff.files,
+              (file) => ({
+                path: file.path,
+                status: file.status,
+                ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
+                // Absent rather than zero: git counts neither a binary nor an
+                // untracked file, and `+0` here would be a fabrication.
+                ...(file.linesAdded === undefined ? {} : { linesAdded: file.linesAdded }),
+                ...(file.linesRemoved === undefined ? {} : { linesRemoved: file.linesRemoved }),
+                ...(file.binary ? { binary: true } : {}),
+              }),
+              { limit: DIFF_FILES_LIMIT, chars: DIFF_FILES_CHARS },
+            );
+            return {
+              commitCount: diff.commits.length,
+              commits: commits.rows,
+              ...(diff.commits.length > commits.rows.length ? { commitsNotShown: diff.commits.length - commits.rows.length } : {}),
+              fileCount: diff.files.length,
+              files: files.rows,
+              ...(diff.files.length > files.rows.length ? { filesNotShown: diff.files.length - files.rows.length } : {}),
+            };
+          })(),
           ...(diff.truncated ? { truncated: true } : {}),
           note: !diff.base
             ? "This session has no recorded base, so the diff is against HEAD and any work it has already COMMITTED is not in this list."
@@ -796,9 +1418,18 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       if (!capability.self) return err(NO_SELF);
       try {
         const subscriptions = await capability.subscriptions(capability.self.sessionId);
+        const { rows } = fillWithin(subscriptions, (subscription) => subscription, {
+          limit: SUBSCRIPTIONS_LIMIT,
+          chars: SUBSCRIPTIONS_CHARS,
+        });
         return json({
-          subscriptions,
-          ...(subscriptions.length === 0 ? { note: "This session is not subscribed to anything." } : {}),
+          subscriptions: rows,
+          ...(subscriptions.length > rows.length ? { total: subscriptions.length, notShown: subscriptions.length - rows.length } : {}),
+          ...(subscriptions.length === 0
+            ? { note: "This session is not subscribed to anything." }
+            : subscriptions.length > rows.length
+              ? { note: `${rows.length} of ${subscriptions.length}. That many at once is usually a sign that one-shot subscriptions were not being removed.` }
+              : {}),
         });
       } catch (error) {
         return err(`Could not list subscriptions: ${failure(error)}`);
@@ -816,10 +1447,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         } catch (error) {
           return err(`Could not read requests of "${sessionId}": ${failure(error)}`);
         }
+        const { rows } = fillWithin(requests, describeRequest, { limit: REQUESTS_LIMIT, chars: REQUESTS_CHARS });
         return json({
           sessionId,
-          requests: requests.map(describeRequest),
-          ...(requests.length === 0 ? { note: "This session is not waiting on anything." } : {}),
+          requests: rows,
+          ...(requests.length > rows.length ? { total: requests.length, notShown: requests.length - rows.length } : {}),
+          ...(requests.length === 0
+            ? { note: "This session is not waiting on anything." }
+            : requests.length > rows.length
+              ? { note: `The first ${rows.length} of ${requests.length} open requests. Answering these makes room for the rest.` }
+              : {}),
         });
       },
     ),
