@@ -11,8 +11,14 @@ export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close()
 
 /**
  * WHAT THIS SESSION IS TOLD, in the order the other two drivers say it: the
- * orientation first (where the agent is, gated on the person), then one
- * paragraph per surface the session actually has.
+ * orientation first (where the agent is, gated on the person), then the Main
+ * session's role if this is that session, then one paragraph per surface the
+ * session actually has.
+ *
+ * THE TWO GATED ON WHO THIS SESSION IS COME BEFORE THE ONES GATED ON WHAT IT
+ * HAS. Orientation and the coordinator briefing both say what this conversation
+ * IS; the browser and run paragraphs are tool contracts, and they read in the
+ * vocabulary the first two teach.
  *
  * Exported so the per-provider test can assert the set without spawning a
  * server, exactly as `mcpConfiguration` is.
@@ -20,6 +26,7 @@ export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close()
 export function openCodeBriefings(input: DriverRun): string[] {
   return [
     ...(input.orientation ? [input.orientation] : []),
+    ...(input.mainBriefing ? [input.mainBriefing] : []),
     ...(input.browserSocket ? [BROWSER_BRIEFING] : []),
     ...(input.run ? [RUN_BRIEFING] : []),
   ];

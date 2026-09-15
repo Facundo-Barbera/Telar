@@ -1362,6 +1362,45 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * THE ONE DESIGNATED COORDINATOR CONVERSATION — experimental, off by
+       * default (#522). A document of the environment like the two above, so
+       * the desktop, a browser tab and a paired phone agree about which
+       * conversation this is rather than each keeping an answer of its own.
+       *
+       * THE PATCH IS WHERE DESIGNATION HAPPENS, and it is the store that does
+       * it: enabling with nothing designated creates through the ordinary
+       * `createSession` path, and enabling with something designated reuses it.
+       * Both rungs live in `setMainSession` because "never a second one" is a
+       * rule about the order of a read and a write — see it there.
+       *
+       * FORWARDED UNVALIDATED, like the two rules above: the shape lives next to
+       * the schema in the store, and a second copy here could disagree with it.
+       *
+       * THE RAIL DOES NOT READ THIS ROUTE. It gets the same answer off
+       * `/v2/sessions/live`, which it already polls; this is the settings pane's
+       * read and every client's write.
+       */
+      if (url.pathname === "/v2/main-session" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          // RESOLVED, not the raw document: a designation whose conversation was
+          // deleted must not put a row in front of somebody that navigates
+          // nowhere. See `resolveMainSession`.
+          writeJson(response, 200, { mainSession: store.resolveMainSession() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          mainSession: store.setMainSession({
+            // By PRESENCE, like every other patch here: a client saying only
+            // `sessionId` must not also be re-deciding the switch.
+            ...("enabled" in input ? { enabled: input.enabled } : {}),
+            ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
+            ...("projectId" in input ? { projectId: input.projectId } : {}),
+          }),
+        });
+        return;
+      }
+      /**
        * Where each project group sits in the rail. A document of the
        * environment, like the two above: one arrangement for every client that
        * reads this engine, so a drag on the desktop is where the phone finds

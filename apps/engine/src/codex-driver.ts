@@ -283,6 +283,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       sessionsSocket,
       telarSocketLease,
       orientation,
+      mainBriefing,
       run,
       onObservations,
       onRequest,
@@ -748,9 +749,15 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
          * First because the briefings under it are written in the vocabulary it
          * teaches. Sent on `thread/start` and `thread/resume` alike, so a
          * resumed thread is oriented too — once per turn, never twice.
+         *
+         * THE COORDINATOR BRIEFING FOLLOWS IT and precedes the capabilities, on
+         * the same split: the first two say what this conversation IS, the ones
+         * under them are tool contracts. Gated on the engine having named THIS
+         * session main at claim time, so it is absent for every other one.
          */
         const briefings = [
           ...(orientation ? [orientation] : []),
+          ...(mainBriefing ? [mainBriefing] : []),
           ...(browserSocket ? [BROWSER_BRIEFING] : []),
           ...(run ? [RUN_BRIEFING] : []),
         ];
