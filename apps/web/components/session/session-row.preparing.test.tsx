@@ -45,7 +45,7 @@ const row = (over: Partial<SidebarSession>) =>
         active={false}
         showProject={false}
         renderedAt={10}
-        onRefresh={() => {}}
+        onRowChanged={() => {}}
       />
     </SidebarProvider>,
   );
