@@ -78,7 +78,7 @@ export function reclaimStale(): ReclaimedEnvs {
     // TTL only — never the holder pid. A CLI-granted lease's pid is the
     // grant command, dead by definition a moment later; reclaiming on it
     // tears down environments humans are actively using (it killed the
-    // cockpit out from under the /looms page the day this was written).
+    // cockpit out from under an open page the day this was written).
     const staleLeases = Object.values(state.leases).filter((l) => l.expiresAt < now);
     for (const l of staleLeases) {
       delete state.leases[l.id];

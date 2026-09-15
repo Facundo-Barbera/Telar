@@ -542,7 +542,7 @@ export type SessionActivity = z.infer<typeof SessionActivity>;
 
 /**
  * Where a session's work lands on disk. `worktree` sessions get a checkout of
- * their own, created through `packages/core/src/vcs.ts`, so N detached sessions
+ * their own, created through the engine's `vcs.ts`, so N detached sessions
  * on one project do not collide.
  */
 export const SessionWorkspace = z.discriminatedUnion("mode", [

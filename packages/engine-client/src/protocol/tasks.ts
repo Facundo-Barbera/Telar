@@ -7,7 +7,7 @@
  *
  * Telar's Ultras (renamed Warp — the set of parallel threads held under tension
  * on a loom) own their own storage, journal, event bus, wake loop, sandbox and
- * surface: ten modules under `packages/core/src/ultra/`. None of it is on the
+ * surface: ten modules in the retired Ultra package. None of it is on the
  * session stream, which is exactly why the frozen cockpit needed a whole second
  * rail to display it, plus a third for ordinary sub-agents.
  *

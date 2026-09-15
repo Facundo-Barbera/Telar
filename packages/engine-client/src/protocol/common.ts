@@ -26,7 +26,7 @@
  * isomorphic and browser-safe, and `@telar/core` already depends on it at the
  * same major, so this introduces no new library to the repo.
  *
- * House style is `packages/core/src/schemas.ts`: `z.enum`, `z.number().int()`,
+ * House style is the engine's `schemas.ts` (ported from the retired core package): `z.enum`, `z.number().int()`,
  * and a schema and its inferred type sharing one exported name. Ids are NOT
  * branded — core does not brand, and matching the surrounding code wins over a
  * safety property no other module in this repo has asked for.
@@ -87,7 +87,7 @@ export const PROVIDER_CAPABILITIES: Record<ProviderDriverKind, { liveSteering: b
  * during the driver/instance migration… once every producer populates it,
  * routing flips to instance-id-only and the legacy field is removed". Doing it
  * in that order means a migration across every event and every persisted model
- * selection. Telar's account registry (`packages/core/src/accounts.ts`) is the
+ * selection. Telar's account registry (the engine's `accounts.ts`) is the
  * natural source of instances.
  */
 export const ProviderInstanceId = Id;
@@ -214,7 +214,7 @@ export type RateLimitType = z.infer<typeof RateLimitType>;
  * Tokens for one unit of work.
  *
  * THE FOUR-WAY SPLIT IS NOT ARBITRARY — it is the same pair-plus-cache shape
- * `UltraTokens` (`packages/core/src/ultra/surface.ts`) and core's `UsageEntry`
+ * the retired Ultra surface's `UltraTokens` and the usage ledger's `UsageEntry`
  * already store, so a figure derived from this is comparable with the session
  * ledger's rather than being a second definition of "tokens". AD-18/FR-RF-2:
  * one spend, one number.
