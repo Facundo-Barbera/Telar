@@ -546,12 +546,15 @@ export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "
    *
    * `/main` IS AN ADDRESS FOR THE ROLE, NOT FOR THE ID — one Main conversation
    * per machine (#526) — which is exactly why it can be named without knowing
-   * which session is behind it. A REMOTE Mac's project-less session is not
-   * reachable from here at all: `/main` is this engine's own, and a paired
-   * host's coordinator is that host's. It still resolves to something a person
-   * can read rather than to a broken link.
+   * which session is behind it.
+   *
+   * IT CARRIES THE HOST LIKE EVERY OTHER SESSION ADDRESS HERE. A paired Mac has
+   * a Main of its own, and its row is in this rail; a bare `/main` would have
+   * opened THIS cockpit's coordinator instead — the same conversation-shaped
+   * screen, the wrong machine, with nothing on it to say so. `hostPrefix` is
+   * empty for the local engine, so the plain `/main` is unchanged.
    */
-  if (!session.projectId) return "/main";
+  if (!session.projectId) return `${hostPrefix(session.hostId)}/main`;
   return `${hostPrefix(session.hostId)}/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 

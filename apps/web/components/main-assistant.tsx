@@ -24,8 +24,10 @@
  */
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { SparklesIcon } from "lucide-react";
 import { SessionCockpit } from "@/components/session-cockpit";
+import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { useMainSession, type MainSessionHandle } from "@/lib/main-session";
 import { Button } from "@/components/ui/button";
 
@@ -74,15 +76,26 @@ export function mainAssistantView(handle: Pick<MainSessionHandle, "main" | "cred
 }
 
 export function MainAssistant() {
-  const view = mainAssistantView(useMainSession());
+  /**
+   * WHICH MAC THIS SCREEN IS ABOUT — the address bar says, exactly as it does
+   * for a session on another Mac. `/main` is this cockpit's own engine;
+   * `/hosts/<id>/main` is that Mac's, and every read below is routed there.
+   */
+  const hostId = hostFromPathname(usePathname());
+  const view = mainAssistantView(useMainSession(hostId));
 
   if (view.kind === "loading") return <div className="flex min-h-0 flex-1" aria-busy="true" />;
 
   if (view.kind === "off") {
     return (
       <MainEmpty
+        hostId={hostId}
         title="The Main assistant is off"
-        body="Main is one conversation per Mac for keeping track of Telar work and coordinating the other sessions. It has no project and no checkout: it reads the rail, delegates, and reports back."
+        body={
+          isLocalHost(hostId)
+            ? "Main is one conversation per Mac for keeping track of Telar work and coordinating the other sessions. It has no project and no checkout: it reads the rail, delegates, and reports back."
+            : "Main is one conversation per Mac, and this one is another Mac's. Its switch, its model and its key are set in Telar's Settings over there — this cockpit cannot change them."
+        }
         action="Turn it on in Settings"
       />
     );
@@ -93,7 +106,7 @@ export function MainAssistant() {
       {/* THE BANNER SITS ABOVE THE COCKPIT rather than replacing it: the
           conversation and its history are real and worth reading even when the
           next turn would fail. */}
-      {view.notice && <MainKeyNotice rejected={view.notice === "rejected"} />}
+      {view.notice && <MainKeyNotice rejected={view.notice === "rejected"} hostId={hostId} />}
       {/* NO `projectId`. That absence is the whole route: the canvas, the
           breadcrumb link, the checkout tabs, Run and Open are all gone from the
           ordinary cockpit by construction rather than by a flag from here. */}
@@ -102,7 +115,28 @@ export function MainAssistant() {
   );
 }
 
-export function MainKeyNotice({ rejected }: { rejected: boolean }) {
+/**
+ * WHOSE SETTINGS TO SEND SOMEBODY TO — and `undefined` when the answer is "not
+ * a page this cockpit has".
+ *
+ * A paired Mac's switch, model and key live on THAT Mac, and this app has no
+ * `/hosts/<id>/settings` route: Settings is scoped to the local engine, and
+ * there is no remote settings surface to link into. Composing one would be a
+ * 404 dressed as a fix, which is strictly worse than the local link it
+ * replaced — so a remote Main gets a SENTENCE naming the Mac instead of a
+ * button that fails.
+ *
+ * IF A HOST-SCOPED SETTINGS ROUTE EVER EXISTS, this is the one place that has
+ * to learn about it.
+ */
+export function mainSettingsHref(hostId?: string): string | undefined {
+  return isLocalHost(hostId) ? MAIN_SETTINGS_HREF : undefined;
+}
+
+const isLocalHost = (hostId?: string): boolean => !hostId || hostId === LOCAL_HOST_ID;
+
+export function MainKeyNotice({ rejected, hostId }: { rejected: boolean; hostId?: string }) {
+  const settings = mainSettingsHref(hostId);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs">
       <span className="text-foreground">
@@ -110,21 +144,29 @@ export function MainKeyNotice({ rejected }: { rejected: boolean }) {
           ? "OpenCode Go refused this Mac’s key. The Main assistant cannot answer until it is replaced."
           : "The Main assistant has no OpenCode Go key yet, so it cannot answer."}
       </span>
-      <Link href={MAIN_SETTINGS_HREF} className="font-medium underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        Add one in Settings
-      </Link>
+      {/* A LINK ONLY WHERE THERE IS A PAGE. Another Mac's key is set on that
+          Mac, and this cockpit has no route into its Settings — see
+          `mainSettingsHref`. */}
+      {settings ? (
+        <Link href={settings} className="font-medium underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Add one in Settings
+        </Link>
+      ) : (
+        <span className="text-muted-foreground">Add one in Telar’s Settings on that Mac.</span>
+      )}
     </div>
   );
 }
 
-function MainEmpty({ title, body, action }: { title: string; body: string; action: string }) {
+function MainEmpty({ title, body, action, hostId }: { title: string; body: string; action: string; hostId?: string }) {
+  const settings = mainSettingsHref(hostId);
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-8">
       <div className="max-w-md space-y-3 text-center">
         <SparklesIcon aria-hidden className="mx-auto size-6 text-muted-foreground" />
         <h1 className="text-base font-semibold">{title}</h1>
         <p className="text-sm text-muted-foreground">{body}</p>
-        <Button render={<Link href={MAIN_SETTINGS_HREF} />}>{action}</Button>
+        {settings && <Button render={<Link href={settings} />}>{action}</Button>}
       </div>
     </div>
   );

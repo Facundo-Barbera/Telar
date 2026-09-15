@@ -16,7 +16,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MainKeyNotice, mainAssistantView, MAIN_SETTINGS_HREF } from "./main-assistant";
+import { MainKeyNotice, mainAssistantView, mainSettingsHref, MAIN_SETTINGS_HREF } from "./main-assistant";
 
 const on = { enabled: true, sessionId: "session_main" };
 
@@ -77,5 +77,20 @@ describe("the notice", () => {
 
   test("the settings link carries no fragment — this app has no hash-to-row navigation", () => {
     expect(MAIN_SETTINGS_HREF).not.toContain("#");
+  });
+
+  test("there is no settings link for another Mac, because there is no such page", () => {
+    // Settings is scoped to the LOCAL engine and this app has no
+    // `/hosts/<id>/settings` route. Composing one would be a 404 dressed as a
+    // fix — worse than the local link it replaced.
+    expect(mainSettingsHref()).toBe("/settings");
+    expect(mainSettingsHref("local")).toBe("/settings");
+    expect(mainSettingsHref("host_ab")).toBeUndefined();
+  });
+
+  test("a remote Main's notice says where to go instead of offering a link that 404s", () => {
+    const markup = renderToStaticMarkup(<MainKeyNotice rejected hostId="host_ab" />);
+    expect(markup).not.toContain("href=");
+    expect(markup).toContain("on that Mac");
   });
 });
