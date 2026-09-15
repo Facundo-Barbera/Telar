@@ -3445,8 +3445,8 @@ export class EngineStore {
     const instances = this.readProviderInstances();
     const existing = instances.find((instance) => instance.id === input.id);
     const driver = input.driver === undefined ? existing?.driver : input.driver;
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
-      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex or opencode");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex, opencode or telar");
     }
     /**
      * THE DRIVER IS FIXED FOR AN INSTANCE'S LIFETIME. Sessions, their resume
@@ -3517,7 +3517,12 @@ export class EngineStore {
    */
   removeProviderInstance(id: string): boolean {
     assertInstanceId(id);
-    if (id === defaultInstanceIdForDriver("claude") || id === defaultInstanceIdForDriver("codex") || id === defaultInstanceIdForDriver("opencode")) {
+    if (
+      id === defaultInstanceIdForDriver("claude") ||
+      id === defaultInstanceIdForDriver("codex") ||
+      id === defaultInstanceIdForDriver("opencode") ||
+      id === defaultInstanceIdForDriver("telar")
+    ) {
       throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
     }
     const instances = this.readProviderInstances();
@@ -3573,14 +3578,21 @@ export class EngineStore {
     const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
     if (stored === undefined) {
       const at = this.now();
-      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
+      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at), seedProviderInstance("telar", at)];
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
       return seeded;
     }
     const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");
-    if (!parsed.data.some((instance) => instance.id === "opencode")) {
-      parsed.data.push(seedProviderInstance("opencode", this.now()));
+    /**
+     * BACKFILL, NOT A MIGRATION. A registry written before a driver existed has
+     * no slot for it, and a session that routes to one would fall through to
+     * `seedProviderInstance` on every claim rather than to a row a person can
+     * switch off. One pass, written back once, for each slot that is missing.
+     */
+    const missing = (["opencode", "telar"] as const).filter((driver) => !parsed.data.some((instance) => instance.id === driver));
+    if (missing.length > 0) {
+      for (const driver of missing) parsed.data.push(seedProviderInstance(driver, this.now()));
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: parsed.data });
     }
     return parsed.data;
@@ -5131,7 +5143,9 @@ export class EngineStore {
     driver: ProviderDriverKind,
     options: { force?: boolean; instanceId?: string } = {},
   ): Promise<ModelCatalogue> {
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "unknown provider driver");
+    }
     const cached = this.modelCache.get(driver);
     let raw: ModelCatalogue;
     if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {

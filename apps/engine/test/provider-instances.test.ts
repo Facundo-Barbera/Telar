@@ -42,8 +42,10 @@ test("a fresh install already has built-in slots with OpenCode disabled", () => 
   const instances = store().listProviderInstances();
   // Their ids ARE the driver kinds, which is what makes an instance id usable
   // as a URL path segment and as a settings anchor.
-  expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
-  expect(instances.filter((instance) => instance.enabled).map((instance) => instance.id)).toEqual(["claude", "codex"]);
+  expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode", "telar"]);
+  // `telar` is Telar's own loop: nothing to install, so it is enabled out of
+  // the box. It still runs no session until the Main setting designates one.
+  expect(instances.filter((instance) => instance.enabled).map((instance) => instance.id)).toEqual(["claude", "codex", "telar"]);
   // No config dir on the base login, and for Claude that is load-bearing:
   // setting CLAUDE_CONFIG_DIR even to ~/.claude reaches a different, empty
   // Keychain entry.

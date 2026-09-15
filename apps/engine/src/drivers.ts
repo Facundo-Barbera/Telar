@@ -81,9 +81,17 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
 export function createDefaultDrivers(): DriverSelector {
   const claude = createClaudeDriver();
   const codex = createCodexDriver();
-  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
+  /**
+   * TOTAL OVER THE INSTALLED HARNESSES, which is what this record is for: a
+   * fourth CLI provider must not be addable without a line here. `telar` — the
+   * engine's own loop — is excluded rather than stubbed, because it is not a
+   * harness this deployment might or might not have found on disk, and a row
+   * mapping it to a driver that throws would be a lie the type system had
+   * blessed. It joins the selector below on its own terms.
+   */
+  const byKind: Record<Exclude<ProviderDriverKind, "telar">, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker
   // turns into a typed `provider_unavailable` failure on the turn rather than
   // an unhandled throw.
-  return (kind) => byKind[kind];
+  return (kind) => (kind === "telar" ? undefined : byKind[kind]);
 }

@@ -926,7 +926,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
   const updateProvider =
     options.runProviderUpdate ??
-    ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+    ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
+      // Telar's own loop has no CLI to update — it ships with the engine. Said
+      // here rather than at the route so the injected test double keeps the
+      // same signature, and refused rather than pretended: a button that
+      // reported "already up to date" would be describing nothing.
+      if (driver === "telar") {
+        throw new EngineStateError("invalid_request", "Telar's own agent loop ships with the engine; update Telar itself.");
+      }
+      return runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) });
+    });
   /**
    * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
    * ending the work it held are the same event, so they are the same function

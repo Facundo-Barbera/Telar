@@ -25,8 +25,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn, ProviderUpdate } from "@telar/engine-client";
-import { cliUsable, resolveCliAsync } from "./cli-resolution";
+import { cliUsable, resolveCliAsync, type CliId } from "./cli-resolution";
 import { cliUpdateFor } from "./cli-updates";
+import { TELAR_ENGINE_VERSION } from "./version";
 
 /**
  * A version probe costs a subprocess, and this is read from a settings page
@@ -48,6 +49,9 @@ const LOGIN_ARTIFACT: Record<ProviderDriverKind, string> = {
   opencode: "auth.json",
   claude: ".credentials.json",
   codex: "auth.json",
+  /** Telar's own loop has no config folder and no artifact — `signInOf` answers
+   *  before it reads this, and the entry exists only so the record stays total. */
+  telar: "",
 };
 
 /** The variable that relocates a provider's whole config and credential
@@ -57,6 +61,9 @@ const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
   opencode: "OPENCODE_CONFIG_DIR",
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
+  /** Nothing relocates Telar's own loop: it spawns no process, so there is no
+   *  child environment for a directory to be declared into. */
+  telar: "",
 };
 
 /**
@@ -107,6 +114,14 @@ const OWNED_ENV: Record<ProviderDriverKind, readonly string[]> = {
     "CLAUDE_CODE_USE_FOUNDRY",
   ],
   codex: ["CODEX_HOME", "OPENAI_BASE_URL", "OPENAI_API_KEY"],
+  /**
+   * EMPTY, AND NOT BECAUSE NOBODY GOT TO IT. This list scrubs variables that
+   * would silently replace a CHILD PROCESS's identity; Telar's own loop has no
+   * child process. Its credential is resolved per call inside the engine (see
+   * `main-session/credentials.ts`), where the environment is one named rung
+   * rather than something inherited by accident.
+   */
+  telar: [],
 };
 
 /**
@@ -157,8 +172,13 @@ export type VersionProbe = {
  * its own bundled one. So the version somebody read on this pane was not the
  * version that answered them, and in a packaged app the pane could report a
  * healthy install for a provider that could not start.
+ *
+ * TAKES A `CliId` RATHER THAN A DRIVER KIND, since `telar` names no CLI: the
+ * caller answers for that one before it gets here (see `versionFor`), and the
+ * narrower parameter is what makes "before" a rule the compiler keeps rather
+ * than a comment.
  */
-async function probeVersion(driver: ProviderDriverKind, binaryPath?: string, force = false): Promise<VersionProbe> {
+async function probeVersion(driver: CliId, binaryPath?: string, force = false): Promise<VersionProbe> {
   const resolution = await resolveCliAsync(driver, { ...(binaryPath ? { binaryPath } : {}) });
   if (resolution.status === "missing") {
     return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
@@ -190,6 +210,12 @@ async function probeVersion(driver: ProviderDriverKind, binaryPath?: string, for
  * entry). So the honest answer is `unknown`, not a green tick.
  */
 export function signInOf(instance: Pick<ProviderInstance, "driver" | "configDir">): { signIn: ProviderSignIn; message?: string } {
+  // Telar's own loop signs in with the OpenCode Go key in Settings, which lives
+  // in the engine's secret store rather than in any provider's config folder —
+  // so there is no artifact on disk that could answer this, either way.
+  if (instance.driver === "telar") {
+    return { signIn: "unknown", message: "Telar's own agent loop. It uses the OpenCode Go key from Settings." };
+  }
   if (instance.driver === "opencode") return { signIn: "unknown", message: "OpenCode authentication uses the CLI login. A config directory does not isolate credentials." };
   if (!instance.configDir) {
     return { signIn: "unknown", message: "Base login — sign-in state cannot be verified from disk." };
@@ -244,7 +270,9 @@ export function statusOf(input: {
 }
 
 export type ProviderProbeDeps = {
-  version?: (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean) => Promise<VersionProbe>;
+  /** `CliId`, not `ProviderDriverKind`: a deployment's own probe answers "which
+   *  CLI is on this machine", and `telar` is not one — see `versionFor`. */
+  version?: (driver: CliId, binaryPath: string | undefined, force: boolean) => Promise<VersionProbe>;
   now?: () => number;
 };
 
@@ -259,6 +287,17 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
   const keyFor = (driver: ProviderDriverKind, binaryPath: string | undefined): string => `${driver} ${binaryPath ?? ""}`;
 
   const versionFor = async (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean): Promise<VersionProbe> => {
+    /**
+     * THERE IS NO BINARY TO FIND, so nobody is asked — not `resolveCliAsync`,
+     * which knows only the three real CLIs, and not an injected `version`
+     * either. Telar's own loop runs inside this process: "installed" is true by
+     * construction and the version that answers a turn is this build's. A
+     * deployment (or a test) that supplies its own probe is answering "which
+     * CLI is on this machine", which is not a question about this driver.
+     *
+     * NOT CACHED, for the same reason: there is nothing that could change.
+     */
+    if (driver === "telar") return { installed: true, version: TELAR_ENGINE_VERSION };
     const key = keyFor(driver, binaryPath);
     const hit = cache.get(key);
     if (!force && hit && now() - hit.at < VERSION_CACHE_MS) return hit.probe;

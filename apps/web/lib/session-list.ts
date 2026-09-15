@@ -36,6 +36,7 @@ import {
   type SessionActivity,
   type SessionAssignment,
   type SessionPreparation,
+  type ProviderDriverKind,
   type SessionSettledBy,
   workspacePath,
 } from "@telar/engine-client";
@@ -112,7 +113,7 @@ export type SidebarSession = {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
-  driver: "claude" | "codex" | "opencode";
+  driver: ProviderDriverKind;
   model?: string;
   effort?: string;
   /** Everything this session has spent, in tokens. Money is not a unit this
