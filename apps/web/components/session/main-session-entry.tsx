@@ -19,6 +19,13 @@
  * NOT A `SessionRow` VARIANT, on that component's own note: its body assumes a
  * row's activity and provider, and a third variant would mean threading "but not
  * this one" through every branch of it.
+ *
+ * WHERE IT GOES IS `sessionHref`'S ANSWER, NOT A STRING COMPOSED HERE. Since
+ * #526 the minted coordinator has no project, and that function is what knows
+ * such a session lives at the reserved `/main` rather than at a
+ * `/projects/<id>/sessions/<id>` URL there is no id to build. A conversation
+ * designated under #523 still has a project and still gets its own address —
+ * one spelling, two honest answers.
  */
 
 import Link from "next/link";

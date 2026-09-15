@@ -24,7 +24,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MAIN_SESSION, type MainSession } from "@telar/engine-client";
+import { DEFAULT_MAIN_SESSION, type MainSession, type MainSessionAnswer } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 
 const api = createEngineApi();
@@ -35,14 +35,21 @@ function announce(main: MainSession): void {
   window.dispatchEvent(new CustomEvent<MainSession>(CHANGED, { detail: main }));
 }
 
+/** Which rung answered, and whether the service refused it — never the key
+ *  itself. See `MainSessionAnswer`. `undefined` is an engine too old to say,
+ *  which the pane must not read as "no key". */
+export type MainCredential = NonNullable<MainSessionAnswer["credential"]>;
+
 export type MainSessionHandle = {
   main: MainSession;
+  /** The key the assistant would run on, as far as the engine can tell. */
+  credential?: MainCredential;
   /** True until the engine has answered once. The pane keeps the switch
    *  disabled until then rather than offering one that might be wrong. */
   loading: boolean;
   /** Designate, or switch it on or off. By presence, like the engine's own
    *  patch: naming a session must not also re-decide the switch. */
-  save: (patch: { enabled?: boolean; sessionId?: string; projectId?: string }) => Promise<void>;
+  save: (patch: { enabled?: boolean; sessionId?: string; model?: string }) => Promise<void>;
   /** The engine refused, or is not answering. Shown on the row rather than
    *  swallowed — the engine's answer is the state. */
   error?: string;
@@ -54,6 +61,7 @@ export function useMainSession(): MainSessionHandle {
    *  off, so a first paint showing it on would read as "Telar did this without
    *  asking" for the length of one fetch. */
   const [main, setMain] = useState<MainSession>(DEFAULT_MAIN_SESSION);
+  const [credential, setCredential] = useState<MainCredential>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -63,7 +71,10 @@ export function useMainSession(): MainSessionHandle {
     const task = window.setTimeout(() => {
       void api
         .mainSession()
-        .then((result) => setMain(result.mainSession))
+        .then((result) => {
+          setMain(result.mainSession);
+          setCredential(result.credential);
+        })
         .catch(() => undefined)
         .finally(() => setLoading(false));
     }, 0);
@@ -78,10 +89,13 @@ export function useMainSession(): MainSessionHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { enabled?: boolean; sessionId?: string; projectId?: string }) => {
+  const save = useCallback(async (patch: { enabled?: boolean; sessionId?: string; model?: string }) => {
     try {
       const result = await api.setMainSession(patch);
       setMain(result.mainSession);
+      // The same answer carries it, so the pane cannot draw a switched-on Main
+      // beside a credential read from a different instant.
+      setCredential(result.credential);
       setError(undefined);
       // Announced from what the ENGINE returned, never from what was sent: a
       // listener told the request rather than the outcome would show a
@@ -92,5 +106,5 @@ export function useMainSession(): MainSessionHandle {
     }
   }, []);
 
-  return { main, loading, save, ...(error === undefined ? {} : { error }) };
+  return { main, loading, save, ...(credential === undefined ? {} : { credential }), ...(error === undefined ? {} : { error }) };
 }

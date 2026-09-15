@@ -1415,6 +1415,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // and a client still sending one is ignored rather than obeyed.
             ...("enabled" in input ? { enabled: input.enabled } : {}),
             ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
+            ...("model" in input ? { model: input.model } : {}),
           }),
           credential: store.mainSessionCredential(),
         });

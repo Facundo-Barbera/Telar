@@ -537,11 +537,21 @@ export function deriveSessionList({
 /** The route a session's own row links to — spelled once so every caller
  *  resolves to the exact same URL a click on the row would. */
 export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "hostId">): string {
-  // A SESSION WITH NO PROJECT HAS NO PROJECT-SCOPED ADDRESS, so it gets the
-  // front door: there is no `/projects/<id>/...` URL to build for it, and
-  // composing one with `undefined` in the path would 404 in a way that looks
-  // like a routing bug rather than a session that lives nowhere in this list.
-  if (!session.projectId) return "/";
+  /**
+   * A SESSION WITH NO PROJECT HAS NO PROJECT-SCOPED ADDRESS, so it gets the one
+   * reserved address there is: `/main`. There is no `/projects/<id>/...` URL to
+   * build for it, and composing one with `undefined` in the path would 404 in a
+   * way that looks like a routing bug rather than a session that lives nowhere
+   * in this list.
+   *
+   * `/main` IS AN ADDRESS FOR THE ROLE, NOT FOR THE ID — one Main conversation
+   * per machine (#526) — which is exactly why it can be named without knowing
+   * which session is behind it. A REMOTE Mac's project-less session is not
+   * reachable from here at all: `/main` is this engine's own, and a paired
+   * host's coordinator is that host's. It still resolves to something a person
+   * can read rather than to a broken link.
+   */
+  if (!session.projectId) return "/main";
   return `${hostPrefix(session.hostId)}/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 

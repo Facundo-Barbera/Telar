@@ -2963,10 +2963,29 @@ export class EngineStore {
    * It deletes no history, stops nothing it delegated to, and leaves an
    * ordinary resumable session behind.
    */
-  setMainSession(patch: { enabled?: unknown; sessionId?: unknown }): MainSession {
+  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; model?: unknown }): MainSession {
     const stored = this.getMainSession();
     const next: MainSession = { ...stored };
     delete next.generation;
+
+    /**
+     * THE MODEL IS NOT PART OF THE DESIGNATION, so it is settled first and it
+     * does NOT move the generation below. Changing which model the coordinator
+     * runs is not a change to "who is Main, and is it on" — invalidating a turn
+     * that is legitimately still coordinating because somebody edited a text
+     * field would be exactly the over-firing that counter exists to avoid.
+     *
+     * EMPTY CLEARS IT, back to the driver's own default. That is what a person
+     * emptying the field means, and storing `""` would be a model id nothing
+     * serves.
+     */
+    if (patch.model !== undefined) {
+      if (typeof patch.model !== "string") throw new EngineStateError("invalid_request", "main session model must be text");
+      const model = patch.model.trim();
+      if (model.length > 120) throw new EngineStateError("invalid_request", "that model id is too long");
+      if (model) next.model = model;
+      else delete next.model;
+    }
 
     if (patch.sessionId !== undefined) {
       assertId(patch.sessionId, "session id");
@@ -8317,6 +8336,19 @@ export class EngineStore {
     instanceId: string,
   ): ModelSelection | undefined {
     const normalized = this.normalizeModelSelection(driver, selection);
+    /**
+     * THE MACHINE'S CHOICE FOR THE MAIN ASSISTANT, when the turn and the session
+     * named none (#526). It lives on the Main document rather than on the
+     * session, so it survives the designation moving — see `MainSession.model`.
+     *
+     * STILL ABSENT WHEN NOBODY PICKED ONE, deliberately: the driver has a real
+     * default id and spelling it here too would be a second place it lives, and
+     * the one that goes stale.
+     */
+    if (driver === "telar" && !normalized?.model) {
+      const configured = this.getMainSession().model;
+      return configured ? { ...(normalized ?? { instanceId }), model: configured } : normalized;
+    }
     if (driver !== "claude" || normalized?.model) return normalized;
     const model = this.defaultClaudeModelId();
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a

@@ -147,14 +147,17 @@ describe("getting to it: one href, three items", () => {
     ]);
   });
 
-  test("a project-less session addresses the front door, rather than a /projects/undefined link", () => {
+  test("a project-less session addresses /main, rather than a /projects/undefined link", () => {
+    // ONE MAIN CONVERSATION PER MACHINE (#526), so the role has an address even
+    // though the session has no project-scoped one. It used to be the front
+    // door, which was honest but landed nowhere in particular.
     const { calls, handlers } = spies();
     const items = build({ session: target({ projectId: undefined }) }, handlers);
     byId(items, "open").run!();
     byId(byId(items, "copy").children!, "copy-link").run!();
     expect(calls).toEqual([
-      ["open", "/"],
-      ["copyLink", "/"],
+      ["open", "/main"],
+      ["copyLink", "/main"],
     ]);
   });
 

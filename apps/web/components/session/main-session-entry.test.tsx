@@ -64,6 +64,16 @@ describe("the entry itself", () => {
     expect(markup).toContain("Main session: ");
   });
 
+  test("a project-less coordinator links to the reserved address", () => {
+    // #526's minted Main has no project, so there is no
+    // `/projects/<id>/sessions/<id>` to build — and the rail must not compose
+    // one with `undefined` in it.
+    const session = row({ projectId: undefined, title: "Main" });
+    const markup = renderToStaticMarkup(<MainSessionEntry session={session} active={false} onNavigate={() => {}} />);
+    expect(markup).toContain('href="/main"');
+    expect(markup).not.toContain("undefined");
+  });
+
   test("an untitled conversation reads as Main rather than as its id", () => {
     const markup = renderToStaticMarkup(<MainSessionEntry session={row({ title: "" })} active={false} onNavigate={() => {}} />);
     expect(markup).toContain("Main");

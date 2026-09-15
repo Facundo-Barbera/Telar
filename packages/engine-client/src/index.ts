@@ -760,7 +760,7 @@ export class EngineClient {
    * choose, which is what makes enable / disable / re-enable and a restart
    * incapable of leaving two.
    */
-  setMainSession(patch: { enabled?: boolean; sessionId?: string }): Promise<MainSessionAnswer> {
+  setMainSession(patch: { enabled?: boolean; sessionId?: string; model?: string }): Promise<MainSessionAnswer> {
     return this.request("PATCH", "/v2/main-session", patch);
   }
 

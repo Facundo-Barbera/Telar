@@ -1143,6 +1143,24 @@ export const MainSession = z.object({
    * "generation nought" rather than failing and costing the designation.
    */
   generation: z.number().int().nonnegative().optional(),
+  /**
+   * WHICH MODEL THE MAIN ASSISTANT RUNS, as the provider's own identifier
+   * (#526).
+   *
+   * ON THE MACHINE'S DOCUMENT RATHER THAN ON THE SESSION, and the difference
+   * shows the moment the designation moves: "which model this Mac's coordinator
+   * runs" is a preference about the ROLE, and a copy on each session would mean
+   * re-picking it every time somebody designated a different conversation.
+   *
+   * ABSENT MEANS THE DRIVER'S OWN DEFAULT, which is a real id rather than a
+   * concept — see `main-session/go.ts`. Spelling that default here too would be
+   * a second place it lives, and the one that goes stale.
+   *
+   * NEVER INTERPRETED. It is whatever OpenCode Go serves, passed through: this
+   * engine has no list to validate against that would not be out of date the
+   * week after it was written.
+   */
+  model: z.string().min(1).max(120).optional(),
 });
 export type MainSession = z.infer<typeof MainSession>;
 
