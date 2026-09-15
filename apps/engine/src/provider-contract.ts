@@ -59,7 +59,16 @@ export type DriverRun = {
    * their parent at every turn boundary.
    */
   sessionId: string;
-  cwd: string;
+  /**
+   * WHERE THE PROVIDER RUNS — and OPTIONAL since #526, mirroring
+   * `WorkerClaim.projectRoot`.
+   *
+   * ABSENT MEANS THERE IS NO DIRECTORY, not "pick one". A driver that spawns a
+   * process must refuse rather than fall back to the worker's own cwd, which
+   * would start a coding agent inside Telar's application-support folder. The
+   * `telar` driver spawns nothing and simply never reads this.
+   */
+  cwd?: string;
   signal: AbortSignal;
   /**
    * SEND NOW: text a human pushed into this running turn. The worker fills
@@ -334,6 +343,27 @@ export type TurnDriver = {
    */
   stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
+
+/**
+ * THE DIRECTORY A SPAWNING DRIVER CANNOT DO WITHOUT (#526).
+ *
+ * `DriverRun.cwd` became optional so a project-less session is expressible, and
+ * every driver that starts a CLI still needs a folder to start it in. Refusing
+ * HERE, by name, is what keeps the failure legible: the alternative was each
+ * driver falling back to the worker's own cwd, which would run a coding agent
+ * inside Telar's application-support directory and look like a bug in the
+ * agent rather than a session that should never have been routed here.
+ *
+ * It is a routing mistake rather than a user error — the engine only mints a
+ * project-less session on the `telar` driver — so the sentence says which
+ * provider and which session shape disagreed.
+ */
+export function requireCwd(cwd: string | undefined, provider: string): string {
+  if (cwd === undefined) {
+    throw new Error(`${provider} runs inside a working directory, and this session has none. Sessions with no checkout run on Telar's own driver.`);
+  }
+  return cwd;
+}
 
 export class ProviderUnavailableError extends Error {
   constructor(message: string) {

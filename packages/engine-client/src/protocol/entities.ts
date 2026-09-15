@@ -544,6 +544,19 @@ export type SessionActivity = z.infer<typeof SessionActivity>;
  * Where a session's work lands on disk. `worktree` sessions get a checkout of
  * their own, created through the engine's `vcs.ts`, so N detached sessions
  * on one project do not collide.
+ *
+ * `none` IS A THIRD ANSWER AND NOT AN EMPTY ONE (#526). The Main conversation
+ * has no project, no checkout and no branch: it inspects and delegates, and
+ * repository work belongs to the sessions it delegates to. Before this, every
+ * session had a `path` — so "no working directory" could only be spelled as a
+ * path that happens to be wrong, which is exactly the shape that makes a
+ * provider spawn somewhere nobody chose.
+ *
+ * IT CARRIES NO `path` FIELD AT ALL, deliberately. An optional-and-absent path
+ * reads identically to a path a caller forgot to set, and every consumer would
+ * have to remember which. Readers narrow on `mode` — the discriminant the other
+ * two variants already made them narrow on — and a reader that needs a real
+ * directory refuses rather than inventing one.
  */
 export const SessionWorkspace = z.discriminatedUnion("mode", [
   z.object({
@@ -569,8 +582,29 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
     /** The commit the worktree was cut from, so a stale one is detectable. */
     baseRef: z.string().min(1).optional(),
   }),
+  /** No directory anywhere — see the note above. Nothing rides along: there is
+   *  no branch to name and no base to diff against. */
+  z.object({ mode: z.literal("none") }),
 ]);
 export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
+
+/**
+ * The workspace's directory, or nothing — the one narrowing every reader that
+ * only wants the path should use.
+ *
+ * `undefined` IS THE ANSWER, NOT A FAILURE. A project-less session genuinely has
+ * no directory, and a reader that treated absence as an error would turn a valid
+ * session into a bug report (the rule `Session.projectId` already states).
+ */
+export function workspacePath(workspace: SessionWorkspace): string | undefined {
+  return workspace.mode === "none" ? undefined : workspace.path;
+}
+
+/** The commit a session is measured against, where it has one. Absent for a
+ *  `none` workspace and for a `local` session created before `baseRef`. */
+export function workspaceBaseRef(workspace: SessionWorkspace): string | undefined {
+  return workspace.mode === "none" ? undefined : workspace.baseRef;
+}
 
 /**
  * THE CHECKOUT IS NOT THERE YET, OR NEVER WILL BE — issue #496.

@@ -170,7 +170,21 @@ export type TurnObservationBatch = z.infer<typeof TurnObservationBatch>;
  */
 export const WorkerClaim = z.object({
   sessionId: Id,
-  projectRoot: z.string().min(1),
+  /**
+   * WHERE A PROVIDER WOULD BE SPAWNED — and OPTIONAL since #526, because a
+   * session with `workspace.mode === "none"` genuinely has nowhere.
+   *
+   * ABSENT IS NOT "LOOK IT UP" AND NOT "USE THE WORKER'S OWN CWD". It is the
+   * positive statement that this turn runs with no working directory, and the
+   * worker acts on it as one: it skips the folder check entirely rather than
+   * stat-ing a path it invented, and hands the driver no `cwd`. A driver that
+   * needs a directory (every provider that spawns a CLI) is never selected for
+   * such a session — the `telar` driver is, and it spawns nothing.
+   *
+   * An older engine always sends one, so nothing about an ordinary session
+   * changes.
+   */
+  projectRoot: z.string().min(1).optional(),
   /**
    * The session's project, for the browser's PER-PROJECT profile: the worker
    * binds the session's browser scope to this before the turn's first tool

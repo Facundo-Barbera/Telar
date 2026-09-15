@@ -40,6 +40,7 @@ import {
   pluginEnabled,
   machineAllows,
   readProjectPlugins,
+  workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
@@ -3254,13 +3255,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         if (request.method === "GET" && session.tail === "/skills") {
           const record = store.getSession(session.sessionId);
+          // A session with no checkout has no project skills to read — the
+          // answer is the empty menu, not a probe of some other directory.
+          const checkout = workspacePath(record.workspace);
+          if (checkout === undefined) {
+            writeJson(response, 200, { skills: [], commands: [] });
+            return;
+          }
           writeJson(
             response,
             200,
             await readProviderSkillsCached({
               cacheKey: record.id,
               driver: record.driver,
-              checkout: record.workspace.path,
+              checkout,
               ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
               ...(options.providerSkills?.loadProviderCommands
                 ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
@@ -3427,10 +3435,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             () => {
               const record = store.getSession(session.sessionId);
               if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
+              // A run is a process in a directory; a session with none cannot
+              // have one. Stated separately from the project check because they
+              // are different absences, even though today only one session has
+              // both.
+              const worktreePath = workspacePath(record.workspace);
+              if (worktreePath === undefined) throw new RunError("invalid_request", "runs need a working directory");
               return {
                 sessionId: record.id,
                 projectId: record.projectId,
-                worktreePath: record.workspace.path,
+                worktreePath,
                 ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
               };
             },

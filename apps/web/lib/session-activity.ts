@@ -138,7 +138,7 @@ export function fmtDuration(startedAt: number, now: number): string {
  * nothing, and the row is two lines rather than three with an empty one.
  */
 export function rowSubtitle(
-  session: { worktreeBranch?: string; projectBranch?: string; projectName?: string; workspacePath: string },
+  session: { worktreeBranch?: string; projectBranch?: string; projectName?: string; workspacePath?: string },
   options: { projectShown: boolean } = { projectShown: false },
 ): { text: string; kind: "branch" | "project" | "path" } | null {
   if (session.worktreeBranch) return { text: session.worktreeBranch, kind: "branch" };
@@ -149,6 +149,11 @@ export function rowSubtitle(
   // switches branches, which is true and worth seeing.
   if (session.projectBranch) return { text: session.projectBranch, kind: "branch" };
   if (session.projectName) return options.projectShown ? null : { text: session.projectName, kind: "project" };
+  // NO BRANCH, NO PROJECT AND NO PATH IS THE TWO-LINE ROW, not a third line
+  // saying nothing — the same answer this function already gives a local
+  // session whose project the header has named. It is what a session with no
+  // checkout at all gets (`SessionWorkspace`'s `none` variant).
+  if (!session.workspacePath) return null;
   // The leaf rather than the whole path: a sidebar column is ~220px, and an
   // absolute path truncates to its least distinctive half.
   const leaf = session.workspacePath.split("/").filter(Boolean).pop();

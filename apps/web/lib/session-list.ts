@@ -37,6 +37,7 @@ import {
   type SessionAssignment,
   type SessionPreparation,
   type SessionSettledBy,
+  workspacePath,
 } from "@telar/engine-client";
 import { isShelved, isSnoozed, settlingActivityOf, type SettlingActivity, type SettlingOptions } from "./session-settling";
 import { hostPrefix } from "./hosts/client";
@@ -118,7 +119,9 @@ export type SidebarSession = {
    *  cockpit reports — see lib/format.ts. */
   tokens?: number;
   contextTokens?: number;
-  workspacePath: string;
+  /** Absent on a session with no checkout — see `SessionWorkspace`'s `none`
+   *  variant. A row that has none draws no path and offers no "Open". */
+  workspacePath?: string;
   worktreeBranch?: string;
   /**
    * The checkout is still being cut, or could not be — `Session.preparation`,
@@ -235,7 +238,7 @@ export function toSidebarSession(
         }
       : {}),
     ...(typeof session.usage?.contextUsed === "number" ? { contextTokens: session.usage.contextUsed } : {}),
-    workspacePath: session.workspace.path,
+    ...(workspacePath(session.workspace) ? { workspacePath: workspacePath(session.workspace)! } : {}),
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),
     ...(session.preparation === undefined ? {} : { preparation: session.preparation }),
     ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),

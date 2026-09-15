@@ -79,7 +79,7 @@ function menuTarget(session: SidebarSession, settled?: boolean): SessionActionTa
     ...(session.projectId ? { projectId: session.projectId } : {}),
     ...(session.projectName ? { projectName: session.projectName } : {}),
     ...(session.hostId ? { hostId: session.hostId } : {}),
-    workspacePath: session.workspacePath,
+    ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
     ...(session.worktreeBranch ? { branch: session.worktreeBranch } : {}),
     ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
     ...(settled === undefined ? {} : { settled }),

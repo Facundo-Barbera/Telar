@@ -22,6 +22,7 @@ import {
   type Turn,
   type TurnAttachment,
   type TurnState,
+  workspacePath,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
@@ -530,7 +531,7 @@ function SessionMasthead({
             desktop shell, and states its own limits (remote sessions). */}
         {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
             "another machine" is true where a guessed name would not be. */}
-        {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
+        {session && <OpenWorkspaceButton path={workspacePath(session.workspace)} hostId={hostId} />}
         {panel}
       </div>
     </header>
@@ -3170,7 +3171,7 @@ export function SessionCockpit({
             ...(session.projectId ? { projectId: session.projectId } : {}),
             ...(projectName ? { projectName } : {}),
             ...(hostId === LOCAL_HOST_ID ? {} : { hostId }),
-            workspacePath: session.workspace.path,
+            ...(workspacePath(session.workspace) ? { workspacePath: workspacePath(session.workspace)! } : {}),
             // Only a worktree session has a branch of its own; a local one runs
             // on the project's checkout, whose HEAD belongs to no conversation.
             ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
@@ -3450,7 +3451,7 @@ export function SessionCockpit({
                 own work from the harness reading its bundled skills out of a
                 temp directory (#354). One fact about the session, stated once,
                 rather than a prop on every row that never uses it. */}
-            <TranscriptWorkspace path={session?.workspace.path}>
+            <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
             {shown.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than

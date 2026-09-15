@@ -28,6 +28,8 @@ import {
   MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
   SidebarLayout as SidebarLayoutSchema,
+  workspaceBaseRef,
+  workspacePath,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
@@ -1019,6 +1021,26 @@ const newestFirst = (left: Session, right: Session): number =>
   right.updatedAt - left.updatedAt || left.id.localeCompare(right.id);
 
 /**
+ * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
+ * folder on disk (#526).
+ *
+ * A `none` workspace is not a missing path, it is a session that HAS no path:
+ * the Main conversation reads and delegates and owns no checkout. So the honest
+ * answer to "read this session's files" is a refusal naming the reason, not a
+ * `git` command run against `undefined` or against the engine's own cwd — which
+ * is what every one of these call sites would have done had the path merely
+ * gone optional.
+ *
+ * `invalid_request` RATHER THAN `not_found`: the session exists and the caller
+ * is fine; what was asked of it does not apply to this kind of session.
+ */
+function workspaceRootOf(session: Pick<Session, "workspace">): string {
+  const root = workspacePath(session.workspace);
+  if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
+  return root;
+}
+
+/**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
  *
  * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
@@ -1044,7 +1066,11 @@ const liveRow = (session: Session): LiveSessionRow => ({
   workspace:
     session.workspace.mode === "worktree"
       ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
-      : { mode: "local", path: session.workspace.path },
+      : session.workspace.mode === "none"
+        ? // A session with no directory says so on the row, rather than sending a
+          // path-shaped answer a rail would draw an "open in Finder" button from.
+          { mode: "none" }
+        : { mode: "local", path: session.workspace.path },
   // ON THE ROW because it is a row's question: the rail is where a person
   // watches a session they just opened, and "the checkout is still being made"
   // is the only thing worth saying about it in those seconds. Absent on every
@@ -2228,25 +2254,25 @@ export class EngineStore {
     if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
     return storeDsCapability({
       sessionId,
-      cwd: session.workspace.path,
+      cwd: workspaceRootOf(session),
       python: resolved.pythonPath,
       telarVenv: telarVenvDir(this.paths.root, session.projectId!, session.workspace.mode === "worktree" ? path.basename(session.workspace.path) : undefined),
       host: this.kernels,
       files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
       // A notebook with plots in it passes the editor's 512 KB ceiling in one
       // cell; both fences take the notebook-sized cap instead.
-      readFile: (target) => this.readFenced(session.workspace.path, target, "session workspace", NOTEBOOK_MAX_BYTES),
-      writeFile: (target, text, expected) => this.writeFenced(session.workspace.path, target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
+      readFile: (target) => this.readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
+      writeFile: (target, text, expected) => this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
       putAttachment: (input) => this.putAttachment(sessionId, input),
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
       now: () => this.now(),
       // Package operations resolve the environment against THIS session's
       // workspace — the worktree rule again — and run as the store's jobs.
-      packages: () => this.dataSciencePackages(session.projectId!, session.workspace.path),
-      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], session.workspace.path),
+      packages: () => this.dataSciencePackages(session.projectId!, workspaceRootOf(session)),
+      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], workspaceRootOf(session)),
       waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
-      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, session.workspace.path) }),
+      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, workspaceRootOf(session)) }),
       useEnvironment: (target) => this.dataScienceUseEnvironment(sessionId, target),
     });
   }
@@ -2280,7 +2306,7 @@ export class EngineStore {
     const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
     const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
     if (!chosen) return undefined;
-    const pythonPath = resolvePythonPath(session.workspace.path, chosen);
+    const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
   }
@@ -2314,7 +2340,7 @@ export class EngineStore {
     }
     return storeLatexCapability({
       sessionId,
-      cwd: session.workspace.path,
+      cwd: workspaceRootOf(session),
       resolved,
       toolchain: () => this.latexToolchain(),
       jobs: this.latexJobs,
@@ -2434,7 +2460,7 @@ export class EngineStore {
     if (/\.parquet$/i.test(target)) {
       const ds = this.dataScience(sessionId);
       const sort = options.sort ? `.sort_values(${JSON.stringify(options.sort)}, ascending=${options.desc ? "False" : "True"})` : "";
-      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(session.workspace.path, target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
+      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(workspaceRootOf(session), target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
       const result = await ds.execute({ code, producer: "table" });
       const line = result.outputs.find((o) => o.kind === "text" && o.text.includes("__TELAR_TABLE__"));
       if (!result.ok || !line || line.kind !== "text") throw new EngineStateError("invalid_request", result.error ? `${result.error.ename}: ${result.error.evalue}` : "could not read the parquet file");
@@ -4685,7 +4711,7 @@ export class EngineStore {
   async dataScienceUseEnvironment(sessionId: string, target: string): Promise<{ environments: EnvironmentRow[]; switched: string }> {
     const session = this.getSession(sessionId);
     if (!session.projectId) throw new EngineStateError("invalid_request", "this session has no project");
-    const workspace = session.workspace.path;
+    const workspace = workspaceRootOf(session);
     const { environments } = await this.dataScienceEnvironments(session.projectId, workspace);
     const match = environments.find((env) => env.id === target || env.name === target || env.root === target || env.python === target || env.path === target);
     if (!match) throw new EngineStateError("invalid_request", `no environment matches "${target}" — the choices are ${environments.map((env) => `${env.name} (${env.id})`).join(", ") || "none"}`);
@@ -5047,9 +5073,9 @@ export class EngineStore {
 
   sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
-    return this.cachedGitRead(`diff:${session.workspace.path}:${session.workspace.baseRef ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+    return this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
     }));
   }
 
@@ -5060,7 +5086,7 @@ export class EngineStore {
 
   sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
     const session = this.getSession(sessionId);
-    return this.readFilePatchAsync(session.workspace.path, target, options, session.workspace.baseRef);
+    return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
   }
 
   private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<{ patch: string; binary: boolean }> {
@@ -5469,8 +5495,8 @@ export class EngineStore {
   sessionDiff(sessionId: string): SessionDiff {
     const session = this.getSession(sessionId);
     return sessionDiff(this.git, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
     });
   }
 
@@ -5488,13 +5514,13 @@ export class EngineStore {
      * in-process caller must not be able to walk past a check that only ran on
      * the socket.
      */
-    const resolved = path.resolve(session.workspace.path, target);
-    const prefix = session.workspace.path.endsWith(path.sep) ? session.workspace.path : `${session.workspace.path}${path.sep}`;
+    const resolved = path.resolve(workspaceRootOf(session), target);
+    const prefix = workspaceRootOf(session).endsWith(path.sep) ? workspaceRootOf(session) : `${workspaceRootOf(session)}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
     return sessionFilePatch(this.git, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
-      path: path.relative(session.workspace.path, resolved),
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+      path: path.relative(workspaceRootOf(session), resolved),
       ...(options.untracked ? { untracked: true } : {}),
     });
   }
@@ -5512,7 +5538,7 @@ export class EngineStore {
     const text = message.trim();
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
-    return commitSessionWork(this.git, { cwd: session.workspace.path, message: text });
+    return commitSessionWork(this.git, { cwd: workspaceRootOf(session), message: text });
   }
 
   /**
@@ -5527,7 +5553,7 @@ export class EngineStore {
   }
 
   sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    const cwd = this.getSession(sessionId).workspace.path;
+    const cwd = workspaceRootOf(this.getSession(sessionId));
     return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
   }
 
@@ -5536,7 +5562,7 @@ export class EngineStore {
   }
 
   sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(this.getSession(sessionId).workspace.path, target, "session workspace");
+    return this.readFencedAsync(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
   /**
@@ -5550,7 +5576,7 @@ export class EngineStore {
   }
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(this.getSession(sessionId).workspace.path, target, "session workspace");
+    return this.readFencedBytes(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
   projectFiles(projectId: string): WorkspaceListing {
@@ -5559,7 +5585,7 @@ export class EngineStore {
 
   /** Every file in a session's own checkout — its worktree, when it cut one. */
   sessionFiles(sessionId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: this.getSession(sessionId).workspace.path, now: this.now() });
+    return listWorkspaceFiles(this.git, { cwd: workspaceRootOf(this.getSession(sessionId)), now: this.now() });
   }
 
   projectFile(projectId: string, target: string): WorkspaceFile {
@@ -5569,7 +5595,7 @@ export class EngineStore {
 
   sessionFile(sessionId: string, target: string): WorkspaceFile {
     const session = this.getSession(sessionId);
-    return this.readFenced(session.workspace.path, target, "session workspace");
+    return this.readFenced(workspaceRootOf(session), target, "session workspace");
   }
 
   /**
@@ -5586,7 +5612,7 @@ export class EngineStore {
 
   sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const session = this.getSession(sessionId);
-    return this.writeFenced(session.workspace.path, target, text, expected, "session workspace");
+    return this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
   }
 
   /**
@@ -8032,7 +8058,9 @@ export class EngineStore {
       const providerInstance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
       return {
         sessionId: session.id,
-        projectRoot: session.workspace.path,
+        // Emitted only when the session HAS one — see `WorkerClaim.projectRoot`.
+        // A `none` workspace sends nothing rather than a path nobody chose.
+        ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
         ...(session.projectId ? { projectId: session.projectId } : {}),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
