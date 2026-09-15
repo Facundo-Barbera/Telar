@@ -35,7 +35,7 @@ A green verify only moves a loom to `ready` — the human always accepts.
 | `apps/engine` | The Telar control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
 | `apps/desktop` | The Electron shell. Forks the engine, then the cockpit's standalone server, and owns auto-update and the browser host. |
 | `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
-| `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
+| `packages/env` | Environment lease scheduler — five-verb contract, sidecar config, MCP server + CLI. Standalone; Telar-optional. |
 
 ### the legacy cockpit is gone
 
