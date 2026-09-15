@@ -503,6 +503,63 @@ function eventPageLimit(raw: string | null): number {
   return Math.min(limit, EVENT_PAGE_MAX);
 }
 
+/**
+ * WHAT THE QUERY ROUTES MAY ANSWER WITH — issue #516.
+ *
+ * Every one of these is a CEILING, not a suggestion. The routes exist because a
+ * tool answer lands in a model's context window (#515), so a caller that asks
+ * for more than the ceiling is clamped rather than served: the point of the
+ * bound is that it cannot be argued out of. A caller that wants the rest pages
+ * for it, and every answer says whether there is a rest.
+ *
+ * THE DEFAULTS ARE WHAT THE ISSUE ASKED FOR: an outline page of 20 turns, a
+ * grep page of 20 matches, ten sessions from `find`, 8,000 characters of one
+ * step. The maxima are where one answer stops being something a model can hold
+ * beside the rest of its work.
+ */
+const OUTLINE_PAGE_DEFAULT = 20;
+const OUTLINE_PAGE_MAX = 100;
+const GREP_PAGE_DEFAULT = 20;
+const GREP_PAGE_MAX = 100;
+const FIND_LIMIT_DEFAULT = 10;
+const FIND_LIMIT_MAX = 50;
+const ITEM_CHARS_DEFAULT = 8_000;
+const ITEM_CHARS_MAX = 64_000;
+const ANSWER_SLICE_DEFAULT = 8_000;
+const ANSWER_SLICE_MAX = 64_000;
+
+/**
+ * A NON-NEGATIVE INTEGER QUERY PARAMETER, clamped — or refused.
+ *
+ * REFUSED RATHER THAN DEFAULTED when it is not a number, on `eventPageLimit`'s
+ * argument: `?limit=all` is a bug in the caller, and quietly serving it the
+ * default would hide the bug behind an answer that looks right.
+ */
+function positiveParam(raw: string | null, fallback: number, ceiling: number, label: string): number {
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new HttpError(400, "invalid_request", `${label} must be a non-negative integer`);
+  return Math.min(value, ceiling);
+}
+
+/**
+ * `/runs/:runId/items` and `/runs/:runId/items/:step` — one shape, because the
+ * list and the step are the same address at two depths and parsing them apart
+ * would let the two disagree about what a run id may contain.
+ *
+ * `step` IS A NUMBER WHEN IT LOOKS LIKE ONE and an item id otherwise: a caller
+ * that has just read the list names a position, and one that found the item in a
+ * journal page names its id. See `runItem`.
+ */
+function runItemsPath(tail: string): { runId: string; step?: number | string } | undefined {
+  const match = /^\/runs\/([A-Za-z0-9_-]+)\/items(?:\/([A-Za-z0-9_-]+))?$/.exec(tail);
+  if (!match) return undefined;
+  const raw = match[2];
+  if (raw === undefined) return { runId: decodeURIComponent(match[1]) };
+  const index = Number(raw);
+  return { runId: decodeURIComponent(match[1]), step: Number.isSafeInteger(index) && index >= 0 ? index : decodeURIComponent(raw) };
+}
+
 type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
@@ -691,6 +748,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     const built = indexed.built > 0 ? `indexed ${indexed.built.toLocaleString("en-US")} sessions` : "";
     const removed = indexed.removed > 0 ? `dropped ${indexed.removed.toLocaleString("en-US")} orphaned rows` : "";
     process.stdout.write(`Telar engine: ${[built, removed].filter(Boolean).join(" and ")}\n`);
+  }
+  /**
+   * AND THE TURN PROJECTION, WHEN IT HAD TO BE BUILT — issue #516.
+   *
+   * Its own line rather than a clause on the one above, because the two backfills
+   * cost differently and a person watching a slow start is trying to work out
+   * which: the session index folds four small documents per conversation, this
+   * one parses every `items.json` on the machine. Silent on every open after the
+   * first, on the same argument as both sweeps above.
+   */
+  const summarised = store.turnSummaryBackfill;
+  if (summarised && summarised.turns > 0) {
+    process.stdout.write(
+      `Telar engine: summarised ${summarised.turns.toLocaleString("en-US")} turns across ${summarised.sessions.toLocaleString("en-US")} sessions\n`,
+    );
   }
   /**
    * AND WHAT THE SPOOL AND THE LOOMS LEFT — issue #501, step 2.
@@ -2755,6 +2827,32 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * mints and reveals the socket's credential, so only something already
        * holding engine access may read it.
        */
+      /**
+       * WHICH CONVERSATION WAS THIS — issue #516.
+       *
+       * A LITERAL PATH UNDER `/v2/sessions/`, so it lives up here with `/live`
+       * and for the identical reason: `sessionPath` matches `find` as happily as
+       * it matches a session id, and below the block this route would be "no
+       * session by that id".
+       *
+       * READ-ONLY AND BOUNDED: ten rows by default, each one id, title, project,
+       * activity, `updatedAt` and a quoted `why`. `index` says whether this
+       * engine's sqlite answered from FTS5 or from the scan, because a caller
+       * comparing two engines' results deserves to know which they got.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/find") {
+        const q = url.searchParams.get("q");
+        if (!q || !q.trim()) throw new HttpError(400, "invalid_request", "q is required");
+        const settled = url.searchParams.get("settled");
+        writeJson(response, 200, store.findSessions({
+          q,
+          ...(url.searchParams.get("projectId") ? { projectId: url.searchParams.get("projectId")! } : {}),
+          ...(settled === null ? {} : { settled: settled === "1" || settled === "true" }),
+          ...(url.searchParams.get("since") ? { since: positiveParam(url.searchParams.get("since"), 0, Number.MAX_SAFE_INTEGER, "since") } : {}),
+          limit: positiveParam(url.searchParams.get("limit"), FIND_LIMIT_DEFAULT, FIND_LIMIT_MAX, "limit"),
+        }));
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions/mcp-info") {
         const bound = server.address();
         const port = bound && typeof bound === "object" ? bound.port : 0;
@@ -2996,6 +3094,83 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             more: read.length > limit,
             ...(read.length > limit ? { next: cursor } : {}),
           });
+          return;
+        }
+        /**
+         * ══ SCROLLING A CONVERSATION RATHER THAN PAGING IT — issue #516 ══
+         *
+         * `/events` above is the journal: every row, in order, from a cursor. It
+         * is the right read for a transcript and the wrong one for an agent,
+         * which wants to ask a question — which turn, what did it conclude, what
+         * did step twelve do — and gets there today only by paging 38 MB.
+         *
+         * The four routes below answer those questions from the `turn_summary`
+         * projection and from indexed document spans. NONE OF THEM FOLDS EVENTS
+         * (except `/grep`, which is a question about event text and says so),
+         * and every one states `more` with the cursor for the next page, so a
+         * caller never has to fetch everything to learn there was nothing.
+         *
+         * ONE TURN PER ROW, NEWEST FIRST. `before` is a sequence rather than an
+         * offset, for the reason `/events` gives about `after`: a session being
+         * appended to under a paging caller must not shift its window.
+         */
+        if (request.method === "GET" && session.tail === "/outline") {
+          writeJson(response, 200, store.turnOutline(session.sessionId, {
+            limit: positiveParam(url.searchParams.get("limit"), OUTLINE_PAGE_DEFAULT, OUTLINE_PAGE_MAX, "limit"),
+            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
+          }));
+          return;
+        }
+        /**
+         * WHAT ONE RUN DID — the list, then one step of it.
+         *
+         * TWO ROUTES RATHER THAN ONE FAT ANSWER, because the list exists so a
+         * caller can choose before it pays: `{index, id, title, status, bytes}`
+         * is under a kilobyte for a long run, and `bytes` is what tells an agent
+         * which step it can afford. The step itself is clamped to `maxChars`
+         * with the marker that says how much was left behind.
+         */
+        const run = runItemsPath(session.tail);
+        if (request.method === "GET" && run) {
+          if (run.step === undefined) {
+            writeJson(response, 200, { items: store.runItems(session.sessionId, run.runId) });
+            return;
+          }
+          writeJson(response, 200, store.runItem(
+            session.sessionId,
+            run.runId,
+            run.step,
+            positiveParam(url.searchParams.get("maxChars"), ITEM_CHARS_DEFAULT, ITEM_CHARS_MAX, "maxChars"),
+          ));
+          return;
+        }
+        /**
+         * THE ANSWER ALONE, SLICED — the most common orchestrator read, as its
+         * own verb. `totalChars` rides every slice so a caller knows what it is
+         * choosing not to read; the default run is the latest turn that actually
+         * left text.
+         */
+        if (request.method === "GET" && session.tail === "/answer") {
+          writeJson(response, 200, store.turnAnswer(session.sessionId, {
+            ...(url.searchParams.get("runId") ? { runId: url.searchParams.get("runId")! } : {}),
+            from: positiveParam(url.searchParams.get("from"), 0, Number.MAX_SAFE_INTEGER, "from"),
+            limit: positiveParam(url.searchParams.get("limit"), ANSWER_SLICE_DEFAULT, ANSWER_SLICE_MAX, "limit"),
+          }));
+          return;
+        }
+        /**
+         * WHERE A PHRASE APPEARS IN THIS JOURNAL — the one route here that does
+         * read events, because no projection worth keeping could answer it. The
+         * scan runs inside sqlite and only the matching page is materialised;
+         * see `grepEvents`.
+         */
+        if (request.method === "GET" && session.tail === "/grep") {
+          const pattern = url.searchParams.get("pattern");
+          if (!pattern) throw new HttpError(400, "invalid_request", "pattern is required");
+          writeJson(response, 200, store.grepSession(session.sessionId, pattern, {
+            limit: positiveParam(url.searchParams.get("limit"), GREP_PAGE_DEFAULT, GREP_PAGE_MAX, "limit"),
+            ...(url.searchParams.get("before") === null ? {} : { before: positiveParam(url.searchParams.get("before"), 0, Number.MAX_SAFE_INTEGER, "before") }),
+          }));
           return;
         }
         /**

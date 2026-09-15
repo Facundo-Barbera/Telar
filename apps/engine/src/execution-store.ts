@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { EngineEvent } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import type { TurnSummary } from "./turn-summary";
 
 type Statement = { run(...args: unknown[]): unknown; get(...args: unknown[]): Record<string, unknown> | undefined; all(...args: unknown[]): Array<Record<string, unknown>> };
 type Database = { exec(sql: string): void; prepare(sql: string): Statement; close(): void };
@@ -117,6 +118,18 @@ export type SessionIndexRow = {
   lastTurnFailed?: boolean;
   activity: "idle" | "blocked" | "working" | "queued" | "monitoring";
   activityAt?: number;
+  /**
+   * WHAT THIS CONVERSATION IS CALLED, AND THE BRANCH IT CUT — issue #516.
+   *
+   * The two exceptions to "nothing here is payload", and they earn it the same
+   * way `activity` does: `find` DECIDES on them. A search that had to open 300
+   * `session.json` blobs to learn which ones are called something would be the
+   * fold #493 removed, reinstated by a different caller.
+   *
+   * Read by `find` alone. Nothing on the rail's wire is built from them.
+   */
+  title?: string;
+  branch?: string;
 };
 
 /** A stored row is columns; `undefined` and `null` are the same absence here. */
@@ -146,7 +159,43 @@ function rowFromColumns(columns: StoredSessionRow): SessionIndexRow {
     ...(Number(columns.last_turn_failed) === 1 ? { lastTurnFailed: true } : {}),
     activity: String(columns.activity) as SessionIndexRow["activity"],
     ...(columns.activity_at === null || columns.activity_at === undefined ? {} : { activityAt: Number(columns.activity_at) }),
+    ...(columns.title === null || columns.title === undefined ? {} : { title: String(columns.title) }),
+    ...(columns.branch === null || columns.branch === undefined ? {} : { branch: String(columns.branch) }),
   };
+}
+
+/** One turn's row, back from its columns — issue #516. `item_titles` is stored
+ *  as JSON because it is a bounded list nothing queries INTO; a row that could
+ *  not parse is an empty list rather than a throw, on the same argument
+ *  `rowFromColumns` makes about a corrupt directory. */
+function turnFromColumns(columns: StoredSessionRow): TurnSummary {
+  let titles: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(String(columns.item_titles ?? "[]"));
+    if (Array.isArray(parsed)) titles = parsed.map((title) => String(title));
+  } catch {}
+  return {
+    sessionId: String(columns.session_id),
+    runId: String(columns.run_id),
+    sequence: Number(columns.sequence),
+    ...(columns.origin === null || columns.origin === undefined ? {} : { origin: String(columns.origin) as TurnSummary["origin"] }),
+    state: String(columns.state) as TurnSummary["state"],
+    ...(columns.started_at === null || columns.started_at === undefined ? {} : { startedAt: Number(columns.started_at) }),
+    ...(columns.ended_at === null || columns.ended_at === undefined ? {} : { endedAt: Number(columns.ended_at) }),
+    input: String(columns.input_line ?? ""),
+    itemCount: Number(columns.item_count ?? 0),
+    itemTitles: titles,
+    answerHead: String(columns.answer_head ?? ""),
+    answerChars: Number(columns.answer_chars ?? 0),
+    ...(columns.failure_text === null || columns.failure_text === undefined ? {} : { failure: String(columns.failure_text) }),
+  };
+}
+
+/** `%` and `_` are wildcards in `LIKE`, and a person searching for `index.lock`
+ *  or a snake_case symbol did not mean them as such. Paired with `ESCAPE '\'`
+ *  at every call site. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 /** What the housekeeping on open actually removed, so the daemon can say so and
@@ -294,6 +343,18 @@ export class ExecutionStore {
    * has that 239 MB went away is that it is gone.
    */
   readonly housekeeping: ExecutionHousekeeping = { receipts: 0 };
+  /**
+   * WHICH ENGINE `find` RUNS ON — probed, never assumed (issue #516).
+   *
+   * FTS5 is a compile-time option, and this store runs on two different sqlite
+   * builds: `bun:sqlite` (which has it) and `node:sqlite` (which may not, and
+   * which the worker process uses). A hard dependency on it would make a search
+   * route that works in the daemon throw in a test runner — so the virtual table
+   * is attempted, and a store that cannot have it says `like` and falls back to a
+   * bounded scan of the same rows. No new dependency either way, which is the
+   * constraint the issue set.
+   */
+  readonly searchIndex: "fts5" | "like" = "like";
   constructor(readonly root: string, options: ExecutionStoreOptions = {}) {
     this.flushCount = Math.max(1, options.flushCount ?? FLUSH_COUNT);
     this.flushAfterMs = Math.max(0, options.flushAfterMs ?? FLUSH_AFTER_MS);
@@ -367,6 +428,59 @@ export class ExecutionStore {
       );
       CREATE INDEX IF NOT EXISTS sessions_shelf ON sessions(archived, settled_override, updated_at);
       CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id, updated_at);`);
+    /**
+     * WHAT A SESSION IS CALLED, AND WHERE IT WORKS — issue #516.
+     *
+     * ADDITIVE COLUMNS ON THE #493 TABLE rather than a table of their own,
+     * because they answer the same question that one does — which conversation
+     * is this — and because `find` has to match a title without opening a
+     * document. Nullable and defaulted, so an older binary neither knows nor
+     * needs to know they exist; the reconcile on open fills them, exactly as it
+     * fills a row a downgrade left behind.
+     *
+     * NOT ON THE WIRE. `liveSessionRows` builds its rows from Session records,
+     * not from these, so nothing here grows the rail's answer — which is the one
+     * thing #493 bought and this must not spend.
+     */
+    for (const column of ["title TEXT", "branch TEXT"]) {
+      const name = column.split(" ")[0]!;
+      if (!this.db.prepare("PRAGMA table_info(sessions)").all().some((existing) => String(existing.name) === name))
+        this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
+    }
+    /**
+     * ONE ROW PER TURN, WRITTEN WHEN THE TURN ENDS — issue #516. See
+     * `turn-summary.ts` for what a row holds and why each bound is where it is.
+     *
+     * KEYED BY (session, run) AND ORDERED BY SEQUENCE, which is the shape every
+     * reader has: an outline is this session's rows newest first, `answer` is one
+     * row by its run id, and `find` is a match across all of them. `sequence` is
+     * the queue's own append order, so paging by it needs no timestamp tie-break
+     * and no second index.
+     *
+     * ADDITIVE, `user_version` STAYS AT 1, AND THE RECONCILE IS THE PRICE — the
+     * same trade the sessions table made. An older binary can settle turns this
+     * table never hears about; `turnSummaryStates` is how the next open notices,
+     * and it compares states rather than trusting a marker for exactly that
+     * reason.
+     */
+    this.db.exec(`CREATE TABLE IF NOT EXISTS turn_summaries (
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL DEFAULT 0,
+        origin TEXT,
+        state TEXT NOT NULL,
+        started_at INTEGER,
+        ended_at INTEGER,
+        input_line TEXT NOT NULL DEFAULT '',
+        item_count INTEGER NOT NULL DEFAULT 0,
+        item_titles TEXT NOT NULL DEFAULT '[]',
+        answer_head TEXT NOT NULL DEFAULT '',
+        answer_chars INTEGER NOT NULL DEFAULT 0,
+        failure_text TEXT,
+        PRIMARY KEY(session_id, run_id)
+      );
+      CREATE INDEX IF NOT EXISTS turn_summaries_outline ON turn_summaries(session_id, sequence);`);
+    this.searchIndex = this.openSearchIndex();
     /**
      * ADDITIVE, AND `user_version` STAYS AT 1 ON PURPOSE — a column with a
      * default is not a downgrade fence. An older binary names the three columns
@@ -635,8 +749,8 @@ export class ExecutionStore {
     this.statement(`INSERT INTO sessions(
         id, project_id, state, archived, draft, created_at, updated_at, read_at, settled_override, settled_at,
         snoozed_until, snoozed_at, last_turn_sequence, last_read_turn_sequence, last_turn_ended_at, last_turn_failed,
-        activity, activity_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        activity, activity_at, title, branch)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         project_id=excluded.project_id, state=excluded.state, archived=excluded.archived, draft=excluded.draft,
         created_at=excluded.created_at, updated_at=excluded.updated_at, read_at=excluded.read_at,
@@ -644,15 +758,197 @@ export class ExecutionStore {
         snoozed_until=excluded.snoozed_until, snoozed_at=excluded.snoozed_at,
         last_turn_sequence=excluded.last_turn_sequence, last_read_turn_sequence=excluded.last_read_turn_sequence,
         last_turn_ended_at=excluded.last_turn_ended_at, last_turn_failed=excluded.last_turn_failed,
-        activity=excluded.activity, activity_at=excluded.activity_at`).run(
+        activity=excluded.activity, activity_at=excluded.activity_at,
+        title=excluded.title, branch=excluded.branch`).run(
       row.id, row.projectId ?? null, row.state, row.archived ? 1 : 0, row.draft ? 1 : 0,
       row.createdAt, row.updatedAt, row.readAt ?? null, row.settledOverride ?? null, row.settledAt ?? null,
       row.snoozedUntil ?? null, row.snoozedAt ?? null, row.lastTurnSequence ?? null, row.lastReadTurnSequence ?? null,
-      row.lastTurnEndedAt ?? null, row.lastTurnFailed ? 1 : 0, row.activity, row.activityAt ?? null);
+      row.lastTurnEndedAt ?? null, row.lastTurnFailed ? 1 : 0, row.activity, row.activityAt ?? null,
+      row.title ?? null, row.branch ?? null);
+    this.writeSessionSearchRow(row.id, row.title ?? "", row.branch ?? "");
   }
 
   deleteSessionRow(sessionId: string): void {
     this.statement("DELETE FROM sessions WHERE id=?").run(sessionId);
+    this.statement("DELETE FROM turn_summaries WHERE session_id=?").run(sessionId);
+    if (this.searchIndex === "fts5") this.statement("DELETE FROM session_search WHERE session_id=?").run(sessionId);
+  }
+
+  /**
+   * ══ THE TURN PROJECTION — issue #516 ══
+   *
+   * Build the search table, or report that this sqlite cannot have one. Called
+   * once, from the constructor; everything below branches on the answer.
+   *
+   * THE PROBE IS A CREATE, NOT A VERSION CHECK. `PRAGMA compile_options` would
+   * tell us what the library was built with and nothing about whether this
+   * binding exposes it; attempting the statement is the only question whose
+   * answer is the thing we actually need. A failure is not an error — it is one
+   * of the two supported configurations — so it is swallowed and recorded.
+   */
+  private openSearchIndex(): "fts5" | "like" {
+    try {
+      this.db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS session_search USING fts5(
+           text, session_id UNINDEXED, run_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
+      );
+      return "fts5";
+    } catch {
+      return "like";
+    }
+  }
+
+  /**
+   * WHAT THE PROJECTION BELIEVES EACH TURN'S STATE IS — the reconcile's question.
+   *
+   * Two columns, by the primary key, with no document text on either side: the
+   * caller compares this against the queue index's own `(runId, state)` pairs and
+   * re-folds only the turns that disagree. That is what makes maintaining the
+   * projection cost nothing on a write that moved one turn, and what makes the
+   * backfill and the steady state the same code.
+   */
+  turnSummaryStates(sessionId: string): Array<{ runId: string; state: string }> {
+    return this.statement("SELECT run_id, state FROM turn_summaries WHERE session_id=?")
+      .all(sessionId)
+      .map((row) => ({ runId: String(row.run_id), state: String(row.state) }));
+  }
+
+  /** Store one turn's row, inside the transaction that settled the turn — the
+   *  rule `writeSessionRow` states, for the same reason. */
+  writeTurnSummary(row: TurnSummary): void {
+    this.statement(`INSERT INTO turn_summaries(
+        session_id, run_id, sequence, origin, state, started_at, ended_at,
+        input_line, item_count, item_titles, answer_head, answer_chars, failure_text)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(session_id, run_id) DO UPDATE SET
+        sequence=excluded.sequence, origin=excluded.origin, state=excluded.state,
+        started_at=excluded.started_at, ended_at=excluded.ended_at, input_line=excluded.input_line,
+        item_count=excluded.item_count, item_titles=excluded.item_titles,
+        answer_head=excluded.answer_head, answer_chars=excluded.answer_chars,
+        failure_text=excluded.failure_text`).run(
+      row.sessionId, row.runId, row.sequence, row.origin ?? null, row.state,
+      row.startedAt ?? null, row.endedAt ?? null, row.input, row.itemCount,
+      JSON.stringify(row.itemTitles), row.answerHead, row.answerChars, row.failure ?? null);
+    if (this.searchIndex !== "fts5") return;
+    // DELETE THEN INSERT: fts5 has no upsert, and an UPDATE over a contentless
+    // row would leave the old terms in the index to match against.
+    this.statement("DELETE FROM session_search WHERE session_id=? AND run_id=?").run(row.sessionId, row.runId);
+    this.statement("INSERT INTO session_search(text, session_id, run_id) VALUES(?,?,?)")
+      .run(`${row.input}\n${row.answerHead}`, row.sessionId, row.runId);
+  }
+
+  /** A row whose turn left the queue. See `reconcileTurnSummaries`. */
+  deleteTurnSummary(sessionId: string, runId: string): void {
+    this.statement("DELETE FROM turn_summaries WHERE session_id=? AND run_id=?").run(sessionId, runId);
+    if (this.searchIndex === "fts5") this.statement("DELETE FROM session_search WHERE session_id=? AND run_id=?").run(sessionId, runId);
+  }
+
+  /** The session's own searchable text — its title and its branch, under the
+   *  empty run id so one table answers both halves of `find`. */
+  writeSessionSearchRow(sessionId: string, title: string, branch: string): void {
+    if (this.searchIndex !== "fts5") return;
+    this.statement("DELETE FROM session_search WHERE session_id=? AND run_id=''").run(sessionId);
+    this.statement("INSERT INTO session_search(text, session_id, run_id) VALUES(?,?,'')").run(`${title}\n${branch}`, sessionId);
+  }
+
+  /**
+   * THE OUTLINE'S PAGE: this session's turns, newest first, keyset by sequence.
+   *
+   * `before` IS A SEQUENCE, NOT AN OFFSET, for the reason the journal's `after`
+   * is an event id: a session being appended to while a caller pages it would
+   * drop or repeat rows under `LIMIT ... OFFSET`, and an orchestrator paging a
+   * live conversation is the ordinary case rather than the exotic one.
+   *
+   * One over the limit is read and dropped by the caller, so `more` is exact.
+   */
+  outlineRows(sessionId: string, before: number | undefined, limit: number): TurnSummary[] {
+    const rows = before === undefined
+      ? this.statement("SELECT * FROM turn_summaries WHERE session_id=? ORDER BY sequence DESC LIMIT ?").all(sessionId, limit)
+      : this.statement("SELECT * FROM turn_summaries WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?").all(sessionId, before, limit);
+    return rows.map(turnFromColumns);
+  }
+
+  turnSummary(sessionId: string, runId: string): TurnSummary | undefined {
+    const columns = this.statement("SELECT * FROM turn_summaries WHERE session_id=? AND run_id=?").get(sessionId, runId);
+    return columns ? turnFromColumns(columns) : undefined;
+  }
+
+  /** The newest turn that left an answer — `/answer`'s default run. A turn that
+   *  ended without text is not one, which is what `answer_chars > 0` says. */
+  latestAnsweredTurn(sessionId: string): TurnSummary | undefined {
+    const columns = this.statement(
+      "SELECT * FROM turn_summaries WHERE session_id=? AND state='completed' AND answer_chars>0 ORDER BY sequence DESC LIMIT 1",
+    ).get(sessionId);
+    return columns ? turnFromColumns(columns) : undefined;
+  }
+
+  /** How many turns this session has a row for — the outline's `total`. */
+  turnSummaryCount(sessionId: string): number {
+    return Number(this.statement("SELECT COUNT(*) AS count FROM turn_summaries WHERE session_id=?").get(sessionId)?.count ?? 0);
+  }
+
+  /**
+   * LEXICAL SEARCH ACROSS EVERY CONVERSATION — `find`'s one read.
+   *
+   * ON FTS5 WHEN THERE IS ONE: the match is an inverted-index lookup and the
+   * scan is over the rows it returns. WITHOUT ONE: a bounded `LIKE` over the same
+   * two columns of `turn_summaries` plus the two on `sessions` — which is a scan,
+   * and is why it is capped by `scan` rather than trusted to be selective. Both
+   * read only projection rows; neither opens a document or folds an event.
+   *
+   * THE ROW CARRIES ITS OWN `why`. A hit with no quotation is a caller taking the
+   * engine's word for it, and the whole point of the verb is to let an agent
+   * decide which conversation to open next.
+   */
+  searchTurnText(terms: string[], scan: number): Array<{ sessionId: string; runId: string; text: string }> {
+    if (terms.length === 0) return [];
+    if (this.searchIndex === "fts5") {
+      // EVERY TERM QUOTED AS A PHRASE, so a user's `index.lock` or `-` is text
+      // rather than fts5 syntax: the query language has operators a person
+      // searching their own conversations never meant to type.
+      const query = terms.map((term) => `"${term.replace(/"/g, '""')}"`).join(" AND ");
+      return this.statement("SELECT text, session_id, run_id FROM session_search WHERE session_search MATCH ? ORDER BY rank LIMIT ?")
+        .all(query, scan)
+        .map((row) => ({ sessionId: String(row.session_id), runId: String(row.run_id), text: String(row.text) }));
+    }
+    const like = `%${escapeLike(terms[0]!)}%`;
+    const rows = this.statement(
+      `SELECT session_id, run_id, input_line || char(10) || answer_head AS text FROM turn_summaries
+         WHERE input_line LIKE ? ESCAPE '\\' OR answer_head LIKE ? ESCAPE '\\'
+         ORDER BY session_id, sequence DESC LIMIT ?`,
+    ).all(like, like, scan);
+    const titles = this.statement(
+      `SELECT id AS session_id, '' AS run_id, COALESCE(title,'') || char(10) || COALESCE(branch,'') AS text FROM sessions
+         WHERE title LIKE ? ESCAPE '\\' OR branch LIKE ? ESCAPE '\\' LIMIT ?`,
+    ).all(like, like, scan);
+    return [...titles, ...rows].map((row) => ({ sessionId: String(row.session_id), runId: String(row.run_id), text: String(row.text) }));
+  }
+
+  /**
+   * WHERE A PATTERN APPEARS IN ONE SESSION'S JOURNAL — `grep`'s read.
+   *
+   * THIS ONE DOES TOUCH EVENTS, and it is the only route that does: "where did
+   * it mention index.lock" is a question about the raw text, and no projection
+   * small enough to be worth keeping could answer it. What makes it affordable is
+   * that the scan runs INSIDE sqlite and only `limit` rows are ever materialised
+   * in JavaScript — the 38 MB an outline used to fold is read as pages by the C
+   * layer and discarded, rather than parsed into 62,000 objects.
+   *
+   * NEWEST FIRST, KEYSET BY EVENT ID, like every other page here.
+   */
+  grepEvents(sessionId: string, needle: string, before: number | undefined, limit: number): Array<{ id: number; value: string }> {
+    const like = `%${escapeLike(needle)}%`;
+    const rows = before === undefined
+      ? this.statement("SELECT id, value FROM events WHERE session_id=? AND value LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?").all(sessionId, like, limit)
+      : this.statement("SELECT id, value FROM events WHERE session_id=? AND id<? AND value LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?").all(sessionId, before, like, limit);
+    return rows.map((row) => ({ id: Number(row.id), value: String(row.value) }));
+  }
+
+  /** Which sessions have no turn rows at all — what the backfill folds. Keys on
+   *  both sides, exactly as `sessionRowGaps` is, and for the same reason. */
+  turnSummaryGaps(): string[] {
+    const summarised = new Set(this.statement("SELECT DISTINCT session_id FROM turn_summaries").all().map((row) => String(row.session_id)));
+    return this.sessionIds().filter((id) => !summarised.has(id));
   }
 
   /** Run `work` as one transaction, for a caller outside a command that still

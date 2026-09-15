@@ -139,6 +139,18 @@ import {
 } from "@telar/engine-client";
 import { atomicWrite, atomicWriteText } from "./atomic";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "./document-window";
+import {
+  boundedOutline,
+  context,
+  firstLine,
+  outlineRow,
+  summariseTurn,
+  FIND_SCAN,
+  GREP_CONTEXT_CHARS,
+  ITEM_TITLE_CHARS,
+  WHY_CHARS,
+  type OutlineRow,
+} from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
@@ -1070,6 +1082,11 @@ const indexRow = (session: Session): SessionIndexRow => ({
   ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
   activity: session.activity ?? "idle",
   ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+  // The two `find` decides on — see `SessionIndexRow`. A worktree session is the
+  // only one whose branch belongs to the conversation rather than to whatever
+  // the checkout happens to be on, so it is the only one that carries one here.
+  ...(session.title === undefined ? {} : { title: session.title }),
+  ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
 });
 
 /**
@@ -2050,6 +2067,10 @@ export class EngineStore {
       this.queueCache.clear(); this.itemsCache.clear(); this.queueChangeAnnounced = false;
       this.pendingStopTasks.clear(); this.afterCommit = [];
       this.dirtySessionRows.clear();
+      // Same argument, for the projection's memo: it records which turn rows
+      // this process has folded, and a rollback took some of those rows with it.
+      // Emptying it costs one SELECT on the next write and cannot be wrong.
+      this.foldedTurnStates.clear();
       throw error;
     } finally { this.commandDepth -= 1; }
     if (this.commandDepth === 0) {
@@ -3673,6 +3694,7 @@ export class EngineStore {
       // AFTER the commands are wrapped, so the backfill's own writes go through
       // one transaction rather than one per row.
       this.sessionIndexBackfill = this.backfillSessionRows();
+      this.turnSummaryBackfill = this.backfillTurnSummaries();
     }
   }
 
@@ -3720,6 +3742,83 @@ export class EngineStore {
       for (const id of missing) this.storeSessionRow(id);
     });
     return { built: missing.length, removed: orphaned.length };
+  }
+
+  /**
+   * WHAT THE TURN PROJECTION BUILT ON OPEN — issue #516. See
+   * `backfillTurnSummaries`. Reported in one line by the daemon, like #493's,
+   * and for its reason: a first open after this shipped folds every conversation
+   * on the machine, and a person watching a slow start deserves to know why.
+   */
+  readonly turnSummaryBackfill?: { sessions: number; turns: number };
+
+  /**
+   * EVERY TURN HAS A ROW BY THE TIME THIS RETURNS — the one-time backfill.
+   *
+   * WHOLE SESSIONS AT A TIME, not turn by turn. `turnSummaryGaps` asks which
+   * sessions have NO rows at all, which is a `DISTINCT` over a primary key on
+   * one side and a covering key seek on the other — no document text on either.
+   * A session already summarised is skipped entirely; one that is not is folded
+   * from its queue and its items, both parsed once.
+   *
+   * IT PARSES `items.json` WHOLE, DELIBERATELY. The indexed span read that the
+   * steady state uses is the right shape for ONE run and the wrong one for all
+   * of them: reading four hundred spans out of one document is four hundred
+   * queries to avoid a parse the backfill was always going to pay in full.
+   *
+   * NOT A REBUILD OF ROWS THAT EXIST. A session whose rows went stale under a
+   * binary that did not maintain them is corrected by `reconcileTurnSummaries`
+   * the next time it is written to — the same trade the session index makes, and
+   * bounded the same way: the conversations a downgrade can touch are the ones
+   * it was used to work in.
+   *
+   * NEVER THROWS FOR ONE BAD SESSION. A corrupt queue is skipped, exactly as the
+   * live fold skips an unreadable directory: one conversation must not be able to
+   * stop an engine from starting.
+   */
+  private backfillTurnSummaries(): { sessions: number; turns: number } {
+    const store = this.executionStore;
+    if (!store) return { sessions: 0, turns: 0 };
+    const missing = store.turnSummaryGaps();
+    if (missing.length === 0) return { sessions: 0, turns: 0 };
+    let turns = 0;
+    let sessions = 0;
+    for (const sessionId of missing) {
+      try {
+        this.executeCommand("backfillTurnSummaries", () => {
+          const queue = this.readQueue(sessionId);
+          if (queue.turns.length === 0) return;
+          const items = [...this.itemsById(sessionId).values()];
+          const byRun = new Map<string, Item[]>();
+          for (const item of items) {
+            const filed = byRun.get(item.runId);
+            if (filed) filed.push(item);
+            else byRun.set(item.runId, [item]);
+          }
+          for (const turn of queue.turns) store.writeTurnSummary(summariseTurn(turn, byRun.get(turn.runId) ?? []));
+          turns += queue.turns.length;
+          sessions += 1;
+        });
+      } catch {
+        // Unreadable is skipped, not thrown — see the note above.
+      }
+    }
+    /**
+     * AND THE BACKFILL LETS GO OF EVERYTHING IT READ TO GET HERE — the argument
+     * `liveQueueSessionIds` makes about its own cold build, for the same reason
+     * and with a sharper edge: this is the one pass that parses every
+     * conversation's `items.json` on the machine, and leaving those maps in the
+     * caches would hand the first read after a start a projection it did not
+     * pay for. A store that looks cheaper than it is cannot be measured, and
+     * `readAccounting` exists precisely to measure it.
+     *
+     * The memo goes with them: it names rows this wrote from outside the
+     * ordinary write path, so the first reconcile per session re-reads them.
+     */
+    this.itemsCache.clear();
+    this.queueCache.clear();
+    this.foldedTurnStates.clear();
+    return { sessions, turns };
   }
 
   /**
@@ -6363,6 +6462,321 @@ export class EngineStore {
   turns(sessionId: string): Turn[] {
     this.getSession(sessionId);
     return structuredClone(this.readQueue(sessionId).turns);
+  }
+
+  /**
+   * ══ THE QUERY READS — issue #516 ══
+   *
+   * Five questions an orchestrator actually asks a conversation, each answered
+   * from the projection or from one indexed span, none of them by folding the
+   * journal. The bounds are stated in every answer rather than applied silently:
+   * a caller that cannot tell what it did not get has to fetch everything to be
+   * sure, which is the behaviour #515 exists to stop.
+   *
+   * SCROLL A CONVERSATION — the newest `limit` turns, keyset by sequence.
+   *
+   * `before` IS A SEQUENCE, so a live session being appended to underneath a
+   * caller cannot shift the window; `more` is exact because one row past the
+   * limit is read and dropped. A session with no rows yet (an engine that has
+   * not run the backfill, a conversation written by an older binary) answers
+   * with an empty page rather than folding events to fake one — see
+   * `turnSummaryBackfill`.
+   */
+  turnOutline(sessionId: string, window: { limit: number; before?: number }): {
+    turns: OutlineRow[];
+    total: number;
+    more: boolean;
+    next?: number;
+  } {
+    this.assertSessionExists(sessionId);
+    const store = this.executionStore;
+    /**
+     * NO INDEX TO PAGE: fold the QUEUE, never the journal — `shelfFromIndex`'s
+     * fallback, one projection over. A store on the JSON backend has no
+     * `turn_summaries` table, and answering an empty outline for a conversation
+     * that plainly has turns would be a wrong answer dressed as a cheap one. The
+     * fold is over `queue.json`, which is the document the projection is derived
+     * from anyway, so this route's one promise — that it does not replay events
+     * — holds on both backends.
+     */
+    if (!store) {
+      const all = this.readQueue(sessionId).turns;
+      const above = window.before === undefined ? all : all.filter((turn) => turn.sequence < window.before!);
+      const window_ = above.slice(-(window.limit + 1)).reverse();
+      const rows = window_.map((turn) => outlineRow(summariseTurn(turn, this.itemsForRuns(sessionId, new Set([turn.runId])))));
+      const turns = boundedOutline(rows, window.limit);
+      const more = turns.length < rows.length;
+      return { turns, total: all.length, more, ...(more ? { next: turns.at(-1)!.sequence } : {}) };
+    }
+    const read = store.outlineRows(sessionId, window.before, window.limit + 1);
+    const page = boundedOutline(read.map(outlineRow), window.limit);
+    const more = page.length < read.length;
+    return {
+      turns: page,
+      total: store.turnSummaryCount(sessionId),
+      more,
+      ...(more ? { next: page.at(-1)!.sequence } : {}),
+    };
+  }
+
+  /**
+   * WHAT ONE RUN DID, AS A LIST TO CHOOSE FROM — `{index, id, title, status,
+   * bytes}` per item, and nothing else.
+   *
+   * `bytes` IS THE POINT OF THE ROUTE. An agent picking a step to read should
+   * know what it is about to spend before it spends it; without the number the
+   * only way to find the big item is to fetch all of them, which is the cost
+   * this is here to avoid.
+   *
+   * ONE INDEXED SPAN, not the session's timeline: the items index is keyed by
+   * run, so this reads the bytes belonging to this turn and parses those.
+   */
+  runItems(sessionId: string, runId: string): Array<{ index: number; id: string; title: string; status: Item["status"]; bytes: number }> {
+    this.assertSessionExists(sessionId);
+    return this.runItemsInOrder(sessionId, runId).map((item, index) => ({
+      index,
+      id: item.id,
+      title: firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS),
+      status: item.status,
+      bytes: Buffer.byteLength(JSON.stringify(item.detail), "utf8"),
+    }));
+  }
+
+  /**
+   * ONE STEP, WHOLE — up to `maxChars` of it, with the marker that says how much
+   * was left.
+   *
+   * ADDRESSED BY POSITION, not by id alone, because the list above is what a
+   * caller has just read and "the twelfth thing it did" is how an agent refers to
+   * a step. An id is accepted too: an item named in a journal page is a thing a
+   * caller already holds, and making it look up an index first would be a round
+   * trip to translate a name into a number.
+   *
+   * THE DETAIL IS THE `text` AND IS NOT ALSO THE ITEM. Returning the whole `Item`
+   * beside the clamped text carried `detail` twice, once bounded and once not —
+   * which made this the one route here whose answer a caller could not predict.
+   * The envelope is the scalars a reader identifies the step by; everything the
+   * step actually SAID is in `text`, under `maxChars`, with its marker.
+   */
+  runItem(sessionId: string, runId: string, step: number | string, maxChars: number): {
+    index: number;
+    id: string;
+    title: string;
+    status: Item["status"];
+    startedAt: number;
+    completedAt?: number;
+    taskId?: string;
+    text: string;
+    totalChars: number;
+    more: boolean;
+  } {
+    this.assertSessionExists(sessionId);
+    const items = this.runItemsInOrder(sessionId, runId);
+    const index = typeof step === "number" ? step : items.findIndex((item) => item.id === step);
+    const item = index >= 0 ? items[index] : undefined;
+    if (!item) throw new EngineStateError("not_found", "that run has no such step");
+    const text = JSON.stringify(item.detail, null, 2);
+    return {
+      index,
+      id: item.id,
+      title: firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS),
+      status: item.status,
+      startedAt: item.startedAt,
+      ...(item.completedAt === undefined ? {} : { completedAt: item.completedAt }),
+      ...(item.taskId === undefined ? {} : { taskId: item.taskId }),
+      text: text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[… ${text.length - maxChars} more characters]`,
+      totalChars: text.length,
+      more: text.length > maxChars,
+    };
+  }
+
+  /**
+   * DOES THIS SESSION EXIST — without folding it to find out.
+   *
+   * `getSession` is the usual answer and it is the wrong one here: it calls
+   * `withActivity`, which parses `queue.json` WHOLE to derive an activity none
+   * of these routes report. On the dogfood store's largest session that is
+   * 1.66 MB and 24 ms — a hundred times the read it was guarding, paid to
+   * produce a 404 that never comes. The index row answers the same question by
+   * primary key.
+   *
+   * THE DOCUMENT PATH IS STILL THE FALLBACK, for a store with no index (the
+   * JSON backend), where there is nothing cheaper to ask.
+   */
+  private assertSessionExists(sessionId: string): void {
+    if (!this.executionStore) { this.getSession(sessionId); return; }
+    if (!this.executionStore.sessionRow(sessionId)) throw new EngineStateError("not_found", "session does not exist");
+  }
+
+  /**
+   * ONE TURN, BY THE QUEUE'S OWN INDEX — `windowedTurns`' read, narrowed to a
+   * single run.
+   *
+   * `/answer` needs `resultText`, which lives on the turn and nowhere else; it
+   * must not cost the whole queue to reach. Without an index (a queue written
+   * before #419, or edited behind the store's back) this is the parse it has
+   * always been — slower, never wrong.
+   */
+  private turnByIndex(sessionId: string, runId: string): Turn | undefined {
+    const file = sessionQueueFile(this.paths, sessionId);
+    const index = this.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
+    if (!index) return this.readQueue(sessionId).turns.find((turn) => turn.runId === runId);
+    const wanted = index.rows.filter((row) => row.key === runId);
+    if (wanted.length === 0) return undefined;
+    const parsed = TurnSchema.array().safeParse(this.readIndexedRows(file, wanted));
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid session queue");
+    return parsed.data.find((turn) => turn.runId === runId);
+  }
+
+  /** A run's items in the order they started — the order `index` counts in, and
+   *  the only one stable enough for a caller to name a step by. */
+  private runItemsInOrder(sessionId: string, runId: string): Item[] {
+    return this.itemsForRuns(sessionId, new Set([runId])).sort((a, b) => a.startedAt - b.startedAt);
+  }
+
+  /**
+   * THE ANSWER, AND ONLY THE ANSWER — sliced, with its true length beside it.
+   *
+   * The most common read an orchestrator makes, which is why it is its own verb
+   * rather than a field of something larger: "what did it conclude" should not
+   * cost a transcript. The text is on the turn already (`resultText`), so this is
+   * one indexed span of `queue.json` and no journal at all.
+   *
+   * THE DEFAULT RUN IS THE LATEST TURN THAT LEFT TEXT, chosen from the
+   * projection. Not simply the latest completed one: a turn can complete having
+   * said nothing, and defaulting to it would answer an empty string to a caller
+   * who asked what the session had concluded.
+   */
+  turnAnswer(sessionId: string, options: { runId?: string; from: number; limit: number }): {
+    runId: string;
+    sequence: number;
+    text: string;
+    from: number;
+    totalChars: number;
+    more: boolean;
+    next?: number;
+  } {
+    this.assertSessionExists(sessionId);
+    const store = this.executionStore;
+    const summary = options.runId === undefined
+      ? store?.latestAnsweredTurn(sessionId)
+      : store?.turnSummary(sessionId, options.runId);
+    const runId = options.runId ?? summary?.runId;
+    if (runId === undefined) throw new EngineStateError("not_found", "this session has no answered turn");
+    const turn = this.turnByIndex(sessionId, runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    const answer = turn.resultText ?? "";
+    const from = Math.min(Math.max(0, options.from), answer.length);
+    const text = answer.slice(from, from + options.limit);
+    const more = from + text.length < answer.length;
+    return {
+      runId,
+      sequence: turn.sequence,
+      text,
+      from,
+      totalChars: answer.length,
+      more,
+      ...(more ? { next: from + text.length } : {}),
+    };
+  }
+
+  /**
+   * WHERE A PHRASE APPEARS IN ONE CONVERSATION — the journal, newest first.
+   *
+   * THE ONE READ HERE THAT TOUCHES EVENTS, and the only one that could: a
+   * projection small enough to be worth keeping cannot answer "where did it
+   * mention index.lock". What makes it affordable is that the scan happens in
+   * sqlite and only the matching page reaches JavaScript — see `grepEvents`.
+   *
+   * SUBSTRING, NOT A REGULAR EXPRESSION. `LIKE` is what sqlite can scan without
+   * a user-defined function, a pattern compiled from a caller's text is a way to
+   * hand the daemon an exponential backtrack, and "the phrase I remember seeing"
+   * is what the verb is for.
+   */
+  grepSession(sessionId: string, pattern: string, window: { limit: number; before?: number }): {
+    matches: Array<{ id: number; at: number; type: string; runId?: string; context: string }>;
+    more: boolean;
+    next?: number;
+  } {
+    this.assertSessionExists(sessionId);
+    const store = this.executionStore;
+    // REFUSED, NOT ANSWERED EMPTY. The JSON backend keeps its journal as a file
+    // nothing can scan without reading it whole, which is the cost this route
+    // exists to avoid — and "no matches" would be a lie a caller acts on.
+    if (!store) throw new EngineStateError("conflict", "this engine's store cannot search a journal");
+    const read = store.grepEvents(sessionId, pattern, window.before, window.limit + 1);
+    const rows = read.length > window.limit ? read.slice(0, window.limit) : read;
+    const more = read.length > window.limit;
+    const needle = pattern.toLowerCase();
+    const matches = rows.map((row) => {
+      const at = row.value.toLowerCase().indexOf(needle);
+      let event: { at?: number; type?: string; runId?: string } = {};
+      try { event = JSON.parse(row.value) as typeof event; } catch {}
+      return {
+        id: row.id,
+        at: Number(event.at ?? 0),
+        type: String(event.type ?? "unknown"),
+        ...(event.runId === undefined ? {} : { runId: String(event.runId) }),
+        context: context(row.value, at < 0 ? 0 : at, GREP_CONTEXT_CHARS),
+      };
+    });
+    return { matches, more, ...(more ? { next: rows.at(-1)!.id } : {}) };
+  }
+
+  /**
+   * WHICH CONVERSATION WAS THIS — lexical, across every session on the engine.
+   *
+   * LEXICAL AND NOTHING ELSE. The issue is explicit that semantic ranking waits
+   * for an embedding provider that is already configured, and there is none: a
+   * new dependency to answer "which session was about the appearance rework"
+   * would cost more than the question is worth. FTS5 when this sqlite has it,
+   * a bounded `LIKE` over the same rows when it does not — `searchIndex` says
+   * which, and the route reports it so a reader is never guessing.
+   *
+   * THE FILTERS ARE APPLIED TO ROWS, NEVER TO DOCUMENTS. `projectId`, `settled`
+   * and `since` all read the #493 index, so narrowing a search costs nothing —
+   * which is what lets the scan cap be generous enough to survive them.
+   *
+   * EVERY HIT QUOTES ITSELF. A `why` line is the difference between a list an
+   * agent can choose from and one it has to open to evaluate.
+   */
+  findSessions(query: { q: string; projectId?: string; settled?: boolean; since?: number; limit: number }): {
+    sessions: Array<{ id: string; title?: string; projectId?: string; activity: string; updatedAt: number; runId?: string; why: string }>;
+    index: "fts5" | "like";
+    more: boolean;
+  } {
+    const store = this.executionStore;
+    // Refused for `grepSession`'s reason: a search across every conversation on
+    // the machine is exactly the fold the index exists to replace.
+    if (!store) throw new EngineStateError("conflict", "this engine's store cannot search across sessions");
+    const terms = query.q.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+    const hits = store.searchTurnText(terms, FIND_SCAN);
+    const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
+    const chosen = new Map<string, { id: string; title?: string; projectId?: string; activity: string; updatedAt: number; runId?: string; why: string }>();
+    let more = false;
+    for (const hit of hits) {
+      if (chosen.has(hit.sessionId)) continue;
+      const row = store.sessionRow(hit.sessionId);
+      if (!row) continue;
+      if (query.projectId !== undefined && row.projectId !== query.projectId) continue;
+      if (query.since !== undefined && row.updatedAt < query.since) continue;
+      if (query.settled !== undefined) {
+        const shelved = row.state !== "active" || rowIsShelved(row, at);
+        if (shelved !== query.settled) continue;
+      }
+      if (chosen.size >= query.limit) { more = true; break; }
+      const line = hit.text.split("\n").find((candidate) => terms.some((term) => candidate.toLowerCase().includes(term.toLowerCase()))) ?? hit.text;
+      chosen.set(hit.sessionId, {
+        id: row.id,
+        ...(row.title === undefined ? {} : { title: row.title }),
+        ...(row.projectId === undefined ? {} : { projectId: row.projectId }),
+        activity: row.activity,
+        updatedAt: row.updatedAt,
+        ...(hit.runId ? { runId: hit.runId } : {}),
+        why: firstLine(line, WHY_CHARS),
+      });
+    }
+    return { sessions: [...chosen.values()], index: store.searchIndex, more };
   }
 
   /**
@@ -9503,11 +9917,106 @@ export class EngineStore {
       "turns",
       queue.turns.map((turn) => ({ key: turn.runId, tag: turn.state })),
     );
+    // INSIDE `writeQueue` BECAUSE IT IS THE ONLY WRITER — the same reason the
+    // live index and the queue cache are maintained here rather than at each of
+    // the thirteen transitions. A projection maintained at the call sites would
+    // be a fourteenth thing to remember. See `reconcileTurnSummaries`.
+    this.reconcileTurnSummaries(sessionId, queue);
     this.queueCache.delete(sessionId);
     this.announceQueueChange();
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);
+  }
+
+  /**
+   * WHICH TURN ROWS THIS PROCESS HAS ALREADY FOLDED — the reconcile's memo.
+   *
+   * Sound for exactly the reason `queueCache` and `liveQueueIndex` are: one
+   * writer, in this process, holding the daemon lock. Warmed from sqlite the
+   * first time a session is written to, and emptied by the rollback path, where
+   * the rows it names may no longer exist.
+   *
+   * WITHOUT IT THE RECONCILE IS A SELECT PER QUEUE WRITE, and a queue is written
+   * several times per turn — on the dogfood store's largest session that is 686
+   * rows read to discover that one of them moved. BOUNDED like `itemsCache` and
+   * for its reason: an entry per session ever written would grow with the age of
+   * the daemon. An evicted session simply pays the SELECT again.
+   */
+  private readonly foldedTurnStates = new Map<string, Map<string, Turn["state"]>>();
+  private static readonly FOLDED_TURNS_LIMIT = 8;
+
+  private knownTurnStates(sessionId: string): Map<string, Turn["state"]> {
+    const cached = this.foldedTurnStates.get(sessionId);
+    if (cached) return cached;
+    const known = new Map<string, Turn["state"]>(
+      (this.executionStore?.turnSummaryStates(sessionId) ?? []).map((row) => [row.runId, row.state as Turn["state"]]),
+    );
+    if (this.foldedTurnStates.size >= EngineStore.FOLDED_TURNS_LIMIT) {
+      const oldest = this.foldedTurnStates.keys().next();
+      if (!oldest.done) this.foldedTurnStates.delete(oldest.value);
+    }
+    this.foldedTurnStates.set(sessionId, known);
+    return known;
+  }
+
+  /**
+   * THE TURN PROJECTION, BROUGHT LEVEL WITH THE QUEUE JUST WRITTEN — issue #516.
+   *
+   * IT COMPARES STATES, IT DOES NOT REBUILD. A turn's row is a function of the
+   * turn and its items, and both are settled by the transition that moved the
+   * turn's state — so a row whose stored state matches the queue's is a row that
+   * is already right. On an ordinary write that is zero rows re-folded; on the
+   * write that ends a turn it is one.
+   *
+   * WHICH IS ALSO WHY A TURN GETS A ROW WHEN IT IS ACCEPTED. `queued` is a state
+   * like any other, so the first write after a submit folds the turn and the
+   * input line is searchable from that instant — no second hook, and no turn
+   * that is invisible to `find` until it finishes.
+   *
+   * A ROW WHOSE TURN LEFT THE QUEUE GOES WITH IT. Nothing in the engine removes
+   * a settled turn today, but a projection that could outlive its subject would
+   * put a conversation in `find`'s answer that `outline` then cannot show.
+   */
+  private reconcileTurnSummaries(sessionId: string, queue: SessionQueue): void {
+    const store = this.executionStore;
+    if (!store) return;
+    const known = this.knownTurnStates(sessionId);
+    const stale = queue.turns.filter((turn) => known.get(turn.runId) !== turn.state);
+    const live = new Set(queue.turns.map((turn) => turn.runId));
+    const gone = [...known.keys()].filter((runId) => !live.has(runId));
+    if (stale.length === 0 && gone.length === 0) return;
+    // ONE ITEMS READ FOR THE WHOLE BATCH, by the index's own per-run spans —
+    // `windowedItems`' route, for `windowedItems`' reason.
+    const items = stale.length > 0 ? this.itemsForRuns(sessionId, new Set(stale.map((turn) => turn.runId))) : [];
+    for (const turn of stale) {
+      store.writeTurnSummary(summariseTurn(turn, items));
+      known.set(turn.runId, turn.state);
+    }
+    for (const runId of gone) {
+      store.deleteTurnSummary(sessionId, runId);
+      known.delete(runId);
+    }
+  }
+
+  /**
+   * The items filed under `runs`, read as spans rather than as a document.
+   *
+   * `windowedItems` is the same read for the same reason; it is not reused
+   * because it takes the caller's whole chosen set and this one is called from
+   * inside a write, where the cached projection is the common case and the
+   * indexed span is the fallback rather than the other way round.
+   */
+  private itemsForRuns(sessionId: string, runs: Set<string>): Item[] {
+    if (this.itemsCache.has(sessionId)) return [...this.itemsById(sessionId).values()].filter((item) => runs.has(item.runId));
+    const file = itemsFile(this.paths, sessionId);
+    const index = this.documentIndex(file, itemsIndexFile(this.paths, sessionId));
+    if (!index) return [...this.itemsById(sessionId).values()].filter((item) => runs.has(item.runId));
+    const wanted = index.rows.filter((row) => runs.has(row.key));
+    if (wanted.length === 0) return [];
+    const parsed = ItemSchema.array().safeParse(this.readIndexedRows(file, wanted));
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
+    return parsed.data.filter((item) => runs.has(item.runId));
   }
 
   /**
