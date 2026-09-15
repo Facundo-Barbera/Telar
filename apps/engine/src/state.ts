@@ -5717,7 +5717,22 @@ export class EngineStore {
   createSession(input: {
     draft?: boolean;
     id?: string;
-    projectId: string;
+    /**
+     * WHICH PROJECT — and OPTIONAL since #526, which is the whole of what makes
+     * a project-less session creatable rather than merely expressible.
+     *
+     * ABSENT IS A POSITIVE STATEMENT, the rule `Session.projectId` already
+     * carries: this session belongs to no project, has no checkout, no branch
+     * and no working directory. It is not "the caller forgot" and it is not
+     * "the default project" — there is no such thing here.
+     *
+     * ONE THING FOLLOWS THAT CANNOT BE ASKED FOR: a worktree. A checkout is cut
+     * FROM a repository, so a stated `envMode: "worktree"` with no project is
+     * refused rather than quietly downgraded — the caller asked for something
+     * this session cannot have, and silently giving it something else is how a
+     * session ends up working in a directory nobody chose.
+     */
+    projectId?: string;
     /**
      * WHO STARTED THIS SESSION. Supplied by the daemon from the creating turn's
      * CLAIM TOKEN, never from a tool argument — see `Session.startedFrom`.
@@ -5771,8 +5786,13 @@ export class EngineStore {
     origin?: SessionOrigin;
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
-    const project = this.getProject(input.projectId);
-    this.assertProjectAvailable(input.projectId);
+    // Both reads are about a project, so both are skipped when there is none —
+    // never replaced by a guess at which project was meant.
+    const project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+    if (input.projectId !== undefined) this.assertProjectAvailable(input.projectId);
+    if (project === undefined && input.envMode === "worktree") {
+      throw new EngineStateError("invalid_request", "a worktree is cut from a project, and this session has none");
+    }
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = this.readDocument(metadata);
@@ -5811,14 +5831,27 @@ export class EngineStore {
      * nobody typed it for this session — so it falls back like the machine's.
      * A stated `worktree` on the call still throws.
      */
-    const preferred = project.envMode ?? this.getSessionDefaults().envMode;
-    const envMode = input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local");
+    /**
+     * A PROJECT-LESS SESSION IS `local`, and the ladder is not consulted.
+     *
+     * `EnvMode` says where work LANDS, and its two answers are "the project's
+     * own checkout" and "a checkout of this session's own". Neither is true
+     * here, and the workspace below says so properly (`mode: "none"`); this
+     * field takes the one value that claims nothing extra. Asking the standing
+     * preference would let a machine-wide `worktree` turn into a refusal for a
+     * session that never had a repository to cut from.
+     */
+    const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
+    const envMode =
+      project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
     if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
       throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
     }
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "unknown provider driver");
+    }
     if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
     /**
      * THE WORKTREE IS PLANNED HERE AND CUT IN THE BACKGROUND — issue #496.
@@ -5842,7 +5875,7 @@ export class EngineStore {
      * missing for those seconds is the directory, and the row says so.
      */
     const cut =
-      envMode === "worktree" && !input.draft
+      envMode === "worktree" && !input.draft && project !== undefined
         ? (() => {
             const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
             // The repository probe inside this is the same one the
@@ -5866,7 +5899,12 @@ export class EngineStore {
           // commit the checkout will start from, so a reader asking "what has
           // this session done" has its anchor from the first instant.
           { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
-        : (() => {
+        : project === undefined
+          ? // NO PROJECT MEANS NO DIRECTORY — see `SessionWorkspace`'s `none`
+            // variant. There is nothing to resolve a base against either: a
+            // base is a commit, and there is no repository here.
+            { mode: "none" as const }
+          : (() => {
             /**
              * A LOCAL SESSION GETS A BASE TOO, which it never used to.
              *
@@ -5887,7 +5925,9 @@ export class EngineStore {
           })();
     const session: Session = {
       id,
-      projectId: input.projectId,
+      // Written only when there IS one. An explicit `undefined` would be a
+      // second spelling of absent on a field whose absence is the statement.
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       environmentId: "local",
       title: input.title?.trim() || "New session",
       state: "active",
@@ -5917,7 +5957,7 @@ export class EngineStore {
        * the honest outcome, because the reader's sentence was "conversations in
        * this project open on THIS", and this is not that conversation.
        */
-      ...(project.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
+      ...(project?.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
         ? { model: project.defaultModel }
         : {}),
       workspace,
@@ -5946,7 +5986,7 @@ export class EngineStore {
     // AFTER the document, never before: the flip this schedules writes the same
     // record, and a cut that finished first would be overwritten by the row that
     // said it had not started.
-    if (cut !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
+    if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
     return structuredClone(session);
   }
 
