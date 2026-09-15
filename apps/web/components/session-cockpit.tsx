@@ -106,7 +106,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -1087,6 +1087,62 @@ function SessionTurnBody({
       </Message>
     </div>
   );
+}
+
+/**
+ * A TURN NOWHERE NEAR THE VIEWPORT COSTS ITS BOX AND NOTHING ELSE (#498).
+ *
+ * Paging history in mounts turns and never unmounts them, so a reader who walks
+ * back through a long session ends up with two hundred turns' worth of layout,
+ * style and paint live in one document — and every one of them is re-laid-out
+ * when anything above changes. `content-visibility: auto` is the browser's own
+ * answer: it skips the rendering work for a subtree that is far enough off
+ * screen, and does it again the moment the subtree comes near.
+ *
+ * NO VIRTUAL LIST, deliberately. A windowing library would own the scroll
+ * container, which this conversation already gives to use-stick-to-bottom, and
+ * it would need a height for a turn before the turn exists — the thing nobody
+ * can know here, where one turn is a sentence and the next is forty tool calls.
+ *
+ * WHICH IS WHY THE SIZE IS MEASURED RATHER THAN GUESSED. A skipped subtree
+ * still has to occupy its space or the scrollbar lurches; `contain-intrinsic-
+ * size: auto <height>` gives the browser the height this turn actually rendered
+ * at, and the `auto` keyword lets it keep its own last-rendered size once it has
+ * one. The measurement is taken from the real render, so the element never
+ * changes height at the moment it starts being skipped.
+ *
+ * THE LIVE TURN IS NEVER SKIPPED. It is at the bottom of the window by
+ * definition — the only place `content-visibility` would do nothing — and its
+ * height changes with every delta, which would make one measurement a lie.
+ */
+export function TurnFrame({ skippable, children }: { skippable: boolean; children: React.ReactNode }) {
+  const frame = useRef<HTMLDivElement>(null);
+  /**
+   * WRITTEN STRAIGHT ONTO THE ELEMENT rather than held as state, because the
+   * value is a MEASUREMENT of the element it is then applied to — routing it
+   * through a render would mean a second render per turn to say something the
+   * DOM already knew. React never sets `style` here (this div has no `style`
+   * prop), so there is nothing for it to clobber.
+   */
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    if (!skippable) {
+      element.style.removeProperty("content-visibility");
+      element.style.removeProperty("contain-intrinsic-size");
+      return;
+    }
+    // Measured ONCE. A second reading, taken while the turn is skipped, would
+    // measure the PLACEHOLDER and lock it in — and a settled turn's height does
+    // not move on its own anyway: a fold the reader opens is rendered at natural
+    // height, and the `auto` keyword is what remembers the new one.
+    if (element.style.getPropertyValue("content-visibility")) return;
+    const measured = element.offsetHeight;
+    if (!measured) return;
+    element.style.setProperty("content-visibility", "auto");
+    element.style.setProperty("contain-intrinsic-size", `auto ${measured}px`);
+  }, [skippable]);
+  return <div ref={frame}>{children}</div>;
 }
 
 function EmptyTranscript({ loading }: { loading: boolean }) {
@@ -3230,10 +3286,14 @@ export function SessionCockpit({
                 middle of the screen and is the whole interface; an empty-state
                 card above it would be a second thing competing to be read. */}
             {!error && !fresh && shown.length === 0 && <EmptyTranscript loading={loading} />}
-            {/* AN EXPLICIT CLICK, NOT A SCROLL TRIGGER. The reader asking for
-                history is the only thing that should fetch it — reaching the
-                top of the window to re-read something must stay free. */}
-            {page?.more && (
+            {/* REACHING THE TOP IS THE GESTURE, and the button is still here
+                for the reader who never scrolls (#498). Nothing is fetched
+                unless there is a page above and none is in flight, so arriving
+                at the top to re-read something is as free as it ever was; what
+                is gone is the wall it used to hit every twenty turns. The edge
+                also puts the viewport back where it was once the page lands —
+                see `ConversationTopEdge`. */}
+            <ConversationTopEdge more={Boolean(page?.more)} loading={loadingOlder} onReach={loadOlder}>
               <div className="mx-auto w-full max-w-[50rem]">
                 <Button
                   type="button"
@@ -3245,7 +3305,7 @@ export function SessionCockpit({
                   {loadingOlder ? "Loading earlier turns…" : "Load earlier turns"}
                 </Button>
               </div>
-            )}
+            </ConversationTopEdge>
             {/* WHERE THIS SESSION'S FILES ARE, so a row can tell the project's
                 own work from the harness reading its bundled skills out of a
                 temp directory (#354). One fact about the session, stated once,
@@ -3259,6 +3319,7 @@ export function SessionCockpit({
                  mistaken for having seen the answer above it, and vice versa.
                  See components/session/read-receipt.tsx. */
               <Fragment key={turn.runId}>
+              <TurnFrame skippable={turn.runId !== active?.runId}>
               <SessionTurn
                 turn={turn}
                 roster={roster}
@@ -3276,6 +3337,10 @@ export function SessionCockpit({
                   ? { onResumeNow: () => void resumeNow(turn.runId) }
                   : {})}
               />
+              </TurnFrame>
+              {/* OUTSIDE THE FRAME. The receipt marker is watched by its own
+                  IntersectionObserver, and a skipped subtree is exactly the
+                  thing that must not be reported as seen. */}
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
             ))}
