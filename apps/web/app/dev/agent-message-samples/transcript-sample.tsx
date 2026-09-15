@@ -21,5 +21,5 @@ const turn: JournalTurn = {
   ],
 };
 export function TranscriptSample() {
-  return <section className="my-8 border-y py-6" aria-label="Transcript layout sample"><SessionTurn turn={turn} requests={[]} sending={false} live={false} now={1} onDecide={() => {}} onRetry={() => {}} /></section>;
+  return <section className="my-8 border-y py-6" aria-label="Transcript layout sample"><SessionTurn turn={turn} requests={[]} sending={false} live={false} onDecide={() => {}} onRetry={() => {}} /></section>;
 }

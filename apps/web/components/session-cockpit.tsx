@@ -690,7 +690,6 @@ function SessionTurnBody({
   requests,
   sending,
   live,
-  now,
   onDecide,
   onRetry,
   onOpenAgent,
@@ -729,7 +728,6 @@ function SessionTurnBody({
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
   live: boolean;
-  now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   /** Abandon an ambiguous run's execution and keep talking — the recovery
    *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
@@ -921,7 +919,6 @@ function SessionTurnBody({
               compacting={isCompacting(turn)}
               startedAt={turn.startedAt}
               {...(turn.lastActivityAt ? { lastActivityAt: turn.lastActivityAt } : {})}
-              now={now}
             />
           )}
           {turn.usage && !live && (
@@ -2273,7 +2270,6 @@ export function SessionCockpit({
   // it, and the send button must not read as a Stop.
   const active =
     transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state) && !turn.held);
-  const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
   /** The provider is squeezing its context right now — an open
    *  context_compaction row on the live turn. Gates the compact button so the
    *  client tells the same story the engine enforces. */
@@ -2284,12 +2280,28 @@ export function SessionCockpit({
    * the affordance. A turn Telar interrupted by quitting lands here too, which
    * is the whole point of recording it as a failure rather than as ambiguity.
    */
-  const [now, setNow] = useState(() => Date.now());
+  /**
+   * THE WALL CLOCK, AND IT IS NO LONGER THE TRANSCRIPT'S (#498).
+   *
+   * A 1 s `setInterval` used to live here and be threaded into every turn as a
+   * `now` prop, so one tick re-rendered the cockpit and all ten turns mounted
+   * under it in order to advance the elapsed seconds inside ONE
+   * `WorkingIndicator`. That clock belongs to the thing that reads it and now
+   * lives there (`useSecondsClock`, transcript.tsx).
+   *
+   * WHAT IS LEFT HERE READS AT HUMAN SCALE, and 30 s is generous for both of
+   * them: `isSettled`, whose window is hours and which returns false on a
+   * working session before it reads this at all, and the header menu's snooze
+   * presets, whose smallest offset is an hour. It is not a regression on the
+   * old clock either way — that one only ticked while a turn was RUNNING, so on
+   * an idle session both of these were already frozen at whatever the cockpit
+   * mounted with.
+   */
+  const [settlingNow, setSettlingNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    const timer = window.setInterval(() => setSettlingNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, []);
 
   // Only OPEN requests on a turn that can still take the answer are actionable;
   // resolved ones are history, and one left on an ended turn has no worker
@@ -2745,7 +2757,7 @@ export function SessionCockpit({
           working: session.activity === "working" || session.activity === "queued",
           waitingOnYou: session.activity === "blocked",
         },
-        { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
+        { now: settlingNow, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
       ),
   );
   const unsettle = async () => {
@@ -2822,7 +2834,7 @@ export function SessionCockpit({
             working: session.activity === "working" || session.activity === "queued",
             waitingOnYou: session.activity === "blocked",
           },
-          now,
+          now: settlingNow,
           // `current` is unconditional here: this menu is only ever about the
           // session this screen is showing, so `Open` is the one verb it can
           // state and cannot perform.
@@ -3100,7 +3112,6 @@ export function SessionCockpit({
                 turn={turn}
                 roster={roster}
                 live={turn.runId === active?.runId}
-                now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
                 onOpenAgent={showAgent}
