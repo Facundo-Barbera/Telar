@@ -166,6 +166,18 @@ export type DriverRun = {
    */
   orientation?: string;
   /**
+   * WHAT THE DESIGNATED COORDINATOR IS TOLD — the Main session briefing, already
+   * resolved by the engine (see `main-session/briefing.ts` and `MainSession`).
+   * Injected through the SAME seam as `orientation` and the per-surface
+   * briefings, once per turn.
+   *
+   * THE TEXT, NOT A FLAG, and it arrives on the claim — `orientation`'s own
+   * reason, and the decision it encodes is narrower: this session is the one
+   * this machine calls main, and the switch was on when the turn was claimed.
+   * ABSENT MEANS INJECT NOTHING, which is every session but at most one.
+   */
+  mainBriefing?: string;
+  /**
    * Files the human attached to THIS message, already on disk.
    *
    * The engine wrote them and owns the paths; a driver reads them and decides

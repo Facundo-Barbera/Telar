@@ -1269,6 +1269,7 @@ export function createClaudeDriver(
       browserSocket,
       telarSocket,
       orientation,
+      mainBriefing,
       run,
       plugins,
       sessions,
@@ -2268,8 +2269,17 @@ export function createClaudeDriver(
        * mid-conversation cold-starts, which is exactly what "off means nothing
        * Telar-authored is injected" requires.
        */
+      /**
+       * THEN WHAT THIS SESSION IS FOR, if this machine has named it Main. Gated
+       * on the SESSION rather than on a capability or a person, and resolved at
+       * claim time like the paragraph above it — so switching Main off takes
+       * effect on the next turn, and the fingerprint below carries it for the
+       * same reason it carries `orientation`. Before the capability briefings
+       * because it says what this conversation is, not how to drive a tool.
+       */
       const briefings = [
         ...(orientation ? [orientation] : []),
+        ...(mainBriefing ? [mainBriefing] : []),
         ...(browserSocket ? [BROWSER_BRIEFING] : []),
         ...(run ? [RUN_BRIEFING] : []),
       ];
@@ -2359,6 +2369,13 @@ export function createClaudeDriver(
          * different system prompt.
          */
         orientation: orientation ?? null,
+        /**
+         * Same rule once more, and here it is what makes "disable removes the
+         * briefing" true rather than aspirational: the paragraph is appended at
+         * query creation, so a session that stops being Main must cold-start
+         * rather than keep a live query that is still carrying it.
+         */
+        mainBriefing: mainBriefing ?? null,
         /**
          * THE `telar` WALL'S LEASE. A STABLE TOKEN IS NOT CATALOG COHERENCE:
          * re-collecting per request keeps dispatch honest server-side, but a

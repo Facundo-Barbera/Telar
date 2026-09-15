@@ -30,6 +30,7 @@ import {
   type ComputerUseStatus,
   type AgentOrientation,
   type InboxPolicy,
+  type MainSession,
   type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
@@ -329,6 +330,25 @@ export type LiveSessionsAnswer = {
    * band the rows it holds or must ask again.
    */
   settledCount?: number;
+  /**
+   * WHICH CONVERSATION THIS MAC CALLS MAIN, if any — see `MainSession` (#522).
+   *
+   * IT RIDES THIS READ for the reason `daemonId`, `inbox` and `layout` do: this
+   * is the one request every rail already makes, per host, per tick, and a
+   * two-field document fetched beside it would be a second round trip for
+   * something that moves twice a year. The desktop rail and the phone's sidebar
+   * then read the flag from the same answer, which is what stops them
+   * disagreeing about whether the entry is there.
+   *
+   * AND THE CURSOR MOVES WITH IT. `main-session.json` is on the engine's
+   * `listRevision` allowlist, so flipping the switch invalidates every rail's
+   * conditional read — without that this would ride an answer no rail asks for
+   * again until something else happens on the machine.
+   *
+   * Absent from an engine older than the feature, which a client reads as "off"
+   * — the same thing it reads for an engine that has never been switched on.
+   */
+  mainSession?: MainSession;
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
@@ -702,6 +722,25 @@ export class EngineClient {
 
   setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
     return this.request("PATCH", "/v2/session-defaults", patch);
+  }
+
+  /** Which conversation this Mac calls main, and whether it is switched on —
+   *  see `MainSession`. Environment-wide, like the two rules above. */
+  mainSession(): Promise<{ mainSession: MainSession }> {
+    return this.request("GET", "/v2/main-session");
+  }
+
+  /**
+   * Switch it on or off, and say which conversation it is.
+   *
+   * `sessionId` DESIGNATES AN EXISTING ONE; `projectId` asks the engine to
+   * create one, and is consulted ONLY when nothing usable is designated already
+   * — which is what makes enable / disable / re-enable and a restart incapable
+   * of leaving two. A bare `{ enabled: true }` with nothing designated is
+   * refused rather than guessing a project.
+   */
+  setMainSession(patch: { enabled?: boolean; sessionId?: string; projectId?: string }): Promise<{ mainSession: MainSession }> {
+    return this.request("PATCH", "/v2/main-session", patch);
   }
 
   /** Where each project group sits in the rail — see `SidebarLayout`.

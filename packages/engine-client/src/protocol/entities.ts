@@ -1058,6 +1058,64 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
+/**
+ * THE ONE DESIGNATED COORDINATOR CONVERSATION — experimental, off by default,
+ * and the whole of what "Main session" is (#522).
+ *
+ * IT DESIGNATES, IT DOES NOT CREATE A KIND. A main session is an ORDINARY
+ * session: the same `createSession` path, the same project and model
+ * conventions, the same rail row underneath, the same tools behind the same
+ * gate. What being main adds is a briefing at the prompt seam and an entry near
+ * the top of the rail. Being main widens no permission and no tool.
+ *
+ * SAME ENVIRONMENT SCOPE AS THE DOCUMENTS ABOVE, and for `AgentOrientation`'s
+ * own reason: this decides what one session on this machine is TOLD, and a
+ * per-browser copy would mean a desktop shell and a phone disagreeing about
+ * which conversation that is.
+ *
+ * `sessionId` OUTLIVES `enabled`, DELIBERATELY. Disabling keeps the id, so
+ * re-enabling designates the conversation that was already main rather than
+ * minting a second one — the requirement that enable, disable, re-enable and a
+ * restart can never leave two. The engine still checks the session EXISTS
+ * before reusing it; a conversation somebody deleted is not a designation.
+ */
+export const MainSession = z.object({
+  /** Off out of the box. Every user who never opens the setting sees exactly
+   *  the Telar they had: no rail entry, no briefing, no document. */
+  enabled: z.boolean(),
+  /** Which conversation is main. Absent means none has been designated yet —
+   *  a distinct state from "designated and switched off". */
+  sessionId: Id.optional(),
+  /**
+   * WHICH DESIGNATION THIS IS — a counter, bumped every time the answer to
+   * "who is Main, and is it on" actually changes.
+   *
+   * IT EXISTS FOR ONE RACE. A turn that was claimed while this session was Main
+   * keeps the coordinator briefing for its whole run — that is the rule, and it
+   * is the right one: a turn in flight finishes with what it started with. But
+   * that turn can still CALL TOOLS after somebody switches Main off, and
+   * `sessions_subscribe` is the one that would quietly restart the monitoring
+   * the switch just stopped. Removing the subscriptions once cannot fix it,
+   * because the turn simply makes new ones.
+   *
+   * SO THE TURN CARRIES THE GENERATION IT WAS CLAIMED UNDER (`Turn.
+   * mainGeneration`), and `subscribe` refuses a caller whose turn's generation
+   * is no longer the current one. A turn with NO generation — an ordinary
+   * session, or this same session on a later human turn after the switch went
+   * off — subscribes exactly as it always did. What is refused is stale
+   * COORDINATOR EXECUTION, not the conversation.
+   *
+   * ABSENT MEANS ZERO, so a document written before this field parses as
+   * "generation nought" rather than failing and costing the designation.
+   */
+  generation: z.number().int().nonnegative().optional(),
+});
+export type MainSession = z.infer<typeof MainSession>;
+
+/** Off, and nothing designated — what this engine did before the document
+ *  existed, which is what an install that never opens Settings keeps doing. */
+export const DEFAULT_MAIN_SESSION: MainSession = { enabled: false };
+
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
@@ -1573,6 +1631,26 @@ export const Turn = z.object({
   completedAt: Timestamp.optional(),
 
   claim: TurnClaim.optional(),
+  /**
+   * WHICH MAIN-SESSION DESIGNATION THIS TURN WAS CLAIMED UNDER — see
+   * `MainSession.generation` (#522).
+   *
+   * STAMPED BY THE ENGINE AT CLAIM TIME and only when this session WAS the
+   * designated one: it is the counterpart of the coordinator briefing on the
+   * claim, and it exists so a turn still running after somebody switched Main
+   * off can be told apart from an ordinary turn in the same conversation.
+   * `subscribe` is the one caller that reads it.
+   *
+   * ON THE TURN RATHER THAN ON THE WIRE, deliberately. The alternative was to
+   * carry it out to the worker and back on every subscribe call, which would
+   * have made a security-shaped rule depend on a client sending a field
+   * faithfully. Here the engine stamps it, the engine reads it, and no tool
+   * shape anywhere carries it — so a model cannot name a generation at all.
+   *
+   * ABSENT IS THE ORDINARY CASE: every turn of every session but the designated
+   * one, and every later turn of that one once the switch is off.
+   */
+  mainGeneration: z.number().int().nonnegative().optional(),
   usage: UsageSnapshot.optional(),
 
   /** The assistant's final text. The full timeline is in the journal; this is

@@ -18,10 +18,12 @@ import {
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
+  DEFAULT_MAIN_SESSION,
   DEFAULT_SESSION_DEFAULTS,
   DEFAULT_SIDEBAR_LAYOUT,
   DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
+  MainSession as MainSessionSchema,
   MAX_SIDEBAR_PROJECT_ORDER,
   MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
@@ -92,6 +94,7 @@ import {
   type GitignoreResult,
   type AgentOrientation,
   type InboxPolicy,
+  type MainSession,
   type SessionDefaults,
   type SidebarLayout,
   type TextGenPolicy,
@@ -152,6 +155,7 @@ import {
   type OutlineRow,
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
+import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -646,6 +650,18 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
+  /**
+   * Which conversation this Mac calls main, and whether it is switched on —
+   * see `MainSession`.
+   *
+   * ITS OWN DOCUMENT, on `SessionDefaults`' own instruction: a field belongs
+   * there only if it decides what a NEW session is built with, and this decides
+   * nothing about creation — it names one conversation that already exists.
+   * Environment-scoped like the rest, for `AgentOrientation`'s reason: it
+   * decides what one session on this machine is told, so a per-browser copy
+   * would brief an agent some of this engine's own clients had switched off.
+   */
+  mainSession: string;
   /** Where each project group sits in the rail — see `SidebarLayout`.
    *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
   sidebarLayout: string;
@@ -751,6 +767,7 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
+    mainSession: path.join(resolved, "main-session.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
@@ -1901,7 +1918,10 @@ export class EngineStore {
       if (path.basename(file) !== "items.json") this.listRevision = this.nextRevision();
       return;
     }
-    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox) {
+    // `mainSession` is on this list for the same reason the other three are: it
+    // rides the live answer, so a rail holding a cursor would otherwise keep
+    // being told "unchanged" while the entry it should be drawing appeared.
+    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.mainSession) {
       this.listRevision = this.nextRevision();
     }
   }
@@ -2772,6 +2792,164 @@ export class EngineStore {
       next.envMode = parsed.data;
     }
     this.writeDocument(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /**
+   * Which conversation this Mac calls main — see `MainSession`.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here the fallback is the
+   * feature being OFF: a document somebody hand-edited into nonsense must cost
+   * the designation rather than briefing an arbitrary session or failing every
+   * claim on the machine.
+   */
+  getMainSession(): MainSession {
+    try {
+      const parsed = MainSessionSchema.safeParse(this.readDocument(this.paths.mainSession));
+      return parsed.success ? parsed.data : { ...DEFAULT_MAIN_SESSION };
+    } catch {
+      return { ...DEFAULT_MAIN_SESSION };
+    }
+  }
+
+  /**
+   * Is THIS the designated conversation, right now?
+   *
+   * THE EXISTENCE CHECK IS NOT HERE, deliberately: the only caller is the claim,
+   * which is holding the session it is asking about. `resolveMainSession` is the
+   * one that has to ask, because it answers about an id nobody is holding.
+   */
+  private isMainSession(sessionId: string): boolean {
+    const main = this.getMainSession();
+    return main.enabled && main.sessionId === sessionId;
+  }
+
+  /**
+   * The designation, with the dangling case resolved — what a client should
+   * draw a rail entry from.
+   *
+   * A CONVERSATION SOMEBODY DELETED IS NOT A DESIGNATION. The id is kept on
+   * disk through a disable (that is what makes re-enabling reuse it), so the
+   * one thing that can outlive it is the session itself; a rail pointed at a
+   * deleted one would draw a row that navigates to a 404. Reading it away here
+   * rather than pruning the document keeps this a read: a getter that wrote
+   * would race every other reader on the machine.
+   */
+  resolveMainSession(): MainSession {
+    const main = this.getMainSession();
+    if (main.sessionId === undefined) return main;
+    return this.sessionExists(main.sessionId) ? main : { enabled: main.enabled };
+  }
+
+  /** Does a session document exist, without the throw `getSession` makes? The
+   *  designation asks this about an id that may be months old. */
+  private sessionExists(sessionId: string): boolean {
+    if (!ID.test(sessionId)) return false;
+    return this.readDocument(sessionMetadataFile(this.paths, sessionId)) !== undefined;
+  }
+
+  /**
+   * SWITCH IT ON OR OFF, AND SAY WHICH CONVERSATION IT IS — the whole of
+   * designation, in one place (#522).
+   *
+   * WHY THE CREATE LIVES HERE rather than in the route: "enable, disable,
+   * re-enable and a restart must never leave two" is a rule about the ORDER of
+   * a read and a write, and a route that read the document, decided, and then
+   * called `createSession` would be a second place that order lives. So the
+   * ladder is stated once:
+   *
+   *   1. An explicit `sessionId` designates that conversation. It must exist —
+   *      naming one that does not is a bad request, not a silent create.
+   *   2. Otherwise, whatever is already designated and still exists is reused.
+   *      This is the rung that makes re-enabling and a restart idempotent, and
+   *      it is checked BEFORE `projectId` is looked at at all.
+   *   3. Only then does `projectId` create one, through the ordinary
+   *      `createSession` path with this machine's ordinary conventions — no
+   *      driver, model or workspace of its own.
+   *
+   * ENABLING WITH NOTHING TO DESIGNATE IS REFUSED. A project is required in this
+   * slice (the issue says so outright), and guessing one would be the engine
+   * choosing where a person's coordinator lives.
+   *
+   * DISABLING KEEPS THE ID AND THE CONVERSATION. It stops the briefing and the
+   * rail entry, and it drops the subscriptions the main session took out — so
+   * "off" means monitoring actually stops rather than merely being invisible.
+   * It deletes no history, stops nothing it delegated to, and leaves an
+   * ordinary resumable session behind.
+   */
+  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; projectId?: unknown }): MainSession {
+    const stored = this.getMainSession();
+    const next: MainSession = { ...stored };
+    delete next.generation;
+
+    if (patch.sessionId !== undefined) {
+      assertId(patch.sessionId, "session id");
+      // Throws `not_found` for an id nobody holds — the refusal a person typing
+      // one in wants, rather than a designation that draws a broken row.
+      this.getSession(patch.sessionId);
+      next.sessionId = patch.sessionId;
+    } else if (next.sessionId !== undefined && !this.sessionExists(next.sessionId)) {
+      // The designated conversation is gone. Forget it here, where we are
+      // writing anyway, so the create below is reached rather than refused.
+      delete next.sessionId;
+    }
+
+    if (patch.enabled !== undefined) {
+      if (typeof patch.enabled !== "boolean") {
+        throw new EngineStateError("invalid_request", "main session enabled must be true or false");
+      }
+      next.enabled = patch.enabled;
+    }
+
+    if (next.enabled && next.sessionId === undefined) {
+      if (patch.projectId === undefined) {
+        throw new EngineStateError("invalid_request", "turning the main session on needs a project to create it in, or a session to designate");
+      }
+      assertId(patch.projectId, "project id");
+      /**
+       * THE ORDINARY CREATE PATH, with nothing said beyond the title. Driver,
+       * model, workspace and provider all fall to this machine's own defaults —
+       * the issue's "normal model and project conventions" — because a main
+       * session that quietly ran on a different provider from every other
+       * session would be a second kind of session after all.
+       */
+      next.sessionId = this.createSession({ projectId: patch.projectId, title: "Main" }).id;
+    }
+
+    /**
+     * THE GENERATION MOVES WHEN THE ANSWER DOES, and not otherwise.
+     *
+     * "Who is Main, and is it on" is the whole of what it counts, so enabling
+     * an already-enabled designation with the same session writes the same
+     * number — a settings pane that saved twice must not invalidate a turn that
+     * is legitimately still coordinating. Every real change bumps it: off, on
+     * again, or moved to another conversation. See `MainSession.generation`.
+     */
+    const moved = next.enabled !== stored.enabled || next.sessionId !== stored.sessionId;
+    next.generation = moved ? (stored.generation ?? 0) + 1 : stored.generation ?? 0;
+    this.writeDocument(this.paths.mainSession, { version: STATE_VERSION, ...next });
+    /**
+     * OFF MEANS THE WAKES STOP. A subscription the main session took out while
+     * coordinating would otherwise keep starting turns on a conversation that
+     * is no longer briefed to coordinate — which is the one way a disabled
+     * feature could still spend a person's provider quota. Only the ones it
+     * SUBSCRIBED to: a subscription some other session holds ON it is that
+     * session's, and dropping it would stop work nobody switched off.
+     *
+     * AND THE WAKES ALREADY IN THE QUEUE, all of them — not just the ones whose
+     * subscription is still there to be matched. A `once` subscription is
+     * removed the moment it fires, so the wake it produced a second before the
+     * switch went off has nothing left to link it to its subscription, and it
+     * would run, spend a turn, and report on work nobody is coordinating any
+     * more. Only WAKE turns: a queued human message and a queued peer task are
+     * explicitly requested work, and disabling a briefing is not a reason to
+     * throw either away. A wake already claimed or running is the worker's and
+     * finishes.
+     */
+    if (!next.enabled && stored.sessionId !== undefined) {
+      this.dropSubscriptionsBy(stored.sessionId);
+      this.discardQueuedWakes(stored.sessionId);
+    }
     return { ...next };
   }
 
@@ -6242,7 +6420,7 @@ export class EngineStore {
    * another's shelf; they cannot, because there is one function and the row
    * carries the fields it reads.
    */
-  private shelfFromIndex(inbox: InboxPolicy, all: boolean): { chosen: Set<string>; settledCount: number } | undefined {
+  private shelfFromIndex(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } | undefined {
     if (!this.executionStore) return undefined;
     // ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — see the document
     // path below for why a test's counting clock must not meet a wall clock here.
@@ -6252,7 +6430,7 @@ export class EngineStore {
     // `liveSessions` carries the ACTIVE sessions and nothing else, so the read
     // seeks past the archived rows rather than folding and dropping them.
     for (const row of this.executionStore.liveSessionRows()) {
-      if (rowIsShelved(row, at)) {
+      if (row.id !== keep && rowIsShelved(row, at)) {
         settledCount += 1;
         if (!all) continue;
       }
@@ -6382,6 +6560,11 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
+    /** Which conversation this Mac calls main (#522) — resolved, so a deleted
+     *  one reads as none. Rides this answer for `inbox`'s reason: it is the one
+     *  read every rail already makes, and both the cockpit's rail and the
+     *  phone's sidebar draw their entry from it. */
+    mainSession: MainSession;
     revision: number;
     settledCount: number;
   } {
@@ -6393,7 +6576,26 @@ export class EngineStore {
      */
     const revision = this.sessionsRevision({ all: options.all === true });
     const inbox = this.getInboxPolicy();
-    const indexed = this.shelfFromIndex(inbox, options.all === true);
+    // Read once and spread into both arms below, like `inbox`: the two paths
+    // differ in how they find the ROWS, never in what rides beside them.
+    const mainSession = this.resolveMainSession();
+    /**
+     * THE DESIGNATED CONVERSATION IS NEVER SHELVED OUT OF THIS ANSWER (#522).
+     *
+     * The rail draws its Main entry from the row in this list, and settling is
+     * a TIME rule — three days quiet by default — so without this the entry the
+     * setting promises would disappear on its own, on a Tuesday, for a feature
+     * the person had not switched off. It is the same argument the pinned band
+     * makes: a row somebody said to keep in front of them is not one a window
+     * gets to hide. It is exempted from `settledCount` too, because it is on
+     * the list rather than behind the shelf.
+     *
+     * ONLY WHILE ENABLED. A designation that is switched off is an ordinary
+     * conversation and settles like any other — which is exactly what "the
+     * session remains an ordinary resumable session" has to mean.
+     */
+    const keep = mainSession.enabled ? mainSession.sessionId : undefined;
+    const indexed = this.shelfFromIndex(inbox, options.all === true, keep);
     if (indexed) {
       /**
        * ══ THE INDEXED PATH — issue #493 ══
@@ -6418,6 +6620,7 @@ export class EngineStore {
         ...full,
         sessions: full.sessions.map(liveRow),
         inbox,
+        mainSession,
         revision,
         settledCount: indexed.settledCount,
       };
@@ -6440,7 +6643,10 @@ export class EngineStore {
        * there is one). Converting here is what lets the rule be one function.
        */
       const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
-      if (isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
+      // `keep` is the designated conversation — see the note where it is
+      // resolved. The document path has to agree with the indexed one above, or
+      // the rail's Main entry would depend on which backend answered.
+      if (session.id !== keep && isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
     }
     const sessions = options.all === true ? full.sessions : full.sessions.filter((session) => !shelved.has(session.id));
     return {
@@ -6454,6 +6660,7 @@ export class EngineStore {
         ? full.assignments
         : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
       inbox,
+      mainSession,
       revision,
       settledCount: shelved.size,
     };
@@ -7391,6 +7598,15 @@ export class EngineStore {
     // The watermark rides the claim: everything submitted from here on was
     // written against a session the person had reason to think was live.
     turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
+    /**
+     * AND WHICH MAIN DESIGNATION IT IS RUNNING UNDER, if any — see
+     * `Turn.mainGeneration` (#522). Stamped in the same breath as the claim and
+     * on the same condition as the coordinator briefing, so the two can never
+     * disagree about whether this turn is a coordinator's: a turn that was
+     * briefed to coordinate is exactly the one that must stop being able to
+     * re-subscribe once the switch goes off.
+     */
+    if (this.isMainSession(sessionId)) turn.mainGeneration = this.getMainSession().generation ?? 0;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -7864,6 +8080,16 @@ export class EngineStore {
          * nothing.
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
+        /**
+         * THE COORDINATOR BRIEFING, DECIDED HERE AND NOWHERE ELSE (#522).
+         *
+         * Same rule as the orientation above, one condition narrower: the words
+         * are the engine's and so is "is this the designated session", so the
+         * claim carries the OUTCOME. Resolved at CLAIM TIME, which is what makes
+         * the disable rule true as stated — a turn already in flight keeps the
+         * briefing it started with, and the next turn is claimed without one.
+         */
+        ...(this.isMainSession(session.id) ? { mainBriefing: MAIN_SESSION_BRIEFING } : {}),
         turn,
       };
     }
@@ -8760,6 +8986,46 @@ export class EngineStore {
   // ── Subscriptions — one session asking to be woken by another ─────────────
 
   /**
+   * REFUSE A COORDINATOR THAT IS NO LONGER ONE — the second half of "disable
+   * stops the monitoring" (#522).
+   *
+   * THE RACE IT CLOSES. A turn claimed while its session was Main keeps the
+   * coordinator briefing for its whole run; that is deliberate, and it means
+   * the turn is still being told to delegate and subscribe long after somebody
+   * may have switched Main off. Dropping the subscriptions at disable is a
+   * one-time sweep, and that turn can simply make new ones — so the monitoring
+   * a person just stopped comes back, silently, on the next tool call.
+   *
+   * WHAT IS REFUSED IS A TURN, NOT A CONVERSATION, and the distinction is the
+   * whole design. The formerly-designated session stays an ordinary, fully
+   * usable session: a later human turn in it is claimed with no generation at
+   * all and subscribes through the ordinary permissions, exactly like any other
+   * conversation. Only a turn that is STILL EXECUTING under a designation the
+   * store has moved past is told no. Ordinary sessions never carry a generation
+   * and are never touched by this.
+   *
+   * IT COVERS EVERY DOOR because it lives in `subscribe` rather than in a tool:
+   * the `sessions` wall, the sessions socket and `POST /v2/sessions/:id/
+   * subscriptions` all bottom out here.
+   *
+   * A SENTENCE THE MODEL CAN ACT ON. It says what happened and what is still
+   * true, because the alternative is a coordinator that retries the same call.
+   */
+  private refuseStaleCoordinator(subscriberSessionId: string): void {
+    // The calling turn is the session's live one — one turn per session is the
+    // invariant every path here relies on, so there is no ambiguity about which.
+    const live = this.readQueue(subscriberSessionId).turns.find((turn) => turn.state === "claimed" || turn.state === "running");
+    if (live?.mainGeneration === undefined) return;
+    const main = this.getMainSession();
+    if (main.enabled && main.sessionId === subscriberSessionId && (main.generation ?? 0) === live.mainGeneration) return;
+    throw new EngineStateError(
+      "conflict",
+      "this session is no longer Telar's Main session, so this turn cannot take out new subscriptions — its monitoring was deliberately stopped. " +
+        "Nothing else about the turn is restricted: finish what you were asked to do and report it. A later turn in this conversation subscribes normally.",
+    );
+  }
+
+  /**
    * SUBSCRIBE. Both sessions must be live: an archived subscriber has nowhere
    * to be woken, and an archived target has nothing left to do. IDEMPOTENT ON
    * THE PAIR — a retried tool call returns the one subscription, with the
@@ -8770,6 +9036,7 @@ export class EngineStore {
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
     }
+    this.refuseStaleCoordinator(subscriberSessionId);
     const subscriber = this.getSession(subscriberSessionId);
     const target = this.getSession(input.targetSessionId);
     if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
@@ -8847,6 +9114,28 @@ export class EngineStore {
     const all = this.readSubscriptions();
     const kept = all.filter((each) => each.subscriberSessionId !== sessionId && each.targetSessionId !== sessionId);
     if (kept.length !== all.length) this.writeSubscriptions(kept);
+  }
+
+  /**
+   * ONE DIRECTION ONLY: what this session asked to be woken BY.
+   *
+   * The narrow twin of `dropSubscriptionsOf`, and the difference is the whole
+   * reason it exists (#522). That one runs when a session is gone, so both ends
+   * are meaningless. This runs when the main session is merely switched off: it
+   * is still there, still resumable, and a subscription somebody else holds ON
+   * it is that session's own business — dropping those would stop work nobody
+   * asked to stop.
+   *
+   * The queued wakes go too, for `unsubscribe`'s reason: "stop waking me" that
+   * left fourteen already-queued wakes to run one by one has stopped nothing a
+   * person could see.
+   */
+  private dropSubscriptionsBy(subscriberSessionId: string): void {
+    const all = this.readSubscriptions();
+    const removed = all.filter((each) => each.subscriberSessionId === subscriberSessionId);
+    if (removed.length === 0) return;
+    this.writeSubscriptions(all.filter((each) => each.subscriberSessionId !== subscriberSessionId));
+    for (const each of removed) this.discardQueuedWakes(each.subscriberSessionId, each.targetSessionId);
   }
 
   /**
@@ -9133,10 +9422,28 @@ export class EngineStore {
    * an unsubscribe means when wakes have already piled up. Turns already
    * claimed or running stay; they are the worker's. Returns how many went.
    */
-  private discardQueuedWakes(subscriberId: string, targetSessionId: string): number {
+  private discardQueuedWakes(subscriberId: string, targetSessionId?: string): number {
     const queue = this.readQueue(subscriberId);
     const at = this.now();
-    const dropped = queue.turns.filter((turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId);
+    /**
+     * `targetSessionId` NARROWS IT TO ONE SOURCE; omitting it means every wake
+     * this session is still holding, whoever it was about — which is what
+     * switching Main off asks for (see `setMainSession`), and what an
+     * unsubscribe must NOT do.
+     *
+     * `wakeReason` IS THE WHOLE TEST OF "AUTOMATED", and it is exact rather than
+     * convenient: a turn is `origin: "session"` for two different reasons, and
+     * carries `wakeReason` for one of them and `sender` for the other (see
+     * `Turn.origin`). A peer's task or report is somebody asking for work, and
+     * it survives here for the same reason a human's queued message does.
+     */
+    const dropped = queue.turns.filter(
+      (turn) =>
+        turn.state === "queued" &&
+        turn.origin === "session" &&
+        turn.wakeReason !== undefined &&
+        (targetSessionId === undefined || turn.wakeReason.sessionId === targetSessionId),
+    );
     if (dropped.length === 0) return 0;
     for (const turn of dropped) {
       turn.state = "discarded";

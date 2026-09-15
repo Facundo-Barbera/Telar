@@ -1530,6 +1530,10 @@ export class EngineWorker {
         // for the same reason the two above are — the worker holds no store
         // handle, and absence is the honest "the person turned it off".
         ...(claim.orientation ? { orientation: claim.orientation } : {}),
+        // The coordinator briefing, forwarded the same way and for the same
+        // reason. Absence is the honest "this is not the designated session, or
+        // the switch is off" — which is every session but at most one.
+        ...(claim.mainBriefing ? { mainBriefing: claim.mainBriefing } : {}),
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH

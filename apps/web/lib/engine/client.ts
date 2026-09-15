@@ -42,6 +42,7 @@ import type {
   InboxPolicy,
   AgentOrientation,
   EnvMode,
+  MainSession,
   SessionDefaults,
   SidebarLayout,
   TextGenPolicy,
@@ -359,6 +360,11 @@ export type LiveSessionsPage = {
    *  behind `?all=1`. Absent from an engine that predates the filter, which
    *  means "you have everything", never "the shelf is empty". */
   settledCount?: number;
+  /** Which conversation this Mac calls Main (#522), resolved — so a designation
+   *  whose session was deleted reads as none. Rides this read for `inbox`'s
+   *  reason: the rail already polls it, per host, per tick. Absent from an
+   *  engine older than the feature, which reads as off. */
+  mainSession?: MainSession;
   unchanged?: false;
 };
 
@@ -490,6 +496,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /** Which conversation this Mac calls Main — see `MainSession`. The SETTINGS
+     *  pane's read; the rail gets the same answer off `liveSessions` below. */
+    mainSession: () => request<{ mainSession: MainSession }>(fetcher, "GET", "/api/main-session"),
+    setMainSession: (patch: { enabled?: boolean; sessionId?: string; projectId?: string }) =>
+      request<{ mainSession: MainSession }>(fetcher, "PATCH", "/api/main-session", patch),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),
