@@ -501,8 +501,7 @@ export type SessionState = z.infer<typeof SessionState>;
  * The `sessions` toolkit lets one session create another. It does NOT create a
  * parent, a child, a depth or an attachment: the two are peers the moment the
  * second one exists, and nothing here records WHICH session made the call. What
- * it records is the same thing `SpoolItem.provenance` records about a filed
- * task — that an agent asked, not a hand — and it exists for exactly one
+ * it records is that an agent asked, not a hand — and it exists for exactly one
  * mechanical reason: with no depth rule, a plain COUNT of live agent-made
  * sessions is the only thing standing between a loop and forty worktrees.
  *
@@ -643,20 +642,15 @@ export const Session = z.object({
    * WHICH PROJECT THIS SESSION BELONGS TO — and OPTIONAL, which is new and is
    * the whole of what makes a project-less session expressible.
    *
-   * Every ordinary session has one. The exception is the Spool's master chat:
-   * `SPEC-organization-workspace` CAP-1 makes it "one project-less
-   * conversation — the module's front door", and the reason is structural
-   * rather than cosmetic. The master answers "where did I stop" ACROSS
-   * projects, and its per-project experts are each scoped to their own — so a
-   * master that carried a project would be scoped to the one thing it must not
-   * be scoped to.
+   * Every ordinary session has one. A session that answers across projects
+   * must not carry one, because carrying a project would scope it to the one
+   * thing it must not be scoped to.
    *
    * ABSENT IS NOT "UNKNOWN". It is a positive statement that this session has
-   * no project, and readers must treat it as one: the spool toolkit reads it as
-   * "every project's items", MCP resolution reads it as "the environment's
-   * global servers and no project's", and a project-scoped list simply does not
-   * contain it. A reader that treats absence as an error turns the front door
-   * into a bug report.
+   * no project, and readers must treat it as one: MCP resolution reads it as
+   * "the environment's global servers and no project's", and a project-scoped
+   * list simply does not contain it. A reader that treats absence as an error
+   * turns a valid session into a bug report.
    */
   projectId: Id.optional(),
   environmentId: EnvironmentId,

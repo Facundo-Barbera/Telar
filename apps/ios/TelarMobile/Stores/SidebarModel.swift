@@ -312,7 +312,9 @@ extension ScopedSessionID {
 /// Public cockpit links are portable between devices; host UUID links stay local to this installation.
 extension Session {
     func cockpitURL(base: URL) -> URL {
-        guard let projectId else { return base.appendingPathComponent("spool") }
+        // A project-less session has no room of its own in the cockpit, so its
+        // link is the cockpit's own front door — what the web opens too.
+        guard let projectId else { return base }
         return base.appendingPathComponent("projects").appendingPathComponent(projectId)
             .appendingPathComponent("sessions").appendingPathComponent(id)
     }

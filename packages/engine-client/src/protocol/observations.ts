@@ -245,14 +245,16 @@ export const WorkerClaim = z.object({
    *
    * IT IS HERE FOR THE SAME REASON `projectRoot` AND `model` ARE — the worker
    * holds no store handle, so anything it needs to execute arrives with the
-   * work. What needs it is the spool toolkit: a spool item's `project` is a
-   * free-form LABEL, not an id, so scoping a session to its own slice means
-   * comparing names, and the worker has no registry to look one up in.
+   * work, and a toolkit that scopes by NAME rather than by id has no registry
+   * to look one up in.
    *
-   * ABSENT MEANS UNSCOPED, which is the project-less master's case — it sees
-   * every project's items, because having no project is the whole point of it.
-   * An older engine that sends nothing therefore degrades to the master's view
-   * rather than to an empty one, and the toolkit says which scope it resolved.
+   * ABSENT MEANS UNSCOPED, which is a project-less session's case. An older
+   * engine that sends nothing therefore degrades to the unscoped view rather
+   * than to an empty one.
+   *
+   * NOTE (#501): the Spool's toolkit was this field's only reader, and it was
+   * decommissioned. The field is kept because the wire carries it and an older
+   * engine still sends it; drop it in a deliberate protocol change, not here.
    */
   project: z.string().min(1).optional(),
   /** Provider continuity from the last completed turn, if any. */

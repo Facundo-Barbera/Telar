@@ -29,26 +29,22 @@ So, as of #264:
 
 ## 1. Model
 
-One note belongs to a **project**, not a session. `ProjectNote` mirrors `SpoolNote`
-(`packages/engine-client/src/protocol/spool.ts`) field for field where the two mean the
-same thing — `{label, at}` stamps, `author: "you" | "session"` stamped once and never
-patched — so the other app can reuse a reader it already has. Three additions:
-`projectId`, `pinned`, `order` (a hand-drag order; pinned sorts first, then `order`).
+One note belongs to a **project**, not a session. `ProjectNote` carries `{label, at}`
+stamps and an `author: "you" | "session"` stamped once and never patched, plus
+`projectId`, `pinned` and `order` (a hand-drag order; pinned sorts first, then `order`).
 
 `author` is the enum and **not** `{ sessionId }`: a second spelling of provenance is worse
 than a missing id, and a session id would be a cross-reference the notebook cannot keep
 valid once the session is archived.
 
 **Stored** one JSON file per project at `<engine root>/notes/<projectId>.json`, derived in
-`notes.ts` from `EngineStatePaths.root` exactly as `shelfPath` derives from
-`SpoolPaths.root`. **`state.ts` is not touched at all** — `notes.ts` imports the path type
+`notes.ts` from `EngineStatePaths.root`. **`state.ts` is not touched at all** — `notes.ts` imports the path type
 and nothing else — so the sibling branches landing there rebase clean. Reads are tolerant
 per row (a hand-edit that breaks one note must not lose the notebook); writes are loud,
-with sentences. Same two-vocabulary contract as the shelf.
+with sentences.
 
-**Delete is a real delete**, unlike the shelf's retire: a shelf note is the record of what
-was known, while a project note is a scratchpad, and a list whose whole job is to stay
-short cannot accumulate tombstones. See §6.
+**Delete is a real delete**, not a retire: a project note is a scratchpad, and a list
+whose whole job is to stay short cannot accumulate tombstones.
 
 ## 2. Engine API
 
@@ -75,7 +71,7 @@ next focus or mount, not within the second.
 
 `/v2/notes/mcp`, its own secret at `<engine root>/notes-mcp-secret.json`, over
 `mcp-socket.ts`'s `ensureSecretFile` / `connectCard` / `handleSocketMessage` — so
-`notes/socket.ts` is ~40 lines, like the spool's and the sessions'. Three doors, three
+`notes/socket.ts` is ~40 lines, like the sessions'. Two doors, two
 keys. `GET /v2/notes/mcp-info` returns the card, behind the normal bearer:
 `{ "mcp": { "url": "http://127.0.0.1:<port>/v2/notes/mcp", "secret": "<32 bytes
 base64url>", "addCommand": "claude mcp add --transport http notes <url> --header
@@ -87,7 +83,7 @@ Tools: `notes_projects()`, `notes_list(projectId?)`, `notes_read(noteId)`,
 test asserts the two lists are equal.
 
 **One deliberate deviation, stated rather than silent.** This wall carries a delete, which
-`sessions-tools/tools.ts` and the spool both refuse on principle. It is kept because the
+`sessions-tools/tools.ts` refuses on principle. It is kept because the
 notebook has no retire to fall back on (§1) — but `notes_delete` **only deletes notes whose
 `author` is `"session"`** and refuses a human's in a sentence. An agent may clean up after
 agents; the user's own notes are the user's.
@@ -123,11 +119,3 @@ second sigil. `detectComposerTrigger` produces one trigger kind for `@…`, and 
 prefix would thread a second kind through the whole editor for a gesture whose whole
 appeal is that `@arch` finds "Architecture decisions" next to `architecture.md`. Notes
 take at most the first four rows (pinned first on an empty query); paths fill the rest.
-
-## 6. The boundary with the Spool
-
-The Spool's shelf is **knowledge across projects** — a guard note, a runbook, a client's
-preferences — kept forever with its provenance and retired rather than deleted; a project
-note is **this repository's scratchpad**, short-lived, deletable, and reachable from the
-composer of every session on that project. They do not merge and neither store reads the
-other.

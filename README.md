@@ -1,31 +1,8 @@
 # Telar
 
-> **Generation is solved; verification is the moat.**
-
 Telar is a project-centric agentic development tool built on the Claude Agent SDK.
-It runs **looms** — self-verifying units of work that plan, fan out into parallel
-threads, build, and verify against an explicit contract. A loom never accepts its
-own work: every terminal `done` is a human sign-off.
-
-## Why
-
-Coding agents generate plausible code all day. What they can't be trusted to do is
-*judge their own output*. Telar puts an independent, read-only **Verifier** between
-generation and acceptance: it drives the running app, checks the work against a
-Verification Contract, and hands concrete failures back to the builder for repair.
-A green verify only moves a loom to `ready` — the human always accepts.
-
-## Model
-
-- **Loom** — a unit of work with a lifecycle: scope → orchestrate → build → verify
-  → *(repair)* → `ready` → **human accept** → `done`.
-- **Orchestrator (weaver)** — decomposes an objective into parallel **threads**
-  (workers), schedules them under a budget, and folds their results.
-- **Verifier** — an agent that can only *observe* (a real browser plus read-only
-  tools), never edit code. Its verdict is trusted precisely because it cannot make
-  itself pass.
-- **The moat** — a red verdict blocks acceptance and `ready → done` is always a
-  human click. There is no `accept` tool an agent can call.
+A local engine owns your projects, their sessions and a durable turn journal; the
+cockpit is the surface you drive them from, in the browser or in the desktop shell.
 
 ## Layout
 
@@ -93,7 +70,7 @@ address there too.
 
 `apps/web` is an independent Next app with its own root-relative routes,
 styles, API adapters, and engine client. It does not mount or compile the legacy
-sidebar, dock, Loom/Workspace navigation, account registry, desktop/browser host,
+sidebar, dock, account registry, desktop/browser host,
 or the legacy app's state/runtime modules. `/settings` in the standalone app is a
 read-only local-runtime guide; it does not manage accounts, credentials, or
 provider configuration.

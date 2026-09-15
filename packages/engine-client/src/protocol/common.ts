@@ -696,7 +696,7 @@ export type McpServer = z.infer<typeof McpServer>;
  */
 /**
  * `projectId` IS OPTIONAL, and absence is meaningful rather than a missing
- * argument: a project-less session (the Spool's master) gets the environment's
+ * argument: a project-less session gets the environment's
  * GLOBAL servers and no project's, which is exactly what the filter below
  * already produces when nothing matches the scoped arm.
  */
