@@ -131,6 +131,30 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       {
+        /**
+         * INDEXED THOUGH IT IS EXPERIMENTAL, because a feature nobody can find
+         * is one nobody can switch off either — and "main" is a word people
+         * will type at this search long before they know what Telar calls it.
+         * The keywords are the ones somebody uses when they have SEEN the rail
+         * entry and want to know what it is: assistant, coordinator, delegate.
+         */
+        title: "Main session",
+        rows: [
+          {
+            title: "Main session (experimental)",
+            hint: "One conversation you coordinate Telar work from — a rail entry and a briefing, no extra tools.",
+            keywords: ["main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Conversation",
+            hint: "Which session is Main — an existing one, or a new one in a project you pick.",
+            keywords: ["main", "designate", "which session", "assistant"],
+            icon: SparklesIcon,
+          },
+        ],
+      },
+      {
         title: "Generated text",
         rows: [
           {

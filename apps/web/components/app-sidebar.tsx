@@ -87,7 +87,7 @@ import {
 import { AppSidebarFooterRow } from "@/components/app-sidebar-footer";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { SidebarProjectFilter } from "@/components/sidebar-project-filter";
-import type { InboxPolicy, Project, SidebarLayout } from "@telar/engine-client";
+import type { InboxPolicy, MainSession, Project, SidebarLayout } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -100,6 +100,7 @@ import {
   useProjectFilter,
 } from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
+import { MainSessionEntry, mainSessionRow } from "@/components/session/main-session-entry";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
@@ -370,6 +371,10 @@ type HostPage = {
    *  opens it. Absent from an engine that predates the filter — which means "you
    *  have everything", so the count is taken from the rows instead. */
   settledCount?: number;
+  /** Which conversation this Mac calls Main (#522). Rides the same read for
+   *  `policy`'s reason — the rail already polls it — and absent from an engine
+   *  older than the feature, which reads as off. */
+  mainSession?: MainSession;
 };
 
 function SidebarBody() {
@@ -381,6 +386,15 @@ function SidebarBody() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
+  /**
+   * WHICH CONVERSATION THIS MAC CALLS MAIN — experimental, off by default, and
+   * `undefined` until the first read answers (#522).
+   *
+   * OFF AND UNANSWERED DRAW THE SAME THING, which is why one state serves both:
+   * the entry is a row the rail does not have until an engine says it does, so
+   * a browser that never got a read in shows exactly the rail it always did.
+   */
+  const [mainSession, setMainSession] = useState<MainSession>();
   /**
    * Started conversations with no session behind them yet.
    *
@@ -724,6 +738,9 @@ function SidebarBody() {
       // the filter, and absent must read as "it sent everything" — the shelf is
       // then counted off the rows, exactly as it always was.
       ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
+      // WHICH ONE THIS MAC CALLS MAIN (#522), straight off the read that was
+      // happening anyway — the rail costs no request for the entry it draws.
+      ...(result.mainSession === undefined ? {} : { mainSession: result.mainSession }),
     };
     // Held so the next not-modified answer has something to BE. Only alongside
     // a tag or a cursor: with neither, every read is a full one and nothing
@@ -760,6 +777,16 @@ function SidebarBody() {
       }
       setUnavailable(false);
       setProjects(local.value.projects);
+      /**
+       * THE LOCAL MAC'S DESIGNATION, AND ONLY IT (#522).
+       *
+       * A paired Mac may have a Main session of its own, and its rows are in
+       * this list — but the entry above the bands says "the conversation I
+       * coordinate FROM", which is a fact about the cockpit you are sitting in.
+       * One entry, as the issue asks; a remote Mac's coordinator is still an
+       * ordinary row inside its project group, exactly where it always was.
+       */
+      setMainSession(local.value.mainSession);
       // THE ARRANGEMENT ANOTHER DEVICE MADE. It rides this Mac's live read, so
       // a drag on the phone or in another tab reaches this rail on the poll it
       // was making anyway — and `observeSidebarLayout` drops it while a drag of
@@ -979,6 +1006,20 @@ function SidebarBody() {
   // renders dimmed under a line saying so, and "Engine unavailable" is left for
   // the browser that has nothing cached to show instead.
   const showingStale = unavailable && sessions.length > 0;
+  /**
+   * THE MAIN ENTRY'S ROW, found among the ones the rail already holds (#522).
+   *
+   * NO READ OF ITS OWN, and no second copy of a session: the designation is an
+   * id, and the row it names is in this list because the engine keeps it there
+   * while Main is on. The rule itself lives beside the component that draws it
+   * — see `mainSessionRow` — so it can be held to rather than read off here.
+   *
+   * OVER `sessions` AND NOT THE FILTERED LIST, deliberately: the project filter
+   * narrows the conversations you are looking THROUGH, and this row is the one
+   * you are looking FROM. Hiding it because its project was unticked would be
+   * the filter arguing with the setting.
+   */
+  const mainRow = mainSessionRow(sessions, mainSession);
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
@@ -1520,6 +1561,34 @@ function SidebarBody() {
             </div>
           </div>
         </div>
+
+        {/*
+          THE MAIN SESSION, ABOVE THE BANDS AND BELOW SEARCH — experimental, and
+          drawn only when this Mac has one switched on (#522).
+
+          ABOVE EVERYTHING INCLUDING DRAFTS, because it is not a band and not a
+          conversation in the list: it is the one entry that is always in the
+          same place, which is the whole of what designating it buys. The bands
+          under it are unchanged, and the conversation itself is still in its
+          project group down there — one row somewhere is not a promise the
+          other one is gone.
+
+          A LINK AND A GLYPH, THE SIZE OF A DRAFT ROW. It needs no status, no
+          branch and no activity: those are questions about work in progress,
+          and this row answers "where do I go to coordinate". Its rule sits
+          underneath, exactly like drafts and pinned, because the boundary that
+          exists is between this and what follows.
+        */}
+        {mainRow && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <SidebarGroupContent>
+              <MainSessionEntry session={mainRow} active={sessionKey(mainRow) === activeSessionId} onNavigate={onNavigate} />
+            </SidebarGroupContent>
+            {/* The rule goes UNDERNEATH, exactly like drafts and pinned: the
+                boundary that exists is between this and what follows. */}
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+          </SidebarGroup>
+        )}
 
         {/*
           DRAFTS SIT ABOVE EVERYTHING, AND COST ONE LINE EACH.
