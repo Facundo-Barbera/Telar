@@ -143,9 +143,16 @@ test("an existing session can be designated, and one that does not exist is refu
 });
 
 test("turning it on with nothing to designate is refused rather than guessed", () => {
+  const engine = store();
   // A project is required in this slice, and choosing one for somebody is the
-  // engine deciding where their coordinator lives.
-  expect(() => store().setMainSession({ enabled: true })).toThrow();
+  // engine deciding where their coordinator lives. A BAD REQUEST, spelled as
+  // one: the settings pane shows the sentence on the row, and a 500 would
+  // read as Telar having broken rather than as the reader owing it an answer.
+  expect(() => engine.setMainSession({ enabled: true })).toThrow(/needs a project/);
+  // AND NOTHING WAS WRITTEN. A refusal that had already flipped the switch, or
+  // created a session on the way to failing, would be the worse half of this.
+  expect(engine.getMainSession()).toEqual({ enabled: false });
+  expect(engine.listSessions("project_one")).toEqual([]);
 });
 
 test("a designated conversation that was deleted reads as none, and the next enable creates", () => {
