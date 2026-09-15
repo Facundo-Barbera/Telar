@@ -480,6 +480,29 @@ function snapshotWindowParam(url: URL): SessionBootstrapWindow | undefined {
   return { turns, ...(before === undefined ? {} : { before }) };
 }
 
+/**
+ * HOW MANY JOURNAL ROWS ONE `GET /v2/sessions/:id/events` MAY ANSWER WITH.
+ *
+ * 200 is the tail a cockpit actually folds per tick, and the size the #490
+ * audit measured at 185 KB / 106 ms against 36.5 MB / 2.48 s for the same
+ * session unpaged. A client that wants fewer says so; one that wants more is
+ * capped, because the cap is what stops a caller from asking for the run back
+ * in one piece and reinstating the cost this page size exists to remove.
+ *
+ * A LIMIT THAT IS NOT A NUMBER IS A BUG IN THE CALLER, not a reason to serve
+ * the whole journal — it is refused rather than defaulted, the same way an
+ * unparseable `turns` is.
+ */
+const EVENT_PAGE_DEFAULT = 200;
+const EVENT_PAGE_MAX = 1000;
+
+function eventPageLimit(raw: string | null): number {
+  if (raw === null) return EVENT_PAGE_DEFAULT;
+  const limit = Number(raw);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new HttpError(400, "invalid_request", "limit must be a positive integer");
+  return Math.min(limit, EVENT_PAGE_MAX);
+}
+
 type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "resume" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
@@ -2927,16 +2950,39 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, sessionBootstrap(store, session.sessionId, snapshotWindowParam(url)));
           return;
         }
+        /**
+         * THE JOURNAL, A PAGE AT A TIME — issue #494.
+         *
+         * This route used to answer with the whole tail above `after`, which on
+         * the biggest dogfood session was 36.5 MB serialised in 2.48 s — one
+         * response the engine builds entirely in memory, the cockpit route
+         * relays entirely in memory, and the client parses entirely in memory
+         * before it can fold a single row. A 200-row page of the same journal
+         * is 185 KB.
+         *
+         * KEYSET, NEVER OFFSET. `after` is an event id, so the window does not
+         * shift under a journal that is being appended to while a client pages
+         * it: `LIMIT ... OFFSET` would drop or repeat rows the moment a turn
+         * streamed a delta mid-walk, which on a live session is always.
+         *
+         * `more` IS EXACT, not "the page came back full". One row beyond the
+         * limit is read and dropped, so a client that pages until `more` is
+         * false never pays a final round trip to be told there was nothing —
+         * and `next` carries the `after` for the following page, present
+         * exactly when `more` is true so the two cannot disagree.
+         */
         if (request.method === "GET" && session.tail === "/events") {
           const after = Number(url.searchParams.get("after") ?? "0");
-          const events = store.readEvents(session.sessionId, after);
+          const limit = eventPageLimit(url.searchParams.get("limit"));
+          // One over, to tell a full page from a full page with more behind it.
+          const read = store.readEvents(session.sessionId, after, limit + 1);
+          const events = read.length > limit ? read.slice(0, limit) : read;
+          const cursor = events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0);
           writeJson(response, 200, {
             events,
-            cursor: events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0),
-            // The store returns the whole tail in one read, so a caller never
-            // has to page. Reported anyway because the field is contract and a
-            // future chunked read must not silently look like a complete one.
-            more: false,
+            cursor,
+            more: read.length > limit,
+            ...(read.length > limit ? { next: cursor } : {}),
           });
           return;
         }
