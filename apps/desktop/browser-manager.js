@@ -503,6 +503,153 @@ function axValue(node, key) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+// --- What an agent reads back: the tree, the console, the network -----------
+// The three answers that are as big as the page rather than as big as the
+// question. They are PURE FUNCTIONS out here, away from the tab and the
+// debugger, for one reason: the only way to know what a heavy page costs a
+// model is to run the renderer over a heavy fixture, and nothing that needs a
+// live CDP session can be handed two thousand nodes in a unit test. The engine
+// puts a byte ceiling on all three (`apps/engine/src/browser/bounds.ts`); the
+// narrowing arguments below are what its marker tells a model to reach for, so
+// they have to actually narrow something.
+
+/** Roles a later call can address. An `img` is in because describing one is
+ *  half of what a model asks a page for. */
+const SNAPSHOT_TARGETABLE_ROLES = new Set([
+  "button", "checkbox", "combobox", "link", "menuitem", "radio", "searchbox",
+  "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
+]);
+/** Indentation stops nesting here; the tree keeps going. Twelve levels of two
+ *  spaces is already a quarter of a line spent on whitespace. */
+const SNAPSHOT_MAX_INDENT = 12;
+const SNAPSHOT_MAX_LINES = 500;
+
+/** Every node's true depth, iteratively. Recursion here is a stack overflow on
+ *  a page with a deep enough chain, which is a crash in the host process for
+ *  the sake of a snapshot. */
+function snapshotDepths(nodes, byId) {
+  const depths = new Map();
+  for (const node of nodes) {
+    if (depths.has(node.nodeId)) continue;
+    const chain = [];
+    let walk = node;
+    while (walk && !depths.has(walk.nodeId)) {
+      chain.push(walk);
+      walk = walk.parentId ? byId.get(walk.parentId) : undefined;
+    }
+    let depth = walk ? depths.get(walk.nodeId) : -1;
+    for (let i = chain.length - 1; i >= 0; i--) depths.set(chain[i].nodeId, ++depth);
+  }
+  return depths;
+}
+
+/**
+ * The accessibility tree, rendered.
+ *
+ * `rootNodeId` narrows to one subtree — what `browser_snapshot {target}` means
+ * — and `maxDepth` cuts the tree off at a relative depth, which is what
+ * `{depth}` means. Both are relative to the ROOT of what is being rendered, so
+ * `{target: "e7", depth: 1}` reads "e7 and its children" whatever e7's
+ * absolute depth in the document happens to be.
+ *
+ * Refs are minted fresh on every render, including a narrowed one: a ref is a
+ * handle into the snapshot that produced it and was never portable between
+ * two of them.
+ */
+function renderSnapshot(nodes, { title = "", url = "", rootNodeId = null, maxDepth = null } = {}) {
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const depths = snapshotDepths(nodes, byId);
+  const scoped = new Map();
+  const inScope = (node) => {
+    if (rootNodeId === null) return true;
+    const chain = [];
+    let walk = node;
+    while (walk && !scoped.has(walk.nodeId)) {
+      if (walk.nodeId === rootNodeId) break;
+      chain.push(walk);
+      walk = walk.parentId ? byId.get(walk.parentId) : undefined;
+    }
+    const answer = walk ? (walk.nodeId === rootNodeId ? true : scoped.get(walk.nodeId)) : false;
+    for (const link of chain) scoped.set(link.nodeId, answer);
+    return answer;
+  };
+  const rootDepth = rootNodeId === null ? 0 : depths.get(rootNodeId) ?? 0;
+  const lines = [`Page: ${title}`, `URL: ${url}`, ""];
+  const refs = new Map();
+  let nextRef = 1;
+  for (const node of nodes) {
+    if (node.ignored) continue;
+    if (!inScope(node)) continue;
+    const relative = (depths.get(node.nodeId) ?? 0) - rootDepth;
+    if (relative < 0) continue;
+    if (maxDepth !== null && relative > maxDepth) continue;
+    const role = axValue(node, "role");
+    const name = axValue(node, "name").replace(/\s+/g, " ").trim();
+    const value = axValue(node, "value").replace(/\s+/g, " ").trim();
+    const backendNodeId = Number(node.backendDOMNodeId || 0);
+    const canTarget = backendNodeId > 0 && (SNAPSHOT_TARGETABLE_ROLES.has(role) || role === "img");
+    if (!name && !value && !canTarget) continue;
+    let ref = "";
+    if (canTarget) {
+      ref = `e${nextRef++}`;
+      refs.set(ref, backendNodeId);
+    }
+    const label = [role || "node", name ? `"${name}"` : "", value ? `value="${value}"` : "", ref ? `[ref=${ref}]` : ""]
+      .filter(Boolean)
+      .join(" ");
+    lines.push(`${"  ".repeat(Math.min(SNAPSHOT_MAX_INDENT, relative))}- ${label}`);
+    if (lines.length >= SNAPSHOT_MAX_LINES) {
+      lines.push("- … snapshot truncated");
+      break;
+    }
+  }
+  return { text: lines.join("\n"), refs };
+}
+
+/**
+ * How loud a console entry is. `level` on `browser_console_messages` is a
+ * FLOOR — the schema has defaulted it to "info" since the tool shipped, and
+ * until now the host ignored it and answered with everything, debug lines
+ * included. Honouring it is what makes the engine's "narrow with `level`"
+ * marker true rather than an instruction that changes nothing.
+ *
+ * `all: true` is the way back to everything.
+ */
+const CONSOLE_LEVEL_RANK = { debug: 0, verbose: 0, trace: 0, log: 1, info: 1, warning: 2, warn: 2, error: 3 };
+const CONSOLE_DEFAULT_RANK = 1;
+
+function consoleRank(level) {
+  const rank = CONSOLE_LEVEL_RANK[String(level || "").toLowerCase()];
+  return rank === undefined ? CONSOLE_DEFAULT_RANK : rank;
+}
+
+/** Console entries as text, oldest first — the order they happened in. The
+ *  engine's bound keeps the TAIL, so the newest lines are the ones that get
+ *  the budget without anything here having to reorder them. */
+function renderConsole(entries, { level = "info", all = false } = {}) {
+  const floor = all ? Number.NEGATIVE_INFINITY : consoleRank(level);
+  const kept = entries.filter((entry) => consoleRank(entry.level) >= floor);
+  if (kept.length === 0) {
+    return entries.length === 0
+      ? "No console messages captured."
+      : `No console messages at ${level} or above (${entries.length} quieter ones captured — pass all: true for those).`;
+  }
+  return kept.map((entry) => `[${entry.level}] ${entry.text}`).join("\n");
+}
+
+/** Network rows as text, oldest first. `filter` is a plain substring over the
+ *  URL, which is what the tool has always documented. */
+function renderNetwork(entries, { filter = "" } = {}) {
+  const needle = String(filter || "");
+  const kept = entries.filter((entry) => !needle || entry.url.includes(needle));
+  if (kept.length === 0) {
+    return entries.length === 0
+      ? "No network requests captured."
+      : `No network requests matching "${needle}" (${entries.length} captured).`;
+  }
+  return kept.map((entry) => `${entry.method} ${entry.url}`).join("\n");
+}
+
 function navigationFlag(webContents, method) {
   const history = webContents.navigationHistory;
   return Boolean(history && typeof history[method] === "function" && history[method]());
@@ -3493,49 +3640,35 @@ class DesktopBrowserManager {
     this.applyVisibility();
   }
 
-  async snapshot(tab) {
+  /**
+   * The page's accessibility tree, optionally narrowed.
+   *
+   * `args.target` is a ref from the PREVIOUS snapshot of this tab — it has to
+   * be resolved against `tab.refs` before the re-mint clears them, which is
+   * the only ordering subtlety here. An unknown ref is refused by name rather
+   * than quietly widened back to the whole page: a model that asked about one
+   * region and got the document would read the answer as the region.
+   */
+  async snapshot(tab, args = {}) {
     const debug = await this.ensureDebugger(tab);
-    const result = await debug.sendCommand("Accessibility.getFullAXTree", { depth: 40 });
-    tab.refs.clear();
-    const nodes = Array.isArray(result.nodes) ? result.nodes : [];
-    const byId = new Map(nodes.map((node) => [node.nodeId, node]));
-    const depths = new Map();
-    const depthOf = (node) => {
-      if (!node?.parentId) return 0;
-      if (depths.has(node.nodeId)) return depths.get(node.nodeId);
-      const depth = Math.min(12, depthOf(byId.get(node.parentId)) + 1);
-      depths.set(node.nodeId, depth);
-      return depth;
-    };
-    const interactive = new Set([
-      "button", "checkbox", "combobox", "link", "menuitem", "radio", "searchbox",
-      "slider", "spinbutton", "switch", "tab", "textbox", "treeitem",
-    ]);
-    const lines = [`Page: ${tab.title}`, `URL: ${tab.url}`, ""];
-    let nextRef = 1;
-    for (const node of nodes) {
-      if (node.ignored) continue;
-      const role = axValue(node, "role");
-      const name = axValue(node, "name").replace(/\s+/g, " ").trim();
-      const value = axValue(node, "value").replace(/\s+/g, " ").trim();
-      const backendNodeId = Number(node.backendDOMNodeId || 0);
-      const canTarget = backendNodeId > 0 && (interactive.has(role) || role === "img");
-      if (!name && !value && !canTarget) continue;
-      let ref = "";
-      if (canTarget) {
-        ref = `e${nextRef++}`;
-        tab.refs.set(ref, backendNodeId);
-      }
-      const label = [role || "node", name ? `\"${name}\"` : "", value ? `value=\"${value}\"` : "", ref ? `[ref=${ref}]` : ""]
-        .filter(Boolean)
-        .join(" ");
-      lines.push(`${"  ".repeat(depthOf(node))}- ${label}`);
-      if (lines.length >= 500) {
-        lines.push("- … snapshot truncated");
-        break;
-      }
+    const target = String(args.target || "").trim();
+    const backendNodeId = target ? tab.refs.get(target) : undefined;
+    if (target && !backendNodeId) {
+      throw new Error(`Unknown browser target ${target}. Take a fresh browser_snapshot first.`);
     }
-    return okText(lines.join("\n"));
+    const result = await debug.sendCommand("Accessibility.getFullAXTree", { depth: 40 });
+    const nodes = Array.isArray(result.nodes) ? result.nodes : [];
+    let rootNodeId = null;
+    if (backendNodeId) {
+      const root = nodes.find((node) => Number(node.backendDOMNodeId || 0) === backendNodeId);
+      if (!root) throw new Error(`${target} is no longer on the page. Take a fresh browser_snapshot first.`);
+      rootNodeId = root.nodeId;
+    }
+    const maxDepth = Number.isInteger(args.depth) && args.depth >= 0 ? args.depth : null;
+    const rendered = renderSnapshot(nodes, { title: tab.title, url: tab.url, rootNodeId, maxDepth });
+    tab.refs.clear();
+    for (const [ref, id] of rendered.refs) tab.refs.set(ref, id);
+    return okText(rendered.text);
   }
 
   backendNode(tab, target) {
@@ -4169,7 +4302,7 @@ class DesktopBrowserManager {
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
         case "browser_navigate_back": await this.goBack(await target()); return okText("Navigated back.");
-        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.tabFor(scope, args)));
+        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.tabFor(scope, args)), args);
         case "browser_click": return this.click(await target(), args, action);
         case "browser_type": return this.type(await target(), args, action);
         case "browser_fill_form": return this.fillForm(await target(), args, action);
@@ -4195,14 +4328,12 @@ class DesktopBrowserManager {
         case "browser_console_messages": {
           const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
-          return okText(tab.console.map((entry) => `[${entry.level}] ${entry.text}`).join("\n") || "No console messages captured.");
+          return okText(renderConsole(tab.console, { level: args.level, all: args.all === true }));
         }
         case "browser_network_requests": {
           const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
-          const filter = String(args.filter || "");
-          const rows = tab.network.filter((entry) => !filter || entry.url.includes(filter));
-          return okText(rows.map((entry) => `${entry.method} ${entry.url}`).join("\n") || "No network requests captured.");
+          return okText(renderNetwork(tab.network, { filter: args.filter }));
         }
         default: throw new Error(`Unsupported desktop browser tool: ${name}.`);
       }
@@ -4449,4 +4580,4 @@ function managerForScope(managers, scopeKey, fallback = null) {
   return best;
 }
 
-module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS };
+module.exports = { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget, normalizeUrl, looksLikeAddress, SEARCH_URL, resolveViewport, fitViewport, zoomStep, DEFAULT_VIEWPORT, VIEWPORT_PRESETS, ZOOM_STEPS, renderSnapshot, renderConsole, renderNetwork, MAX_LOG_ITEMS, MAX_LOG_TEXT };
