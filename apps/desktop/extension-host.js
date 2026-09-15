@@ -12,9 +12,8 @@
  *     main-world shims registered first, then `loadExtension` — every boot,
  *     as Electron requires;
  *   · popup: opened by the library anchored to the toolbar button's rect in
- *     the app window, for the ACTIVE integrated tab;
- *   · privacy: opening the popup BEGINS a private interaction (see
- *     private-interaction.js); the human ends it explicitly.
+ *     the app window, for the ACTIVE integrated tab. Opening it pauses
+ *     nothing — agents' browser tools go on working in every session.
  *
  * Every failure is a sentence in `status()`, never a silent blank. No
  * message payloads are logged; the library's `debug` namespace is left off.
@@ -267,12 +266,11 @@ function download(url, dest, hops = 0) {
 class ExtensionHost {
   /**
    * @param session the integrated browser's session (the persistent partition)
-   * @param deps { privacy: PrivateInteraction, tabs: host tab callbacks for the
-   *   library, rootDir?: where extensions live, fetch?: download override }
+   * @param deps { tabs: host tab callbacks for the library, rootDir?: where
+   *   extensions live, fetch?: download override }
    */
   constructor(session, deps) {
     this.session = session;
-    this.privacy = deps.privacy;
     this.tabs = deps.tabs;
     /** The app window, registered with the library BEFORE the extension
      *  loads so a zero-tab boot still has a current window. */
@@ -301,11 +299,9 @@ class ExtensionHost {
     this.health = { workerErrors: {} }; // { [code]: count }
     this.icon = null; // official 1Password icon data URL, set on ready
     this._startPromise = null;
-    /**
-     * Popup and extension-window lifetimes are tracked by identity. In the app,
-     * the manager tracks visibility without pausing browser tools. A standalone
-     * harness without callbacks falls back to its PrivateInteraction boundary.
-     */
+    /** Popup and extension-window lifetimes, tracked by identity so the app's
+     *  manager can count the surfaces that are open. Nothing is paused by an
+     *  open popup; a standalone harness may leave these unset. */
     this.onHoldOpen = null;
     this.onHoldClose = null;
     /** The session listener `observeHealth` installs, held so `dispose` can
@@ -315,14 +311,12 @@ class ExtensionHost {
     this._holdSeq = 0;
   }
 
-  /** Track an extension surface by id, or use the standalone harness boundary. */
+  /** Track an extension surface by id. */
   openHold(id, reason) {
     if (this.onHoldOpen) this.onHoldOpen(id, reason);
-    else this.privacy.begin(reason, null);
   }
 
-  /** Close one hold by id. With no manager the shared boundary has no
-   *  per-id holds, so nothing to do — its own lifecycle ends it. */
+  /** That surface closed. */
   closeHold(id) {
     if (this.onHoldClose) this.onHoldClose(id);
   }
@@ -351,7 +345,6 @@ class ExtensionHost {
       ...(this.error ? { error: this.error } : {}),
       ...(this.icon ? { icon: this.icon } : {}),
       health: { workerErrors: { ...this.health.workerErrors }, native: nativeHealth() },
-      privacy: this.privacy.state(),
     };
   }
 
@@ -569,9 +562,8 @@ class ExtensionHost {
    * separate HUMAN-ONLY window, never in the integrated browser's tab list:
    * browser tools cannot address a tab that is not a manager tab, and the
    * manager's URL policy (http/https only) is untouched. The window is
-   * parented to the app window, tracked with the library as a tab (so
-   * chrome.tabs/runtime messaging work), and opening it begins a private
-   * interaction; it stays private until the human resumes.
+   * parented to the app window and tracked with the library as a tab (so
+   * chrome.tabs/runtime messaging work).
    */
   openExtensionPage(url, parent) {
     const parsed = new URL(url);

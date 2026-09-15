@@ -57,10 +57,8 @@ async function main() {
   const hostTabs = [];
   // The product's route for the extension's own pages (main.js createTab →
   // ExtensionHost.openExtensionPage): a human-only window, not a tab.
-  const { PrivateInteraction } = require("./private-interaction");
   const { ExtensionHost } = require("./extension-host");
-  const privacy = new PrivateInteraction();
-  const pageHost = Object.assign(Object.create(ExtensionHost.prototype), { session: ses, privacy, extensionWindows: new Set() });
+  const pageHost = Object.assign(Object.create(ExtensionHost.prototype), { session: ses, extensionWindows: new Set() });
   const extensions = attachExtensionSupport(ses, {
     createTab: async (details) => {
       if (/^chrome-extension:/.test(details.url || "")) {
@@ -126,7 +124,7 @@ async function main() {
     try { text = await w.webContents.executeJavaScript("(document.body?.innerText || '').trim().length", true); } catch {}
     pageInfo.push({ visible: w.isVisible(), size: w.getSize(), url: w.webContents.getURL().replace(/^chrome-extension:\/\/[a-p]{32}/, "ext:").slice(0, 100), title: w.webContents.getTitle(), textChars: text });
   }
-  report.afterClick = { tabsCreated: hostTabs.length - tabsCreatedBefore, extensionWindows: pageInfo, privacy: privacy.state().private };
+  report.afterClick = { tabsCreated: hostTabs.length - tabsCreatedBefore, extensionWindows: pageInfo };
   note(`after click: ${JSON.stringify(report.afterClick)}`);
   note(`popup: ${JSON.stringify(report.popup)}`);
   note(`alias: ${JSON.stringify(report.alias)}`);

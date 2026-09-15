@@ -45,7 +45,6 @@ import {
 import dynamic from "next/dynamic";
 import type { AnnotateCapture } from "@/components/browser-annotate";
 import { captionFor, captureFileName, type ElementBox } from "@/lib/browser-annotation";
-import { BrowserPrivacyBanner, type DesktopPrivacyState } from "@/components/browser-privacy-banner";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import {
   describePermissionDenial,
@@ -152,10 +151,6 @@ export type DesktopBrowserProfile = {
   projects?: string[];
 };
 
-/** The credential boundary, as the shell reports it (private-interaction.js).
- *  Declared beside the bar that draws it so the two cannot drift. */
-export type { DesktopPrivacyState } from "@/components/browser-privacy-banner";
-
 /** How the active tab is presented inside the panel's bounds: its intrinsic
  *  size, the presentation scale, and the native rect (window coordinates)
  *  the view occupies — what the device frame is drawn around. */
@@ -187,7 +182,6 @@ export type DesktopBrowserPanelState = {
   scopeKey: string;
   controller?: "agent" | "human" | "idle";
   tabs: DesktopBrowserTab[];
-  privacy?: DesktopPrivacyState;
   presentation?: DesktopBrowserPresentation | null;
   /** The identity this session's NEXT tab opens in, and every identity it
    *  could be switched to. Null before the profile binding lands. */
@@ -229,7 +223,6 @@ export type DesktopExtensionStatus = {
      *  `helpers` is the count of live 1Password browser-helper processes. */
     native: { state: "not attempted" | "available" | "unavailable"; helpers: number; lastExitCode?: number | null; hint?: string };
   };
-  privacy?: DesktopPrivacyState;
 };
 
 /** One short sentence of the extension's real health for the toolbar. */
@@ -308,12 +301,6 @@ export type DesktopBrowserBridge = {
   capture?(scopeKey: string, options?: { fullPage?: boolean; elements?: boolean }): Promise<DesktopBrowserCapture>;
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
-  /** End the private window. Plain: the shell re-probes the holding page and
-   *  refuses unless it answers clean. `force`: the person is asserting the
-   *  sign-in is over on a page that will not answer at all (#480). Optional
-   *  because an older shell does not have it — the bar then draws no buttons
-   *  rather than one that throws. */
-  resumeFromPrivate?(options?: { force?: boolean }): Promise<DesktopPrivacyState>;
   /**
    * Hand a page to the user's DEFAULT browser. Optional because an older shell
    * does not have it, and the tab menu hides the row rather than offering one
@@ -1227,9 +1214,7 @@ export function DesktopBrowserSurface({
     bridge,
     scopeKey,
     hostRef,
-    // The privacy bar is a ROW ABOVE THE STRIP, so it moves the native view
-    // down; its two states are different heights, so both are in the key.
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), Boolean(state?.privacy?.private), Boolean(state?.privacy?.stuck), activeTab?.sleeping, activeTab?.preview].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, Boolean(actionError), Boolean(extensionError), Boolean(permissionDenial), activeTab?.sleeping, activeTab?.preview].join("|"),
     viewportMode,
     overlayRef,
   );
@@ -1597,15 +1582,6 @@ export function DesktopBrowserSurface({
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeys}>
-      {/* THE CREDENTIAL BOUNDARY (#480), ABOVE EVERYTHING — the pause is on the
-          whole browser, not on one tab, so it sits over the strip rather than
-          inside it. Drawn in every panel because privacy is global: the
-          sign-in holding this session's tools may be another session's page,
-          and the bar names it. Without the bridge method (an older shell) the
-          bar still says what is happening; it just offers no way out. */}
-      {state?.privacy?.private ? (
-        <BrowserPrivacyBanner privacy={state.privacy} {...(bridge.resumeFromPrivate ? { onResume: bridge.resumeFromPrivate } : {})} />
-      ) : null}
       {/* ── tab strip ─────────────────────────────────────────────────── */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2 py-1" role="tablist" aria-label="Browser tabs">
         {(state?.tabs ?? []).map((tab) => (
@@ -2070,10 +2046,7 @@ export function DesktopBrowserSurface({
             // wrong; the words say what, on hover and to a screen reader.
             aria-label={extension.phase === "ready" ? `Open ${extension.name ?? "password manager"} — ${describeExtensionHealth(extension).text}` : `${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}
             title={`${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}
-            // Privacy pauses AGENTS, never the human's own credential tools:
-            // the button stays live while private so a login can be chosen
-            // and the popup closed and reopened. Disabled only while the
-            // extension itself is not usable.
+            // Disabled only while the extension itself is not usable.
             disabled={extension.phase !== "ready"}
             onClick={() => void openPasswordManager()}
             className={cn(

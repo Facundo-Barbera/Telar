@@ -106,7 +106,7 @@ describe("worker errors reach status() only as fixed codes and counts", () => {
     expect(classifyWorkerError("Something with a secret-looking token=abc123 in it")).toBe("other");
   });
   test("status() carries counts per code and no message text", () => {
-    const host = Object.assign(Object.create(ExtensionHost.prototype), { privacy: { state: () => ({ private: false, epoch: 0 }) }, loaded: null, verification: null, error: null, phase: "ready", health: { workerErrors: {} } });
+    const host = Object.assign(Object.create(ExtensionHost.prototype), { loaded: null, verification: null, error: null, phase: "ready", health: { workerErrors: {} } });
     const pushed = [];
     host.onHealthChange = (s) => pushed.push(s);
     host.noteWorkerError("Uncaught (in promise) Error: WASM is not initialized, unable to make core call.");
@@ -172,7 +172,6 @@ describe("a host lets go of what outlives it", () => {
   function hostOn(session) {
     const host = Object.assign(Object.create(ExtensionHost.prototype), {
       session,
-      privacy: { state: () => ({ private: false, epoch: 0 }) },
       health: { workerErrors: {} },
       loaded: null,
       verification: null,

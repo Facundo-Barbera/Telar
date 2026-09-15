@@ -84,31 +84,6 @@ class FakeWebContents extends EventEmitter {
       goForward: () => {},
     };
     this.windowOpenHandler = null;
-    // The credential probe, per frame: tests set `probeAnswers` to one
-    // answer per frame (false = empty, true = filled, null = probe missing,
-    // an Error = the frame threw).
-    this.probeAnswers = [false];
-    const self = this;
-    this.mainFrame = {
-      get framesInSubtree() {
-        return self.probeAnswers.map((answer) => ({
-          executeJavaScript: (source) => {
-            if (String(source).includes("active.blur()")) {
-              if (answer && typeof answer === "object" && answer.emptyFocused) {
-                answer.blurred = true;
-                answer.probe = false;
-                return Promise.resolve(true);
-              }
-              return Promise.resolve(false);
-            }
-            if (answer === "__hang__") return new Promise(() => {}); // never settles
-            if (answer instanceof Error) return Promise.reject(answer);
-            if (answer && typeof answer === "object" && "probe" in answer) return Promise.resolve(answer.probe);
-            return Promise.resolve(answer);
-          },
-        }));
-      },
-    };
   }
 
   getURL() {
@@ -385,9 +360,7 @@ function makeHarness(options = {}) {
     ...(options.now ? { now: options.now } : {}),
     ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
     ...(options.onVisited ? { onVisited: options.onVisited } : {}),
-    ...(options.onCredentialEntryFinished ? { onCredentialEntryFinished: options.onCredentialEntryFinished } : {}),
-    ...(options.onPrivacyForced ? { onPrivacyForced: options.onPrivacyForced } : {}),
-    ...(options.stuckAfterMs !== undefined ? { stuckAfterMs: options.stuckAfterMs } : {}),
+    ...(options.onLoginEntryFinished ? { onLoginEntryFinished: options.onLoginEntryFinished } : {}),
     ...(options.tabStore ? { tabStore: options.tabStore } : {}),
     ...(options.sessions ? { sessionFor } : {}),
   });
@@ -400,11 +373,6 @@ function makeHarness(options = {}) {
     if (scopeKey && !manager.profileOf(scopeKey)) manager.declareProfile(scopeKey, "none");
     return origCreate(scopeKey, ...rest);
   };
-  // The automatic-release loop polls on a real interval; with the harness's
-  // immediate-resolve `wait` it would busy-spin. Tests that exercise the loop
-  // pass `lifecycle: true` and drive it with a manual clock; the rest keep the
-  // old explicit model (privacy ends via resumeFromPrivate/autoRelease).
-  if (!options.lifecycle) manager.ensureAutoRelease = () => {};
   return { children, clipboard, manager, menus, messages, previewWindows, sessions, views, waits };
 }
 
@@ -1318,188 +1286,42 @@ describe("the shared-browser interaction model — human input wins, agent defer
   });
 });
 
-describe("the credential boundary — private interaction gates every browser tool in every scope", () => {
-  test("while private, reads and mutations in ANY scope are refused with the reason; logs are not captured", async () => {
+/**
+ * THE LOCK-DOWN THAT IS GONE (#524). A person entering credentials used to
+ * pause EVERY agent browser tool in EVERY session until a focus-aware probe
+ * said the entry was over — and when a page would not answer that probe, the
+ * browser was dead in every session at once with no way out but killing Telar.
+ * The feature is removed, not softened: there is no flag and no degraded mode.
+ *
+ * What a login entry still does is tell the login offer about itself, and
+ * nothing else. What is still refused is an EXTENSION PAGE — a password
+ * manager's popup or unlock is not a page an agent reads — which is a rule
+ * about the target, not about what a person is doing.
+ */
+describe("a sign-in never pauses a browser tool", () => {
+  test("a tool call during a credential entry returns the tool's own result", async () => {
     const { manager, views } = makeHarness();
-    await manager.createTab("s1", "https://one.example");
+    await manager.createTab("s1", "https://login.example");
     await manager.createTab("s2", "https://two.example");
-    await manager.callTool("s2", "browser_snapshot", {});
-    manager.privacy.begin("1Password", "s1");
-    for (const [scope, name, args] of [["s1", "browser_snapshot", {}], ["s2", "browser_snapshot", {}], ["s2", "browser_click", { target: "e1" }], ["s2", "browser_take_screenshot", {}], ["s2", "browser_console_messages", {}], ["s2", "browser_tabs", { action: "list" }]]) {
+    // The whole of what used to lock the browser down: the extension popup is
+    // open, and the page's preload reports a value landing in a password field.
+    manager.addUiHold("p:popup", "1Password");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "fill" });
+    for (const [scope, name, args] of [["s1", "browser_snapshot", {}], ["s2", "browser_snapshot", {}], ["s1", "browser_click", { target: "e1" }], ["s2", "browser_take_screenshot", {}], ["s1", "browser_console_messages", {}], ["s2", "browser_tabs", { action: "list" }]]) {
       const result = await manager.callTool(scope, name, args);
-      expect(result.isError).toBe(true);
-      // Actionable + retriable, not a terminal unexplained failure.
-      expect(result.retriable).toBe(true);
-      expect(textOf(result)).toMatch(/signing in|resume automatically/i);
+      expect(result.isError).toBeUndefined();
     }
-    // A console line emitted during privacy is dropped, not stored.
-    const debug = views[1].webContents.debugger;
-    await manager.ensureDebugger(manager.activeTab("s2"));
-    debug.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "secret-ish" }] });
-    expect(manager.activeTab("s2").console).toEqual([]);
-    expect(manager.state("s2").privacy).toMatchObject({ private: true, reason: "1Password" });
-  });
-
-  test("a read in flight when privacy begins is discarded on return, and resume makes every page stale", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    let release;
-    const gate = new Promise((resolve) => (release = resolve));
-    const debug = views[0].webContents.debugger;
-    const original = debug.sendCommand.bind(debug);
-    debug.sendCommand = async (method, params) => {
-      if (method === "Accessibility.getFullAXTree") await gate; // every tree read waits on ONE gate
-      return original(method, params);
-    };
-    const pending = manager.callTool("s", "browser_snapshot", {});
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    manager.privacy.begin("1Password", "s");
-    release();
-    const result = await pending;
-    expect(result.isError).toBe(true);
-    expect(result.discarded).toBe(true);
-    await manager.resumeFromPrivate();
-    expect(manager.state("s").privacy.private).toBe(false);
-    // The agent's earlier snapshot no longer blesses the page.
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-    await manager.callTool("s", "browser_snapshot", {});
-    expect((await manager.callTool("s", "browser_click", { target: "e1" })).isError).toBeUndefined();
-  });
-
-  test("a credential field in use begins privacy on its own — inline fill included — and Resume is refused while a password field is still filled", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    // The page's preload reports a fill landing in a password field.
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    expect(manager.state("s").privacy).toMatchObject({ private: true, reason: "credentials filled" });
-    expect((await manager.callTool("s", "browser_snapshot", {})).isError).toBe(true);
-    // The page still holds a filled password field: resume is refused.
-    views[0].webContents.probeAnswers = [true];
-    const refused = await manager.resumeFromPrivate();
-    expect(refused.private).toBe(true);
-    expect(refused.refused).toContain("credential field is still in use");
-    // The human submits/clears; now resume goes through and the page is stale.
-    views[0].webContents.probeAnswers = [false];
-    const ended = await manager.resumeFromPrivate();
-    expect(ended.private).toBe(false);
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  /**
-   * THE HOLDING TAB IS ASKED, FRAME BY FRAME — AND NOTHING ELSE IS (#480).
-   *
-   * Every frame of the tab that REPORTED a credential field still gets the
-   * question, because the field may be in the login iframe rather than the top
-   * document. What changed is who is asked at all: a tab the preload never
-   * named cannot be the reason the window has to stay open, and asking it was
-   * the wedge — one unrelated tab with an unprobeable frame held every agent's
-   * browser tools in every session until Telar was killed.
-   */
-  test("Resume asks every frame of the HOLDING tab: a filled iframe refuses, a frame with no probe vouches", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("a", "https://one.example");
-    await manager.createTab("b", "https://two.example");
-    // Tab a is the one that reported a field; its login iframe is filled.
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [false, true];
-    expect((await manager.resumeFromPrivate()).refused).toContain("credential field is still in use");
-    // A FRAME WITH NO PROBE VOUCHES. The preload never ran there (a cross-origin
-    // ad iframe, about:blank, the PDF viewer), so it cannot hold a field the
-    // preload would have reported — and treating it as a veto never cleared.
-    views[0].webContents.probeAnswers = [false, null];
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-    // A frame that throws (torn down mid-question) still refuses: it might.
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [new Error("frame gone")];
-    expect((await manager.resumeFromPrivate()).refused).toBeDefined();
-    // Mid-navigation, with no frames at all, there is no field to hold.
-    views[0].webContents.probeAnswers = [];
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a tab that never reported a credential field cannot hold the window — whatever its frames say", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("a", "https://one.example");
-    await manager.createTab("b", "https://two.example");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [false];
-    // Tab b is the bug, in all four of its shapes: a filled field the reporter
-    // never saw, a frame with no probe, a frame that throws, a wedged frame.
-    for (const answers of [[true], [false, null], [new Error("frame gone")], [false, "__hang__"], []]) {
-      views[1].webContents.probeAnswers = answers;
-      expect(await manager.credentialStatus()).toBe("clear");
-    }
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a held tab that navigates away stops holding — the page it reported is gone", async () => {
-    const { manager, views } = makeHarness();
-    const tab = await manager.createTab("s", "https://login.example");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    expect(manager.holdingTabs()).toHaveLength(1);
-    // The form submits and the browser commits the next document.
-    manager.noteNavigation(tab);
-    expect(manager.holdingTabs()).toHaveLength(0);
-    expect(await manager.credentialStatus()).toBe("clear");
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a frame whose safety probe NEVER resolves refuses the resume with an actionable message — it does not hang", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    // A background frame wedged so its executeJavaScript never settles.
-    views[0].webContents.probeAnswers = [false, "__hang__"];
-    const started = Date.now();
-    const result = await manager.resumeFromPrivate();
-    // Resolved (bounded), refused, and told the human what to do.
-    expect(Date.now() - started).toBeLessThan(4000);
-    expect(result.private).toBe(true);
-    expect(result.refused).toContain("not responding to the safety check");
-    expect(result.refused).toContain("Reload or close it");
-    // The page settles (frame responds clean); resume now goes through.
-    views[0].webContents.probeAnswers = [false, false];
-    expect((await manager.resumeFromPrivate()).private).toBe(false);
-  });
-
-  test("a clean page after sign-in (no filled fields) resumes and makes every page stale", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    expect(manager.state("s").privacy.private).toBe(true);
-    // Signed in: the form submitted, the password field is gone/empty.
-    views[0].webContents.probeAnswers = [false];
-    const ended = await manager.resumeFromPrivate();
-    expect(ended.private).toBe(false);
-    expect(ended.refused).toBeUndefined();
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  test("privacy beginning drops every tab's captured console and network log, in every scope", async () => {
-    const { manager, views } = makeHarness();
-    await manager.createTab("s1", "https://one.example");
-    await manager.createTab("s2", "https://two.example");
-    for (const [i, scope] of [[0, "s1"], [1, "s2"]]) {
-      await manager.ensureDebugger(manager.activeTab(scope));
-      views[i].webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "before" }] });
-      views[i].webContents.debugger.emit("message", {}, "Network.requestWillBeSent", { request: { method: "GET", url: "https://login.example/?token=abc" } });
-    }
+    // And a console line from the page is captured, not dropped on the floor.
+    await manager.ensureDebugger(manager.activeTab("s1"));
+    views[0].webContents.debugger.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: "still logging" }] });
     expect(manager.activeTab("s1").console).toHaveLength(1);
-    expect(manager.activeTab("s2").network).toHaveLength(1);
-    manager.privacy.begin("1Password", "s1");
-    for (const scope of ["s1", "s2"]) {
-      expect(manager.activeTab(scope).console).toEqual([]);
-      expect(manager.activeTab(scope).network).toEqual([]);
-    }
+  });
+
+  test("the state the renderer reads carries no pause to draw", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("s", "https://login.example");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "fill" });
+    expect(manager.state("s").privacy).toBeUndefined();
   });
 
   test("a read or navigation whose tab lands on an extension page DURING the call is refused, not returned", async () => {
@@ -1525,38 +1347,6 @@ describe("the credential boundary — private interaction gates every browser to
     const nav = await manager.callTool("s", "browser_navigate", { url: "https://sso.example/start" });
     expect(nav.isError).toBe(true);
     expect(textOf(nav)).toContain("now showing an extension page");
-  });
-
-  test("a QUEUED or IN-FLIGHT mutation stops at its next step when privacy begins under it", async () => {
-    const clock = { t: 1_000_000 };
-    const { manager, views } = makeHarness({ now: () => clock.t, wait: async (ms) => { clock.t += ms; } });
-    await manager.createTab("s", "https://example.com");
-    await manager.callTool("s", "browser_snapshot", {});
-    const debug = views[0].webContents.debugger;
-    const original = debug.sendCommand.bind(debug);
-    let inserted = 0;
-    debug.sendCommand = async (method, params) => {
-      const result = await original(method, params);
-      if (method === "Input.insertText" && ++inserted === 2) manager.privacy.begin("credential entry", "s");
-      return result;
-    };
-    const typing = await manager.callTool("s", "browser_type", { target: "e1", text: "hello", slowly: true });
-    expect(typing.isError).toBe(true);
-    // Either the mid-action checkpoint ("Stopped:") or the on-return discard —
-    // both carry the sign-in reason; the point is it did not run to completion.
-    expect(textOf(typing)).toMatch(/sign-in|Stopped/);
-    expect(inserted).toBeLessThan(5);
-    // Queued behind a human deferral, privacy begins before it runs: refused before any input.
-    await manager.resumeFromPrivate();
-    await manager.callTool("s", "browser_snapshot", {});
-    manager.noteHumanInput("s", { force: true });
-    const before = debug.commands.length;
-    const queued = manager.callTool("s", "browser_click", { target: "e1" });
-    manager.privacy.begin("1Password", "s");
-    clock.t += 5_000;
-    const result = await queued;
-    expect(result.isError).toBe(true);
-    expect(debug.commands.slice(before).filter((c) => c.method === "Input.dispatchMouseEvent")).toHaveLength(0);
   });
 
   test("an extension page is never a target: not read, not acted on, not navigated to, and named but not exposed in the list", async () => {
@@ -1688,244 +1478,6 @@ describe("the cockpit's own capture", () => {
     await expect(manager.capture("s")).rejects.toThrow(/no page here/i);
     await manager.createTab("s", "about:blank");
     await expect(manager.capture("s")).rejects.toThrow(/no page loaded/i);
-  });
-});
-
-describe("the automatic credential lifecycle", () => {
-  // Real (tiny) timers so the poll loop actually yields between iterations
-  // instead of busy-spinning; the loop cadence is compressed to ~1ms.
-  // `stuckAfterMs: 1` collapses the real 3 s "unresponsive for long enough to
-  // be called stuck" window to the first failing poll, so these tests observe
-  // the transition rather than the delay. The delay itself is asserted on its
-  // own, below, with the shipped threshold left in place.
-  function lifecycleHarness(options = {}) {
-    return makeHarness({ lifecycle: true, stuckAfterMs: 1, wait: async () => new Promise((r) => setTimeout(r, 1)), ...options });
-  }
-  // Let a few poll cycles run and observe the result.
-  const settle = async () => { await new Promise((r) => setTimeout(r, 40)); };
-  // Wait until a predicate holds (bounded) — for transitions gated on a real
-  // probe timeout (~750ms), not just a poll tick.
-  // 15 s, the bound the engine suite's `eventually`/`until` helpers carry,
-  // under the 20 s bunfig ceiling: every caller asserts the predicate came
-  // true, so a healthy run leaves on the first passing poll and only a loaded
-  // runner ever spends the budget (#458).
-  const until = async (fn, ms = 15_000) => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) { if (fn()) return true; await new Promise((r) => setTimeout(r, 20)); }
-    return fn();
-  };
-
-  test("a credential fill holds privacy until a clean probe, then auto-releases (no manual Resume)", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true]; // filled
-    expect(manager.state("s").privacy.private).toBe(true);
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true); // still filled → held
-    // The person submits: fields clear. The loop auto-releases with no Resume.
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-    // The agent's next mutation is stale until it re-observes.
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  test("a focused-but-empty password field keeps privacy (active entry), then releases when blurred/cleared", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "focus" });
-    views[0].webContents.probeAnswers = [true]; // entry-active probe: focused OR filled
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true);
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-  });
-
-  test("closing extension chrome blurs empty credential focus so privacy can auto-release", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    const password = { probe: true, emptyFocused: true, blurred: false };
-    views[0].webContents.probeAnswers = [password];
-    manager.addUiHold("p:popup", "1Password");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "focus" });
-    expect(manager.state("s").privacy.private).toBe(true);
-    manager.removeUiHold("p:popup");
-    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
-    expect(password.blurred).toBe(true);
-  });
-
-  test("opening and closing 1Password never pauses browser tools, even if page probes cannot answer", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    views[0].webContents.probeAnswers = [new Promise(() => {})];
-    manager.addUiHold("p:popup", "1Password");
-    manager.addUiHold("w:extwin", "1Password");
-    expect(manager.state("s").privacy.private).toBe(false);
-    expect((await manager.callTool("s", "browser_tabs", { action: "list" })).isError).not.toBe(true);
-    manager.removeUiHold("p:popup");
-    manager.removeUiHold("w:extwin");
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-  });
-
-  test("a fill landing WHILE a popup is open keeps privacy after the popup closes", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.addUiHold("p:popup", "1Password");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true]; // inline fill left a filled field
-    manager.removeUiHold("p:popup");
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(true); // fill still holds
-    views[0].webContents.probeAnswers = [false];
-    await settle();
-    expect(manager.state("s").privacy.private).toBe(false);
-  });
-
-  test("a probe that never answers keeps privacy and marks it stuck — it never auto-releases on timeout", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [false, "__hang__"];
-    // The wedged frame's probe must time out (~750ms) before "stuck" is set.
-    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
-    expect(manager.state("s").privacy.private).toBe(true);
-    // The agent gets the specific stuck recovery, not a promise of auto-clear.
-    const busy = await manager.callTool("s", "browser_snapshot", {});
-    expect(busy.isError).toBe(true);
-    expect(textOf(busy)).toContain("not responding");
-    // Recovery: the page clears; privacy releases and stuck lifts.
-    views[0].webContents.probeAnswers = [false];
-    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
-    expect(manager.state("s").privacy.stuck).toBe(false);
-  });
-
-  /**
-   * THE BUG THIS ISSUE IS ABOUT (#480), as the owner met it: a sign-in in one
-   * tab, an ordinary second tab with a frame the preload never reached, and
-   * every agent's browser tools in every session wedged until Telar was killed.
-   * The sign-in finishes; the release must not be waiting on the other tab.
-   */
-  test("a tab that never reported a field does not block the release — whatever its frames do", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s1", "https://login.example");
-    await manager.createTab("s2", "https://unrelated.example");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    // The unrelated tab: an ad iframe with no probe, and a throttled background
-    // frame whose executeJavaScript never settles. Neither is the sign-in.
-    views[1].webContents.probeAnswers = [null, "__hang__"];
-    views[0].webContents.probeAnswers = [true];
-    await settle();
-    expect(manager.state("s1").privacy.private).toBe(true); // the real field holds
-    // The person signs in; the holding tab clears. The other tab is still just
-    // as unprobeable, and privacy ends anyway.
-    views[0].webContents.probeAnswers = [false];
-    expect(await until(() => manager.state("s1").privacy.private === false)).toBe(true);
-    expect(manager.state("s2").privacy.private).toBe(false);
-  });
-
-  test("a background tab whose probes time out does not block the release once the holding tab is clear", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://login.example");
-    await manager.createTab("s", "https://slow.example");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[1].webContents.probeAnswers = ["__hang__"];
-    views[0].webContents.probeAnswers = [false];
-    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
-    // And it never even looked wedged: the holding tab always answered.
-    expect(manager.state("s").privacy.stuck).toBe(false);
-  });
-
-  /**
-   * STUCK IS A DURATION. A page that has just submitted a form can miss one
-   * 750 ms probe without being wedged, and the banner saying "not answering" on
-   * that single miss is crying wolf. The shipped threshold is left in place
-   * here — that is the point of the test.
-   */
-  test("one slow poll does not say 'not answering'; an unbroken run of them does", async () => {
-    const { manager, views } = lifecycleHarness({ stuckAfterMs: 400 });
-    await manager.createTab("s", "https://login.example");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = ["__hang__"];
-    // Well inside the window: unresponsive, but not yet called stuck.
-    await settle();
-    expect(manager.state("s").privacy.stuck).toBe(false);
-    expect(manager.state("s").privacy.private).toBe(true);
-    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
-    // A single good answer resets the run — the next wedge starts from zero.
-    views[0].webContents.probeAnswers = [true];
-    expect(await until(() => manager.state("s").privacy.stuck === false)).toBe(true);
-    expect(manager.state("s").privacy.private).toBe(true);
-  });
-
-  /**
-   * THE WAY OUT, WHEN THE PROBE HAS NONE (#480). A page that will not answer
-   * cannot be cleared by asking it again; the person looking at it is the only
-   * remaining witness, and "kill Telar" is not a recovery. The forced path is
-   * still a real release — same epoch bump, same staleness — so nothing an
-   * agent decided under privacy survives it.
-   */
-  test("Resume anyway ends privacy over an unresponsive page, bumps the epoch, and is logged", async () => {
-    const forced = [];
-    const { manager, views } = lifecycleHarness({ onPrivacyForced: (entry) => forced.push(entry) });
-    await manager.createTab("s", "https://login.example");
-    await manager.callTool("s", "browser_snapshot", {});
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = ["__hang__"];
-    expect(await until(() => manager.state("s").privacy.stuck === true)).toBe(true);
-    // The safe path is refused, which is what earns the second button.
-    const refused = await manager.resumeFromPrivate();
-    expect(refused.private).toBe(true);
-    expect(refused.refused).toContain("not responding to the safety check");
-    const epochBefore = manager.privacy.epoch;
-    const ended = await manager.resumeFromPrivate({ force: true });
-    expect(ended.private).toBe(false);
-    expect(ended.stuck).toBe(false);
-    expect(ended.refused).toBeUndefined();
-    expect(manager.privacy.epoch).toBeGreaterThan(epochBefore);
-    // Logged, with no address in it — tab ids and a moment.
-    expect(forced).toHaveLength(1);
-    expect(forced[0]).toMatchObject({ wasStuck: true });
-    expect(forced[0].tabIds).toEqual([manager.activeTab("s").id]);
-    expect(JSON.stringify(forced[0])).not.toContain("login.example");
-    // A real release: the agent's earlier snapshot no longer blesses the page.
-    const stale = await manager.callTool("s", "browser_click", { target: "e1" });
-    expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toContain("a private interaction ended");
-  });
-
-  test("the state names the page that holds the window, by host — never its full address", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://login.example/sso?token=super-secret");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true];
-    const titled = manager.state("s").privacy.holding;
-    expect(titled).toHaveLength(1);
-    // A title when there is one — it is what the person reads in the strip.
-    expect(titled[0].label).toBe(manager.activeTab("s").title);
-    expect(JSON.stringify(titled)).not.toContain("super-secret");
-    // An untitled page falls back to the HOST, never the address: that query
-    // string is the sign-in's own token.
-    manager.activeTab("s").title = "";
-    const bare = manager.state("s").privacy.holding;
-    expect(bare[0].label).toBe("login.example");
-    expect(JSON.stringify(bare)).not.toContain("super-secret");
-  });
-
-  test("destroy stops the loop", async () => {
-    const { manager, views } = lifecycleHarness();
-    await manager.createTab("s", "https://example.com");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "fill" });
-    views[0].webContents.probeAnswers = [true];
-    await settle();
-    manager.destroy();
-    expect(manager._autoReleaseRunning === false || manager._disposed === true).toBe(true);
-    await settle();
-    expect(manager._disposed).toBe(true);
   });
 });
 
@@ -2578,7 +2130,7 @@ describe("navigation replacement — ERR_ABORTED from a superseded load is not a
 });
 
 describe("the start page's contract — onVisited and the hidden blank view", () => {
-  test("onVisited fires for a committed http(s) top-level navigation only: not blank, not an error status, not an extension page, not while private", async () => {
+  test("onVisited fires for a committed http(s) top-level navigation only: not blank, not an error status, not an extension page", async () => {
     const visited = [];
     const { manager, views } = makeHarness({ onVisited: (scopeKey, url) => visited.push([scopeKey, url]) });
     await manager.createTab("s", "https://one.example/");
@@ -2587,8 +2139,6 @@ describe("the start page's contract — onVisited and the hidden blank view", ()
     wc.url = "https://err.example/"; wc.emit("did-navigate", null, "https://err.example/", 404);
     wc.url = "chrome-extension://abc/x.html"; wc.emit("did-navigate", null, "chrome-extension://abc/x.html", 200);
     wc.url = "about:blank"; wc.emit("did-navigate", null, "about:blank", 0);
-    manager.privacy.begin("popup", "s");
-    wc.url = "https://login.example/"; wc.emit("did-navigate", null, "https://login.example/", 200);
     expect(visited).toEqual([["s", "https://one.example/"], ["s", "https://two.example/path"]]);
   });
 
@@ -3010,20 +2560,19 @@ test("only an interruption is reported as the human taking the browser", async (
 // The manager's half of login-offer.js: WHEN a capture is taken (a value in a
 // credential field, never mere focus), WHAT it holds (the tab's top-level
 // address and identity at that moment — metadata only), and WHEN it is handed
-// on (the automatic release that ends the private window). The offer's own
+// on (the tab leaving the page the value was typed into). The offer's own
 // decisions are covered in login-offer.test.js and login-offer-flow.test.js.
 describe("the login offer capture", () => {
   test("an entry captures the tab's address and identity; focus captures nothing", async () => {
-    const finished = [];
     const clock = { t: 50_000 };
-    const { manager, views } = makeHarness({ now: () => clock.t, onCredentialEntryFinished: (capture) => finished.push(capture) });
+    const { manager, views } = makeHarness({ now: () => clock.t });
     await manager.createTab("s", "https://accounts.example.com/signin?next=/inbox");
     const wc = views[0].webContents;
 
-    manager.noteCredentialFieldFromWebContents(wc, { kind: "focus" });
+    manager.noteLoginEntryFromWebContents(wc, { kind: "focus" });
     expect(manager.heldLoginCapture).toBeNull();
 
-    manager.noteCredentialFieldFromWebContents(wc, { kind: "fill" });
+    manager.noteLoginEntryFromWebContents(wc, { kind: "fill" });
     expect(manager.heldLoginCapture).toMatchObject({
       origin: "https://accounts.example.com",
       tabUid: manager.scopeTabs("s")[0].id,
@@ -3033,32 +2582,36 @@ describe("the login offer capture", () => {
   });
 
   test("the capture is taken AT ENTRY and a later navigation does not move it", async () => {
-    const { manager, views } = makeHarness();
+    const finished = [];
+    const { manager, views } = makeHarness({ onLoginEntryFinished: (capture) => finished.push(capture) });
     await manager.createTab("s", "https://accounts.example.com/signin");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
-    // The sign-in redirects; the held capture still names the typed-into page.
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
+    // The sign-in redirects; the capture handed on still names the typed-into
+    // page, not where the redirect landed.
     await views[0].webContents.loadURL("https://mail.example.com/u/0");
-    expect(manager.heldLoginCapture.origin).toBe("https://accounts.example.com");
+    expect(finished.at(-1)?.origin ?? manager.heldLoginCapture.origin).toBe("https://accounts.example.com");
   });
 
-  test("the automatic release hands the capture on, once", async () => {
+  test("leaving the page hands the capture on, once", async () => {
     const finished = [];
-    const { manager, views } = makeHarness({ onCredentialEntryFinished: (capture) => finished.push(capture) });
-    await manager.createTab("s", "https://accounts.example.com/signin");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
-    manager.autoRelease();
+    const { manager, views } = makeHarness({ onLoginEntryFinished: (capture) => finished.push(capture) });
+    const tab = await manager.createTab("s", "https://accounts.example.com/signin");
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
+    // Nothing is asked while the person is still on the form.
+    expect(finished.length).toBe(0);
+    manager.noteNavigation(tab);
     expect(finished.length).toBe(1);
     expect(finished[0].origin).toBe("https://accounts.example.com");
     expect(manager.heldLoginCapture).toBeNull();
-    // A release with nothing held (the next one) hands nothing on.
-    manager.autoRelease();
+    // A later navigation with nothing held hands nothing on.
+    manager.noteNavigation(tab);
     expect(finished.length).toBe(1);
   });
 
   test("a page that cannot carry a grant is never captured", async () => {
     const { manager, views } = makeHarness();
     await manager.createTab("s", "about:blank");
-    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "input" });
+    manager.noteLoginEntryFromWebContents(views[0].webContents, { kind: "input" });
     expect(manager.heldLoginCapture).toBeNull();
   });
 
