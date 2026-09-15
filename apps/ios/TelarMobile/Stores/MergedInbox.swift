@@ -37,6 +37,38 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
     return merged
 }
 
+/// PURE — the Main-session fold, pinned by the tests exactly as `mergeInbox` is
+/// (#522). Each part is one Mac's designation and the rows it has already
+/// banded; this only picks.
+///
+/// ONE PER MAC, NOT ONE FULL STOP, and that is this phone's honest reading of
+/// the desktop's "one entry". A designation is a fact about the MAC that holds
+/// it, and unlike the cockpit — which sits on the machine it coordinates from —
+/// this app is remote to all of them. One Mac paired, which is most phones, is
+/// exactly one row; three paired and coordinating means three, because hiding
+/// two would be the sidebar deciding which Mac the reader meant.
+///
+/// A DESIGNATION WITH NO ROW DRAWS NOTHING. The id is the Mac's; the
+/// conversation it names is in that Mac's own sections because its engine keeps
+/// it there while Main is on. A Mac still answering its first poll has the id
+/// and not yet the row, and a row that opened nothing would be worse than none.
+///
+/// IN THE MACS' OWN ORDER, which is the order their groups appear in below: a
+/// band that re-sorted itself as conversations were touched would move under
+/// the thumb.
+func mainSessionRows(
+    _ parts: [(hostId: HostID, main: MainSession?, sections: InboxSections)],
+    filter: HostID?
+) -> [HostedSession] {
+    parts.compactMap { part in
+        guard filter == nil || part.hostId == filter else { return nil }
+        guard let main = part.main, main.enabled, let sessionId = main.sessionId else { return nil }
+        let rows = part.sections.active + part.sections.snoozed + part.sections.settled
+        guard let session = rows.first(where: { $0.id == sessionId }) else { return nil }
+        return HostedSession(hostId: part.hostId, session: session)
+    }
+}
+
 @MainActor @Observable final class MergedInbox {
     private(set) var stores: [HostID: InboxStore] = [:]
     /// nil = all Macs.
@@ -65,6 +97,13 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
 
     var sections: MergedSections {
         mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: filter)
+    }
+
+    /// THE CONVERSATIONS THE MACS CALL MAIN (#522) — experimental, off by
+    /// default, and empty on every phone whose Macs have never switched it on.
+    /// The fold is `mainSessionRows` above, where the tests can reach it.
+    var mainSessions: [HostedSession] {
+        mainSessionRows(order.compactMap { id in stores[id].map { (id, $0.mainSession, $0.sections) } }, filter: filter)
     }
 
     /// HOW MANY SETTLED ROWS THE MACS ARE HOLDING BACK (#457), summed over the

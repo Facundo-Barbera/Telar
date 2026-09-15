@@ -346,6 +346,22 @@ struct SidebarLayout: Decodable, Equatable, Sendable {
 /// on meaning the engine's own default rather than "unknown". Do NOT make a
 /// field required to satisfy the session screen: that screen has its own read,
 /// and a required field the list does not send blanks the whole list.
+/// WHICH CONVERSATION A MAC CALLS MAIN, and whether the designation is on —
+/// experimental, off by default (#522).
+///
+/// A DESIGNATION, NOT A KIND OF SESSION. The conversation it names is an
+/// ordinary one with an ordinary row; what being Main adds on this phone is a
+/// single entry at the top of the sidebar that opens it, and on the Mac a
+/// briefing the phone never sees.
+///
+/// ALREADY RESOLVED BY THE MAC: a designation whose conversation was deleted
+/// arrives with no `sessionId`, so this phone never draws a row that opens
+/// nothing.
+struct MainSession: Decodable, Equatable {
+    var enabled: Bool
+    var sessionId: EngineID?
+}
+
 struct LiveSessions: Decodable {
     var sessions: [Session]
     var projects: [ProjectRef]
@@ -386,6 +402,15 @@ struct LiveSessions: Decodable {
     /// engine predates the filter sends every row, exactly as before, and the
     /// phone bands them itself.
     var settledCount: Int?
+    /// WHICH CONVERSATION THIS MAC CALLS MAIN (#522), riding the read the phone
+    /// already makes every few seconds — the same reason `layout` and `inbox`
+    /// ride it, and the reason this phone needs no route of its own for a
+    /// two-field document that moves twice a year.
+    ///
+    /// NIL MEANS OFF, and it means it for both of the reasons that produce it: a
+    /// Mac whose engine predates the feature, and one that has never been
+    /// switched on. Neither should put a row on this sidebar.
+    var mainSession: MainSession?
     /// NOTHING HAS MOVED SINCE THE CURSOR THIS PHONE SENT, so this answer
     /// carries no rows at all and the store keeps what it has.
     ///
@@ -395,7 +420,7 @@ struct LiveSessions: Decodable {
     /// never be confused with "this Mac has no conversations".
     var unchanged: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, settledCount, unchanged }
+    private enum CodingKeys: String, CodingKey { case sessions, projects, layout, assignments, inbox, revision, settledCount, mainSession, unchanged }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -403,6 +428,9 @@ struct LiveSessions: Decodable {
         inbox = try? c.decodeIfPresent(InboxPolicy.self, forKey: .inbox)
         revision = try? c.decodeIfPresent(Int.self, forKey: .revision)
         settledCount = try? c.decodeIfPresent(Int.self, forKey: .settledCount)
+        // A designation this build cannot read costs the entry, never the list —
+        // the same tolerance every optional above is given.
+        mainSession = try? c.decodeIfPresent(MainSession.self, forKey: .mainSession)
         unchanged = (try? c.decode(Bool.self, forKey: .unchanged)) ?? false
         sessions = try c.decodeIfPresent([Skippable<Session>].self, forKey: .sessions)?.compactMap(\.value) ?? []
         projects = try c.decodeIfPresent([Skippable<ProjectRef>].self, forKey: .projects)?.compactMap(\.value) ?? []

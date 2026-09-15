@@ -63,6 +63,40 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
+                // THE CONVERSATION EACH MAC COORDINATES FROM, above everything
+                // (#522) — experimental, and absent on every phone whose Macs
+                // have never switched it on.
+                //
+                // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
+                // a band and not an entry in the list, it is the row that is
+                // always in the same place. A search is a question about the
+                // whole list and flattens every band, so this one goes with
+                // them — the row is still in the results, as itself.
+                //
+                // SLIM, BECAUSE THE HEADER HAS ALREADY SAID WHAT IT IS. A card
+                // would spend three lines on status and branch, which are
+                // questions about work in progress rather than about where to
+                // go to coordinate. The conversation also keeps its ordinary row
+                // in its project group below: one row at the top is not a
+                // promise the other has gone.
+                let mainRows = inbox.mainSessions
+                if !mainRows.isEmpty {
+                    Section {
+                        ForEach(mainRows) { row in sessionRow(row, variant: .slim, placesAbove: settings.hosts.count) }
+                    } header: {
+                        // A GLYPH BEFORE THE WORD, the treatment "Needs you"
+                        // gets and for the same reason: it says this band is
+                        // different before the word is read. No count — one Mac
+                        // has at most one, so a number here would only ever
+                        // read "1".
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles")
+                            Text(mainRows.count > 1 ? "Main sessions" : "Main session")
+                        }
+                        .bandCaption()
+                        .accessibilityElement(children: .combine)
+                    }
+                }
                 ForEach(MobileDrafts.shared.drafts.filter { draft in
                     settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
                 }) { draft in

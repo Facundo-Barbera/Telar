@@ -145,6 +145,14 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// ZERO FROM A MAC THAT PREDATES THE FILTER, which sent every row — the
     /// sections below then hold the settled ones already and this adds nothing.
     private(set) var shelvedOnMac = 0
+    /// WHICH CONVERSATION THIS MAC CALLS MAIN (#522), as of its last answer.
+    ///
+    /// NIL UNTIL A MAC SAYS OTHERWISE, and nil again the moment one says it is
+    /// off: unlike `layout` beside it, an absent field here is a real answer
+    /// rather than "cannot say". A Mac whose engine predates the feature sends
+    /// nothing and means off, and holding a stale designation for it would put a
+    /// row on this sidebar that its own rail does not draw.
+    private(set) var mainSession: MainSession?
     /// WHETHER THIS PHONE IS ASKING FOR THEM. Off until a reader opens the
     /// shelf, and it stays on afterwards: the rows cost nothing to keep, and
     /// turning it back off would mean re-fetching all of them the next time
@@ -358,6 +366,11 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         // and the sections below then hold the settled rows themselves — so
         // zero here is "nothing withheld", never "nothing settled".
         shelvedOnMac = live.settledCount ?? 0
+        // WHICH ONE THIS MAC CALLS MAIN (#522). Taken straight, not merged with
+        // what was held: nil is the Mac saying "off", not "cannot say", so a
+        // designation switched off on the desktop leaves this sidebar on the
+        // very next poll rather than lingering until something else moves.
+        mainSession = live.mainSession
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
         assignments = live.assignments
