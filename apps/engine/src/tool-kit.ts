@@ -51,6 +51,36 @@ export function bounded(text: string, max: number = MAX_ANSWER_CHARS): string {
   return `${text.slice(0, max)}\n[… ${text.length - max} more characters not shown]`;
 }
 
+/**
+ * AS MANY ROWS AS FIT, AND HOW MANY THERE WERE — the shaped bound every list
+ * on these walls uses, so there is one of it rather than five.
+ *
+ * TWO NUMBERS, WHICHEVER IS REACHED FIRST, for the reason a page of events
+ * needs both: a count alone lets fifty rows carrying a megabyte through, and a
+ * byte budget alone will happily return four thousand tiny ones. A row is
+ * mostly free text somebody typed, so neither number can be trusted on its own.
+ *
+ * THE FIRST ROW ALWAYS GOES THROUGH, whatever it costs. A page of nothing with
+ * a cursor that never advances is a caller that can never finish.
+ *
+ * `measure` MATCHES HOW THE ANSWER IS WRITTEN — `json` pretty-prints at two
+ * spaces, and sizing against compact JSON understated every budget by about a
+ * third.
+ */
+export function fillWithin<T, R>(items: readonly T[], shape: (item: T) => R, options: { limit: number; chars: number }): { rows: R[]; shown: number } {
+  const rows: R[] = [];
+  let chars = 0;
+  for (const item of items) {
+    if (rows.length >= options.limit) break;
+    const row = shape(item);
+    const size = JSON.stringify(row, null, 2)?.length ?? 0;
+    if (rows.length > 0 && chars + size > options.chars) break;
+    rows.push(row);
+    chars += size;
+  }
+  return { rows, shown: rows.length };
+}
+
 export const ok = (text: string) => ({ content: [{ type: "text", text }] });
 export const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 /** A JSON answer, always bounded. `max` raises or lowers the backstop for one

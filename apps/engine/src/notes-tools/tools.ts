@@ -27,7 +27,7 @@
  */
 import { z } from "zod";
 import type { ProjectNote } from "@telar/engine-client";
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 
 /**
  * What the toolkit may do.
@@ -81,6 +81,17 @@ const shape = (note: ProjectNote) => ({
  * the caller's context to answer "which notes are there".
  */
 const PREVIEW_CHARS = 120;
+
+/**
+ * AND THE LISTING ITSELF IS BOUNDED, because a preview per note is still a
+ * per-note cost. A project that has accumulated 200 notes is a project that
+ * used its notebook, and 200 previews is past the backstop in `tool-kit.ts` —
+ * which clips characters, so the caller would get JSON with its tail cut off
+ * rather than a short list. Pinned notes sort first, so the notes a person
+ * wanted kept where they could see them are the notes that survive the bound.
+ */
+const LIST_LIMIT = 60;
+const LIST_CHARS = 9_000;
 
 /**
  * One note in a LISTING: what it is, whose it is, and enough of it to choose.
@@ -142,16 +153,20 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
         if (!projectId) return err(NO_PROJECT);
         try {
           const notes = await capability.list(projectId);
-          const abridged = notes.filter((note) => note.body.length > PREVIEW_CHARS).length;
+          const { rows } = fillWithin(notes, listShape, { limit: LIST_LIMIT, chars: LIST_CHARS });
+          const abridged = notes.slice(0, rows.length).filter((note) => note.body.length > PREVIEW_CHARS).length;
           return json({
-            notes: notes.map(listShape),
+            notes: rows,
             count: notes.length,
+            ...(notes.length > rows.length ? { notShown: notes.length - rows.length } : {}),
             note:
               notes.length === 0
                 ? "This project's notebook is empty."
-                : abridged > 0
-                  ? `${abridged} of these are longer than the preview — read one whole with notes_read(noteId).`
-                  : "Every body is short enough to be here in full.",
+                : notes.length > rows.length
+                  ? `${rows.length} of ${notes.length} notes, pinned first. Read one whole with notes_read(noteId).`
+                  : abridged > 0
+                    ? `${abridged} of these are longer than the preview — read one whole with notes_read(noteId).`
+                    : "Every body is short enough to be here in full.",
           });
         } catch (error) {
           return err(failure(error));

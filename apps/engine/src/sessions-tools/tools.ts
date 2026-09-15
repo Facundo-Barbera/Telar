@@ -187,7 +187,7 @@ export type SessionsCapability = {
   ): Promise<EngineRequest>;
 };
 
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
 export type { ToolFactory };
 
 /**
@@ -202,13 +202,13 @@ export type { ToolFactory };
  * but "I was told no, so I will ask someone else" is a decision a model makes
  * in words, and words are what this text answers.
  */
-const NOT_A_BYPASS = "Never hand a peer work you were refused — a denied call is still denied when another session makes it. Take the refusal to the user.";
+const NOT_A_BYPASS = "Never hand a peer work you were refused — that is the same refused action, renamed.";
 
 const LIST = `Sessions alive on this engine, and the projects one could be created in. UNSETTLED ONLY by default — settled: true adds the shelved ones, projectId narrows, limit and after page. Read it before creating anything: the session you want may already exist.`;
 
-const CREATE = `Start a NEW session on a project. It is a PEER, not a child: nothing links the two, it does not report back, and you learn what it did by asking. Creating it starts no work — sessions_send with intent: "task" does. envMode "worktree" gives it a checkout of its own (use it for anything that writes code); "local" shares the project's own. ${NOT_A_BYPASS}`;
+const CREATE = `Start a NEW session on a project. It is a PEER: nothing links it to you and it does not report back. Creating it starts no work — sessions_send with intent: "task" does. envMode "worktree" gives it a checkout of its own; "local" shares the project's own. ${NOT_A_BYPASS}`;
 
-const SEND = `Send a message to another session. intent: report (the default) is passive; result wakes a coordinator subscribed to you; blocker asks for intervention; task assigns work. The recipient is handed a NOTICE, not your text — one line plus the sessions_read call that fetches the body — so put the point in the FIRST LINE. ${NOT_A_BYPASS}`;
+const SEND = `Send a message to another session. intent: report (the default) is passive; result wakes a subscribed coordinator; blocker asks for intervention; task assigns work. The recipient is handed a NOTICE naming sessions_read, not your text — so lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -221,7 +221,7 @@ const SUBSCRIPTIONS = `Every subscription this session holds: which sessions wil
 
 const REQUESTS = `What a session is WAITING on: its open requests — a question, a command, a file change or a tool call it wants approved — each with the id sessions_resolve_request takes. A request is a question to a HUMAN by default, and answering it is you taking responsibility. A secret pick is listed by origin only.`;
 
-const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf: accept, acceptForSession (this and every later one of its kind), or decline. answers fills a question's fields as sessions_requests listed them. Recorded as answered BY A SESSION. Only answer what you know; a secret pick is refused here. ${NOT_A_BYPASS}`;
+const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf: accept, acceptForSession, or decline; answers fills a question's fields. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused here. ${NOT_A_BYPASS}`;
 
 const READ = `What a session has done. By default the LATEST page of its journal — from: "start" reads from the beginning, after: <cursor> walks forward, mode: "summary" folds it to a line per turn. runId answers ONE turn: its events, its answer, and a peer's message in full (long ones slice on resultAfter / messageAfter). Never assume a page is the whole story.`;
 
@@ -617,6 +617,30 @@ const LIST_LIMIT_MAX = 200;
  */
 const LIST_CHARS = 10_000;
 
+/**
+ * THE THREE LISTS THAT ARE NOT `sessions_list` AND ARE JUST AS UNBOUNDED.
+ *
+ * The issue named the three big tools; the budget test found these behind them,
+ * and found them the same way — by having 200 of something. A session waiting
+ * on 200 questions, an orchestrator holding 200 subscriptions, and a branch
+ * that touched 500 files all produced answers past the `bounded` backstop,
+ * which clips CHARACTERS: the caller got JSON with its tail cut off rather than
+ * a short list. Each is a normal thing to have.
+ *
+ * So each fills to a budget and states its total. The numbers are small because
+ * these answers are read to DECIDE something — which request to answer, which
+ * file to look at — and a decision is made from the first screen of a list or
+ * not at all.
+ */
+const REQUESTS_LIMIT = 20;
+const REQUESTS_CHARS = 8_000;
+const SUBSCRIPTIONS_LIMIT = 40;
+const SUBSCRIPTIONS_CHARS = 6_000;
+const DIFF_FILES_LIMIT = 100;
+const DIFF_FILES_CHARS = 8_000;
+const DIFF_COMMITS_LIMIT = 30;
+const DIFF_COMMITS_CHARS = 4_000;
+
 /** The turn states a caller means by "is anything running". Named once so the
  *  status tool and its own `running` flag cannot disagree. */
 const LIVE_TURN_STATES = new Set(["queued", "claimed", "running"]);
@@ -715,17 +739,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         // one line at the top does not. Rows carry it when they disagree.
         const drivers = new Set(window.map((session) => session.driver));
         const perRowDriver = drivers.size > 1;
-        const rows: unknown[] = [];
-        let chars = 0;
-        for (const session of window) {
-          const row = summarise(session, names, { driver: perRowDriver });
-          const size = measure(row);
-          // The first row is always let through: a page of nothing with a
-          // cursor that never advances is a caller that can never finish.
-          if (rows.length > 0 && chars + size > LIST_CHARS) break;
-          rows.push(row);
-          chars += size;
-        }
+        const { rows } = fillWithin(window, (session) => summarise(session, names, { driver: perRowDriver }), {
+          limit,
+          chars: LIST_CHARS,
+        });
         const page = window.slice(0, rows.length);
         const more = after + page.length < matching.length;
         return json({
@@ -1302,17 +1319,41 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ...(diff.base ? { base: diff.base } : { baseUnknown: true }),
           linesAdded: diff.linesAdded,
           linesRemoved: diff.linesRemoved,
-          commits: diff.commits.map((commit) => ({ sha: commit.shortSha, subject: commit.subject })),
-          files: diff.files.map((file) => ({
-            path: file.path,
-            status: file.status,
-            ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
-            // Absent rather than zero: git counts neither a binary nor an
-            // untracked file, and `+0` here would be a fabrication.
-            ...(file.linesAdded === undefined ? {} : { linesAdded: file.linesAdded }),
-            ...(file.linesRemoved === undefined ? {} : { linesRemoved: file.linesRemoved }),
-            ...(file.binary ? { binary: true } : {}),
-          })),
+          ...(() => {
+            /**
+             * THE TOTALS ARE THE REVIEW; THE LISTS ARE THE DETAIL. A branch
+             * that touched 500 files is a normal branch and an unbounded
+             * answer, so each list fills to a budget and says how long it
+             * really was — `linesAdded` and `linesRemoved` above are the whole
+             * change either way, and they are what a reader judges the size by.
+             */
+            const commits = fillWithin(diff.commits, (commit) => ({ sha: commit.shortSha, subject: commit.subject }), {
+              limit: DIFF_COMMITS_LIMIT,
+              chars: DIFF_COMMITS_CHARS,
+            });
+            const files = fillWithin(
+              diff.files,
+              (file) => ({
+                path: file.path,
+                status: file.status,
+                ...(file.renamedFrom ? { renamedFrom: file.renamedFrom } : {}),
+                // Absent rather than zero: git counts neither a binary nor an
+                // untracked file, and `+0` here would be a fabrication.
+                ...(file.linesAdded === undefined ? {} : { linesAdded: file.linesAdded }),
+                ...(file.linesRemoved === undefined ? {} : { linesRemoved: file.linesRemoved }),
+                ...(file.binary ? { binary: true } : {}),
+              }),
+              { limit: DIFF_FILES_LIMIT, chars: DIFF_FILES_CHARS },
+            );
+            return {
+              commitCount: diff.commits.length,
+              commits: commits.rows,
+              ...(diff.commits.length > commits.rows.length ? { commitsNotShown: diff.commits.length - commits.rows.length } : {}),
+              fileCount: diff.files.length,
+              files: files.rows,
+              ...(diff.files.length > files.rows.length ? { filesNotShown: diff.files.length - files.rows.length } : {}),
+            };
+          })(),
           ...(diff.truncated ? { truncated: true } : {}),
           note: !diff.base
             ? "This session has no recorded base, so the diff is against HEAD and any work it has already COMMITTED is not in this list."
@@ -1377,9 +1418,18 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       if (!capability.self) return err(NO_SELF);
       try {
         const subscriptions = await capability.subscriptions(capability.self.sessionId);
+        const { rows } = fillWithin(subscriptions, (subscription) => subscription, {
+          limit: SUBSCRIPTIONS_LIMIT,
+          chars: SUBSCRIPTIONS_CHARS,
+        });
         return json({
-          subscriptions,
-          ...(subscriptions.length === 0 ? { note: "This session is not subscribed to anything." } : {}),
+          subscriptions: rows,
+          ...(subscriptions.length > rows.length ? { total: subscriptions.length, notShown: subscriptions.length - rows.length } : {}),
+          ...(subscriptions.length === 0
+            ? { note: "This session is not subscribed to anything." }
+            : subscriptions.length > rows.length
+              ? { note: `${rows.length} of ${subscriptions.length}. That many at once is usually a sign that one-shot subscriptions were not being removed.` }
+              : {}),
         });
       } catch (error) {
         return err(`Could not list subscriptions: ${failure(error)}`);
@@ -1397,10 +1447,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         } catch (error) {
           return err(`Could not read requests of "${sessionId}": ${failure(error)}`);
         }
+        const { rows } = fillWithin(requests, describeRequest, { limit: REQUESTS_LIMIT, chars: REQUESTS_CHARS });
         return json({
           sessionId,
-          requests: requests.map(describeRequest),
-          ...(requests.length === 0 ? { note: "This session is not waiting on anything." } : {}),
+          requests: rows,
+          ...(requests.length > rows.length ? { total: requests.length, notShown: requests.length - rows.length } : {}),
+          ...(requests.length === 0
+            ? { note: "This session is not waiting on anything." }
+            : requests.length > rows.length
+              ? { note: `The first ${rows.length} of ${requests.length} open requests. Answering these makes room for the rest.` }
+              : {}),
         });
       },
     ),

@@ -949,7 +949,7 @@ describe("sessions_read returns the message a notice stands in for", () => {
   test("the wall tells senders and recipients what actually travels", () => {
     const { store } = engine();
     const tools = wall(store);
-    expect(tools.get("sessions_send")!.description).toContain("handed a NOTICE, not your text");
+    expect(tools.get("sessions_send")!.description).toContain("handed a NOTICE naming sessions_read, not your text");
     // The description names the call and the arguments; the mechanics of the
     // notice moved to the telar skill with everything else that would not fit
     // in 350 characters (#515), and both halves are asserted.

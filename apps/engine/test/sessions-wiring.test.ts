@@ -266,8 +266,12 @@ test("the worker cannot archive, delete or accept anything — the client it hol
   // because a Pick widened by accident is exactly the change nobody notices.
   const { sawCapability } = await turnWith(async (sessions) => {
     const surface = Object.keys(sessions).sort();
+    // `cursor` joined the list with #515: the journal's last event id, so the
+    // wall can answer "what happened lately" from one page rather than by
+    // walking 61,933 events to reach the end. A READ, like every other member
+    // that is not one of the five verbs.
     expect(surface).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "cursor", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
