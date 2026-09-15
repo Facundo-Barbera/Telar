@@ -295,6 +295,43 @@ test("a live Claude query cannot keep a briefing the session no longer has", () 
 });
 
 /* ------------------------------------------------------------------ *
+ * The entry the rail draws from.
+ * ------------------------------------------------------------------ */
+
+test("the designated conversation is not settled out of the rail while Main is on", () => {
+  /**
+   * WHY THIS IS A RULE AND NOT A COINCIDENCE. Settling is a TIME rule — three
+   * days quiet by default — and the rail draws its Main entry from the row in
+   * this answer. Without the exemption the entry the setting promises would
+   * disappear on its own, on a Tuesday, for a feature nobody had switched off.
+   */
+  let now = Date.UTC(2026, 0, 1);
+  const engine = new EngineStore(join(home, "state"), () => now);
+  engine.registerProject({ id: "project_one", name: "One", root: home });
+  engine.createSession({ id: "session_main", projectId: "project_one", driver: "codex" });
+  engine.createSession({ id: "session_quiet", projectId: "project_one", driver: "codex" });
+  engine.setMainSession({ enabled: true, sessionId: "session_main" });
+
+  // Well past the default settling window, with nothing touched in between.
+  now += 30 * 24 * 60 * 60 * 1000;
+  const listed = engine.liveSessionRows();
+  expect(listed.sessions.map((session) => session.id)).toContain("session_main");
+  // Its quiet neighbour goes to the shelf, which is what makes this an
+  // exemption rather than settling being switched off.
+  expect(listed.sessions.map((session) => session.id)).not.toContain("session_quiet");
+  // AND IT IS NOT COUNTED BEHIND THE SHELF EITHER: it is on the list.
+  expect(listed.settledCount).toBe(1);
+
+  // OFF MEANS ORDINARY. A designation that is switched off settles like
+  // anything else — which is what "remains an ordinary resumable session" has
+  // to mean in the one place a person would see it.
+  engine.setMainSession({ enabled: false });
+  const after = engine.liveSessionRows();
+  expect(after.sessions.map((session) => session.id)).not.toContain("session_main");
+  expect(after.settledCount).toBe(2);
+});
+
+/* ------------------------------------------------------------------ *
  * Disable.
  * ------------------------------------------------------------------ */
 

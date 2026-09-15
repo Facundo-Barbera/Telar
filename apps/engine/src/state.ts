@@ -6395,7 +6395,7 @@ export class EngineStore {
    * another's shelf; they cannot, because there is one function and the row
    * carries the fields it reads.
    */
-  private shelfFromIndex(inbox: InboxPolicy, all: boolean): { chosen: Set<string>; settledCount: number } | undefined {
+  private shelfFromIndex(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } | undefined {
     if (!this.executionStore) return undefined;
     // ONE CLOCK FOR THE WHOLE FOLD, and it is the STORE'S — see the document
     // path below for why a test's counting clock must not meet a wall clock here.
@@ -6405,7 +6405,7 @@ export class EngineStore {
     // `liveSessions` carries the ACTIVE sessions and nothing else, so the read
     // seeks past the archived rows rather than folding and dropping them.
     for (const row of this.executionStore.liveSessionRows()) {
-      if (rowIsShelved(row, at)) {
+      if (row.id !== keep && rowIsShelved(row, at)) {
         settledCount += 1;
         if (!all) continue;
       }
@@ -6554,7 +6554,23 @@ export class EngineStore {
     // Read once and spread into both arms below, like `inbox`: the two paths
     // differ in how they find the ROWS, never in what rides beside them.
     const mainSession = this.resolveMainSession();
-    const indexed = this.shelfFromIndex(inbox, options.all === true);
+    /**
+     * THE DESIGNATED CONVERSATION IS NEVER SHELVED OUT OF THIS ANSWER (#522).
+     *
+     * The rail draws its Main entry from the row in this list, and settling is
+     * a TIME rule — three days quiet by default — so without this the entry the
+     * setting promises would disappear on its own, on a Tuesday, for a feature
+     * the person had not switched off. It is the same argument the pinned band
+     * makes: a row somebody said to keep in front of them is not one a window
+     * gets to hide. It is exempted from `settledCount` too, because it is on
+     * the list rather than behind the shelf.
+     *
+     * ONLY WHILE ENABLED. A designation that is switched off is an ordinary
+     * conversation and settles like any other — which is exactly what "the
+     * session remains an ordinary resumable session" has to mean.
+     */
+    const keep = mainSession.enabled ? mainSession.sessionId : undefined;
+    const indexed = this.shelfFromIndex(inbox, options.all === true, keep);
     if (indexed) {
       /**
        * ══ THE INDEXED PATH — issue #493 ══
@@ -6602,7 +6618,10 @@ export class EngineStore {
        * there is one). Converting here is what lets the rule be one function.
        */
       const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
-      if (isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
+      // `keep` is the designated conversation — see the note where it is
+      // resolved. The document path has to agree with the indexed one above, or
+      // the rail's Main entry would depend on which backend answered.
+      if (session.id !== keep && isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
     }
     const sessions = options.all === true ? full.sessions : full.sessions.filter((session) => !shelved.has(session.id));
     return {
