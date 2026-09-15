@@ -1,4 +1,5 @@
 import { createOpenCodeDriver } from "./opencode/driver";
+import { createTelarDriver } from "./main-session/driver";
 /**
  * The one place that says which provider driver serves which session.
  *
@@ -82,16 +83,15 @@ export function createDefaultDrivers(): DriverSelector {
   const claude = createClaudeDriver();
   const codex = createCodexDriver();
   /**
-   * TOTAL OVER THE INSTALLED HARNESSES, which is what this record is for: a
-   * fourth CLI provider must not be addable without a line here. `telar` — the
-   * engine's own loop — is excluded rather than stubbed, because it is not a
-   * harness this deployment might or might not have found on disk, and a row
-   * mapping it to a driver that throws would be a lie the type system had
-   * blessed. It joins the selector below on its own terms.
+   * TOTAL, AND `telar` IS NOT LIKE THE OTHER THREE. Those name a harness this
+   * deployment may or may not have found on disk, and each defers touching it
+   * until the first run; the engine's own loop is simply here, has no binary to
+   * look for, and touches the network only inside a turn. Same eager
+   * construction, same reason it costs nothing.
    */
-  const byKind: Record<Exclude<ProviderDriverKind, "telar">, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
+  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver(), telar: createTelarDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker
   // turns into a typed `provider_unavailable` failure on the turn rather than
   // an unhandled throw.
-  return (kind) => (kind === "telar" ? undefined : byKind[kind]);
+  return (kind) => byKind[kind];
 }

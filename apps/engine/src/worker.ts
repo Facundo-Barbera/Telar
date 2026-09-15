@@ -1569,6 +1569,15 @@ export class EngineWorker {
         ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
+        /**
+         * THE SESSION'S OWN ROWS, for the driver that rebuilds its conversation
+         * from them rather than resuming one the provider holds. Back over the
+         * client like everything else here — the worker holds no store handle —
+         * and WINDOWED, because a coordinator with a thousand turns behind it
+         * would otherwise pay for all of them on every message. The driver's
+         * own character budget is what actually decides how much is sent.
+         */
+        transcript: async (options) => (await this.options.client.session(sessionId, { turns: options?.turns ?? 80 })).items,
         // The project notebook, hoisted above for the same reason. Absent on a
         // project-less session, which is no notebook rather than an empty one.
         ...(notesCapability ? { notes: notesCapability } : {}),

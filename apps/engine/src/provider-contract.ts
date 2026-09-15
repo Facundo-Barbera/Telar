@@ -1,6 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { Item, McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { DsCapability } from "./ds/capability";
@@ -259,6 +259,26 @@ export type DriverRun = {
    * down. Same key, same tool names, same approvals.
    */
   telarSocketLease?: { url: string; token: string; generation: string };
+  /**
+   * THE SESSION'S OWN TRANSCRIPT ROWS, for a driver that has no provider-side
+   * conversation to resume (#526).
+   *
+   * Claude, Codex and OpenCode each hand their provider a session id and let it
+   * remember; `providerSessionId` below is that continuity. Telar's own loop
+   * talks to a stateless HTTP API, so the conversation it sends is rebuilt from
+   * the rows the engine already wrote — and the worker holds no store handle,
+   * so the read comes back over the same client as every other capability here.
+   *
+   * PER-RUN AND A THUNK, like `sessions` and for the same reasons: it is
+   * assembled from the worker's client (a deployment with none has no history
+   * rather than a broken one), and it must be read AT the turn rather than
+   * captured before it, so a message that arrived while the turn was queued is
+   * in the history the model sees.
+   *
+   * ABSENT MEANS NO HISTORY — a test, an older worker — and a driver must treat
+   * that as an empty conversation rather than as an error.
+   */
+  transcript?(options?: { turns?: number }): Promise<Item[]>;
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**
