@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
@@ -24,7 +24,7 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -107,7 +107,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ConversationContent, ConversationScrollButton, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
+import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageMenu, MessageResponse } from "@/components/ui/message";
 import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -668,40 +668,7 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-/**
- * ONE FOLD PER PASSIVE REPORT (#239).
- *
- * A routine peer report used to be wrapped in a SECOND disclosure here — a
- * "Session activity · report received" row whose only child was the turn body,
- * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
- * peer's message to its notice. A passive turn never runs (the engine completes
- * it on arrival with no items and no result — see `state.ts`, `passive`), so
- * that wrapper added nothing but a second chevron: the reader had to open two
- * folds, one nested inside the other, to reach one report.
- *
- * The bubble is the fold, and it is the SAME one a peer's message gets when it
- * lands mid-turn as a steered row — which is the point. A report should not look
- * like a different kind of thing for having arrived between turns rather than
- * during one.
- */
-export { SessionTurnBody as SessionTurn };
-
-function SessionTurnBody({
-  turn,
-  requests,
-  sending,
-  live,
-  now,
-  onDecide,
-  onRetry,
-  onOpenAgent,
-  onOpenTab,
-  onResumeNow,
-  onInsert,
-  onOpenFile,
-  onOpenFileInNewTab,
-  roster = [],
-}: {
+type SessionTurnProps = {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
@@ -730,17 +697,7 @@ function SessionTurnBody({
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
   live: boolean;
-  now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
-  /** Abandon an ambiguous run's execution and keep talking — the recovery
-   *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
-   *  an ordinary FAILED turn and submits nothing. */
-  /** A held message the person re-read and still means — it runs in its
-   *  original place in the queue. */
-  /** ...or no longer wants. An ordinary stop; it is still a queued turn. */
-  /** How many messages are queued behind an undecided ambiguous turn. The
-   *  engine holds them; the card says so rather than letting the session look
-   *  stuck. */
   /** Offered on the ONE failed turn the session can continue from (see
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
@@ -748,7 +705,200 @@ function SessionTurnBody({
   /** Don't wait for the usage limit to lift. Offered only on a `rate_limited`
    *  failure; the cockpit decides, the turn only renders. */
   onResumeNow?: () => void;
-}) {
+};
+
+/**
+ * THE GESTURES WHOSE PRESENCE CHANGES THE PICTURE.
+ *
+ * Their IDENTITY does not, and that is the one liberty `sameTurnRender` takes:
+ * the cockpit writes most of these as inline arrows, so comparing them would
+ * mean never bailing out at all. None is read during a render — they run on a
+ * press — and each is a thin router into cockpit state (`showPanelTab`,
+ * `decideRequest`) reached through setters rather than a captured value. A
+ * turn's own `runId` is the only thing the closures below bind, and React's key
+ * means a memoised turn is never handed another turn's props.
+ */
+const TURN_GESTURES = ["onOpenAgent", "onOpenTab", "onInsert", "onOpenFile", "onOpenFileInNewTab", "onContinue", "onResumeNow"] as const;
+
+/**
+ * WHETHER TWO READINGS OF A TURN WOULD DRAW THE SAME THING (#498).
+ *
+ * The cockpit tails once a second, and any queue-changing event brings a
+ * companion snapshot whose rows are fresh objects off `JSON.parse`. The
+ * projector rebuilds every turn from those (`createJournalProjector`'s whole-
+ * journal fallback), so an ordinary tick during a live run handed all ten
+ * mounted turns a new-but-identical `JournalTurn` — and React re-rendered the
+ * lot. What changed was one turn; what re-rendered was the conversation.
+ *
+ * SO THIS COMPARES CONTENT, NOT IDENTITY. Identity is still the fast path (the
+ * projector reuses a settled turn's fold, so `prev.turn === next.turn` is the
+ * common case); everything below it is the fallback for the snapshot tick.
+ *
+ * `prompt` IS DELIBERATELY NOT READ. It is the turn's `input` row, which the
+ * engine writes once and never rewrites, and the `runId` key means this
+ * function only ever compares one turn against a later reading of itself.
+ */
+function sameTurnRender(prev: SessionTurnProps, next: SessionTurnProps): boolean {
+  if (prev.live !== next.live || prev.sending !== next.sending) return false;
+  for (const gesture of TURN_GESTURES) if (Boolean(prev[gesture]) !== Boolean(next[gesture])) return false;
+  if (!sameRequests(prev.requests, next.requests)) return false;
+  // The roster is read by ONE row — the wake-up line — and only on a turn that
+  // names the task that woke it. Everywhere else it is a prop the body never
+  // opens, so comparing it would be work for an answer nobody reads.
+  if (next.turn.wokenBy !== undefined && !sameRoster(prev.roster, next.roster)) return false;
+  return sameTurnContent(prev.turn, next.turn);
+}
+
+function sameRequests(prev: readonly EngineRequest[], next: readonly EngineRequest[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.state !== after.state || before.decision !== after.decision) return false;
+  }
+  return true;
+}
+
+function sameRoster(prev: readonly JournalTask[] = [], next: readonly JournalTask[] = []): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    // What the wake-up row draws off a task: which one it is, and its name.
+    if (before.id !== after.id || before.title !== after.title || before.kind !== after.kind) return false;
+  }
+  return true;
+}
+
+/** Every field of a turn the body branches on or prints. */
+function sameTurnContent(prev: JournalTurn, next: JournalTurn): boolean {
+  if (prev === next) return true;
+  return (
+    prev.runId === next.runId &&
+    prev.state === next.state &&
+    prev.held === next.held &&
+    prev.heldReason === next.heldReason &&
+    prev.kind === next.kind &&
+    prev.origin === next.origin &&
+    prev.wokenBy === next.wokenBy &&
+    prev.wakeReason?.kind === next.wakeReason?.kind &&
+    prev.wakeReason?.sessionId === next.wakeReason?.sessionId &&
+    prev.sender?.sessionId === next.sender?.sessionId &&
+    prev.agentDelivery === next.agentDelivery &&
+    prev.agentIntent === next.agentIntent &&
+    prev.agentNotice === next.agentNotice &&
+    prev.assignmentScope === next.assignmentScope &&
+    prev.attachments?.length === next.attachments?.length &&
+    prev.startedAt === next.startedAt &&
+    prev.lastActivityAt === next.lastActivityAt &&
+    prev.resultText === next.resultText &&
+    prev.failure === next.failure &&
+    prev.failureCode === next.failureCode &&
+    prev.resumeAt === next.resumeAt &&
+    prev.limitType === next.limitType &&
+    prev.resumedAfterRateLimit === next.resumedAfterRateLimit &&
+    prev.usage?.tokens.input === next.usage?.tokens.input &&
+    prev.usage?.tokens.output === next.usage?.tokens.output &&
+    sameItems(prev.items, next.items) &&
+    sameTurnTasks(prev.tasks, next.tasks)
+  );
+}
+
+/**
+ * THE ITEM IDS AND THE TEXT, which is what the issue calls the hash.
+ *
+ * The string itself rather than a digest of it: JavaScript compares equal
+ * strings by length first and interned ones by pointer, so hashing would only
+ * be a slower way of reading every character.
+ */
+function sameItems(prev: readonly JournalItem[], next: readonly JournalItem[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.status !== after.status || before.taskId !== after.taskId) return false;
+    if (before.detail !== after.detail) {
+      /**
+       * A ROW STILL OPEN CAN CHANGE WITHOUT CHANGING ITS STATUS — a browser step
+       * moving to a new URL, a command growing its output preview. Such a row is
+       * on the live turn by construction, and the live turn is re-rendering
+       * anyway, so answering "changed" costs nothing. A CLOSED row's detail is
+       * terminal: the fresh object is the same snapshot read twice.
+       */
+      if (after.status === "inProgress" || before.detail.type !== after.detail.type) return false;
+    }
+    if (itemText(before) !== itemText(after)) return false;
+  }
+  return true;
+}
+
+/** A turn's own sub-agents: the chips, and what each one says. */
+function sameTurnTasks(prev: readonly JournalTask[], next: readonly JournalTask[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (
+      before.id !== after.id ||
+      before.state !== after.state ||
+      before.kind !== after.kind ||
+      before.title !== after.title ||
+      before.backgrounded !== after.backgrounded ||
+      before.resultText !== after.resultText ||
+      before.failure !== after.failure ||
+      before.items.length !== after.items.length
+    ) {
+      return false;
+    }
+    if (!sameItems(before.items, after.items)) return false;
+  }
+  return true;
+}
+
+/**
+ * ONE FOLD PER PASSIVE REPORT (#239).
+ *
+ * A routine peer report used to be wrapped in a SECOND disclosure here — a
+ * "Session activity · report received" row whose only child was the turn body,
+ * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
+ * peer's message to its notice. A passive turn never runs (the engine completes
+ * it on arrival with no items and no result — see `state.ts`, `passive`), so
+ * that wrapper added nothing but a second chevron: the reader had to open two
+ * folds, one nested inside the other, to reach one report.
+ *
+ * The bubble is the fold, and it is the SAME one a peer's message gets when it
+ * lands mid-turn as a steered row — which is the point. A report should not look
+ * like a different kind of thing for having arrived between turns rather than
+ * during one.
+ *
+ * MEMOISED, on what it DRAWS rather than on what it is handed (#498) — see
+ * `sameTurnRender` below for the whole argument.
+ */
+export const SessionTurn = memo(SessionTurnBody, sameTurnRender);
+
+function SessionTurnBody({
+  turn,
+  requests,
+  sending,
+  live,
+  onDecide,
+  onRetry,
+  onOpenAgent,
+  onOpenTab,
+  onResumeNow,
+  onInsert,
+  onOpenFile,
+  onOpenFileInNewTab,
+  roster = [],
+}: SessionTurnProps) {
   /**
    * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
    *
@@ -922,7 +1072,6 @@ function SessionTurnBody({
               compacting={isCompacting(turn)}
               startedAt={turn.startedAt}
               {...(turn.lastActivityAt ? { lastActivityAt: turn.lastActivityAt } : {})}
-              now={now}
             />
           )}
           {turn.usage && !live && (
@@ -939,6 +1088,62 @@ function SessionTurnBody({
       </Message>
     </div>
   );
+}
+
+/**
+ * A TURN NOWHERE NEAR THE VIEWPORT COSTS ITS BOX AND NOTHING ELSE (#498).
+ *
+ * Paging history in mounts turns and never unmounts them, so a reader who walks
+ * back through a long session ends up with two hundred turns' worth of layout,
+ * style and paint live in one document — and every one of them is re-laid-out
+ * when anything above changes. `content-visibility: auto` is the browser's own
+ * answer: it skips the rendering work for a subtree that is far enough off
+ * screen, and does it again the moment the subtree comes near.
+ *
+ * NO VIRTUAL LIST, deliberately. A windowing library would own the scroll
+ * container, which this conversation already gives to use-stick-to-bottom, and
+ * it would need a height for a turn before the turn exists — the thing nobody
+ * can know here, where one turn is a sentence and the next is forty tool calls.
+ *
+ * WHICH IS WHY THE SIZE IS MEASURED RATHER THAN GUESSED. A skipped subtree
+ * still has to occupy its space or the scrollbar lurches; `contain-intrinsic-
+ * size: auto <height>` gives the browser the height this turn actually rendered
+ * at, and the `auto` keyword lets it keep its own last-rendered size once it has
+ * one. The measurement is taken from the real render, so the element never
+ * changes height at the moment it starts being skipped.
+ *
+ * THE LIVE TURN IS NEVER SKIPPED. It is at the bottom of the window by
+ * definition — the only place `content-visibility` would do nothing — and its
+ * height changes with every delta, which would make one measurement a lie.
+ */
+export function TurnFrame({ skippable, children }: { skippable: boolean; children: React.ReactNode }) {
+  const frame = useRef<HTMLDivElement>(null);
+  /**
+   * WRITTEN STRAIGHT ONTO THE ELEMENT rather than held as state, because the
+   * value is a MEASUREMENT of the element it is then applied to — routing it
+   * through a render would mean a second render per turn to say something the
+   * DOM already knew. React never sets `style` here (this div has no `style`
+   * prop), so there is nothing for it to clobber.
+   */
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    if (!skippable) {
+      element.style.removeProperty("content-visibility");
+      element.style.removeProperty("contain-intrinsic-size");
+      return;
+    }
+    // Measured ONCE. A second reading, taken while the turn is skipped, would
+    // measure the PLACEHOLDER and lock it in — and a settled turn's height does
+    // not move on its own anyway: a fold the reader opens is rendered at natural
+    // height, and the `auto` keyword is what remembers the new one.
+    if (element.style.getPropertyValue("content-visibility")) return;
+    const measured = element.offsetHeight;
+    if (!measured) return;
+    element.style.setProperty("content-visibility", "auto");
+    element.style.setProperty("contain-intrinsic-size", `auto ${measured}px`);
+  }, [skippable]);
+  return <div ref={frame}>{children}</div>;
 }
 
 function EmptyTranscript({ loading }: { loading: boolean }) {
@@ -2274,7 +2479,6 @@ export function SessionCockpit({
   // it, and the send button must not read as a Stop.
   const active =
     transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state) && !turn.held);
-  const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
   /** The provider is squeezing its context right now — an open
    *  context_compaction row on the live turn. Gates the compact button so the
    *  client tells the same story the engine enforces. */
@@ -2285,12 +2489,28 @@ export function SessionCockpit({
    * the affordance. A turn Telar interrupted by quitting lands here too, which
    * is the whole point of recording it as a failure rather than as ambiguity.
    */
-  const [now, setNow] = useState(() => Date.now());
+  /**
+   * THE WALL CLOCK, AND IT IS NO LONGER THE TRANSCRIPT'S (#498).
+   *
+   * A 1 s `setInterval` used to live here and be threaded into every turn as a
+   * `now` prop, so one tick re-rendered the cockpit and all ten turns mounted
+   * under it in order to advance the elapsed seconds inside ONE
+   * `WorkingIndicator`. That clock belongs to the thing that reads it and now
+   * lives there (`useSecondsClock`, transcript.tsx).
+   *
+   * WHAT IS LEFT HERE READS AT HUMAN SCALE, and 30 s is generous for both of
+   * them: `isSettled`, whose window is hours and which returns false on a
+   * working session before it reads this at all, and the header menu's snooze
+   * presets, whose smallest offset is an hour. It is not a regression on the
+   * old clock either way — that one only ticked while a turn was RUNNING, so on
+   * an idle session both of these were already frozen at whatever the cockpit
+   * mounted with.
+   */
+  const [settlingNow, setSettlingNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    const timer = window.setInterval(() => setSettlingNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, []);
 
   // Only OPEN requests on a turn that can still take the answer are actionable;
   // resolved ones are history, and one left on an ended turn has no worker
@@ -2786,7 +3006,7 @@ export function SessionCockpit({
           working: session.activity === "working" || session.activity === "queued",
           waitingOnYou: session.activity === "blocked",
         },
-        { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
+        { now: settlingNow, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
       ),
   );
   const unsettle = async () => {
@@ -2863,7 +3083,7 @@ export function SessionCockpit({
             working: session.activity === "working" || session.activity === "queued",
             waitingOnYou: session.activity === "blocked",
           },
-          now,
+          now: settlingNow,
           // `current` is unconditional here: this menu is only ever about the
           // session this screen is showing, so `Open` is the one verb it can
           // state and cannot perform.
@@ -3107,10 +3327,14 @@ export function SessionCockpit({
                 middle of the screen and is the whole interface; an empty-state
                 card above it would be a second thing competing to be read. */}
             {!error && !fresh && shown.length === 0 && <EmptyTranscript loading={loading} />}
-            {/* AN EXPLICIT CLICK, NOT A SCROLL TRIGGER. The reader asking for
-                history is the only thing that should fetch it — reaching the
-                top of the window to re-read something must stay free. */}
-            {page?.more && (
+            {/* REACHING THE TOP IS THE GESTURE, and the button is still here
+                for the reader who never scrolls (#498). Nothing is fetched
+                unless there is a page above and none is in flight, so arriving
+                at the top to re-read something is as free as it ever was; what
+                is gone is the wall it used to hit every twenty turns. The edge
+                also puts the viewport back where it was once the page lands —
+                see `ConversationTopEdge`. */}
+            <ConversationTopEdge more={Boolean(page?.more)} loading={loadingOlder} onReach={loadOlder}>
               <div className="mx-auto w-full max-w-[50rem]">
                 <Button
                   type="button"
@@ -3122,7 +3346,7 @@ export function SessionCockpit({
                   {loadingOlder ? "Loading earlier turns…" : "Load earlier turns"}
                 </Button>
               </div>
-            )}
+            </ConversationTopEdge>
             {/* WHERE THIS SESSION'S FILES ARE, so a row can tell the project's
                 own work from the harness reading its bundled skills out of a
                 temp directory (#354). One fact about the session, stated once,
@@ -3136,12 +3360,11 @@ export function SessionCockpit({
                  mistaken for having seen the answer above it, and vice versa.
                  See components/session/read-receipt.tsx. */
               <Fragment key={turn.runId}>
-              <SessionTurnBody
-                key={turn.runId}
+              <TurnFrame skippable={turn.runId !== active?.runId}>
+              <SessionTurn
                 turn={turn}
                 roster={roster}
                 live={turn.runId === active?.runId}
-                now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
                 onOpenAgent={showAgent}
@@ -3155,6 +3378,10 @@ export function SessionCockpit({
                   ? { onResumeNow: () => void resumeNow(turn.runId) }
                   : {})}
               />
+              </TurnFrame>
+              {/* OUTSIDE THE FRAME. The receipt marker is watched by its own
+                  IntersectionObserver, and a skipped subtree is exactly the
+                  thing that must not be reported as seen. */}
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
             ))}
