@@ -193,35 +193,86 @@ function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undef
  */
 export const READ_BUDGET = 2;
 
-let reading = 0;
-const queued: Array<() => void> = [];
-
-/** Take a slot, waiting in line when the budget is spent. */
-async function acquireRead(): Promise<void> {
-  if (reading < READ_BUDGET) {
-    reading += 1;
-    return;
-  }
-  await new Promise<void>((resolve) => queued.push(resolve));
-}
+/**
+ * …AND ONE SLOT THAT ONLY AN OPENING MAY TAKE (#497).
+ *
+ * `/bootstrap` is the read that IS the click. Everything else the budget
+ * governs is a poll on a timer nobody pressed — and a poll landing a
+ * microsecond earlier was enough to put the one read a person is waiting on
+ * third in a queue of two. That is the "opening a conversation takes three
+ * serial round trips" in #490's audit: the wait was not the engine answering,
+ * it was this gate deciding the rail's housekeeping went first.
+ *
+ * ONE, NOT MORE, AND SEPARATE RATHER THAN RESERVED. Separate because a slot
+ * carved out of the two would halve ordinary read throughput for the whole life
+ * of the tab to serve a read that happens on a click; one because a person
+ * opens one conversation at a time, and the rail's warm-ups (lib/rail-prefetch)
+ * coalesce onto the same `SessionConnection` the cockpit reads, so two
+ * concurrent openings of the same conversation are one request already.
+ *
+ * THE CEILING IS THEREFORE THREE, not two — and #82's arithmetic still holds
+ * with room over: six connections per origin, minus three, leaves three free
+ * for navigation, which needs one. In practice the opening burst got SMALLER,
+ * not larger: `/projects` and `/browser` no longer go out beside `/bootstrap`
+ * at all (see the cockpit's `transcriptLanded` gate), so what used to be three
+ * reads contending for two slots is now one read on a slot of its own.
+ */
+export const OPEN_BUDGET = 1;
 
 /**
- * Hand the slot to whoever is next in line, or give it back.
+ * One budget and its queue.
  *
- * The waiter is resumed WITHOUT touching `reading` — the slot is transferred,
- * not released and re-taken, so a third caller arriving in the same tick cannot
- * slip past the queue into the gap that a decrement would open.
+ * WAS TWO MODULE-LEVEL VARIABLES AND TWO FUNCTIONS, which is fine for one gate
+ * and a copy-paste bug waiting for the second. The behaviour is unchanged and
+ * the comments below are the originals: nothing is dropped or debounced,
+ * over-budget callers queue FIFO and go out as slots free.
  */
-function releaseRead(): void {
-  const next = queued.shift();
-  if (next) {
-    next();
-    return;
-  }
-  reading -= 1;
+function gate(budget: number) {
+  let live = 0;
+  const queued: Array<() => void> = [];
+  return {
+    /** Take a slot, waiting in line when the budget is spent. */
+    async take(): Promise<void> {
+      if (live < budget) {
+        live += 1;
+        return;
+      }
+      await new Promise<void>((resolve) => queued.push(resolve));
+    },
+    /**
+     * Hand the slot to whoever is next in line, or give it back.
+     *
+     * The waiter is resumed WITHOUT touching `live` — the slot is transferred,
+     * not released and re-taken, so a third caller arriving in the same tick
+     * cannot slip past the queue into the gap that a decrement would open.
+     */
+    give(): void {
+      const next = queued.shift();
+      if (next) {
+        next();
+        return;
+      }
+      live -= 1;
+    },
+  };
 }
 
-async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+type Gate = ReturnType<typeof gate>;
+
+const reads = gate(READ_BUDGET);
+/** The opening's own slot. Exported for the cockpit's sake only in the sense
+ *  that `sessionBootstrap` below is the single caller — nothing else may take
+ *  it, or it stops being the thing that makes an opening never wait. */
+const opens = gate(OPEN_BUDGET);
+
+async function request<T>(
+  fetcher: Fetcher,
+  method: string,
+  pathname: string,
+  body?: unknown,
+  signal?: AbortSignal,
+  lane: Gate = reads,
+): Promise<T> {
   /**
    * READS ARE BUDGETED; EVERYTHING ELSE GOES STRAIGHT OUT.
    *
@@ -235,11 +286,11 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
    * of those parked in a slot would starve the tail for as long as it ran.
    */
   const budgeted = method === "GET" && signal === undefined;
-  if (budgeted) await acquireRead();
+  if (budgeted) await lane.take();
   try {
     return await send<T>(fetcher, method, pathname, body, signal);
   } finally {
-    if (budgeted) releaseRead();
+    if (budgeted) lane.give();
   }
 }
 
@@ -705,7 +756,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       options: { etag?: string; all?: boolean } = {},
     ): Promise<{ notModified: true; etag: string } | (LiveSessionsPage & { notModified?: false; etag?: string })> => {
       const pathname = options.all ? "/api/sessions/live?all=1" : "/api/sessions/live";
-      await acquireRead();
+      await reads.take();
       let response: Response;
       try {
         response = await fetcher(pathname, {
@@ -723,7 +774,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
           host,
         );
       } finally {
-        releaseRead();
+        reads.give();
       }
       const etag = response.headers.get("etag") ?? undefined;
       // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none.
@@ -770,9 +821,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * trips through this adapter before a transcript could be folded. Kept
      * beside `session` rather than replacing it — the paging path asks for a
      * window whose cursor it already holds and wants none of this.
+     *
+     * AND IT NO LONGER QUEUES BEHIND THE POLLS (#497). This is the one read a
+     * person is actually waiting on, so it spends `OPEN_BUDGET` — a slot of its
+     * own that the rail's passes and the cockpit's own housekeeping cannot
+     * take. See the note on that constant for why one slot and why separate.
      */
     sessionBootstrap: (sessionId: string, window?: SnapshotWindow) =>
-      request<SessionBootstrap>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`),
+      request<SessionBootstrap>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`,
+        undefined,
+        undefined,
+        opens,
+      ),
     /** Rename, change the model, or change what the session may do without
      *  asking. The model must belong to the session's provider instance — the
      *  engine rejects anything else, because a turn is routed by that instance

@@ -43,7 +43,8 @@ import type { LiveSessionRow } from "@telar/engine-client";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
-import { canvasHref, sessionHref, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
+import { claimPrefetch, PREFETCH_INTENT_MS, PREFETCH_MARGIN, releasePrefetch, warmConversation } from "@/lib/rail-prefetch";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, SessionRowContextMenu, type SessionRowMenuProps } from "@/components/session/session-inbox-menu";
 import { mutateRow, patchSession, withSettling, withSnooze, withTitle, type SessionRowChanged } from "@/lib/session-mutations";
@@ -285,6 +286,95 @@ export function SessionRow({
   }, [renaming]);
 
   const href = sessionHref(session);
+  /**
+   * WHETHER THIS ROW IS OPENED AHEAD OF THE CLICK — issue #497.
+   *
+   * `false` is the resting state and stays the default: the rail draws every
+   * session on this Mac, and a list of forty rows that each prefetch a
+   * force-dynamic route would be forty route payloads and forty `/bootstrap`
+   * reads for the one conversation somebody opens. `lib/rail-prefetch.ts` is
+   * where the three warm rows are chosen and why three; this only asks.
+   *
+   * A ROW WITH NO PROJECT HAS NO ADDRESS TO WARM. `sessionHref` sends it to the
+   * front door (see its note), and prefetching that would be warming a route
+   * this row does not lead to.
+   */
+  const warmable = Boolean(session.projectId);
+  const rowKey = sessionKey(session);
+  const [warm, setWarm] = useState(false);
+  /** The 150 ms pause that separates pointing at a row from sweeping across it
+   *  on the way to something else. */
+  const intent = useRef<number | undefined>(undefined);
+  const restIntent = () => {
+    if (intent.current === undefined) return;
+    window.clearTimeout(intent.current);
+    intent.current = undefined;
+  };
+  const beginIntent = () => {
+    if (!warmable || warm || intent.current !== undefined) return;
+    intent.current = window.setTimeout(() => {
+      intent.current = undefined;
+      // INTENT MAY EVICT and a viewport claim may not — a full cap must never
+      // stop the rail warming the row somebody is about to press.
+      if (claimPrefetch(rowKey, { active, intent: true })) setWarm(true);
+    }, PREFETCH_INTENT_MS);
+  };
+  useEffect(() => restIntent, []);
+
+  /**
+   * ROWS NEAR THE VIEWPORT WARM THEMSELVES — t3's second signal, a 160 px
+   * margin so a row is ready just before it becomes the next thing you could
+   * scroll to.
+   *
+   * OBSERVED PER ROW RATHER THAN FROM THE RAIL, because the rail draws
+   * `SessionRow` from five different places (the bands, the project groups, the
+   * search results) and an observer wired at each would be five copies of this
+   * agreeing by hand. The slot bookkeeping is shared and module-scope, so the
+   * cap is still counted once across all of them.
+   *
+   * LEAVING GIVES THE SLOT BACK, which is what lets scrolling rotate the three
+   * warm rows rather than spending them on whatever happened to be on screen
+   * first.
+   */
+  useEffect(() => {
+    const node = rowRef.current;
+    if (!warmable || !node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setWarm((current) => current || claimPrefetch(rowKey, { active }));
+          else {
+            releasePrefetch(rowKey);
+            setWarm(false);
+          }
+        }
+      },
+      { rootMargin: PREFETCH_MARGIN },
+    );
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      releasePrefetch(rowKey);
+    };
+  }, [rowKey, active, warmable]);
+
+  /**
+   * …AND A WARM ROW PAYS ITS `/bootstrap` NOW.
+   *
+   * The route prefetch above is Next's, and on a `force-dynamic` page it buys
+   * the chunks and the shell as far as `loading.tsx` — not the transcript. The
+   * transcript is this cockpit's own read, so the rail makes it too, through
+   * the same `SessionConnection` the cockpit will read from: a warm still in
+   * flight when the click lands is joined rather than raced.
+   *
+   * NEVER FOR THE ACTIVE ROW. That conversation is on screen; its connection is
+   * already held and being tailed once a second, and warming it would be a
+   * second caller asking for what the cockpit is already reading.
+   */
+  useEffect(() => {
+    if (!warm || active) return;
+    warmConversation(session.hostId, session.id);
+  }, [warm, active, session.hostId, session.id]);
   const snoozing = band === "snoozed";
   /**
    * The settling module's view of this session, WHICH IS NO LONGER EMPTY.
@@ -698,6 +788,15 @@ export function SessionRow({
      */
     <div
       ref={rowRef}
+      /* POINTING AT A ROW IS THE STRONGEST SIGNAL THE RAIL GETS (#497), so it
+         is read on the WHOLE row rather than on the link inside it: the row is
+         what a pointer is over, it is the element both the plain and the
+         hover-card branches share, and `onFocus` bubbling here is what gives a
+         keyboard the same warm-up a pointer gets. Leaving cancels a pause that
+         has not elapsed — a sweep across the rail must warm nothing. */
+      onPointerEnter={beginIntent}
+      onPointerLeave={restIntent}
+      onFocus={beginIntent}
       // A ROW WHOSE HOST STOPPED ANSWERING IS A PHOTOGRAPH, so it recedes the
       // same way an archived one does — the list is still there, it just is not
       // being told anything. The hover title carries the only fact that is
@@ -728,7 +827,11 @@ export function SessionRow({
         <Link
           id={`sidebar-session-${session.id}`}
           href={href}
-          prefetch={false}
+          // COLD UNTIL THIS ROW HAS EARNED A SLOT (#497). `null` is Next's own
+          // spelling for "prefetch as you normally would" — it is what restores
+          // the default once intent is shown, and it is not the same as `true`,
+          // which would also resolve the URL's data at prefetch time.
+          prefetch={warm ? null : false}
           // AN ANCHOR IS DRAGGABLE BY DEFAULT, and that default would win: a
           // grab starting on the title would hand the platform a URL to drag
           // instead of letting the row's own wrapper carry the row. Off here so
@@ -757,9 +860,10 @@ export function SessionRow({
             render={
               <Link
                 href={href}
-                // Session routes are force-dynamic and carry the transcript.
-                // They are deliberately fetched only when selected.
-                prefetch={false}
+                // Session routes are force-dynamic and carry the transcript, so
+                // they stay cold by default — see the plain branch, and
+                // `lib/rail-prefetch.ts` for which three rows are not.
+                prefetch={warm ? null : false}
                 // See the plain branch: an anchor drags its own URL unless
                 // told not to, which would beat the row wrapper's drag.
                 draggable={false}

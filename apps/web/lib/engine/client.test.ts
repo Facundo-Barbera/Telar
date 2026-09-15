@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { Turn } from "@telar/engine-client";
-import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError, READ_BUDGET } from "./client";
+import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError, OPEN_BUDGET, READ_BUDGET } from "./client";
 import { SessionConnection } from "./session-connection";
 
 /**
@@ -150,6 +150,61 @@ describe("engine browser adapter", () => {
     expect(wire.peak).toBe(READ_BUDGET);
     // Every one of them still happened; the budget delays, it never drops.
     expect(wire.urls).toHaveLength(6);
+  });
+
+  test("the opening read never waits behind the polls (#497)", async () => {
+    /**
+     * THE THREE SERIAL ROUND TRIPS #490's audit measured, in a fixture.
+     *
+     * Opening a conversation issued `/bootstrap` beside the cockpit's
+     * `/projects` and the rail's own pass. Three reads, two slots — and nothing
+     * ordered them, so the one a person was waiting on could be the one that
+     * queued. `/bootstrap` spends `OPEN_BUDGET` now, which no poll can take.
+     */
+    const wire = countingWire((pathname) =>
+      pathname.includes("/bootstrap")
+        ? { session: { id: "session_1" }, turns: [], items: [], tasks: [], requests: [], cursor: 3, events: [], subscriptions: [] }
+        : {},
+    );
+    const api = createEngineApi(wire.fetcher);
+    await Promise.all([api.health(), api.projects(), api.sessionBootstrap("session_1", { turns: 10 })]);
+    // FIRST WAVE, not third. The two polls filled the ordinary budget and the
+    // open went out anyway.
+    expect(wire.urls.slice(0, 3)).toContain("/api/sessions/session_1/bootstrap?turns=10");
+    expect(wire.peak).toBe(READ_BUDGET + OPEN_BUDGET);
+    // …and #82's arithmetic still holds: six per origin, minus the three this
+    // cockpit can now spend, leaves three for navigation, which needs one.
+    expect(6 - wire.peak).toBeGreaterThanOrEqual(3);
+  });
+
+  test("the opening's slot is its own, and ordinary reads cannot take it (#497)", async () => {
+    /**
+     * The other half of "its own slot": a lane of one that only `/bootstrap`
+     * may enter. Six polls at one instant still peak at two, so the extra slot
+     * is not a third read for everybody — it sits idle unless a conversation is
+     * opening.
+     */
+    const wire = countingWire();
+    const api = createEngineApi(wire.fetcher);
+    await Promise.all([api.health(), api.projects(), api.inbox(), api.hosts(), api.orientation(), api.sidebarLayout()]);
+    expect(wire.peak).toBe(READ_BUDGET);
+  });
+
+  test("two conversations opening at once still take one slot between them (#497)", async () => {
+    /**
+     * WHY THE OPEN LANE IS ONE AND NOT MORE. A person opens one conversation at
+     * a time, and the rail's warm-ups coalesce onto the same `SessionConnection`
+     * the cockpit reads — so the pathological case is a second opening arriving
+     * mid-first, which queues rather than doubling the engine's work.
+     */
+    const wire = countingWire((pathname) => ({
+      session: { id: pathname.includes("session_2") ? "session_2" : "session_1" },
+      turns: [], items: [], tasks: [], requests: [], cursor: 1, events: [], subscriptions: [],
+    }));
+    const api = createEngineApi(wire.fetcher);
+    await Promise.all([api.sessionBootstrap("session_1"), api.sessionBootstrap("session_2")]);
+    expect(wire.peak).toBe(OPEN_BUDGET);
+    expect(wire.urls).toHaveLength(2);
   });
 
   test("the budget queues in order and a failed read gives its slot back", async () => {
