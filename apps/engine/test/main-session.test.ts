@@ -373,7 +373,198 @@ test("disabling keeps the conversation and its journal, and drops only ITS subsc
   expect(engine.getSession(delegate).state).toBe("active");
 
   // And the id is kept, which is what re-enabling reuses.
-  expect(engine.getMainSession()).toEqual({ enabled: false, sessionId: designated });
+  expect(engine.getMainSession()).toMatchObject({ enabled: false, sessionId: designated });
+});
+
+/* ------------------------------------------------------------------ *
+ * The two races around disable.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Send a turn to ONE session and claim it, handing back its claim token.
+ *
+ * `claimTurn` rather than `claimNextTurn`, because these tests have several
+ * sessions with work waiting and the engine-wide claim takes the oldest — which
+ * is not the one the test means. The generation is stamped by `claimTurn`, so
+ * this is the same seam a worker goes through.
+ */
+function claim(engine: EngineStore, sessionId: string, runId: string): string {
+  engine.submitTurn(sessionId, { runId, input: "…" });
+  const claimed = engine.claimTurn(sessionId, "worker_one");
+  expect(claimed?.runId).toBe(runId);
+  return claimed!.claim!.token;
+}
+
+test("a coordinator turn still running after disable cannot take out new subscriptions", () => {
+  /**
+   * THE RACE. The briefing is resolved at claim time and the turn keeps it for
+   * its whole run — deliberately. So the turn goes on being told to delegate
+   * and subscribe after somebody has switched Main off, and a one-time sweep of
+   * the subscriptions cannot hold: the turn simply makes new ones, and the
+   * monitoring a person just stopped comes back on the next tool call.
+   */
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one" }).id;
+  const token = claim(engine, designated, "run_one");
+
+  // While it IS the coordinator, subscribing is exactly what it is for.
+  expect(engine.subscribe(designated, { targetSessionId: delegate }).targetSessionId).toBe(delegate);
+
+  engine.setMainSession({ enabled: false });
+  expect(() => engine.subscribe(designated, { targetSessionId: delegate })).toThrow(/no longer Telar's Main session/);
+  expect(engine.subscriptionsFor(designated)).toEqual([]);
+
+  // AND NOTHING ELSE ABOUT THE TURN IS RESTRICTED. It finishes the work it was
+  // asked for, with its briefing, and reports — which is the accepted
+  // behaviour this guard is narrow enough to preserve.
+  finish(engine, designated, "run_one", token);
+  expect(engine.turns(designated).find((turn) => turn.runId === "run_one")?.state).toBe("completed");
+});
+
+test("the same conversation, on a later turn, subscribes like any other session", () => {
+  /**
+   * THE GUARD IS ABOUT A TURN, NOT A CONVERSATION. Refusing every subscription
+   * from the formerly-designated session would make it a second-class session
+   * for ever — and it is supposed to remain an ordinary, resumable one. A turn
+   * claimed after the switch went off carries no generation at all, so it never
+   * reaches the check.
+   */
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one" }).id;
+
+  const stale = claim(engine, designated, "run_one");
+  engine.setMainSession({ enabled: false });
+  expect(() => engine.subscribe(designated, { targetSessionId: delegate })).toThrow();
+  finish(engine, designated, "run_one", stale);
+
+  // A human sends a new message to what is now an ordinary conversation.
+  claim(engine, designated, "run_two");
+  expect(engine.subscribe(designated, { targetSessionId: delegate }).targetSessionId).toBe(delegate);
+});
+
+test("re-enabling bumps the generation, so the old turn stays refused and the new one works", () => {
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one" }).id;
+
+  const stale = claim(engine, designated, "run_one");
+  engine.setMainSession({ enabled: false });
+  engine.setMainSession({ enabled: true, sessionId: designated });
+
+  // ON AGAIN IS NOT THE SAME DESIGNATION. The turn that was running across both
+  // switches coordinated under the old one, and its subscriptions were swept;
+  // letting it re-subscribe now would restore monitoring the person had ended
+  // rather than start the monitoring they have just asked for.
+  expect(() => engine.subscribe(designated, { targetSessionId: delegate })).toThrow(/no longer Telar's Main session/);
+  finish(engine, designated, "run_one", stale);
+
+  // A turn claimed under the NEW designation is the one that may.
+  claim(engine, designated, "run_two");
+  expect(engine.subscribe(designated, { targetSessionId: delegate }).targetSessionId).toBe(delegate);
+});
+
+test("moving the designation refuses the old coordinator and allows the new one", () => {
+  const engine = store();
+  const first = designatedCodexSession(engine, "session_first");
+  engine.createSession({ id: "session_second", projectId: "project_one", driver: "codex" });
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one" }).id;
+
+  const stale = claim(engine, first, "run_one");
+  engine.setMainSession({ enabled: true, sessionId: "session_second" });
+
+  expect(() => engine.subscribe(first, { targetSessionId: delegate })).toThrow(/no longer Telar's Main session/);
+  finish(engine, first, "run_one", stale);
+
+  claim(engine, "session_second", "run_two");
+  expect(engine.subscribe("session_second", { targetSessionId: delegate }).targetSessionId).toBe(delegate);
+});
+
+test("saving the same designation twice does not invalidate a turn that is legitimately coordinating", () => {
+  // The generation counts "who is Main, and is it on" — not writes. A settings
+  // pane that saved twice must not cut a live coordinator off from its work.
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one" }).id;
+  claim(engine, designated, "run_one");
+
+  engine.setMainSession({ enabled: true, sessionId: designated });
+  expect(engine.subscribe(designated, { targetSessionId: delegate }).targetSessionId).toBe(delegate);
+});
+
+test("disable settles the wakes already queued, and leaves explicitly requested work alone", () => {
+  /**
+   * THE SECOND RACE. Subscriptions that fired just before the switch went off
+   * left turns sitting in the queue; each would run as a full turn and spend
+   * provider quota reporting on work nobody is coordinating any more.
+   *
+   * A `once` SUBSCRIPTION IS WHY THE SWEEP CANNOT BE PER-SUBSCRIPTION. It is
+   * removed the instant it fires, so by the time the switch goes off its wake
+   * has nothing left to link it to — `dropSubscriptionsBy` alone would walk
+   * straight past it.
+   */
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one", driver: "codex" }).id;
+  const peer = engine.createSession({ id: "session_peer", projectId: "project_one", driver: "codex" }).id;
+
+  engine.subscribe(designated, { targetSessionId: delegate, once: true });
+  // The delegate finishes, which fires the one-shot and removes it.
+  finish(engine, delegate, "run_delegate", claim(engine, delegate, "run_delegate"));
+  expect(engine.subscriptionsFor(designated)).toEqual([]);
+
+  // A human message and a peer's task, queued behind the wake.
+  engine.submitTurn(designated, { runId: "run_human", input: "please look at this" });
+  // A peer's task is sent from INSIDE its own live run, which is the proof the
+  // store stamps the sender from — so that run has to be running.
+  const peerToken = claim(engine, peer, "run_peer");
+  engine.markRunning(peer, "run_peer", peerToken);
+  engine.submitAgentTurn(
+    designated,
+    { runId: "run_task", input: "here is an errand", intent: "task" },
+    { sessionId: peer, runId: "run_peer", claimToken: peerToken },
+  );
+
+  const queuedWakes = engine.turns(designated).filter((turn) => turn.state === "queued" && turn.wakeReason !== undefined);
+  expect(queuedWakes).toHaveLength(1);
+
+  engine.setMainSession({ enabled: false });
+
+  const after = engine.turns(designated);
+  // THE WAKE IS SETTLED — discarded, not run.
+  expect(after.find((turn) => turn.runId === queuedWakes[0]!.runId)?.state).toBe("discarded");
+  // AND EVERYTHING SOMEBODY ASKED FOR SURVIVES. A queued human message and a
+  // queued peer task are explicitly requested work; switching off a briefing is
+  // not a reason to throw either away.
+  expect(after.find((turn) => turn.runId === "run_human")?.state).toBe("queued");
+  expect(after.find((turn) => turn.runId === "run_task")?.state).toBe("queued");
+  // The delegate is untouched and still live.
+  expect(engine.getSession(delegate).state).toBe("active");
+});
+
+test("a wake that is already running is the worker's, and finishes", () => {
+  const engine = store();
+  const designated = designatedCodexSession(engine);
+  const delegate = engine.createSession({ id: "session_delegate", projectId: "project_one", driver: "codex" }).id;
+  engine.subscribe(designated, { targetSessionId: delegate });
+
+  const delegateToken = claim(engine, delegate, "run_delegate");
+  finish(engine, delegate, "run_delegate", delegateToken);
+  const wake = engine.turns(designated).find((turn) => turn.wakeReason !== undefined)!;
+
+  // Claimed and RUNNING before the switch is touched.
+  const claimed = engine.claimTurn(designated, "worker_one");
+  expect(claimed?.runId).toBe(wake.runId);
+  engine.markRunning(designated, wake.runId, claimed!.claim!.token);
+
+  engine.setMainSession({ enabled: false });
+  // NOT KILLED. Disable stops monitoring; it does not reach into a turn a
+  // worker is already executing — that is `sessions_stop`'s job, and a person's
+  // decision.
+  expect(engine.turns(designated).find((turn) => turn.runId === wake.runId)?.state).toBe("running");
+  engine.completeTurn(designated, wake.runId, claimed!.claim!.token, { text: "noted" });
+  expect(engine.turns(designated).find((turn) => turn.runId === wake.runId)?.state).toBe("completed");
 });
 
 /* ------------------------------------------------------------------ *
