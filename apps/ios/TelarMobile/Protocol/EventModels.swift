@@ -158,14 +158,20 @@ struct EventPage: Decodable {
     /// not scan for it — and so skipped rows cannot stall replay.
     var cursor: Int
     var more: Bool
+    /// The `after` for the next page, sent exactly when `more` is true (#494).
+    /// It equals `cursor`; a client that pages may read either, and one that
+    /// only tails stores `cursor` and ignores this. Absent from an engine older
+    /// than the paged route, where `more` was always false.
+    var next: Int?
 
-    private enum CodingKeys: String, CodingKey { case events, cursor, more }
+    private enum CodingKeys: String, CodingKey { case events, cursor, more, next }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         events = try c.decode([Skippable<EngineEvent>].self, forKey: .events).compactMap(\.value)
         cursor = try c.decode(Int.self, forKey: .cursor)
         more = try c.decodeIfPresent(Bool.self, forKey: .more) ?? false
+        next = try c.decodeIfPresent(Int.self, forKey: .next)
     }
 }
 
