@@ -12,7 +12,7 @@ Scope: sessions, project navigation, browser, 1Password and release reliability.
 - No device frame on Fit or blank tabs. New tabs show project history and discovered local servers.
 - Successful replacement navigation can recover from ERR_ABORTED; actual failures remain errors.
 - Usage has matching borders, loading feedback, range caching and stale-request protection. Global and project Settings use the same rounded-panel shell.
-- Opening 1Password does not pause browser tools or show control banners. Actual credential-field protection remains, and extension pages stay outside agent capture.
+- A sign-in never pauses browser tools: neither the 1Password popup nor a credential field gates, delays or refuses an agent's call, and there is no control banner (#524). Extension pages stay outside agent capture.
 - Release smoke and engine-worker checks precede upload; immutable artifacts precede feeds.
 
 ## Final review
