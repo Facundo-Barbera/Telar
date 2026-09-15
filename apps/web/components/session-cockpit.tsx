@@ -49,6 +49,7 @@ import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { sessionConnection } from "@/lib/engine/session-connection";
 import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
+import { recallTranscript, rememberTranscript, transcriptKey } from "@/lib/transcript-cache";
 import { decideStale } from "@/lib/stale-state";
 import { Composer, MAX_ATTACHMENTS } from "./composer";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
@@ -1440,6 +1441,55 @@ export function SessionCockpit({
   const syncSession = useRef(syncKey);
   const syncGeneration = useRef(0);
   const tailInFlight = useRef(false);
+  /** Whether what is on screen is this conversation's own transcript, rather
+   *  than the tail of the last one or a recording of this one. A fresh canvas
+   *  has nothing to read, so it is never mid-open.
+   *
+   *  COMPUTED HERE, BESIDE ITS TWO HALVES, rather than beside the render that
+   *  reads it (#497): the effects that hold `/projects` and `/browser` back
+   *  until the transcript lands name it in their dependency arrays, and a
+   *  dependency array is evaluated during render — so a `const` declared below
+   *  them would be a temporal-dead-zone throw rather than a deferral. */
+  const transcriptLanded = !sessionId || readKey === syncKey;
+
+  /**
+   * THE LAST SIXTEEN TRANSCRIPTS, PAINTED IN THE COMMIT THAT SWITCHES (#497).
+   *
+   * Switching back to a conversation you were reading a moment ago used to
+   * blank the screen for a round trip: this component does not remount between
+   * sessions, so it sits holding the PREVIOUS conversation's rows with
+   * `readKey !== syncKey` until the new read lands. The rows it needs are the
+   * ones this same tab folded and dropped seconds earlier, so
+   * `lib/transcript-cache.ts` keeps the last sixteen and this hands them back.
+   *
+   * DURING RENDER, NOT IN AN EFFECT, and that is the whole point: an effect
+   * commits a frame later, which is a frame of the blank this exists to remove.
+   * It is the same adjust-on-subject-change shape `nameSubject` above uses, and
+   * the reason both are written this way rather than as a `useEffect`.
+   *
+   * THE CURSOR IS DELIBERATELY NOT RESTORED. It is a ref, writing one during
+   * render is a side effect, and the sync effect below resets it to 0 on this
+   * very switch anyway — `hydrate` sets the real one when it lands, and until
+   * then a cursor of 0 costs nothing because nothing tails before hydrate.
+   */
+  const [transcriptSubject, setTranscriptSubject] = useState(syncKey);
+  if (transcriptSubject !== syncKey) {
+    setTranscriptSubject(syncKey);
+    const recalled = sessionId ? recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId)) : undefined;
+    if (recalled) {
+      setSession(recalled.session);
+      setTurns(recalled.turns);
+      setItems(recalled.items);
+      setTasks(recalled.tasks);
+      setRequests(recalled.requests);
+      setEvents(recalled.events);
+      setPage(recalled.page);
+      // IN THE SAME COMMIT as the rows, for the reason `hydrate` gives: told a
+      // render later, the viewport treats the transcript's arrival as ordinary
+      // growth and animates it.
+      setReadKey(syncKey);
+    }
+  }
 
   useEffect(() => {
     if (syncSession.current === syncKey) return;
@@ -1479,6 +1529,25 @@ export function SessionCockpit({
    *  fetched values rather than from state, which has not committed yet. */
   const remember = useCallback((id: string, snapshot: SessionSnapshot & { events?: EngineEvent[] }) => {
     live();
+    /**
+     * THE IN-MEMORY HALF, AND IT IS FIRST FOR TWO REASONS (#497).
+     *
+     * BEFORE THE `store` GUARD, because a browser with no IndexedDB — a private
+     * window, a locked-down profile — still switches conversations, and the
+     * flash this removes has nothing to do with whether the outage recording
+     * can be written.
+     *
+     * BEFORE THE IDENTITY CHECK BELOW, because that check answers "is this
+     * worth photographing again", and the answer for the LRU is different: an
+     * unchanged transcript is exactly the one still being read, and letting it
+     * age out behind sixteen conversations opened once is how a cache evicts
+     * the entry it most needs. Re-remembering costs a `Map` delete and set.
+     */
+    rememberTranscript(transcriptKey(hostId ?? LOCAL_HOST, id), {
+      ...snapshot,
+      events: snapshot.events ?? [],
+      cursor: snapshot.cursor ?? 0,
+    });
     const store = snapshotStore();
     if (!store) return;
     /**
@@ -1711,6 +1780,19 @@ export function SessionCockpit({
    */
   const [browserCanStart, setBrowserCanStart] = useState(false);
   useEffect(() => {
+    /**
+     * AFTER THE TRANSCRIPT, NOT BESIDE IT (#497). This answers whether one
+     * button is offered. It used to go out on mount, which put it on the wire
+     * at the same instant as `/bootstrap` and `/projects` — three reads
+     * contending for two budget slots, with the one a person was waiting on
+     * able to come third. Nothing on this screen can want a browser before the
+     * conversation it would belong to has appeared.
+     *
+     * A CANVAS IS NOT HELD AT ALL: `transcriptLanded` is true from the first
+     * render when there is no session, which is the screen where this button is
+     * most likely to be the next thing pressed.
+     */
+    if (!transcriptLanded) return;
     let cancelled = false;
     // Deferred to a task, same rule as the panel restore above: a synchronous
     // setState in an effect body is a cascading render.
@@ -1744,7 +1826,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [sessionId, projectId, hostId]);
+  }, [sessionId, projectId, hostId, transcriptLanded]);
 
   /**
    * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
@@ -2301,6 +2383,17 @@ export function SessionCockpit({
   // resolves it; a failure leaves the breadcrumb on the id, which is worse to
   // read but never wrong.
   useEffect(() => {
+    /**
+     * AFTER THE TRANSCRIPT, NOT BESIDE IT (#497) — the same rule the browser
+     * probe above now follows, and this is the read it was contending with.
+     *
+     * NOTHING IS LOST BY WAITING, because the remembered name below already
+     * covers the gap this read was hurrying to close: the breadcrumb paints the
+     * name the last visit left within a tick, and this read exists to correct
+     * it for a rename or to say the project is not on this Mac. Neither is
+     * urgent enough to sit in front of the transcript.
+     */
+    if (!transcriptLanded) return;
     let cancelled = false;
     /**
      * THE NAME THE LAST VISIT LEFT, painted while the list is in flight (#407).
@@ -2366,7 +2459,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [projectId, hostId]);
+  }, [projectId, hostId, transcriptLanded]);
 
   useEffect(() => {
     // A fresh canvas has nothing to hydrate and nothing to poll — and polling a
@@ -2392,6 +2485,17 @@ export function SessionCockpit({
       ?.read(snapshotKey(hostId ?? LOCAL_HOST, sessionId))
       .then((cached) => {
         if (!cached || cancelled || lastLiveAt.current !== undefined) return;
+        /**
+         * A WARM SWITCH HAS ALREADY PAINTED, SO THE RECORDING IS OLDER (#497).
+         *
+         * The in-memory LRU holds this conversation from seconds ago and seeded
+         * it during the render that switched; this read is a photograph from a
+         * previous run of the app. Landing it now would replace live rows with
+         * dated ones AND hang a "last true at" banner over a transcript that is
+         * nothing of the sort — the banner being the part a reader would
+         * actually notice.
+         */
+        if (recallTranscript(transcriptKey(hostId ?? LOCAL_HOST, sessionId))) return;
         setSession(cached.session);
         setTurns(cached.turns);
         setItems(cached.items);
@@ -3143,11 +3247,6 @@ export function SessionCockpit({
   // take it, and the person has to see what a pause (or a restart) is holding
   // in order to decide about it.
   const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
-  /** Whether what is on screen is this conversation's own transcript, rather
-   *  than the tail of the last one or a recording of this one. A fresh canvas
-   *  has nothing to read, so it is never mid-open. */
-  const transcriptLanded = !sessionId || readKey === syncKey;
-
   /**
    * WHERE THE TIME GOES WHEN A CONVERSATION OPENS (#407).
    *
