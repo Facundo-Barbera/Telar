@@ -63,9 +63,15 @@ jobs:
       # (scripts/lint-ceiling.mjs) was deleted with the gate rather than left
       # behind to rot. Do not re-add it: work belongs in apps/web.
 
-      # Cheapest first. Includes core's test tree, which nothing typechecked
-      # until this branch — pinned as a ceiling by scripts/typecheck-ceiling.mjs.
-      - name: Typecheck core, engine, web, and core's test tree against its ceiling
+      # Cheapest first.
+      #
+      # DELIBERATELY ABSENT: the packages/core test-tree ceiling. That gate
+      # (scripts/typecheck-ceiling.mjs) existed because core's tsconfig excluded
+      # its own `test` dir, so 116 test files were never typechecked and could
+      # not be made clean in one go. packages/core was deleted with the Loom
+      # engine (#501 step 3), and the ceiling went with it rather than being
+      # left behind to rot. Every tree that remains typechecks outright.
+      - name: Typecheck engine-client, env, engine, and web
         run: bun run typecheck
 
       - name: Lint apps/web
@@ -73,7 +79,7 @@ jobs:
 
       # Desktop is the unit tier only. Smoke and e2e need a real Electron and a
       # built bundle, and stay on the mac release path.
-      - name: Run the core, engine, web, and desktop unit suites
+      - name: Run the engine-client, env, engine, web, desktop and worker suites
         run: bun run test
 
       # DELIBERATELY ABSENT: `next build`. A reader may assume "Verify" proves

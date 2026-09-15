@@ -41,8 +41,9 @@ const FORBIDDEN = new Map<number, string>([
   [0xfeff, "BYTE ORDER MARK"],
 ]);
 
-/** The trees this repo actually authors. `web_old` and `packages/core` are the
- *  frozen donor and are not ours to police; `node_modules` is nobody's. */
+/** The trees this repo actually authors. `web_old` and `packages/core` were the
+ *  frozen donor, never policed here and now deleted outright; `node_modules` is
+ *  nobody's. */
 const TREES = [
   "apps/engine/src",
   "apps/engine/test",

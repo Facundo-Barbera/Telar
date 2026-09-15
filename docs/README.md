@@ -11,18 +11,23 @@ its own rationale**, kept when the generated 2026-07-17 doc set was cleared:
 
 | File | Cited by |
 | --- | --- |
-| `session-profile-port.md` | `packages/core/src/session-profile.ts`, `workspace/store.ts` |
-| `weave-contracts.md` | `packages/core/src/weave-contracts.ts` |
-| `workspace-item-schema-design.md` | `packages/core/src/workspace/schema.ts` |
 | `engine-contract-v2.md` | `packages/engine-client/src/protocol/index.ts` |
 | `command-keys-web-port.md` | `apps/web/lib/command-keys.ts` |
-| `integration-architecture.md` | `packages/core/test/invariants.test.ts` (INV-1 — the accept-tool moat, enforced by that prose) |
-| `deferred-work.md` | `packages/core/src/ultra/wake.ts`, `ultra/events.ts`, `test/invariants.test.ts` |
 
 Those modules deliberately hold point-of-use notes only and defer the long
 reasoning to these pages, so deleting one silently strips the explanation for
 code that is still shipping. Supersede them by rewriting rather than by dropping
 the file — and when you do, update the citing comment in the same change.
+
+**Five rows left this table in #501 step 3.** `session-profile-port.md`,
+`weave-contracts.md`, `workspace-item-schema-design.md`, `integration-architecture.md`
+and `deferred-work.md` were kept because `packages/core` cited them —
+`src/session-profile.ts`, `src/weave-contracts.ts`, `src/workspace/schema.ts`,
+`test/invariants.test.ts` (INV-1, the accept-tool moat) and `src/ultra/wake.ts`.
+That package was deleted with the Loom engine, so no live source cites those five
+any more and the rule above no longer holds them here. They are still on disk;
+#501 step 5 is the doc sweep that decides each one (the issue names
+`workspace-item-schema-design.md` as reviewed, not dropped blindly).
 
 Note that source comments also cite pages that are **already** gone (chiefly
 `docs/loom-model.md` and `docs/loom-orchestrator.md`). Those predate this
