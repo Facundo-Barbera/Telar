@@ -245,7 +245,7 @@ describe("one prefix, one owner", () => {
     expect(subject.ownerOfTool("notebook_read")).toBe("data-science");
     expect(subject.ownerOfTool("ds_query")).toBe("data-science");
     expect(subject.ownerOfTool("latex_compile")).toBe("latex");
-    expect(subject.ownerOfTool("spool_list_items")).toBeUndefined();
+    expect(subject.ownerOfTool("sessions_list")).toBeUndefined();
     expect(subject.toolPrefixes().sort()).toEqual(["ds", "latex", "notebook"]);
   });
 });

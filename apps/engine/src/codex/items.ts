@@ -330,8 +330,8 @@ function mcpToolApproval(
   /**
    * CLASSIFIED THE SAME WAY CLAUDE'S IS, and this used to be a real defect.
    *
-   * This arm answered `tool_call` unconditionally, so `spool_list_items` — a
-   * pure read — auto-accepted under Claude and parked a card under Codex, for
+   * This arm answered `tool_call` unconditionally, so a pure read like
+   * `display_open` auto-accepted under Claude and parked a card under Codex, for
    * the same tool. The engine's own classifier is the single authority for
    * every wire; the host installs the plugin half of it at startup, so a
    * plugin's reads are ratified once and answered identically wherever the call

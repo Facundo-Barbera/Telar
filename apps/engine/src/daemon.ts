@@ -74,9 +74,7 @@ import {
 } from "./appearance-home";
 import { readUsageReport, warmUsageScanCache } from "./usage";
 import { readUsageLimitSource } from "./usage-limits";
-import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
-import type { SpoolCapability } from "./spool/tools";
 import {
   collectSessionsWallTools,
   ensureSessionsSocketSecret,
@@ -94,6 +92,7 @@ import type { NotesCapability } from "./notes-tools/tools";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
+import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
@@ -153,7 +152,7 @@ export type EngineDaemonOptions = {
   notifier?: EngineNotifier;
   /**
    * How the engine reaches GitHub. INJECTED for the reason every other
-   * subprocess here is: a route test that drives `/v2/spool/look` must never
+   * subprocess here is: a route test that drives a forge read must never
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
@@ -457,23 +456,6 @@ function stringValue(value: unknown, label: string, optional = false): string | 
   return value;
 }
 
-/**
- * THE ONE PLACE A ROUTE READS "TODAY" — and it never reads a clock to get it.
- * §3.2-as-amended: a comparison against today requires the CALLER to state
- * one; `?today=YYYY-MM-DD` is that statement, freshly introduced by the lobby
- * and the brief (no earlier spool route took a query param at all). Absent is
- * the honest "the caller sent none" — the composition degrades rather than
- * substituting `new Date()`.
- */
-function todayParam(url: URL): string | undefined {
-  const raw = url.searchParams.get("today");
-  if (raw === null) return undefined;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    throw new HttpError(400, "invalid_request", `today must be YYYY-MM-DD — got ${JSON.stringify(raw)}.`);
-  }
-  return raw;
-}
-
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
@@ -687,6 +669,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     const removed = indexed.removed > 0 ? `dropped ${indexed.removed.toLocaleString("en-US")} orphaned rows` : "";
     process.stdout.write(`Telar engine: ${[built, removed].filter(Boolean).join(" and ")}\n`);
   }
+  /**
+   * AND WHAT THE SPOOL AND THE LOOMS LEFT — issue #501, step 2.
+   *
+   * Beside the sweep above and for the same reason: two directories nothing in
+   * this repository can open any more. Once per home, best-effort, and silent
+   * unless something actually went. See `decommission-sweep.ts`.
+   */
+  const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
+  if (decommissioned) process.stdout.write(`${decommissioned}\n`);
   /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
@@ -932,63 +923,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
 
   /**
-   * THE SOCKET'S SECRET AND TOOLS, both lazy: nothing is minted or assembled
-   * until something asks — the connect card or a client's first request — so a
-   * daemon nothing connects to writes nothing extra to disk.
-   */
-  let socketSecretCache: string | undefined;
-  const socketSecret = () => (socketSecretCache ??= ensureSocketSecret(store.spool));
-  let socketToolsCache: SocketTool[] | undefined;
-  const socketTools = (): SocketTool[] => {
-    if (socketToolsCache) return socketToolsCache;
-    /**
-     * THE WALL AT MASTER SCOPE — every capability lands on the store's own
-     * facade, the same methods the HTTP routes call, so there is exactly one
-     * implementation of every rule about an item. No `project` key: the
-     * socket is the user's own outward door and sees every subject, like the
-     * master chat. The wall's absences ride along whole: close, reopen,
-     * accept, delete and lane structure are not on the wall, so no client of
-     * this socket can reach them — asserted in `spool-socket.test.ts`.
-     */
-    const capability: SpoolCapability = {
-      snapshot: async () => store.spoolSnapshot(),
-      item: async (id) => {
-        try {
-          return store.spoolItem(id);
-        } catch {
-          return null;
-        }
-      },
-      create: async (input) => store.createSpoolItem(input),
-      update: async (id, patch) => store.updateSpoolItem(id, patch),
-      consult: (id) => store.consultSpoolExpert(id),
-      map: async () => store.spoolMap(),
-      openThread: async (subject, input) => store.openSpoolThread(subject, input),
-      setWaiting: async (subject, threadId, waiting) => store.setSpoolThreadWaiting(subject, threadId, waiting),
-      settle: async (subject, threadId, answer) => store.settleSpoolThread(subject, threadId, answer),
-      answer: async (itemId, question, answer) => store.answerSpoolQuestion(itemId, question, answer),
-      focus: async () => ({ pickup: store.spoolPickup(), days: store.spoolFocusDays() }),
-      setFocus: async (input) => store.openSpoolFocus(input),
-      endFocus: async (id, end) => store.closeSpoolFocus(id, end),
-      look: (subjectKey) => store.reconcileSpoolLook(subjectKey),
-      setTerrain: async (subjectKey, terrain) => store.setSpoolSubjectTerrain(subjectKey, terrain),
-      setIdentity: async (subjectKey, patch) => store.setSpoolSubjectIdentity(subjectKey, patch),
-      setAperture: async (view) => store.setSpoolAperture(view),
-      setAreaPermits: async (name, ceiling) => store.setSpoolAreaCeiling(name, ceiling),
-      notes: async () => store.spoolNotes(),
-      // The wall's handler declares `author: "session"`; the arm below is the
-      // same default the human route keeps, so an absent declaration is a hand.
-      createNote: async (input) => store.createSpoolNote({ ...input, author: input.author === "session" ? "session" : "you" }),
-      updateNote: async (id, patch) => store.updateSpoolNote(id, patch),
-      search: async (query, subject) => store.spoolSearch(query, subject ? { subject } : {}),
-    };
-    socketToolsCache = collectWallTools(capability);
-    return socketToolsCache;
-  };
-
-  /**
-   * THE SESSIONS SOCKET'S SECRET AND TOOLS, lazy for the same reason and minted
-   * SEPARATELY from the spool's: two doors, two keys.
+   * THE SESSIONS SOCKET'S SECRET AND TOOLS, both lazy: nothing is minted or
+   * assembled until something asks. Minted SEPARATELY from the notebook's:
+   * two doors, two keys.
    */
   let sessionsSecretCache: string | undefined;
   const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
@@ -996,16 +933,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const sessionsSocketTools = (): SocketTool[] => {
     if (sessionsToolsCache) return sessionsToolsCache;
     /**
-     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS, exactly
-     * as the spool socket's capability does. There is no validation here and
+     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS. There
+     * is no validation here and
      * there must not be: `createSession` owns the env-mode rule and the
      * driver check; `submitTurn` owns the backlog cap; `readEvents` owns the
      * cursor check. A check written at this seam would protect the socket
      * and nothing else.
      *
      * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
-     * shape on the wall carries it. It is the same construction the spool's
-     * `source: "session"` uses — provenance a list can show, nothing more.
+     * shape on the wall carries it — provenance a list can show, nothing more.
      */
     const capability: SessionsCapability = {
       // NO `self`: a chat client on this socket is not a session and has
@@ -1062,7 +998,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       create: async (projectId, input) => {
         store.getProject(projectId);
         // THE WALL DECLARES `author: "session"`, never a caller: no tool shape
-        // carries it. Same construction as the spool's `source: "session"`.
+        // carries it.
         return notebook.createNote(store.paths, projectId, { ...input, author: "session" });
       },
       update: async (projectId, noteId, patch) => {
@@ -1139,45 +1075,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       /**
-       * THE OUTWARD MCP SOCKET — before the bearer check, because its auth is
-       * DELIBERATELY NOT the management token: this endpoint answers to its
-       * own dedicated secret and to nothing else, in both directions — the
-       * engine token does not open the socket, and a leaked socket secret
-       * opens no other route (every other path still demands the bearer
-       * above). Streamable HTTP, stateless, tools only: POST carries one
-       * JSON-RPC message; GET (the server-initiated stream) is declined 405,
-       * which the protocol permits; DELETE has no session to end and says so
-       * with a 200.
-       */
-      if (url.pathname === "/v2/spool/mcp") {
-        if (!bearerIsValid(request.headers.authorization, socketSecret())) {
-          writeJson(response, 401, { error: { code: "engine_unauthorized", message: "the spool socket answers to its own secret — see /v2/spool/mcp-info" } });
-          return;
-        }
-        if (request.method === "POST") {
-          const message = await body(request);
-          const answer = await handleSocketMessage(socketTools(), message);
-          if (answer === undefined) {
-            response.writeHead(202).end();
-            return;
-          }
-          writeJson(response, 200, answer);
-          return;
-        }
-        if (request.method === "DELETE") {
-          writeJson(response, 200, {});
-          return;
-        }
-        writeJson(response, 405, { error: { code: "invalid_request", message: "the spool socket is POST-only — it keeps no stream open" } });
-        return;
-      }
-      /**
-       * THE SESSIONS SOCKET — beside the spool's, and before the bearer check
-       * for the identical reason: it answers to its OWN secret in both
-       * directions. The engine token does not open it, and its secret opens no
-       * other route — including, deliberately, the archive and delete verbs,
-       * which stay a person's: a chat client that could archive a session
-       * could erase another agent's work.
+       * THE SESSIONS SOCKET — an OUTWARD MCP socket, before the bearer check,
+       * because its auth is DELIBERATELY NOT the management token: it answers
+       * to its OWN dedicated secret and to nothing else, in both directions.
+       * The engine token does not open it, and a leaked socket secret opens no
+       * other route (every other path still demands the bearer above) —
+       * including, deliberately, the archive and delete verbs, which stay a
+       * person's: a chat client that could archive a session could erase
+       * another agent's work.
+       *
+       * Streamable HTTP, stateless, tools only: POST carries one JSON-RPC
+       * message; GET (the server-initiated stream) is declined 405, which the
+       * protocol permits; DELETE has no session to end and says so with a 200.
        *
        * IT MUST STAY ABOVE `sessionPath`, which would otherwise read
        * `/v2/sessions/mcp` as a session whose id is "mcp" and answer 404. That
@@ -1724,877 +1633,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * THE SPOOL — the item store behind SPEC-organization-workspace.
-       *
-       * NOT UNDER A PROJECT, and that is the module's premise rather than a
-       * routing convenience: an item's project is an OPTIONAL field on it, and
-       * absent means floating, which is a valid resting state. A
-       * `/v2/projects/:id/spool` shape would make the one thing the store is for
-       * — holding work that has not been placed yet — unaddressable. A
-       * project-scoped view is a filter over `rows`, not a different endpoint.
+       * THE CONNECT CARD — where the notebook's outward socket listens and its
+       * dedicated secret. BEHIND THE NORMAL BEARER, deliberately: the card
+       * mints and reveals the socket's credential, so only something already
+       * holding engine access may read it. The composed `claude mcp add` line
+       * comes from the engine so the card and the socket cannot disagree.
        */
-      if (request.method === "GET" && url.pathname === "/v2/spool") {
-        writeJson(response, 200, store.spoolSnapshot());
-        return;
-      }
-      /**
-       * The Spool's master chat, ensured.
-       *
-       * A GET THAT MAY CREATE, which is unusual enough to justify: the master is
-       * a SINGLETON front door, so "get me the master" and "make one if there
-       * has never been one" are the same request from the caller's side, and
-       * splitting them would make every client do the two-step. It is
-       * idempotent — a second call returns the first one's session — which is
-       * the property that actually matters here.
-       */
-      if (url.pathname === "/v2/spool/night") {
-        if (request.method === "GET") {
-          writeJson(response, 200, { night: store.spoolNight() });
-          return;
-        }
-        if (request.method === "POST") {
-          /**
-           * STARTS THE NIGHT AND ANSWERS AT ONCE, with the plan it intends to
-           * work. It used to await the whole run, and a live night proved that
-           * wrong inside one attempt: five minutes in, the caller's HTTP client
-           * gave up and reported the engine unreachable while the daemon
-           * happily finished every job. Progress is read from `GET` — the record
-           * is on disk after each job, so that read is always current.
-           *
-           * IT REFUSES WHILE A PERSON IS WORKING rather than standing down one
-           * job in. Starting a run that immediately halts would burn the plan
-           * and write a stopped record for no reason.
-           */
-          if (store.humanActive()) {
-            writeJson(response, 200, {
-              night: null,
-              refused: "A turn is running, so the night stood down rather than competing for the account.",
-            });
-            return;
-          }
-          const input = await body(request).catch(() => ({}) as Record<string, unknown>);
-          writeJson(
-            response,
-            200,
-            store.startSpoolNight({
-              ...(typeof input.maxJobs === "number" ? { maxJobs: input.maxJobs } : {}),
-              ...(typeof input.maxCostUsd === "number" ? { maxCostUsd: input.maxCostUsd } : {}),
-            }),
-          );
-          return;
-        }
-      }
-      /**
-       * WHAT THE SPOOL IS DOING RIGHT NOW. `GET` is the whole surface; `DELETE`
-       * on one id stops that pass. There is no `POST` — work is begun by the
-       * verb that spends the money (a consultation, a night), never by asking
-       * for a record of it.
-       */
-      /**
-       * THE SUBJECTS, RECONCILED ON READ. `GET` derives any that items name and
-       * nothing has registered, so this is also how the migration runs — no boot
-       * hook, nothing to leave half-done, and it self-heals.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/subjects") {
-        writeJson(response, 200, { subjects: store.spoolSubjects() });
-        return;
-      }
-      /**
-       * THE LOBBY — mission control, ranked, never enumerated (§13.2). A pure
-       * composition over what the routes above already serve: no store write,
-       * no `gh` run, no model call. `?today=YYYY-MM-DD` is optional — see
-       * `todayParam` — and every today-relative fact simply does not appear
-       * without it.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/lobby") {
-        writeJson(response, 200, { lobby: store.spoolLobby(todayParam(url)) });
-        return;
-      }
-      /**
-       * THE RE-ENTRY BRIEF — a subject's room, opened. Same pull-only,
-       * model-free composition as the lobby above, widened to one subject's
-       * pickup, threads, stored look, queue rows and notes. `not_found` for a
-       * key nothing goes by, the same shape `PATCH .../subjects/:key` uses.
-       */
-      const spoolSubjectBrief = /^\/v2\/spool\/subjects\/([^/]+)\/brief$/.exec(url.pathname);
-      if (request.method === "GET" && spoolSubjectBrief) {
-        writeJson(response, 200, {
-          brief: store.spoolSubjectBrief(decodeURIComponent(spoolSubjectBrief[1]), todayParam(url)),
-        });
-        return;
-      }
-      const spoolSubject = /^\/v2\/spool\/subjects\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolSubject) {
-        const input = await body(request);
-        /**
-         * TERRAIN IS ITS OWN ARM. `null` clears and an object sets — two
-         * different requests JSON can only tell apart by the key being present,
-         * the same `in` rule the inbox route states. The shape and the
-         * repo-address guard live in the store (the wall); a refusal comes back
-         * with the store's own sentence.
-         */
-        if ("terrain" in input) {
-          writeJson(response, 200, {
-            subject: store.setSpoolSubjectTerrain(
-              decodeURIComponent(spoolSubject[1]),
-              input.terrain as Parameters<typeof store.setSpoolSubjectTerrain>[1],
-            ),
-          });
-          return;
-        }
-        /**
-         * IDENTITY IS ITS OWN ARM, on the same `in` rule as terrain: `null`
-         * clears a field, a value sets it, an absent key leaves it alone —
-         * which is what lets one request set `area`, `color` and `rank`
-         * together, the way a user states them ("pon casa en Personal, de
-         * color mar"), or the way a drag surface states just `rank` alone.
-         * The closed color set, the area cap and the rank floor live in the
-         * store (the wall); a refusal comes back with the store's own
-         * sentence.
-         */
-        if ("area" in input || "color" in input || "rank" in input) {
-          writeJson(response, 200, {
-            subject: store.setSpoolSubjectIdentity(decodeURIComponent(spoolSubject[1]), {
-              ...("area" in input ? { area: input.area as string | null } : {}),
-              ...("color" in input ? { color: input.color as Parameters<typeof store.setSpoolSubjectIdentity>[1]["color"] } : {}),
-              ...("rank" in input ? { rank: input.rank as number | null } : {}),
-            }),
-          });
-          return;
-        }
-        const permits = input.permits;
-        if (permits !== "read" && permits !== "draft" && permits !== "propose") {
-          writeJson(response, 400, {
-            error: `permits must be "read", "draft" or "propose" — got ${JSON.stringify(permits)}.`,
-          });
-          return;
-        }
-        // A key nothing goes by throws `not_found` from the store — see
-        // `setSpoolSubjectPermits`. Written as a bare `writeJson(404)` first,
-        // which dropped the error CODE and made the web adapter report a
-        // reachable, answered request as "the engine is unreachable".
-        writeJson(response, 200, {
-          subject: store.setSpoolSubjectPermits(decodeURIComponent(spoolSubject[1]), permits),
-        });
-        return;
-      }
-      /**
-       * THE AREAS — the group-level permit ceilings. `GET` lists only the
-       * records something was stated on; the area NAMES live on the subjects
-       * read, and the web joins the two by `name` (the join-by-key idiom).
-       * `PATCH` states a ceiling or withdraws one with `null` — there is no
-       * create route (records are minted lazily by the first statement) and no
-       * delete route (a cleared, unreferenced area sits harmlessly).
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/areas") {
-        writeJson(response, 200, { areas: store.spoolAreas() });
-        return;
-      }
-      const spoolArea = /^\/v2\/spool\/areas\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolArea) {
-        const input = await body(request);
-        const ceiling = input.ceiling;
-        if (ceiling !== null && ceiling !== "read" && ceiling !== "draft" && ceiling !== "propose") {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            `ceiling must be "read", "draft", "propose" or null to withdraw it — got ${JSON.stringify(ceiling)}.`,
-          );
-        }
-        writeJson(response, 200, { area: store.setSpoolAreaCeiling(decodeURIComponent(spoolArea[1]), ceiling) });
-        return;
-      }
-      /**
-       * THE TAGS — the free-text labels items and notes already carry, given
-       * exactly two hand verbs. `GET` is a projection (no tag record on
-       * disk); `PATCH .../tags/:from` with `{to}` renames it everywhere,
-       * merging onto `to` when that name is already in use. There is no
-       * create route (a tag exists the moment something carries it) and no
-       * delete route (retagging to `[]` on the row itself is how one goes
-       * away).
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/tags") {
-        writeJson(response, 200, { tags: store.spoolTags() });
-        return;
-      }
-      const spoolTag = /^\/v2\/spool\/tags\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolTag) {
-        const input = await body(request);
-        const to = stringValue(input.to, "to");
-        if (!to) throw new HttpError(400, "invalid_request", "to is required — the name the tag should read after the rename.");
-        writeJson(response, 200, store.renameSpoolTag(decodeURIComponent(spoolTag[1]), to));
-        return;
-      }
-      /**
-       * THE APERTURE SLOT — which smart view the wide room is showing. `PUT`
-       * because the request replaces the one whole value: idempotent, last
-       * writer wins, and the chat's tool and the hand's click share this slot
-       * so neither can drift from the other. No history behind it — see
-       * `spool/aperture.ts` for why a log of glances is refused.
-       */
-      if (url.pathname === "/v2/spool/aperture") {
-        if (request.method === "GET") {
-          writeJson(response, 200, { aperture: store.spoolAperture() });
-          return;
-        }
-        if (request.method === "PUT") {
-          const input = await body(request);
-          writeJson(response, 200, { aperture: store.setSpoolAperture(input.view) });
-          return;
-        }
-      }
-      /**
-       * RECONCILE-ON-LOOK — the only route in the engine that reads the world,
-       * and it is PULL ONLY: a human's arrival or focus calls it, no timer or
-       * webhook exists to. `gh` failing is a 200 whose outcome carries the
-       * stale look and an `error` naming why — the room renders its staleness
-       * rather than coming down. A subject with no terrain answers with a
-       * `note`, because that is an ordinary state and not a fault.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/look") {
-        const input = await body(request);
-        const subjectKey = stringValue(input.subjectKey, "subjectKey");
-        if (!subjectKey) throw new HttpError(400, "invalid_request", "subjectKey is required — name the subject to look at.");
-        writeJson(response, 200, { look: await store.reconcileSpoolLook(subjectKey) });
-        return;
-      }
-      /** The stored looks — what the Spool last saw, honestly stale
-       *  (`fresh: false`), with no network read. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/looks") {
-        writeJson(response, 200, { looks: store.spoolLooks() });
-        return;
-      }
-      /** "Noted" — drains ONE observation. Never deletes; the row stays with
-       *  its mark, which is the store's no-delete discipline on the one record
-       *  the Spool authors about the world. */
-      const spoolLookAck = /^\/v2\/spool\/looks\/([^/]+)\/ack$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLookAck) {
-        const input = await body(request);
-        const observationId = stringValue(input.observationId, "observationId");
-        if (!observationId) throw new HttpError(400, "invalid_request", "observationId is required — name the observation being noted.");
-        writeJson(response, 200, {
-          look: store.acknowledgeSpoolObservation(decodeURIComponent(spoolLookAck[1]), observationId),
-        });
-        return;
-      }
-      /** "Noted", in bulk — one digest line's whole group drained in one
-       *  gesture. Idempotent per id; the rules live in the store. */
-      const spoolLookAckAll = /^\/v2\/spool\/looks\/([^/]+)\/ack-all$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLookAckAll) {
-        const input = await body(request);
-        if (!Array.isArray(input.observationIds) || input.observationIds.some((id) => typeof id !== "string")) {
-          throw new HttpError(400, "invalid_request", "observationIds must be an array of observation ids.");
-        }
-        const { look, acknowledged } = store.acknowledgeSpoolObservations(
-          decodeURIComponent(spoolLookAckAll[1]),
-          input.observationIds as string[],
-        );
-        writeJson(response, 200, { look, acknowledged });
-        return;
-      }
-      const spoolLookOne = /^\/v2\/spool\/looks\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && spoolLookOne) {
-        writeJson(response, 200, { look: store.spoolLook(decodeURIComponent(spoolLookOne[1])) });
-        return;
-      }
-      /** Everything remembered, in one read — retired facts included, because
-       *  "dismissing drains" means the record stays legible to the human. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/memory") {
-        writeJson(response, 200, store.spoolMemory());
-        return;
-      }
-      const spoolFact = /^\/v2\/spool\/memory\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolFact) {
-        const input = await body(request);
-        const subject = typeof input.subject === "string" ? input.subject : undefined;
-        const why = (input.retire as { why?: unknown } | undefined)?.why;
-        // A RETIREMENT WITHOUT A REASON IS REFUSED. The reason is the durable
-        // half — a drained fact keeps it forever, and a blank one turns the
-        // record of why something stopped being true into a shrug.
-        if (input.retire !== undefined && (typeof why !== "string" || why.trim() === "")) {
-          throw new HttpError(400, "invalid_request", "retire.why is required — say what stopped being true.");
-        }
-        writeJson(response, 200, {
-          fact: store.judgeSpoolFact({
-            id: decodeURIComponent(spoolFact[1]),
-            ...(subject ? { subject } : {}),
-            ...(typeof why === "string" ? { retire: { why } } : {}),
-            ...(typeof input.reviewed === "boolean" ? { reviewed: input.reviewed } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * THE SHELF — notes beside the items (`docs/spool-loops.md` §10.1).
-       * The human API: create defaults the author to "you" exactly as the
-       * items route defaults `source`, and only the tool wall's own code ever
-       * declares "session". Retire is POST-as-verb like close — a drain with
-       * a required reason, never a DELETE.
-       */
-      if (url.pathname === "/v2/spool/notes" && (request.method === "GET" || request.method === "POST")) {
-        if (request.method === "GET") {
-          const subject = url.searchParams.get("subject")?.trim() || undefined;
-          writeJson(response, 200, { notes: store.spoolNotes(subject) });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          note: store.createSpoolNote({
-            title: String(input.title ?? ""),
-            body: String(input.body ?? ""),
-            ...(Array.isArray(input.tags) ? { tags: input.tags as string[] } : {}),
-            ...(typeof input.subjectKey === "string" && input.subjectKey ? { subjectKey: input.subjectKey } : {}),
-            author: input.author === "session" ? "session" : "you",
-          }),
-        });
-        return;
-      }
-      const spoolNoteRetire = /^\/v2\/spool\/notes\/([^/]+)\/retire$/.exec(url.pathname);
-      if (request.method === "POST" && spoolNoteRetire) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          note: store.retireSpoolNote(decodeURIComponent(spoolNoteRetire[1]), String(input.reason ?? "")),
-        });
-        return;
-      }
-      const spoolNote = /^\/v2\/spool\/notes\/([^/]+)$/.exec(url.pathname);
-      if (spoolNote && (request.method === "GET" || request.method === "PATCH")) {
-        const id = decodeURIComponent(spoolNote[1]);
-        if (request.method === "GET") {
-          writeJson(response, 200, { note: store.spoolNote(id) });
-          return;
-        }
-        // FORWARDED WHOLE, the same rule the item PATCH states: the shelf
-        // refuses a forbidden key — `author` above all — by NAME with its
-        // sentence, and filtering here would turn that refusal into silence.
-        writeJson(response, 200, { note: store.updateSpoolNote(id, await body(request)) });
-        return;
-      }
-      /** THE SEARCH — deterministic and lexical (§10.2). A read; an empty `q`
-       *  answers no hits rather than an error, because an empty query is a
-       *  search for nothing, honestly answered. */
-      if (request.method === "GET" && url.pathname === "/v2/spool/search") {
-        const limit = Number(url.searchParams.get("limit") ?? "");
-        writeJson(response, 200, {
-          hits: store.spoolSearch(url.searchParams.get("q") ?? "", {
-            ...(url.searchParams.get("subject") ? { subject: url.searchParams.get("subject")! } : {}),
-            ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * THE CONNECT CARD — where the outward socket listens and its dedicated
-       * secret. BEHIND THE NORMAL BEARER, deliberately: the card mints and
-       * reveals the socket's credential, so only something already holding
-       * engine access may read it. The composed `claude mcp add` line comes
-       * from the engine so the card and the socket cannot disagree.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/mcp-info") {
-        const bound = server.address();
-        const port = bound && typeof bound === "object" ? bound.port : 0;
-        writeJson(response, 200, {
-          mcp: socketConnectCard(`http://127.0.0.1:${port}/v2/spool/mcp`, socketSecret()),
-        });
-        return;
-      }
-      /** The notebook socket's card, behind the normal bearer for the reason
-       *  stated above: it mints and reveals a credential. */
       if (request.method === "GET" && url.pathname === "/v2/notes/mcp-info") {
         const bound = server.address();
         const port = bound && typeof bound === "object" ? bound.port : 0;
         writeJson(response, 200, {
           mcp: notesSocketConnectCard(`http://127.0.0.1:${port}/v2/notes/mcp`, notesSecret()),
         });
-        return;
-      }
-      /**
-       * THE MAP — every subject's open questions, in one read.
-       *
-       * ONE CALL AND NOT ONE PER SUBJECT, the rule `/v2/spool` already states:
-       * these are projections of the same items and the same digests, and a
-       * client that fetched them separately could draw one subject's weave a
-       * tick apart from another's with no way to tell staleness from
-       * disagreement.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/threads") {
-        writeJson(response, 200, store.spoolMap());
-        return;
-      }
-      const spoolMapSubject = /^\/v2\/spool\/threads\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "GET" && spoolMapSubject) {
-        writeJson(response, 200, store.spoolThreads(decodeURIComponent(spoolMapSubject[1])));
-        return;
-      }
-      /**
-       * MAP THIS SUBJECT — detached, and it answers with the work record rather
-       * than the result. The expert route learned this the expensive way: a pass
-       * that runs for minutes behind a synchronous POST is a request the client
-       * abandons while the daemon keeps spending.
-       */
-      if (request.method === "POST" && spoolMapSubject) {
-        const started = store.startSpoolThreadPass(decodeURIComponent(spoolMapSubject[1]));
-        writeJson(response, started.refused ? 200 : 202, started);
-        return;
-      }
-      const spoolThread = /^\/v2\/spool\/threads\/([^/]+)\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolThread) {
-        const subject = decodeURIComponent(spoolThread[1]);
-        const threadId = decodeURIComponent(spoolThread[2]);
-        const input = await body(request);
-        /**
-         * A SETTLE WITHOUT AN ANSWER IS REFUSED HERE TOO, the same shape the
-         * fact retirement above takes. `settleThread` also refuses it — the
-         * store is the wall — but a 400 naming the field is a better answer than
-         * a 500 carrying a thrown sentence.
-         */
-        if (input.settle !== undefined) {
-          const answer = (input.settle as { answer?: unknown } | undefined)?.answer;
-          if (typeof answer !== "string" || answer.trim() === "") {
-            throw new HttpError(
-              400,
-              "invalid_request",
-              "settle.answer is required — settling a thread records what was found out, not that it is over.",
-            );
-          }
-          writeJson(response, 200, { thread: store.settleSpoolThread(subject, threadId, answer) });
-          return;
-        }
-        if (input.reviewed === true) {
-          writeJson(response, 200, { thread: store.reviewSpoolThread(subject, threadId) });
-          return;
-        }
-        /** Who the thread is stuck on. Normalisation and the settled refusal
-         *  live in the store — the wall — this only shapes the arm. */
-        if (input.waiting !== undefined) {
-          const waiting = input.waiting as { kind?: unknown; who?: unknown; note?: unknown };
-          if (waiting?.kind !== "you" && waiting?.kind !== "agent" && waiting?.kind !== "person") {
-            throw new HttpError(400, "invalid_request", 'waiting.kind must be "you", "agent" or "person".');
-          }
-          writeJson(response, 200, {
-            thread: store.setSpoolThreadWaiting(subject, threadId, {
-              kind: waiting.kind,
-              ...(typeof waiting.who === "string" ? { who: waiting.who } : {}),
-              ...(typeof waiting.note === "string" ? { note: waiting.note } : {}),
-            }),
-          });
-          return;
-        }
-        throw new HttpError(400, "invalid_request", "Send `settle: {answer}`, `reviewed: true` or `waiting: {kind}`.");
-      }
-      /**
-       * OPEN ONE QUESTION from conversation. POST-as-create on the subject's
-       * own collection; the pass trigger keeps the parent path, because a pass
-       * and a deliberate open are different acts with different costs.
-       */
-      const spoolThreadOpen = /^\/v2\/spool\/threads\/([^/]+)\/open$/.exec(url.pathname);
-      if (request.method === "POST" && spoolThreadOpen) {
-        const input = await body(request);
-        const question = typeof input.question === "string" ? input.question : "";
-        const items = Array.isArray(input.items) ? input.items.filter((i): i is string => typeof i === "string") : [];
-        if (!question.trim()) throw new HttpError(400, "invalid_request", "question is required.");
-        writeJson(response, 200, {
-          thread: store.openSpoolThread(decodeURIComponent(spoolThreadOpen[1]), {
-            question,
-            items,
-            ...(typeof input.handle === "string" ? { handle: input.handle } : {}),
-            ...(input.waiting && typeof input.waiting === "object"
-              ? { waiting: input.waiting as { kind: "you" | "agent" | "person"; who?: string; note?: string } }
-              : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * SETTLE MANY, each with its own REQUIRED answer — the selection model's
-       * settle. A row that cannot take its settle comes back in `refused` with
-       * its sentence; only a body that is not even the right shape is a 400.
-       */
-      const spoolSettleMany = /^\/v2\/spool\/threads\/([^/]+)\/settle-many$/.exec(url.pathname);
-      if (request.method === "POST" && spoolSettleMany) {
-        const input = await body(request);
-        if (
-          !Array.isArray(input.settles) ||
-          input.settles.some(
-            (row) => !row || typeof row !== "object" || typeof (row as { threadId?: unknown }).threadId !== "string",
-          )
-        ) {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            "settles must be an array of {threadId, answer} — every settle records what was found out, per thread.",
-          );
-        }
-        writeJson(
-          response,
-          200,
-          store.settleSpoolThreadsMany(
-            decodeURIComponent(spoolSettleMany[1]),
-            (input.settles as Array<{ threadId: string; answer?: unknown }>).map((row) => ({
-              threadId: row.threadId,
-              answer: typeof row.answer === "string" ? row.answer : "",
-            })),
-          ),
-        );
-        return;
-      }
-      /** Move one capture between threads. `to: null` takes it off the map, which
-       *  is a resting state the surface draws rather than a hole. */
-      if (request.method === "POST" && url.pathname === "/v2/spool/threads-refile") {
-        const input = await body(request);
-        const subject = typeof input.subject === "string" ? input.subject : "";
-        const itemId = typeof input.itemId === "string" ? input.itemId : "";
-        if (!subject || !itemId) {
-          throw new HttpError(400, "invalid_request", "subject and itemId are required.");
-        }
-        writeJson(response, 200, {
-          map: store.refileSpoolCapture(subject, itemId, typeof input.to === "string" ? input.to : null),
-        });
-        return;
-      }
-      /**
-       * WHERE TO PICK UP, plus the day reading — in one call.
-       *
-       * The rule `/v2/spool` states: these are two views of the same focus log
-       * and the same map, and a client that fetched them separately could draw a
-       * brief that disagrees with the history under it.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/focus") {
-        writeJson(response, 200, { pickup: store.spoolPickup(), days: store.spoolFocusDays() });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/focus") {
-        const input = await body(request);
-        const subject = stringValue(input.subject, "subject");
-        if (!subject) throw new HttpError(400, "invalid_request", "subject is required.");
-        writeJson(response, 201, {
-          focus: store.openSpoolFocus({
-            subject,
-            ...(typeof input.threadId === "string" ? { threadId: input.threadId } : {}),
-            ...(typeof input.note === "string" ? { note: input.note } : {}),
-          }),
-        });
-        return;
-      }
-      const spoolFocusEntry = /^\/v2\/spool\/focus\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolFocusEntry) {
-        const id = decodeURIComponent(spoolFocusEntry[1]);
-        const input = await body(request);
-        /**
-         * CLOSING AND CORRECTING ARE DIFFERENT VERBS ON ONE ROUTE, and the body
-         * says which. They are not merged: closing records where you LEFT it and
-         * correcting records what it SHOULD HAVE SAID, and one endpoint that did
-         * both by inference would eventually do the wrong one silently.
-         */
-        if (input.end !== undefined) {
-          const end = input.end as { reason?: unknown; note?: unknown };
-          if (end.reason !== "done" && end.reason !== "switched" && end.reason !== "paused") {
-            throw new HttpError(400, "invalid_request", 'end.reason must be "done", "switched" or "paused".');
-          }
-          writeJson(response, 200, {
-            focus: store.closeSpoolFocus(id, {
-              reason: end.reason,
-              ...(typeof end.note === "string" ? { note: end.note } : {}),
-            }),
-          });
-          return;
-        }
-        if (input.amend !== undefined) {
-          const amend = input.amend as { subject?: unknown; threadId?: unknown; note?: unknown; why?: unknown };
-          writeJson(response, 200, {
-            focus: store.amendSpoolFocus(
-              id,
-              {
-                ...(typeof amend.subject === "string" ? { subject: amend.subject } : {}),
-                // `null` CLEARS the thread and `undefined` leaves it — the
-                // distinction `amendFocus` depends on, preserved across HTTP.
-                ...(amend.threadId === null || typeof amend.threadId === "string" ? { threadId: amend.threadId } : {}),
-                ...(typeof amend.note === "string" ? { note: amend.note } : {}),
-              },
-              typeof amend.why === "string" ? amend.why : undefined,
-            ),
-          });
-          return;
-        }
-        throw new HttpError(400, "invalid_request", "Send either `end: {reason}` or `amend: {...}`.");
-      }
-      if (request.method === "GET" && url.pathname === "/v2/spool/work") {
-        writeJson(response, 200, { work: store.spoolWork() });
-        return;
-      }
-      if (request.method === "DELETE" && url.pathname.startsWith("/v2/spool/work/")) {
-        const id = decodeURIComponent(url.pathname.slice("/v2/spool/work/".length));
-        /**
-         * `stopped: false` IS A 200, not a 404. "There is nothing running under
-         * that id" is the honest answer to "stop this" from a surface whose
-         * record is a poll or two old — and it is the state the caller wanted.
-         */
-        writeJson(response, 200, { stopped: store.cancelSpoolWork(id) });
-        return;
-      }
-      /**
-       * THE COMPOSED SCREEN. GET is a poll on `rev`; POST asks for a new one and
-       * answers immediately, because the composition arrives on the canvas
-       * rather than in this response — see `askSpoolCanvas`.
-       */
-      if (request.method === "GET" && url.pathname === "/v2/spool/canvas") {
-        writeJson(response, 200, store.spoolCanvas());
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/canvas") {
-        const input = await body(request);
-        const asked = stringValue(input.asked, "asked")?.trim() ?? "";
-        if (!asked) throw new HttpError(400, "invalid_request", "Send `asked` — the question to compose an answer to.");
-        writeJson(response, 202, store.askSpoolCanvas(asked));
-        return;
-      }
-      if (request.method === "GET" && url.pathname === "/v2/spool/master") {
-        writeJson(response, 200, { session: store.ensureMasterSession() });
-        return;
-      }
-      if (url.pathname === "/v2/spool/lanes" && (request.method === "GET" || request.method === "POST")) {
-        if (request.method === "GET") {
-          writeJson(response, 200, { lanes: store.spoolLanes() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 201, {
-          lane: store.createSpoolLane({
-            label: String(input.label ?? ""),
-            window: String(input.window ?? ""),
-            ...(typeof input.note === "string" ? { note: input.note } : {}),
-          }),
-        });
-        return;
-      }
-      /**
-       * Split rows out of a lane into a new one. A COMPOSITION of the lane verbs
-       * beside it, never a fifth primitive — and human-only, like all of them.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/lanes/split") {
-        const input = await body(request);
-        writeJson(
-          response,
-          200,
-          store.splitSpoolLane(
-            String(input.sourceKey ?? ""),
-            {
-              label: String(input.label ?? ""),
-              window: String(input.window ?? ""),
-              ...(typeof input.note === "string" ? { note: input.note } : {}),
-            },
-            (input.items ?? []) as string[],
-          ),
-        );
-        return;
-      }
-      const spoolLaneReorder = /^\/v2\/spool\/lanes\/([^/]+)\/reorder$/.exec(url.pathname);
-      if (request.method === "POST" && spoolLaneReorder) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          lane: store.reorderSpoolLane(decodeURIComponent(spoolLaneReorder[1]), (input.items ?? []) as string[]),
-        });
-        return;
-      }
-      const spoolLane = /^\/v2\/spool\/lanes\/([^/]+)$/.exec(url.pathname);
-      if (spoolLane && (request.method === "PATCH" || request.method === "DELETE")) {
-        const key = decodeURIComponent(spoolLane[1]);
-        if (request.method === "PATCH") {
-          const input = await body(request);
-          writeJson(response, 200, { lane: store.renameSpoolLane(key, String(input.label ?? "")) });
-          return;
-        }
-        /**
-         * A REFUSAL IS 200 WITH `ok: false`, not a 4xx, and the distinction is
-         * not pedantry. Every refusal the store produces is a sentence naming
-         * what the human must move first — it is the ANSWER to "can I retire
-         * this?", not a malformed request. A 400 would let a client render it as
-         * an error toast and drop the sentence that made it actionable.
-         */
-        writeJson(response, 200, store.retireSpoolLane(key));
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/v2/spool/items") {
-        const input = await body(request);
-        writeJson(response, 201, {
-          item: store.createSpoolItem({
-            title: String(input.title ?? ""),
-            /**
-             * WHOSE HAND, defaulted to the HUMAN's. This is the human API — the
-             * workbench form posts here with no agent anywhere near it, and a
-             * bare create must therefore stamp "you", or the footer's "agents
-             * added N" counts a hand-made item (the live-drive lie this fixes).
-             * The tool wall is the one caller that declares `source: "session"`
-             * — its own code, never a model argument — and anything that is not
-             * that exact declaration is a hand.
-             */
-            source: input.source === "session" ? "session" : "you",
-            ...(typeof input.project === "string" ? { project: input.project } : {}),
-            ...(typeof input.lane === "string" ? { lane: input.lane } : {}),
-            ...(typeof input.raw === "string" ? { raw: input.raw } : {}),
-            ...(typeof input.rawSource === "string" ? { rawSource: input.rawSource } : {}),
-            ...(typeof input.creationNote === "string" ? { creationNote: input.creationNote } : {}),
-            // A quoted pair, validated by the store's schema — see
-            // `NewSpoolItem.deadline` for the quoting law it rides under.
-            ...(input.deadline && typeof input.deadline === "object"
-              ? { deadline: input.deadline as { label: string; kind: "external" | "self" } }
-              : {}),
-            // Forwarded raw so the STORE's gate speaks: a malformed pin gets
-            // its plain sentence back as a 400 rather than being dropped here.
-            ...(input.pinned !== undefined && input.pinned !== null ? { pinned: input.pinned as { day: string } } : {}),
-            // Same rule for tags: the store's one gate speaks, not this route.
-            ...(input.tags !== undefined ? { tags: input.tags as string[] } : {}),
-          }),
-        });
-        return;
-      }
-      const spoolExpert = /^\/v2\/spool\/items\/([^/]+)\/expert$/.exec(url.pathname);
-      if (request.method === "POST" && spoolExpert) {
-        /**
-         * TWO SHAPES, AND WHICH ONE YOU GET DEPENDS ON WHO IS ASKING.
-         *
-         * `{detach: true}` starts the pass and answers at once with its work
-         * record. This route's previous comment said the synchronous form held
-         * only "once the OVERNIGHT runner exists and nobody is watching — at
-         * which point the job store is the thing that reports what ran while you
-         * slept". That store now exists (`spool/work.ts`), and the assumption
-         * behind waiting — "a human who clicked consult is, by definition,
-         * watching" — was wrong in the way that matters: they are watching a
-         * SCREEN, not an HTTP socket, and the socket gives up first.
-         *
-         * WITHOUT THE FLAG IT STILL AWAITS, because `spool_consult_expert` is
-         * called by a MODEL mid-turn and a model cannot do anything with a
-         * record it would have to poll for.
-         *
-         * A REFUSAL IS A 200 WITH ITS SENTENCE, in both shapes. Same reasoning
-         * as the lane retire above: "the expert cannot read this because the
-         * item is floating" is the ANSWER, not a malformed request.
-         */
-        const id = decodeURIComponent(spoolExpert[1]);
-        const input = await body(request).catch(() => ({}) as Record<string, unknown>);
-        if (input.detach === true) {
-          writeJson(response, 200, store.startSpoolExpert(id));
-          return;
-        }
-        writeJson(response, 200, await store.consultSpoolExpert(id));
-        return;
-      }
-      /**
-       * BRIEFED ARRIVAL — loop 2. A READ, deliberately: it composes the full
-       * briefing (packet, raw words, thread state, and the delta from the
-       * subject's stored look) from what is already on disk, with no model
-       * call, no session created and no turn queued. The web writes it into a
-       * composer draft and the HUMAN sends it — the moat stays where it is.
-       * An item whose subject maps to no registered project answers with
-       * `project` absent, which is an ordinary state the surface renders
-       * honestly, never an invented project.
-       */
-      const spoolBriefing = /^\/v2\/spool\/items\/([^/]+)\/briefing$/.exec(url.pathname);
-      if (request.method === "GET" && spoolBriefing) {
-        writeJson(response, 200, { briefing: store.spoolBriefing(decodeURIComponent(spoolBriefing[1])) });
-        return;
-      }
-      const spoolPromote = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)\/promote$/.exec(url.pathname);
-      if (request.method === "POST" && spoolPromote) {
-        writeJson(
-          response,
-          200,
-          store.promoteSpoolSubtask(decodeURIComponent(spoolPromote[1]), decodeURIComponent(spoolPromote[2])),
-        );
-        return;
-      }
-      const spoolSubtask = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)$/.exec(url.pathname);
-      if (request.method === "PATCH" && spoolSubtask) {
-        const input = await body(request);
-        writeJson(response, 200, {
-          item: store.setSpoolSubtaskDone(
-            decodeURIComponent(spoolSubtask[1]),
-            decodeURIComponent(spoolSubtask[2]),
-            input.done === true,
-          ),
-        });
-        return;
-      }
-      const spoolSubtasks = /^\/v2\/spool\/items\/([^/]+)\/subtasks$/.exec(url.pathname);
-      if (request.method === "POST" && spoolSubtasks) {
-        const input = await body(request);
-        writeJson(response, 201, {
-          item: store.addSpoolSubtask(decodeURIComponent(spoolSubtasks[1]), String(input.title ?? "")),
-        });
-        return;
-      }
-      /**
-       * ANSWER ONE OF AN ITEM'S OPEN QUESTIONS — the reduction verb. The match
-       * rule, the empty-answer refusal and the timeline write all live in the
-       * store; this route only guards the two required strings by name.
-       */
-      const spoolAnswer = /^\/v2\/spool\/items\/([^/]+)\/answer$/.exec(url.pathname);
-      if (request.method === "POST" && spoolAnswer) {
-        const input = await body(request);
-        const question = typeof input.question === "string" ? input.question : "";
-        const answer = typeof input.answer === "string" ? input.answer : "";
-        if (!question.trim() || !answer.trim()) {
-          throw new HttpError(
-            400,
-            "invalid_request",
-            "question and answer are both required — an answer with no question is an orphan, and a question with no answer stays open.",
-          );
-        }
-        writeJson(response, 200, {
-          item: store.answerSpoolQuestion(decodeURIComponent(spoolAnswer[1]), question, answer),
-        });
-        return;
-      }
-      /**
-       * THE CHECKBOX — docs/spool-loops.md §9. DEDICATED ROUTES, DELIBERATELY:
-       * the generic item PATCH below is reachable from the tool wall's update
-       * capability, so close and reopen must not travel through it — the store
-       * refuses `closed` on that path by name, and these two verbs exist ONLY
-       * here, on the human API, where no tool and no capability can spell them.
-       * Closing cascades (open threads on the item settle with the user's own
-       * close as the answer); reopening unticks and resurrects nothing.
-       */
-      const spoolClose = /^\/v2\/spool\/items\/([^/]+)\/close$/.exec(url.pathname);
-      if (request.method === "POST" && spoolClose) {
-        writeJson(response, 200, store.closeSpoolItem(decodeURIComponent(spoolClose[1])));
-        return;
-      }
-      const spoolReopen = /^\/v2\/spool\/items\/([^/]+)\/reopen$/.exec(url.pathname);
-      if (request.method === "POST" && spoolReopen) {
-        writeJson(response, 200, store.reopenSpoolItem(decodeURIComponent(spoolReopen[1])));
-        return;
-      }
-      /**
-       * MANY CHECKBOXES — the selection model's close, and HUMAN API ONLY
-       * exactly like the single verb: this route is the only caller of
-       * `closeSpoolItems`, no tool names it, and the socket's wall cannot
-       * reach it (asserted in `spool-socket.test.ts`). Per-item results carry
-       * the single close's own shape; an id nothing goes by is `{id, error}`
-       * beside the closes that landed, never a thrown batch.
-       */
-      if (request.method === "POST" && url.pathname === "/v2/spool/items/close-many") {
-        const input = await body(request);
-        if (!Array.isArray(input.ids) || input.ids.some((id) => typeof id !== "string")) {
-          throw new HttpError(400, "invalid_request", "ids must be an array of item ids.");
-        }
-        writeJson(response, 200, store.closeSpoolItems(input.ids as string[]));
-        return;
-      }
-      const spoolItem = /^\/v2\/spool\/items\/([^/]+)$/.exec(url.pathname);
-      if (spoolItem && (request.method === "GET" || request.method === "PATCH")) {
-        const id = decodeURIComponent(spoolItem[1]);
-        if (request.method === "GET") {
-          writeJson(response, 200, store.spoolItem(id));
-          return;
-        }
-        /**
-         * FORWARDED WHOLE, deliberately. The store refuses a forbidden key by
-         * NAME and throws a sentence saying which one and why — filtering the
-         * body here would turn "you cannot rewrite the user's own words" into a
-         * silent no-op, which is the exact failure that refusal exists to
-         * prevent. The engine's error translation carries the sentence out.
-         */
-        writeJson(response, 200, { item: store.updateSpoolItem(id, await body(request)) });
         return;
       }
       /**
@@ -2633,8 +1683,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         writeJson(response, 201, {
           // ABSENT `author` MEANS THE HUMAN'S. Only the tool wall declares
-          // "session", exactly as the spool's notes do — so a note that arrives
-          // with no declaration is a hand's.
+          // "session" — so a note that arrives with no declaration is a hand's.
           note: notebook.createNote(store.paths, projectId, {
             title: input.title as string,
             body: (input.body ?? "") as string,
@@ -3667,7 +2716,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       /**
        * THE SESSIONS SOCKET'S CONNECT CARD — where it listens and its dedicated
-       * secret. BEHIND THE NORMAL BEARER, exactly as the spool's is: the card
+       * secret. BEHIND THE NORMAL BEARER, exactly as the notebook's is: the card
        * mints and reveals the socket's credential, so only something already
        * holding engine access may read it.
        */
@@ -3703,8 +2752,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             /**
              * WHO ASKED — provenance. Forwarded rather than ignored because the
              * OUT-OF-PROCESS worker reaches this route to build the toolkit's
-             * `create`, exactly as it reaches `/v2/spool/items` to build the
-             * spool's: the capability is assembled out of client calls in one
+             * `create`: the capability is assembled out of client calls in one
              * deployment and out of `store.*` calls in the other, and both must
              * stamp the same provenance.
              *

@@ -14,7 +14,7 @@
  * worker is registered.
  *
  * ── MOST OF THIS FILE ASSERTS AN ABSENCE ────────────────────────────────────
- * Like the spool's wall, this one's contract is mostly what it cannot do, and a
+ * This wall's contract is mostly what it cannot do, and a
  * comment claiming a negative is worth nothing:
  *   · nothing accept-shaped, and nothing that archives or deletes (INV-1);
  *   · nothing that records WHO created a session — no parent, no child, no
@@ -966,6 +966,6 @@ describe("a warp child may not reach these tools", () => {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }
     // ANTI-VACUITY: the list is not simply "everything".
-    expect(WARP_CHILD_DISALLOWED_TOOLS).not.toContain(qualifyTelarTool("spool_list_items"));
+    expect(WARP_CHILD_DISALLOWED_TOOLS).not.toContain(qualifyTelarTool("display_open"));
   });
 });

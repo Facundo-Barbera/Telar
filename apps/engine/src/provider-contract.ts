@@ -1,7 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
 import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
-import type { SpoolCapability } from "./spool/tools";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { DsCapability } from "./ds/capability";
@@ -10,7 +9,7 @@ import type { RunCapability } from "./run/capability";
 import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
-export type { SpoolCapability, SessionsCapability, NotesCapability, DsCapability, DisplayCapability, LatexCapability };
+export type { SessionsCapability, NotesCapability, DsCapability, DisplayCapability, LatexCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -72,26 +71,14 @@ export type DriverRun = {
    */
   steer?: SteerMailbox;
   /**
-   * The session's door to the user's item store.
-   *
-   * PER-RUN, NOT PER-DRIVER, unlike `browser`. A browser is a machine resource
-   * the deployment owns and every session borrows; the spool arrives already
-   * SCOPED to the project this turn belongs to, and that scope is a fact about
-   * the turn. Capturing one at construction would give every session the first
-   * session's slice.
-   *
-   * ABSENT MEANS NO SPOOL TOOLS, which is what a test gets and what an older
-   * worker produces — not an empty spool. The difference matters: a model told
-   * "no items" would report that as the truth.
-   */
-  spool?: SpoolCapability;
-  /**
    * The session's door to OTHER sessions — create, send, read, status, stop,
    * diff.
    *
-   * PER-RUN, like the spool and for a related reason: it is assembled out of
-   * the worker's own client, so a deployment with no client has no toolkit
-   * rather than a broken one.
+   * PER-RUN, NOT PER-DRIVER, unlike `browser` — the rule every capability below
+   * follows. A browser is a machine resource the deployment owns and every
+   * session borrows; this one is assembled out of the worker's own client, so a
+   * deployment with no client has no toolkit rather than a broken one, and
+   * capturing one at construction would give every session the first session's.
    *
    * ABSENT MEANS NO SESSIONS TOOLS, which is what a test gets and what an older
    * worker produces — never an empty engine. A model told "no sessions exist"
@@ -107,7 +94,7 @@ export type DriverRun = {
    * The session's door to the PROJECT'S NOTEBOOK — the quick notes the person
    * keeps beside the code, which the composer's foot also draws.
    *
-   * PER-RUN and SCOPED, like the spool and for the same reason: it carries
+   * PER-RUN and SCOPED, like `sessions` and for the same reason: it carries
    * `self.projectId`, so `notes_list()` with no argument means "this project"
    * and an agent asked "what does the deploy note say?" has somewhere to look.
    *
@@ -118,8 +105,8 @@ export type DriverRun = {
   notes?: NotesCapability;
   /**
    * The session's kernel, notebooks and analysis tools — present only when
-   * the project opted in (the claim carried `dataScience`). Per-run like the
-   * spool: assembled from the worker's client, scoped to this session.
+   * the project opted in (the claim carried `dataScience`). Per-run like
+   * `sessions`: assembled from the worker's client, scoped to this session.
    * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
    */
   ds?: DsCapability;
@@ -142,9 +129,9 @@ export type DriverRun = {
   plugins?: Record<string, unknown>;
   /**
    * The session's door to the human's SCREEN — `display_open`, the tool that
-   * shows one workspace file in the cockpit's right panel. Per-run like the
-   * spool: the worker assembles it around this turn's checkout, so the fence
-   * is the turn's own. ABSENT MEANS THE TOOL DOES NOT EXIST, which is what a
+   * shows one workspace file in the cockpit's right panel. Per-run like
+   * `sessions`: the worker assembles it around this turn's checkout, so the
+   * fence is the turn's own. ABSENT MEANS THE TOOL DOES NOT EXIST, which is what a
    * test gets and what an older worker produces.
    */
   display?: DisplayCapability;
@@ -173,10 +160,9 @@ export type DriverRun = {
    * person turned it off, or the worker is older than this field, or it is a
    * test. Never a default paragraph invented here.
    *
-   * A WARP CHILD DOES NOT GET ONE, and neither does the spool's canvas: both
-   * are spawned outside this contract with a prompt that already states what
-   * they are and what they may do. Orienting them a second time would be a
-   * paragraph about a cockpit neither of them is sitting in.
+   * A WARP CHILD DOES NOT GET ONE: it is spawned outside this contract with a
+   * prompt that already states what it is and what it may do. Orienting it a
+   * second time would be a paragraph about a cockpit it is not sitting in.
    */
   orientation?: string;
   /**

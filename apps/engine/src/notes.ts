@@ -8,17 +8,16 @@
  * ── A FREE-STANDING MODULE, AND THAT IS THE POINT ───────────────────────────
  * Nothing here imports `state.ts` except its PATH TYPE, and nothing in `state.ts`
  * imports this. The notebook's directory is derived from `paths.root` exactly as
- * `spool/shelf.ts` derives `shelf.json` from `SpoolPaths.root`, so adding this
+ * a sibling store derives its own file from a resolved root, so adding this
  * feature adds ZERO lines to a 457 KB file two other branches are editing. The
  * daemon's routes call these functions directly with `store.paths`, having
  * already resolved the project through `store.getProject`.
  *
  * ── ONE FILE PER PROJECT, NOT ONE FOR ALL OF THEM ───────────────────────────
- * The shelf is a single `shelf.json` because a spool note may belong to no
- * subject at all, so a per-subject layout would need a root residual file
- * anyway. A project note ALWAYS has a project — `projectId` is required — so the
- * residual case does not exist, and per-project files mean unregistering one
- * project cannot rewrite another's notes.
+ * A project note ALWAYS has a project — `projectId` is required — so a
+ * residual "belongs to nothing" file is not a case that exists here, and
+ * per-project files mean unregistering one project cannot rewrite another's
+ * notes.
  *
  * ── THE TWO-VOCABULARY CONTRACT, AS EVERYWHERE IN THIS TREE ─────────────────
  * Reads are tolerant per row: a hand-edit that breaks ONE note must not lose the
@@ -38,7 +37,7 @@ import { atomicWrite } from "./atomic";
 import type { EngineStatePaths } from "./state";
 
 /** Thrown for every refusal. The daemon maps this to a 400/404 the same way it
- *  maps the spool's `Error`s — one shape of complaint, not two. */
+ *  maps every other store's `Error`s — one shape of complaint, not two. */
 export class ProjectNotesError extends Error {
   constructor(
     readonly code: "invalid_request" | "not_found",
@@ -70,8 +69,8 @@ const newNoteId = (): string => `n-${crypto.randomBytes(6).toString("hex")}`;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const two = (value: number): string => String(value).padStart(2, "0");
 
-/** The display half of a stamp — the spelling `capturedLabel` uses in the spool,
- *  restated here rather than imported so this module owes the spool nothing. */
+/** The display half of a stamp, stated here rather than imported so this module
+ *  owes no other store anything. */
 export function noteLabel(at: Date): string {
   return `${WEEKDAYS[at.getDay()]} ${two(at.getHours())}:${two(at.getMinutes())}`;
 }
@@ -158,7 +157,7 @@ export type NewProjectNote = {
   body: string;
   pinned?: boolean;
   /** Whose hand. The HTTP route defaults it to "you"; the tool wall's own code
-   *  declares "session", exactly as the spool's notes do. */
+   *  declares "session". */
   author: ProjectNoteAuthor;
 };
 

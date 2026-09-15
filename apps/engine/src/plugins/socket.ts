@@ -38,7 +38,7 @@
  * ── PER-SESSION TOKENS, NEVER PERSISTED ─────────────────────────────────────
  * Minted per bound session, handed only to that session's provider subprocess,
  * dropped on release. There is no on-disk secret for this door: unlike the
- * spool's and the sessions wall's outward sockets, nothing outside a running
+ * sessions wall's and the notebook's outward sockets, nothing outside a running
  * turn has any business holding a plugin's tools.
  */
 import crypto from "node:crypto";

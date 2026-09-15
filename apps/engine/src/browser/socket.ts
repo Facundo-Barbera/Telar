@@ -1,6 +1,6 @@
 /**
  * THE BROWSER, AS A SESSION-SCOPED MCP SOCKET — the transport that closes the
- * "Codex cannot reach in-process tools" gap (`docs/spool-port.md` stage I).
+ * "Codex cannot reach in-process tools" gap.
  *
  * ── HOSTED BY THE WORKER, NOT THE DAEMON ────────────────────────────────────
  * The worker process is the only one that owns a `BrowserRuntime` (the
@@ -11,7 +11,7 @@
  * One tool surface, two providers, zero in-process special cases.
  *
  * ── PER-RUN TOKENS, NOT A PERSISTED SECRET ──────────────────────────────────
- * Unlike the spool socket (one wall, master scope, one secret on disk), this
+ * Unlike the outward walls (one wall, one scope, one secret on disk), this
  * socket is a different credential per CLAIMED TURN. The token is handed to a
  * provider subprocess, and the binding it unlocks carries the run's browser
  * scope, its approval gate and its observation sink — facts about a run, not a
@@ -20,7 +20,7 @@
  *
  * ── NO CONNECT CARD, NO DISCOVERY ROUTE, ON PURPOSE ─────────────────────────
  * Nothing outside the worker ever needs this URL: the worker mints the lease
- * and hands `{url, token}` to the driver it is about to run. The spool socket's
+ * and hands `{url, token}` to the driver it is about to run. An outward socket's
  * `mcp-info` precedent is deliberately not copied here — a human-facing door
  * would be surface with no user.
  */

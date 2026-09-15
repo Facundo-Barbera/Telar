@@ -1,6 +1,6 @@
 /**
  * What the `notebook_*` and `ds_*` toolkits may do — a thin port, one member
- * per store method, exactly as `SpoolCapability` and `SessionsCapability` are.
+ * per store method, exactly as `SessionsCapability` and `NotesCapability` are.
  * Validation lives behind it; the walls compose sentences.
  *
  * TWO IMPLEMENTATIONS, ONE SHAPE: the worker builds this out of `EngineClient`

@@ -73,7 +73,6 @@ import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
-import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox, SteerMessage } from "./steering";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
@@ -86,7 +85,7 @@ import type { DsCapability } from "./ds/capability";
 
 export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
 export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, ProviderTurnBinding, DriverSessionHooks, TurnDriver,
-  SpoolCapability, SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
+  SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
 import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
   type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
 
@@ -197,13 +196,12 @@ async function* singleUserMessage(content: string | Array<Record<string, unknown
  * reaches through `bindings.current`, swapped whole at the top of every run.
  * The query outlives the turn (see ./claude-runtime.ts); these do not: the
  * permission gate is bound to a claim token that dies with the turn, the
- * spool and sessions capabilities to the worker client that assembled them,
- * and the warp spawn to this turn's model and login.
+ * sessions capability to the worker client that assembled it, and the warp
+ * spawn to this turn's model and login.
  */
 type ClaudeTurnBindings = {
   signal: AbortSignal;
   canUseTool: SdkCanUseTool | undefined;
-  spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
   /** The project's notebook, scoped to this turn's project. */
   notes: NotesCapability | undefined;
@@ -557,23 +555,17 @@ function warpTool(
  * TELAR'S OWN READ-ONLY TOOLS, classified as reads rather than as generic tool
  * calls.
  *
- * FOUND BY DRIVING THE MASTER CHAT. The Spool's front door opened, the assistant
- * reached for `spool_list_items` to answer "where did I stop?", and the turn
- * parked — asking the user to approve READING THEIR OWN TASK LIST. That is the
- * exact friction the module exists to remove, on the one screen it exists to be.
- *
- * THE FIX IS A CLASSIFICATION, NOT A BYPASS, and the distinction matters. The
+ * THE POINT IS A CLASSIFICATION, NOT A BYPASS, and the distinction matters. The
  * engine already has a ladder: `approval-required` auto-accepts `file_read` and
- * parks everything else. These tools ARE reads — they return the user's own
- * stored items and change nothing — so naming them correctly lets the existing
- * rule do its job. Nothing here can skip a mode's decision; it only stops
- * mis-declaring a read as an action.
+ * parks everything else. A tool that returns the user's own stored state and
+ * changes nothing IS a read, so naming it correctly lets the existing rule do
+ * its job. Nothing here can skip a mode's decision; it only stops mis-declaring
+ * a read as an action.
  *
- * THE LIST IS EXPLICIT, NEVER A PREFIX MATCH ON "list". `spool_create_item`,
- * `spool_update_item` and `spool_consult_expert` all stay `tool_call` and keep
- * parking: two of them write, and the third spends money. A rule shaped like
- * "anything that sounds like a read" would silently adopt the next tool whose
- * name starts well.
+ * THE LIST IS EXPLICIT, NEVER A PREFIX MATCH ON "list". Anything that writes or
+ * spends stays `tool_call` and keeps parking, and a rule shaped like "anything
+ * that sounds like a read" would silently adopt the next tool whose name starts
+ * well. A name earns its place here one at a time.
  */
 // `display_open` is not literally a read, but it is read-SHAPED: it writes
 // nothing, spends nothing, and its whole effect is a panel opening on the
@@ -584,7 +576,7 @@ function warpTool(
  * at startup through `setPluginReadTools`, because a plugin's own manifest is a
  * CLAIM rather than a grant and only the host may ratify it.
  */
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "display_open"]);
+const TELAR_READ_TOOLS = new Set<string>(["display_open"]);
 
 /**
  * The reads the host ratified. EMPTY UNTIL INSTALLED, deliberately.
@@ -609,7 +601,7 @@ export function requestKindForTool(name: string): RequestKind {
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "NotebookEdit") return "file_change";
   const parsed = parseToolName(name);
   // Only OUR servers' tools qualify — a user-configured server that happened to
-  // name a tool `spool_list_items` must not inherit the engine's own posture.
+  // name a tool `display_open` must not inherit the engine's own posture.
   if (isTelarMcpServer(parsed.server) && (TELAR_READ_TOOLS.has(parsed.tool) || telarPluginReadTools.has(parsed.tool))) {
     return "file_read";
   }
@@ -1279,7 +1271,6 @@ export function createClaudeDriver(
       orientation,
       run,
       plugins,
-      spool,
       sessions,
       notes,
       ds,
@@ -2172,7 +2163,7 @@ export function createClaudeDriver(
       };
 
       /**
-       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER — the spool and `warp`.
+       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER.
        *
        * THE BROWSER IS NOT HERE ANY MORE: it is served by the worker's own
        * `BrowserToolSocket` and registered below as an HTTP entry, the same
@@ -2238,7 +2229,6 @@ export function createClaudeDriver(
       const turnBindings: ClaudeTurnBindings = {
         signal,
         canUseTool,
-        spool,
         sessions,
         notes,
         ds,
@@ -2301,7 +2291,6 @@ export function createClaudeDriver(
       const telarLeased = telarSocket ? telarLeases.get(sessionId) : undefined;
       const telarRef = telarLeased?.ref ?? { current: undefined as RuntimeBindings<ClaudeTurnBindings> | undefined };
       const telarParts: TelarWallPart[] = [
-        { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
         { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
         { name: "notes", build: notesTools as never, capability: () => telarRef.current?.current.notes },
         { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
@@ -2347,7 +2336,6 @@ export function createClaudeDriver(
          */
         servers: canonicalServers(userMcpServers),
         browser: browserSocket ?? null,
-        spool: Boolean(spool),
         sessions: Boolean(sessions),
         // Same rule: the toolkits are baked into the query at creation, so a
         // project-less session gaining a project must cold-start rather than
@@ -2418,35 +2406,20 @@ export function createClaudeDriver(
         const telarTools: unknown[] = [];
 
         /**
-         * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
-         * Telar-wide substrate", which is only true if an ordinary project
-         * session can reach them.
+         * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
          *
-         * NO APPROVAL GATE ON ANY OF THESE, and that is the same judgement the
-         * legacy server made about the same four verbs: none of them is a commit.
-         * Filing a task starts nothing, and the two things a human must decide —
-         * a verdict, and a sub-task's promotion — have no tool input that can
-         * spell them. The one gate that matters here is structural, not
-         * interactive.
+         * NO APPROVAL GATE ON ANY OF THESE, the judgement every toolkit below
+         * inherits: not one of them lands anything. Creating a session starts no
+         * work (nothing is queued until `sessions_send`), reading and stopping
+         * are read-and-brake, and there is deliberately no merge, no accept and
+         * no archive for a gate to guard. The guard that matters here is
+         * structural — the store's live-session budget — not interactive.
+         *
+         * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
+         * withholds Telar's whole MCP server from a child and names these tools
+         * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
+         * `sessions_create` is fan-out wearing another hat.
          */
-        if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, delegatingCapability(() => bindings.current.spool)));
-
-      /**
-       * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
-       *
-       * NO APPROVAL GATE ON ANY OF THESE, the same judgement the spool's verbs
-       * get and for the same reason: not one of them lands anything. Creating a
-       * session starts no work (nothing is queued until `sessions_send`),
-       * reading and stopping are read-and-brake, and there is deliberately no
-       * merge, no accept and no archive for a gate to guard. The guard that
-       * matters here is structural — the store's live-session budget — not
-       * interactive.
-       *
-       * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
-       * withholds Telar's whole MCP server from a child and names these tools
-       * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
-       * `sessions_create` is fan-out wearing another hat.
-       */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
 
         /**
@@ -2454,8 +2427,8 @@ export function createClaudeDriver(
          * deploy note say?" is answerable, and "keep this where we can find it"
          * lands somewhere the human will actually see it.
          *
-         * NO APPROVAL GATE, the spool's judgement again: nothing here lands
-         * anything, and writing a note changes no branch and queues no turn. The
+         * NO APPROVAL GATE, the sessions toolkit's judgement again: nothing here
+         * lands anything, and writing a note changes no branch and queues no turn. The
          * one guard that matters is the wall's own — `notes_delete` removes only
          * notes an agent wrote, and refuses the user's in a sentence.
          */
@@ -2482,7 +2455,7 @@ export function createClaudeDriver(
 
         /**
          * THE DISPLAY TOOLKIT, WHEN THE TURN CARRIES ONE. No approval gate,
-         * the spool's judgement again: opening a panel on a file the human
+         * the same judgement again: opening a panel on a file the human
          * could open themselves commits nothing. The worker's capability owns
          * the one check that matters — the path stays inside this turn's own
          * checkout.
