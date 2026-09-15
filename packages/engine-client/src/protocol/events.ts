@@ -365,6 +365,17 @@ export const EventPage = z.object({
   /** True when more rows are immediately available — a client should keep
    *  paging before it starts tailing. */
   more: z.boolean(),
+  /**
+   * The `after` for the next page, present exactly when `more` is true (#494).
+   *
+   * It is `cursor`, and it is sent anyway: `cursor` means "what this page ends
+   * at", which a tailing client stores whether or not it pages again, while
+   * `next` means "there is another page, ask from here". Reading the second off
+   * the first is a rule a client has to remember; an absent `next` is one it
+   * cannot get wrong. OPTIONAL at every hop — an engine older than #494 answers
+   * without it, and `more: false` there means the same thing it always did.
+   */
+  next: z.number().int().nonnegative().optional(),
 });
 export type EventPage = z.infer<typeof EventPage>;
 

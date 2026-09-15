@@ -73,6 +73,7 @@ import {
   type EngineErrorCode,
   type EngineEvent,
   type EngineHealth,
+  type EventPage,
   type Item,
   type GitOverview,
   type ModelSelection,
@@ -1469,8 +1470,43 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`);
   }
 
-  events(sessionId: string, after = 0): Promise<{ events: EngineEvent[]; cursor: number; more: boolean }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`);
+  /**
+   * ONE PAGE OF THE JOURNAL ABOVE `after` (#494), not the rest of the run.
+   *
+   * The engine caps what it will serialise, so an answer with `more` true is
+   * the ordinary case on a session that has been away, not an error: page again
+   * from `next` — or use `drainEvents`, which is that loop written once.
+   */
+  events(sessionId: string, after = 0, limit?: number): Promise<EventPage> {
+    const bound = limit === undefined ? "" : `&limit=${limit}`;
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`);
+  }
+
+  /**
+   * EVERY EVENT ABOVE `after`, however many pages that takes.
+   *
+   * For the caller that genuinely needs the whole tail — an export, or a client
+   * catching up from a cursor it has held across a long sleep. It is still
+   * bounded per REQUEST, which is the property #494 is about: the engine never
+   * builds a 36.5 MB response, and a caller that only wanted the next few rows
+   * never asks for the rest.
+   *
+   * `pages` IS A STOP, not a tuning knob. A journal that is being appended to
+   * faster than it is read would otherwise spin here forever; the default is
+   * far above any real catch-up, and stopping leaves a valid cursor to resume
+   * from rather than a partial answer that claims to be complete.
+   */
+  async drainEvents(sessionId: string, after = 0, options?: { limit?: number; pages?: number }): Promise<EventPage> {
+    const pages = options?.pages ?? 100;
+    let cursor = after;
+    let events: EngineEvent[] = [];
+    for (let page = 0; page < pages; page += 1) {
+      const read = await this.events(sessionId, cursor, options?.limit);
+      events = events.length ? [...events, ...read.events] : read.events;
+      cursor = Math.max(cursor, read.cursor);
+      if (!read.more) return { events, cursor, more: false };
+    }
+    return { events, cursor, more: true, next: cursor };
   }
 
   /**

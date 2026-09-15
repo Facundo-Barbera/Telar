@@ -6,7 +6,10 @@ import { journalCursor } from "./journal";
 
 export type SessionSyncApi = {
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot>;
-  events(sessionId: string, after: number): Promise<{ events: EngineEvent[] }>;
+  /** ONE PAGE above `after` (#494). `more` is optional here because an engine
+   *  older than the route never sends it, and absent must read as "that was
+   *  everything" — which is exactly what it meant before. */
+  events(sessionId: string, after: number): Promise<{ events: EngineEvent[]; more?: boolean }>;
   /**
    * The one-read opening (#407). OPTIONAL, and that is not politeness: a
    * REMOTE host may be running an engine older than the route, and the two-call
@@ -101,9 +104,50 @@ export async function hydrateSession(
     };
   }
   const snapshot = await api.session(sessionId, window);
-  const from = snapshot.cursor ?? journalCursor((await api.events(sessionId, 0)).events);
-  const tail = await api.events(sessionId, from);
-  return { ...snapshot, events: tail.events, cursor: Math.max(from, journalCursor(tail.events)) };
+  /**
+   * DRAINED, because this branch wants the journal's END and a page gives it
+   * the journal's BEGINNING (#494). Only an engine too old to stamp a cursor
+   * reaches here, and for that one there is no cheaper answer than walking to
+   * the last id — in bounded pages now, rather than one 36 MB response.
+   */
+  const from = snapshot.cursor ?? (await drainEvents(api, sessionId, 0)).cursor;
+  const tail = await drainEvents(api, sessionId, from);
+  return { ...snapshot, events: tail.events, cursor: Math.max(from, tail.cursor) };
+}
+
+/**
+ * EVERY EVENT ABOVE `after`, however many pages that takes (#494).
+ *
+ * The engine caps one response, so a client that has been away — a laptop that
+ * slept, a tab left open through a long turn — gets `more: true` and has to ask
+ * again. Folding one page and stopping would leave the transcript silently
+ * short of what the session actually did, which is worse than the cost this
+ * paging exists to avoid.
+ *
+ * `MAX_PAGES` IS A STOP, NOT A BUDGET. A journal appended to faster than it is
+ * read would otherwise spin here forever, blocking a tick that runs once a
+ * second; stopping hands back a valid cursor, so the next tick resumes where
+ * this one reached and nothing is lost.
+ */
+const MAX_PAGES = 100;
+
+export async function drainEvents(
+  api: SessionSyncApi,
+  sessionId: string,
+  after: number,
+): Promise<{ events: EngineEvent[]; cursor: number }> {
+  let cursor = after;
+  let events: EngineEvent[] = [];
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const read = await api.events(sessionId, cursor);
+    events = events.length ? [...events, ...read.events] : read.events;
+    const reached = Math.max(cursor, journalCursor(read.events));
+    // A page that moved nothing ends the walk whatever `more` claims: asking
+    // again from the same cursor is the one way this loop cannot terminate.
+    if (!read.more || reached === cursor) return { events, cursor: reached };
+    cursor = reached;
+  }
+  return { events, cursor };
 }
 
 /**
@@ -126,10 +170,14 @@ export async function tailSession(
   cursor: number;
   snapshot?: SessionSnapshot;
 }> {
-  const page = await api.events(sessionId, after);
+  // DRAINED (#494): a quiet tick is one page and stops on the first answer, so
+  // the ordinary second costs exactly what it did. A tick that comes back to a
+  // session which ran while the tab slept keeps paging — each request bounded,
+  // the transcript complete.
+  const page = await drainEvents(api, sessionId, after);
   return {
     events: page.events,
-    cursor: Math.max(after, journalCursor(page.events)),
+    cursor: Math.max(after, page.cursor),
     ...(needsSessionSnapshot(page.events) ? { snapshot: await api.session(sessionId, window) } : {}),
   };
 }

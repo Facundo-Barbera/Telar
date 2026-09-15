@@ -514,12 +514,31 @@ export class ExecutionStore {
     const span = row.span;
     return Buffer.isBuffer(span) ? span : Buffer.from(span as Uint8Array);
   }
-  events(sessionId: string, after = 0): EngineEvent[] {
-    const stored = this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
-      .map((row) => JSON.parse(String(row.value)) as EngineEvent);
-    // Held deltas are always newer than every stored row, so the tail appends.
+  /**
+   * A WINDOW OF THE JOURNAL, `(after, ...]` in id order — issue #494.
+   *
+   * `limit` IS PUSHED INTO SQLITE, not applied to the answer: the whole point
+   * is that a 50k-event session never materialises 50k rows of JSON in this
+   * process to hand back two hundred. Absent, the read is the whole tail, which
+   * is what the export and the in-process folds still want.
+   *
+   * THE HELD DELTAS ARE PART OF THE PAGE, and they come last because they are
+   * newer than every stored row (see `buffered`). So a page is filled from the
+   * disk first and topped up from the buffer only if the disk left room — the
+   * same order `cursor` reports, which is what keeps a keyset caller from
+   * stepping over a delta that had not been flushed when it asked.
+   */
+  events(sessionId: string, after = 0, limit?: number): EngineEvent[] {
+    const bounded = limit !== undefined && Number.isSafeInteger(limit) && limit > 0;
+    const stored = (bounded
+      ? this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id LIMIT ?").all(sessionId, after, limit)
+      : this.statement("SELECT value FROM events WHERE session_id=? AND id>? ORDER BY id").all(sessionId, after)
+    ).map((row) => JSON.parse(String(row.value)) as EngineEvent);
+    if (bounded && stored.length >= limit!) return stored;
     const held = this.held().filter((event) => event.sessionId === sessionId && event.id > after);
-    return held.length ? [...stored, ...held] : stored;
+    if (!held.length) return stored;
+    const page = [...stored, ...held];
+    return bounded ? page.slice(0, limit) : page;
   }
   cursor(sessionId: string): number {
     const known = this.cursors.get(sessionId);

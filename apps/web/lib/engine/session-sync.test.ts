@@ -244,6 +244,112 @@ describe("session hydration", () => {
   });
 });
 
+/**
+ * THE JOURNAL ARRIVES IN PAGES NOW (#494), and a reader that folded the first
+ * one and stopped would leave the transcript silently short of what the session
+ * actually did. These price the two halves of that: a quiet tick still costs
+ * ONE request, and a tick that comes back to a session which ran while the tab
+ * slept keeps asking until the engine says there is no more.
+ */
+describe("paging the journal", () => {
+  const event = (id: number): EngineEvent => ({ ...envelope, id, at: id, type: "turn.started" });
+
+  test("a tick that gets a full page keeps paging, and asks from the last id it saw", async () => {
+    const asked: number[] = [];
+    const pages = [
+      { events: [event(11), event(12)], more: true },
+      { events: [event(13), event(14)], more: true },
+      { events: [event(15)], more: false },
+    ];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        asked.push(after);
+        return pages.shift()!;
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 10);
+    // KEYSET, not offset: each ask names the last id folded, so a delta landing
+    // mid-walk can neither be skipped nor counted twice.
+    expect(asked).toEqual([10, 12, 14]);
+    expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14, 15]);
+    expect(tail.cursor).toBe(15);
+  });
+
+  test("the quiet second still costs exactly one request", async () => {
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [], more: false };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 42);
+    expect(calls).toBe(1);
+    expect(tail.events).toEqual([]);
+    // The cursor does not move backwards on an empty answer.
+    expect(tail.cursor).toBe(42);
+  });
+
+  test("an engine that never sends `more` is read exactly as it always was", async () => {
+    // A REMOTE host may predate the paged route. Absent must mean "that was
+    // everything" — the meaning it had before the field existed.
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [event(7)] };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    expect((await tailSession(api, session.id, 6)).events.map((each) => each.id)).toEqual([7]);
+    expect(calls).toBe(1);
+  });
+
+  test("a page that claims `more` but moves nothing ends the walk instead of spinning", async () => {
+    // The one way this loop could fail to terminate: re-asking from a cursor
+    // that never advances. A tick runs once a second — it may not hang.
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [], more: true };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 5);
+    expect(calls).toBe(1);
+    expect(tail.cursor).toBe(5);
+  });
+
+  test("the cursorless fallback walks to the END of the journal, not to the end of page one", async () => {
+    /**
+     * An engine too old to stamp a snapshot cursor makes `hydrateSession` ask
+     * the journal where it ends. A page answers from the BEGINNING, so reading
+     * one and taking its last id would tail from event 2 and re-fold the whole
+     * history — the exact cost paging exists to remove.
+     */
+    const asked: number[] = [];
+    const pages = [
+      { events: [event(1), event(2)], more: true },
+      { events: [event(3)], more: false },
+      { events: [], more: false },
+    ];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        asked.push(after);
+        return pages.shift()!;
+      },
+      session: async () => ({ session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const hydrated = await hydrateSession(api, session.id);
+    expect(asked).toEqual([0, 2, 3]);
+    expect(hydrated.cursor).toBe(3);
+    expect(hydrated.events).toEqual([]);
+  });
+});
+
 describe("mergeOlderPage", () => {
   const makeTurn = (runId: string, sequence: number): Turn => ({ ...turn, runId, sequence });
   const makeItem = (id: string, runId: string): Item => ({

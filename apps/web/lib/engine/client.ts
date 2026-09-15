@@ -54,8 +54,8 @@ import type {
   CustomProviderModel,
   SessionDiff,
   EngineErrorCode,
-  EngineEvent,
   EngineHealth,
+  EventPage,
   McpOAuthStatus,
   McpServer,
   McpServerSpec,
@@ -831,8 +831,16 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
     ) =>
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
-    events: (sessionId: string, after: number) =>
-      request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
+    /**
+     * ONE PAGE of the journal above `after` (#494). `more` true is ordinary,
+     * not an error — see `drainEvents` in `session-sync.ts` for the loop.
+     */
+    events: (sessionId: string, after: number, limit?: number) =>
+      request<EventPage>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${limit === undefined ? "" : `&limit=${limit}`}`,
+      ),
     /** `model` rides with THIS message — queue three with different models and
      *  each runs on the one it was written under. It cannot name a provider
      *  instance, so the session's provider is fixed for its whole life. */

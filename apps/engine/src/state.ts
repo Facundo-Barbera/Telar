@@ -8948,10 +8948,26 @@ export class EngineStore {
     });
   }
 
-  readEvents(sessionId: string, after = 0): EngineEvent[] {
+  /**
+   * The journal above `after`, at most `limit` rows of it — issue #494.
+   *
+   * `limit` IS THE CALLER'S PAGE SIZE, and absent means the whole tail: the
+   * route bounds what it serialises over HTTP, while an in-process fold that
+   * genuinely needs the run (the export, `openItemPrefix`) asks without one and
+   * is unchanged. The cursor check stays here rather than at any caller's seam
+   * because this method owns it — see the sessions socket's capability.
+   *
+   * NO OFFSET, EVER. The window is keyed on the event id, so a page is the same
+   * page whether or not rows were appended while the caller was reading, and a
+   * client that resumes from the last id it saw can neither skip nor repeat.
+   */
+  readEvents(sessionId: string, after = 0, limit?: number): EngineEvent[] {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
-    return this.executionStore ? this.executionStore.events(sessionId, after) : readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new EngineStateError("invalid_request", "event limit is invalid");
+    if (this.executionStore) return this.executionStore.events(sessionId, after, limit);
+    const tail = readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
+    return limit === undefined ? tail : tail.slice(0, limit);
   }
 
   /**
