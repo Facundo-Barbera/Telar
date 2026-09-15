@@ -2880,6 +2880,7 @@ export class EngineStore {
   setMainSession(patch: { enabled?: unknown; sessionId?: unknown; projectId?: unknown }): MainSession {
     const stored = this.getMainSession();
     const next: MainSession = { ...stored };
+    delete next.generation;
 
     if (patch.sessionId !== undefined) {
       assertId(patch.sessionId, "session id");
@@ -2915,6 +2916,17 @@ export class EngineStore {
       next.sessionId = this.createSession({ projectId: patch.projectId, title: "Main" }).id;
     }
 
+    /**
+     * THE GENERATION MOVES WHEN THE ANSWER DOES, and not otherwise.
+     *
+     * "Who is Main, and is it on" is the whole of what it counts, so enabling
+     * an already-enabled designation with the same session writes the same
+     * number — a settings pane that saved twice must not invalidate a turn that
+     * is legitimately still coordinating. Every real change bumps it: off, on
+     * again, or moved to another conversation. See `MainSession.generation`.
+     */
+    const moved = next.enabled !== stored.enabled || next.sessionId !== stored.sessionId;
+    next.generation = moved ? (stored.generation ?? 0) + 1 : stored.generation ?? 0;
     this.writeDocument(this.paths.mainSession, { version: STATE_VERSION, ...next });
     /**
      * OFF MEANS THE WAKES STOP. A subscription the main session took out while
@@ -2923,8 +2935,21 @@ export class EngineStore {
      * feature could still spend a person's provider quota. Only the ones it
      * SUBSCRIBED to: a subscription some other session holds ON it is that
      * session's, and dropping it would stop work nobody switched off.
+     *
+     * AND THE WAKES ALREADY IN THE QUEUE, all of them — not just the ones whose
+     * subscription is still there to be matched. A `once` subscription is
+     * removed the moment it fires, so the wake it produced a second before the
+     * switch went off has nothing left to link it to its subscription, and it
+     * would run, spend a turn, and report on work nobody is coordinating any
+     * more. Only WAKE turns: a queued human message and a queued peer task are
+     * explicitly requested work, and disabling a briefing is not a reason to
+     * throw either away. A wake already claimed or running is the worker's and
+     * finishes.
      */
-    if (!next.enabled && stored.sessionId !== undefined) this.dropSubscriptionsBy(stored.sessionId);
+    if (!next.enabled && stored.sessionId !== undefined) {
+      this.dropSubscriptionsBy(stored.sessionId);
+      this.discardQueuedWakes(stored.sessionId);
+    }
     return { ...next };
   }
 
@@ -7573,6 +7598,15 @@ export class EngineStore {
     // The watermark rides the claim: everything submitted from here on was
     // written against a session the person had reason to think was live.
     turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
+    /**
+     * AND WHICH MAIN DESIGNATION IT IS RUNNING UNDER, if any — see
+     * `Turn.mainGeneration` (#522). Stamped in the same breath as the claim and
+     * on the same condition as the coordinator briefing, so the two can never
+     * disagree about whether this turn is a coordinator's: a turn that was
+     * briefed to coordinate is exactly the one that must stop being able to
+     * re-subscribe once the switch goes off.
+     */
+    if (this.isMainSession(sessionId)) turn.mainGeneration = this.getMainSession().generation ?? 0;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -8952,6 +8986,46 @@ export class EngineStore {
   // ── Subscriptions — one session asking to be woken by another ─────────────
 
   /**
+   * REFUSE A COORDINATOR THAT IS NO LONGER ONE — the second half of "disable
+   * stops the monitoring" (#522).
+   *
+   * THE RACE IT CLOSES. A turn claimed while its session was Main keeps the
+   * coordinator briefing for its whole run; that is deliberate, and it means
+   * the turn is still being told to delegate and subscribe long after somebody
+   * may have switched Main off. Dropping the subscriptions at disable is a
+   * one-time sweep, and that turn can simply make new ones — so the monitoring
+   * a person just stopped comes back, silently, on the next tool call.
+   *
+   * WHAT IS REFUSED IS A TURN, NOT A CONVERSATION, and the distinction is the
+   * whole design. The formerly-designated session stays an ordinary, fully
+   * usable session: a later human turn in it is claimed with no generation at
+   * all and subscribes through the ordinary permissions, exactly like any other
+   * conversation. Only a turn that is STILL EXECUTING under a designation the
+   * store has moved past is told no. Ordinary sessions never carry a generation
+   * and are never touched by this.
+   *
+   * IT COVERS EVERY DOOR because it lives in `subscribe` rather than in a tool:
+   * the `sessions` wall, the sessions socket and `POST /v2/sessions/:id/
+   * subscriptions` all bottom out here.
+   *
+   * A SENTENCE THE MODEL CAN ACT ON. It says what happened and what is still
+   * true, because the alternative is a coordinator that retries the same call.
+   */
+  private refuseStaleCoordinator(subscriberSessionId: string): void {
+    // The calling turn is the session's live one — one turn per session is the
+    // invariant every path here relies on, so there is no ambiguity about which.
+    const live = this.readQueue(subscriberSessionId).turns.find((turn) => turn.state === "claimed" || turn.state === "running");
+    if (live?.mainGeneration === undefined) return;
+    const main = this.getMainSession();
+    if (main.enabled && main.sessionId === subscriberSessionId && (main.generation ?? 0) === live.mainGeneration) return;
+    throw new EngineStateError(
+      "conflict",
+      "this session is no longer Telar's Main session, so this turn cannot take out new subscriptions — its monitoring was deliberately stopped. " +
+        "Nothing else about the turn is restricted: finish what you were asked to do and report it. A later turn in this conversation subscribes normally.",
+    );
+  }
+
+  /**
    * SUBSCRIBE. Both sessions must be live: an archived subscriber has nowhere
    * to be woken, and an archived target has nothing left to do. IDEMPOTENT ON
    * THE PAIR — a retried tool call returns the one subscription, with the
@@ -8962,6 +9036,7 @@ export class EngineStore {
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
     }
+    this.refuseStaleCoordinator(subscriberSessionId);
     const subscriber = this.getSession(subscriberSessionId);
     const target = this.getSession(input.targetSessionId);
     if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
@@ -9347,10 +9422,28 @@ export class EngineStore {
    * an unsubscribe means when wakes have already piled up. Turns already
    * claimed or running stay; they are the worker's. Returns how many went.
    */
-  private discardQueuedWakes(subscriberId: string, targetSessionId: string): number {
+  private discardQueuedWakes(subscriberId: string, targetSessionId?: string): number {
     const queue = this.readQueue(subscriberId);
     const at = this.now();
-    const dropped = queue.turns.filter((turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId);
+    /**
+     * `targetSessionId` NARROWS IT TO ONE SOURCE; omitting it means every wake
+     * this session is still holding, whoever it was about — which is what
+     * switching Main off asks for (see `setMainSession`), and what an
+     * unsubscribe must NOT do.
+     *
+     * `wakeReason` IS THE WHOLE TEST OF "AUTOMATED", and it is exact rather than
+     * convenient: a turn is `origin: "session"` for two different reasons, and
+     * carries `wakeReason` for one of them and `sender` for the other (see
+     * `Turn.origin`). A peer's task or report is somebody asking for work, and
+     * it survives here for the same reason a human's queued message does.
+     */
+    const dropped = queue.turns.filter(
+      (turn) =>
+        turn.state === "queued" &&
+        turn.origin === "session" &&
+        turn.wakeReason !== undefined &&
+        (targetSessionId === undefined || turn.wakeReason.sessionId === targetSessionId),
+    );
     if (dropped.length === 0) return 0;
     for (const turn of dropped) {
       turn.state = "discarded";
