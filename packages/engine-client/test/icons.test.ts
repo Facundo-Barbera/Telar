@@ -1,13 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  IDENTITY_COLORS,
-  IdentityColor,
-  isIdentityColor,
-  isTelarIcon,
-  SpoolSubjectColor,
-  TELAR_ICONS,
-  TelarIcon,
-} from "../src/index";
+import { IDENTITY_COLORS, IdentityColor, isIdentityColor, isTelarIcon, TELAR_ICONS, TelarIcon } from "../src/index";
 
 /**
  * THE IDENTITY VOCABULARY IS A CLOSED SET, AND A SHARED ONE.
@@ -16,8 +8,8 @@ import {
  * renderer maps every id to a glyph by hand (`apps/web/lib/telar-icons.tsx`).
  * That makes the list's SHAPE load-bearing in a way a list of strings usually is
  * not: a duplicate silently costs a slot in the picker grid, an id that is not
- * kebab-case cannot be looked up in lucide, and a set that drifts from the
- * Spool's hues means the same eight colours are drawn from two sources.
+ * kebab-case cannot be looked up in lucide, and a hue that drifts from
+ * `--subject-*` stops covering half the app's colour tokens.
  */
 describe("the icon set", () => {
   test("is forty ids, each distinct", () => {
@@ -51,12 +43,11 @@ describe("the icon set", () => {
 });
 
 describe("the identity colours", () => {
-  test("are the eight the Spool already paints identities with", () => {
-    // Restated rather than imported (these are not Spool records) — so the one
-    // thing that must be true is that the two lists have not drifted. If they
-    // do, `--subject-*` stops covering half the app's colour tokens.
-    expect([...IDENTITY_COLORS]).toEqual([...SpoolSubjectColor.options]);
-    expect(IDENTITY_COLORS).toHaveLength(8);
+  test("are the eight `--subject-*` hues, spelled out so a rename cannot pass", () => {
+    // Written literally rather than folded from the source: these token names
+    // are what `globals.css` and `Theme.swift` also spell, and a test that only
+    // counted them would let a rename through silently.
+    expect([...IDENTITY_COLORS]).toEqual(["plum", "sea", "moss", "amber", "slate", "rose", "sky", "sand"]);
     expect(new Set(IDENTITY_COLORS).size).toBe(8);
   });
 

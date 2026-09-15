@@ -39,7 +39,7 @@ export const TELAR_MCP_SERVER = "telar";
  * reachable by Codex, and the Codex app-server takes MCP servers as CONFIG (a
  * url), not as an in-process handle — so the browser is served over HTTP by the
  * worker that owns it, and an HTTP server cannot share the `telar` key with the
- * in-process server that still carries the spool and warp. Both keys are
+ * in-process server that still carries warp. Both keys are
  * Telar's: `isTelarMcpServer` is what the capability mapping and the approval
  * posture read, so a `browser_*` call is a `browser_action` row on either
  * provider.
@@ -98,14 +98,14 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CORE_CAPABILITIES = ["browser", "spool", "sessions", "display", "run"] as const;
+export const TELAR_CORE_CAPABILITIES = ["browser", "sessions", "display", "run"] as const;
 
 /**
  * Core capabilities plus every bundled plugin's tool prefix.
  *
  * THE PLUGIN HALF IS NO LONGER SPELLED HERE. `notebook`, `ds` and `latex` used
- * to be three entries indistinguishable from `spool` — precisely the confusion
- * the plugin host exists to remove: a plugin's tool namespace comes from its
+ * to be three entries indistinguishable from a core one — precisely the
+ * confusion the plugin host exists to remove: a plugin's tool namespace comes from its
  * manifest, and `plugins.ts` explains why the bundled set is still declared as
  * data rather than discovered at startup. `run` stays CORE: it is a capability
  * of the engine, not a plugin, and it is listed here in the same change that
@@ -138,7 +138,7 @@ export function canonicalToolName(server: string | undefined, tool: string): str
 /** The name a model sees for one of our tools. The default server is the
  *  in-process one; the browser's callers name `TELAR_BROWSER_MCP_SERVER`
  *  explicitly. The default is deliberately unchanged — shifting it would
- *  silently rename every spool tool. */
+ *  silently rename every tool on the in-process wall. */
 export function qualifyTelarTool(tool: string, server: string = TELAR_MCP_SERVER): string {
   return canonicalToolName(server, tool);
 }
