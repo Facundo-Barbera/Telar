@@ -338,27 +338,33 @@ test("an abort mid-stream ends the turn and stops reporting", async () => {
  * Refusals.
  * ------------------------------------------------------------------ */
 
-test("a 401 surfaces the service's own words, with the status", async () => {
+test("a 401 surfaces the service's own words, as a provider that cannot run here", async () => {
   serve(() => new Response(JSON.stringify({ error: { message: "invalid api key" } }), { status: 401 }));
 
   const error = await driver()
     .run(run())
     .catch((caught: unknown) => caught);
 
-  expect(error).toBeInstanceOf(GoRequestError);
-  expect((error as GoRequestError).status).toBe(401);
+  // The CLASS is what the settings pane keys the setup prompt off — a rejected
+  // key is a login to fix, which is the same failure a missing CLI produces.
+  expect((error as Error).name).toBe("ProviderUnavailableError");
   expect((error as Error).message).toContain("invalid api key");
+  expect((error as Error).message).toContain("401");
 });
 
-test("a 429 surfaces its words too — the service knows which limit", async () => {
+test("a 429 surfaces its words too, and stays a request error — a wait, not a login", async () => {
   serve(() => new Response(JSON.stringify({ error: { message: "rate limit exceeded, retry in 30s" } }), { status: 429 }));
 
   const error = await driver()
     .run(run())
     .catch((caught: unknown) => caught);
 
+  expect(error).toBeInstanceOf(GoRequestError);
   expect((error as GoRequestError).status).toBe(429);
   expect((error as Error).message).toContain("retry in 30s");
+  // Emphatically NOT the shape a rejected key takes: nothing about a rate
+  // limit should send somebody to re-paste a key that is working.
+  expect((error as Error).name).not.toBe("ProviderUnavailableError");
 });
 
 test("no key reaches an item or a thrown message, even when the server echoes it back", async () => {

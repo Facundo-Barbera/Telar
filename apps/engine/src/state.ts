@@ -158,6 +158,7 @@ import {
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
+import { resolveGoCredential, type GoKeySource } from "./main-session/credentials";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -180,6 +181,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
+import { providerProcessEnv } from "./provider-instances";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
@@ -2867,6 +2869,51 @@ export class EngineStore {
     return this.sessionExists(main.sessionId) ? main : { enabled: main.enabled };
   }
 
+  /**
+   * WHETHER THE MAIN ASSISTANT HAS A KEY, AND WHETHER THE LAST ONE WORKED —
+   * what the settings pane decides between "here is the field" and "here is the
+   * setup you still owe me" (#526).
+   *
+   * THE KEY NEVER LEAVES. `resolveGoCredential` finds one; only its SOURCE is
+   * returned, which is the one fact that helps somebody work out why the wrong
+   * account is being billed. See `main-session/credentials.ts`.
+   *
+   * `rejected` IS DERIVED, NOT STORED, and that is what makes it self-clearing.
+   * A rejected key fails the turn as `provider_unavailable` (the driver
+   * translates 401 and 403 into exactly that), so the answer is "the newest
+   * settled turn on the designated session failed that way" — and the next turn
+   * that completes makes it false again without anybody having to remember to
+   * clear a flag. A stored boolean would outlive the key it was about.
+   *
+   * ONLY THE ENGINE'S OWN LOOP. A session designated under #523 runs a CLI and
+   * has nothing to do with an OpenCode Go key; reporting one as rejected
+   * because a Claude turn failed would send somebody to fix the wrong thing.
+   */
+  mainSessionCredential(): { source?: GoKeySource; rejected: boolean } {
+    const instance = this.resolveProviderInstance(defaultInstanceIdForDriver("telar"), "telar");
+    const found = resolveGoCredential({ instanceEnv: providerProcessEnv(instance) });
+    const main = this.resolveMainSession();
+    return {
+      ...(found ? { source: found.source } : {}),
+      rejected: main.enabled && main.sessionId !== undefined ? this.mainTurnRejectedKey(main.sessionId) : false,
+    };
+  }
+
+  /** Did the newest settled turn on this session fail because the provider
+   *  could not run? Never throws: a session that has gone, or a queue that will
+   *  not parse, is simply not evidence of a bad key. */
+  private mainTurnRejectedKey(sessionId: string): boolean {
+    try {
+      const session = this.getSession(sessionId);
+      if (session.driver !== "telar") return false;
+      const settled = this.readQueue(sessionId).turns.filter((turn) => turn.state === "completed" || turn.state === "failed");
+      const newest = settled.at(-1);
+      return newest?.state === "failed" && newest.failure?.code === "provider_unavailable";
+    } catch {
+      return false;
+    }
+  }
+
   /** Does a session document exist, without the throw `getSession` makes? The
    *  designation asks this about an id that may be months old. */
   private sessionExists(sessionId: string): boolean {
@@ -2887,15 +2934,28 @@ export class EngineStore {
    *   1. An explicit `sessionId` designates that conversation. It must exist —
    *      naming one that does not is a bad request, not a silent create.
    *   2. Otherwise, whatever is already designated and still exists is reused.
-   *      This is the rung that makes re-enabling and a restart idempotent, and
-   *      it is checked BEFORE `projectId` is looked at at all.
-   *   3. Only then does `projectId` create one, through the ordinary
-   *      `createSession` path with this machine's ordinary conventions — no
-   *      driver, model or workspace of its own.
+   *      This is the rung that makes re-enabling and a restart idempotent.
+   *   3. Otherwise one is MINTED: project-less, on the `telar` driver, with no
+   *      checkout and no working directory.
    *
-   * ENABLING WITH NOTHING TO DESIGNATE IS REFUSED. A project is required in this
-   * slice (the issue says so outright), and guessing one would be the engine
-   * choosing where a person's coordinator lives.
+   * ── RUNG 3 IS THE CORRECTION #526 MADE ──────────────────────────────────────
+   * #523 asked for a project and opened an ORDINARY session inside it, "with
+   * nothing said beyond the title… because a main session that quietly ran on a
+   * different provider from every other session would be a second kind of
+   * session after all". The owner's answer was that it is a second kind of
+   * session, and that was the point: the coordinator is not assigned to a
+   * working directory like the rest. So the `projectId` rung is gone, enabling
+   * no longer needs anything to be chosen, and what gets minted is deliberately
+   * not an ordinary conversation.
+   *
+   * ENABLING NEVER REFUSES NOW. There is nothing left to guess: no project to
+   * pick, no checkout to cut, and one Main conversation per machine.
+   *
+   * RUNG 1 STILL TAKES AN ORDINARY SESSION, and that is not a leftover. A
+   * conversation designated under #523 keeps its history, keeps its project and
+   * its driver, and becomes ordinary again when the switch goes off — the
+   * designation is a role, and un-designating has never been allowed to rewrite
+   * what a session is.
    *
    * DISABLING KEEPS THE ID AND THE CONVERSATION. It stops the briefing and the
    * rail entry, and it drops the subscriptions the main session took out — so
@@ -2903,7 +2963,7 @@ export class EngineStore {
    * It deletes no history, stops nothing it delegated to, and leaves an
    * ordinary resumable session behind.
    */
-  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; projectId?: unknown }): MainSession {
+  setMainSession(patch: { enabled?: unknown; sessionId?: unknown }): MainSession {
     const stored = this.getMainSession();
     const next: MainSession = { ...stored };
     delete next.generation;
@@ -2928,18 +2988,17 @@ export class EngineStore {
     }
 
     if (next.enabled && next.sessionId === undefined) {
-      if (patch.projectId === undefined) {
-        throw new EngineStateError("invalid_request", "turning the main session on needs a project to create it in, or a session to designate");
-      }
-      assertId(patch.projectId, "project id");
       /**
-       * THE ORDINARY CREATE PATH, with nothing said beyond the title. Driver,
-       * model, workspace and provider all fall to this machine's own defaults —
-       * the issue's "normal model and project conventions" — because a main
-       * session that quietly ran on a different provider from every other
-       * session would be a second kind of session after all.
+       * NO PROJECT, AND THE ENGINE'S OWN DRIVER — the whole of what makes this
+       * conversation a coordinator rather than a worker with a good view.
+       *
+       * Nothing else is said. No model: the machine setting decides, and a
+       * model named here would be a second place that lives. No `envMode`: a
+       * project-less create is `local` by construction and refuses a worktree
+       * outright. No provider instance: `telar` has exactly one slot, which
+       * `createSession` derives from the driver.
        */
-      next.sessionId = this.createSession({ projectId: patch.projectId, title: "Main" }).id;
+      next.sessionId = this.createSession({ title: "Main", driver: "telar" }).id;
     }
 
     /**

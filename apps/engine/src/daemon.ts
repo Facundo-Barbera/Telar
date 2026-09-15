@@ -1395,7 +1395,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // RESOLVED, not the raw document: a designation whose conversation was
           // deleted must not put a row in front of somebody that navigates
           // nowhere. See `resolveMainSession`.
-          writeJson(response, 200, { mainSession: store.resolveMainSession() });
+          //
+          // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
+          // pane that has to decide whether to show a setup field — and asking
+          // in a second request would let the two disagree about the same
+          // instant. Which RUNG answered, never the key. See
+          // `EngineStore.mainSessionCredential`.
+          writeJson(response, 200, { mainSession: store.resolveMainSession(), credential: store.mainSessionCredential() });
           return;
         }
         const input = await body(request);
@@ -1403,10 +1409,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           mainSession: store.setMainSession({
             // By PRESENCE, like every other patch here: a client saying only
             // `sessionId` must not also be re-deciding the switch.
+            //
+            // `projectId` IS GONE (#526). Turning Main on mints a project-less
+            // session on the engine's own driver; there is nothing to choose,
+            // and a client still sending one is ignored rather than obeyed.
             ...("enabled" in input ? { enabled: input.enabled } : {}),
             ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
-            ...("projectId" in input ? { projectId: input.projectId } : {}),
           }),
+          credential: store.mainSessionCredential(),
         });
         return;
       }

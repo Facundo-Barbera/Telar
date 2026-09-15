@@ -266,19 +266,21 @@ export function createTelarDriver(options: TelarDriverOptions = {}): TurnDriver 
 
       for (let round = 0; round < maxRounds; round += 1) {
         input.signal.throwIfAborted();
-        const answer = await streamRound({
-          doFetch,
-          base,
-          credential,
-          sessionId: input.sessionId,
-          model,
-          messages,
-          tools,
-          signal: input.signal,
-          round,
-          runId: input.runId ?? input.sessionId,
-          onObservations: input.onObservations,
-        });
+        const answer = await unauthorizedAsUnavailable(() =>
+          streamRound({
+            doFetch,
+            base,
+            credential,
+            sessionId: input.sessionId,
+            model,
+            messages,
+            tools,
+            signal: input.signal,
+            round,
+            runId: input.runId ?? input.sessionId,
+            onObservations: input.onObservations,
+          }),
+        );
         if (answer.usage) usage = mergeUsage(usage, answer.usage);
         if (answer.text) text = answer.text;
 
@@ -318,6 +320,32 @@ export function createTelarDriver(options: TelarDriverOptions = {}): TurnDriver 
       return { text: stoppedAtCap ? capped : text, ...(usage ? { usage } : {}) };
     },
   };
+}
+
+/**
+ * A REJECTED KEY IS "this provider cannot run here", not "the turn broke".
+ *
+ * 401 and 403 are the two statuses that mean the credential is the problem, and
+ * the difference matters twice over. For the PERSON, `provider_unavailable` is
+ * the failure the cockpit already knows how to talk about — the same one a
+ * missing CLI produces — rather than a generic driver fault. For the SETTINGS
+ * PANE, it is the durable signal that flips the key field back to setup: the
+ * engine reads the Main session's newest settled turn and needs one code to key
+ * that off, without parsing anybody's prose.
+ *
+ * THE SERVICE'S OWN WORDS SURVIVE THE TRANSLATION. Only the class changes.
+ * Every other status — 429 above all — stays a `GoRequestError`, because a rate
+ * limit is a wait to sit out and not a login to fix.
+ */
+async function unauthorizedAsUnavailable<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof GoRequestError && (error.status === 401 || error.status === 403)) {
+      throw new ProviderUnavailableError(error.message);
+    }
+    throw error;
+  }
 }
 
 /** Two usage snapshots, added. A turn is several requests and the person is
