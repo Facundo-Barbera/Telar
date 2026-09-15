@@ -127,11 +127,40 @@ It is not this CLI's own notion of a session, and not a chat thread.
   resumable; nothing is deleted, and nothing about the work is approved by it.
   Whether work is good enough to keep is a human's decision, made elsewhere:
   there is no tool here that merges, lands or accepts anything.
+- **Creating costs the person something.** There is no cap, so the discipline is
+  yours: sessions do not clean themselves up — one you start stays live until a
+  human archives it — and every worktree session is a whole checkout on their
+  disk. Create what the work needs and nothing more.
+- **Do not acknowledge acknowledgements.** A \`report\` back saying "received" is
+  a turn somebody pays for. Completion already arrives on its own.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_diff\`, \`sessions_stop\`, \`sessions_settle\`,
 \`sessions_subscribe\`, \`sessions_unsubscribe\`, \`sessions_subscriptions\`,
 \`sessions_requests\`, \`sessions_resolve_request\`.
+
+### Reading a peer without spending your context on it
+
+Every answer these tools give lands in YOUR context window, so each one is
+bounded and each says where its bound fell. Read the notes in the answers; they
+name the exact next call.
+
+- \`sessions_list\` answers the UNSETTLED sessions, 50 at a time. \`settled: true\`
+  adds the shelf, \`projectId\` narrows, \`after\` pages. An engine with hundreds
+  of conversations is ordinary and almost all of them are shelved.
+- \`sessions_status\` is the cheap "is it finished yet": an activity, a turn
+  count, and the last few turns. Ask it before you read anything.
+- \`sessions_read\` answers the LATEST page by default, which is what "what has
+  it been doing" means. \`mode: "summary"\` folds recent turns to a line each —
+  what it was asked, what it did, how it answered — and is usually the right
+  first read of a long session. \`from: "start"\` reads from the beginning;
+  \`after\` walks forward from a cursor; \`verbose: true\` restores the token
+  counts and auto-approved requests that are dropped by default.
+- **A wake or a peer's message is a PING.** It names a session and a run and
+  carries no body. \`sessions_read(sessionId, runId)\` fetches the whole thing —
+  the answer, and a peer's message in full — and long ones come back in verbatim
+  slices on \`resultAfter\` / \`messageAfter\` that concatenate exactly. Fetch when
+  it matters; skip when it does not.
 
 ### What a coordinating session can and cannot do
 
@@ -177,6 +206,8 @@ write one when the person asks you to keep something, not to log what you did.
 - A note you write is stamped as an agent's, permanently.
 - \`notes_delete\` removes only notes an agent wrote. The person's own are
   theirs; say so rather than asking another session to delete one for you.
+- \`notes_list\` shows titles and the first 120 characters. \`notes_read\` gives
+  one note whole — ask for the ones you actually need.
 
 Tools: \`notes_list\`, \`notes_read\`, \`notes_write\`, \`notes_delete\`,
 \`notes_projects\`.

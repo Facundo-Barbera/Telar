@@ -178,7 +178,7 @@ describe("the protocol surface", () => {
     // The prose a model reads rides along whole rather than being re-authored
     // for the socket — including the sentence the wall can only say.
     expect(result.tools.find((tool) => tool.name === "sessions_create")!.description).toContain(
-      "NEVER use this to get around something you were refused",
+      "Never hand a peer work you were refused",
     );
   });
 

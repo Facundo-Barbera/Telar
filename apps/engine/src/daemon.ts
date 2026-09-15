@@ -969,12 +969,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     const capability: SessionsCapability = {
       // NO `self`: a chat client on this socket is not a session and has
       // nowhere to be woken. The subscription tools refuse, in words.
-      list: async () => store.liveSessions(),
+      /**
+       * THE SHELF IS THE STORE'S RULE, ASKED FOR RATHER THAN RE-IMPLEMENTED
+       * (#515). This used to be `store.liveSessions()` — every session the
+       * store calls live, settled included, 334 rows and 142 KB in one tool
+       * answer. `liveSessionRows` is the same fold the rail's own route serves,
+       * with the clients' `isShelved` deciding, so the toolkit's default list
+       * and the person's sidebar agree by construction rather than by two
+       * copies of one rule. `settled: true` is `?all=1`, the old answer.
+       */
+      list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
       // An agent's words, with no session to attribute them to: the caller is
       // the user's own chat client, outside any turn. Never the person's.
       send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
-      read: async (sessionId, after) => store.readEvents(sessionId, after),
+      read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
+      // The last event id, so the wall can serve "what happened lately" from
+      // one page rather than by walking a journal to reach its end (#515).
+      cursor: async (sessionId) => store.eventCursor(sessionId),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
       // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
       // same work a person's Stop ends, and leaves the session idle rather
