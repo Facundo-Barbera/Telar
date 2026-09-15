@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, FolderGit2Icon, Minimize2Icon, TerminalIcon, TriangleAlertIcon } from "lucide-react";
 import {
   isBackgroundWork,
@@ -24,7 +24,7 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { rememberedProjectName, writeFrontDoorNote } from "@/lib/composer-project";
 import { installNavigationMarks, markNavigation } from "@/lib/perf-marks";
 import { projectSettingsHref } from "@/lib/project-settings-link";
@@ -667,39 +667,7 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-/**
- * ONE FOLD PER PASSIVE REPORT (#239).
- *
- * A routine peer report used to be wrapped in a SECOND disclosure here — a
- * "Session activity · report received" row whose only child was the turn body,
- * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
- * peer's message to its notice. A passive turn never runs (the engine completes
- * it on arrival with no items and no result — see `state.ts`, `passive`), so
- * that wrapper added nothing but a second chevron: the reader had to open two
- * folds, one nested inside the other, to reach one report.
- *
- * The bubble is the fold, and it is the SAME one a peer's message gets when it
- * lands mid-turn as a steered row — which is the point. A report should not look
- * like a different kind of thing for having arrived between turns rather than
- * during one.
- */
-export { SessionTurnBody as SessionTurn };
-
-function SessionTurnBody({
-  turn,
-  requests,
-  sending,
-  live,
-  onDecide,
-  onRetry,
-  onOpenAgent,
-  onOpenTab,
-  onResumeNow,
-  onInsert,
-  onOpenFile,
-  onOpenFileInNewTab,
-  roster = [],
-}: {
+type SessionTurnProps = {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
@@ -729,15 +697,6 @@ function SessionTurnBody({
   /** This turn is the one currently executing. Drives the live step window. */
   live: boolean;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
-  /** Abandon an ambiguous run's execution and keep talking — the recovery
-   *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
-   *  an ordinary FAILED turn and submits nothing. */
-  /** A held message the person re-read and still means — it runs in its
-   *  original place in the queue. */
-  /** ...or no longer wants. An ordinary stop; it is still a queued turn. */
-  /** How many messages are queued behind an undecided ambiguous turn. The
-   *  engine holds them; the card says so rather than letting the session look
-   *  stuck. */
   /** Offered on the ONE failed turn the session can continue from (see
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
@@ -745,7 +704,200 @@ function SessionTurnBody({
   /** Don't wait for the usage limit to lift. Offered only on a `rate_limited`
    *  failure; the cockpit decides, the turn only renders. */
   onResumeNow?: () => void;
-}) {
+};
+
+/**
+ * THE GESTURES WHOSE PRESENCE CHANGES THE PICTURE.
+ *
+ * Their IDENTITY does not, and that is the one liberty `sameTurnRender` takes:
+ * the cockpit writes most of these as inline arrows, so comparing them would
+ * mean never bailing out at all. None is read during a render — they run on a
+ * press — and each is a thin router into cockpit state (`showPanelTab`,
+ * `decideRequest`) reached through setters rather than a captured value. A
+ * turn's own `runId` is the only thing the closures below bind, and React's key
+ * means a memoised turn is never handed another turn's props.
+ */
+const TURN_GESTURES = ["onOpenAgent", "onOpenTab", "onInsert", "onOpenFile", "onOpenFileInNewTab", "onContinue", "onResumeNow"] as const;
+
+/**
+ * WHETHER TWO READINGS OF A TURN WOULD DRAW THE SAME THING (#498).
+ *
+ * The cockpit tails once a second, and any queue-changing event brings a
+ * companion snapshot whose rows are fresh objects off `JSON.parse`. The
+ * projector rebuilds every turn from those (`createJournalProjector`'s whole-
+ * journal fallback), so an ordinary tick during a live run handed all ten
+ * mounted turns a new-but-identical `JournalTurn` — and React re-rendered the
+ * lot. What changed was one turn; what re-rendered was the conversation.
+ *
+ * SO THIS COMPARES CONTENT, NOT IDENTITY. Identity is still the fast path (the
+ * projector reuses a settled turn's fold, so `prev.turn === next.turn` is the
+ * common case); everything below it is the fallback for the snapshot tick.
+ *
+ * `prompt` IS DELIBERATELY NOT READ. It is the turn's `input` row, which the
+ * engine writes once and never rewrites, and the `runId` key means this
+ * function only ever compares one turn against a later reading of itself.
+ */
+function sameTurnRender(prev: SessionTurnProps, next: SessionTurnProps): boolean {
+  if (prev.live !== next.live || prev.sending !== next.sending) return false;
+  for (const gesture of TURN_GESTURES) if (Boolean(prev[gesture]) !== Boolean(next[gesture])) return false;
+  if (!sameRequests(prev.requests, next.requests)) return false;
+  // The roster is read by ONE row — the wake-up line — and only on a turn that
+  // names the task that woke it. Everywhere else it is a prop the body never
+  // opens, so comparing it would be work for an answer nobody reads.
+  if (next.turn.wokenBy !== undefined && !sameRoster(prev.roster, next.roster)) return false;
+  return sameTurnContent(prev.turn, next.turn);
+}
+
+function sameRequests(prev: readonly EngineRequest[], next: readonly EngineRequest[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.state !== after.state || before.decision !== after.decision) return false;
+  }
+  return true;
+}
+
+function sameRoster(prev: readonly JournalTask[] = [], next: readonly JournalTask[] = []): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    // What the wake-up row draws off a task: which one it is, and its name.
+    if (before.id !== after.id || before.title !== after.title || before.kind !== after.kind) return false;
+  }
+  return true;
+}
+
+/** Every field of a turn the body branches on or prints. */
+function sameTurnContent(prev: JournalTurn, next: JournalTurn): boolean {
+  if (prev === next) return true;
+  return (
+    prev.runId === next.runId &&
+    prev.state === next.state &&
+    prev.held === next.held &&
+    prev.heldReason === next.heldReason &&
+    prev.kind === next.kind &&
+    prev.origin === next.origin &&
+    prev.wokenBy === next.wokenBy &&
+    prev.wakeReason?.kind === next.wakeReason?.kind &&
+    prev.wakeReason?.sessionId === next.wakeReason?.sessionId &&
+    prev.sender?.sessionId === next.sender?.sessionId &&
+    prev.agentDelivery === next.agentDelivery &&
+    prev.agentIntent === next.agentIntent &&
+    prev.agentNotice === next.agentNotice &&
+    prev.assignmentScope === next.assignmentScope &&
+    prev.attachments?.length === next.attachments?.length &&
+    prev.startedAt === next.startedAt &&
+    prev.lastActivityAt === next.lastActivityAt &&
+    prev.resultText === next.resultText &&
+    prev.failure === next.failure &&
+    prev.failureCode === next.failureCode &&
+    prev.resumeAt === next.resumeAt &&
+    prev.limitType === next.limitType &&
+    prev.resumedAfterRateLimit === next.resumedAfterRateLimit &&
+    prev.usage?.tokens.input === next.usage?.tokens.input &&
+    prev.usage?.tokens.output === next.usage?.tokens.output &&
+    sameItems(prev.items, next.items) &&
+    sameTurnTasks(prev.tasks, next.tasks)
+  );
+}
+
+/**
+ * THE ITEM IDS AND THE TEXT, which is what the issue calls the hash.
+ *
+ * The string itself rather than a digest of it: JavaScript compares equal
+ * strings by length first and interned ones by pointer, so hashing would only
+ * be a slower way of reading every character.
+ */
+function sameItems(prev: readonly JournalItem[], next: readonly JournalItem[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (before.id !== after.id || before.status !== after.status || before.taskId !== after.taskId) return false;
+    if (before.detail !== after.detail) {
+      /**
+       * A ROW STILL OPEN CAN CHANGE WITHOUT CHANGING ITS STATUS — a browser step
+       * moving to a new URL, a command growing its output preview. Such a row is
+       * on the live turn by construction, and the live turn is re-rendering
+       * anyway, so answering "changed" costs nothing. A CLOSED row's detail is
+       * terminal: the fresh object is the same snapshot read twice.
+       */
+      if (after.status === "inProgress" || before.detail.type !== after.detail.type) return false;
+    }
+    if (itemText(before) !== itemText(after)) return false;
+  }
+  return true;
+}
+
+/** A turn's own sub-agents: the chips, and what each one says. */
+function sameTurnTasks(prev: readonly JournalTask[], next: readonly JournalTask[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let index = 0; index < prev.length; index += 1) {
+    const before = prev[index]!;
+    const after = next[index]!;
+    if (before === after) continue;
+    if (
+      before.id !== after.id ||
+      before.state !== after.state ||
+      before.kind !== after.kind ||
+      before.title !== after.title ||
+      before.backgrounded !== after.backgrounded ||
+      before.resultText !== after.resultText ||
+      before.failure !== after.failure ||
+      before.items.length !== after.items.length
+    ) {
+      return false;
+    }
+    if (!sameItems(before.items, after.items)) return false;
+  }
+  return true;
+}
+
+/**
+ * ONE FOLD PER PASSIVE REPORT (#239).
+ *
+ * A routine peer report used to be wrapped in a SECOND disclosure here — a
+ * "Session activity · report received" row whose only child was the turn body,
+ * whose only child in turn is the `AgentMessageBubble` that ALREADY collapses a
+ * peer's message to its notice. A passive turn never runs (the engine completes
+ * it on arrival with no items and no result — see `state.ts`, `passive`), so
+ * that wrapper added nothing but a second chevron: the reader had to open two
+ * folds, one nested inside the other, to reach one report.
+ *
+ * The bubble is the fold, and it is the SAME one a peer's message gets when it
+ * lands mid-turn as a steered row — which is the point. A report should not look
+ * like a different kind of thing for having arrived between turns rather than
+ * during one.
+ *
+ * MEMOISED, on what it DRAWS rather than on what it is handed (#498) — see
+ * `sameTurnRender` below for the whole argument.
+ */
+export const SessionTurn = memo(SessionTurnBody, sameTurnRender);
+
+function SessionTurnBody({
+  turn,
+  requests,
+  sending,
+  live,
+  onDecide,
+  onRetry,
+  onOpenAgent,
+  onOpenTab,
+  onResumeNow,
+  onInsert,
+  onOpenFile,
+  onOpenFileInNewTab,
+  roster = [],
+}: SessionTurnProps) {
   /**
    * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
    *
@@ -3107,8 +3259,7 @@ export function SessionCockpit({
                  mistaken for having seen the answer above it, and vice versa.
                  See components/session/read-receipt.tsx. */
               <Fragment key={turn.runId}>
-              <SessionTurnBody
-                key={turn.runId}
+              <SessionTurn
                 turn={turn}
                 roster={roster}
                 live={turn.runId === active?.runId}
