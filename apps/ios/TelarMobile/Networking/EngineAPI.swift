@@ -619,6 +619,10 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     func events(_ id: EngineID, after: Int) async throws -> EventPage {
+        // NO `limit` SENT: the engine's own default (200) is the page size this
+        // phone wants, and naming it here would only be a second opinion to
+        // drift from it. The radio is the reason paging matters at all —
+        // 36.5 MB of journal over cellular was the cost #494 removed.
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
     }
 
