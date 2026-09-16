@@ -75,7 +75,7 @@ import { AGENT_BRIEFING } from "./briefing";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
-import { trimAgentMessages } from "./trim";
+import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
 
 /**
  * HOW MANY TIMES ONE TURN MAY GO BACK TO THE MODEL — `MAX_ROUNDS`' own number
@@ -121,6 +121,44 @@ export type AgentTurnOrigin = "human" | "wake";
 
 export type AgentPendingRequest = AgentApprovalRequest & { id: string; runId: string; openedAt: number };
 
+/**
+ * WHAT ONE TURN COST THE MODEL — summed over its laps, not per call (#539).
+ *
+ * A turn that calls three tools goes back to the model four times, and the
+ * question a person asks is "what did that turn cost", so these are totals. The
+ * numbers are the PROVIDER'S, reported on `usage_metadata`; nothing here counts
+ * tokens itself.
+ */
+export type AgentUsage = { input: number; output: number; total: number };
+
+/**
+ * THE CONTEXT METER'S WHOLE INPUT — the last turn's cost and the size of the
+ * prompt that produced it.
+ *
+ * ON THE STATE RATHER THAN DERIVED PER READER: a cockpit, a phone and a later
+ * `GET /v2/agent` must show the same number, and three clients each folding the
+ * transcript would be three numbers waiting to disagree. It survives a restart
+ * because `restore` reads it back off the last `turn_done` row.
+ */
+export type AgentLastUsage = {
+  /** The turn these numbers came from, so a client can tell a stale meter from
+   *  a fresh one without a timestamp comparison. */
+  runId: string;
+  at: number;
+  /**
+   * ABSENT WHEN THE MODEL REPORTED NONE, which is a real case: an
+   * OpenAI-compatible server is not obliged to send usage, and a zero here
+   * would read as "that turn was free" rather than "nobody said".
+   */
+  usage?: AgentUsage;
+  /** What the prompt cost in CHARACTERS on the turn's last lap, as the trim
+   *  step measured it — system prompt included. See `./trim.ts`. */
+  contextChars: number;
+  /** The trim's ceiling those characters are measured against, so a reader can
+   *  draw a proportion without knowing the engine's constant. */
+  budgetChars: number;
+};
+
 export type AgentStateAnswer = {
   enabled: boolean;
   threadId?: string;
@@ -134,6 +172,10 @@ export type AgentStateAnswer = {
   /** How many turns are waiting behind the live one. */
   queued: number;
   request?: AgentPendingRequest;
+  /** The context meter — what the last COMPLETED turn cost. Absent until one
+   *  has, and unchanged while the next runs, because a meter that emptied
+   *  itself the moment you spoke would answer a question nobody asked. */
+  lastUsage?: AgentLastUsage;
 };
 
 /** What a watcher is pushed. A row is durable and pageable; a delta is neither,
@@ -191,6 +233,13 @@ export class AgentRuntime {
   /** The drain in flight, so `submit` does not start a second one — and so
    *  `shutdown` has something to await. Cleared when the queue runs dry. */
   private draining?: Promise<void>;
+  /** The context meter, last written by a completed turn and read back off the
+   *  transcript at startup. See `AgentLastUsage`. */
+  private lastUsage?: AgentLastUsage;
+  /** What the live turn has spent so far: the model's own numbers summed over
+   *  its laps, and the prompt size the most recent lap was trimmed to. Reset
+   *  when a turn starts, folded into `turn_done` when one ends. */
+  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
 
@@ -246,6 +295,11 @@ export class AgentRuntime {
     if (!settings.enabled || !settings.threadId || this.pending || this.live) return;
     try {
       const graph = this.buildGraph({ tools: [], model: undefined, runId: "" });
+      // THE METER SURVIVES THE RESTART, because the number it shows was never
+      // this process's — it is on the last `turn_done` row, where the turn that
+      // earned it wrote it. Read before the parked-request check, which returns
+      // early on every ordinary start.
+      this.lastUsage = this.lastTurnUsage(settings.threadId);
       const snapshot = await graph.getState({ configurable: { thread_id: settings.threadId } });
       const parked = firstInterrupt(snapshot);
       if (!parked) return;
@@ -259,6 +313,42 @@ export class AgentRuntime {
       // A thread whose checkpoint cannot be read is not a reason a daemon fails
       // to start. The conversation is still on disk for a later build.
     }
+  }
+
+  /**
+   * The newest `turn_done` on this thread, as the context meter — so a cockpit
+   * opened after a restart shows the last turn's cost rather than an empty
+   * gauge.
+   *
+   * Bounded to the same tail `lastUnresolvedRequest` reads: a turn that ended
+   * is one of the newest things on the thread, and a meter is not worth walking
+   * a transcript for. Absent when the tail holds no ended turn, which is a
+   * thread whose only turn is still running.
+   */
+  private lastTurnUsage(threadId: string): AgentLastUsage | undefined {
+    const log = this.log;
+    if (!log) return undefined;
+    const end = log.cursor(threadId);
+    const page = log.page(threadId, Math.max(0, end - 50), 50);
+    let found: AgentLastUsage | undefined;
+    for (const row of page.rows) {
+      if (row.kind !== "turn_done") continue;
+      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown };
+      // A row written before the meter existed carries no numbers. It is still
+      // the newest ended turn, so it CLEARS a stale meter rather than leaving
+      // an older turn's figures on screen.
+      const usage = detail.usage;
+      found = {
+        runId: row.runId,
+        at: row.at,
+        ...(typeof usage?.input === "number" && typeof usage.output === "number" && typeof usage.total === "number"
+          ? { usage: { input: usage.input, output: usage.output, total: usage.total } }
+          : {}),
+        contextChars: typeof detail.contextChars === "number" ? detail.contextChars : 0,
+        budgetChars: typeof detail.budgetChars === "number" ? detail.budgetChars : this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS,
+      };
+    }
+    return found;
   }
 
   /** The newest `request_opened` on this thread with no `request_resolved`
@@ -329,11 +419,13 @@ export class AgentRuntime {
   patch(patch: { enabled?: unknown; model?: unknown; reset?: unknown }): AgentStateAnswer {
     const result = patchAgentSettings(this.paths, patch, { now: this.now, beforeArchive: () => this.close() });
     if (patch.reset === true) {
-      // The conversation is gone; anything waiting to be said to it is too.
+      // The conversation is gone; anything waiting to be said to it is too —
+      // the meter included, since it measured a thread that no longer exists.
       this.queue = [];
       this.live?.controller.abort();
       this.pending = undefined;
       this.answer = undefined;
+      this.lastUsage = undefined;
     }
     if (result.settings.enabled === false) this.queue = [];
     return this.state();
@@ -350,6 +442,7 @@ export class AgentRuntime {
       ...(this.live ? { runId: this.live.turn.runId } : {}),
       queued: this.queue.length,
       ...(this.pending ? { request: this.pending } : {}),
+      ...(this.lastUsage ? { lastUsage: this.lastUsage } : {}),
     };
   }
 
@@ -529,10 +622,13 @@ export class AgentRuntime {
       if (!next) return;
       const controller = new AbortController();
       this.live = { turn: next, controller };
+      // The meter's accumulator, per turn. A stopped or failed turn reports
+      // what it had spent before it ended — the tokens were bought either way.
+      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0 };
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
-        this.row("turn_done", next.runId, {
+        this.endedRow(next.runId, {
           status: controller.signal.aborted ? "stopped" : "failed",
           ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
         });
@@ -541,6 +637,7 @@ export class AgentRuntime {
         this.pending = undefined;
         this.answer = undefined;
         this.turnThreadId = undefined;
+        this.spend = undefined;
       }
     }
   }
@@ -608,7 +705,38 @@ export class AgentRuntime {
 
     const snapshot = await graph.getState(config);
     const text = lastAssistantText(snapshot.values?.messages ?? []);
-    this.row("turn_done", turn.runId, { status: "completed", ...(text ? { text } : {}) });
+    this.endedRow(turn.runId, { status: "completed", ...(text ? { text } : {}) });
+  }
+
+  /**
+   * THE ONE PLACE A TURN ENDS — `turn_done`, with the meter folded in (#539).
+   *
+   * Every ending goes through here (completed, stopped, failed) so the context
+   * meter cannot be a property of only the happy path: a turn that spent 40k
+   * tokens and then failed spent them, and a transcript whose usage appeared
+   * only on success would understate what the machine cost.
+   *
+   * IT ALSO UPDATES `lastUsage`, in the same call that writes the row, so the
+   * state a client polls and the transcript it pages can never disagree about
+   * which turn the meter is showing.
+   */
+  private endedRow(runId: string, detail: Record<string, unknown>): void {
+    const spend = this.spend;
+    const budgetChars = this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS;
+    const usage: AgentUsage | undefined = spend?.reported
+      ? { input: spend.input, output: spend.output, total: spend.total }
+      : undefined;
+    const contextChars = spend?.contextChars ?? 0;
+    const row = this.row("turn_done", runId, {
+      ...detail,
+      ...(usage ? { usage } : {}),
+      contextChars,
+      budgetChars,
+    });
+    // Only when the row landed: a row suppressed because the thread was reset
+    // mid-turn belongs to a conversation that no longer exists, and its meter
+    // with it.
+    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars };
   }
 
   /**
@@ -667,14 +795,36 @@ export class AgentRuntime {
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
       // THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
       // MODEL sees and never what the transcript holds.
-      const history = trimAgentMessages(state.messages, {
+      const history = trimAgentHistory(state.messages, {
         ...(budget === undefined ? {} : { budgetChars: budget }),
         reservedChars: String(system.content).length,
       });
+      /**
+       * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
+       * denominator (#539). The LAST lap wins rather than the largest: a turn
+       * that called three tools ends with the fullest prompt it ever sent, and
+       * that is the number a person reading "how full is this conversation"
+       * means. Recorded before the call, so a turn the model refuses still
+       * reports what it tried to send.
+       */
+      if (this.spend) this.spend.contextChars = history.chars;
       // CONFIG IS PASSED THROUGH so the turn's abort signal reaches the
       // provider call. A cancel that unwound the graph and left the request in
       // flight would not be a cancel.
-      const answer = (await bound.invoke([system, ...history], config)) as AIMessage;
+      const answer = (await bound.invoke([system, ...history.messages], config)) as AIMessage;
+      /**
+       * THE MODEL'S OWN TOKEN COUNT, SUMMED OVER THE TURN'S LAPS. Nothing here
+       * counts tokens — `usage_metadata` is what the provider reported, and a
+       * provider that reported nothing leaves `reported` false so the meter can
+       * say "no count" rather than "zero".
+       */
+      const usage = answer.usage_metadata;
+      if (this.spend && usage) {
+        this.spend.input += usage.input_tokens ?? 0;
+        this.spend.output += usage.output_tokens ?? 0;
+        this.spend.total += usage.total_tokens ?? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+        this.spend.reported = true;
+      }
       /**
        * ONE ROW PER THING THE ASSISTANT SAYS, AS IT SAYS IT.
        *

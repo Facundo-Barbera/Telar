@@ -11,7 +11,7 @@
  */
 import { expect, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
-import { messageBlocks, trimAgentMessages } from "../src/agent/trim";
+import { messageBlocks, trimAgentHistory, trimAgentMessages } from "../src/agent/trim";
 
 const human = (text: string) => new HumanMessage(text);
 const said = (text: string) => new AIMessage(text);
@@ -70,4 +70,30 @@ test("the system prompt is charged against the budget rather than trusted to fit
 
 test("an empty conversation trims to nothing rather than throwing", () => {
   expect(trimAgentMessages([])).toEqual([]);
+});
+
+/**
+ * #539 — THE CONTEXT METER'S NUMBER COMES FROM HERE, because this is the only
+ * step that knows it: what was sent is what the trim decided to send, plus the
+ * reserve it charged for the system prompt. A meter computed anywhere else
+ * would be a second estimate of this one.
+ */
+test("the trim reports what it sent, the ceiling it measured against, and what fell off", () => {
+  const block = "z".repeat(1_000);
+  const messages = [human(block), human(block), human("newest")];
+  const full = trimAgentHistory(messages, { budgetChars: 100_000, reservedChars: 500 });
+  expect(full.dropped).toBe(0);
+  expect(full.budgetChars).toBe(100_000);
+  // The reserve is IN the number: the system prompt is part of the prompt.
+  expect(full.chars).toBeGreaterThan(2_500);
+  expect(full.chars).toBeLessThan(2_700);
+
+  const squeezed = trimAgentHistory(messages, { budgetChars: 1_500, reservedChars: 500 });
+  expect(squeezed.messages).toHaveLength(1);
+  expect(squeezed.dropped).toBe(2);
+  expect(squeezed.chars).toBeLessThan(full.chars);
+});
+
+test("an empty conversation still reports the reserve, because the system prompt is sent", () => {
+  expect(trimAgentHistory([], { reservedChars: 900 })).toMatchObject({ messages: [], chars: 900, dropped: 0 });
 });

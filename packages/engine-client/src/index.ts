@@ -320,6 +320,36 @@ export type AgentRequest = {
   openedAt: number;
 };
 
+/**
+ * WHAT ONE TURN COST THE MODEL — the provider's own numbers, summed over the
+ * turn's laps (#539). A turn that calls three tools goes back to the model four
+ * times; the question a person asks is what the TURN cost.
+ */
+export type AgentUsage = { input: number; output: number; total: number };
+
+/**
+ * THE CONTEXT METER — the last completed turn's cost, and how full the prompt
+ * that produced it was.
+ *
+ * The Agent reported no context at all before this (#539). The numbers come from
+ * the two places that actually know them: `usage` is what the provider reported,
+ * and `contextChars` is what the engine's trim step measured on its way to
+ * deciding what to send — system prompt included, against `budgetChars`, the
+ * same ceiling the decision used. Neither is recomputed by a client.
+ */
+export type AgentLastUsage = {
+  /** The turn these numbers came from. */
+  runId: string;
+  at: number;
+  /** ABSENT WHEN THE MODEL REPORTED NONE — an OpenAI-compatible server is not
+   *  obliged to send usage, and a zero would read as a free turn. */
+  usage?: AgentUsage;
+  /** The prompt's size in characters on the turn's last lap. */
+  contextChars: number;
+  /** The trim ceiling `contextChars` is a proportion of. */
+  budgetChars: number;
+};
+
 export type AgentState = {
   enabled: boolean;
   threadId?: string;
@@ -333,6 +363,9 @@ export type AgentState = {
   runId?: string;
   queued: number;
   request?: AgentRequest;
+  /** The context meter, from the last turn that ENDED. Absent until one has;
+   *  unchanged while the next runs, so it never blanks mid-thought. */
+  lastUsage?: AgentLastUsage;
 };
 
 export type AgentAnswer = {
@@ -362,10 +395,14 @@ export type AgentAnswer = {
  *   request_opened    the whole `AgentRequest`
  *   request_resolved  `{ requestId, decision, tool }`
  *   turn_started      `{ origin }`
- *   turn_done         `{ status, text?, message? }` — `text` is the turn's
- *                     ANSWER, the same words as its last assistant row. Two
- *                     readers, two shapes: a list view renders this without
- *                     replaying the thread.
+ *   turn_done         `{ status, text?, message?, usage?, contextChars,
+ *                     budgetChars }` — `text` is the turn's ANSWER, the same
+ *                     words as its last assistant row. Two readers, two shapes:
+ *                     a list view renders this without replaying the thread.
+ *                     The meter fields are `AgentLastUsage`'s, written on EVERY
+ *                     ending (completed, stopped, failed) because a turn that
+ *                     spent its tokens and then failed still spent them. A row
+ *                     written before the meter existed carries neither.
  */
 export type AgentRow = {
   id: number;

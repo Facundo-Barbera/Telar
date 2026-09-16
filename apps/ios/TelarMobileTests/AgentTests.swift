@@ -202,3 +202,70 @@ import Testing
         #expect(merged[0].text == "final")
     }
 }
+
+/// THE CONTEXT METER (#539) — the line under the Agent's header.
+///
+/// The Agent reported no context at all, and a coordinator whose history is
+/// quietly being trimmed is one a person cannot reason about. What must not
+/// drift:
+///
+///   - a Mac that reports no tokens draws a context percentage and NOT a zero
+///     token count, because "nobody said" and "that turn was free" are
+///     different facts;
+///   - the percentage is of the Mac's TRIM budget, the ceiling that will
+///     actually drop the oldest exchange;
+///   - a prompt over budget reads full rather than overflowing;
+///   - a Mac too old to send any of it costs the line, never the screen.
+@Suite struct AgentContextMeterTests {
+    @Test func bothNumbersRideTheState() throws {
+        let json = #"""
+        {"agent":{"enabled":true,"running":false,"queued":0,
+         "lastUsage":{"runId":"run_a","at":1700,"usage":{"input":2600,"output":90,"total":2690},
+                      "contextChars":30000,"budgetChars":120000}}}
+        """#
+        let answer = try JSONDecoder().decode(AgentAnswer.self, from: Data(json.utf8))
+        let meter = try #require(answer.agent.lastUsage)
+        #expect(meter.runId == "run_a")
+        #expect(meter.usage == AgentUsage(input: 2600, output: 90, total: 2690))
+        #expect(meter.percent == 25)
+        #expect(meter.meterLine == "2,690 tokens · 25% context")
+    }
+
+    @Test func aMacThatReportedNoTokensKeepsTheContextHalf() throws {
+        let json = #"""
+        {"agent":{"enabled":true,"running":false,"queued":0,
+         "lastUsage":{"runId":"run_b","contextChars":12000,"budgetChars":120000}}}
+        """#
+        let meter = try #require(try JSONDecoder().decode(AgentAnswer.self, from: Data(json.utf8)).agent.lastUsage)
+        #expect(meter.usage == nil)
+        // NOT "0 tokens": that would assert the turn was free.
+        #expect(meter.meterLine == "10% context")
+    }
+
+    @Test func aPromptOverBudgetReadsFullRatherThanOverflowing() {
+        // The Mac's trim keeps the newest exchange whatever it costs, so this
+        // really happens.
+        let over = AgentLastUsage(runId: "run_c", contextChars: 400_000, budgetChars: 120_000)
+        #expect(over.percent == 100)
+        #expect(over.meterLine == "100% context")
+    }
+
+    @Test func noCeilingMeansNoLineRatherThanADivisionByNothing() {
+        let none = AgentLastUsage(runId: "run_d", contextChars: 10, budgetChars: 0)
+        #expect(none.percent == 0)
+        #expect(none.meterLine == nil)
+    }
+
+    @Test func aMacTooOldToSendAMeterCostsTheLineAndNotTheScreen() throws {
+        // Every engine before #539 sends no `lastUsage` at all, and one sending
+        // a shape this build cannot read is the same case.
+        let absent = #"{"agent":{"enabled":true,"running":false,"queued":0}}"#
+        #expect(try JSONDecoder().decode(AgentAnswer.self, from: Data(absent.utf8)).agent.lastUsage == nil)
+
+        let strange = #"{"agent":{"enabled":true,"running":false,"queued":0,"lastUsage":"soon"}}"#
+        let tolerant = try JSONDecoder().decode(AgentAnswer.self, from: Data(strange.utf8))
+        #expect(tolerant.agent.lastUsage == nil)
+        // The screen is still perfectly usable.
+        #expect(tolerant.agent.enabled)
+    }
+}

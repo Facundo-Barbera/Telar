@@ -43,6 +43,7 @@ import { useAgentThread, type AgentThreadHandle } from "@/lib/agent/thread";
 import { AgentTranscript } from "./agent-transcript";
 import { AgentApproval } from "./agent-approval";
 import { Composer } from "@/components/composer";
+import { ContextMeter } from "@/components/context-meter";
 import { Button } from "@/components/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 
@@ -130,6 +131,9 @@ export function AgentScreen() {
 
   const running = handle.state?.running === true;
   const request = handle.state?.request;
+  // The LAST ENDED turn's cost, not the live one's: a meter that emptied itself
+  // the moment you spoke would answer a question nobody asked.
+  const lastUsage = handle.state?.lastUsage;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -141,6 +145,22 @@ export function AgentScreen() {
         <p role="status" className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-foreground">
           {handle.error}
         </p>
+      )}
+
+      {/* THE CONTEXT METER (#539). This screen has no masthead to hang it on —
+          the Agent is not a session, so there is no breadcrumb — so it gets the
+          thinnest strip that can hold it, above the conversation and below the
+          banners, which is where a masthead's would have sat anyway. It draws
+          nothing until a turn has ended, so a fresh thread is not topped with an
+          empty gauge. */}
+      {lastUsage && (
+        <div className="flex shrink-0 justify-end px-4 py-1">
+          <ContextMeter
+            {...(lastUsage.usage ? { usage: lastUsage.usage } : {})}
+            contextChars={lastUsage.contextChars}
+            budgetChars={lastUsage.budgetChars}
+          />
+        </div>
       )}
 
       <ConversationViewport className="min-h-0 flex-1">

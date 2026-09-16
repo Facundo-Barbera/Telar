@@ -71,6 +71,15 @@ struct AgentView: View {
                     description: Text("Its switch, its model and its key are set in Telar’s Settings on that Mac.")
                 )
             } else {
+                // THE CONTEXT METER, AS ONE LINE UNDER THE HEADER (#539). The
+                // Agent reported no context at all, and a coordinator whose
+                // history is quietly being trimmed is one a person cannot reason
+                // about. It draws nothing until a turn has ended, so a fresh
+                // thread is not topped with an empty gauge, and nothing at all
+                // against a Mac too old to send the numbers.
+                if let meter = state?.lastUsage, let line = meter.meterLine {
+                    contextLine(meter, line)
+                }
                 transcript
                 composer
             }
@@ -78,6 +87,40 @@ struct AgentView: View {
         .navigationTitle("Agent")
         .navigationBarTitleDisplayMode(.inline)
         .task { await follow() }
+    }
+
+    // ── THE CONTEXT METER ────────────────────────────────────────────────────
+
+    /// ONE LINE, NOT A CARD. It sits between the navigation bar and the
+    /// transcript, where a masthead's meter would be on the desktop, and it is
+    /// the quietest thing on the screen until the conversation gets crowded —
+    /// at which point the bar takes the warning tone, because the Mac's trim
+    /// drops history SILENTLY and the warning has to arrive before anything has
+    /// been lost rather than after.
+    private func contextLine(_ meter: AgentLastUsage, _ line: String) -> some View {
+        let crowded = meter.percent >= 80
+        return HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            // A LEVEL, DRAWN AS ONE. `ProgressView` would say something is in
+            // progress; nothing is.
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.surface)
+                    Capsule()
+                        .fill(crowded ? Theme.statusAmber : Theme.textMuted)
+                        .frame(width: geometry.size.width * CGFloat(meter.percent) / 100)
+                }
+            }
+            .frame(width: 40, height: 4)
+            Text(line)
+                .font(Theme.monoSmall)
+                .foregroundStyle(crowded ? Theme.statusAmber : Theme.textMuted)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context used")
+        .accessibilityValue(line)
     }
 
     // ── THE TRANSCRIPT ───────────────────────────────────────────────────────
