@@ -27,6 +27,7 @@ import fs from "node:fs";
 import type http from "node:http";
 import { z } from "zod";
 import { atomicWrite } from "./atomic";
+import type { ToolCallContext } from "./tool-kit";
 
 /** One wall tool, as the collecting factory sees it — name, prose, argument
  *  shape and the exact handler the SDK would run. */
@@ -34,7 +35,9 @@ export type SocketTool = {
   name: string;
   description: string;
   shape: Record<string, unknown>;
-  run: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>;
+  /** `context` carries the provider's own tool call id when the caller has one
+   *  — see `ToolCallContext`. A socket has none and passes nothing. */
+  run: (args: Record<string, unknown>, context?: ToolCallContext) => Promise<{ content: unknown[]; isError?: boolean }>;
 };
 
 /**
@@ -51,7 +54,7 @@ export function collectTools<Capability>(
       name: string,
       description: string,
       shape: Record<string, unknown>,
-      handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
+      handler: (args: Record<string, unknown>, context?: ToolCallContext) => Promise<{ content: unknown[]; isError?: boolean }>,
     ) => unknown,
     capability: Capability,
   ) => unknown[],

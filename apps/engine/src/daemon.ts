@@ -1035,8 +1035,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let sessionsSecretCache: string | undefined;
   const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
   let sessionsToolsCache: SocketTool[] | undefined;
-  const sessionsSocketTools = (): SocketTool[] => {
-    if (sessionsToolsCache) return sessionsToolsCache;
+  /**
+   * THE IN-PROCESS SESSIONS CAPABILITY, WITH OR WITHOUT A `self`.
+   *
+   * ONE BUILD, TWO CALLERS (#531). The outward MCP socket takes it with no
+   * `self` — a chat client is not a session and has nowhere to be woken, so the
+   * subscription tools refuse in words. The built-in Agent takes the same build
+   * with `self: { sessionId: "agent" }`, which is the only difference between
+   * them: it has somewhere to be woken and something to be attributed to.
+   *
+   * Written as a parameter rather than as a second object so a verb added to
+   * one is added to both — the drift this seam exists to prevent is exactly the
+   * kind nobody notices until an agent's tool answers differently from a chat
+   * client's.
+   */
+  const buildSessionsCapability = (self?: { sessionId: string }): SessionsCapability => {
     /**
      * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS. There
      * is no validation here and
@@ -1048,9 +1061,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
      * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
      * shape on the wall carries it — provenance a list can show, nothing more.
      */
-    const capability: SessionsCapability = {
-      // NO `self`: a chat client on this socket is not a session and has
-      // nowhere to be woken. The subscription tools refuse, in words.
+    return {
+      // ABSENT for the socket: a chat client on it is not a session and has
+      // nowhere to be woken, so the subscription tools refuse in words. PRESENT
+      // for the Agent, which has both.
+      ...(self ? { self } : {}),
       /**
        * THE SHELF IS THE STORE'S RULE, ASKED FOR RATHER THAN RE-IMPLEMENTED
        * (#515). This used to be `store.liveSessions()` — every session the
@@ -1082,9 +1097,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       requests: async (sessionId) => store.requests(sessionId),
       resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
     };
-    sessionsToolsCache = collectSessionsWallTools(capability);
-    return sessionsToolsCache;
   };
+  const sessionsSocketTools = (): SocketTool[] => (sessionsToolsCache ??= collectSessionsWallTools(buildSessionsCapability()));
 
   /**
    * THE NOTES SOCKET'S SECRET AND TOOLS — the third door, lazy like the other
@@ -1093,8 +1107,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   let notesSecretCache: string | undefined;
   const notesSecret = () => (notesSecretCache ??= ensureNotesSocketSecret(store.paths));
   let notesToolsCache: SocketTool[] | undefined;
-  const notesSocketTools = (): SocketTool[] => {
-    if (notesToolsCache) return notesToolsCache;
+  /**
+   * THE NOTEBOOK CAPABILITY, shared by the outward socket and the Agent for
+   * `buildSessionsCapability`'s reason — one build, so a rule added to one door
+   * is added to both. Neither has a `self`: a chat client has no project to
+   * default to, and neither has the Agent, which owns no checkout at all.
+   */
+  const buildNotesCapability = (): NotesCapability => {
     /**
      * NO `self`: a chat client on this socket is not in a session and has no
      * project to default to, so `notes_list` asks it for one by name — exactly
@@ -1105,7 +1124,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
      * `getProject` IS THE GATE ON EVERY WRITE, here as on the routes: an id
      * nobody registered must not be able to mint a notebook file.
      */
-    const capability: NotesCapability = {
+    return {
       projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
       list: async (projectId) => {
         store.getProject(projectId);
@@ -1124,9 +1143,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       },
       remove: async (projectId, noteId) => notebook.deleteNote(store.paths, projectId, noteId),
     };
-    notesToolsCache = collectNotesWallTools(capability);
-    return notesToolsCache;
   };
+  const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {

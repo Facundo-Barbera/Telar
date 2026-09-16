@@ -159,6 +159,7 @@ import {
 import { TELAR_ORIENTATION } from "./orientation";
 import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
 import { resolveGoCredential, type GoKeySource } from "./agent/credentials";
+import { isAgentSelf } from "./agent/identity";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -1678,6 +1679,16 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
   }
   return true;
 }
+
+/**
+ * ONE WAKE, ON ITS WAY TO THE BUILT-IN AGENT (#531).
+ *
+ * The same two things a session's wake carries — the NOTICE the model is handed
+ * as its input, and the `WakeReason` that says which run on which session
+ * caused it — with no turn around them, because the Agent's runtime is what
+ * decides when to run one. See `setAgentWakeSink`.
+ */
+export type AgentWake = { input: string; wakeReason: WakeReason };
 
 export class EngineStore {
   private executionStore?: ExecutionStore;
@@ -9209,10 +9220,24 @@ export class EngineStore {
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
     }
-    this.refuseStaleCoordinator(subscriberSessionId);
-    const subscriber = this.getSession(subscriberSessionId);
+    /**
+     * THE BUILT-IN AGENT IS A SUBSCRIBER THAT IS NOT A SESSION (#531).
+     *
+     * Everything below about the SUBSCRIBER asks the session store about it —
+     * does it exist, is it archived, is its live turn coordinating under a
+     * designation that has moved. None of the three has an answer for the
+     * Agent: it has no session document, it cannot be archived, and it takes no
+     * claim. So the subscriber-side checks are skipped by name, and every
+     * TARGET-side check below still runs unchanged — which is the half that
+     * protects the other session.
+     */
+    const agentSubscriber = isAgentSelf(subscriberSessionId);
+    if (!agentSubscriber) {
+      this.refuseStaleCoordinator(subscriberSessionId);
+      const subscriber = this.getSession(subscriberSessionId);
+      if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
+    }
     const target = this.getSession(input.targetSessionId);
-    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
     if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
     const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
     const all = this.readSubscriptions();
@@ -9246,6 +9271,19 @@ export class EngineStore {
     return structuredClone(subscription);
   }
 
+  /**
+   * WHERE A WAKE FOR THE BUILT-IN AGENT GOES (#531).
+   *
+   * Registered by the daemon when the Agent's runtime is built, cleared when it
+   * is torn down. A function rather than an import because the direction has to
+   * be this way round: the runtime knows about the store, and the store must
+   * not know about a graph.
+   */
+  setAgentWakeSink(sink: ((wake: AgentWake) => void) | undefined): void {
+    this.agentWakeSink = sink;
+  }
+  private agentWakeSink?: (wake: AgentWake) => void;
+
   /** With `subscriberSessionId`, another session's subscription reads as
    *  absent — a session may not remove what it did not ask for. */
   unsubscribe(subscriptionId: string, subscriberSessionId?: string): boolean {
@@ -9264,9 +9302,10 @@ export class EngineStore {
     return true;
   }
 
-  /** What this session has asked to be woken by. */
+  /** What this session — or the built-in Agent — has asked to be woken by. */
   subscriptionsFor(subscriberSessionId: string): Subscription[] {
-    this.getSession(subscriberSessionId);
+    // The existence check is the session store's, and the Agent is not in it.
+    if (!isAgentSelf(subscriberSessionId)) this.getSession(subscriberSessionId);
     return structuredClone(this.readSubscriptions().filter((each) => each.subscriberSessionId === subscriberSessionId));
   }
 
@@ -9360,6 +9399,40 @@ export class EngineStore {
     for (const subscription of hits) {
       const subscriberId = subscription.subscriberSessionId;
       if (subscriberId === targetSessionId) continue;
+      /**
+       * THE AGENT'S WAKE DOES NOT GO THROUGH `submitTurn` (#531).
+       *
+       * Everything below is a turn on a SESSION — a queue, a backlog cap, a
+       * coalesce against what is already queued there. The Agent has no queue
+       * in this store; its turns live on a LangGraph thread and are ordered by
+       * its own runtime. So the notice is handed over and the runtime decides
+       * what to do with it, and the one-shot is spent here on the same rule as
+       * every other subscription.
+       *
+       * THE SINK IS OPTIONAL AND A MISS IS SILENT. An engine whose Agent is
+       * switched off has no sink registered, and a wake for a subscription it
+       * has not taken out yet is a wake with nowhere to go — which is not a
+       * fault of the turn that just ended.
+       */
+      if (isAgentSelf(subscriberId)) {
+        try {
+          this.agentWakeSink?.({
+            input: wakeMessage(kind, target, turn, context),
+            wakeReason: {
+              kind,
+              sessionId: targetSessionId,
+              runId: turn.runId,
+              ...(context.request ? { requestId: context.request.id } : {}),
+            },
+          });
+        } catch {
+          // The Agent's own runtime refusing a wake must not fail the turn
+          // whose ending caused it — `fireSubscriptions`' contract, applied to
+          // the one subscriber that is not a session.
+        }
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
+        continue;
+      }
       let subscriber: Session | undefined;
       try {
         subscriber = this.getSession(subscriberId);
