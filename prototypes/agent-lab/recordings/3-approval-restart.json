@@ -1,0 +1,20 @@
+{
+  "name": "3-approval-restart",
+  "steps": [
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": {
+            "sessionId": "ses_1",
+            "intent": "task",
+            "input": "Please run the nightly triage sweep and report what you find."
+          }
+        }
+      ]
+    },
+    { "text": "Sent. Nightly triage has the sweep and is working on it." }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

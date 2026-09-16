@@ -1,0 +1,39 @@
+{
+  "name": "6-no-duplicate-delegation",
+  "steps": [
+    {
+      "text": "",
+      "toolCalls": [
+        { "name": "sessions_create", "args": { "projectId": "prj_lab", "title": "Flaky triage", "envMode": "worktree" } }
+      ]
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": { "sessionId": "ses_1", "intent": "task", "input": "Run the triage sweep and report what you find." }
+        }
+      ]
+    },
+    {
+      "text": "",
+      "toolCalls": [{ "name": "sessions_subscribe", "args": { "sessionId": "ses_1", "events": ["turn_completed", "turn_failed"], "once": true } }]
+    },
+    { "text": "Delegated the triage sweep and subscribed to its result." },
+    { "text": "", "toolCalls": [{ "name": "sessions_status", "args": { "sessionId": "ses_1" } }] },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": { "sessionId": "ses_1", "intent": "task", "input": "Run the triage sweep and report what you find." }
+        }
+      ]
+    },
+    {
+      "text": "The triage session's turn failed. I did not queue a second copy of the sweep — that exact task was already sent on this thread, so the retry returned the original answer."
+    }
+  ],
+  "fallback": { "text": "Nothing further." }
+}

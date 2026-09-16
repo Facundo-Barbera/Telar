@@ -45,6 +45,7 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, END, MessagesAnnotation, START, StateGraph, interrupt } from "@langchain/langgraph";
 import { createHash } from "node:crypto";
 import type { Meter } from "../harness/meter";
@@ -138,10 +139,13 @@ function buildGraph(options: AgentOptions) {
   const byName = new Map(options.tools.map((one) => [one.name, one]));
   const system = new SystemMessage(options.systemPrompt ?? DEFAULT_PROMPT);
 
-  const callModel = async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
+  const callModel = async (state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> => {
     const bound = options.model.bindTools?.(options.tools) ?? options.model;
     const messages: BaseMessage[] = [system, ...state.messages];
-    const answer = (await bound.invoke(messages)) as AIMessage;
+    // CONFIG IS PASSED THROUGH, so the run's abort signal and callbacks reach
+    // the provider call. A cancel that only unwinds the graph and leaves the
+    // request in flight is not a cancel.
+    const answer = (await bound.invoke(messages, config)) as AIMessage;
     options.meter.recordModelCall({
       promptTokens: answer.usage_metadata?.input_tokens ?? 0,
       completionTokens: answer.usage_metadata?.output_tokens ?? 0,
@@ -150,7 +154,7 @@ function buildGraph(options: AgentOptions) {
     return { messages: [answer] };
   };
 
-  const callTools = async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
+  const callTools = async (state: AgentStateType, config?: RunnableConfig): Promise<Partial<AgentStateType>> => {
     const last = state.messages[state.messages.length - 1] as AIMessage | undefined;
     const calls = last?.tool_calls ?? [];
     if (calls.length === 0) return {};
@@ -160,6 +164,11 @@ function buildGraph(options: AgentOptions) {
     const decisions = new Map<string, ApprovalDecision>();
     for (const call of calls) {
       if (!approvalPolicy(call)) continue;
+      // AN EFFECT ALREADY ON THE LEDGER IS NOT ASKED ABOUT AGAIN. The person
+      // approved this exact call once; nothing new will happen, so waking them
+      // for it would teach them that approvals are noise.
+      const ledgered = idempotencyPolicy(call);
+      if (ledgered && state.effects[ledgered] !== undefined) continue;
       const request: ApprovalRequest = {
         type: "approval",
         tool: call.name,
@@ -176,16 +185,8 @@ function buildGraph(options: AgentOptions) {
     const effects: Record<string, string> = {};
     for (const call of calls) {
       const id = call.id ?? "";
-      if (approvalPolicy(call) && decisions.get(id) !== "accept") {
-        messages.push(
-          new ToolMessage({
-            tool_call_id: id,
-            name: call.name,
-            content: "Declined by the person. Do not retry this call; tell them it was declined and ask what they want instead.",
-          }),
-        );
-        continue;
-      }
+      // THE LEDGER IS READ FIRST, in the same order pass 1 used, so a replayed
+      // call neither asks for approval nor reaches the wall.
       const key = idempotencyPolicy(call);
       const already = key ? state.effects[key] : undefined;
       if (already !== undefined) {
@@ -198,12 +199,22 @@ function buildGraph(options: AgentOptions) {
         );
         continue;
       }
+      if (approvalPolicy(call) && decisions.get(id) !== "accept") {
+        messages.push(
+          new ToolMessage({
+            tool_call_id: id,
+            name: call.name,
+            content: "Declined by the person. Do not retry this call; tell them it was declined and ask what they want instead.",
+          }),
+        );
+        continue;
+      }
       const tool = byName.get(call.name);
       if (!tool) {
         messages.push(new ToolMessage({ tool_call_id: id, name: call.name, content: `No tool goes by "${call.name}".` }));
         continue;
       }
-      const answer = (await tool.invoke(call)) as ToolMessage | string;
+      const answer = (await tool.invoke(call, config)) as ToolMessage | string;
       const text = typeof answer === "string" ? answer : String(answer.content);
       if (key) effects[key] = text;
       messages.push(typeof answer === "string" ? new ToolMessage({ tool_call_id: id, name: call.name, content: answer }) : answer);

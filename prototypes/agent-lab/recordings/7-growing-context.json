@@ -1,0 +1,570 @@
+{
+  "name": "7-growing-context",
+  "steps": [
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 1: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 2: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_send",
+          "args": {
+            "sessionId": "ses_1",
+            "intent": "task",
+            "input": "Take the backlog sweep while I keep watch."
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 3: the sweep is delegated and approved."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 4: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 5: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 6: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 7: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 8: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 9: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 10: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 11: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 12: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 13: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 14: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 15: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 16: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 17: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 18: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 19: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 20: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 21: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 22: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 23: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 24: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 25: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 26: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 27: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 28: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 29: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 30: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 31: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 32: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 33: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 34: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 35: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 36: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 37: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 38: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 39: ses_1 is idle and its last turn completed."
+    },
+    {
+      "text": "",
+      "toolCalls": [
+        {
+          "name": "sessions_status",
+          "args": {
+            "sessionId": "ses_1"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Turn 40: ses_1 is idle and its last turn completed."
+    }
+  ],
+  "fallback": {
+    "text": "Nothing further."
+  }
+}
