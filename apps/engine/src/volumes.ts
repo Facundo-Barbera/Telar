@@ -260,7 +260,12 @@ export function mountSignature(deps: VolumeDeps = {}): string {
       if (isMountPoint(mount, resolved)) mounted.push(mount);
     }
   }
-  return mounted.sort().join(" ");
+  // JSON rather than a joined string: a separator character is a character a
+  // mount name could contain, and two different sets that joined to one string
+  // would read as "nothing changed" — which is exactly the case this exists to
+  // detect. It also keeps the repository's no-invisible-characters rule, which
+  // an obvious NUL separator would have broken.
+  return JSON.stringify(mounted.sort());
 }
 
 export function findVolumeMount(uuid: string, deps: VolumeDeps = {}): string | undefined {

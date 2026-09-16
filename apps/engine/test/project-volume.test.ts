@@ -505,3 +505,27 @@ test("…and prunes as it always did once the drive is back", async () => {
   store.archiveSession("session_tree");
   expect(await until(() => ran.some((call) => call.includes("prune")))).toBe(true);
 });
+
+test("the POLL finds a remount too — the floor under the desktop's mount event", async () => {
+  // `POST /v2/projects/reprobe` is the fast path. This is what happens for a
+  // cockpit running without the desktop shell, a shell whose watcher died, and
+  // a drive swapped while the Mac was off.
+  const { store, mounts, tick } = counting();
+  store.listProjects();
+  expect(await until(() => store.getProject("project_one").root.includes("TelarVR"))).toBe(true);
+
+  mounts.unmount("TelarVR");
+  tick(11_000);
+  store.listProjects();
+  expect(store.projectAvailability(store.getProject("project_one"))).toBe("unmounted");
+
+  // Plugged back in, and macOS gives it the name one along — the SAME drive.
+  const moved = mounts.mount("TelarVR 1", mounts.uuidOf("TelarVR"));
+  fs.mkdirSync(path.join(moved, "project"), { recursive: true });
+
+  tick(11_000);
+  store.listProjects();
+  expect(store.getProject("project_one").id).toBe("project_one");
+  expect(store.getProject("project_one").root).toBe(path.join(moved, "project"));
+  expect(store.projectAvailability(store.getProject("project_one"))).toBe("available");
+});
