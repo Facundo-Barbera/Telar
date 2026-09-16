@@ -613,6 +613,35 @@ export class AgentRuntime {
       // provider call. A cancel that unwound the graph and left the request in
       // flight would not be a cancel.
       const answer = (await bound.invoke([system, ...history], config)) as AIMessage;
+      /**
+       * ONE ROW PER THING THE ASSISTANT SAYS, AS IT SAYS IT.
+       *
+       * THE BUG THIS FIXES: a turn that says something and THEN calls a tool
+       * lost the said text entirely. Only `turn_done.detail.text` reached a
+       * row, and that carries the LAST assistant message of the turn — so
+       * "I'll check the rail" followed by `sessions_list` left a transcript in
+       * which the Agent narrated nothing and simply acted.
+       *
+       * EMITTED FROM THE NODE rather than derived from the stream, for the
+       * reason the tool rows already are: the node holds the finished message,
+       * where a row derived from deltas would have to decide for itself when a
+       * message had ended.
+       *
+       * `itemId` IS THE MESSAGE'S OWN ID, which is also what the deltas carry,
+       * so a client that has been painting a live bubble can reconcile it with
+       * the row that lands rather than drawing the same sentence twice.
+       *
+       * A ROUND THAT ONLY CALLS TOOLS SAYS NOTHING, and writes no row — the
+       * same rule `main-session/driver.ts` had for its text item: an empty
+       * speech bubble in the transcript is worse than none.
+       *
+       * `turn_done.detail.text` IS UNCHANGED, deliberately. It is the turn's
+       * ANSWER — what a list view renders without replaying the thread — and
+       * the final assistant row is the same words in the conversation. Two
+       * readers, two shapes, one of them keyed by run.
+       */
+      const said = typeof answer.content === "string" ? answer.content : "";
+      if (said.trim()) this.row("assistant_message", context.runId, { text: said, itemId: answer.id ?? context.runId });
       return { messages: [answer] };
     };
 

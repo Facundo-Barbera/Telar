@@ -345,9 +345,27 @@ export type AgentAnswer = {
   credential?: { source?: "setting" | "environment" | "cli"; set: boolean };
 };
 
-/** One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
- *  vocabulary so a client that already draws a session recognises the shapes;
- *  `detail` is keyed by `kind`. */
+/**
+ * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
+ * vocabulary so a client that already draws a session recognises the shapes.
+ *
+ * `detail` IS KEYED BY `kind`:
+ *
+ *   user_message      `{ text, origin: "human" | "wake", wakeReason? }`
+ *   assistant_message `{ text, itemId }` — one per thing the assistant SAYS,
+ *                     including the sentence before a tool call. `itemId` is
+ *                     the id the live deltas carry, so a client painting a
+ *                     streamed bubble reconciles it with the row that lands
+ *                     rather than drawing the same sentence twice.
+ *   tool_call         `{ name, toolCallId, input, output, status }`
+ *   request_opened    the whole `AgentRequest`
+ *   request_resolved  `{ requestId, decision, tool }`
+ *   turn_started      `{ origin }`
+ *   turn_done         `{ status, text?, message? }` — `text` is the turn's
+ *                     ANSWER, the same words as its last assistant row. Two
+ *                     readers, two shapes: a list view renders this without
+ *                     replaying the thread.
+ */
 export type AgentRow = {
   id: number;
   threadId: string;

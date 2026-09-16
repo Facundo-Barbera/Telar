@@ -328,3 +328,58 @@ test("an approval opens and resolves on the stream, and the state says so betwee
   controller.abort();
   await pump;
 });
+
+test("the thread route and the stream both carry what the assistant said before a tool call", async () => {
+  const { client } = await engine([
+    { text: "I'll check the rail.", toolCalls: [{ id: "call_say", name: "sessions_list", args: {}, type: "tool_call" }] },
+    { text: "Nothing is running." },
+  ]);
+  await client.setAgent({ enabled: true });
+
+  const stream = client.agentStream(0);
+  const controller = new AbortController();
+  const response = await fetch(stream.url, { headers: stream.headers, signal: controller.signal });
+  const said: string[] = [];
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (;;) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary === -1) break;
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!frame.startsWith("data:")) continue;
+          const event = JSON.parse(frame.slice(5).trim()) as { type: string; row?: { kind: string; detail: { text?: string } } };
+          if (event.row?.kind === "assistant_message") said.push(String(event.row.detail.text));
+        }
+      }
+    } catch {
+      // The abort below is how this ends.
+    }
+  })();
+
+  await client.sendAgentTurn("what is running?");
+  await until(async () => said.length >= 2, "both assistant rows on the stream");
+  expect(said).toEqual(["I'll check the rail.", "Nothing is running."]);
+
+  // And the same two are pageable, in the same order, with the tool call
+  // between them.
+  const rows = (await client.agentThread({ limit: 200 })).rows;
+  expect(rows.map((row) => row.kind)).toEqual([
+    "user_message",
+    "turn_started",
+    "assistant_message",
+    "tool_call",
+    "assistant_message",
+    "turn_done",
+  ]);
+
+  controller.abort();
+  await pump;
+});

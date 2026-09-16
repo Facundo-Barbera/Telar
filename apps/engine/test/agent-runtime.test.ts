@@ -12,7 +12,10 @@
  *   - one turn at a time: a second message queues rather than interleaving;
  *   - the transcript is rows with a cursor, so a phone can page it;
  *   - a wake runs as a turn on the same thread and sees the first turn's
- *     history.
+ *     history;
+ *   - everything the assistant SAYS reaches a row, including the sentence
+ *     before a tool call — which `turn_done.detail.text` alone could never
+ *     carry, because it holds the turn's last message.
  */
 import { expect, test } from "bun:test";
 import fs from "node:fs";
@@ -110,7 +113,7 @@ test("the Agent answers from its own thread and creates no session for itself", 
   await until(() => agent.state().running === false && agent.state().runId === undefined, "the turn to finish");
 
   expect(landed.filter((call) => call.name === "sessions_create")).toHaveLength(0);
-  expect(kinds(agent)).toEqual(["user_message", "turn_started", "turn_done"]);
+  expect(kinds(agent)).toEqual(["user_message", "turn_started", "assistant_message", "turn_done"]);
   const done = agent.thread().rows.at(-1)!;
   expect(done.runId).toBe(runId);
   expect(done.detail.status).toBe("completed");
@@ -126,7 +129,7 @@ test("the thread survives a new runtime over the same file — a restart resumes
   agent.close();
 
   const second = new AgentRuntime({ engineRoot, tools: () => wall(landed), model: () => new ScriptedChatModel([{ text: "second" }]) });
-  expect(second.thread().rows.map((row) => row.kind)).toEqual(["user_message", "turn_started", "turn_done"]);
+  expect(second.thread().rows.map((row) => row.kind)).toEqual(["user_message", "turn_started", "assistant_message", "turn_done"]);
   second.submit({ text: "again" });
   await until(() => second.state().running === false, "the second turn");
   // The MODEL saw the first exchange, which is what a resumed thread means.
@@ -152,6 +155,7 @@ test("a watcher is pushed rows as they happen, and deltas that are never stored"
   expect(events.filter((event) => event.type === "row").map((event) => (event as { row: { kind: string } }).row.kind)).toEqual([
     "user_message",
     "turn_started",
+    "assistant_message",
     "turn_done",
   ]);
   // A delta is pushed and stored nowhere.
@@ -466,5 +470,73 @@ test("a thread with no parked approval restores nothing", async () => {
   await until(() => agent.state().runId === undefined, "the turn");
   await agent.restore();
   expect(agent.state().request).toBeUndefined();
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * What the assistant said, as rows.
+ * ------------------------------------------------------------------ */
+
+test("a turn that says something and THEN calls a tool keeps the said text", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      // The bug this pins: only `turn_done.detail.text` used to reach a row, and
+      // that is the turn's LAST message — so this sentence was lost entirely.
+      { text: "I'll check the rail.", toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }] },
+      { text: "Two sessions are running." },
+    ],
+    wall(landed),
+  );
+
+  agent.submit({ text: "what is running?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  expect(kinds(agent)).toEqual([
+    "user_message",
+    "turn_started",
+    "assistant_message",
+    "tool_call",
+    "assistant_message",
+    "turn_done",
+  ]);
+  const said = agent.thread({ limit: 200 }).rows.filter((row) => row.kind === "assistant_message");
+  expect(said.map((row) => row.detail.text)).toEqual(["I'll check the rail.", "Two sessions are running."]);
+  // The ORDER is the conversation's: the sentence lands before the call it
+  // introduced, not after it.
+  const rows = agent.thread({ limit: 200 }).rows;
+  expect(rows.findIndex((row) => row.kind === "assistant_message")).toBeLessThan(rows.findIndex((row) => row.kind === "tool_call"));
+  // And the turn's ANSWER is unchanged — two readers, two shapes.
+  expect(rows.at(-1)!.detail.text).toBe("Two sessions are running.");
+  agent.close();
+});
+
+test("a round that only calls tools writes no empty bubble", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [{ toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }] }, { text: "done" }],
+    wall(landed),
+  );
+  agent.submit({ text: "look" });
+  await until(() => agent.state().runId === undefined, "the turn");
+  expect(kinds(agent)).toEqual(["user_message", "turn_started", "tool_call", "assistant_message", "turn_done"]);
+  agent.close();
+});
+
+test("an assistant row carries the id its deltas carried, so a live bubble reconciles", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "streamed" }], wall(landed));
+  const events: AgentStreamEvent[] = [];
+  const stop = agent.watch((event) => events.push(event));
+  agent.submit({ text: "say something" });
+  await until(() => agent.state().runId === undefined, "the turn");
+  stop();
+
+  const delta = events.find((event) => event.type === "delta") as { itemId: string } | undefined;
+  const row = agent.thread({ limit: 200 }).rows.find((each) => each.kind === "assistant_message");
+  expect(delta).toBeDefined();
+  expect(row?.detail.itemId).toBe(delta!.itemId);
+  // The row rides the stream too, so a watcher need not poll for it.
+  expect(events.some((event) => event.type === "row" && event.row.kind === "assistant_message")).toBe(true);
   agent.close();
 });
