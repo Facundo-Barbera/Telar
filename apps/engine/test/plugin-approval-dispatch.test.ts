@@ -45,6 +45,13 @@ import { createCodexDriver } from "../src/codex-driver";
 import type { DriverRequest } from "../src/driver";
 import { helloToolModule } from "../src/plugins/hello";
 import { TelarToolSocket, collectTelarWall } from "../src/telar-socket";
+import { allowCliInThisFile } from "./allow-cli";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  the driver resolves one on its way to the repo’s fake `codex` app-server fixture.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
 
 const FIXTURE = path.join(import.meta.dir, "fixtures", "fake-codex-app-server.mjs");
 

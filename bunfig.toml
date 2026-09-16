@@ -13,5 +13,14 @@ pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]
 # carries the same set for the workspace CI actually runs. The third gives
 # Next's server modules the `AsyncLocalStorage` global they read once at import
 # and bun does not provide; apps/web/scripts/test-async-storage.mjs has that
-# story.
-preload = ["./scripts/test-setup.mjs", "./apps/web/scripts/test-dom.mjs", "./apps/web/scripts/test-async-storage.mjs"]
+# story. The fourth stops a bare `bun test` here — which sweeps up
+# apps/engine/test/*.test.ts as well — from spawning a real `claude` for session
+# titles, model lists and skills probes; apps/engine/test/no-providers.ts has
+# that story, and apps/engine/bunfig.toml carries the same registration for the
+# workspace the engine suite actually runs from.
+preload = [
+  "./scripts/test-setup.mjs",
+  "./apps/web/scripts/test-dom.mjs",
+  "./apps/web/scripts/test-async-storage.mjs",
+  "./apps/engine/test/no-providers.ts",
+]

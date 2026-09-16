@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -138,6 +138,27 @@ describe("refreshWorktreeBranchFromTitle", () => {
 });
 
 describe("maybeRetitleSession", () => {
+  /**
+   * THE KILL SWITCH IS OFF FOR THIS BLOCK, and only this block — issue #532.
+   *
+   * The suite's preload sets `TELAR_TEXTGEN=off` so that no test anywhere
+   * spends a real model call on a title. These tests spend nothing: the
+   * generator is injected and returns a string. But the switch is honoured
+   * before the policy is read, so leaving it on here would make every one of
+   * them pass for the wrong reason — a flow that never ran looks identical to
+   * a flow that ran and declined. `no-providers.test.ts` holds the switch
+   * itself; this block holds what it switches.
+   */
+  let previous: string | undefined;
+  beforeAll(() => {
+    previous = process.env.TELAR_TEXTGEN;
+    delete process.env.TELAR_TEXTGEN;
+  });
+  afterAll(() => {
+    if (previous === undefined) delete process.env.TELAR_TEXTGEN;
+    else process.env.TELAR_TEXTGEN = previous;
+  });
+
   type Overrides = Partial<{
     policy: TextGenPolicy;
     title: string;

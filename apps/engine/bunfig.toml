@@ -15,3 +15,14 @@
 #
 # Verified against bun 1.3.11: a test that sleeps 7 s dies at exactly 5000 ms
 # with this file present, and passes under `bun test --timeout 20000`.
+
+[test]
+# THE SUITE DOES NOT TALK TO A REAL PROVIDER — issue #532. The preload arms the
+# two switches that stop a test spawning `claude`: without them this suite made
+# dozens of real model calls per run and left 8.2 GB of Claude Code transcripts
+# under ~/.claude/projects. test/no-providers.ts carries the whole story.
+#
+# bun reads bunfig.toml from the directory it was invoked in and does NOT walk
+# up to the repo root, so this registration covers `bun run --cwd apps/engine
+# test` and the root bunfig.toml carries its own for a bare `bun test` there.
+preload = ["./test/no-providers.ts"]
