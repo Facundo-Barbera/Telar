@@ -68,6 +68,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interrupt } from "@langchain/langgraph";
 import crypto from "node:crypto";
+import type { AgentSettings } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { toolInputSchema } from "../mcp-socket";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
@@ -163,6 +164,11 @@ export type AgentStateAnswer = {
   enabled: boolean;
   threadId?: string;
   model?: string;
+  /** `reasoning_effort` on the wire. Absent means the parameter is not sent —
+   *  see `AgentSettings.effort`. */
+  effort?: AgentSettings["effort"];
+  /** Absent means `ask`, which is what shipped. See `AgentSettings.access`. */
+  access?: AgentSettings["access"];
   generation?: number;
   /** A turn is executing right now. False while one is parked for a person —
    *  which is why `request` is reported beside it rather than inside it. */
@@ -190,8 +196,9 @@ export type AgentRuntimeOptions = {
    *  object would pin. */
   tools: () => SocketTool[];
   /** The model, per turn, for the key ladder's reason: a person who pastes a
-   *  key gets the new answer on their next message, not their next restart. */
-  model: (input: { threadId: string; model?: string }) => BaseChatModel;
+   *  key gets the new answer on their next message, not their next restart.
+   *  `effort` rides with it for the same reason — see `AgentSettings.effort`. */
+  model: (input: { threadId: string; model?: string; effort?: AgentSettings["effort"] }) => BaseChatModel;
   now?: () => number;
   /** Appended after the briefing, exactly as a session's orientation is. */
   orientation?: () => string | undefined;
@@ -416,7 +423,7 @@ export class AgentRuntime {
    * refuses to move a database until its `beforeArchive` hook has run, and this
    * is what that hook is for.
    */
-  patch(patch: { enabled?: unknown; model?: unknown; reset?: unknown }): AgentStateAnswer {
+  patch(patch: { enabled?: unknown; model?: unknown; effort?: unknown; access?: unknown; reset?: unknown }): AgentStateAnswer {
     const result = patchAgentSettings(this.paths, patch, { now: this.now, beforeArchive: () => this.close() });
     if (patch.reset === true) {
       // The conversation is gone; anything waiting to be said to it is too —
@@ -437,6 +444,8 @@ export class AgentRuntime {
       enabled: settings.enabled,
       ...(settings.threadId ? { threadId: settings.threadId } : {}),
       ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.effort ? { effort: settings.effort } : {}),
+      ...(settings.access ? { access: settings.access } : {}),
       ...(settings.generation === undefined ? {} : { generation: settings.generation }),
       running: this.live !== undefined && this.pending === undefined,
       ...(this.live ? { runId: this.live.turn.runId } : {}),
@@ -662,7 +671,20 @@ export class AgentRuntime {
     }
 
     const tools = this.options.tools();
-    const graph = this.buildGraph({ tools, model: this.options.model({ threadId, ...(settings.model ? { model: settings.model } : {}) }), runId: turn.runId });
+    const graph = this.buildGraph({
+      tools,
+      // EFFORT RIDES THE MODEL, because it is a property of the REQUEST rather
+      // than of the conversation — read per turn, like the model itself and the
+      // key behind it, so a person changing the pill gets it on their next
+      // message and not on the next restart.
+      model: this.options.model({
+        threadId,
+        ...(settings.model ? { model: settings.model } : {}),
+        ...(settings.effort ? { effort: settings.effort } : {}),
+      }),
+      runId: turn.runId,
+      ...(settings.access ? { access: settings.access } : {}),
+    });
     const config: RunnableConfig = {
       configurable: { thread_id: threadId },
       // One lap is two supersteps, plus the final model call that answers.
@@ -768,7 +790,7 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string }) {
+  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"] }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
@@ -872,7 +894,29 @@ export class AgentRuntime {
         // them for it would teach them that approvals are noise.
         const key = ledgerKey(call.name, args);
         if (key && state.effects[key] !== undefined) continue;
-        decisions.set(call.id ?? "", interrupt<AgentApprovalRequest, AgentApprovalDecision>(approvalRequest({ name: call.name, args }, call.id ?? "")));
+        const request = approvalRequest({ name: call.name, args }, call.id ?? "");
+        /**
+         * `access: "auto"` — THE QUESTION IS STILL ASKED, AND POLICY ANSWERS IT
+         * (#539).
+         *
+         * This is `openRequest`'s own shape for a session's runtime mode, one
+         * level down: the request is OPENED and then RESOLVED in the same
+         * breath, stamped `resolvedBy: "policy"`, so the transcript records
+         * that a gated call happened and who let it through. A mode that simply
+         * skipped the gate would leave a conversation in which the Agent
+         * created three sessions and nothing anywhere says a decision was made.
+         *
+         * WHAT DOES NOT CHANGE IS WHICH CALLS REACH HERE. `needsApproval` is
+         * untouched — same tools, same argument-aware `sessions_send` rule — so
+         * `auto` moves who answers and never what may be asked.
+         */
+        if (context.access === "auto") {
+          this.row("request_opened", context.runId, { ...request, id: `req_${crypto.randomUUID().replaceAll("-", "")}`, runId: context.runId, openedAt: this.now() });
+          this.row("request_resolved", context.runId, { requestId: request.toolCallId, decision: "accept", resolvedBy: "policy", tool: request.tool });
+          decisions.set(call.id ?? "", "accept");
+          continue;
+        }
+        decisions.set(call.id ?? "", interrupt<AgentApprovalRequest, AgentApprovalDecision>(request));
       }
 
       // PASS 2 — the effects, each recorded in the same state write as its

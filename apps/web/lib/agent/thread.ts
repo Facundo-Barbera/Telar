@@ -196,6 +196,9 @@ export type AgentThreadHandle = {
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
   resolve: (requestId: string, decision: "accept" | "decline") => Promise<void>;
+  /** The composer's three pills — model, effort, access — writing `agent.json`
+   *  through the same route Settings uses. `""` clears a field. */
+  configure: (patch: { model?: string; effort?: string; access?: string }) => Promise<void>;
   sending: boolean;
 };
 
@@ -400,6 +403,23 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
     }
   }, [api]);
 
+  /**
+   * THE COMPOSER'S PILLS WRITE HERE (#539) — the same `PATCH /v2/agent` the
+   * settings pane uses, so both read one value and cannot drift.
+   *
+   * THE ANSWER IS THE NEW STATE, so the pill repaints from the engine's word
+   * rather than from an optimistic local copy. It is one small round trip on a
+   * gesture nobody makes twice a second, and it means a refusal shows as a
+   * refusal instead of a setting that silently reverted on the next poll.
+   */
+  const configure = useCallback(async (patch: { model?: string; effort?: string; access?: string }) => {
+    try {
+      setState((await api.setAgent(patch)).agent);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The engine refused that setting.");
+    }
+  }, [api]);
+
   const items = useMemo(() => {
     const drawn = agentItems(rows);
     const streaming = liveAssistantItem(rows, live);
@@ -414,6 +434,7 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
     send,
     cancel,
     resolve,
+    configure,
     sending,
     ...(error === undefined ? {} : { error }),
   };

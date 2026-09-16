@@ -46,6 +46,13 @@ export type AgentModelInput = {
   threadId: string;
   /** From `agent.json`; absent means `DEFAULT_GO_MODEL`. */
   model?: string;
+  /**
+   * HOW HARD TO THINK — `reasoning_effort` on the wire, from `agent.json`.
+   *
+   * ABSENT MEANS THE PARAMETER IS NOT SENT AT ALL, which is not the same as
+   * sending a default. See the header note on where this name comes from.
+   */
+  effort?: "low" | "medium" | "high";
   /** `<engineRoot>/agent` — rung 1 of the key ladder reads `credentials.json`
    *  inside it. Absent in a test that means to reach no key at all. */
   agentDir?: string;
@@ -124,6 +131,38 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
     // usage at all, and a turn with no token count is a turn missing from the
     // usage report.
     streamUsage: true,
+    /**
+     * EFFORT, ONLY WHEN SOMEBODY SET IT — `reasoning_effort` on the wire.
+     *
+     * ── WHY `modelKwargs` AND NOT `reasoningEffort` ─────────────────────────
+     * `ChatOpenAI` HAS a `reasoningEffort` field, and in this version it does
+     * NOT reach a chat-completions body: measured against a local server on
+     * `@langchain/openai` 1.5.13, a client configured with
+     * `reasoningEffort: "high"` sent `{ model, stream, messages }` and nothing
+     * else — the field is carried on the Responses API path only. The same
+     * client with `modelKwargs: { reasoning_effort: "high" }` sent it verbatim.
+     *
+     * So the configured field would have been a setting that silently did
+     * nothing, which is the worst of the three outcomes: worse than omitting it
+     * and saying so, and worse than an error. `agent-model.test.ts` asserts what
+     * reached the SOCKET for exactly this reason — the same rule the `User-Agent`
+     * header above is tested by, and the second time that rule has paid here.
+     *
+     * ── WHY `reasoning_effort` IS THE RIGHT NAME ────────────────────────────
+     * opencode.ai/docs/go publishes the base URL and the session header and no
+     * parameter list, but the endpoint is explicitly OpenAI-compatible, and
+     * `reasoning_effort` is that API's field for a reasoning DEPTH. The three
+     * values Telar offers are inside the set it accepts. A server that does not
+     * honour the field ignores an unknown key, which is the same behaviour as
+     * not sending it.
+     *
+     * ── OMITTED RATHER THAN DEFAULTED ───────────────────────────────────────
+     * A model with no reasoning mode is served today by a request that does not
+     * mention reasoning; sending `medium` on its behalf would change what every
+     * existing conversation asks for, and on a strict server it is a 400 where
+     * there was an answer. An unset setting sends nothing.
+     */
+    ...(input.effort ? { modelKwargs: { reasoning_effort: input.effort } } : {}),
     ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     configuration: { baseURL: input.base ?? OPENCODE_GO_BASE, fetch: withTelarHeaders },
   });

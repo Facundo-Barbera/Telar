@@ -204,3 +204,49 @@ test("close is idempotent — the reset path calls it without knowing whether th
   opened.close();
   opened.close();
 });
+
+/**
+ * THE COMPOSER'S OTHER TWO SETTINGS (#539) — effort and access.
+ *
+ * What must not drift:
+ *
+ *   - neither starts a new conversation, because neither is a change to the
+ *     THREAD: the generation counter is what a cockpit compares to know its
+ *     cached transcript is stale, and moving it for a pill would throw away a
+ *     conversation nobody asked to end;
+ *   - empty CLEARS, exactly as the model field does, and clearing effort means
+ *     the parameter stops being sent rather than taking a default value;
+ *   - a value neither field understands is refused in words rather than stored.
+ */
+test("effort and access are stored, cleared by empty, and move no generation", () => {
+  const paths = agentPaths(root());
+  patchAgentSettings(paths, { enabled: true });
+  const before = readAgentSettings(paths).generation;
+
+  const set = patchAgentSettings(paths, { effort: "high", access: "auto" }).settings;
+  expect(set.effort).toBe("high");
+  expect(set.access).toBe("auto");
+  // NOT A NEW CONVERSATION. The thread and its generation are untouched.
+  expect(set.threadId).toBe(readAgentSettings(paths).threadId);
+  expect(readAgentSettings(paths).generation).toBe(before);
+
+  // EMPTY CLEARS. For effort that means the parameter stops being sent at all;
+  // for access it means `ask`, which is what shipped.
+  const cleared = patchAgentSettings(paths, { effort: "", access: "" }).settings;
+  expect(cleared.effort).toBeUndefined();
+  expect(cleared.access).toBeUndefined();
+  // And `ask` is spelled the same as absent rather than stored beside it, so
+  // there is one representation of the default.
+  expect(patchAgentSettings(paths, { access: "ask" }).settings.access).toBeUndefined();
+});
+
+test("a value neither setting understands is refused rather than stored", () => {
+  const paths = agentPaths(root());
+  patchAgentSettings(paths, { enabled: true });
+  expect(() => patchAgentSettings(paths, { effort: "max" })).toThrow("low, medium or high");
+  expect(() => patchAgentSettings(paths, { access: "always" })).toThrow("ask or auto");
+  expect(() => patchAgentSettings(paths, { effort: 3 })).toThrow("must be text");
+  // Nothing was written by any of the three.
+  expect(readAgentSettings(paths).effort).toBeUndefined();
+  expect(readAgentSettings(paths).access).toBeUndefined();
+});

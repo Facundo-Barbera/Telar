@@ -133,6 +133,11 @@ export function archiveThreadFile(paths: AgentPaths, at: number): string | undef
 export type AgentPatch = {
   enabled?: unknown;
   model?: unknown;
+  /** `"low" | "medium" | "high"`, or `""` to stop sending the parameter at
+   *  all — see `AgentSettings.effort`. */
+  effort?: unknown;
+  /** `"ask" | "auto"`, or `""` for the default (`ask`). */
+  access?: unknown;
   /** Start a new conversation. The only verb that retires a thread, and the
    *  only one that moves `generation`. */
   reset?: unknown;
@@ -158,8 +163,8 @@ export type AgentPatchResult = {
 };
 
 /**
- * ENABLE, DISABLE, PICK A MODEL, RESET — in that order, and the order is the
- * rule rather than a convenience.
+ * ENABLE, DISABLE, PICK A MODEL, SET EFFORT AND ACCESS, RESET — in that order,
+ * and the order is the rule rather than a convenience.
  *
  * RESET IS APPLIED BEFORE `enabled`, so "reset and switch off in one call"
  * archives the conversation and leaves nothing half-done, and "reset and switch
@@ -186,6 +191,34 @@ export function patchAgentSettings(paths: AgentPaths, patch: AgentPatch, options
     // serves.
     if (model) next.model = model;
     else delete next.model;
+  }
+
+  /**
+   * EFFORT AND ACCESS SETTLE WITH THE MODEL, AND MOVE NOTHING.
+   *
+   * Neither starts a new conversation, for the model's own reason: changing how
+   * hard the Agent thinks, or who answers its approvals, is a change to the next
+   * TURN and not to the thread. The generation counter stays where it is, and a
+   * cockpit's cached transcript stays valid.
+   *
+   * EMPTY CLEARS, exactly as the model field does: a person clearing the pill
+   * means "stop sending it", which for effort is the provider's own default and
+   * for access is `ask`. Storing `""` would be a value nothing understands.
+   */
+  if (patch.effort !== undefined) {
+    if (typeof patch.effort !== "string") throw new Error("the Agent's effort must be text");
+    const effort = patch.effort.trim();
+    if (effort === "") delete next.effort;
+    else if (effort === "low" || effort === "medium" || effort === "high") next.effort = effort;
+    else throw new Error("the Agent's effort must be low, medium or high");
+  }
+
+  if (patch.access !== undefined) {
+    if (typeof patch.access !== "string") throw new Error("the Agent's access must be text");
+    const access = patch.access.trim();
+    if (access === "" || access === "ask") delete next.access;
+    else if (access === "auto") next.access = access;
+    else throw new Error("the Agent's access must be ask or auto");
   }
 
   if (patch.reset !== undefined) {

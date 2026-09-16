@@ -644,3 +644,77 @@ test("a stopped turn still reports what it spent, because the tokens were bought
   expect(done.detail.usage).toEqual({ input: 700, output: 20, total: 720 });
   agent.close();
 });
+
+/* ------------------------------------------------------------------ *
+ * `access: "auto"` — #539. The gate still asks; policy answers.
+ * ------------------------------------------------------------------ */
+
+test("auto access lets a gated call through and records that policy allowed it", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([sendTask("call_1"), { text: "sent" }], wall(landed));
+  agent.patch({ access: "auto" });
+
+  agent.submit({ text: "delegate it" });
+  await until(() => agent.state().runId === undefined, "the turn to finish");
+
+  // NOTHING PARKED, and the effect happened.
+  expect(agent.state().request).toBeUndefined();
+  expect(landed.map((call) => call.name)).toEqual(["sessions_send"]);
+
+  /**
+   * THE QUESTION IS STILL IN THE TRANSCRIPT. This is `openRequest`'s own shape
+   * for a session's runtime mode: opened and resolved in the same breath,
+   * stamped `resolvedBy: "policy"`. A mode that simply skipped the gate would
+   * leave a conversation in which the Agent assigned work and nothing anywhere
+   * says a decision was made.
+   */
+  const rows = agent.thread({ limit: 200 }).rows;
+  const opened = rows.find((row) => row.kind === "request_opened")!;
+  const resolved = rows.find((row) => row.kind === "request_resolved")!;
+  expect(opened.detail.tool).toBe("sessions_send");
+  expect(resolved.detail).toMatchObject({ decision: "accept", resolvedBy: "policy", tool: "sessions_send" });
+  agent.close();
+});
+
+test("auto access does not widen what is gated — a read is still never asked about", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [{ toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }] }, { text: "two sessions" }],
+    wall(landed),
+  );
+  agent.patch({ access: "auto" });
+  agent.submit({ text: "what is running?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // `needsApproval` is untouched by the mode: `auto` moves who ANSWERS the
+  // question, never which calls raise one. A read raises none either way, so
+  // there is no policy row to write.
+  expect(kinds(agent)).not.toContain("request_opened");
+  expect(kinds(agent)).not.toContain("request_resolved");
+  expect(landed.map((call) => call.name)).toEqual(["sessions_list"]);
+  agent.close();
+});
+
+test("ask is the default, so an Agent nobody configured still parks", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([sendTask("call_1"), { text: "sent" }], wall(landed));
+  expect(agent.state().access).toBeUndefined();
+  agent.submit({ text: "delegate it" });
+  await until(() => agent.state().request !== undefined, "the approval to park");
+  expect(landed).toHaveLength(0);
+  agent.cancel();
+  await until(() => agent.state().runId === undefined, "the turn");
+  agent.close();
+});
+
+test("effort and access are reported on the state a composer reads", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "ok" }], wall(landed));
+  expect(agent.state().effort).toBeUndefined();
+  const set = agent.patch({ effort: "high", access: "auto" });
+  expect(set.effort).toBe("high");
+  expect(set.access).toBe("auto");
+  // And a cleared pill disappears from the state rather than reading as a value.
+  expect(agent.patch({ effort: "" }).effort).toBeUndefined();
+  agent.close();
+});

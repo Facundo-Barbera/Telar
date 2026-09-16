@@ -468,8 +468,8 @@ struct NewSessionDraftView: View {
                                 onChange: { choice = $0 }
                             )
                             chip(icon: "slider.horizontal.3",
-                                 label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
-                                ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
+                                 label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
+                                ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
                                     Button { runtimeMode = mode } label: { menuRow(label, selected: mode == runtimeMode) }
                                 }
                             }

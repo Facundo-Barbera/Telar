@@ -40,6 +40,32 @@ struct AgentView: View {
     @State private var loading = true
     @State private var sending = false
     @State private var failure: String?
+    /// FOCUS LIVES HERE, exactly as it does on `SessionView`: the transcript is
+    /// what puts the keyboard away, and it cannot reach a flag private to the
+    /// composer.
+    @State private var composerFocused = false
+    /// The model list behind the composer's first pill, and the service's own
+    /// words when it could not be fetched.
+    @State private var models: [ProviderModel] = []
+    @State private var modelsMessage: String?
+    /**
+     STICK TO THE BOTTOM, THE WAY `SessionView` DOES (#539).
+
+     This screen opened at the TOP. It scrolled to a bottom anchor only
+     `onChange(of: rows.count)`, which misses the case that matters: the first
+     page arrives in one assignment before the view has laid out, and every
+     RE-OPEN starts with the rows already in hand, so the count never changes
+     and the anchor is never used. A person opening the Agent read the oldest
+     thing it had ever said.
+
+     `.scrollPosition` pinned to an EDGE is the fix and is the transcript's own
+     (`SessionView`): a position pinned to an edge stays on that edge as the
+     content grows, and `isPositionedByUser` flips the moment the reader
+     scrolls — which is what "let them go" keys on. `.defaultScrollAnchor`
+     cannot do this job; it is solved once, when the ScrollView first appears,
+     and this transcript is still empty then.
+     */
+    @State private var scroll = AgentTranscriptScroll()
 
     /// HOW MANY PAGES A FIRST READ WILL WALK.
     ///
@@ -126,9 +152,8 @@ struct AgentView: View {
     // ── THE TRANSCRIPT ───────────────────────────────────────────────────────
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
                     if let credential, credential.source == nil {
                         // NO KEY IS SAID HERE rather than left for the first
                         // turn to fail: the conversation exists, it simply
@@ -157,18 +182,17 @@ struct AgentView: View {
                             Task { await resolve(request.id, accept: accept) }
                         }
                     }
-                    Color.clear.frame(height: 1).id(bottomAnchor)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
             }
-            .onChange(of: rows.count) { _, _ in
-                withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
+        .scrollPosition($scroll.position)
+        // THE CONVERSATION IS THE WAY OUT OF THE KEYBOARD — the transcript's own
+        // rule on `SessionView`, and the composer is a real field now, so this
+        // screen needs it too.
+        .scrollDismissesKeyboard(.immediately)
     }
 
-    private let bottomAnchor = "agent-bottom"
 
     /// WHAT IS WORTH DRAWING.
     ///
@@ -206,33 +230,41 @@ struct AgentView: View {
 
     // ── THE COMPOSER ─────────────────────────────────────────────────────────
 
+    /// THE SESSION'S COMPOSER, NOT A SECOND ONE (#539).
+    ///
+    /// This was a bare `TextField` with a send button, because `ComposerView`
+    /// took a `SessionStore` and the Agent is not a session. What the Agent was
+    /// missing was not decoration: `ComposerTextView` is a UIKit field, which is
+    /// the only reason the system's own Paste offers a picture at all, and the
+    /// focused card, the stash and the control row came with it.
+    ///
+    /// `ComposerHost` is what made it reusable — the composer names the handful
+    /// of facts it reads rather than a store, and `AgentComposerHost` answers
+    /// them, including the two honest noes: no attachments (the thread route
+    /// takes `{ text }` and has nowhere to put bytes) and no queue strip (the
+    /// engine reports how MANY turns are queued, not what they say).
     private var composer: some View {
-        HStack(spacing: 8) {
-            TextField("Message the Agent", text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .disabled(sending)
-            // STOP REPLACES SEND WHILE A TURN RUNS, rather than sitting beside
-            // it: there is one thread and one turn at a time, so the two are
-            // never both the thing to press.
-            if state?.running == true {
-                Button { Task { await cancel() } } label: {
-                    Image(systemName: "stop.circle.fill").font(.title2)
-                }
-                .accessibilityLabel("Stop the Agent")
-            } else {
-                Button { Task { await send() } } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
-                }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
-                .accessibilityLabel("Send")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        ComposerView(
+            draft: $draft,
+            focus: $composerFocused,
+            host: AgentComposerHost(
+                running: state?.running == true,
+                onSend: { text in await send(text) },
+                onStop: { await cancel() }
+            ),
+            // THE THREE CONTROLS, BOUND TO `/v2/agent` — item 1's row of menus
+            // above the composer, which on this phone is the composer's own
+            // toolbar rather than a second row above it.
+            controls: AnyView(
+                AgentComposerControls(
+                    state: state,
+                    models: models,
+                    modelsMessage: modelsMessage,
+                    onPatch: { patch in await configure(patch) }
+                )
+            ),
+            onSend: { scroll.pinToTail() }
+        )
     }
 
     // ── READS AND WRITES ─────────────────────────────────────────────────────
@@ -240,13 +272,46 @@ struct AgentView: View {
     /// Page the transcript once, then keep asking from the cursor.
     private func follow() async {
         await refreshState()
+        await loadModels()
         await page()
         loading = false
+        // AFTER THE FIRST PAGE, AND ON EVERY RE-OPEN. This is the case the old
+        // `onChange(of: rows.count)` anchor could not reach: the first page
+        // lands in one assignment before layout, and a re-open starts with the
+        // rows already in hand, so the count never changes. See `scroll`.
+        scroll.rowsChanged(to: rows.count)
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(Self.pollSeconds))
             if Task.isCancelled { return }
             await refreshState()
             await page()
+            // NEW ROWS FOLLOW THE TAIL; a reader who scrolled up keeps their
+            // place, because `rowsChanged` only pins when the count moved.
+            scroll.rowsChanged(to: rows.count)
+        }
+    }
+
+    /// THE MODEL PILL'S LIST — `GET /v2/agent/models`, once per screen.
+    ///
+    /// FAILS SOFT, like the desktop's: an empty picker carrying the service's
+    /// own words beats one full of ids that 404, and the pane is opened before
+    /// the key is pasted at least as often as after.
+    private func loadModels() async {
+        guard let answer = try? await api.agentModels() else { return }
+        models = answer.models
+        modelsMessage = answer.message
+    }
+
+    /// THE THREE PILLS WRITE HERE — the same `PATCH /v2/agent` the Mac's own
+    /// Settings uses, so the phone and the desktop read one value. The answer is
+    /// the new state, so a refusal shows as a refusal rather than as a setting
+    /// that silently reverted on the next poll.
+    private func configure(_ patch: AgentSettingsPatch) async {
+        do {
+            state = try await api.setAgent(patch).agent
+            failure = nil
+        } catch {
+            failure = "That Mac refused the setting."
         }
     }
 
@@ -274,16 +339,18 @@ struct AgentView: View {
         }
     }
 
-    private func send() async {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The composer hands the text over; it has already cleared the box and
+    /// pinned the transcript, which is `ComposerView`'s own contract.
+    private func send(_ raw: String) async {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         sending = true
-        draft = ""
         defer { sending = false }
         do {
             let accepted = try await api.sendAgentTurn(text)
             if let agent = accepted.agent { state = agent }
             await page()
+            scroll.rowsChanged(to: rows.count)
         } catch {
             failure = "That Mac refused the message."
             // THE TEXT COMES BACK rather than being lost to a failed send.
@@ -307,9 +374,32 @@ struct AgentView: View {
 }
 
 /// ONE ROW OF THE AGENT'S CONVERSATION.
+///
+/// THE SAME VIEWS `SessionView` DRAWS (#539). This screen had its own bubble and
+/// its own hand-rolled tool disclosure, one radius and one font off the
+/// transcript beside it — two conversations on one phone that did not look like
+/// the same app. `UserBubble` and `ToolChipLabel`/`NestedDetail` are the
+/// session transcript's own and take no store, so the Agent uses them outright;
+/// the assistant already shared `MarkdownText`.
+///
+/// WHAT STAYS THE AGENT'S OWN is the wake label above a user bubble, because
+/// the session's equivalent (`WakeRow`) reads a `JournalTurn` the Agent has no
+/// shape for — and the fact it states is the same one either way.
 struct AgentRowView: View {
     let row: AgentRow
     @State private var open = false
+
+    /// The Agent writes its tool status as a string; the session's chip takes
+    /// the journal's enum. Same three states, one translation, no third
+    /// vocabulary — and an unknown one draws no mark rather than guessing.
+    private var toolStatus: ItemStatus? {
+        switch row.status {
+        case "failed": return .failed
+        case "declined": return .declined
+        case "completed": return .completed
+        default: return nil
+        }
+    }
 
     var body: some View {
         switch row.kind {
@@ -318,11 +408,7 @@ struct AgentRowView: View {
                 if let wake = row.wakeLabel {
                     Text(wake).font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
                 }
-                Text(row.text ?? "")
-                    .font(.subheadline)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                UserBubble(text: row.text ?? "")
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
 
@@ -348,25 +434,25 @@ struct AgentRowView: View {
             // unreadable on a phone.
             VStack(alignment: .leading, spacing: 6) {
                 Button { open.toggle() } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: open ? "chevron.down" : "chevron.right")
-                        Image(systemName: "wrench.and.screwdriver")
-                        Text(displayToolName(row.name ?? "tool")).font(Theme.monoSmall)
-                        if row.status == "failed" {
-                            Text("failed").font(Theme.monoSmall).foregroundStyle(Theme.statusRed)
-                        } else if row.status == "declined" {
-                            Text("denied").font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(Theme.textMuted)
+                    // THE SESSION'S OWN CHIP — same glyph slot, same mono
+                    // label, same status marks (a pulse while running, a cross
+                    // for failed, a raised hand for declined).
+                    ToolChipLabel(
+                        icon: open ? "chevron.down" : "chevron.right",
+                        label: displayToolName(row.name ?? "tool"),
+                        status: toolStatus
+                    )
                 }
                 .buttonStyle(.plain)
+                // And the session's own nesting: a 28pt indent behind a left
+                // hairline, rather than a bare padding.
                 if open, let output = row.output, !output.isEmpty {
-                    Text(output)
-                        .font(Theme.monoSmall)
-                        .foregroundStyle(Theme.textMuted)
-                        .padding(.leading, 18)
+                    NestedDetail {
+                        Text(output)
+                            .font(Theme.monoSmall)
+                            .foregroundStyle(Theme.textMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
 

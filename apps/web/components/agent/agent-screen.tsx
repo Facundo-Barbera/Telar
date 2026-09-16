@@ -44,6 +44,7 @@ import { AgentTranscript } from "./agent-transcript";
 import { AgentApproval } from "./agent-approval";
 import { Composer } from "@/components/composer";
 import { ContextMeter } from "@/components/context-meter";
+import { AgentComposerControls, useAgentModels } from "./agent-composer-controls";
 import { Button } from "@/components/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 
@@ -111,6 +112,12 @@ export function AgentScreen() {
     setDraft("");
     void send(text);
   }, [draft, send]);
+
+  /** The composer's pickers. One read per screen, failing soft — an empty
+   *  picker carrying the service's reason beats one full of ids that 404. */
+  const catalogue = useAgentModels(hostId);
+  const { configure: write } = handle;
+  const configure = useCallback((patch: { model?: string; effort?: string; access?: string }) => void write(patch), [write]);
 
   if (view.kind === "loading") return <div className="flex min-h-0 flex-1" aria-busy="true" />;
 
@@ -193,6 +200,11 @@ export function AgentScreen() {
         ready
         attachments={[]}
         onAttach={() => {}}
+        /* THE AGENT'S OWN THREE PILLS (#539) — same look as the session
+           composer's, different sources, because the Agent has no provider
+           catalogue, no per-model effort list and no session runtime mode. See
+           `agent-composer-controls.tsx`. */
+        controls={<AgentComposerControls state={handle.state} models={catalogue.models} {...(catalogue.message ? { message: catalogue.message } : {})} onChange={configure} />}
         busy={running}
         sending={handle.sending}
         backgroundTasks={0}

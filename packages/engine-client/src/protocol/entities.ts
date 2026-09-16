@@ -1221,6 +1221,38 @@ export const AgentSettings = z.object({
    * than costing the thread.
    */
   generation: z.number().int().nonnegative().optional(),
+  /**
+   * HOW HARD THE MODEL SHOULD THINK — `reasoning_effort` on the wire (#539).
+   *
+   * THE NAME IS THE API'S, NOT OURS. OpenCode Go's surface is
+   * OpenAI-compatible, and `reasoning_effort` is that API's spelling for
+   * exactly this: a depth, not a token count. Three values rather than the
+   * seven OpenAI now accepts (`none` … `max`) because three is what a composer
+   * pill can be read at a glance, and because low/medium/high are the ones
+   * every model that supports the parameter at all understands.
+   *
+   * ABSENT MEANS THE PARAMETER IS NOT SENT — the provider's own default, and
+   * what every conversation before this field did. That distinction is the
+   * whole reason it is optional rather than defaulting to "medium": a model
+   * with no reasoning mode must not start receiving a field it will refuse.
+   */
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  /**
+   * WHETHER THE AGENT ASKS BEFORE THE GATED CALLS (#539).
+   *
+   * `ask` is what shipped and stays the default: the approval gate parks an
+   * `interrupt()` and a person answers it. `auto` resolves those interrupts BY
+   * POLICY — the same `resolvedBy: "policy"` a session's runtime mode uses —
+   * so the Agent runs unattended.
+   *
+   * THE GATED LIST DOES NOT WIDEN, and that is the load-bearing half. `auto` is
+   * about who ANSWERS the question, never about which calls raise one:
+   * `needsApproval` is untouched, so the same calls are still gated, still
+   * ledgered and still written to the transcript as decisions. A setting that
+   * quietly enlarged what the Agent may do would be a different feature wearing
+   * this one's name.
+   */
+  access: z.enum(["ask", "auto"]).optional(),
 });
 export type AgentSettings = z.infer<typeof AgentSettings>;
 

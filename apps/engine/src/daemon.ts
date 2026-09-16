@@ -1250,6 +1250,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         agentChatModel({
           threadId: input.threadId,
           ...(input.model ? { model: input.model } : {}),
+          // `reasoning_effort` on the wire, and only when somebody set it —
+          // see `agent/model.ts` for why it is omitted rather than defaulted.
+          ...(input.effort ? { effort: input.effort } : {}),
           agentDir: path.join(root, "agent"),
         })),
     ...(options.now ? { now: options.now } : {}),
@@ -1561,6 +1564,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           agentRuntime.patch({
             ...("enabled" in input ? { enabled: input.enabled } : {}),
             ...("model" in input ? { model: input.model } : {}),
+            // The composer's other two pills (#539). Same forwarding rule as the
+            // model beside them: presence, unvalidated, because the shape lives
+            // once beside the schema.
+            ...("effort" in input ? { effort: input.effort } : {}),
+            ...("access" in input ? { access: input.access } : {}),
             ...("reset" in input ? { reset: input.reset } : {}),
           });
           /**

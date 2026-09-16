@@ -131,6 +131,13 @@ struct AgentState: Decodable, Equatable {
     var enabled: Bool
     var threadId: String?
     var model: String?
+    /// `reasoning_effort` on the wire (#539). ABSENT MEANS THE PARAMETER IS NOT
+    /// SENT — the provider's own default — which is not the same as a default
+    /// value, and is why the composer's pill offers "Auto" rather than a level.
+    var effort: String?
+    /// Absent means `ask`, which is what shipped: a person answers the approval
+    /// gate. `auto` answers it by policy. NEITHER changes which calls are gated.
+    var access: String?
     /// A turn is executing. FALSE while one is parked for a person, which is
     /// why `request` sits beside this rather than inside it.
     var running: Bool
@@ -142,13 +149,15 @@ struct AgentState: Decodable, Equatable {
     /// moment you spoke would answer a question nobody asked.
     var lastUsage: AgentLastUsage?
 
-    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, running, runId, queued, request, lastUsage }
+    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, effort, access, running, runId, queued, request, lastUsage }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
         threadId = try? c.decodeIfPresent(String.self, forKey: .threadId)
         model = try? c.decodeIfPresent(String.self, forKey: .model)
+        effort = try? c.decodeIfPresent(String.self, forKey: .effort)
+        access = try? c.decodeIfPresent(String.self, forKey: .access)
         running = (try? c.decode(Bool.self, forKey: .running)) ?? false
         runId = try? c.decodeIfPresent(String.self, forKey: .runId)
         queued = (try? c.decode(Int.self, forKey: .queued)) ?? 0
@@ -159,10 +168,12 @@ struct AgentState: Decodable, Equatable {
         lastUsage = try? c.decodeIfPresent(AgentLastUsage.self, forKey: .lastUsage)
     }
 
-    init(enabled: Bool, threadId: String? = nil, model: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil, lastUsage: AgentLastUsage? = nil) {
+    init(enabled: Bool, threadId: String? = nil, model: String? = nil, effort: String? = nil, access: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil, lastUsage: AgentLastUsage? = nil) {
         self.enabled = enabled
         self.threadId = threadId
         self.model = model
+        self.effort = effort
+        self.access = access
         self.running = running
         self.runId = runId
         self.queued = queued
@@ -299,6 +310,47 @@ struct AgentThreadPage: Decodable {
         self.more = more
         self.threadId = threadId
     }
+}
+
+/// `GET /api/agent/models` — the composer's model pill (#539).
+///
+/// FAILS SOFT BY DESIGN: a Mac that could not reach OpenCode Go, or has no key
+/// yet, answers an empty list and a `message`. Both halves are decoded, because
+/// an empty picker carrying the reason beats one full of ids that 404.
+struct AgentModelList: Decodable {
+    var models: [ProviderModel]
+    var message: String?
+
+    private enum CodingKeys: String, CodingKey { case models, message }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // A ROW THIS BUILD CANNOT READ IS DROPPED, never the list.
+        models = try c.decodeIfPresent([Skippable<ProviderModel>].self, forKey: .models)?.compactMap(\.value) ?? []
+        message = try? c.decodeIfPresent(String.self, forKey: .message)
+    }
+
+    init(models: [ProviderModel], message: String?) {
+        self.models = models
+        self.message = message
+    }
+}
+
+/// `PATCH /api/agent` — the three composer pills' write (#539).
+///
+/// BY PRESENCE, NEVER BY VALUE. A phone setting an effort must not also be
+/// re-deciding who answers approvals, so an absent field means "leave it alone"
+/// and `""` means "clear it" — the same contract the Mac's own route keeps.
+/// That is exactly what an optional encodes to with the default encoder, which
+/// is why there is nothing clever here.
+struct AgentSettingsPatch: Encodable {
+    var model: String?
+    /// `"low" | "medium" | "high"`, or `""` to stop sending `reasoning_effort`
+    /// at all — the provider's own default.
+    var effort: String?
+    /// `"ask"` (the default) or `"auto"`. `auto` answers the approval gate by
+    /// policy; it does NOT widen which calls are gated.
+    var access: String?
 }
 
 /// `POST /api/agent/turns`.

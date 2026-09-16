@@ -354,6 +354,12 @@ export type AgentState = {
   enabled: boolean;
   threadId?: string;
   model?: string;
+  /** `reasoning_effort` on the wire. ABSENT MEANS THE PARAMETER IS NOT SENT —
+   *  the provider's own default — which is not the same as a default value. */
+  effort?: "low" | "medium" | "high";
+  /** Absent means `ask`, which is what shipped: a person answers the approval
+   *  gate. `auto` answers it by policy. Neither changes which calls are gated. */
+  access?: "ask" | "auto";
   /** Bumped by a reset and nothing else — a cached transcript compares it to
    *  know it is about a thread that no longer exists. */
   generation?: number;
@@ -937,7 +943,20 @@ export class EngineClient {
    * it is the only writer of this secret and a Remove button has to be able to
    * say so. Absent still means "leave it alone".
    */
-  setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }): Promise<AgentAnswer> {
+  setAgent(patch: {
+    enabled?: boolean;
+    model?: string;
+    /** `"low" | "medium" | "high"`, or `""` to stop sending `reasoning_effort`
+     *  at all — the provider's own default, and what every turn did before this
+     *  field existed. */
+    effort?: string;
+    /** `"ask"` (the default, and what shipped) or `"auto"`. `auto` resolves the
+     *  approval gate's interrupts by policy; it does NOT widen which calls are
+     *  gated. `""` is the same as `"ask"`. */
+    access?: string;
+    reset?: boolean;
+    apiKey?: string;
+  }): Promise<AgentAnswer> {
     return this.request("PATCH", "/v2/agent", patch);
   }
 
