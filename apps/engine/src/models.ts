@@ -31,6 +31,7 @@ import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
+import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./main-session/go";
 
 /**
  * How long to wait for a provider to describe itself.
@@ -295,13 +296,44 @@ export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; m
   } catch (error) { return { models: [], message: error instanceof Error ? error.message : "OpenCode did not answer models" }; }
 }
 
+/**
+ * TELAR'S OWN LOOP HAS NO CLI TO ASK, so it asks the API it actually calls —
+ * OpenCode Go's public model list, over HTTP and with no credential (#526). It
+ * is listed here rather than left to fall through, because the fall-through
+ * arm runs the CODEX binary, and a picker that quietly shelled out to another
+ * provider would be the worst possible answer to "what can this session run".
+ */
+async function readTelarModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+  const answer = await readOpenCodeGoModels();
+  return {
+    models: answer.models.map((model) => ({
+      id: model.id,
+      label: model.id,
+      efforts: [],
+      isDefault: model.id === DEFAULT_GO_MODEL,
+      hidden: false,
+      fastMode: false,
+      hiddenByUser: false,
+      source: "provider" as const,
+    })),
+    ...(answer.message ? { message: answer.message } : {}),
+  };
+}
+
 export async function readModelCatalogue(
   driver: ProviderDriverKind,
   now: () => number,
   readCodex: typeof readCodexModels = readCodexModels,
   readClaude: typeof readClaudeModels = readClaudeModels,
 ): Promise<ModelCatalogue> {
-  const answer = driver === "claude" ? await readClaude() : driver === "opencode" ? await readOpenCodeModels() : await readCodex();
+  const answer =
+    driver === "claude"
+      ? await readClaude()
+      : driver === "opencode"
+        ? await readOpenCodeModels()
+        : driver === "telar"
+          ? await readTelarModels()
+          : await readCodex();
   /**
    * A PROVIDER THAT COULD NOT BE ASKED FALLS BACK TO NOTHING — for both, now.
    *

@@ -28,6 +28,8 @@ import {
   MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
   SidebarLayout as SidebarLayoutSchema,
+  workspaceBaseRef,
+  workspacePath,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
@@ -156,6 +158,7 @@ import {
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
+import { resolveGoCredential, type GoKeySource } from "./main-session/credentials";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -178,6 +181,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
+import { providerProcessEnv } from "./provider-instances";
 import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
@@ -1019,6 +1023,26 @@ const newestFirst = (left: Session, right: Session): number =>
   right.updatedAt - left.updatedAt || left.id.localeCompare(right.id);
 
 /**
+ * THE SESSION'S DIRECTORY, OR A REFUSAL — every store call that needs a real
+ * folder on disk (#526).
+ *
+ * A `none` workspace is not a missing path, it is a session that HAS no path:
+ * the Main conversation reads and delegates and owns no checkout. So the honest
+ * answer to "read this session's files" is a refusal naming the reason, not a
+ * `git` command run against `undefined` or against the engine's own cwd — which
+ * is what every one of these call sites would have done had the path merely
+ * gone optional.
+ *
+ * `invalid_request` RATHER THAN `not_found`: the session exists and the caller
+ * is fine; what was asked of it does not apply to this kind of session.
+ */
+function workspaceRootOf(session: Pick<Session, "workspace">): string {
+  const root = workspacePath(session.workspace);
+  if (root === undefined) throw new EngineStateError("invalid_request", "this session has no working directory");
+  return root;
+}
+
+/**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
  *
  * SPELLED AS A PICK RATHER THAN A DELETE-LIST, so a field added to `Session`
@@ -1044,7 +1068,11 @@ const liveRow = (session: Session): LiveSessionRow => ({
   workspace:
     session.workspace.mode === "worktree"
       ? { mode: "worktree", path: session.workspace.path, branch: session.workspace.branch }
-      : { mode: "local", path: session.workspace.path },
+      : session.workspace.mode === "none"
+        ? // A session with no directory says so on the row, rather than sending a
+          // path-shaped answer a rail would draw an "open in Finder" button from.
+          { mode: "none" }
+        : { mode: "local", path: session.workspace.path },
   // ON THE ROW because it is a row's question: the rail is where a person
   // watches a session they just opened, and "the checkout is still being made"
   // is the only thing worth saying about it in those seconds. Absent on every
@@ -2228,25 +2256,25 @@ export class EngineStore {
     if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
     return storeDsCapability({
       sessionId,
-      cwd: session.workspace.path,
+      cwd: workspaceRootOf(session),
       python: resolved.pythonPath,
       telarVenv: telarVenvDir(this.paths.root, session.projectId!, session.workspace.mode === "worktree" ? path.basename(session.workspace.path) : undefined),
       host: this.kernels,
       files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
       // A notebook with plots in it passes the editor's 512 KB ceiling in one
       // cell; both fences take the notebook-sized cap instead.
-      readFile: (target) => this.readFenced(session.workspace.path, target, "session workspace", NOTEBOOK_MAX_BYTES),
-      writeFile: (target, text, expected) => this.writeFenced(session.workspace.path, target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
+      readFile: (target) => this.readFenced(workspaceRootOf(session), target, "session workspace", NOTEBOOK_MAX_BYTES),
+      writeFile: (target, text, expected) => this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
       putAttachment: (input) => this.putAttachment(sessionId, input),
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
       now: () => this.now(),
       // Package operations resolve the environment against THIS session's
       // workspace — the worktree rule again — and run as the store's jobs.
-      packages: () => this.dataSciencePackages(session.projectId!, session.workspace.path),
-      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], session.workspace.path),
+      packages: () => this.dataSciencePackages(session.projectId!, workspaceRootOf(session)),
+      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], workspaceRootOf(session)),
       waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
-      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, session.workspace.path) }),
+      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, workspaceRootOf(session)) }),
       useEnvironment: (target) => this.dataScienceUseEnvironment(sessionId, target),
     });
   }
@@ -2280,7 +2308,7 @@ export class EngineStore {
     const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machinePlugins(), "data-science"));
     const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
     if (!chosen) return undefined;
-    const pythonPath = resolvePythonPath(session.workspace.path, chosen);
+    const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
   }
@@ -2314,7 +2342,7 @@ export class EngineStore {
     }
     return storeLatexCapability({
       sessionId,
-      cwd: session.workspace.path,
+      cwd: workspaceRootOf(session),
       resolved,
       toolchain: () => this.latexToolchain(),
       jobs: this.latexJobs,
@@ -2434,7 +2462,7 @@ export class EngineStore {
     if (/\.parquet$/i.test(target)) {
       const ds = this.dataScience(sessionId);
       const sort = options.sort ? `.sort_values(${JSON.stringify(options.sort)}, ascending=${options.desc ? "False" : "True"})` : "";
-      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(session.workspace.path, target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
+      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(workspaceRootOf(session), target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
       const result = await ds.execute({ code, producer: "table" });
       const line = result.outputs.find((o) => o.kind === "text" && o.text.includes("__TELAR_TABLE__"));
       if (!result.ok || !line || line.kind !== "text") throw new EngineStateError("invalid_request", result.error ? `${result.error.ename}: ${result.error.evalue}` : "could not read the parquet file");
@@ -2841,6 +2869,51 @@ export class EngineStore {
     return this.sessionExists(main.sessionId) ? main : { enabled: main.enabled };
   }
 
+  /**
+   * WHETHER THE MAIN ASSISTANT HAS A KEY, AND WHETHER THE LAST ONE WORKED —
+   * what the settings pane decides between "here is the field" and "here is the
+   * setup you still owe me" (#526).
+   *
+   * THE KEY NEVER LEAVES. `resolveGoCredential` finds one; only its SOURCE is
+   * returned, which is the one fact that helps somebody work out why the wrong
+   * account is being billed. See `main-session/credentials.ts`.
+   *
+   * `rejected` IS DERIVED, NOT STORED, and that is what makes it self-clearing.
+   * A rejected key fails the turn as `provider_unavailable` (the driver
+   * translates 401 and 403 into exactly that), so the answer is "the newest
+   * settled turn on the designated session failed that way" — and the next turn
+   * that completes makes it false again without anybody having to remember to
+   * clear a flag. A stored boolean would outlive the key it was about.
+   *
+   * ONLY THE ENGINE'S OWN LOOP. A session designated under #523 runs a CLI and
+   * has nothing to do with an OpenCode Go key; reporting one as rejected
+   * because a Claude turn failed would send somebody to fix the wrong thing.
+   */
+  mainSessionCredential(): { source?: GoKeySource; rejected: boolean } {
+    const instance = this.resolveProviderInstance(defaultInstanceIdForDriver("telar"), "telar");
+    const found = resolveGoCredential({ instanceEnv: providerProcessEnv(instance) });
+    const main = this.resolveMainSession();
+    return {
+      ...(found ? { source: found.source } : {}),
+      rejected: main.enabled && main.sessionId !== undefined ? this.mainTurnRejectedKey(main.sessionId) : false,
+    };
+  }
+
+  /** Did the newest settled turn on this session fail because the provider
+   *  could not run? Never throws: a session that has gone, or a queue that will
+   *  not parse, is simply not evidence of a bad key. */
+  private mainTurnRejectedKey(sessionId: string): boolean {
+    try {
+      const session = this.getSession(sessionId);
+      if (session.driver !== "telar") return false;
+      const settled = this.readQueue(sessionId).turns.filter((turn) => turn.state === "completed" || turn.state === "failed");
+      const newest = settled.at(-1);
+      return newest?.state === "failed" && newest.failure?.code === "provider_unavailable";
+    } catch {
+      return false;
+    }
+  }
+
   /** Does a session document exist, without the throw `getSession` makes? The
    *  designation asks this about an id that may be months old. */
   private sessionExists(sessionId: string): boolean {
@@ -2861,15 +2934,28 @@ export class EngineStore {
    *   1. An explicit `sessionId` designates that conversation. It must exist —
    *      naming one that does not is a bad request, not a silent create.
    *   2. Otherwise, whatever is already designated and still exists is reused.
-   *      This is the rung that makes re-enabling and a restart idempotent, and
-   *      it is checked BEFORE `projectId` is looked at at all.
-   *   3. Only then does `projectId` create one, through the ordinary
-   *      `createSession` path with this machine's ordinary conventions — no
-   *      driver, model or workspace of its own.
+   *      This is the rung that makes re-enabling and a restart idempotent.
+   *   3. Otherwise one is MINTED: project-less, on the `telar` driver, with no
+   *      checkout and no working directory.
    *
-   * ENABLING WITH NOTHING TO DESIGNATE IS REFUSED. A project is required in this
-   * slice (the issue says so outright), and guessing one would be the engine
-   * choosing where a person's coordinator lives.
+   * ── RUNG 3 IS THE CORRECTION #526 MADE ──────────────────────────────────────
+   * #523 asked for a project and opened an ORDINARY session inside it, "with
+   * nothing said beyond the title… because a main session that quietly ran on a
+   * different provider from every other session would be a second kind of
+   * session after all". The owner's answer was that it is a second kind of
+   * session, and that was the point: the coordinator is not assigned to a
+   * working directory like the rest. So the `projectId` rung is gone, enabling
+   * no longer needs anything to be chosen, and what gets minted is deliberately
+   * not an ordinary conversation.
+   *
+   * ENABLING NEVER REFUSES NOW. There is nothing left to guess: no project to
+   * pick, no checkout to cut, and one Main conversation per machine.
+   *
+   * RUNG 1 STILL TAKES AN ORDINARY SESSION, and that is not a leftover. A
+   * conversation designated under #523 keeps its history, keeps its project and
+   * its driver, and becomes ordinary again when the switch goes off — the
+   * designation is a role, and un-designating has never been allowed to rewrite
+   * what a session is.
    *
    * DISABLING KEEPS THE ID AND THE CONVERSATION. It stops the briefing and the
    * rail entry, and it drops the subscriptions the main session took out — so
@@ -2877,10 +2963,29 @@ export class EngineStore {
    * It deletes no history, stops nothing it delegated to, and leaves an
    * ordinary resumable session behind.
    */
-  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; projectId?: unknown }): MainSession {
+  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; model?: unknown }): MainSession {
     const stored = this.getMainSession();
     const next: MainSession = { ...stored };
     delete next.generation;
+
+    /**
+     * THE MODEL IS NOT PART OF THE DESIGNATION, so it is settled first and it
+     * does NOT move the generation below. Changing which model the coordinator
+     * runs is not a change to "who is Main, and is it on" — invalidating a turn
+     * that is legitimately still coordinating because somebody edited a text
+     * field would be exactly the over-firing that counter exists to avoid.
+     *
+     * EMPTY CLEARS IT, back to the driver's own default. That is what a person
+     * emptying the field means, and storing `""` would be a model id nothing
+     * serves.
+     */
+    if (patch.model !== undefined) {
+      if (typeof patch.model !== "string") throw new EngineStateError("invalid_request", "main session model must be text");
+      const model = patch.model.trim();
+      if (model.length > 120) throw new EngineStateError("invalid_request", "that model id is too long");
+      if (model) next.model = model;
+      else delete next.model;
+    }
 
     if (patch.sessionId !== undefined) {
       assertId(patch.sessionId, "session id");
@@ -2902,18 +3007,17 @@ export class EngineStore {
     }
 
     if (next.enabled && next.sessionId === undefined) {
-      if (patch.projectId === undefined) {
-        throw new EngineStateError("invalid_request", "turning the main session on needs a project to create it in, or a session to designate");
-      }
-      assertId(patch.projectId, "project id");
       /**
-       * THE ORDINARY CREATE PATH, with nothing said beyond the title. Driver,
-       * model, workspace and provider all fall to this machine's own defaults —
-       * the issue's "normal model and project conventions" — because a main
-       * session that quietly ran on a different provider from every other
-       * session would be a second kind of session after all.
+       * NO PROJECT, AND THE ENGINE'S OWN DRIVER — the whole of what makes this
+       * conversation a coordinator rather than a worker with a good view.
+       *
+       * Nothing else is said. No model: the machine setting decides, and a
+       * model named here would be a second place that lives. No `envMode`: a
+       * project-less create is `local` by construction and refuses a worktree
+       * outright. No provider instance: `telar` has exactly one slot, which
+       * `createSession` derives from the driver.
        */
-      next.sessionId = this.createSession({ projectId: patch.projectId, title: "Main" }).id;
+      next.sessionId = this.createSession({ title: "Main", driver: "telar" }).id;
     }
 
     /**
@@ -3419,8 +3523,8 @@ export class EngineStore {
     const instances = this.readProviderInstances();
     const existing = instances.find((instance) => instance.id === input.id);
     const driver = input.driver === undefined ? existing?.driver : input.driver;
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
-      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex or opencode");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex, opencode or telar");
     }
     /**
      * THE DRIVER IS FIXED FOR AN INSTANCE'S LIFETIME. Sessions, their resume
@@ -3491,7 +3595,12 @@ export class EngineStore {
    */
   removeProviderInstance(id: string): boolean {
     assertInstanceId(id);
-    if (id === defaultInstanceIdForDriver("claude") || id === defaultInstanceIdForDriver("codex") || id === defaultInstanceIdForDriver("opencode")) {
+    if (
+      id === defaultInstanceIdForDriver("claude") ||
+      id === defaultInstanceIdForDriver("codex") ||
+      id === defaultInstanceIdForDriver("opencode") ||
+      id === defaultInstanceIdForDriver("telar")
+    ) {
       throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
     }
     const instances = this.readProviderInstances();
@@ -3547,14 +3656,21 @@ export class EngineStore {
     const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
     if (stored === undefined) {
       const at = this.now();
-      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
+      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at), seedProviderInstance("telar", at)];
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
       return seeded;
     }
     const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");
-    if (!parsed.data.some((instance) => instance.id === "opencode")) {
-      parsed.data.push(seedProviderInstance("opencode", this.now()));
+    /**
+     * BACKFILL, NOT A MIGRATION. A registry written before a driver existed has
+     * no slot for it, and a session that routes to one would fall through to
+     * `seedProviderInstance` on every claim rather than to a row a person can
+     * switch off. One pass, written back once, for each slot that is missing.
+     */
+    const missing = (["opencode", "telar"] as const).filter((driver) => !parsed.data.some((instance) => instance.id === driver));
+    if (missing.length > 0) {
+      for (const driver of missing) parsed.data.push(seedProviderInstance(driver, this.now()));
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: parsed.data });
     }
     return parsed.data;
@@ -4685,7 +4801,7 @@ export class EngineStore {
   async dataScienceUseEnvironment(sessionId: string, target: string): Promise<{ environments: EnvironmentRow[]; switched: string }> {
     const session = this.getSession(sessionId);
     if (!session.projectId) throw new EngineStateError("invalid_request", "this session has no project");
-    const workspace = session.workspace.path;
+    const workspace = workspaceRootOf(session);
     const { environments } = await this.dataScienceEnvironments(session.projectId, workspace);
     const match = environments.find((env) => env.id === target || env.name === target || env.root === target || env.python === target || env.path === target);
     if (!match) throw new EngineStateError("invalid_request", `no environment matches "${target}" — the choices are ${environments.map((env) => `${env.name} (${env.id})`).join(", ") || "none"}`);
@@ -5047,9 +5163,9 @@ export class EngineStore {
 
   sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
-    return this.cachedGitRead(`diff:${session.workspace.path}:${session.workspace.baseRef ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+    return this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
     }));
   }
 
@@ -5060,7 +5176,7 @@ export class EngineStore {
 
   sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
     const session = this.getSession(sessionId);
-    return this.readFilePatchAsync(session.workspace.path, target, options, session.workspace.baseRef);
+    return this.readFilePatchAsync(workspaceRootOf(session), target, options, workspaceBaseRef(session.workspace));
   }
 
   private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<{ patch: string; binary: boolean }> {
@@ -5105,7 +5221,9 @@ export class EngineStore {
     driver: ProviderDriverKind,
     options: { force?: boolean; instanceId?: string } = {},
   ): Promise<ModelCatalogue> {
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "unknown provider driver");
+    }
     const cached = this.modelCache.get(driver);
     let raw: ModelCatalogue;
     if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {
@@ -5469,8 +5587,8 @@ export class EngineStore {
   sessionDiff(sessionId: string): SessionDiff {
     const session = this.getSession(sessionId);
     return sessionDiff(this.git, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
     });
   }
 
@@ -5488,13 +5606,13 @@ export class EngineStore {
      * in-process caller must not be able to walk past a check that only ran on
      * the socket.
      */
-    const resolved = path.resolve(session.workspace.path, target);
-    const prefix = session.workspace.path.endsWith(path.sep) ? session.workspace.path : `${session.workspace.path}${path.sep}`;
+    const resolved = path.resolve(workspaceRootOf(session), target);
+    const prefix = workspaceRootOf(session).endsWith(path.sep) ? workspaceRootOf(session) : `${workspaceRootOf(session)}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
     return sessionFilePatch(this.git, {
-      cwd: session.workspace.path,
-      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
-      path: path.relative(session.workspace.path, resolved),
+      cwd: workspaceRootOf(session),
+      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+      path: path.relative(workspaceRootOf(session), resolved),
       ...(options.untracked ? { untracked: true } : {}),
     });
   }
@@ -5512,7 +5630,7 @@ export class EngineStore {
     const text = message.trim();
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
-    return commitSessionWork(this.git, { cwd: session.workspace.path, message: text });
+    return commitSessionWork(this.git, { cwd: workspaceRootOf(session), message: text });
   }
 
   /**
@@ -5527,7 +5645,7 @@ export class EngineStore {
   }
 
   sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    const cwd = this.getSession(sessionId).workspace.path;
+    const cwd = workspaceRootOf(this.getSession(sessionId));
     return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
   }
 
@@ -5536,7 +5654,7 @@ export class EngineStore {
   }
 
   sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
-    return this.readFencedAsync(this.getSession(sessionId).workspace.path, target, "session workspace");
+    return this.readFencedAsync(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
   /**
@@ -5550,7 +5668,7 @@ export class EngineStore {
   }
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return this.readFencedBytes(this.getSession(sessionId).workspace.path, target, "session workspace");
+    return this.readFencedBytes(workspaceRootOf(this.getSession(sessionId)), target, "session workspace");
   }
 
   projectFiles(projectId: string): WorkspaceListing {
@@ -5559,7 +5677,7 @@ export class EngineStore {
 
   /** Every file in a session's own checkout — its worktree, when it cut one. */
   sessionFiles(sessionId: string): WorkspaceListing {
-    return listWorkspaceFiles(this.git, { cwd: this.getSession(sessionId).workspace.path, now: this.now() });
+    return listWorkspaceFiles(this.git, { cwd: workspaceRootOf(this.getSession(sessionId)), now: this.now() });
   }
 
   projectFile(projectId: string, target: string): WorkspaceFile {
@@ -5569,7 +5687,7 @@ export class EngineStore {
 
   sessionFile(sessionId: string, target: string): WorkspaceFile {
     const session = this.getSession(sessionId);
-    return this.readFenced(session.workspace.path, target, "session workspace");
+    return this.readFenced(workspaceRootOf(session), target, "session workspace");
   }
 
   /**
@@ -5586,7 +5704,7 @@ export class EngineStore {
 
   sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
     const session = this.getSession(sessionId);
-    return this.writeFenced(session.workspace.path, target, text, expected, "session workspace");
+    return this.writeFenced(workspaceRootOf(session), target, text, expected, "session workspace");
   }
 
   /**
@@ -5677,7 +5795,22 @@ export class EngineStore {
   createSession(input: {
     draft?: boolean;
     id?: string;
-    projectId: string;
+    /**
+     * WHICH PROJECT — and OPTIONAL since #526, which is the whole of what makes
+     * a project-less session creatable rather than merely expressible.
+     *
+     * ABSENT IS A POSITIVE STATEMENT, the rule `Session.projectId` already
+     * carries: this session belongs to no project, has no checkout, no branch
+     * and no working directory. It is not "the caller forgot" and it is not
+     * "the default project" — there is no such thing here.
+     *
+     * ONE THING FOLLOWS THAT CANNOT BE ASKED FOR: a worktree. A checkout is cut
+     * FROM a repository, so a stated `envMode: "worktree"` with no project is
+     * refused rather than quietly downgraded — the caller asked for something
+     * this session cannot have, and silently giving it something else is how a
+     * session ends up working in a directory nobody chose.
+     */
+    projectId?: string;
     /**
      * WHO STARTED THIS SESSION. Supplied by the daemon from the creating turn's
      * CLAIM TOKEN, never from a tool argument — see `Session.startedFrom`.
@@ -5731,8 +5864,13 @@ export class EngineStore {
     origin?: SessionOrigin;
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
-    const project = this.getProject(input.projectId);
-    this.assertProjectAvailable(input.projectId);
+    // Both reads are about a project, so both are skipped when there is none —
+    // never replaced by a guess at which project was meant.
+    const project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+    if (input.projectId !== undefined) this.assertProjectAvailable(input.projectId);
+    if (project === undefined && input.envMode === "worktree") {
+      throw new EngineStateError("invalid_request", "a worktree is cut from a project, and this session has none");
+    }
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = this.readDocument(metadata);
@@ -5771,14 +5909,27 @@ export class EngineStore {
      * nobody typed it for this session — so it falls back like the machine's.
      * A stated `worktree` on the call still throws.
      */
-    const preferred = project.envMode ?? this.getSessionDefaults().envMode;
-    const envMode = input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local");
+    /**
+     * A PROJECT-LESS SESSION IS `local`, and the ladder is not consulted.
+     *
+     * `EnvMode` says where work LANDS, and its two answers are "the project's
+     * own checkout" and "a checkout of this session's own". Neither is true
+     * here, and the workspace below says so properly (`mode: "none"`); this
+     * field takes the one value that claims nothing extra. Asking the standing
+     * preference would let a machine-wide `worktree` turn into a refusal for a
+     * session that never had a repository to cut from.
+     */
+    const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
+    const envMode =
+      project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
     if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
       throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
     }
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+      throw new EngineStateError("invalid_request", "unknown provider driver");
+    }
     if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
     /**
      * THE WORKTREE IS PLANNED HERE AND CUT IN THE BACKGROUND — issue #496.
@@ -5802,7 +5953,7 @@ export class EngineStore {
      * missing for those seconds is the directory, and the row says so.
      */
     const cut =
-      envMode === "worktree" && !input.draft
+      envMode === "worktree" && !input.draft && project !== undefined
         ? (() => {
             const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
             // The repository probe inside this is the same one the
@@ -5826,7 +5977,12 @@ export class EngineStore {
           // commit the checkout will start from, so a reader asking "what has
           // this session done" has its anchor from the first instant.
           { mode: "worktree" as const, path: cut.plan.path, branch: cut.plan.branch, baseRef: cut.baseSha }
-        : (() => {
+        : project === undefined
+          ? // NO PROJECT MEANS NO DIRECTORY — see `SessionWorkspace`'s `none`
+            // variant. There is nothing to resolve a base against either: a
+            // base is a commit, and there is no repository here.
+            { mode: "none" as const }
+          : (() => {
             /**
              * A LOCAL SESSION GETS A BASE TOO, which it never used to.
              *
@@ -5847,7 +6003,9 @@ export class EngineStore {
           })();
     const session: Session = {
       id,
-      projectId: input.projectId,
+      // Written only when there IS one. An explicit `undefined` would be a
+      // second spelling of absent on a field whose absence is the statement.
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       environmentId: "local",
       title: input.title?.trim() || "New session",
       state: "active",
@@ -5877,7 +6035,7 @@ export class EngineStore {
        * the honest outcome, because the reader's sentence was "conversations in
        * this project open on THIS", and this is not that conversation.
        */
-      ...(project.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
+      ...(project?.defaultModel && project.defaultModel.instanceId === (chosen?.id ?? defaultInstanceIdForDriver(driver))
         ? { model: project.defaultModel }
         : {}),
       workspace,
@@ -5906,7 +6064,7 @@ export class EngineStore {
     // AFTER the document, never before: the flip this schedules writes the same
     // record, and a cut that finished first would be overwritten by the row that
     // said it had not started.
-    if (cut !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
+    if (cut !== undefined && project !== undefined) this.prepareWorktree(id, project.root, cut.plan, cut.baseSha);
     return structuredClone(session);
   }
 
@@ -8032,7 +8190,9 @@ export class EngineStore {
       const providerInstance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
       return {
         sessionId: session.id,
-        projectRoot: session.workspace.path,
+        // Emitted only when the session HAS one — see `WorkerClaim.projectRoot`.
+        // A `none` workspace sends nothing rather than a path nobody chose.
+        ...(workspacePath(session.workspace) ? { projectRoot: workspacePath(session.workspace)! } : {}),
         ...(session.projectId ? { projectId: session.projectId } : {}),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
@@ -8176,6 +8336,19 @@ export class EngineStore {
     instanceId: string,
   ): ModelSelection | undefined {
     const normalized = this.normalizeModelSelection(driver, selection);
+    /**
+     * THE MACHINE'S CHOICE FOR THE MAIN ASSISTANT, when the turn and the session
+     * named none (#526). It lives on the Main document rather than on the
+     * session, so it survives the designation moving — see `MainSession.model`.
+     *
+     * STILL ABSENT WHEN NOBODY PICKED ONE, deliberately: the driver has a real
+     * default id and spelling it here too would be a second place it lives, and
+     * the one that goes stale.
+     */
+    if (driver === "telar" && !normalized?.model) {
+      const configured = this.getMainSession().model;
+      return configured ? { ...(normalized ?? { instanceId }), model: configured } : normalized;
+    }
     if (driver !== "claude" || normalized?.model) return normalized;
     const model = this.defaultClaudeModelId();
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a

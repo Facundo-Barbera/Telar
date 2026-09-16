@@ -23,6 +23,7 @@ import {
   toSidebarSession,
   type SidebarSession,
 } from "./session-list";
+import { LOCAL_HOST_ID } from "./hosts/client";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -397,6 +398,25 @@ describe("canvasHref", () => {
     expect(canvasHref("a/b")).toBe("/projects/a%2Fb/sessions/new");
     // And it must not be mistaken for a session by the sidebar's own reader.
     expect(sessionHref({ id: "s1", projectId: "project_a" })).not.toBe(canvasHref("project_a"));
+  });
+});
+
+describe("the Main conversation's address", () => {
+  test("a project-less session addresses the reserved /main on ITS OWN Mac", () => {
+    // ONE MAIN PER MACHINE, so the address names the role rather than the id —
+    // and it has to name the machine too. A bare `/main` for a paired Mac's
+    // coordinator opened THIS cockpit's own: the right shape of screen, the
+    // wrong engine, with nothing on it to say so.
+    expect(sessionHref({ id: "session_main" })).toBe("/main");
+    expect(sessionHref({ id: "session_main", hostId: "host_ab" })).toBe("/hosts/host_ab/main");
+    // The host segment is encoded like every other one in this module.
+    expect(sessionHref({ id: "session_main", hostId: "a/b" })).toBe("/hosts/a%2Fb/main");
+  });
+
+  test("the local host id is not a segment — `/main` is already this Mac's", () => {
+    // `hostPrefix` answers empty for local, which is what keeps the bare
+    // address meaningful: there is nothing to redirect.
+    expect(sessionHref({ id: "session_main", hostId: LOCAL_HOST_ID })).toBe("/main");
   });
 });
 

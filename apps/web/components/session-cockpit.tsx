@@ -22,6 +22,7 @@ import {
   type Turn,
   type TurnAttachment,
   type TurnState,
+  workspacePath,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, refusedBy, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { createJournalProjector, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
@@ -277,7 +278,10 @@ function SessionMasthead({
   onWatchRun,
   menu,
 }: {
-  projectId: string;
+  /** Absent for a conversation that belongs to no project (#526) — the
+   *  breadcrumb then names Telar rather than linking into a project that is
+   *  not there. */
+  projectId?: string;
   /** Which Mac the project is on — the breadcrumb's link must stay there. */
   hostId: string;
   /** Resolved from THIS host's project record. Absent until it loads, and
@@ -409,12 +413,20 @@ function SessionMasthead({
               project — on its canvas, which is what "this project, right now"
               looks like. It pointed at the retired `/projects` table, which named
               every project and therefore answered a question nobody had asked. */}
-          <Link
-            href={canvasHref(projectId, hostId)}
-            className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
-          </Link>
+          {/* A CONVERSATION WITH NO PROJECT HAS NO CRUMB TO PRESS. It reads as
+              plain text rather than as a dead link or a link into
+              `/projects/undefined`, and it says "Main" because that is what the
+              rail's own entry calls this one thing (#526). */}
+          {projectId === undefined ? (
+            <span className="shrink-0 truncate text-muted-foreground">Main</span>
+          ) : (
+            <Link
+              href={canvasHref(projectId, hostId)}
+              className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
+            </Link>
+          )}
           <span className="text-border">/</span>
           {editing ? (
             <Input
@@ -518,7 +530,12 @@ function SessionMasthead({
         {/* KEYED BY HOST AND SESSION: a different machine is a different
             mount, so no answer, latch or poll from the previous one can reach
             this one. Two hosts can hold the same session id. */}
-        {session && (
+        {/* A RUN IS A PROCESS IN A DIRECTORY, so a conversation with neither
+            does not offer one (#526). Absent rather than disabled: a greyed
+            Run button invites somebody to work out why, and the answer —
+            "this conversation has no checkout" — is already the shape of the
+            screen around it. */}
+        {session && workspacePath(session.workspace) !== undefined && (
           <RunHeaderControl
             key={`${hostId}:${session.id}`}
             sessionId={session.id}
@@ -530,7 +547,9 @@ function SessionMasthead({
             desktop shell, and states its own limits (remote sessions). */}
         {/* No `hostLabel`: this masthead knows the host's ID, not its name, and
             "another machine" is true where a guessed name would not be. */}
-        {session && <OpenWorkspaceButton path={session.workspace.path} hostId={hostId} />}
+        {session && workspacePath(session.workspace) !== undefined && (
+          <OpenWorkspaceButton path={workspacePath(session.workspace)} hostId={hostId} />
+        )}
         {panel}
       </div>
     </header>
@@ -1168,7 +1187,16 @@ export function SessionCockpit({
   sessionId: routeSessionId,
   projectName: serverProjectName,
 }: {
-  projectId: string;
+  /**
+   * WHICH PROJECT THIS SCREEN IS ABOUT — and OPTIONAL since #526.
+   *
+   * The Main assistant's conversation belongs to no project (`/main`), so there
+   * is no breadcrumb to draw, no canvas to return to, no checkout to inspect
+   * and no draft to key. Absent is a positive statement about the session, not
+   * a prop somebody forgot: every branch below reads it that way and draws
+   * nothing rather than drawing a link into `/projects/undefined`.
+   */
+  projectId?: string;
   sessionId?: string;
   /** Resolved by the page, so the breadcrumb and the greeting never paint the
    *  raw id first and correct themselves a moment later. */
@@ -1203,7 +1231,10 @@ export function SessionCockpit({
   // Every link this component builds carries it, so a remote session's
   // breadcrumb and its post-creation rewrite stay on the remote.
   const hostId = hostFromPathname(pathname);
-  const onCanvas = pathname === canvasHref(projectId, hostId);
+  // A session with no project has no canvas to be on — and `canvasHref` has no
+  // URL to build for it. Never on the canvas, rather than on a canvas whose
+  // address contains the word "undefined".
+  const onCanvas = projectId !== undefined && pathname === canvasHref(projectId, hostId);
   const sessionId = routeSessionId ?? (onCanvas ? undefined : createdSessionId);
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
@@ -1712,7 +1743,10 @@ export function SessionCockpit({
    * visit and again the moment the first message landed — the surfaces you had
    * open to write that message vanished as it sent.
    */
-  const panelKey = sessionId ?? canvasPanelKey(projectId);
+  // A PROJECT-LESS COCKPIT ALWAYS HAS A SESSION, so the canvas half is
+  // unreachable there — `/main` renders a conversation that already exists, and
+  // there is no "new conversation in no project" to arrange a panel for.
+  const panelKey = sessionId ?? (projectId === undefined ? "main" : canvasPanelKey(projectId));
 
   useEffect(() => {
     // Deferred to a task rather than called in the effect body: a synchronous
@@ -2250,7 +2284,7 @@ export function SessionCockpit({
    * learned its id, and treating that as a switch would empty it under anyone
    * who started typing a follow-up during the round trip.
    */
-  const owner = useRef<{ sessionId: string | undefined; projectId: string }>({ sessionId, projectId });
+  const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
   const draftText = useRef(draft);
   const [browserStart, setBrowserStart] = useState<BrowserStartState>({ status: "idle" });
@@ -2261,6 +2295,10 @@ export function SessionCockpit({
 
   async function ensureBrowserDraft(): Promise<string> {
     if (sessionId) return sessionId;
+    // A draft is a session waiting to be created IN A PROJECT. There is no such
+    // thing without one, and `/main` never reaches here: it always has a
+    // session already.
+    if (projectId === undefined) throw new EngineApiError("invalid_request", "This conversation has no project to open a draft in.");
     if (browserDraftFlight.current) return browserDraftFlight.current;
     const origin = window.location.pathname;
     if (browserDraftIdentity.current?.path !== origin) {
@@ -2417,7 +2455,7 @@ export function SessionCockpit({
     // eternity ahead of the fetch below, which is the whole point.
     const task = window.setTimeout(() => {
       if (cancelled || answered || !local) return;
-      const remembered = rememberedProjectName(projectId);
+      const remembered = projectId === undefined ? undefined : rememberedProjectName(projectId);
       if (remembered) setProjectName(remembered);
     }, 0);
     /**
@@ -2868,6 +2906,14 @@ export function SessionCockpit({
        */
       let target = sessionId ?? browserTarget;
       if (!target) {
+        // UNREACHABLE FROM `/main`, and stated rather than assumed: that screen
+        // renders a session the engine already minted, so there is nothing to
+        // create — and a create with no project here would be a SECOND place
+        // that decides what a project-less session is.
+        if (projectId === undefined) {
+          setError(new EngineApiError("invalid_request", "This conversation has no project to create a session in."));
+          return;
+        }
         /**
          * THE ID IS MINTED HERE, AND THE ADDRESS MOVES BEFORE THE ENGINE
          * ANSWERS — issue #495.
@@ -3170,7 +3216,7 @@ export function SessionCockpit({
             ...(session.projectId ? { projectId: session.projectId } : {}),
             ...(projectName ? { projectName } : {}),
             ...(hostId === LOCAL_HOST_ID ? {} : { hostId }),
-            workspacePath: session.workspace.path,
+            ...(workspacePath(session.workspace) ? { workspacePath: workspacePath(session.workspace)! } : {}),
             // Only a worktree session has a branch of its own; a local one runs
             // on the project's checkout, whose HEAD belongs to no conversation.
             ...(session.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {}),
@@ -3230,7 +3276,12 @@ export function SessionCockpit({
                 // DELETING THE SESSION YOU ARE READING MUST NOT MAROON YOU ON
                 // IT. A composer in the project you were just working in is
                 // where you were going anyway — the same landing the rail picks.
-                .then(() => router.push(canvasHref(session.projectId ?? projectId, hostId)))
+                // A session with no project has no canvas to land on — the
+                // front door is where the rail would have put you anyway.
+                .then(() => {
+                  const home = session.projectId ?? projectId;
+                  router.push(home === undefined ? "/" : canvasHref(home, hostId));
+                })
                 .catch((cause: unknown) =>
                   setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not delete the session.")),
                 );
@@ -3388,7 +3439,11 @@ export function SessionCockpit({
           onWatchRun={() => showPanelTab("run")}
           panel={
             <>
-              <WorkspaceInspector projectId={session?.projectId ?? projectId} />
+              {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
+                  empty: a panel reporting "no changes" about a repository this
+                  conversation does not have would be answering a question
+                  nobody asked. */}
+              {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
               <RailToggle
                 open={panel.open}
                 onToggle={() => {
@@ -3450,7 +3505,7 @@ export function SessionCockpit({
                 own work from the harness reading its bundled skills out of a
                 temp directory (#354). One fact about the session, stated once,
                 rather than a prop on every row that never uses it. */}
-            <TranscriptWorkspace path={session?.workspace.path}>
+            <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
             {shown.map((turn) => (
               /* THE END OF THIS ANSWER, when it is the newest one — the
                  position a read receipt is about. Inside the list rather than

@@ -20,9 +20,41 @@ private func session(_ id: String) -> Session {
     return try! JSONDecoder().decode(Session.self, from: Data(json.utf8))
 }
 
+/// The Main conversation as #526 mints it: no project, no checkout, and the
+/// engine's own driver. Written as raw JSON on purpose — what is being pinned
+/// is that this decodes AT ALL.
+private let projectlessMainJSON = """
+{"id":"session_main","title":"Main","createdAt":1,"updatedAt":1,
+ "driver":"telar","workspace":{"mode":"none"}}
+"""
+
 @Suite struct MainSessionTests {
     let hostA = HostID()
     let hostB = HostID()
+
+    @Test func aConversationWithNoCheckoutDecodes() throws {
+        // THE FAILURE THIS PREVENTS IS NOT A BLANK ROW, IT IS A BLANK SIDEBAR:
+        // `path` used to be a non-optional `String`, so a `none` workspace
+        // failed to decode the Session — and one undecodable session takes the
+        // whole live-sessions answer with it.
+        let decoded = try JSONDecoder().decode(Session.self, from: Data(projectlessMainJSON.utf8))
+        #expect(decoded.workspace.mode == "none")
+        #expect(decoded.workspace.path == nil)
+        #expect(decoded.projectId == nil)
+        // The driver is carried as a STRING, so a provider this build predates
+        // is named rather than rejected.
+        #expect(decoded.driver == "telar")
+    }
+
+    @Test func aLiveAnswerHoldingOneStillDecodesWholly() throws {
+        let json = """
+        {"sessions":[\(projectlessMainJSON)],"projects":[],
+         "mainSession":{"enabled":true,"sessionId":"session_main"}}
+        """
+        let live = try JSONDecoder().decode(LiveSessions.self, from: Data(json.utf8))
+        #expect(live.sessions.count == 1)
+        #expect(live.mainSession?.sessionId == "session_main")
+    }
 
     @Test func aMacThatSaysNothingIsOff() throws {
         // The live answer every Mac sent before this feature existed. It must

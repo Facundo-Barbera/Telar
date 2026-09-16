@@ -20,7 +20,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { defaultInstanceIdForDriver, type TextGenPolicy } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, workspacePath, type SessionWorkspace, type TextGenPolicy } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 
 export type TextGenEffort = "low" | "medium" | "high";
@@ -312,7 +312,10 @@ export async function runStructuredForPolicy(
   let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
   try {
     policy = store.getTextGenPolicy();
-    if (policy.driver === "opencode") return undefined;
+    // Neither of these can run a one-shot schema-bound prompt the way this
+    // helper needs: OpenCode has no `-p` equivalent, and Telar's own loop is a
+    // turn inside a session rather than a callable generator.
+    if (policy.driver === "opencode" || policy.driver === "telar") return undefined;
     instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
   } catch {
     return undefined;
@@ -340,7 +343,7 @@ export async function runStructuredForPolicy(
  *  is testable without a daemon or a real harness. */
 export type RetitleStore = {
   getTextGenPolicy(): TextGenPolicy;
-  getSession(sessionId: string): { title: string; state: string; workspace: { path: string } };
+  getSession(sessionId: string): { title: string; state: string; workspace: SessionWorkspace };
   resolveProviderInstance(
     instanceId: string,
     driver: "claude" | "codex",
@@ -366,7 +369,7 @@ export async function maybeRetitleSession(
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
   const policy = store.getTextGenPolicy();
-  if (!policy.titles || policy.driver === "opencode") return;
+  if (!policy.titles || policy.driver === "opencode" || policy.driver === "telar") return;
   let session: ReturnType<RetitleStore["getSession"]>;
   try {
     session = store.getSession(sessionId);
@@ -374,6 +377,15 @@ export async function maybeRetitleSession(
     return;
   }
   if (session.state !== "active" || !titleIsSeed(session.title, firstMessage)) return;
+  /**
+   * A SESSION WITH NO DIRECTORY KEEPS ITS PLACEHOLDER. The title is written by
+   * spawning a CLI, and a CLI has to be spawned somewhere; there is no honest
+   * answer for a `none` workspace, and the engine's own cwd would start a
+   * harness inside Telar's application-support folder. Same shape as every
+   * other early return here — the seed title stays, and nothing is surfaced.
+   */
+  const cwd = workspacePath(session.workspace);
+  if (cwd === undefined) return;
   const instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
   if (!instance.enabled) return;
   const env: Record<string, string> = {};
@@ -382,7 +394,7 @@ export async function maybeRetitleSession(
     driver: policy.driver,
     ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}),
     env,
-    cwd: session.workspace.path,
+    cwd,
     ...(policy.model ? { model: policy.model } : {}),
     message: firstMessage,
   });

@@ -30,6 +30,7 @@ const LISTS: Record<ProviderDriverKind, ProviderModel[]> = {
   claude: [row("claude-opus-5", true), row("claude-sonnet-5")],
   codex: [row("gpt-5-codex", true)],
   opencode: [row("anthropic/claude-sonnet-5", true)],
+  telar: [row("kimi-k3", true)],
 };
 
 export const stubModels = async (driver: ProviderDriverKind, now: () => number): Promise<ModelCatalogue> => ({

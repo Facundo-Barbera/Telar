@@ -55,6 +55,7 @@ const CATALOGUES: Record<ProviderDriverKind, ModelCatalogue> = {
   claude: { driver: "claude", models: CLAUDE, source: "provider", readAt: 0 },
   codex: { driver: "codex", models: CODEX, source: "provider", readAt: 0 },
   opencode: { driver: "opencode", models: OPENCODE, source: "provider", readAt: 0 },
+  telar: { driver: "telar", models: [row("kimi-k3", { label: "Kimi K3", isDefault: true })], source: "provider", readAt: 0 },
 };
 
 // ── overlays (stars), in memory with subscribers ──────────────────────────

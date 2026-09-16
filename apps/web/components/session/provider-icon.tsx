@@ -1,3 +1,5 @@
+import { SparklesIcon } from "lucide-react";
+import type { ProviderDriverKind } from "@telar/engine-client";
 import { cn } from "@/lib/utils";
 import { ConnectionIcon } from "@/components/session/connection-icon";
 
@@ -32,10 +34,21 @@ export function ProviderIcon({
   className,
   size = 14,
 }: {
-  provider: "claude" | "codex" | "opencode";
+  provider: ProviderDriverKind;
   className?: string;
   size?: number;
 }) {
+  /**
+   * TELAR'S OWN LOOP HAS NO BRAND MARK TO INLINE, because it is not somebody
+   * else's product. It takes the same glyph the rail's Main entry does
+   * (`main-session-entry.tsx`), so the one conversation that runs on it reads
+   * the same in the rail and in the composer's provider pill. Drawing a
+   * look-alike of one of the marks below would be exactly what this file's
+   * provenance rule forbids.
+   */
+  if (provider === "telar") {
+    return <SparklesIcon aria-hidden className={cn("text-foreground/80", className)} style={{ width: size, height: size }} />;
+  }
   if (provider === "opencode") return <ConnectionIcon connection="opencode" size={size} className={cn("text-foreground/80", className)} />;
   if (provider === "codex") {
     return (
@@ -71,8 +84,9 @@ export function ProviderIcon({
   );
 }
 
-export const PROVIDER_LABEL: Record<"claude" | "codex" | "opencode", string> = {
+export const PROVIDER_LABEL: Record<ProviderDriverKind, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  telar: "Telar",
 };

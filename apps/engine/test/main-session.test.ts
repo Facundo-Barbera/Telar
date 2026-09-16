@@ -100,34 +100,42 @@ test("off by default: no briefing, no rail entry, and no document written", () =
  * Designation — the rule that can never leave two.
  * ------------------------------------------------------------------ */
 
-test("enabling with a project creates exactly one, and re-enabling reuses it", () => {
+test("enabling mints exactly one project-less session, and re-enabling reuses it", () => {
   const engine = store();
-  const first = engine.setMainSession({ enabled: true, projectId: "project_one" });
+  const first = engine.setMainSession({ enabled: true });
   expect(first.enabled).toBe(true);
   expect(first.sessionId).toBeDefined();
+  // WHAT WAS MINTED, not merely that something was (#526): no project, no
+  // directory, and the engine's own loop rather than whatever CLI this Mac
+  // happens to default to.
+  const minted = engine.getSession(first.sessionId!);
+  expect(minted.projectId).toBeUndefined();
+  expect(minted.workspace).toEqual({ mode: "none" });
+  expect(minted.driver).toBe("telar");
 
   // OFF AND ON AGAIN IS THE SAME CONVERSATION. This is the whole requirement:
   // a second create here would leave an abandoned coordinator behind every
   // time somebody tried the feature and changed their mind.
   engine.setMainSession({ enabled: false });
-  const again = engine.setMainSession({ enabled: true, projectId: "project_one" });
+  const again = engine.setMainSession({ enabled: true });
   expect(again.sessionId).toBe(first.sessionId!);
 
   // Even asked twice in a row while already on.
-  expect(engine.setMainSession({ enabled: true, projectId: "project_one" }).sessionId).toBe(first.sessionId!);
-  expect(engine.listSessions("project_one")).toHaveLength(1);
+  expect(engine.setMainSession({ enabled: true }).sessionId).toBe(first.sessionId!);
+  // And the project is untouched throughout: the coordinator was never in it.
+  expect(engine.listSessions("project_one")).toHaveLength(0);
 });
 
 test("a restart reuses the designation rather than minting a second one", () => {
   const first = store();
-  const designated = first.setMainSession({ enabled: true, projectId: "project_one" }).sessionId!;
+  const designated = first.setMainSession({ enabled: true }).sessionId!;
 
   // A SECOND STORE ON THE SAME ROOT is what a daemon restart is from the
   // document's point of view: nothing in memory, everything on disk.
   const restarted = new EngineStore(join(home, "state"));
   expect(restarted.getMainSession().sessionId).toBe(designated);
-  expect(restarted.setMainSession({ enabled: true, projectId: "project_one" }).sessionId).toBe(designated);
-  expect(restarted.listSessions("project_one")).toHaveLength(1);
+  expect(restarted.setMainSession({ enabled: true }).sessionId).toBe(designated);
+  expect(restarted.listSessions("project_one")).toHaveLength(0);
 });
 
 test("an existing session can be designated, and one that does not exist is refused", () => {
@@ -142,22 +150,21 @@ test("an existing session can be designated, and one that does not exist is refu
   expect(() => engine.setMainSession({ enabled: true, sessionId: "session_nope" })).toThrow();
 });
 
-test("turning it on with nothing to designate is refused rather than guessed", () => {
+test("turning it on needs nothing chosen — there is nothing left to choose (#526)", () => {
   const engine = store();
-  // A project is required in this slice, and choosing one for somebody is the
-  // engine deciding where their coordinator lives. A BAD REQUEST, spelled as
-  // one: the settings pane shows the sentence on the row, and a 500 would
-  // read as Telar having broken rather than as the reader owing it an answer.
-  expect(() => engine.setMainSession({ enabled: true })).toThrow(/needs a project/);
-  // AND NOTHING WAS WRITTEN. A refusal that had already flipped the switch, or
-  // created a session on the way to failing, would be the worse half of this.
-  expect(engine.getMainSession()).toEqual({ enabled: false });
+  // #523 refused this, because a project had to be picked and picking one for
+  // somebody is the engine deciding where their coordinator lives. The
+  // correction removed the question: the coordinator lives in no project.
+  const main = engine.setMainSession({ enabled: true });
+  expect(main.enabled).toBe(true);
+  expect(engine.getSession(main.sessionId!).projectId).toBeUndefined();
+  // And no project gained a session on the way.
   expect(engine.listSessions("project_one")).toEqual([]);
 });
 
 test("a designated conversation that was deleted reads as none, and the next enable creates", () => {
   const engine = store();
-  const designated = engine.setMainSession({ enabled: true, projectId: "project_one" }).sessionId!;
+  const designated = engine.setMainSession({ enabled: true }).sessionId!;
   engine.deleteSession(designated);
 
   // THE DOCUMENT STILL NAMES IT — the id outliving a disable is what makes
@@ -166,7 +173,7 @@ test("a designated conversation that was deleted reads as none, and the next ena
   expect(engine.resolveMainSession().sessionId).toBeUndefined();
   expect(engine.liveSessionRows().mainSession.sessionId).toBeUndefined();
 
-  const replacement = engine.setMainSession({ enabled: true, projectId: "project_one" }).sessionId!;
+  const replacement = engine.setMainSession({ enabled: true }).sessionId!;
   expect(replacement).not.toBe(designated);
 });
 
@@ -591,4 +598,83 @@ test("the setting round-trips over HTTP and rides the read every rail already ma
   const after = await client.liveSessionsSince(revision);
   expect(after.unchanged).toBeUndefined();
   expect((after as { mainSession?: { enabled: boolean } }).mainSession?.enabled).toBe(false);
+});
+
+/* ------------------------------------------------------------------ *
+ * The key the assistant runs on — #526's correction.
+ * ------------------------------------------------------------------ */
+
+/** Settle the Main session's one queued turn, however the caller wants. */
+function settleMainTurn(engine: EngineStore, sessionId: string, outcome: { failure?: string } = {}): void {
+  engine.submitTurn(sessionId, { runId: `run_${Math.random().toString(16).slice(2)}`, input: "hello" });
+  const claim = engine.claimNextTurn("worker_one")!;
+  const { runId } = claim.turn;
+  const token = claim.turn.claim!.token;
+  engine.markRunning(sessionId, runId, token);
+  if (outcome.failure) engine.failTurn(sessionId, runId, token, { code: "provider_unavailable", message: outcome.failure });
+  else engine.completeTurn(sessionId, runId, token, { text: "done" });
+}
+
+test("with no key anywhere, the pane is told there is no source — which is its cue to ask for one", () => {
+  const engine = store();
+  // The ambient rung is this process's own environment, and the suite must not
+  // depend on whether the machine running it exports one.
+  const previous = process.env.OPENCODE_API_KEY;
+  delete process.env.OPENCODE_API_KEY;
+  try {
+    engine.setMainSession({ enabled: true });
+    // `source` absent is the whole signal: nothing was pasted, nothing is
+    // exported, and the CLI has no `opencode-go` entry on this machine.
+    const credential = engine.mainSessionCredential();
+    expect(credential.rejected).toBe(false);
+    if (credential.source !== undefined) {
+      // This machine DOES have a CLI login. Then the claim under test is the
+      // other half: a source was found and it is named, never the key.
+      expect(["setting", "environment", "cli"]).toContain(credential.source);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = previous;
+  }
+});
+
+test("a pasted key is reported as the SETTING's, and its value never leaves the engine", () => {
+  const engine = store();
+  engine.saveProviderInstance({ id: "telar", driver: "telar", env: [{ name: "OPENCODE_API_KEY", value: "sk-pasted-secret", sensitive: true }] });
+  engine.setMainSession({ enabled: true });
+
+  expect(engine.mainSessionCredential()).toEqual({ source: "setting", rejected: false });
+  // The registry route the settings pane actually reads hands back a redacted
+  // shape — the pattern this key deliberately reuses rather than reinventing.
+  const listed = engine.listProviderInstances().find((instance) => instance.id === "telar")!;
+  expect(JSON.stringify(listed)).not.toContain("sk-pasted-secret");
+  expect(listed.env).toEqual([{ name: "OPENCODE_API_KEY", value: "", sensitive: true, valueRedacted: true }]);
+});
+
+test("a key the service rejects flips the pane to setup, and a later good turn flips it back", () => {
+  const engine = store();
+  engine.saveProviderInstance({ id: "telar", driver: "telar", env: [{ name: "OPENCODE_API_KEY", value: "sk-stale", sensitive: true }] });
+  const sessionId = engine.setMainSession({ enabled: true }).sessionId!;
+
+  // A rejected key fails the turn as `provider_unavailable` — the driver turns
+  // 401 and 403 into exactly that, and this is the signal the pane reads.
+  settleMainTurn(engine, sessionId, { failure: "OpenCode Go answered 401: invalid api key" });
+  expect(engine.mainSessionCredential()).toEqual({ source: "setting", rejected: true });
+
+  // DERIVED, NOT STORED, which is what makes it self-clearing: nobody has to
+  // remember to reset a flag when the key starts working again.
+  settleMainTurn(engine, sessionId);
+  expect(engine.mainSessionCredential()).toEqual({ source: "setting", rejected: false });
+});
+
+test("an ordinary session designated as Main is never reported as having a bad Go key", () => {
+  // A #523-shaped designation runs a CLI and has nothing to do with this key.
+  // Reporting its failure as a rejected key would send somebody to fix the
+  // wrong thing entirely.
+  const engine = store();
+  engine.createSession({ id: "session_mine", projectId: "project_one", driver: "codex" });
+  engine.setMainSession({ enabled: true, sessionId: "session_mine" });
+  settleMainTurn(engine, "session_mine", { failure: "codex is not on PATH" });
+
+  expect(engine.mainSessionCredential().rejected).toBe(false);
 });

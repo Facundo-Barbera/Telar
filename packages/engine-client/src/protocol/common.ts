@@ -67,15 +67,33 @@ export type Timestamp = z.infer<typeof Timestamp>;
 export const EnvironmentId = z.literal("local");
 export type EnvironmentId = z.infer<typeof EnvironmentId>;
 
-/** WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
- *  `ProviderId` vocabulary so the two never disagree about the word "claude". */
-export const ProviderDriverKind = z.enum(["claude", "codex", "opencode"]);
+/**
+ * WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
+ * `ProviderId` vocabulary so the two never disagree about the word "claude".
+ *
+ * `telar` IS THE ODD ONE AND SAYS SO HERE (#526). The other three name a
+ * harness somebody else installed; this one is the engine's OWN agent loop,
+ * running in the worker against a model API directly. It is in this enum rather
+ * than beside it because everything downstream — routing, the claim, the
+ * registry, a usage row — already keys on this word, and a second vocabulary
+ * for "which loop runs this turn" would be a second place every one of those
+ * decisions lives.
+ */
+export const ProviderDriverKind = z.enum(["claude", "codex", "opencode", "telar"]);
 export type ProviderDriverKind = z.infer<typeof ProviderDriverKind>;
 
 export const PROVIDER_CAPABILITIES: Record<ProviderDriverKind, { liveSteering: boolean; compaction: boolean; backgroundTaskStop: boolean }> = {
   claude: { liveSteering: true, compaction: true, backgroundTaskStop: true },
   codex: { liveSteering: true, compaction: true, backgroundTaskStop: false },
   opencode: { liveSteering: false, compaction: false, backgroundTaskStop: false },
+  /**
+   * ALL THREE FALSE, AND EACH ONE IS A FACT RATHER THAN A GAP. The loop has no
+   * mid-turn input channel (a turn is one request/response cycle against the
+   * model, steering lands on the next one); it has no compaction, so history is
+   * a character budget for now (#526 keeps compaction out of scope); and it
+   * launches no background processes, so there is no task to stop.
+   */
+  telar: { liveSteering: false, compaction: false, backgroundTaskStop: false },
 };
 
 /**

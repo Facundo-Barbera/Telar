@@ -39,8 +39,11 @@ export type UsageFold = {
   sessions: number;
 };
 
-export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
-export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
+/** Every provider a usage row can name — `telar` included, because the engine's
+ *  own loop spends tokens like any other and a report that omitted it would
+ *  under-count the machine. */
+export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode", "telar"];
+export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", telar: "Telar" };
 
 const zeroTokens = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
 const zeroTotals = (): UsageTotals => ({ tokens: zeroTokens(), processed: 0, costUsd: 0, priced: true, turns: 0 });

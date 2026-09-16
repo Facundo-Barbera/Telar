@@ -1,4 +1,5 @@
 import { createOpenCodeDriver } from "./opencode/driver";
+import { createTelarDriver } from "./main-session/driver";
 /**
  * The one place that says which provider driver serves which session.
  *
@@ -81,7 +82,14 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
 export function createDefaultDrivers(): DriverSelector {
   const claude = createClaudeDriver();
   const codex = createCodexDriver();
-  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
+  /**
+   * TOTAL, AND `telar` IS NOT LIKE THE OTHER THREE. Those name a harness this
+   * deployment may or may not have found on disk, and each defers touching it
+   * until the first run; the engine's own loop is simply here, has no binary to
+   * look for, and touches the network only inside a turn. Same eager
+   * construction, same reason it costs nothing.
+   */
+  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver(), telar: createTelarDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker
   // turns into a typed `provider_unavailable` failure on the turn rather than
   // an unhandled throw.

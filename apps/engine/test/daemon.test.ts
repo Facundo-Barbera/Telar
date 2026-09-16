@@ -225,10 +225,11 @@ test("the provider registry answers with its probe, and never with a secret", as
   const client = new EngineClient(daemon.discovery);
 
   const seeded = await client.listProviderInstances();
-  expect(seeded.providerInstances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
+  expect(seeded.providerInstances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode", "telar"]);
   // One call for both, so the page cannot paint a green dot beside an instance
-  // a second call is about to report missing.
-  expect(seeded.probes.map((probe) => probe.status)).toEqual(["ready", "error", "disabled"]);
+  // a second call is about to report missing. `telar` reads ready without the
+  // injected probe being consulted: there is no binary for it to look for.
+  expect(seeded.probes.map((probe) => probe.status)).toEqual(["ready", "error", "disabled", "ready"]);
 
   await client.saveProviderInstance({
     id: "claude_work",

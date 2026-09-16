@@ -43,9 +43,16 @@ enum SessionState: String, Codable {
 
 /// Flattened from the contract's discriminated union — `local` and `worktree`
 /// share every field the phone reads, and a flat struct decodes both.
+///
+/// `path` IS OPTIONAL BECAUSE `none` EXISTS (#526). The Main conversation has no
+/// project and no checkout, so its workspace carries no path at all — and a
+/// non-optional `String` here would have failed to decode that session, taking
+/// the WHOLE live-sessions answer down with it. Absent is a fact about the
+/// session, not a field the Mac forgot: a reader that needs a directory says so
+/// rather than substituting one.
 struct SessionWorkspace: Codable, Equatable {
     var mode: String
-    var path: String
+    var path: String?
     var branch: String?
     var baseRef: String?
 }

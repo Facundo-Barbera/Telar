@@ -40,6 +40,7 @@ import {
   pluginEnabled,
   machineAllows,
   readProjectPlugins,
+  workspacePath,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
@@ -925,7 +926,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   });
   const updateProvider =
     options.runProviderUpdate ??
-    ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+    ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
+      // Telar's own loop has no CLI to update — it ships with the engine. Said
+      // here rather than at the route so the injected test double keeps the
+      // same signature, and refused rather than pretended: a button that
+      // reported "already up to date" would be describing nothing.
+      if (driver === "telar") {
+        throw new EngineStateError("invalid_request", "Telar's own agent loop ships with the engine; update Telar itself.");
+      }
+      return runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) });
+    });
   /**
    * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
    * ending the work it held are the same event, so they are the same function
@@ -1385,7 +1395,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // RESOLVED, not the raw document: a designation whose conversation was
           // deleted must not put a row in front of somebody that navigates
           // nowhere. See `resolveMainSession`.
-          writeJson(response, 200, { mainSession: store.resolveMainSession() });
+          //
+          // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
+          // pane that has to decide whether to show a setup field — and asking
+          // in a second request would let the two disagree about the same
+          // instant. Which RUNG answered, never the key. See
+          // `EngineStore.mainSessionCredential`.
+          writeJson(response, 200, { mainSession: store.resolveMainSession(), credential: store.mainSessionCredential() });
           return;
         }
         const input = await body(request);
@@ -1393,10 +1409,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           mainSession: store.setMainSession({
             // By PRESENCE, like every other patch here: a client saying only
             // `sessionId` must not also be re-deciding the switch.
+            //
+            // `projectId` IS GONE (#526). Turning Main on mints a project-less
+            // session on the engine's own driver; there is nothing to choose,
+            // and a client still sending one is ignored rather than obeyed.
             ...("enabled" in input ? { enabled: input.enabled } : {}),
             ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
-            ...("projectId" in input ? { projectId: input.projectId } : {}),
+            ...("model" in input ? { model: input.model } : {}),
           }),
+          credential: store.mainSessionCredential(),
         });
         return;
       }
@@ -3254,13 +3275,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         if (request.method === "GET" && session.tail === "/skills") {
           const record = store.getSession(session.sessionId);
+          // A session with no checkout has no project skills to read — the
+          // answer is the empty menu, not a probe of some other directory.
+          const checkout = workspacePath(record.workspace);
+          if (checkout === undefined) {
+            writeJson(response, 200, { skills: [], commands: [] });
+            return;
+          }
           writeJson(
             response,
             200,
             await readProviderSkillsCached({
               cacheKey: record.id,
               driver: record.driver,
-              checkout: record.workspace.path,
+              checkout,
               ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
               ...(options.providerSkills?.loadProviderCommands
                 ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
@@ -3427,10 +3455,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             () => {
               const record = store.getSession(session.sessionId);
               if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
+              // A run is a process in a directory; a session with none cannot
+              // have one. Stated separately from the project check because they
+              // are different absences, even though today only one session has
+              // both.
+              const worktreePath = workspacePath(record.workspace);
+              if (worktreePath === undefined) throw new RunError("invalid_request", "runs need a working directory");
               return {
                 sessionId: record.id,
                 projectId: record.projectId,
-                worktreePath: record.workspace.path,
+                worktreePath,
                 ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
               };
             },

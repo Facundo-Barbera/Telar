@@ -1225,7 +1225,11 @@ export class EngineWorker {
       // SDK reports as a misleading "native binary" error — the folder, not
       // the binary, is what is gone (a moved checkout, a deleted worktree).
       // Said plainly here, in the words that fix it, before anything spawns.
-      assertProjectRoot(cwd);
+      //
+      // A CLAIM WITH NO `projectRoot` HAS NOTHING TO CHECK (#526) — that is a
+      // session with no working directory, not one whose folder went missing,
+      // and the check is skipped rather than passed a substitute.
+      if (cwd !== undefined) assertProjectRoot(cwd);
       /**
        * THE SESSION'S BROWSER LEASE, one binding per session rather than one
        * per run. The lease's url+token are baked into the provider's live
@@ -1272,7 +1276,9 @@ export class EngineWorker {
           scopeKey: sessionId,
           // Where a `file:` navigation may point — the session's own checkout,
           // and nowhere else. Stable for the session's life, like the scope.
-          workspaceRoot: cwd,
+          // Absent for a session with no checkout, which `fileUrlViolation`
+          // already reads as "no local files at all" rather than "no fence".
+          ...(cwd === undefined ? {} : { workspaceRoot: cwd }),
           gate: (input) => refs.gate(input),
           onNavigated: (state) => refs.onNavigated(state),
           fillSecret: (args, callBrowser, profile) => refs.fillSecret(args, callBrowser, profile),
@@ -1512,7 +1518,10 @@ export class EngineWorker {
         prompt,
         promptFromHuman,
         sessionId,
-        cwd,
+        // Absent-means-absent, like everything else spread into this call: a
+        // project-less session has no directory and the driver is told so
+        // rather than handed one.
+        ...(cwd === undefined ? {} : { cwd }),
         signal: controller.signal,
         // Spread rather than passed as possibly-undefined: `exactOptionalPropertyTypes`
         // distinguishes "absent" from "present and undefined", and the drivers
@@ -1560,6 +1569,15 @@ export class EngineWorker {
         ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
+        /**
+         * THE SESSION'S OWN ROWS, for the driver that rebuilds its conversation
+         * from them rather than resuming one the provider holds. Back over the
+         * client like everything else here — the worker holds no store handle —
+         * and WINDOWED, because a coordinator with a thousand turns behind it
+         * would otherwise pay for all of them on every message. The driver's
+         * own character budget is what actually decides how much is sent.
+         */
+        transcript: async (options) => (await this.options.client.session(sessionId, { turns: options?.turns ?? 80 })).items,
         // The project notebook, hoisted above for the same reason. Absent on a
         // project-less session, which is no notebook rather than an empty one.
         ...(notesCapability ? { notes: notesCapability } : {}),
@@ -1586,14 +1604,22 @@ export class EngineWorker {
          * is this turn's own checkout; the report rides the same observation
          * channel as everything else the worker sees, so the engine journals
          * it under this turn and a stop refuses it like any late report.
+         *
+         * ABSENT WITH NO CHECKOUT. The whole tool is a path inside a fence, and
+         * a session with no directory has no fence to put one in — so it does
+         * not exist rather than existing and refusing every call.
          */
-        display: createDisplayCapability({
-          cwd,
-          report: (observation) =>
-            this.options.client
-              .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
-              .then(() => undefined),
-        }),
+        ...(cwd === undefined
+          ? {}
+          : {
+              display: createDisplayCapability({
+                cwd,
+                report: (observation) =>
+                  this.options.client
+                    .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
+                    .then(() => undefined),
+              }),
+            }),
         onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the

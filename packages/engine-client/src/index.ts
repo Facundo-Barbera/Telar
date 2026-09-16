@@ -280,6 +280,26 @@ export type SessionSnapshot = {
  * trips are strictly serial and each one crosses a cockpit route handler as
  * well as the engine. The engine holds both halves at one instant.
  */
+/**
+ * The designation, plus whether the assistant it designates can actually call a
+ * model.
+ *
+ * THE CREDENTIAL RIDES THE SAME ANSWER because one pane reads both and must not
+ * be able to draw a switched-on Main beside a stale "no key". WHICH RUNG
+ * answered, never the key itself: `source` absent means all three are empty and
+ * the setup field is the honest thing to show, and `rejected` means the newest
+ * settled turn was refused by the service — a key that exists and does not work.
+ *
+ * BOTH OPTIONAL AT EVERY HOP. An engine older than this field sends no
+ * `credential`, and a client must read that as "cannot say" rather than as "no
+ * key" — the difference between a quiet pane and one demanding setup from
+ * somebody whose assistant is working.
+ */
+export type MainSessionAnswer = {
+  mainSession: MainSession;
+  credential?: { source?: "setting" | "environment" | "cli"; rejected?: boolean };
+};
+
 export type SessionBootstrap = SessionSnapshot & {
   /**
    * The journal from `cursor`. Empty on a quiet session, which is the ordinary
@@ -726,20 +746,21 @@ export class EngineClient {
 
   /** Which conversation this Mac calls main, and whether it is switched on —
    *  see `MainSession`. Environment-wide, like the two rules above. */
-  mainSession(): Promise<{ mainSession: MainSession }> {
+  mainSession(): Promise<MainSessionAnswer> {
     return this.request("GET", "/v2/main-session");
   }
 
   /**
    * Switch it on or off, and say which conversation it is.
    *
-   * `sessionId` DESIGNATES AN EXISTING ONE; `projectId` asks the engine to
-   * create one, and is consulted ONLY when nothing usable is designated already
-   * — which is what makes enable / disable / re-enable and a restart incapable
-   * of leaving two. A bare `{ enabled: true }` with nothing designated is
-   * refused rather than guessing a project.
+   * `sessionId` DESIGNATES AN EXISTING ONE — a conversation somebody already
+   * has, which keeps its project and its provider and becomes ordinary again
+   * when the switch goes off. With nothing designated, `{ enabled: true }` MINTS
+   * one: project-less, on the engine's own driver. There is nothing left to
+   * choose, which is what makes enable / disable / re-enable and a restart
+   * incapable of leaving two.
    */
-  setMainSession(patch: { enabled?: boolean; sessionId?: string; projectId?: string }): Promise<{ mainSession: MainSession }> {
+  setMainSession(patch: { enabled?: boolean; sessionId?: string; model?: string }): Promise<MainSessionAnswer> {
     return this.request("PATCH", "/v2/main-session", patch);
   }
 

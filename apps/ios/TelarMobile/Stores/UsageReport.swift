@@ -109,13 +109,14 @@ struct UsageFold: Equatable {
 
 /// THE DRIVERS, IN THE ORDER THE WEB LISTS THEM, and their labels — the phone
 /// and the Mac name the same provider the same way.
-let usageDrivers = ["claude", "codex", "opencode"]
+let usageDrivers = ["claude", "codex", "opencode", "telar"]
 
 func usageDriverLabel(_ driver: String) -> String {
     switch driver {
     case "claude": "Claude"
     case "codex": "Codex"
     case "opencode": "OpenCode"
+    case "telar": "Telar"
     // A provider this build predates is named by its own id rather than
     // dropped: an unlabelled row still carries real spend.
     default: driver

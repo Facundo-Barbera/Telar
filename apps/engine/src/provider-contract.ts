@@ -1,6 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { Item, McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { DsCapability } from "./ds/capability";
@@ -59,7 +59,16 @@ export type DriverRun = {
    * their parent at every turn boundary.
    */
   sessionId: string;
-  cwd: string;
+  /**
+   * WHERE THE PROVIDER RUNS — and OPTIONAL since #526, mirroring
+   * `WorkerClaim.projectRoot`.
+   *
+   * ABSENT MEANS THERE IS NO DIRECTORY, not "pick one". A driver that spawns a
+   * process must refuse rather than fall back to the worker's own cwd, which
+   * would start a coding agent inside Telar's application-support folder. The
+   * `telar` driver spawns nothing and simply never reads this.
+   */
+  cwd?: string;
   signal: AbortSignal;
   /**
    * SEND NOW: text a human pushed into this running turn. The worker fills
@@ -250,6 +259,26 @@ export type DriverRun = {
    * down. Same key, same tool names, same approvals.
    */
   telarSocketLease?: { url: string; token: string; generation: string };
+  /**
+   * THE SESSION'S OWN TRANSCRIPT ROWS, for a driver that has no provider-side
+   * conversation to resume (#526).
+   *
+   * Claude, Codex and OpenCode each hand their provider a session id and let it
+   * remember; `providerSessionId` below is that continuity. Telar's own loop
+   * talks to a stateless HTTP API, so the conversation it sends is rebuilt from
+   * the rows the engine already wrote — and the worker holds no store handle,
+   * so the read comes back over the same client as every other capability here.
+   *
+   * PER-RUN AND A THUNK, like `sessions` and for the same reasons: it is
+   * assembled from the worker's client (a deployment with none has no history
+   * rather than a broken one), and it must be read AT the turn rather than
+   * captured before it, so a message that arrived while the turn was queued is
+   * in the history the model sees.
+   *
+   * ABSENT MEANS NO HISTORY — a test, an older worker — and a driver must treat
+   * that as an empty conversation rather than as an error.
+   */
+  transcript?(options?: { turns?: number }): Promise<Item[]>;
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**
@@ -334,6 +363,27 @@ export type TurnDriver = {
    */
   stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
+
+/**
+ * THE DIRECTORY A SPAWNING DRIVER CANNOT DO WITHOUT (#526).
+ *
+ * `DriverRun.cwd` became optional so a project-less session is expressible, and
+ * every driver that starts a CLI still needs a folder to start it in. Refusing
+ * HERE, by name, is what keeps the failure legible: the alternative was each
+ * driver falling back to the worker's own cwd, which would run a coding agent
+ * inside Telar's application-support directory and look like a bug in the
+ * agent rather than a session that should never have been routed here.
+ *
+ * It is a routing mistake rather than a user error — the engine only mints a
+ * project-less session on the `telar` driver — so the sentence says which
+ * provider and which session shape disagreed.
+ */
+export function requireCwd(cwd: string | undefined, provider: string): string {
+  if (cwd === undefined) {
+    throw new Error(`${provider} runs inside a working directory, and this session has none. Sessions with no checkout run on Telar's own driver.`);
+  }
+  return cwd;
+}
 
 export class ProviderUnavailableError extends Error {
   constructor(message: string) {

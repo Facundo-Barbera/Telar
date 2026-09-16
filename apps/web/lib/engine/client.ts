@@ -43,6 +43,7 @@ import type {
   AgentOrientation,
   EnvMode,
   MainSession,
+  MainSessionAnswer,
   SessionDefaults,
   SidebarLayout,
   TextGenPolicy,
@@ -498,9 +499,9 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
     /** Which conversation this Mac calls Main — see `MainSession`. The SETTINGS
      *  pane's read; the rail gets the same answer off `liveSessions` below. */
-    mainSession: () => request<{ mainSession: MainSession }>(fetcher, "GET", "/api/main-session"),
-    setMainSession: (patch: { enabled?: boolean; sessionId?: string; projectId?: string }) =>
-      request<{ mainSession: MainSession }>(fetcher, "PATCH", "/api/main-session", patch),
+    mainSession: () => request<MainSessionAnswer>(fetcher, "GET", "/api/main-session"),
+    setMainSession: (patch: { enabled?: boolean; sessionId?: string; model?: string }) =>
+      request<MainSessionAnswer>(fetcher, "PATCH", "/api/main-session", patch),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),

@@ -133,7 +133,10 @@ export type SessionActionTarget = {
   projectName?: string;
   /** Which Mac. Absent for the local engine. */
   hostId?: string;
-  workspacePath: string;
+  /** Where the session's files are. ABSENT ON A SESSION WITH NO CHECKOUT — see
+   *  `SessionWorkspace`'s `none` variant — so "Copy path" is simply not offered
+   *  rather than copying an empty string. */
+  workspacePath?: string;
   /**
    * THE SESSION'S OWN BRANCH, which only a worktree session has. A local
    * session runs on the project's checkout, where the branch is a property of
@@ -420,7 +423,9 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
    */
   const copies: SessionActionItem[] = [
     { id: "copy-link", label: "Link", icon: "copy", run: () => actions.copyLink(href) },
-    { id: "copy-path", label: "Path", icon: "copy", run: () => actions.copy(session.workspacePath) },
+    ...(session.workspacePath
+      ? [{ id: "copy-path", label: "Path", icon: "copy" as const, run: () => actions.copy(session.workspacePath!) }]
+      : []),
     ...(session.branch ? [{ id: "copy-branch", label: "Branch", icon: "copy" as const, run: () => actions.copy(session.branch!) }] : []),
     { id: "copy-id", label: "Session ID", icon: "copy", run: () => actions.copy(session.id) },
   ];

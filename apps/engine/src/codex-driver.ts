@@ -53,7 +53,7 @@ import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
-import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./provider-contract";
+import { normalizeOutcome, requireCwd, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./provider-contract";
 
 /**
  * The posture a thread runs under.
@@ -270,7 +270,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
   return {
     async run({
       prompt,
-      cwd,
+      cwd: claimedCwd,
       signal,
       model: turnModel,
       effort: turnEffort,
@@ -296,6 +296,9 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
        * turn, so it wins; `CodexDriverOptions.model` remains the deployment-wide
        * default for a worker started without one.
        */
+      // Codex spawns an app-server in a directory; a session with none is a
+      // routing mistake and says so before anything starts. See `requireCwd`.
+      const cwd = requireCwd(claimedCwd, "Codex");
       const model = turnModel ?? options.model ?? DEFAULT_CODEX_MODEL;
       const effort = turnEffort ?? options.effort;
       // Throws `ProviderUnavailableError` when Codex is not installed, BEFORE a

@@ -88,6 +88,7 @@ export type { DriverRequest, DriverRequestOutcome, DriverRun, DriverResult, Prov
   SessionsCapability, DsCapability, DisplayCapability, LatexCapability } from "./provider-contract";
 import { ProviderUnavailableError, normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun,
   type DriverResult, type ProviderTurnBinding, type DriverSessionHooks, type TurnDriver } from "./provider-contract";
+import { requireCwd } from "./provider-contract";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */
 type SdkCanUseTool = (
@@ -1253,7 +1254,7 @@ export function createClaudeDriver(
       prompt,
       promptFromHuman,
       sessionId,
-      cwd,
+      cwd: claimedCwd,
       signal,
       model,
       effort,
@@ -1289,6 +1290,9 @@ export function createClaudeDriver(
           "Claude Agent SDK is unavailable; install and configure Claude Code before retrying",
         );
       }
+      // The Claude SDK spawns its CLI in a directory; a session with none is a
+      // routing mistake and says so before anything starts. See `requireCwd`.
+      const cwd = requireCwd(claimedCwd, "Claude Code");
       const sdkEffort = claudeEffort(effort);
       const userServers = claudeMcpServers(userMcpServers);
       const contextEnv = claudeContextEnvForModel(model);
