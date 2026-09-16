@@ -185,6 +185,7 @@ import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { findVolumeMount, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
@@ -2148,6 +2149,15 @@ export class EngineStore {
    * flight to order.
    */
   private readonly worktreeQueue: WorktreeQueue = createWorktreeQueue();
+  /**
+   * HOW THIS STORE ASKS THE MACHINE ABOUT DISKS — see `volumes.ts`.
+   *
+   * INJECTED BY TESTS ONLY, and the seam this whole feature is testable on: a
+   * fake mount is a temp directory with a stable uuid, so unplug, remount at a
+   * new path and the recreated-empty-mountpoint case are unit tests rather than
+   * a drawer of USB sticks.
+   */
+  private readonly volumes: VolumeDeps;
   private readonly gh: GhRunner;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
@@ -3757,6 +3767,10 @@ export class EngineStore {
        *  the default is the bundled one, and a test about the overlay should
        *  not have to know which models the manifest declares this week. */
       manifest?: ModelManifest;
+      /** How disks are asked about (`volumes.ts`). INJECTED BY TESTS ONLY — the
+       *  default reads the real machine's mounts and `diskutil`, and a test
+       *  about an unplugged drive should not need a drive. */
+      volumes?: VolumeDeps;
     } = {},
   ) {
     this.notifier = options.notifier;
@@ -3773,6 +3787,7 @@ export class EngineStore {
     // whole of git, and two seams would let a fake apply to half of it.
     this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
     this.gh = options.gh ?? defaultGhRunner;
+    this.volumes = options.volumes ?? {};
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -4128,11 +4143,27 @@ export class EngineStore {
      * comes back whole: same id, same name unless a new one was typed, same
      * data-science and LaTeX blocks.
      */
+    /**
+     * WHICH DISK THIS IS ON, asked once, here — see `volumes.ts`.
+     *
+     * REGISTRATION IS THE ONLY AFFORDABLE MOMENT for the `diskutil` child this
+     * costs: it is a request somebody is waiting on, it happens once per
+     * project, and every later question about the drive is answered by three
+     * `stat`s against what it records. A project on this Mac's own disk gets
+     * nothing and is unchanged in every respect.
+     */
+    const volume = volumeForRoot(projectRoot, this.volumes);
     const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
     if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
       delete tombstone.removedAt;
       tombstone.name = input.name.trim();
       tombstone.updatedAt = this.now();
+      // RE-READ ON THE WAY BACK IN, because a project put away before this
+      // existed carries no volume at all, and one put away on a drive that has
+      // since been reformatted carries the wrong uuid. Restoring is the person
+      // pointing at this folder again, so what the disk says now wins.
+      if (volume === undefined) delete tombstone.volume;
+      else tombstone.volume = volume;
       this.writeDocument(this.paths.projects, parsed);
       this.forgetProjectIcon(tombstone.id);
       this.projectMetadataCache.delete(tombstone.id);
@@ -4151,6 +4182,7 @@ export class EngineStore {
       root: projectRoot,
       createdAt: at,
       updatedAt: at,
+      ...(volume === undefined ? {} : { volume }),
     };
     parsed.projects.push(project);
     this.writeDocument(this.paths.projects, parsed);

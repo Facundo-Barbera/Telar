@@ -474,6 +474,32 @@ export const Project = z.object({
    * to name it — its own settings page, offering to put it back — asks.
    */
   removedAt: Timestamp.optional(),
+  /**
+   * WHICH REMOVABLE DISK THIS CHECKOUT LIVES ON, when it lives on one.
+   *
+   * STORED, AND THE ONE THING HERE THAT SURVIVES AN UNPLUG. Every other answer
+   * about an external drive is re-derived from the filesystem; this is the
+   * identity that outlives it, and `uuid` is the field that does the work.
+   * macOS mounts a volume whose name is already taken at `<name> 1`, so the
+   * PATH changes on an ordinary replug — a registry that recognised the drive
+   * by `mount` would mint a new project for the same disk and strand every
+   * session's `projectId`, every MCP server scoped to it and every browser
+   * profile keyed to it. `mount` is kept as the last place it was seen, which
+   * is a hint; the uuid is what a remount is matched on.
+   *
+   * ABSENT FOR A PROJECT ON THIS MACHINE'S OWN DISK, which is every project
+   * registered before this existed, and they behave exactly as they always
+   * did. Absent too for a removable disk with no readable uuid — a network
+   * share, a filesystem `diskutil` has no `VolumeUUID` for — because without a
+   * uuid there is nothing to recover a remount against, and half of this
+   * feature is worse than today's behaviour.
+   */
+  volume: z
+    .object({
+      mount: z.string().min(1),
+      uuid: z.string().min(1),
+    })
+    .optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
