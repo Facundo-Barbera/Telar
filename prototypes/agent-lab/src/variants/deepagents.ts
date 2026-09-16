@@ -45,7 +45,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { Command, interrupt } from "@langchain/langgraph";
 import { createMiddleware } from "langchain";
-import { createDeepAgent, createFilesystemMiddleware, createSubAgentMiddleware } from "deepagents";
+import { createDeepAgent, createFilesystemMiddleware, createSubAgentMiddleware, createSummarizationMiddleware, StateBackend } from "deepagents";
 import * as z from "zod";
 import type { Meter } from "../harness/meter";
 import {
@@ -142,12 +142,16 @@ function policyMiddleware(options: {
       }
 
       const answer = await handler(request);
-      if (key) {
-        const text = typeof answer === "string" ? answer : String((answer as ToolMessage).content);
-        // The effect and its record commit in the same state write.
-        return { update: { effects: { [key]: text } }, result: answer };
-      }
-      return answer;
+      if (!key) return answer;
+      // The effect and its record commit in the same state write. `wrapToolCall`
+      // may only return a ToolMessage or a Command, so the ledger entry has to
+      // travel as a Command carrying the tool message alongside it.
+      const text = typeof answer === "string" ? answer : String((answer as ToolMessage).content);
+      const message =
+        typeof answer === "string"
+          ? new ToolMessage({ tool_call_id: call.id ?? "", name: call.name, content: answer })
+          : (answer as ToolMessage);
+      return new Command({ update: { messages: [message], effects: { [key]: text } } });
     },
   });
 }
@@ -221,10 +225,27 @@ export function buildDeepAgent(options: DeepAgentOptions): BuiltDeepAgent {
 
   const middleware: unknown[] = [meterMiddleware(options.meter)];
   if (approvalMode === "policy") middleware.unshift(policyMiddleware({ approvalPolicy, idempotencyPolicy }));
+  // The default trigger is 170k tokens for a model that declares no window,
+  // which forty Telar-sized turns never reach. Overriding it is the only way
+  // to observe the summariser actually running — and to find out whether the
+  // approval state from turn 3 survives it.
+  // `backend` is optional in the type but NOT in practice: without it the
+  // middleware throws `undefined is not an object (evaluating 'backend.delete')`
+  // inside `adaptBackendProtocol` — and only at the moment summarisation first
+  // fires, which is deep in a long conversation rather than at construction.
+  if (options.summarizeAfterTokens !== undefined) {
+    middleware.unshift(
+      createSummarizationMiddleware({
+        backend: ((config: never) => new StateBackend(config)) as never,
+        trigger: { type: "tokens", value: options.summarizeAfterTokens },
+        keep: { type: "messages", value: 6 },
+      }) as never,
+    );
+  }
   if (options.filesystem === "narrow") {
     middleware.unshift(
       createFilesystemMiddleware({ tools: ["read_file"] }) as never,
-      createSubAgentMiddleware({ subagents: [], generalPurposeAgent: false }) as never,
+      createSubAgentMiddleware({ defaultModel: options.model as never, subagents: [], generalPurposeAgent: false }) as never,
     );
   }
 

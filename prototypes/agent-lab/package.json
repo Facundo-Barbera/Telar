@@ -15,7 +15,15 @@
     "scenario:6": "bun run src/scenarios/6-no-duplicate-delegation.ts",
     "scenario:7": "bun run src/scenarios/7-growing-context.ts",
     "scenarios": "bun run src/scenarios/all.ts",
-    "footprint": "bun run src/tools/footprint.ts"
+    "footprint": "bun run src/tools/footprint.ts",
+    "scenarios:b": "bun run src/scenarios-b/run.ts",
+    "scenario:b:1": "bun run src/scenarios-b/run.ts --only 1",
+    "scenario:b:2": "bun run src/scenarios-b/run.ts --only 2",
+    "scenario:b:3": "bun run src/scenarios-b/run.ts --only 3",
+    "scenario:b:4": "bun run src/scenarios-b/run.ts --only 4",
+    "scenario:b:5": "bun run src/scenarios-b/run.ts --only 5",
+    "scenario:b:6": "bun run src/scenarios-b/run.ts --only 6",
+    "scenario:b:7": "bun run src/scenarios-b/run.ts --only 7"
   },
   "dependencies": {
     "@langchain/core": "^1.2.11",
