@@ -422,6 +422,11 @@ export async function readClaudeSupportedCommands(
         cwd,
         permissionMode: "default",
         abortController: controller,
+        // NO TRANSCRIPT FOR A HANDSHAKE — issue #532, same as the model probe.
+        // This one is worse for being per-checkout: it runs in the session's
+        // own directory, so its leavings were spread across a projects folder
+        // per worktree rather than one.
+        persistSession: false,
         ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });

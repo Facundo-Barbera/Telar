@@ -143,11 +143,22 @@ async function runStructured(input: TextGenDriverInput, prompt: string, schema: 
 /** `claude -p` with `--json-schema` prints one JSON envelope whose
  *  `structured_output` is the schema-shaped answer. Verified against the
  *  installed CLI; the flag set is t3 code's, minus its permission bypass —
- *  a schema-bound print run needs no tools, so denied-by-default is right. */
+ *  a schema-bound print run needs no tools, so denied-by-default is right.
+ *
+ *  `--no-session-persistence` IS NOT OPTIONAL HERE — issue #532. Claude Code
+ *  writes a full transcript for every session including a print-mode one-liner,
+ *  and it attaches environment, skill listing and prompt snapshots to each, so
+ *  one title cost ~250 KB under `~/.claude/projects/<slug-of-cwd>/` and the
+ *  dogfood machine had accumulated 8.2 GB of them. The flag (print mode only,
+ *  verified against 2.1.270) means the run is never saved and cannot be
+ *  resumed, which is exactly what a title call wants. A CLI too old to know the
+ *  flag fails the run, and a failed run keeps the placeholder — the same
+ *  best-effort contract as every other failure in this file. */
 async function runClaude(input: TextGenDriverInput, prompt: string, schema: object): Promise<Record<string, unknown> | undefined> {
   const executable = requireCli("claude", { ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}) });
   const args = [
     "-p",
+    "--no-session-persistence",
     "--output-format",
     "json",
     "--json-schema",

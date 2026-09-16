@@ -186,6 +186,14 @@ export async function readClaudeModels(
         cwd: process.cwd(),
         permissionMode: "default",
         abortController: controller,
+        /**
+         * NO TRANSCRIPT FOR A HANDSHAKE — issue #532. A query that never sends
+         * a message still opens a session, and an opened session is ~250 KB
+         * written under `~/.claude/projects/<slug-of-cwd>/` and kept forever.
+         * This probe exists to fill a menu; there is nothing here anybody would
+         * ever resume.
+         */
+        persistSession: false,
         ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
