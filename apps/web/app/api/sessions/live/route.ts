@@ -133,8 +133,8 @@ async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Respons
        * anything not named here is dropped. The hosts proxy forwards the engine
        * verbatim, so a field omitted here is present for every PAIRED Mac and
        * missing for the local one — a rail that draws the entry for other
-       * people's machines and never for your own, which is exactly what
-       * `mainSession` did before it.
+       * people's machines and never for your own, which is the hole the
+       * coordinator flag this replaces had for as long as it existed.
        */
       ...(agent ? { agent } : {}),
     }, {

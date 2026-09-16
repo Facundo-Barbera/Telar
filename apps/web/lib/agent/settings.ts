@@ -20,9 +20,10 @@
  * and a per-browser copy would mean an entry in one client's rail and not
  * another's — the exact disagreement the setting is machine-scoped to prevent.
  *
- * ── THIS HOOK IS LOCAL-ONLY, WHICH `useMainSession` WAS NOT ─────────────────
- * That one took a `hostId` because `/hosts/<id>/main` read its designation
- * through it. The Agent screen reads its own state off `useAgentThread`, and
+ * ── THIS HOOK IS LOCAL-ONLY, WHICH ITS PREDECESSOR WAS NOT ─────────────────
+ * The coordinator hook this replaces took a `hostId`, because a paired Mac's
+ * screen read its designation through it. The Agent screen reads its own state
+ * off `useAgentThread` instead, and
  * Settings is scoped to the local engine — there is no `/hosts/<id>/settings`
  * route to serve. A host parameter here would be one nothing could pass.
  */

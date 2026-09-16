@@ -48,25 +48,31 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
 /// exactly one row; three paired and coordinating means three, because hiding
 /// two would be the sidebar deciding which Mac the reader meant.
 ///
-/// A DESIGNATION WITH NO ROW DRAWS NOTHING. The id is the Mac's; the
-/// conversation it names is in that Mac's own sections because its engine keeps
-/// it there while Main is on. A Mac still answering its first poll has the id
-/// and not yet the row, and a row that opened nothing would be worse than none.
+/// ONE ROW PER MAC THAT HAS ONE, IN THE MACS' OWN ORDER — the order their
+/// groups appear in below, so a band that re-sorted itself as conversations
+/// were touched cannot move under the thumb.
 ///
-/// IN THE MACS' OWN ORDER, which is the order their groups appear in below: a
-/// band that re-sorted itself as conversations were touched would move under
-/// the thumb.
-func mainSessionRows(
-    _ parts: [(hostId: HostID, main: MainSession?, sections: InboxSections)],
-    filter: HostID?
-) -> [HostedSession] {
+/// NOTHING IS LOOKED UP IN THE SECTIONS, which is the whole difference from the
+/// Main band this replaces. That one had to find a designated conversation
+/// among the Mac's rows: a Mac still answering its first poll had the id and
+/// not yet the row, so the entry appeared a beat late, and a designation whose
+/// conversation had fallen off the page drew nothing at all. The Agent is not a
+/// session — one flag decides, and the row is drawn the moment the Mac says it
+/// exists.
+func agentRows(_ parts: [(hostId: HostID, enabled: Bool)], filter: HostID?) -> [HostedAgent] {
     parts.compactMap { part in
         guard filter == nil || part.hostId == filter else { return nil }
-        guard let main = part.main, main.enabled, let sessionId = main.sessionId else { return nil }
-        let rows = part.sections.active + part.sections.snoozed + part.sections.settled
-        guard let session = rows.first(where: { $0.id == sessionId }) else { return nil }
-        return HostedSession(hostId: part.hostId, session: session)
+        guard part.enabled else { return nil }
+        return HostedAgent(hostId: part.hostId)
     }
+}
+
+/// A MAC'S AGENT, as a thing the sidebar can put in a `ForEach`. It carries the
+/// host and nothing else, because the row shows a fixed word and opens a fixed
+/// destination — see `agentRows`.
+struct HostedAgent: Identifiable, Equatable {
+    let hostId: HostID
+    var id: HostID { hostId }
 }
 
 @MainActor @Observable final class MergedInbox {
@@ -99,11 +105,11 @@ func mainSessionRows(
         mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: filter)
     }
 
-    /// THE CONVERSATIONS THE MACS CALL MAIN (#522) — experimental, off by
+    /// THE MACS THAT HAVE A BUILT-IN AGENT (#531) — experimental, off by
     /// default, and empty on every phone whose Macs have never switched it on.
-    /// The fold is `mainSessionRows` above, where the tests can reach it.
-    var mainSessions: [HostedSession] {
-        mainSessionRows(order.compactMap { id in stores[id].map { (id, $0.mainSession, $0.sections) } }, filter: filter)
+    /// The fold is `agentRows` above, where the tests can reach it.
+    var agents: [HostedAgent] {
+        agentRows(order.compactMap { id in stores[id].map { (id, $0.agentEnabled) } }, filter: filter)
     }
 
     /// HOW MANY SETTLED ROWS THE MACS ARE HOLDING BACK (#457), summed over the

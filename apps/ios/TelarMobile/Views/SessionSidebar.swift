@@ -63,35 +63,72 @@ struct SessionSidebar: View {
                     ContentUnavailableView("No sessions found", systemImage: "text.bubble", description: Text("Try another title or project."))
                 }
             } else {
-                // THE CONVERSATION EACH MAC COORDINATES FROM, above everything
-                // (#522) — experimental, and absent on every phone whose Macs
-                // have never switched it on.
+                // EACH MAC'S BUILT-IN AGENT, above everything (#531) —
+                // experimental, and absent on every phone whose Macs have never
+                // switched one on.
+                //
+                // ONE ROW PER MAC, and nothing is looked up in that Mac's
+                // sessions to draw it. The Main band this replaces had to find a
+                // designated conversation among the rows, so it appeared a beat
+                // late on a Mac still answering its first poll and not at all if
+                // the conversation had fallen off the page. The Agent is not a
+                // session: one flag decides, and the row is there the moment the
+                // Mac says it is.
                 //
                 // FIRST, AND OUTSIDE SEARCH, for the desktop's reason: it is not
                 // a band and not an entry in the list, it is the row that is
                 // always in the same place. A search is a question about the
-                // whole list and flattens every band, so this one goes with
-                // them — the row is still in the results, as itself.
+                // whole list and flattens every band — and this row is not in
+                // the list to be found, so it simply goes.
                 //
-                // SLIM, BECAUSE THE HEADER HAS ALREADY SAID WHAT IT IS. A card
-                // would spend three lines on status and branch, which are
-                // questions about work in progress rather than about where to
-                // go to coordinate. The conversation also keeps its ordinary row
-                // in its project group below: one row at the top is not a
-                // promise the other has gone.
-                let mainRows = inbox.mainSessions
-                if !mainRows.isEmpty {
+                // A DIRECT DESTINATION rather than a `NavigationLink(value:)`.
+                // The value form resolves against the destinations registered
+                // for session ids, and an Agent has no id in that namespace —
+                // there is nothing to register it under.
+                let agentRows = inbox.agents
+                if !agentRows.isEmpty {
                     Section {
-                        ForEach(mainRows) { row in sessionRow(row, variant: .slim, placesAbove: settings.hosts.count) }
+                        ForEach(agentRows) { row in
+                            NavigationLink {
+                                if let api = settings.api(for: row.hostId) {
+                                    AgentView(hostId: row.hostId, api: api)
+                                } else {
+                                    // A Mac whose client cannot be built is one
+                                    // this phone is no longer paired with. The
+                                    // sentence is better than a blank screen.
+                                    ContentUnavailableView(
+                                        "That Mac is not connected",
+                                        systemImage: "sparkles",
+                                        description: Text("Pair with it again to reach its Agent.")
+                                    )
+                                }
+                            } label: {
+                                Label {
+                                    HStack(spacing: 6) {
+                                        Text("Agent").font(.subheadline)
+                                        // WHICH MAC, and only when there is more
+                                        // than one to tell apart — the rule
+                                        // `HostLabel` applies to every other row
+                                        // on this sidebar.
+                                        if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
+                                            Text(name).font(.caption).foregroundStyle(Theme.textMuted)
+                                        }
+                                    }
+                                } icon: {
+                                    Image(systemName: "sparkles")
+                                }
+                                .lineLimit(1)
+                            }
+                        }
                     } header: {
                         // A GLYPH BEFORE THE WORD, the treatment "Needs you"
                         // gets and for the same reason: it says this band is
                         // different before the word is read. No count — one Mac
-                        // has at most one, so a number here would only ever
-                        // read "1".
+                        // has at most one Agent, so a number here would only
+                        // ever say how many Macs are paired.
                         HStack(spacing: 6) {
                             Image(systemName: "sparkles")
-                            Text(mainRows.count > 1 ? "Main sessions" : "Main session")
+                            Text(agentRows.count > 1 ? "Agents" : "Agent")
                         }
                         .bandCaption()
                         .accessibilityElement(children: .combine)
