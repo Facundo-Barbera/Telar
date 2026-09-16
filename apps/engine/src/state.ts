@@ -158,7 +158,7 @@ import {
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
-import { isAgentSelf } from "./agent/identity";
+import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
@@ -7664,6 +7664,12 @@ export class EngineStore {
       origin?: "session";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
+      /**
+       * THE ONE SENDER A HUMAN STOP DOES NOT LATCH OUT — set by
+       * `submitAgentTurn` from the built-in Agent's proof and by nothing else.
+       * See the latch below for the argument.
+       */
+      fromBuiltInAgent?: true;
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
@@ -7682,7 +7688,30 @@ export class EngineStore {
       if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
-    if (input.origin === "session" && session.agentMessagesBlocked) {
+    /**
+     * A HUMAN STOP LATCHES OUT PEERS, NOT THE THING THE HUMAN IS TYPING AT
+     * (#539).
+     *
+     * The latch was written for a runaway orchestrator: a person presses Stop, a
+     * coordinator two rooms away has not noticed, and its next `sessions_send`
+     * restarts exactly the work that was just ended. Nobody decided that, which
+     * is why it refuses.
+     *
+     * The built-in Agent is the opposite case and the owner met it on day one.
+     * It has no errand of its own: every send it makes is one a person asked for
+     * in the composer, seconds earlier, in front of them. Refusing that one is
+     * the machine telling the human they may not do the thing they are doing —
+     * and the only way round it was to go to the stopped session and type
+     * something there, which is the Stop undone by hand.
+     *
+     * SO THE EXEMPTION IS THE SENDER, NOT THE INTENT. `fromBuiltInAgent` comes
+     * from a proof only the in-process Agent capability can build (see
+     * `submitAgentTurn`); a peer session's send carries a claim instead and is
+     * still refused here, wake included. And the latch is NOT cleared by the
+     * Agent going through it — only a human message on the session itself does
+     * that, below — so the next peer that tries is still turned away.
+     */
+    if (input.origin === "session" && session.agentMessagesBlocked && !input.fromBuiltInAgent) {
       throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
     }
     /**
@@ -7845,6 +7874,7 @@ export class EngineStore {
     if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
     if (input.origin !== "session" && kind !== "compact" && session.agentMessagesBlocked) {
       delete session.agentMessagesBlocked;
+      delete session.agentMessagesBlockedAt;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }
     queue.turns.push(turn);
@@ -7963,13 +7993,43 @@ export class EngineStore {
   submitAgentTurn(
     sessionId: string,
     input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string },
-    proof?: { sessionId: string; runId: string; claimToken: string },
-  ): { turn: Turn; replayed: boolean } {
+    proof?: AgentSenderProof,
+  ): { turn: Turn; replayed: boolean; stoppedByUser?: { at?: number } } {
     let sender: { sessionId?: string } = {};
+    let fromBuiltInAgent = false;
     if (proof) {
       assertId(proof.sessionId, "sender session id");
-      const claimed = this.requireSenderClaim(proof);
-      sender = { sessionId: claimed.sessionId };
+      if (proof.claimToken === undefined) {
+        /**
+         * THE AGENT'S PROOF IS ITS OWN NAME, and it is claimless because there
+         * is nothing to claim: the Agent is a LangGraph thread, not a session,
+         * so it has no queue, no run and no token the engine could check — the
+         * same reason `subscribe` knows it by name (see `agent/identity.ts`).
+         *
+         * WHAT MAKES THAT SAFE IS THE SHAPE, not a check. `AgentTurnInput`, the
+         * only wire form of this argument, requires a run id and a token, so no
+         * HTTP body can produce a claimless proof at all — and the guard below
+         * stops a body from reaching this branch by NAMING `agent` with a forged
+         * claim instead. In-process, `buildSessionsCapability` builds it from
+         * the `self` it was constructed with, which the daemon supplies.
+         *
+         * IT STAMPS NO SENDER. The Agent has no session page to link to and no
+         * id a `sessions_read` would resolve, so a turn attributed to `agent`
+         * would be a dead link in the transcript and a lie in the notice. It
+         * stays what it is today — an agent's words, with no session behind
+         * them — and the exemption below is the only thing the proof buys.
+         */
+        if (!isAgentSelf(proof.sessionId)) {
+          throw new EngineStateError("invalid_request", "a claimless sender proof belongs to the built-in Agent alone");
+        }
+        fromBuiltInAgent = true;
+      } else {
+        if (isAgentSelf(proof.sessionId)) {
+          throw new EngineStateError("invalid_request", "the built-in Agent has no claim to send with; this proof is not its own");
+        }
+        const claimed = this.requireSenderClaim(proof);
+        sender = { sessionId: claimed.sessionId };
+      }
     }
     const intent = input.intent ?? "report";
     /**
@@ -8005,11 +8065,25 @@ export class EngineStore {
      * per-reader drift this field exists to prevent.
      */
     const scope = intent === "task" ? input.scope : undefined;
+    /**
+     * READ BEFORE THE SUBMIT, because the submit is what may clear it — and
+     * reported even though the send SUCCEEDED. The Agent going through a latch
+     * it is exempt from is the one case where a person's Stop is silently
+     * stepped over, so the tool answer says whose Stop it was and when. The
+     * caller decides what to do with that; nothing here refuses.
+     */
+    const latched = fromBuiltInAgent ? this.getSession(sessionId) : undefined;
+    const stoppedByUser = latched?.agentMessagesBlocked
+      ? { ...(latched.agentMessagesBlockedAt !== undefined ? { at: latched.agentMessagesBlockedAt } : {}) }
+      : undefined;
     const result = this.submitTurn(sessionId, {
       runId: input.runId, input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
-      ...(proof ? { agentSourceRunId: proof.runId } : {}),
+      // The Agent's proof names no run — it has none — so there is no source
+      // run to carry. A session sender's always does.
+      ...(proof?.runId ? { agentSourceRunId: proof.runId } : {}),
+      ...(fromBuiltInAgent ? { fromBuiltInAgent: true as const } : {}),
       agentNotice: agentNotice({
         recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
         ...(sender.sessionId ? { sender } : {}),
@@ -8019,7 +8093,7 @@ export class EngineStore {
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
     });
-    return result;
+    return { ...result, ...(stoppedByUser ? { stoppedByUser } : {}) };
   }
 
   /**
@@ -9055,8 +9129,11 @@ export class EngineStore {
     if (stopped.length > 0) this.writeQueue(sessionId, queue);
     // A peer must not undo a human Stop by immediately sending another turn.
     // A fresh human message clears this gate; no discarded work is replayed.
+    // The stamp rides with it so the one exempt sender — the built-in Agent,
+    // see `submitAgentTurn` — can say WHEN the person stopped this.
     if (by === "user") {
       session.agentMessagesBlocked = true;
+      session.agentMessagesBlockedAt = at;
       session.updatedAt = at;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }

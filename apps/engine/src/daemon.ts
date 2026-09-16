@@ -91,6 +91,7 @@ import {
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
 import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
+import { isAgentSelf } from "./agent/identity";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
 import { readAgentModels } from "./models";
@@ -1133,9 +1134,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
-      // An agent's words, with no session to attribute them to: the caller is
-      // the user's own chat client, outside any turn. Never the person's.
-      send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
+      /**
+       * An agent's words, with no session to attribute them to: the caller is
+       * the user's own chat client, outside any turn. Never the person's.
+       *
+       * THE AGENT'S BUILD PASSES ITS OWN NAME AS PROOF (#539), and that is the
+       * whole of the difference. It buys one thing — a human Stop on the
+       * recipient latches out peer sessions and not the Agent, which the person
+       * is typing at right now — and the store says in its answer when that
+       * latch was stepped over. The socket's build has no `self` and so sends
+       * unproven, exactly as before: a chat client is not the Agent.
+       */
+      send: async (sessionId, input) =>
+        store.submitAgentTurn(sessionId, input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
       read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).

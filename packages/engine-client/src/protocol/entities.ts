@@ -965,6 +965,23 @@ export const Session = z.object({
    * It never holds or replays an old backlog. */
   agentMessagesBlocked: z.boolean().optional(),
 
+  /**
+   * WHEN THE PERSON PRESSED STOP — the companion stamp to the latch above, set
+   * and cleared with it.
+   *
+   * It exists because one sender is EXEMPT from the latch and still has to be
+   * told about it: the built-in Agent, which a human is driving turn by turn
+   * (#539). Its `sessions_send` goes through, and its tool answer says the
+   * session was stopped by the person and when — a sentence that needs a time,
+   * and `updatedAt` is not one (any later touch moves it). A peer session's
+   * send is still refused outright, so only the Agent ever reads this.
+   *
+   * ABSENT ON A RECORD LATCHED BEFORE THIS FIELD EXISTED, which is why every
+   * reader treats the time as optional and says "stopped by the person" without
+   * a time rather than inventing one.
+   */
+  agentMessagesBlockedAt: Timestamp.optional(),
+
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */
@@ -1016,6 +1033,7 @@ export const LiveSessionRow = Session.omit({
   resumeCursor: true,
   resumeAfterRateLimit: true,
   agentMessagesBlocked: true,
+  agentMessagesBlockedAt: true,
   paused: true,
   unsettledAssignments: true,
 });

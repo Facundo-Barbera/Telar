@@ -127,8 +127,19 @@ export type SessionsCapability = {
    */
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
-   *  tool call cannot double-submit. */
-  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{ turn: Turn; replayed: boolean }>;
+   *  tool call cannot double-submit.
+   *
+   *  `stoppedByUser` IS AN ANSWER TO A SEND THAT WORKED, not an error (#539).
+   *  Only one sender ever sees it: the built-in Agent, which a human Stop on the
+   *  recipient does not latch out because a human is driving it. It means the
+   *  message landed on a session a PERSON had stopped, and the wall says so in
+   *  words. Optional at this seam — a capability whose sender is latched out
+   *  never reaches the case, so it simply never sets it. */
+  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{
+    turn: Turn;
+    replayed: boolean;
+    stoppedByUser?: { at?: number };
+  }>;
   /** The journal after a cursor, at most `limit` rows of it. The STORE returns
    *  the whole tail when no limit is given; the bound is this wall's, because
    *  the wall is what lands in a model's context.
@@ -875,12 +886,37 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
           : `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
-          const { turn } = await capability.send(sessionId, { runId, input: text, intent: args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report" });
+          const { turn, stoppedByUser } = await capability.send(sessionId, { runId, input: text, intent: args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report" });
           return json({
             sessionId,
             runId: turn.runId,
             state: turn.state,
             delivery: turn.agentDelivery,
+            /**
+             * THE SEND WORKED AND A PERSON HAD STOPPED THIS SESSION — both, and
+             * the second is not a footnote (#539).
+             *
+             * A human Stop latches peer sessions out entirely; this sender is
+             * exempt because the human is driving it. So the exemption is only
+             * defensible if it is VISIBLE: the model that just restarted a
+             * session somebody deliberately stopped is told so, in the answer to
+             * the call that did it, and can say it back to the person rather
+             * than discovering the Stop later as a mystery.
+             *
+             * The time is optional because a session latched before the stamp
+             * existed has none — then it is the fact without the clock, never a
+             * guessed one.
+             */
+            ...(stoppedByUser
+              ? {
+                  stoppedByUser: {
+                    ...(stoppedByUser.at !== undefined ? { at: stoppedByUser.at } : {}),
+                    note: stoppedByUser.at !== undefined
+                      ? `A PERSON STOPPED this session at ${new Date(stoppedByUser.at).toISOString()} and it has had no human message since. Your message went through anyway — the Stop latch holds peer sessions out, not you, because a human is driving you. Tell them you restarted it.`
+                      : "A PERSON STOPPED this session and it has had no human message since. Your message went through anyway — the Stop latch holds peer sessions out, not you, because a human is driving you. Tell them you restarted it.",
+                  },
+                }
+              : {}),
             // WHAT THE OTHER SIDE ACTUALLY SEES, quoted back. A sender that
             // believes its 6 KB report was read verbatim writes the next one
             // the same way; this is where that belief is corrected, with the
