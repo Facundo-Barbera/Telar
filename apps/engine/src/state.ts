@@ -4071,6 +4071,69 @@ export class EngineStore {
       });
   }
 
+  /**
+   * WHAT EACH PROJECT'S AVAILABILITY WAS THE LAST TIME ANYBODY LOOKED.
+   *
+   * NOT A TTL CACHE, and that distinction is the whole design. The value is
+   * never served in place of a probe — `projectAvailability` probes every time,
+   * because three `stat`s are cheaper than any bookkeeping that would avoid
+   * them. What this remembers is the PREVIOUS answer, so a CHANGE can be
+   * noticed: a drive coming back is the moment the branch, the icon, the diff
+   * and the file tree cached while it was away all became lies, and they are
+   * dropped then rather than at the end of somebody's TTL.
+   *
+   * In memory, like every other cache here: it is a fact about a cable, and a
+   * stale one surviving a restart would be worse than probing once on open.
+   */
+  private readonly projectAvailabilityCache = new Map<string, ProjectAvailability>();
+
+  /**
+   * IS THIS PROJECT'S DISK HERE — the one answer every surface reads.
+   *
+   * ONE OWNER, on purpose. A rail deciding for itself whether a folder is
+   * readable, a composer deciding again, and `assertProjectAvailable` deciding a
+   * third time is three chances to disagree about a cable, in three places a
+   * person would have to reconcile by hand. See `probeAvailability` for what it
+   * costs and why the mount is asked before the root.
+   *
+   * ALWAYS FRESH. The tick in `projectMetadata` decides how often anyone ASKS;
+   * it does not make this answer older than the question.
+   */
+  projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
+    const availability = probeAvailability(project, this.volumes);
+    const previous = this.projectAvailabilityCache.get(project.id);
+    if (previous === availability) return availability;
+    this.projectAvailabilityCache.set(project.id, availability);
+    /**
+     * THE FIRST ANSWER IS NOT A TRANSITION. On a cold store every project moves
+     * from "nobody has looked" to something, and dropping every cache for each
+     * of them would make the first read of every surface the slow one.
+     */
+    if (previous !== undefined) this.forgetProjectReads(project);
+    return availability;
+  }
+
+  /**
+   * DROP WHAT WAS READ OFF A DISK THAT HAS SINCE CHANGED UNDER US.
+   *
+   * Called on an availability TRANSITION in either direction. Going away, the
+   * branch and icon in hand were read from a disk nobody can see any more;
+   * coming back, they are whatever the failing reads left behind — a blank
+   * branch, a "no icon", a diff that said `repository: false`. Neither is worth
+   * the ten seconds a TTL would keep it.
+   */
+  private forgetProjectReads(project: Pick<Project, "id" | "root">): void {
+    this.projectMetadataCache.delete(project.id);
+    this.forgetProjectIcon(project.id);
+    // `gitReadCache` is keyed by PATH rather than by project — the overview, the
+    // diff and every file patch under this root — so the root is what identifies
+    // the entries to drop.
+    const prefix = `${project.root}`;
+    for (const key of [...this.gitReadCache.keys()]) {
+      if (key.includes(prefix)) this.gitReadCache.delete(key);
+    }
+  }
+
   /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
    * branch/icon labels arrive on the next poll without blocking worker heartbeats. */
   private readonly projectMetadataCache = new Map<string, {

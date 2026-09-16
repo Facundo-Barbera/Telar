@@ -71,6 +71,68 @@ test("a project on this machine's own disk records no volume and is unchanged", 
   expect(store.getProject("project_plain").volume).toBeUndefined();
 });
 
+/* ------------------------------------------------------------------ *
+ * One owner of availability
+ * ------------------------------------------------------------------ */
+
+test("the store classifies a drive that is here, gone, and faked by an empty folder", () => {
+  const { store, mounts, root } = onADrive();
+  const project = () => store.getProject("project_one");
+
+  expect(store.projectAvailability(project())).toBe("available");
+
+  mounts.unmount("TelarVR");
+  expect(store.projectAvailability(project())).toBe("unmounted");
+
+  mounts.leaveEmptyMountpoint("TelarVR");
+  fs.mkdirSync(root, { recursive: true });
+  expect(store.projectAvailability(project())).toBe("unmounted");
+});
+
+test("a project on this machine's own disk goes MISSING rather than unmounted", () => {
+  const mounts = fixture();
+  const store = new EngineStore(home(), () => 1_000, { volumes: mounts.deps });
+  const root = path.join(mounts.mountRoot, "plain-folder");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_plain", name: "Plain", root });
+
+  expect(store.projectAvailability(store.getProject("project_plain"))).toBe("available");
+  fs.rmSync(root, { recursive: true });
+  expect(store.projectAvailability(store.getProject("project_plain"))).toBe("missing");
+});
+
+test("a TRANSITION drops what was read off the disk, rather than waiting out a TTL", async () => {
+  const mounts = fixture();
+  let now = 1_000;
+  let reads = 0;
+  const store = new EngineStore(home(), () => now, {
+    volumes: mounts.deps,
+    asyncGit: async () => { reads += 1; return { status: 1, stdout: "", stderr: "" }; },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+
+  // Probed once while the drive is here, which is what the ten-second tick and
+  // the sweep at daemon start both do: a transition needs a previous answer to
+  // be a transition FROM, and on a cold store there is nothing cached to drop.
+  expect(store.projectAvailability(store.getProject("project_one"))).toBe("available");
+
+  await store.projectDiffAsync("project_one");
+  const primed = reads;
+  await store.projectDiffAsync("project_one");
+  expect(reads).toBe(primed);
+
+  mounts.unmount("TelarVR");
+  expect(store.projectAvailability(store.getProject("project_one"))).toBe("unmounted");
+
+  // Same instant — the cache's own two seconds have not passed, and the entry
+  // is gone anyway because the disk it was read from is.
+  await store.projectDiffAsync("project_one");
+  expect(reads).toBeGreaterThan(primed);
+});
+
 test("restoring a project re-reads the drive rather than trusting what was stored", () => {
   const { store, mounts } = onADrive();
   store.unregisterProject("project_one");
