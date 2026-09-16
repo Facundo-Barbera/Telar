@@ -1168,6 +1168,62 @@ export type MainSession = z.infer<typeof MainSession>;
  *  existed, which is what an install that never opens Settings keeps doing. */
 export const DEFAULT_MAIN_SESSION: MainSession = { enabled: false };
 
+/**
+ * THE BUILT-IN AGENT, AND EVERYTHING THIS MACHINE REMEMBERS ABOUT IT (#531).
+ *
+ * WHAT CHANGED FROM `MainSession`, WHICH THIS REPLACES. That document
+ * DESIGNATED a conversation: it named a session id, and the coordinator was an
+ * ordinary session wearing a briefing. The Agent is not a session at all — it
+ * has its own identity, its own history and its own lifecycle, and Telar
+ * sessions are resources it operates on through tools. So the id this document
+ * carries is a THREAD id, and nothing in the rail has to exist for it to be
+ * real.
+ *
+ * ENVIRONMENT-SCOPED, for `MainSession`'s own reason: remote web, the desktop
+ * shell and a paired phone must agree about whether the Agent exists, and a
+ * per-browser copy would put an entry in one client's rail and not another's.
+ */
+export const AgentSettings = z.object({
+  /** Off out of the box. A user who never opens the setting sees exactly the
+   *  Telar they had: no entry above the rail, no thread, no document. */
+  enabled: z.boolean(),
+  /**
+   * THE CONVERSATION, as LangGraph's `thread_id` and as OpenCode Go's
+   * `x-opencode-session`. One id, one conversation, both sides.
+   *
+   * IT OUTLIVES `enabled`, exactly as `MainSession.sessionId` did and for the
+   * same requirement: switching the Agent off keeps the thread, so switching it
+   * back on resumes the conversation that was already there rather than minting
+   * a second one. Absent means the Agent has never been switched on.
+   */
+  threadId: z.string().min(1).max(120).optional(),
+  /**
+   * WHICH MODEL THE AGENT RUNS, as the provider's own identifier. Absent means
+   * the default in `agent/go.ts` — a real id rather than a concept, spelled
+   * once so this document does not become a second place it lives. Never
+   * interpreted: it is whatever OpenCode Go serves, passed through.
+   */
+  model: z.string().min(1).max(120).optional(),
+  /**
+   * WHICH CONVERSATION THIS IS — bumped by a RESET and by nothing else.
+   *
+   * NARROWER THAN `MainSession.generation`, which counted every change to "who
+   * is Main, and is it on". There is no designation left to move, and enabling
+   * or disabling does not start a new conversation — only a reset does. It is
+   * what a client compares to know its cached transcript is about a thread that
+   * no longer exists.
+   *
+   * ABSENT MEANS ZERO, so a document written before this field parses rather
+   * than costing the thread.
+   */
+  generation: z.number().int().nonnegative().optional(),
+});
+export type AgentSettings = z.infer<typeof AgentSettings>;
+
+/** Off, and no thread yet — what an install that never opens Settings keeps
+ *  doing, and what an unreadable document falls back to. */
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = { enabled: false };
+
 /** Generous: a rail with a thousand project groups has other problems. The cap
  *  exists so a runaway client cannot grow this document without bound. */
 export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
