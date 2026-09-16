@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Evidence lab for issue #528 — LangGraph.js (A) and Deep Agents JS (B) on one harness. Nothing here is imported by shipped code.",
+  "description": "Evidence lab for issue #528 \u2014 LangGraph.js (A) and Deep Agents JS (B) on one harness. Nothing here is imported by shipped code.",
   "scripts": {
     "test": "bun test --timeout 30000",
     "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json",
@@ -22,7 +22,9 @@
     "@langchain/langgraph": "^1.4.15",
     "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",
     "@langchain/openai": "^1.5.13",
-    "zod": "4.4.3"
+    "deepagents": "1.13.4",
+    "langchain": "^1.5.11",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
