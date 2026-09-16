@@ -85,10 +85,10 @@ test("the desktop shell can ask the engine to re-probe every project now", async
   expect(first.status).toBe(200);
   // The first reading of a project is not a transition — there was nothing to
   // change from. See `projectAvailability`.
-  expect(await first.json()).toEqual({ projects: 1, changed: 1 });
+  expect(await first.json()).toEqual({ projects: 1, changed: 1, recovered: 0 });
 
   const again = await post("/v2/projects/reprobe");
-  expect(await again.json()).toEqual({ projects: 1, changed: 0 });
+  expect(await again.json()).toEqual({ projects: 1, changed: 0, recovered: 0 });
 });
 
 test("re-probing is unauthenticated-proof like every other route", async () => {

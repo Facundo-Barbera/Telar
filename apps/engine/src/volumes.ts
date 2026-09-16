@@ -231,6 +231,38 @@ export function probeAvailability(
  * a `diskutil` per mounted volume is affordable: it runs when a drive is away,
  * not on the poll path.
  */
+/**
+ * WHAT IS MOUNTED RIGHT NOW, as one comparable string.
+ *
+ * WHY THIS EXISTS: `findVolumeMount` costs a `diskutil` child PER MOUNTED
+ * VOLUME, and the poll path cannot afford to pay that every ten seconds for
+ * every away project — that would be a worse version of exactly the git churn
+ * this issue is about. But a drive can only have come back if the set of mount
+ * points CHANGED, and that question is a `readdir` and a `stat` each.
+ *
+ * So this is the cheap precondition: while it reads the same, no drive has
+ * arrived or left and there is nothing for a uuid search to find. It is a HINT
+ * in the same sense the desktop's watcher is — a signature that failed to change
+ * costs a search that would have found nothing.
+ */
+export function mountSignature(deps: VolumeDeps = {}): string {
+  const resolved = resolveDeps(deps);
+  const mounted: string[] = [];
+  for (const mountRoot of resolved.mounts) {
+    let names: string[];
+    try {
+      names = resolved.readdir(mountRoot);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const mount = path.join(mountRoot, name);
+      if (isMountPoint(mount, resolved)) mounted.push(mount);
+    }
+  }
+  return mounted.sort().join(" ");
+}
+
 export function findVolumeMount(uuid: string, deps: VolumeDeps = {}): string | undefined {
   const resolved = resolveDeps(deps);
   for (const mountRoot of resolved.mounts) {

@@ -231,11 +231,11 @@ test("git comes back on its own when the drive does", async () => {
 test("reprobe answers how many projects it asked about and how many moved", () => {
   const { store, mounts } = onADrive();
 
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1 });
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 0 });
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1, recovered: 0 });
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 0, recovered: 0 });
 
   mounts.unmount("TelarVR");
-  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1 });
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1, recovered: 0 });
 });
 
 test("restoring a project re-reads the drive rather than trusting what was stored", () => {
@@ -302,4 +302,154 @@ test("a worktree cut blames the drive, not the repository", () => {
       availability: "unmounted",
     }),
   ).toThrow("The drive holding TelarVR Work is not connected. Plug it back in and this will work again.");
+});
+
+/* ------------------------------------------------------------------ *
+ * The drive comes back under another name
+ * ------------------------------------------------------------------ */
+
+test("a remount at `<name> 1` keeps the project id and moves its root in place", () => {
+  const { store, mounts } = onADrive();
+  const before = store.getProject("project_one");
+
+  // macOS's own habit: the old name is taken (by the folder its unmount left
+  // behind, or by another disk), so the same drive lands one along.
+  const moved = mounts.remount("TelarVR", "TelarVR 1");
+  fs.mkdirSync(path.join(moved, "project"), { recursive: true });
+
+  expect(store.reprobeProjects()).toMatchObject({ recovered: 1 });
+
+  const after = store.getProject("project_one");
+  expect(after.id).toBe("project_one");
+  expect(after.root).toBe(path.join(moved, "project"));
+  expect(after.volume).toEqual({ mount: moved, uuid: mounts.uuidOf("TelarVR") });
+  expect(after.root).not.toBe(before.root);
+  expect(store.projectAvailability(after)).toBe("available");
+});
+
+test("a local session's workspace moves with the project — the same id, a working path", () => {
+  const { store, mounts, root } = onADrive();
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.getSession("session_one").workspace).toMatchObject({ mode: "local", path: root });
+
+  const moved = mounts.remount("TelarVR", "TelarVR 1");
+  fs.mkdirSync(path.join(moved, "project"), { recursive: true });
+  store.reprobeProjects();
+
+  const session = store.getSession("session_one");
+  expect(session.id).toBe("session_one");
+  expect(session.projectId).toBe("project_one");
+  expect(session.workspace).toMatchObject({ mode: "local", path: path.join(moved, "project") });
+});
+
+test("a WORKTREE session is left alone — its checkout never moved", () => {
+  // A worktree lives under the engine root on the internal disk while the
+  // project's `.git` is on the drive (see worktree.ts). What broke while the
+  // drive was away was the repository it points at, and that is fixed by the
+  // drive being back.
+  const mounts = fixture();
+  const engineHome = home();
+  const store = new EngineStore(engineHome, () => 1_000, {
+    volumes: mounts.deps,
+    git: () => ({ status: 0, stdout: "true\n", stderr: "" }),
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+  store.createSession({ id: "session_tree", projectId: "project_one", envMode: "worktree" });
+  const cut = store.getSession("session_tree").workspace;
+  expect(cut.mode).toBe("worktree");
+
+  const moved = mounts.remount("TelarVR", "TelarVR 1");
+  fs.mkdirSync(path.join(moved, "project"), { recursive: true });
+  store.reprobeProjects();
+
+  expect(store.getSession("session_tree").workspace).toEqual(cut);
+  expect(store.getProject("project_one").root).toBe(path.join(moved, "project"));
+});
+
+test("a drive that came back WITHOUT the project's folder is not a rename", () => {
+  const { store, mounts } = onADrive();
+  const before = store.getProject("project_one").root;
+
+  // The disk is here; the checkout is not on it — reformatted, or the folder
+  // deleted on another machine. Rewriting the record would point every session
+  // at a path that is not there either.
+  const moved = mounts.remount("TelarVR", "TelarVR 1");
+  fs.rmSync(path.join(moved, "project"), { recursive: true, force: true });
+  expect(store.reprobeProjects()).toMatchObject({ recovered: 0 });
+  expect(store.getProject("project_one").root).toBe(before);
+});
+
+test("a different drive with the same name is NOT this project — the match is the uuid", () => {
+  const { store, mounts } = onADrive();
+  const before = store.getProject("project_one").root;
+
+  mounts.unmount("TelarVR");
+  // Somebody else's disk, mounted where this one used to be, carrying a folder
+  // with the same name. Matching on the path would have adopted it.
+  const impostor = mounts.mount("TelarVR", "FAKE-UUID-SOMEBODY-ELSES-DISK");
+  fs.mkdirSync(path.join(impostor, "project"), { recursive: true });
+
+  expect(store.reprobeProjects()).toMatchObject({ recovered: 0 });
+  expect(store.getProject("project_one").root).toBe(before);
+});
+
+test("an unplugged drive that stays unplugged is searched for ONCE, not on every poll", () => {
+  // The search costs a `diskutil` child per mounted volume. A drive in
+  // somebody's bag must not make that a recurring cost — which would be a
+  // worse version of the git churn this whole issue is about.
+  const mounts = fixture();
+  let searches = 0;
+  const counting = {
+    ...mounts.deps,
+    volumeUuid: (mount: string) => { searches += 1; return mounts.deps.volumeUuid!(mount); },
+  };
+  const store = new EngineStore(home(), () => 1_000, { volumes: counting });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+
+  mounts.unmount("TelarVR");
+  const registered = searches;
+  for (let pass = 0; pass < 10; pass += 1) store.reprobeProjects();
+  expect(searches).toBe(registered);
+});
+
+test("a worktree cut that failed while the drive was away is retried once on recovery", async () => {
+  const mounts = fixture();
+  let cuts = 0;
+  let repositoryReadable = true;
+  const store = new EngineStore(home(), () => 1_000, {
+    volumes: mounts.deps,
+    git: () => ({ status: 0, stdout: "true\n", stderr: "" }),
+    asyncGit: async (_cwd, args) => {
+      if (args[0] !== "worktree" || args[1] !== "add") return { status: 0, stdout: "", stderr: "" };
+      cuts += 1;
+      return repositoryReadable
+        ? { status: 0, stdout: "", stderr: "" }
+        : { status: 128, stdout: "", stderr: "fatal: not a git repository" };
+    },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+
+  repositoryReadable = false;
+  store.createSession({ id: "session_tree", projectId: "project_one", envMode: "worktree" });
+  expect(await until(() => store.getSession("session_tree").preparation?.state === "failed")).toBe(true);
+  const failedAfter = cuts;
+
+  // The drive comes back somewhere else, and the reason the cut failed stops
+  // being true. This is the one moment a retry is not a guess.
+  repositoryReadable = true;
+  const moved = mounts.remount("TelarVR", "TelarVR 1");
+  fs.mkdirSync(path.join(moved, "project"), { recursive: true });
+  store.reprobeProjects();
+
+  expect(await until(() => cuts > failedAfter)).toBe(true);
+  expect(await until(() => store.getSession("session_tree").preparation === undefined)).toBe(true);
 });

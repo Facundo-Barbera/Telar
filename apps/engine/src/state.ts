@@ -185,7 +185,7 @@ import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
-import { findVolumeMount, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
+import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
@@ -4095,6 +4095,16 @@ export class EngineStore {
   private readonly projectAvailabilityCache = new Map<string, ProjectAvailability>();
 
   /**
+   * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
+   *
+   * The remount search is the expensive one — a `diskutil` child per mounted
+   * volume — and it can only succeed if a disk has arrived. Keyed by project and
+   * valued by `mountSignature`, so an unplugged drive that stays unplugged is
+   * searched for exactly once no matter how long the poll runs.
+   */
+  private readonly remountAttempts = new Map<string, string>();
+
+  /**
    * IS THIS PROJECT'S DISK HERE — the one answer every surface reads.
    *
    * ONE OWNER, on purpose. A rail deciding for itself whether a folder is
@@ -4188,7 +4198,21 @@ export class EngineStore {
      */
     if (availability !== "available") {
       entry.value = {};
+      /**
+       * AND THE POLL IS ALSO WHERE A DRIVE COMES BACK UNDER A NEW NAME — step 7.
+       *
+       * `POST /v2/projects/reprobe` is the fast path and does this within a
+       * quarter-second of a mount; this is the floor under it, for a cockpit
+       * running without the desktop shell, a shell whose watcher died, and a
+       * drive swapped while the Mac was off. Bounded twice over: only for a
+       * project that cannot be read, and only once per distinct mount
+       * configuration — see `recoverRemountedProject`.
+       *
+       * `at` IS STAMPED FIRST because the recovery DELETES this entry on
+       * success, and writing to it afterwards would resurrect a detached one.
+       */
       entry.at = this.now();
+      this.recoverRemountedProject(project);
       return entry.value;
     }
     if (!entry.pending && this.now() - entry.at >= 10_000) {
@@ -4237,15 +4261,174 @@ export class EngineStore {
    * show a drive badge, and probing it would be three `stat`s for a row nobody
    * is drawing.
    */
-  reprobeProjects(): { projects: number; changed: number } {
+  reprobeProjects(): { projects: number; changed: number; recovered: number } {
     const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects.filter((project) => project.removedAt === undefined);
     let changed = 0;
+    let recovered = 0;
     for (const project of projects) {
       const before = this.projectAvailabilityCache.get(project.id);
-      if (this.projectAvailability(project) !== before) changed += 1;
+      let availability = this.projectAvailability(project);
+      /**
+       * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
+       * `recoverRemountedProject`. Attempted only when the project cannot be
+       * read, which is what keeps the `diskutil` it costs off the poll path, and
+       * HERE rather than inside the probe because this is the call that happens
+       * when a disk has just appeared.
+       */
+      if (availability !== "available" && this.recoverRemountedProject(project) !== undefined) {
+        recovered += 1;
+        availability = this.projectAvailability(this.getProject(project.id));
+      }
+      if (availability !== before) changed += 1;
     }
-    return { projects: projects.length, changed };
+    return { projects: projects.length, changed, recovered };
+  }
+
+  /**
+   * THE DRIVE IS BACK, UNDER A DIFFERENT NAME — issue #534, step 7.
+   *
+   * WHAT MACOS ACTUALLY DOES. A volume whose name is already taken in `/Volumes`
+   * — by the empty folder its own unmount left behind, or by another disk — is
+   * mounted at `<name> 1`. So replugging the drive a project was registered from
+   * routinely changes its PATH while changing nothing about the disk.
+   *
+   * WHY THE PATH CANNOT BE THE ANSWER. Before this, the only way back was to
+   * register the new folder, and `registerProject` mints a NEW id for a root it
+   * has not seen. Three things outlive a registration and are keyed by that id —
+   * a session's `projectId`, an MCP server's scope, a browser profile's binding
+   * — so the person would point Telar at the same disk and lose all three, from
+   * an action that reads like plugging a cable back in.
+   *
+   * THIS IS THE ONE SANCTIONED WRITE OF `Project.root`, and `updateProject`'s
+   * refusal still stands for every other caller: moving a project means
+   * registering the new folder. This is not a move. It is the same folder, on
+   * the same disk, and the uuid is what proves it — which is why the match is on
+   * the uuid and never on a name, a size or a label.
+   *
+   * IT REFUSES TO GUESS. The new root has to EXIST on the remounted volume; a
+   * drive that came back without the project's folder on it is a `missing`
+   * project, not a rename, and rewriting the record would point every session at
+   * a path that is not there either.
+   *
+   * Returns the updated project, or nothing when there was nothing to recover.
+   */
+  private recoverRemountedProject(project: Project): Project | undefined {
+    if (project.volume === undefined) return undefined;
+    /**
+     * THE CHEAP PRECONDITION FIRST — see `mountSignature`.
+     *
+     * The search below costs a `diskutil` child per mounted volume, and this
+     * runs on the ten-second poll for every away project. Paying that every tick
+     * would be a worse version of the git churn this issue exists to remove. A
+     * drive can only have come back if the set of mount points changed, and that
+     * question is a `readdir` and a `stat` each — so one attempt per project per
+     * distinct mount configuration, and nothing at all while a drive sits in
+     * somebody's bag.
+     */
+    const signature = mountSignature(this.volumes);
+    if (this.remountAttempts.get(project.id) === signature) return undefined;
+    this.remountAttempts.set(project.id, signature);
+    const mount = findVolumeMount(project.volume.uuid, this.volumes);
+    if (mount === undefined || mount === project.volume.mount) return undefined;
+    const within = path.relative(project.volume.mount, project.root);
+    // A root that is not under its own recorded mount is a record this cannot
+    // reason about; leave it alone rather than composing a path from a guess.
+    if (within.startsWith("..") || path.isAbsolute(within)) return undefined;
+    const root = within === "" ? mount : path.join(mount, within);
+    try {
+      if (!fs.statSync(root).isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
+
+    const registryDocument = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registryDocument);
+    const stored = parsed.projects.find((candidate) => candidate.id === project.id);
+    if (stored === undefined) return undefined;
+    const previousRoot = stored.root;
+    stored.root = root;
+    stored.volume = { mount, uuid: project.volume.uuid };
+    stored.updatedAt = this.now();
+    this.writeDocument(this.paths.projects, parsed);
+
+    /**
+     * AND EVERY SESSION THAT WORKS IN IT. A `local` session's workspace IS the
+     * project root, so a record left pointing at the old path would send a
+     * provider to a folder that no longer exists — the project would be back and
+     * its conversations would not.
+     *
+     * A WORKTREE SESSION IS DELIBERATELY UNTOUCHED. Its checkout lives under the
+     * engine root on the internal disk (see `worktree.ts`) and never moved; what
+     * was broken while the drive was away was the `.git` it points AT, and that
+     * is fixed by the drive being back.
+     */
+    const moved: string[] = [];
+    const prefix = previousRoot.endsWith(path.sep) ? previousRoot : `${previousRoot}${path.sep}`;
+    for (const session of this.readSessions()) {
+      if (session.projectId !== project.id) continue;
+      const current = workspacePath(session.workspace);
+      if (current === undefined) continue;
+      if (current !== previousRoot && !current.startsWith(prefix)) continue;
+      const next = current === previousRoot ? root : path.join(root, current.slice(prefix.length));
+      const updated: Session = {
+        ...session,
+        workspace: { ...session.workspace, path: next } as Session["workspace"],
+        updatedAt: this.now(),
+      };
+      this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(updated));
+      this.appendEvent(session.id, { type: "session.updated", session: updated });
+      moved.push(session.id);
+    }
+
+    // The reads in hand were taken off a disk that has since come back at
+    // another address; none of them describes anything that exists now.
+    this.forgetProjectReads({ id: project.id, root: previousRoot });
+    this.forgetProjectReads({ id: project.id, root });
+    this.projectAvailabilityCache.delete(project.id);
+
+    /**
+     * ONE LINE, because a record the engine rewrote on its own is exactly the
+     * kind of thing a person needs to be able to find afterwards — and because
+     * the alternative reading of a project that silently changed its path is
+     * that something is wrong with the store.
+     */
+    process.stdout.write(
+      `Telar engine: ${project.name} came back on its own drive at a new path — ${previousRoot} → ${root}` +
+        `${moved.length > 0 ? ` (${moved.length} session${moved.length === 1 ? "" : "s"} moved with it)` : ""}\n`,
+    );
+
+    this.retryWorktreesFailedWhileAway(project.id, root);
+    return structuredClone(stored);
+  }
+
+  /**
+   * ONE AUTOMATIC RETRY FOR A CUT THAT FAILED WHILE THE DISK WAS GONE.
+   *
+   * A worktree session created while the drive was away has a row saying so
+   * forever: `git worktree add` could not read the repository, the failure was
+   * recorded on the session (`SessionPreparation`), and nothing ever tried
+   * again. The reason it failed has just stopped being true, so this is the one
+   * moment a retry is not a guess.
+   *
+   * ONCE, AND ONLY HERE. Nothing retries on a timer and nothing retries a cut
+   * that failed for its own reasons — a branch that already exists, a bad base —
+   * because those failures are still failures with the drive plugged in. The
+   * gate is the RECOVERY, not the error text: a retry that fails again simply
+   * records the new failure, and the row says what git said this time.
+   */
+  private retryWorktreesFailedWhileAway(projectId: string, projectRoot: string): void {
+    for (const session of this.readSessions()) {
+      if (session.projectId !== projectId) continue;
+      if (session.preparation?.state !== "failed") continue;
+      if (session.workspace.mode !== "worktree") continue;
+      const plan: WorktreePlan = { path: session.workspace.path, branch: session.workspace.branch, named: false };
+      const baseSha = workspaceBaseRef(session.workspace);
+      // No recorded base is no commit to cut from, and inventing one would put
+      // the session on a checkout nobody chose. The row keeps its failure.
+      if (baseSha === undefined) continue;
+      this.prepareWorktree(session.id, projectRoot, plan, baseSha);
+    }
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
