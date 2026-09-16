@@ -1,0 +1,21 @@
+{
+  "name": "deepagents-audit",
+  "private": true,
+  "type": "module",
+  "description": "Issue #528 part B: what the installed deepagents package injects, costs and persists. Not in the root workspaces; nothing here is imported by shipped code.",
+  "scripts": {
+    "probe:defaults": "bun run src/probe-defaults.ts",
+    "probe:cost": "bun run src/probe-injection-cost.ts",
+    "probe:runtime": "bun run src/probe-runtime.ts",
+    "probe:all": "bun run src/probe-defaults.ts && bun run src/probe-injection-cost.ts && bun run src/probe-runtime.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "1.2.11",
+    "@langchain/langgraph": "1.4.15",
+    "@langchain/langgraph-checkpoint": "1.1.5",
+    "@langchain/openai": "1.5.13",
+    "deepagents": "1.13.4",
+    "js-tiktoken": "1.0.21",
+    "zod": "4.3.6"
+  }
+}
