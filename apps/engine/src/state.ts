@@ -435,6 +435,51 @@ const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running
 const SNAPSHOT_SETTLED_REQUESTS = 50;
 
 /**
+ * HOW MANY RESOLVED REQUESTS THE DOCUMENT ITSELF KEEPS (#545).
+ *
+ * `SNAPSHOT_SETTLED_REQUESTS` above bounded what a snapshot CARRIES; nothing
+ * bounded what the store HOLDS. `requests.json` was append-only for the life of
+ * a session — one orchestrator conversation had 4,902 rows, every one resolved,
+ * and the store 43,280 across 345 documents, 33 MB that every heartbeat and
+ * every activity fold re-read to find the handful that were open.
+ *
+ * SO THE DOCUMENT IS A WINDOW, NOT A LEDGER, and the ledger is the journal:
+ * `request.opened` and `request.resolved` are appended for every one of these
+ * and are never trimmed, so a resolved request that falls out of this window is
+ * still answerable from `readEvents`. What the window has to keep is what a
+ * client RENDERS — which is the same tail `boundedRequests` already chose, so
+ * it is the same number.
+ *
+ * AN OPEN REQUEST IS NEVER DROPPED, whatever this number is: it is the one row
+ * a session's `blocked` state and a worker's answer both depend on.
+ */
+const RESOLVED_REQUEST_HISTORY = 50;
+
+/**
+ * Drop all but the newest `RESOLVED_REQUEST_HISTORY` resolved rows, in place.
+ *
+ * IN PLACE, so the caller's map is exactly what was written: `writeRequests` is
+ * the only writer and every mutation path hands it a map it has just edited.
+ *
+ * NEWEST BY WHEN IT WAS ANSWERED, NOT BY WHERE IT SITS, and the difference is a
+ * bug rather than a nicety. The document is in OPEN order, and a question a
+ * human left parked for an hour is answered long after the ones opened behind
+ * it — so dropping from the front would drop the row that had just resolved,
+ * which is precisely the row a blocked worker is polling the heartbeat for. The
+ * sort is stable, so rows answered in the same tick keep document order.
+ *
+ * Returns how many rows went, so the boot sweep can report one line.
+ */
+function pruneResolvedRequests(requests: Map<string, EngineRequest>): number {
+  const resolved = [...requests.values()].filter((request) => request.state !== "open");
+  if (resolved.length <= RESOLVED_REQUEST_HISTORY) return 0;
+  const oldestFirst = resolved.sort((left, right) => (left.resolvedAt ?? 0) - (right.resolvedAt ?? 0));
+  const dropped = oldestFirst.slice(0, oldestFirst.length - RESOLVED_REQUEST_HISTORY);
+  for (const request of dropped) requests.delete(request.id);
+  return dropped.length;
+}
+
+/**
  * Every open request, plus the newest settled ones — see above.
  *
  * `chosen` narrows to a window's turns first when there is one; without it this
@@ -10676,6 +10721,19 @@ export class EngineStore {
         }
       }
     }
+    /**
+     * AND THE REQUESTS WRITTEN BEFORE THE WINDOW EXISTED ARE BROUGHT INSIDE IT.
+     *
+     * Last, after the sweeps above have resolved whatever the lost process left
+     * open, so a request retired a moment ago is counted with the rest rather
+     * than surviving this boot to be trimmed by the next one. Silent once the
+     * store has been swept — see `pruneResolvedRequestHistory`.
+     */
+    const pruned = this.pruneResolvedRequestHistory();
+    if (pruned.dropped > 0) {
+      const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
+      console.log(`[engine] trimmed ${pruned.dropped} resolved requests out of ${pruned.sessions} session${pruned.sessions === 1 ? "" : "s"} (${freed}); the journal still holds every one of them.`);
+    }
     return { stopped };
   }
 
@@ -11653,9 +11711,55 @@ export class EngineStore {
     return new Map((rows as EngineRequest[]).map((request) => [request.id, request]));
   }
 
+  /**
+   * AND THE ONLY WRITER IS WHERE THE WINDOW IS APPLIED (#545).
+   *
+   * Here rather than in `resolveRequest` because five call sites resolve a
+   * request — a human answering, a policy, and three retire paths that cancel
+   * in bulk when a turn ends — and a bound applied at four of them is a
+   * document that grows through the fifth. See `pruneResolvedRequests`.
+   */
   private writeRequests(sessionId: string, requests: Map<string, EngineRequest>): void {
+    pruneResolvedRequests(requests);
     this.writeDocument(requestsFile(this.paths, sessionId), { version: STATE_VERSION, requests: [...requests.values()] });
     this.reindexRequests(sessionId, requests);
+  }
+
+  /**
+   * THE BOOT SWEEP: bring documents written before the window existed inside it.
+   *
+   * `writeRequests` bounds every document it touches from now on, but a session
+   * nobody writes to again keeps whatever it had — and the store this was
+   * written for holds 345 of them. One pass, at boot, beside `recover()`'s other
+   * retroactive cures; silent when there is nothing to do, so an engine that has
+   * already been swept says nothing on every subsequent start.
+   *
+   * IT WRITES THROUGH THE ORDINARY PATH, so each trimmed document goes out with
+   * its index row and its revision exactly as any other request write would.
+   */
+  private pruneResolvedRequestHistory(): { sessions: number; dropped: number; bytes: number } {
+    let sessions = 0;
+    let dropped = 0;
+    let bytes = 0;
+    for (const sessionId of this.storedSessionIds()) {
+      let requests: Map<string, EngineRequest>;
+      const file = requestsFile(this.paths, sessionId);
+      try {
+        requests = this.readRequests(sessionId);
+      } catch {
+        // One unreadable document must not stop the engine booting — the same
+        // rule `readSessions` follows for a session it cannot parse.
+        continue;
+      }
+      const before = this.documentBytes(file) ?? 0;
+      const went = pruneResolvedRequests(requests);
+      if (went === 0) continue;
+      this.writeRequests(sessionId, requests);
+      sessions += 1;
+      dropped += went;
+      bytes += before - (this.documentBytes(file) ?? 0);
+    }
+    return { sessions, dropped, bytes };
   }
 
   /** One observation → at most one journal record, plus its projection edit. */
