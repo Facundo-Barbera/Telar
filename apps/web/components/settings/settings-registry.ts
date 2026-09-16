@@ -130,44 +130,15 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
           },
         ],
       },
-      {
-        /**
-         * INDEXED THOUGH IT IS EXPERIMENTAL, because a feature nobody can find
-         * is one nobody can switch off either — and "main" is a word people
-         * will type at this search long before they know what Telar calls it.
-         * The keywords are the ones somebody uses when they have SEEN the rail
-         * entry and want to know what it is: assistant, coordinator, delegate.
-         */
-        title: "Main assistant",
-        rows: [
-          {
-            title: "Main assistant (experimental)",
-            hint: "One conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
-            keywords: ["main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
-            icon: SparklesIcon,
-          },
-          {
-            title: "Model",
-            hint: "Which model OpenCode Go serves the Main assistant. Empty runs the default.",
-            keywords: ["main", "assistant", "model", "opencode", "go", "kimi"],
-            icon: SparklesIcon,
-          },
-          {
-            /** Indexed by the words somebody types when a turn has just failed
-             *  and the message said "key": the pane is where it is fixed. */
-            title: "OpenCode Go key",
-            hint: "The credential the Main assistant calls OpenCode Go with. Stored with this Mac's other provider credentials.",
-            keywords: ["main", "assistant", "key", "api key", "opencode", "go", "credential", "token", "401"],
-            icon: KeyRoundIcon,
-          },
-          {
-            title: "Conversation",
-            hint: "Which session is Main — an existing one, or the project-less one Telar mints.",
-            keywords: ["main", "designate", "which session", "assistant"],
-            icon: SparklesIcon,
-          },
-        ],
-      },
+      /**
+       * THE MAIN ASSISTANT'S GROUP STOOD HERE and went with the pane (#531).
+       *
+       * NOT REPLACED BY THE AGENT'S YET, deliberately: every row this index
+       * carries has to be copy that exists on a pane, and the Agent's pane is
+       * the web half of #531. Indexing rows for a pane nobody has written would
+       * be a search result that navigates nowhere — which is exactly what
+       * `settings-registry.test.ts` refuses, and rightly.
+       */
       {
         title: "Generated text",
         rows: [

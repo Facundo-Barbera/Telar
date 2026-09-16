@@ -14,10 +14,11 @@
  * opencode.ai/docs/go's "Where can I use it?" welcomes third-party coding
  * agents and asks two things of them: identify yourself in `User-Agent`, and
  * carry a stable `x-opencode-session` per conversation. Both are kept as
- * promises rather than as conveniences — the session header is the SESSION's
- * id, so one Telar conversation is one upstream conversation for as long as it
- * lives, and the agent string is this build's real version (see
- * `../version.ts`), never a placeholder.
+ * promises rather than as conveniences — the session header is the AGENT'S
+ * THREAD id (#531; it was a Telar session id while the coordinator was one), so
+ * one Telar conversation is one upstream conversation for as long as it lives,
+ * and the agent string is this build's real version (see `../version.ts`),
+ * never a placeholder.
  *
  * ── NOTHING HERE HOLDS A KEY ────────────────────────────────────────────────
  * `authHeaders` takes one and returns a header map; it never reads a setting, a
@@ -46,10 +47,11 @@ export const GO_USER_AGENT = `telar/${TELAR_ENGINE_VERSION}`;
 /**
  * The headers every call carries, plus the credential when the caller has one.
  *
- * `sessionId` IS THE TELAR SESSION'S OWN ID, unchanged and unhashed: it is
- * opaque, it is already the stable name for this conversation everywhere else,
- * and inventing a second identifier would mean storing a mapping whose only job
- * is to be looked up.
+ * `sessionId` IS THE CONVERSATION'S OWN ID, unchanged and unhashed — the
+ * Agent's thread id today, a Telar session id in the loop this replaced. Either
+ * way it is opaque, it is already the stable name for this conversation
+ * everywhere else, and inventing a second identifier would mean storing a
+ * mapping whose only job is to be looked up.
  */
 export function goHeaders(input: { apiKey?: string; sessionId?: string; json?: boolean }): Record<string, string> {
   return {

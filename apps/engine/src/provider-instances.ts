@@ -49,9 +49,6 @@ const LOGIN_ARTIFACT: Record<ProviderDriverKind, string> = {
   opencode: "auth.json",
   claude: ".credentials.json",
   codex: "auth.json",
-  /** Telar's own loop has no config folder and no artifact — `signInOf` answers
-   *  before it reads this, and the entry exists only so the record stays total. */
-  telar: "",
 };
 
 /** The variable that relocates a provider's whole config and credential
@@ -61,9 +58,6 @@ const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
   opencode: "OPENCODE_CONFIG_DIR",
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
-  /** Nothing relocates Telar's own loop: it spawns no process, so there is no
-   *  child environment for a directory to be declared into. */
-  telar: "",
 };
 
 /**
@@ -114,14 +108,6 @@ const OWNED_ENV: Record<ProviderDriverKind, readonly string[]> = {
     "CLAUDE_CODE_USE_FOUNDRY",
   ],
   codex: ["CODEX_HOME", "OPENAI_BASE_URL", "OPENAI_API_KEY"],
-  /**
-   * EMPTY, AND NOT BECAUSE NOBODY GOT TO IT. This list scrubs variables that
-   * would silently replace a CHILD PROCESS's identity; Telar's own loop has no
-   * child process. Its credential is resolved per call inside the engine (see
-   * `main-session/credentials.ts`), where the environment is one named rung
-   * rather than something inherited by accident.
-   */
-  telar: [],
 };
 
 /**
@@ -210,12 +196,6 @@ async function probeVersion(driver: CliId, binaryPath?: string, force = false): 
  * entry). So the honest answer is `unknown`, not a green tick.
  */
 export function signInOf(instance: Pick<ProviderInstance, "driver" | "configDir">): { signIn: ProviderSignIn; message?: string } {
-  // Telar's own loop signs in with the OpenCode Go key in Settings, which lives
-  // in the engine's secret store rather than in any provider's config folder —
-  // so there is no artifact on disk that could answer this, either way.
-  if (instance.driver === "telar") {
-    return { signIn: "unknown", message: "Telar's own agent loop. It uses the OpenCode Go key from Settings." };
-  }
   if (instance.driver === "opencode") return { signIn: "unknown", message: "OpenCode authentication uses the CLI login. A config directory does not isolate credentials." };
   if (!instance.configDir) {
     return { signIn: "unknown", message: "Base login — sign-in state cannot be verified from disk." };
@@ -297,7 +277,6 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
      *
      * NOT CACHED, for the same reason: there is nothing that could change.
      */
-    if (driver === "telar") return { installed: true, version: TELAR_ENGINE_VERSION };
     const key = keyFor(driver, binaryPath);
     const hit = cache.get(key);
     if (!force && hit && now() - hit.at < VERSION_CACHE_MS) return hit.probe;

@@ -7,7 +7,10 @@
  *
  *   - the ORDER, all three present at once: a pasted key beats the environment
  *     beats the CLI, because the pasted one is the owner saying which account
- *     this machine's Main assistant runs on;
+ *     this machine's Agent runs on;
+ *   - that rung 1 is the Agent's own 0600 file (#531 rehoused it off the `telar`
+ *     provider login, which went with the driver kind), and that a key pasted
+ *     under #526 is CARRIED ACROSS rather than asked for again;
  *   - that a MALFORMED CLI entry is "no key" rather than an error, including the
  *     OAuth-shaped entry that lives in the same document;
  *   - that nothing which describes a key contains one.
@@ -17,13 +20,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  agentKeyFile,
+  carryOverLegacyKey,
   describeGoCredential,
   GO_API_KEY_VAR,
   openCodeAuthFile,
+  readAgentKey,
   readOpenCodeCliKey,
   redactKey,
   resolveGoCredential,
-} from "../src/main-session/credentials";
+  writeAgentKey,
+} from "../src/agent/credentials";
 
 const roots: string[] = [];
 const tempHome = (auth?: unknown): string => {
@@ -37,13 +44,21 @@ const tempHome = (auth?: unknown): string => {
   return home;
 };
 
+/** An `agent/` directory, optionally with rung 1 already in it. */
+const tempAgentDir = (key?: string): string => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "go-agent-"));
+  roots.push(dir);
+  if (key !== undefined) writeAgentKey(dir, key);
+  return dir;
+};
+
 afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("the pasted key wins over the environment and over the CLI", () => {
   const resolved = resolveGoCredential({
-    instanceEnv: { [GO_API_KEY_VAR]: "sk-pasted" },
+    agentDir: tempAgentDir("sk-pasted"),
     processEnv: { [GO_API_KEY_VAR]: "sk-ambient" },
     readCliKey: () => "sk-cli",
   });
@@ -52,7 +67,7 @@ test("the pasted key wins over the environment and over the CLI", () => {
 
 test("the environment answers when nothing was pasted", () => {
   const resolved = resolveGoCredential({
-    instanceEnv: {},
+    agentDir: tempAgentDir(),
     processEnv: { [GO_API_KEY_VAR]: "sk-ambient" },
     readCliKey: () => "sk-cli",
   });
@@ -60,17 +75,17 @@ test("the environment answers when nothing was pasted", () => {
 });
 
 test("the CLI's own key is the last rung, not the first", () => {
-  const resolved = resolveGoCredential({ instanceEnv: {}, processEnv: {}, readCliKey: () => "sk-cli" });
+  const resolved = resolveGoCredential({ agentDir: tempAgentDir(), processEnv: {}, readCliKey: () => "sk-cli" });
   expect(resolved).toEqual({ key: "sk-cli", source: "cli" });
 });
 
 test("all three absent is absent — the setup field's case, not an error", () => {
-  expect(resolveGoCredential({ instanceEnv: {}, processEnv: {}, readCliKey: () => undefined })).toBeUndefined();
+  expect(resolveGoCredential({ agentDir: tempAgentDir(), processEnv: {}, readCliKey: () => undefined })).toBeUndefined();
 });
 
 test("a blank value on any rung is not a key", () => {
   const resolved = resolveGoCredential({
-    instanceEnv: { [GO_API_KEY_VAR]: "   " },
+    agentDir: tempAgentDir("   "),
     processEnv: { [GO_API_KEY_VAR]: "" },
     readCliKey: () => "sk-cli",
   });
@@ -118,4 +133,44 @@ test("redaction removes every occurrence, and leaves text alone when there is no
   expect(redactKey("auth failed for sk-1 (sent sk-1)", "sk-1")).toBe("auth failed for [redacted] (sent [redacted])");
   expect(redactKey("nothing to hide", undefined)).toBe("nothing to hide");
   expect(redactKey("nothing to hide", "")).toBe("nothing to hide");
+});
+
+/* ------------------------------------------------------------------ *
+ * RUNG 1'S OWN FILE — issue #531.
+ * ------------------------------------------------------------------ */
+
+test("the pasted key is stored 0600, and an empty string clears it", () => {
+  const dir = tempAgentDir();
+  writeAgentKey(dir, "sk-pasted");
+  expect(readAgentKey(dir)).toBe("sk-pasted");
+  expect(fs.statSync(agentKeyFile(dir)).mode & 0o777).toBe(0o600);
+  writeAgentKey(dir, "");
+  expect(readAgentKey(dir)).toBeUndefined();
+  // The FILE stays, so its mode and its existence are not re-derived.
+  expect(fs.existsSync(agentKeyFile(dir))).toBe(true);
+});
+
+test("an absent or unreadable file is no key rather than an error", () => {
+  const dir = tempAgentDir();
+  expect(readAgentKey(dir)).toBeUndefined();
+  fs.writeFileSync(agentKeyFile(dir), "{ not json");
+  expect(readAgentKey(dir)).toBeUndefined();
+});
+
+test("a #526 key is carried across once, and never over a newer one", () => {
+  const dir = tempAgentDir();
+  expect(carryOverLegacyKey(dir, "sk-from-526")).toBe(true);
+  expect(readAgentKey(dir)).toBe("sk-from-526");
+  // The second start finds rung 1 already answered and does nothing.
+  expect(carryOverLegacyKey(dir, "sk-from-526")).toBe(false);
+  writeAgentKey(dir, "sk-newer");
+  expect(carryOverLegacyKey(dir, "sk-from-526")).toBe(false);
+  expect(readAgentKey(dir)).toBe("sk-newer");
+});
+
+test("nothing to carry is not a migration", () => {
+  const dir = tempAgentDir();
+  expect(carryOverLegacyKey(dir, undefined)).toBe(false);
+  expect(carryOverLegacyKey(dir, "   ")).toBe(false);
+  expect(fs.existsSync(agentKeyFile(dir))).toBe(false);
 });

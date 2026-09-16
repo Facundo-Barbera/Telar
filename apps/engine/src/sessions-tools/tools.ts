@@ -837,20 +837,43 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("Default report is passive. task assigns work; result wakes only an awaiting subscriber; blocker requires intervention."),
         input: z.string().min(1).describe("The whole message. The session cannot see this conversation, so say everything it needs."),
       },
-      async (args) => {
+      async (args, context) => {
         const sessionId = String(args.sessionId ?? "");
         const text = String(args.input ?? "");
         /**
-         * THE RUN ID IS MINTED HERE, not taken as an argument.
+         * THE RUN ID BELONGS TO THE CALL, not to the model and not to this
+         * invocation of the handler.
          *
          * `submitTurn` is idempotent on it — a resubmitted id with the same
          * text replays rather than queueing twice — and that guarantee is only
-         * worth anything if the id belongs to the CALL. A model-supplied id
-         * would let two different messages share one, which the store refuses
-         * loudly, and a model reusing one by accident would silently lose its
-         * second message.
+         * worth anything if the id is one a RETRY produces again. It is still
+         * never taken as an argument: a model-supplied id lets two different
+         * messages share one, which the store refuses loudly, and a model
+         * reusing one by accident silently loses its second message.
+         *
+         * ── WHY A RANDOM ID WAS NOT ENOUGH (#531, the lab's finding 2) ───────
+         * A node is the unit of atomicity, not an effect: a cancel that lands
+         * between the HTTP call and the checkpoint write replays the node, and
+         * a replayed node that minted a FRESH run id queued a second turn on
+         * the peer. The engine's own idempotency was sitting right there and
+         * was unreachable, because nothing about the second call looked like
+         * the first. No framework can fix that — an HTTP call and a local
+         * checkpoint write cannot be made atomic — so the fix belongs at this
+         * wall, where every framework's retry passes.
+         *
+         * DERIVED BY HASH RATHER THAN USED RAW. A provider's call id is opaque
+         * and its alphabet is nobody's promise; `Id` here accepts letters,
+         * digits, `_` and `-`, so a call id with a dot in it would be refused
+         * at the store with a message about an id the model never chose. The
+         * hash is stable, is the same length every time, and reveals nothing.
+         *
+         * NO CALL ID MEANS THE OLD BEHAVIOUR, unchanged: the MCP socket has
+         * none to give (a JSON-RPC id is the transport's, not the model's), and
+         * a random id is exactly right for a caller that cannot replay.
          */
-        const runId = `run_${crypto.randomUUID().replaceAll("-", "")}`;
+        const runId = context?.toolCallId
+          ? `run_${crypto.createHash("sha256").update(`sessions_send:${context.toolCallId}`).digest("hex").slice(0, 32)}`
+          : `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
           const { turn } = await capability.send(sessionId, { runId, input: text, intent: args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report" });
           return json({

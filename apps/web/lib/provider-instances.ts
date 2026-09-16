@@ -25,10 +25,6 @@ export const DRIVER_LABEL: Record<ProviderDriverKind, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
-  /** Not a product somebody installed: the engine's own agent loop. Named for
-   *  the app rather than for a model, because which model it runs is a setting
-   *  and the loop is the thing that is constant. */
-  telar: "Telar",
 };
 
 /**
@@ -263,17 +259,12 @@ const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
   opencode: "OPENCODE_CONFIG_DIR",
-  /** Nothing to relocate: the engine's loop spawns no child process. */
-  telar: "",
 };
 
 const LOGIN_COMMAND: Record<ProviderDriverKind, string> = {
   claude: "claude auth login",
   codex: "codex login",
   opencode: "opencode auth login",
-  /** There is no terminal command: the key is pasted into Settings. Read only
-   *  through `signInCommand`, which answers for this driver before it looks. */
-  telar: "",
 };
 
 /**
@@ -289,9 +280,6 @@ const LOGIN_COMMAND: Record<ProviderDriverKind, string> = {
  * a person and never executed — one copy, in the layer that renders it.
  */
 export function signInCommand(instance: Pick<ProviderInstance, "driver" | "configDir">): string {
-  // The engine's own loop signs in with a key the person pastes into Settings,
-  // so there is no command to hand over and an empty string says so.
-  if (instance.driver === "telar") return "";
   const command = LOGIN_COMMAND[instance.driver];
   if (instance.driver === "opencode") return command; // configDir does not isolate native OpenCode credentials.
   return instance.configDir ? `${CONFIG_DIR_ENV[instance.driver]}="${instance.configDir}" ${command}` : command;

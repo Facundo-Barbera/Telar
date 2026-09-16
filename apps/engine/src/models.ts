@@ -31,7 +31,7 @@ import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
-import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./main-session/go";
+import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./agent/go";
 
 /**
  * How long to wait for a provider to describe itself.
@@ -316,13 +316,15 @@ export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; m
 }
 
 /**
- * TELAR'S OWN LOOP HAS NO CLI TO ASK, so it asks the API it actually calls —
- * OpenCode Go's public model list, over HTTP and with no credential (#526). It
- * is listed here rather than left to fall through, because the fall-through
- * arm runs the CODEX binary, and a picker that quietly shelled out to another
- * provider would be the worst possible answer to "what can this session run".
+ * WHAT THE BUILT-IN AGENT MAY RUN — OpenCode Go's public model list, over HTTP
+ * and with no credential (#526, rehoused by #531).
+ *
+ * NOT PART OF `readModelCatalogue` ANY MORE. That function is keyed by
+ * `ProviderDriverKind` and answers "what can this SESSION run"; the Agent is
+ * not a session and `telar` is no longer a driver kind. It is the same list
+ * against the same endpoint, reached by the Agent's own route instead.
  */
-async function readTelarModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+export async function readAgentModels(): Promise<{ models: ProviderModel[]; message?: string }> {
   const answer = await readOpenCodeGoModels();
   return {
     models: answer.models.map((model) => ({
@@ -350,9 +352,7 @@ export async function readModelCatalogue(
       ? await readClaude()
       : driver === "opencode"
         ? await readOpenCodeModels()
-        : driver === "telar"
-          ? await readTelarModels()
-          : await readCodex();
+        : await readCodex();
   /**
    * A PROVIDER THAT COULD NOT BE ASKED FALLS BACK TO NOTHING — for both, now.
    *

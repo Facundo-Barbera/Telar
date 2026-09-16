@@ -1,5 +1,4 @@
 import { createOpenCodeDriver } from "./opencode/driver";
-import { createTelarDriver } from "./main-session/driver";
 /**
  * The one place that says which provider driver serves which session.
  *
@@ -83,13 +82,17 @@ export function createDefaultDrivers(): DriverSelector {
   const claude = createClaudeDriver();
   const codex = createCodexDriver();
   /**
-   * TOTAL, AND `telar` IS NOT LIKE THE OTHER THREE. Those name a harness this
-   * deployment may or may not have found on disk, and each defers touching it
-   * until the first run; the engine's own loop is simply here, has no binary to
-   * look for, and touches the network only inside a turn. Same eager
-   * construction, same reason it costs nothing.
+   * TOTAL OVER THE THREE HARNESSES THIS ENGINE DRIVES. Each names a provider
+   * this deployment may or may not have found on disk, and each defers touching
+   * it until the first run, so offering one that is not installed costs nothing
+   * and fails as `provider_unavailable` — the honest answer — rather than being
+   * refused a driver up front.
+   *
+   * `telar` WAS A FOURTH (#526) and is gone (#531): the engine's own agent loop
+   * is no longer something a SESSION runs. It is the built-in Agent, which has
+   * no session behind it at all — see `agent/runtime.ts`.
    */
-  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver(), telar: createTelarDriver() };
+  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker
   // turns into a typed `provider_unavailable` failure on the turn rather than
   // an unhandled throw.

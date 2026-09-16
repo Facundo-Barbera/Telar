@@ -1,6 +1,13 @@
 /**
  * A SESSION WITH NO PROJECT AND NO WORKING DIRECTORY (#526).
  *
+ * ON `codex` SINCE #531. These were written against the `telar` driver because
+ * that was the one project-less thing in the engine; it is gone, and the
+ * property under test never had anything to do with it — a session with no
+ * project is a shape any driver can be given. Codex rather than Claude for the
+ * reason the ordinary-session case below already gives: a Claude claim waits on
+ * the model catalogue.
+ *
  * WHAT IS BEING PINNED, and why each one is worth a test rather than a comment:
  *
  *   - that a project-less create produces `workspace.mode === "none"` and NO
@@ -46,14 +53,14 @@ const store = (): EngineStore => new EngineStore(path.join(root(), "state"), () 
 
 test("a session created with no project has no project, no path and no branch", () => {
   const engine = store();
-  const session = engine.createSession({ id: "session_main", title: "Main", driver: "telar" });
+  const session = engine.createSession({ id: "session_main", title: "Main", driver: "codex" });
 
   expect(session.projectId).toBeUndefined();
   expect(session.workspace).toEqual({ mode: "none" });
   // Not merely "no path on a local workspace": the variant itself carries no
   // `path` key, so nothing downstream can read one off it.
   expect("path" in session.workspace).toBe(false);
-  expect(session.driver).toBe("telar");
+  expect(session.driver).toBe("codex");
   // `EnvMode` has no third answer, and `none` is what the workspace says. The
   // one value that claims nothing extra is `local`.
   expect(session.envMode).toBe("local");
@@ -64,7 +71,7 @@ test("a session created with no project has no project, no path and no branch", 
 
 test("a worktree cannot be asked for without a project — refused, never downgraded", () => {
   const engine = store();
-  expect(() => engine.createSession({ id: "session_nope", envMode: "worktree", driver: "telar" })).toThrow(
+  expect(() => engine.createSession({ id: "session_nope", envMode: "worktree", driver: "codex" })).toThrow(
     /worktree is cut from a project/,
   );
   // And nothing was written for the id that was refused.
@@ -73,14 +80,14 @@ test("a worktree cannot be asked for without a project — refused, never downgr
 
 test("the claim for such a session carries no projectRoot at all", () => {
   const engine = store();
-  engine.createSession({ id: "session_main", title: "Main", driver: "telar" });
+  engine.createSession({ id: "session_main", title: "Main", driver: "codex" });
   engine.submitTurn("session_main", { runId: "run_one", input: "hello" });
 
   const claim = engine.claimNextTurn("worker_one");
   expect(claim?.sessionId).toBe("session_main");
   expect(claim?.projectRoot).toBeUndefined();
   expect(claim?.projectId).toBeUndefined();
-  expect(claim?.driver).toBe("telar");
+  expect(claim?.driver).toBe("codex");
 });
 
 test("an ordinary session still claims with its project root", () => {
@@ -123,7 +130,7 @@ test("a driver that spawns a CLI refuses a turn with no directory, by name", asy
 
 test("the store refuses a files or diff read on a session that has no directory", () => {
   const engine = store();
-  engine.createSession({ id: "session_main", driver: "telar" });
+  engine.createSession({ id: "session_main", driver: "codex" });
 
   expect(() => engine.sessionFiles("session_main")).toThrow(/no working directory/);
   expect(() => engine.sessionDiff("session_main")).toThrow(/no working directory/);

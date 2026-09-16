@@ -23,11 +23,28 @@
  * fit" will report the first ten minutes of a session as its whole life. The
  * marker says how much is missing so the caller knows to narrow its ask.
  */
+/**
+ * WHAT A HANDLER KNOWS BESIDES ITS ARGUMENTS.
+ *
+ * ONE FIELD, AND IT IS THE PROVIDER'S OWN CALL ID (#531). A tool that LANDS
+ * something needs an idempotency key the CALLER owns and can reuse, because
+ * every retry path in every framework replays the same call — and the only such
+ * key at this seam is the id the provider minted for it. Without it a wall can
+ * only mint its own, which is unreachable from a retry by construction: see
+ * `sessions_send`.
+ *
+ * OPTIONAL, AND ABSENT IS THE ORDINARY CASE. The MCP socket has no call id to
+ * pass — a JSON-RPC request id is the transport's, not the model's — so every
+ * handler must still work without one. A factory that ignores the argument
+ * entirely stays type-correct, which is what keeps this additive.
+ */
+export type ToolCallContext = { toolCallId?: string };
+
 export type ToolFactory = (
   name: string,
   description: string,
   shape: Record<string, unknown>,
-  handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
+  handler: (args: Record<string, unknown>, context?: ToolCallContext) => Promise<{ content: unknown[]; isError?: boolean }>,
 ) => unknown;
 
 /**
