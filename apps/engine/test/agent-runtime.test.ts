@@ -401,3 +401,70 @@ test("the settings a client reads are the document's, plus what only the runtime
   expect(fs.existsSync(path.join(engineRoot, "agent", "agent.json"))).toBe(true);
   agent.close();
 });
+
+/* ------------------------------------------------------------------ *
+ * 3 — the approval that outlives the process that asked.
+ * ------------------------------------------------------------------ */
+
+test("an approval parked by one process is found and answered by the next", async () => {
+  const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-restart-"));
+
+  /**
+   * A REAL CHILD, awaited, exit code checked. Two runtimes in one heap would
+   * share the saver's own process memory and prove nothing about a restart —
+   * see `fixtures/agent-park-approval.ts`.
+   */
+  const child = Bun.spawn(["bun", "run", path.join(import.meta.dir, "fixtures", "agent-park-approval.ts"), engineRoot], {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd: path.join(import.meta.dir, ".."),
+  });
+  const printed = await new Response(child.stdout).text();
+  const failed = await new Response(child.stderr).text();
+  expect(await child.exited, `the child failed: ${failed}`).toBe(0);
+  const parked = JSON.parse(printed.trim()) as { id: string; runId: string; tool: string; args: Record<string, unknown> };
+
+  // A FRESH RUNTIME that has never seen this thread — the process boundary the
+  // durability claim is about.
+  const landed: Landed[] = [];
+  const second = new AgentRuntime({
+    engineRoot,
+    tools: () => wall(landed),
+    model: () => new ScriptedChatModel([{ text: "sent" }]),
+  });
+  await second.restore();
+
+  const request = second.state().request;
+  expect(request, "the parked approval did not survive the restart").toBeDefined();
+  // THE PAYLOAD CAME BACK WITH IT, which is what `interrupt()` buys over the
+  // static gate: the surface need not re-derive which call it is about.
+  expect(request!.id).toBe(parked.id);
+  expect(request!.runId).toBe(parked.runId);
+  expect(request!.tool).toBe("sessions_send");
+  expect(request!.args.sessionId).toBe("session_peer");
+  expect(request!.args.intent).toBe("task");
+  // The child made NO send: it parked before any effect in the node.
+  expect(landed).toHaveLength(0);
+
+  // And answering it here resumes the turn the other process started.
+  expect(second.resolveRequest(request!.id, "accept")).toBe(true);
+  await until(() => second.state().runId === undefined && second.state().request === undefined, "the resumed turn");
+  expect(landed.map((call) => call.name)).toEqual(["sessions_send"]);
+  expect(landed[0]!.toolCallId).toBe("call_restart");
+
+  // ONE user_message, not two: a resumed turn says nothing new.
+  const users = second.thread({ limit: 200 }).rows.filter((row) => row.kind === "user_message");
+  expect(users).toHaveLength(1);
+  expect(second.thread({ limit: 200 }).rows.filter((row) => row.kind === "request_resolved")).toHaveLength(1);
+  second.close();
+});
+
+test("a thread with no parked approval restores nothing", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "done" }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the turn");
+  await agent.restore();
+  expect(agent.state().request).toBeUndefined();
+  agent.close();
+});

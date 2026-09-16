@@ -130,7 +130,21 @@ export type AgentRuntimeOptions = {
   budgetChars?: number;
 };
 
-type QueuedTurn = { runId: string; input: string; origin: AgentTurnOrigin; wakeReason?: Record<string, unknown> };
+type QueuedTurn = {
+  runId: string;
+  input: string;
+  origin: AgentTurnOrigin;
+  wakeReason?: Record<string, unknown>;
+  /**
+   * THIS TURN CONTINUES ONE THE CHECKPOINT ALREADY HOLDS — see `restore`.
+   *
+   * Present only for a turn resumed after a RESTART: the conversation is in the
+   * checkpoint, the parked interrupt is in it too, and what this carries is the
+   * person's answer rather than anything new to say. It writes no
+   * `user_message` and no `turn_started`, because neither happened twice.
+   */
+  resume?: AgentApprovalDecision;
+};
 
 /* ------------------------------------------------------------------ *
  * The runtime.
@@ -175,6 +189,66 @@ export class AgentRuntime {
       this.log = new AgentThreadLog(opened.db);
     }
     return { opened: this.opened, log: this.log };
+  }
+
+  /**
+   * AN APPROVAL PARKED BY A PREVIOUS PROCESS, FOUND AGAIN (#531).
+   *
+   * THIS IS THE WHOLE POINT OF A DURABLE CHECKPOINTER, and it is the property
+   * the lab measured: `interrupt()` writes the parked call INTO the checkpoint,
+   * payload and all, so a process that has never seen the thread can read what
+   * the person was being asked and carry on from it. `MemorySaver` survives
+   * nothing across a process boundary, which is exactly what a restart is.
+   *
+   * THE REQUEST'S OWN ID COMES FROM THE TRANSCRIPT, not from the checkpoint.
+   * LangGraph stores the payload our node passed to `interrupt()`; the id and
+   * the run it belongs to are Telar's, and they were written as a
+   * `request_opened` row in the same breath. Recovering them from there is what
+   * lets a cockpit that was holding the old id still answer it.
+   *
+   * AWAITED BY THE DAEMON AT STARTUP rather than fired off inside the first
+   * read. It is one bounded sqlite read, it happens once, and doing it eagerly
+   * is what makes "the request is there the moment the route can answer" true
+   * instead of nearly true.
+   *
+   * SILENT WHEN THERE IS NOTHING TO RESTORE, which is every ordinary start.
+   */
+  async restore(): Promise<void> {
+    const settings = readAgentSettings(this.paths);
+    if (!settings.enabled || !settings.threadId || this.pending || this.live) return;
+    try {
+      const graph = this.buildGraph({ tools: [], model: undefined, runId: "" });
+      const snapshot = await graph.getState({ configurable: { thread_id: settings.threadId } });
+      const parked = firstInterrupt(snapshot);
+      if (!parked) return;
+      const opened = this.lastUnresolvedRequest(settings.threadId);
+      if (!opened) return;
+      this.pending = { ...parked, id: opened.id, runId: opened.runId, openedAt: opened.openedAt };
+      // NO `answer` RESOLVER: the promise that held the parked turn died with
+      // the process that made it. `resolveRequest` sees that and queues a
+      // RESUME turn instead of settling a promise nobody is waiting on.
+    } catch {
+      // A thread whose checkpoint cannot be read is not a reason a daemon fails
+      // to start. The conversation is still on disk for a later build.
+    }
+  }
+
+  /** The newest `request_opened` on this thread with no `request_resolved`
+   *  after it. Bounded: an approval nobody answered is the newest thing that
+   *  happened, so the tail is where it is. */
+  private lastUnresolvedRequest(threadId: string): { id: string; runId: string; openedAt: number } | undefined {
+    const log = this.log;
+    if (!log) return undefined;
+    const end = log.cursor(threadId);
+    const page = log.page(threadId, Math.max(0, end - 50), 50);
+    let found: { id: string; runId: string; openedAt: number } | undefined;
+    for (const row of page.rows) {
+      if (row.kind === "request_opened" && typeof row.detail.id === "string") {
+        found = { id: row.detail.id, runId: row.runId, openedAt: typeof row.detail.openedAt === "number" ? row.detail.openedAt : row.at };
+      }
+      if (row.kind === "request_resolved") found = undefined;
+    }
+    return found;
   }
 
   /** Close the thread file. The reset path's precondition, and the daemon's
@@ -355,12 +429,25 @@ export class AgentRuntime {
    * own, minted when it parked.
    */
   resolveRequest(requestId: string, decision: AgentApprovalDecision): boolean {
-    if (!this.pending || this.pending.id !== requestId || !this.answer) return false;
-    const answer = this.answer;
-    this.row("request_resolved", this.pending.runId, { requestId, decision, tool: this.pending.tool });
+    if (!this.pending || this.pending.id !== requestId) return false;
+    const pending = this.pending;
+    this.row("request_resolved", pending.runId, { requestId, decision, tool: pending.tool });
     this.pending = undefined;
-    this.answer = undefined;
-    answer(decision);
+    if (this.answer) {
+      // The turn is still in this process, waiting on the promise below.
+      const answer = this.answer;
+      this.answer = undefined;
+      answer(decision);
+      return true;
+    }
+    /**
+     * NOBODY IS WAITING — this approval was parked by a PROCESS THAT IS GONE,
+     * and `restore` found it in the checkpoint. The answer therefore starts a
+     * turn rather than settling a promise: same run id, same thread, and the
+     * graph picks up inside the node it was interrupted in.
+     */
+    this.queue.push({ runId: pending.runId, input: "", origin: "human", resume: decision });
+    void this.pump();
     return true;
   }
 
@@ -403,12 +490,17 @@ export class AgentRuntime {
     this.turnThreadId = threadId;
     this.open();
 
-    this.row("user_message", turn.runId, {
-      text: turn.input,
-      origin: turn.origin,
-      ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
-    });
-    this.row("turn_started", turn.runId, { origin: turn.origin });
+    // A RESUMED TURN SAYS NOTHING NEW. The person's words and the turn's start
+    // were written by the process that parked the approval; writing them again
+    // would put the same question in the transcript twice.
+    if (!turn.resume) {
+      this.row("user_message", turn.runId, {
+        text: turn.input,
+        origin: turn.origin,
+        ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
+      });
+      this.row("turn_started", turn.runId, { origin: turn.origin });
+    }
 
     const tools = this.options.tools();
     const graph = this.buildGraph({ tools, model: this.options.model({ threadId, ...(settings.model ? { model: settings.model } : {}) }), runId: turn.runId });
@@ -424,7 +516,9 @@ export class AgentRuntime {
      *  interrupt rather than restarting the node with new input. Typed off the
      *  compiled graph so the node names in `Command`'s own generics stay right
      *  when a node is added. */
-    let input: Parameters<typeof graph.stream>[0] = { messages: [new HumanMessage(turn.input)] };
+    let input: Parameters<typeof graph.stream>[0] = turn.resume
+      ? new Command({ resume: turn.resume })
+      : { messages: [new HumanMessage(turn.input)] };
     for (;;) {
       /**
        * `streamMode: "messages"` IS WHERE THE TOKENS COME FROM. Tool rows are
@@ -484,7 +578,7 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel; runId: string }) {
+  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
@@ -504,6 +598,10 @@ export class AgentRuntime {
     const budget = this.options.budgetChars;
 
     const callModel = async (state: AgentGraphStateType, config?: RunnableConfig): Promise<Partial<AgentGraphStateType>> => {
+      // `restore` compiles this graph with no model at all — it only ever reads
+      // state — so a node that somehow ran without one says so rather than
+      // dereferencing undefined.
+      if (!context.model) throw new Error("the Agent has no model for this turn");
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
       // THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
       // MODEL sees and never what the transcript holds.

@@ -19,6 +19,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { AIMessage } from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { ToolCall } from "@langchain/core/messages/tool";
 import type { ChatResult } from "@langchain/core/outputs";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
@@ -32,6 +33,10 @@ import { stubModels } from "./stub-models";
  * that API happened to have. See `EngineDaemonOptions.agentModel`.
  */
 class ScriptedChatModel extends BaseChatModel {
+  private index = 0;
+  constructor(private readonly script: Array<{ text?: string; toolCalls?: ToolCall[] }> = []) {
+    super({});
+  }
   _llmType(): string {
     return "scripted";
   }
@@ -39,10 +44,17 @@ class ScriptedChatModel extends BaseChatModel {
     return this;
   }
   async _generate(): Promise<ChatResult> {
-    const message = new AIMessage({ content: "nothing is running." });
-    return { generations: [{ text: "nothing is running.", message }] };
+    const step = this.script[this.index] ?? { text: "nothing is running." };
+    this.index += 1;
+    const message = new AIMessage({ content: step.text ?? "", tool_calls: step.toolCalls ?? [] });
+    return { generations: [{ text: step.text ?? "", message }] };
   }
 }
+
+/** The one gated call, as a model step: `sessions_send` with `intent: task`. */
+const asksToDelegate: { toolCalls: ToolCall[] } = {
+  toolCalls: [{ id: "call_route", name: "sessions_send", args: { sessionId: "session_peer", intent: "task", input: "do it" }, type: "tool_call" }],
+};
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -54,8 +66,8 @@ const root = (): string => {
   return directory;
 };
 
-async function engine(): Promise<{ daemon: EngineDaemon; client: EngineClient }> {
-  const daemon = await startEngine({ models: stubModels, engineRoot: root(), agentModel: () => new ScriptedChatModel({}) });
+async function engine(script: Array<{ text?: string; toolCalls?: ToolCall[] }> = []): Promise<{ daemon: EngineDaemon; client: EngineClient }> {
+  const daemon = await startEngine({ models: stubModels, engineRoot: root(), agentModel: () => new ScriptedChatModel(script) });
   daemons.push(daemon);
   return { daemon, client: new EngineClient(daemon.discovery) };
 }
@@ -227,7 +239,7 @@ test("the startup sweep deletes main-session.json and carries its key across", a
     JSON.stringify({ version: 1, secrets: { "telar OPENCODE_API_KEY": "sk-from-526" } }),
   );
 
-  const daemon = await startEngine({ models: stubModels, engineRoot: directory, agentModel: () => new ScriptedChatModel({}) });
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory, agentModel: () => new ScriptedChatModel() });
   daemons.push(daemon);
 
   expect(fs.existsSync(path.join(directory, "main-session.json"))).toBe(false);
@@ -259,3 +271,60 @@ async function until(check: () => Promise<boolean>, label: string, ms = 15_000):
   }
   throw new Error(`timed out waiting for ${label}`);
 }
+
+test("an approval opens and resolves on the stream, and the state says so between", async () => {
+  // A project and a peer, so the gated `sessions_send` has somewhere real to go.
+  const { client } = await engine([asksToDelegate, { text: "sent" }]);
+  await client.setAgent({ enabled: true });
+
+  const stream = client.agentStream(0);
+  const controller = new AbortController();
+  const response = await fetch(stream.url, { headers: stream.headers, signal: controller.signal });
+  const frames: Array<{ type: string; row?: { kind: string; detail: Record<string, unknown> } }> = [];
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (;;) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary === -1) break;
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!frame.startsWith("data:")) continue;
+          frames.push(JSON.parse(frame.slice(5).trim()));
+        }
+      }
+    } catch {
+      // The abort below is how this ends.
+    }
+  })();
+
+  await client.sendAgentTurn("delegate it");
+  await until(async () => frames.some((frame) => frame.row?.kind === "request_opened"), "the approval on the stream");
+
+  // The ASK is on the wire whole, so a surface need not re-derive the call.
+  const opened = frames.find((frame) => frame.row?.kind === "request_opened")!.row!;
+  expect(opened.detail.tool).toBe("sessions_send");
+  expect((opened.detail.args as { sessionId: string }).sessionId).toBe("session_peer");
+
+  // And the state agrees, with `running` FALSE while a person is being asked.
+  const parked = (await client.agent()).agent;
+  expect(parked.request?.id).toBe(opened.detail.id as string);
+  expect(parked.running).toBe(false);
+
+  expect(await client.resolveAgentRequest(parked.request!.id, "decline")).toMatchObject({ resolved: true });
+  await until(async () => frames.some((frame) => frame.row?.kind === "request_resolved"), "the resolution on the stream");
+  const resolved = frames.find((frame) => frame.row?.kind === "request_resolved")!.row!;
+  expect(resolved.detail.decision).toBe("decline");
+
+  await until(async () => (await client.agent()).agent.runId === undefined, "the turn to end");
+  expect((await client.agent()).agent.request).toBeUndefined();
+
+  controller.abort();
+  await pump;
+});

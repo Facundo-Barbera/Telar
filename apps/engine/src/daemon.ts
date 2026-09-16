@@ -1164,6 +1164,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
+  /** Every live `GET /v2/agent/stream`, so shutdown can end them — see the
+   *  route. A `Set` of teardown functions rather than of responses: the route
+   *  owns what ending one means. */
+  const openStreams = new Set<(() => void) & { end?: () => void }>();
+
   /**
    * THE BUILT-IN AGENT — one per machine, in this process (#531).
    *
@@ -1213,6 +1218,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * store, and the store must not know about a graph.
    */
   store.setAgentWakeSink((wake) => agentRuntime.wake({ notice: wake.input, wakeReason: wake.wakeReason as unknown as Record<string, unknown> }));
+  /**
+   * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
+   *
+   * AWAITED, so `GET /v2/agent` cannot answer "nothing pending" to a cockpit
+   * that is holding the very question. One bounded read of a thread that in the
+   * ordinary case does not exist — see `AgentRuntime.restore`.
+   */
+  await agentRuntime.restore();
 
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {
@@ -1583,6 +1596,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // The socket has gone; the close handler below unsubscribes.
           }
         };
+        /**
+         * ONE FRAME BEFORE ANYTHING ELSE, AND IT IS NOT POLITENESS.
+         *
+         * Measured: `writeHead` alone does not put the headers on the wire, so a
+         * client subscribing to a QUIET thread — one with no backlog to replay —
+         * sat in `await fetch(...)` until something happened to be said. Which is
+         * exactly backwards: the emptier the conversation, the longer the client
+         * hung waiting to be told it had connected. A comment frame flushes them
+         * and is ignored by every SSE reader.
+         */
+        response.write(": open\n\n");
         for (const row of agentRuntime.thread({ after, limit: THREAD_PAGE_MAX }).rows) send({ type: "row", row });
         const stop = agentRuntime.watch(send);
         // A COMMENT FRAME ON A TIMER, because a stream that says nothing for
@@ -1599,9 +1623,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const finish = () => {
           clearInterval(beat);
           stop();
+          openStreams.delete(finish);
         };
+        /**
+         * THE SHUTDOWN HAS TO BE ABLE TO END THIS.
+         *
+         * `server.close()` stops accepting and then WAITS for open connections,
+         * and an SSE stream is a connection that by design never ends — so a
+         * daemon with a cockpit watching the Agent would hang on close for ever.
+         * Registered here and ended in `close()` below, before the server is
+         * asked to shut: the client sees a clean end of stream and reconnects to
+         * whatever comes back up.
+         */
+        openStreams.add(finish);
         request.on("close", finish);
         response.on("close", finish);
+        (finish as { end?: () => void }).end = () => {
+          finish();
+          try {
+            response.end();
+          } catch {
+            /* already gone */
+          }
+        };
         return;
       }
       /**
@@ -4182,6 +4226,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
+        // THE AGENT'S STREAMS FIRST, and before the server: `server.close()`
+        // waits for open connections, and an SSE stream never closes itself.
+        for (const stream of [...openStreams]) (stream.end ?? stream)();
+        openStreams.clear();
         await closeServer(server);
         // AFTER THE SERVER, so no stream route is still holding a watcher, and
         // before the execution store: the Agent's thread is a database handle
