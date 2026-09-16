@@ -15,9 +15,11 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { stubModels } from "./stub-models";
+import { fakeMounts, type FakeMounts } from "./fake-mount";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
+const drives: FakeMounts[] = [];
 
 const root = (prefix = "telar-availability-"): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -33,22 +35,45 @@ const home = (): string => {
 
 afterEach(async () => {
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
+  for (const drive of drives.splice(0)) drive.cleanup();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function engine(): Promise<{ daemon: EngineDaemon; client: EngineClient; post: (route: string) => Promise<Response> }> {
-  const daemon = await startEngine({ models: stubModels, engineRoot: home() });
+async function engine(volumes?: FakeMounts): Promise<{
+  daemon: EngineDaemon;
+  client: EngineClient;
+  post: (route: string) => Promise<Response>;
+  get: (route: string) => Promise<Response>;
+}> {
+  const daemon = await startEngine({
+    models: stubModels,
+    engineRoot: home(),
+    ...(volumes ? { volumes: volumes.deps } : {}),
+  });
   daemons.push(daemon);
+  const headers = { authorization: `Bearer ${daemon.discovery.token}`, "content-type": "application/json" };
   return {
     daemon,
     client: new EngineClient(daemon.discovery),
-    post: (route) =>
-      fetch(`http://127.0.0.1:${daemon.discovery.port}${route}`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${daemon.discovery.token}`, "content-type": "application/json" },
-        body: "{}",
-      }),
+    post: (route) => fetch(`http://127.0.0.1:${daemon.discovery.port}${route}`, { method: "POST", headers, body: "{}" }),
+    get: (route) => fetch(`http://127.0.0.1:${daemon.discovery.port}${route}`, { headers }),
   };
+}
+
+/** A daemon with one project on a drive that can be unplugged. */
+async function onADrive(): Promise<{
+  client: EngineClient;
+  get: (route: string) => Promise<Response>;
+  mounts: FakeMounts;
+}> {
+  const mounts = fakeMounts();
+  drives.push(mounts);
+  const { client, get } = await engine(mounts);
+  const mount = mounts.mount("TelarVR");
+  const checkout = path.join(mount, "project");
+  fs.mkdirSync(checkout);
+  await client.registerProject({ id: "project_one", name: "TelarVR Work", root: checkout });
+  return { client, get, mounts };
 }
 
 test("the desktop shell can ask the engine to re-probe every project now", async () => {
@@ -72,4 +97,69 @@ test("re-probing is unauthenticated-proof like every other route", async () => {
 
   const refused = await fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/projects/reprobe`, { method: "POST" });
   expect(refused.status).toBe(401);
+});
+
+/* ------------------------------------------------------------------ *
+ * What a client can see
+ * ------------------------------------------------------------------ */
+
+test("registration stores the drive, and the projects list publishes its availability", async () => {
+  const { client, get, mounts } = await onADrive();
+
+  const registered = (await (await get("/v2/projects")).json()) as { projects: Array<{ id: string; volume?: unknown; availability?: string }> };
+  expect(registered.projects[0]!.volume).toEqual({ mount: path.join(mounts.mountRoot, "TelarVR"), uuid: mounts.uuidOf("TelarVR") });
+  expect(registered.projects[0]!.availability).toBe("available");
+
+  mounts.unmount("TelarVR");
+  const away = (await (await get("/v2/projects")).json()) as { projects: Array<{ availability?: string }> };
+  expect(away.projects[0]!.availability).toBe("unmounted");
+});
+
+test("the rail's one read carries availability, so the badge costs no second request", async () => {
+  const { client, get, mounts } = await onADrive();
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+
+  const live = (await (await get("/v2/sessions/live")).json()) as { projects: Array<{ id: string; availability?: string }> };
+  expect(live.projects.find((project) => project.id === "project_one")?.availability).toBe("available");
+
+  mounts.unmount("TelarVR");
+  const away = (await (await get("/v2/sessions/live")).json()) as { projects: Array<{ id: string; availability?: string }> };
+  expect(away.projects.find((project) => project.id === "project_one")?.availability).toBe("unmounted");
+});
+
+/* ------------------------------------------------------------------ *
+ * What a client cannot do
+ * ------------------------------------------------------------------ */
+
+test("creating a session on an away project is refused with the drive sentence", async () => {
+  const { client, mounts } = await onADrive();
+  mounts.unmount("TelarVR");
+
+  await expect(client.createSession({ id: "session_away", projectId: "project_one" })).rejects.toMatchObject({
+    code: "conflict",
+    message: "The drive holding TelarVR Work is not connected. Plug it back in and this will work again.",
+  });
+});
+
+test("sending into a session whose drive left is refused with the same sentence", async () => {
+  const { client, mounts } = await onADrive();
+  const session = await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.registerWorker("worker_one");
+
+  mounts.unmount("TelarVR");
+  await expect(client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" })).rejects.toMatchObject({
+    code: "conflict",
+    message: "The drive holding TelarVR Work is not connected. Plug it back in and this will work again.",
+  });
+});
+
+test("the drive coming back is all it takes — no re-registration, same project id", async () => {
+  const { client, mounts } = await onADrive();
+  mounts.unmount("TelarVR");
+  await expect(client.createSession({ id: "session_away", projectId: "project_one" })).rejects.toMatchObject({ code: "conflict" });
+
+  mounts.mount("TelarVR");
+  fs.mkdirSync(path.join(mounts.mountRoot, "TelarVR", "project"), { recursive: true });
+  const session = await client.createSession({ id: "session_back", projectId: "project_one" });
+  expect(session.session.projectId).toBe("project_one");
 });

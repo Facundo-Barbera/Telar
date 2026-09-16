@@ -27,6 +27,7 @@ import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { ProjectAvailability } from "./volumes";
 
 export type GitResult = {
   status: number;
@@ -367,10 +368,23 @@ export function planSessionWorktree(input: {
  * what the background step needs and nothing else: where it lands, and what it
  * starts from.
  *
- * THROWS `WorktreeError` FOR ALL FOUR: a directory that is not a repository, a
- * branch name outside what the engine will create, a slug in the wrong shape,
- * and a base ref that does not resolve. See `isGitWorkTree` for why these stay
- * on the request when the cut itself does not.
+ * THROWS `WorktreeError` FOR ALL FIVE: a drive that is not connected, a
+ * directory that is not a repository, a branch name outside what the engine will
+ * create, a slug in the wrong shape, and a base ref that does not resolve. See
+ * `isGitWorkTree` for why these stay on the request when the cut itself does not.
+ *
+ * THE DISK IS ASKED ABOUT FIRST, BEFORE ANY GIT — issue #534. An unplugged drive
+ * used to reach `isGitWorkTree`, which found no repository there and said so:
+ * "worktree sessions need a git repository; /Volumes/TelarVR/thing is not one.
+ * Use envMode local for an unversioned project." Every word of that is wrong
+ * about a repository that exists and is in somebody's bag, and the advice would
+ * have put the session on a checkout that is not there either.
+ *
+ * THE CALLER PASSES WHAT IT ALREADY KNOWS rather than this probing again — the
+ * store has just asked (`assertProjectAvailable`), and a second `stat` here
+ * would be a second opinion that could differ from the one the refusal upstream
+ * was based on. Absent means "not asked", which is what the tests and any caller
+ * with no project record pass.
  */
 export function prepareSessionWorktree(
   git: GitRunner,
@@ -381,8 +395,22 @@ export function prepareSessionWorktree(
     baseRef?: string;
     branchSlug?: string;
     branchName?: string;
+    /** What the store's probe said about the project's disk, when there is one.
+     *  See `ProjectAvailability`. */
+    availability?: ProjectAvailability;
+    /** The project's name, for the sentence a person reads when the drive is
+     *  away. The path is not what they call it. */
+    projectName?: string;
   },
 ): { plan: WorktreePlan; baseSha: string } {
+  if (input.availability === "unmounted") {
+    throw new WorktreeError(
+      `The drive holding ${input.projectName ?? input.projectRoot} is not connected. Plug it back in and this will work again.`,
+    );
+  }
+  if (input.availability === "missing") {
+    throw new WorktreeError(`The folder for ${input.projectName ?? input.projectRoot} is not on this machine any more (${input.projectRoot}).`);
+  }
   if (!isGitWorkTree(git, input.projectRoot)) {
     throw new WorktreeError(
       `worktree sessions need a git repository; ${input.projectRoot} is not one. Use envMode "local" for an unversioned project.`,

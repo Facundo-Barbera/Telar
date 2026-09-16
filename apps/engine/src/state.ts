@@ -4067,7 +4067,14 @@ export class EngineStore {
         // A removed project's checkout is not polled: it is not on any surface
         // that shows a branch or an icon, and a removed row must not keep a
         // `git rev-parse` running against somebody's disk every ten seconds.
-        return project.removedAt === undefined ? { ...project, ...this.projectMetadata(project) } : project;
+        // Its availability is absent for the same reason — nothing probed it,
+        // so there is no answer to publish.
+        if (project.removedAt !== undefined) return project;
+        // THE METADATA READ IS WHAT PROBES (see `projectMetadata`), so the
+        // availability is asked for AFTER it rather than beside it: two probes
+        // in one listing would be two `stat`s per project for one answer.
+        const metadata = this.projectMetadata(project);
+        return { ...project, ...metadata, availability: this.projectAvailability(project) };
       });
   }
 
@@ -4421,8 +4428,34 @@ export class EngineStore {
    * restore is what was put away).
    */
   private assertProjectAvailable(projectId: string): void {
-    if (this.getProject(projectId).removedAt === undefined) return;
-    throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
+    const project = this.getProject(projectId);
+    if (project.removedAt !== undefined) {
+      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
+    }
+    /**
+     * AND THE DISK HAS TO BE THERE — issue #534.
+     *
+     * The same three places, and the same argument: reading stays open, starting
+     * work does not. What differs is WHY it is refused and therefore what the
+     * sentence has to say. A removed project needs a decision (restore it); an
+     * unplugged drive needs a cable, and telling somebody to re-register would
+     * be actively harmful — re-registering a different path mints a new project
+     * id and strands the sessions they are trying to get back to.
+     *
+     * PROBED FRESH RATHER THAN READ OFF THE LAST LISTING. This is the moment a
+     * provider would be spawned in the folder, and a ten-second-old answer about
+     * a cable is exactly old enough to be wrong.
+     *
+     * `unmounted` ONLY, AND `missing` DELIBERATELY NOT. A deleted folder already
+     * has a good answer and it is a BETTER-PLACED one: the turn is accepted, the
+     * worker's `assertProjectRoot` refuses to spawn, and the sentence naming the
+     * folder lands in the conversation the person is looking at rather than as a
+     * dialog on a button. Nothing about an external drive changes that, and
+     * moving the refusal earlier would only make it harder to read.
+     */
+    if (this.projectAvailability(project) === "unmounted") {
+      throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
+    }
   }
 
   getProject(projectId: string): Project {
@@ -5885,6 +5918,22 @@ export class EngineStore {
      * preference would let a machine-wide `worktree` turn into a refusal for a
      * session that never had a repository to cut from.
      */
+    /**
+     * THE LADDER NEVER ASKS GIT ABOUT A DISK THAT IS NOT THERE — issue #534.
+     *
+     * `assertProjectAvailable` above has already refused an unavailable project,
+     * so by here the answer is `"available"` and this is the value the cut below
+     * is handed rather than a second probe: one reading, one refusal, no chance
+     * of the ladder and the guard disagreeing about a cable between two lines.
+     *
+     * AND THAT IS ALSO WHY THERE IS NO SILENT DOWNGRADE LEFT HERE. The fallback
+     * to `local` exists for an UNVERSIONED project — a real directory with no
+     * `.git` — and it was reachable by an unplugged one too, because
+     * `isGitWorkTree` answers "not a repository" for a path it cannot read. That
+     * turned a cable into a session quietly pointed at a dead path in a mode
+     * nobody asked for. An unreadable project now never reaches this line.
+     */
+    const availability = project === undefined ? undefined : this.projectAvailability(project);
     const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
     const envMode =
       project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
@@ -5930,7 +5979,9 @@ export class EngineStore {
             return prepareSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
+              projectName: project.name,
               sessionId: id,
+              ...(availability !== undefined ? { availability } : {}),
               ...(branchSlug !== undefined ? { branchSlug } : {}),
               ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
               ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
@@ -6605,7 +6656,15 @@ export class EngineStore {
    */
   liveSessions(only?: Set<string>): {
     sessions: Session[];
-    projects: Array<{ id: string; name: string }>;
+    /**
+     * `availability` RIDES THE ROW — issue #534, and for `layout`'s reason. The
+     * rail draws its "drive not connected" badge in the project group of THIS
+     * list; without it here the sidebar would have to fetch `/v2/projects`
+     * beside this on every pass, per paired host, for one enum per project.
+     *
+     * Absent on a removed project, which this list does not carry anyway.
+     */
+    projects: Array<{ id: string; name: string; availability?: ProjectAvailability }>;
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
   } {
@@ -6625,7 +6684,13 @@ export class EngineStore {
     const { sessions, assignments } = this.foldLiveSessions(only);
     return {
       sessions,
-      projects: projects.map((project) => ({ id: project.id, name: project.name })),
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        // Removed projects are in `projects` here (it is the raw registry), and
+        // a put-away checkout is never probed — see `listProjects`.
+        ...(project.removedAt === undefined ? { availability: this.projectAvailability(project) } : {}),
+      })),
       assignments,
       layout: this.getSidebarLayout(),
     };
@@ -7448,7 +7513,11 @@ export class EngineStore {
         // to waits in the queue until the checkout lands; `claimTurn` is what
         // holds it, and the row says why.
         const planned = prepareSessionWorktree(this.git, {
-          engineRoot: this.paths.root, projectRoot: project.root, sessionId,
+          engineRoot: this.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
+          // The send that promotes a draft already went through
+          // `assertProjectAvailable`, so this is that reading rather than a
+          // second one — see the ladder in `createSession`.
+          availability: this.projectAvailability(project),
           branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
           ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
           ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),

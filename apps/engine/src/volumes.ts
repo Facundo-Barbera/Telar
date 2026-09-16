@@ -33,6 +33,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { Project, ProjectAvailability } from "@telar/engine-client";
 
 /**
  * WHERE THIS PROJECT'S DISK IS, and what it IS — recorded at registration.
@@ -40,19 +41,15 @@ import path from "node:path";
  * `mount` is where the drive was mounted the day it was registered; it is a
  * HINT, and the recovery path exists precisely because it goes stale. `uuid` is
  * the drive's own identifier and is what a remount is matched on.
- */
-export type VolumeIdentity = { mount: string; uuid: string };
-
-/**
- * WHETHER THE PROJECT'S FILES CAN BE READ RIGHT NOW.
  *
- * `unmounted` is the drive being away and is RECOVERABLE — plug it back in and
- * the project comes back with its id. `missing` is the folder being gone from a
- * disk that is present, which is not. The pair is the whole point: a surface
- * that only knew "cannot read it" would have to tell the person to re-register
- * a project whose only problem is a cable.
+ * THE CONTRACT'S SHAPE, NOT A SECOND SPELLING OF IT (`Project.volume`). Two
+ * definitions of what a volume is would be two things to forget when one moves.
  */
-export type ProjectAvailability = "available" | "unmounted" | "missing";
+export type VolumeIdentity = NonNullable<Project["volume"]>;
+
+/** Re-exported so this module is the one import a caller here needs, and so
+ *  `ProjectAvailability` still has exactly one definition — the contract's. */
+export type { ProjectAvailability };
 
 export type VolumeDeps = {
   platform?: NodeJS.Platform;

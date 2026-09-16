@@ -344,6 +344,30 @@ export type LatexPackagesAnswer = z.infer<typeof LatexPackagesAnswer>;
 export const LatexJob = DataScienceJob;
 export type LatexJob = z.infer<typeof LatexJob>;
 
+/**
+ * WHETHER A PROJECT'S FILES CAN BE READ RIGHT NOW — issue #534.
+ *
+ * DERIVED, NEVER STORED, like `branch` and `icon`: it is a fact about a cable,
+ * and a registry that remembered it would be wrong the first time somebody
+ * unplugged a drive without asking Telar. The engine re-probes on every listing
+ * — three `stat`s — so every surface reads one answer rather than asking the
+ * filesystem its own version of the question.
+ *
+ * THE TWO FAILURES ARE DIFFERENT FAILURES, and keeping them apart is the point.
+ * `unmounted` is the drive being away, which is recoverable: plug it in and the
+ * project comes back with its id, its sessions and its settings. `missing` is
+ * the folder being gone from a disk that is present, which is not. A surface
+ * that knew only "cannot read it" would have to tell somebody to re-register a
+ * project whose only problem is a cable — and re-registering is exactly what
+ * mints a new id and strands their sessions.
+ *
+ * ABSENT ON A REMOVED PROJECT. Its checkout is not polled at all (see
+ * `listProjects`), so there is no probe behind the field and a value here would
+ * be a claim nobody checked.
+ */
+export const ProjectAvailability = z.enum(["available", "unmounted", "missing"]);
+export type ProjectAvailability = z.infer<typeof ProjectAvailability>;
+
 export const Project = z.object({
   id: Id,
   environmentId: EnvironmentId,
@@ -500,6 +524,20 @@ export const Project = z.object({
       uuid: z.string().min(1),
     })
     .optional(),
+  /**
+   * WHETHER ITS FILES CAN BE READ RIGHT NOW — see `ProjectAvailability`.
+   *
+   * DERIVED ON LIST, like `branch`, `icon` and `remoteUrl` above, and for the
+   * sharpest version of their reason: a drive is unplugged by a hand, without
+   * telling the engine anything.
+   *
+   * OPTIONAL ON THE SHAPE, PRESENT ON EVERY LISTED PROJECT. It is absent on a
+   * removed one (nothing probes a put-away checkout) and on a record read
+   * straight off disk, so a client treats absence as "nobody has said" rather
+   * than as a fourth state — which is what lets a cockpit that predates this
+   * field go on working against an engine that has it, and the other way round.
+   */
+  availability: ProjectAvailability.optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */

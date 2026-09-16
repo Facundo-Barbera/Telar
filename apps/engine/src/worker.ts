@@ -18,6 +18,7 @@ import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from ".
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
 import { ratifiedReadTools } from "./plugins/policy";
+import { isMountPoint, mountPointForRoot, type VolumeDeps } from "./volumes";
 import { RateLimitedError, setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
@@ -1980,8 +1981,31 @@ export class EngineWorker {
  * directory NOW. Thrown as a `driver_failed` message that names the path and
  * the likely cause, so a moved checkout reads as "the folder is gone", never
  * as a broken binary.
+ *
+ * AND THE DRIVE HAS TO BE THERE — issue #534, and this is the check that had to
+ * come FIRST rather than last. Two of the three cases below would otherwise
+ * give advice that makes things worse:
+ *
+ *   - An unplugged drive read as "it may have been moved or deleted; re-register
+ *     the project with its current location", which is how somebody loses a
+ *     project id, its sessions and its browser profile over a cable.
+ *   - A RECREATED EMPTY MOUNTPOINT passed every check here. macOS leaves
+ *     `/Volumes/<name>` behind as an ordinary folder, so the `stat` succeeded,
+ *     the directory test succeeded, `access` succeeded — and a provider was
+ *     spawned in an empty folder that disappears at the next remount, having
+ *     been told it was looking at the project.
+ *
+ * IT NEEDS NO STORE AND NO PROJECT RECORD, which is why it can live here: the
+ * PATH says whether it is under a mount root, and the filesystem says whether
+ * anything is mounted there. See `volumes.ts`.
  */
-export function assertProjectRoot(cwd: string): void {
+export function assertProjectRoot(cwd: string, volumes: VolumeDeps = {}): void {
+  const mount = mountPointForRoot(cwd, volumes);
+  if (mount !== undefined && !isMountPoint(mount, volumes)) {
+    throw new Error(
+      `The drive holding this project is not connected (${mount}). Plug it back in and retry — do not re-register the project from another path, which would give it a new id and leave this session's history behind.`,
+    );
+  }
   let stat: fs.Stats;
   try {
     stat = fs.statSync(cwd);

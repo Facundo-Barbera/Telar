@@ -16,6 +16,8 @@ import os from "node:os";
 import path from "node:path";
 import { fakeMounts, type FakeMounts } from "./fake-mount";
 import { EngineStore } from "../src/state";
+import { assertProjectRoot } from "../src/worker";
+import { prepareSessionWorktree } from "../src/worktree";
 
 const drives: FakeMounts[] = [];
 const homes: string[] = [];
@@ -249,4 +251,55 @@ test("restoring a project re-reads the drive rather than trusting what was store
   const restored = store.registerProject({ name: "One", root });
   expect(restored.id).toBe("project_one");
   expect(restored.volume).toEqual({ mount, uuid: "FAKE-UUID-REFORMATTED" });
+});
+
+/* ------------------------------------------------------------------ *
+ * Nothing starts on a disk that is not there
+ * ------------------------------------------------------------------ */
+
+test("the worker refuses to spawn in a RECREATED EMPTY MOUNTPOINT, which every other check passes", () => {
+  const mounts = fixture();
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+
+  expect(() => assertProjectRoot(root, mounts.deps)).not.toThrow();
+
+  // macOS leaves the folder behind. `stat` succeeds, `isDirectory` succeeds,
+  // `access` succeeds — and the provider would have worked in a directory that
+  // disappears at the next remount.
+  mounts.leaveEmptyMountpoint("TelarVR");
+  fs.mkdirSync(root, { recursive: true });
+  expect(() => assertProjectRoot(root, mounts.deps)).toThrow(/drive holding this project is not connected/i);
+});
+
+test("an unplugged drive is never described as a folder to re-register — that is how an id is lost", () => {
+  const mounts = fixture();
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  mounts.unmount("TelarVR");
+
+  expect(() => assertProjectRoot(root, mounts.deps)).toThrow(/drive holding this project is not connected/i);
+  expect(() => assertProjectRoot(root, mounts.deps)).not.toThrow(/re-register the project with its current location/i);
+});
+
+test("a worktree cut blames the drive, not the repository", () => {
+  const mounts = fixture();
+  const mount = mounts.mount("TelarVR");
+  const projectRoot = path.join(mount, "project");
+  fs.mkdirSync(projectRoot);
+
+  // The old sentence was "worktree sessions need a git repository; <path> is
+  // not one. Use envMode local for an unversioned project." — every word of it
+  // wrong about a repository that exists and is in somebody's bag.
+  expect(() =>
+    prepareSessionWorktree(() => ({ status: 0, stdout: "true\n", stderr: "" }), {
+      engineRoot: home(),
+      projectRoot,
+      projectName: "TelarVR Work",
+      sessionId: "session_one",
+      availability: "unmounted",
+    }),
+  ).toThrow("The drive holding TelarVR Work is not connected. Plug it back in and this will work again.");
 });

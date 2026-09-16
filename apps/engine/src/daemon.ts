@@ -101,6 +101,7 @@ import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
+import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
 /**
@@ -190,6 +191,13 @@ export type EngineDaemonOptions = {
   git?: GitRunner;
   /** Test seam: the provider model list, so a suite never spawns a real CLI. */
   models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
+  /**
+   * How the engine asks about disks (`volumes.ts`). INJECTED for `gh`'s reason
+   * and a sharper one: the default shells to `diskutil` and reads this Mac's
+   * real `/Volumes`, and a route test about an unplugged drive must be able to
+   * unplug one. See `test/fake-mount.ts`.
+   */
+  volumes?: VolumeDeps;
   /**
    * Run a worker inside the daemon process.
    *
@@ -713,6 +721,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
+    ...(options.volumes ? { volumes: options.volumes } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
