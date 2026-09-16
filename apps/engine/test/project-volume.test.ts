@@ -133,6 +133,109 @@ test("a TRANSITION drops what was read off the disk, rather than waiting out a T
   expect(reads).toBeGreaterThan(primed);
 });
 
+/* ------------------------------------------------------------------ *
+ * Nothing is spawned against a disk that is not there
+ * ------------------------------------------------------------------ */
+
+/**
+ * The metadata refresh is deliberately OFF the request path: `listProjects`
+ * returns what it has and the branch, icon and remote arrive on their own
+ * microtasks plus one real `readdir`. So a test waits for the answer rather
+ * than for a duration — a fixed sleep is a guess that holds on an idle machine
+ * and fails on a loaded one, which is how a real assertion becomes a flake.
+ *
+ * The 15 s bound is the suite's own (see `bunfig.toml`): long enough to outlast
+ * a loaded runner, short enough to stay under the 20 s ceiling so a genuine
+ * hang still fails as a hang.
+ */
+async function until(predicate: () => boolean, ms = 15_000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return predicate();
+}
+
+/** One poll's worth of waiting for nothing to happen — the shape an assertion
+ *  that something was NOT spawned needs. */
+const settle = async (): Promise<void> => { await new Promise((resolve) => setTimeout(resolve, 20)); };
+
+/** A store that counts every git child, with one project on a drive. */
+function counting(): { store: EngineStore; mounts: FakeMounts; spawns: () => number; tick: (ms: number) => void } {
+  const mounts = fixture();
+  let now = 1_000;
+  let spawns = 0;
+  const store = new EngineStore(home(), () => now, {
+    volumes: mounts.deps,
+    asyncGit: async () => { spawns += 1; return { status: 0, stdout: "main\n", stderr: "" }; },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  fs.writeFileSync(path.join(root, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  store.registerProject({ id: "project_one", name: "One", root });
+  return { store, mounts, spawns: () => spawns, tick: (ms) => { now += ms; } };
+}
+
+test("an away project spawns NO git children, however often the rail polls", async () => {
+  const { store, mounts, spawns, tick } = counting();
+
+  store.listProjects();
+  expect(await until(() => spawns() > 0)).toBe(true);
+
+  mounts.unmount("TelarVR");
+  const beforeUnplug = spawns();
+  // Six passes past the ten-second tick — what the old code spent about 18
+  // children a minute on, forever, failing into a drive in somebody's bag.
+  for (let pass = 0; pass < 6; pass += 1) {
+    tick(11_000);
+    store.listProjects();
+    await settle();
+  }
+  expect(spawns()).toBe(beforeUnplug);
+});
+
+test("an away project shows no branch and no icon — a label read off a disk nobody can see", async () => {
+  const { store, mounts } = counting();
+  const row = () => store.listProjects().find((project) => project.id === "project_one")!;
+
+  expect(await until(() => row().branch === "main" && row().icon !== undefined)).toBe(true);
+
+  mounts.unmount("TelarVR");
+  const gone = row();
+  expect(gone.branch).toBeUndefined();
+  expect(gone.icon).toBeUndefined();
+});
+
+test("git comes back on its own when the drive does", async () => {
+  const { store, mounts, spawns, tick } = counting();
+  store.listProjects();
+  expect(await until(() => spawns() > 0)).toBe(true);
+
+  mounts.unmount("TelarVR");
+  tick(11_000);
+  store.listProjects();
+  await settle();
+  const quiet = spawns();
+
+  mounts.mount("TelarVR");
+  fs.mkdirSync(path.join(mounts.mountRoot, "TelarVR", "project"), { recursive: true });
+  tick(11_000);
+  store.listProjects();
+  expect(await until(() => spawns() > quiet)).toBe(true);
+});
+
+test("reprobe answers how many projects it asked about and how many moved", () => {
+  const { store, mounts } = onADrive();
+
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1 });
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 0 });
+
+  mounts.unmount("TelarVR");
+  expect(store.reprobeProjects()).toEqual({ projects: 1, changed: 1 });
+});
+
 test("restoring a project re-reads the drive rather than trusting what was stored", () => {
   const { store, mounts } = onADrive();
   store.unregisterProject("project_one");

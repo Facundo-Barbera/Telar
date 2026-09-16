@@ -4141,10 +4141,48 @@ export class EngineStore {
   }>();
 
   private projectMetadata(project: Project): Pick<Project, "branch" | "icon" | "remoteUrl"> {
+    /**
+     * THE DISK IS ASKED ABOUT FIRST, AND BEFORE THE CACHE IS READ — issue #534.
+     *
+     * NO NEW TIMER. This is the call every listing already makes, so the probe
+     * rides it rather than earning a ticker of its own; `reprobeProjects` and
+     * the sweep at daemon start are the same probe at other moments, never a
+     * second opinion.
+     *
+     * ON EVERY CALL RATHER THAN ON THE TEN-SECOND TICK BELOW, because the two
+     * costs are not comparable: the tick exists to bound three `git` children
+     * and a directory walk, and this is three `stat`s. Putting it on the tick
+     * would have made "how long after I plug the drive back in does the rail
+     * say so" up to ten seconds for no saving worth having.
+     *
+     * BEFORE THE LOOKUP, not after, and that ordering is load-bearing: a
+     * transition DELETES this very entry, so an `entry` read first would be
+     * written back over the invalidation and keep the branch that was read off a
+     * disk nobody can see.
+     */
+    const availability = this.projectAvailability(project);
     let entry = this.projectMetadataCache.get(project.id);
     if (!entry || entry.root !== project.root) {
       entry = { root: project.root, at: -Infinity, value: {} };
       this.projectMetadataCache.set(project.id, entry);
+    }
+    /**
+     * NOTHING IS SPAWNED AGAINST A DISK THAT IS NOT THERE.
+     *
+     * This is the churn #534 is named for: three `git` children per project
+     * every ten seconds, each failing into an unplugged drive, each turning
+     * ENOENT into a status 1 that nothing reported — about 18 children a minute
+     * for one away project, forever. The icon read is skipped for the same
+     * reason and a worse one: it WALKS the checkout.
+     *
+     * AND THE LABELS GO WITH THEM. A branch name left over from before the
+     * unplug is a claim about a disk nobody can read; the row says the drive is
+     * away instead, which is the true thing and a shorter sentence.
+     */
+    if (availability !== "available") {
+      entry.value = {};
+      entry.at = this.now();
+      return entry.value;
     }
     if (!entry.pending && this.now() - entry.at >= 10_000) {
       const current = entry;
@@ -4176,6 +4214,31 @@ export class EngineStore {
       });
     }
     return entry.value;
+  }
+
+  /**
+   * ASK EVERY PROJECT'S DISK NOW, rather than waiting for somebody to look.
+   *
+   * TWO CALLERS, ONE PROBE. The daemon runs this once at start, so an engine
+   * that came up with a drive already unplugged knows it before the first
+   * listing rather than on it; and `POST /v2/projects/reprobe` runs it when the
+   * desktop shell notices a mount or an unmount, which is what turns "within ten
+   * seconds" into "immediately". Neither is a second opinion — both go through
+   * `projectAvailability`, and the poll stays the floor under both.
+   *
+   * REMOVED PROJECTS ARE SKIPPED. A put-away project is on no surface that could
+   * show a drive badge, and probing it would be three `stat`s for a row nobody
+   * is drawing.
+   */
+  reprobeProjects(): { projects: number; changed: number } {
+    const registry = this.readDocument(this.paths.projects);
+    const projects = registry === undefined ? [] : parseRegistry(registry).projects.filter((project) => project.removedAt === undefined);
+    let changed = 0;
+    for (const project of projects) {
+      const before = this.projectAvailabilityCache.get(project.id);
+      if (this.projectAvailability(project) !== before) changed += 1;
+    }
+    return { projects: projects.length, changed };
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {

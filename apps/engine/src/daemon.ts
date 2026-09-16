@@ -800,6 +800,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const mainSwept = mainSweepReport({ carriedKey: store.carryOverAgentKey(), removed: sweepMainSession(store.paths.root) });
   if (mainSwept) process.stdout.write(`${mainSwept}\n`);
   /**
+   * WHICH PROJECTS' DISKS ARE HERE — issue #534.
+   *
+   * ONCE, ON THE WAY UP, so an engine that started with a drive already unplugged
+   * knows it BEFORE the first listing rather than on it. Without this the first
+   * `GET /v2/projects` after a boot is the probe, and until it lands the rail
+   * would draw an away project as an ordinary one and spawn git against it.
+   *
+   * NO TIMER FOLLOWS. The poll is `projectMetadata`'s existing call path and the
+   * mount events are `POST /v2/projects/reprobe`; this is the floor's first
+   * reading, not a third mechanism.
+   *
+   * ONE LINE, AND ONLY WHEN A DRIVE IS ACTUALLY AWAY, on the same argument as
+   * every sweep above: a daemon that reported "all disks present" on each start
+   * would train its reader past the start where one is not.
+   */
+  const away = store
+    .listProjects()
+    .map((project) => ({ project, availability: store.projectAvailability(project) }))
+    .filter((entry) => entry.availability !== "available");
+  if (away.length > 0) {
+    const named = away.map((entry) => `${entry.project.name} (${entry.availability})`).join(", ");
+    process.stdout.write(`Telar engine: ${away.length === 1 ? "a project is" : `${away.length} projects are`} unreadable — ${named}\n`);
+  }
+  /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
    *
