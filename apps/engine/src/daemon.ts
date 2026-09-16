@@ -1423,6 +1423,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * A DRIVE WAS PLUGGED IN OR PULLED OUT — issue #534.
+       *
+       * ACCELERATION, NOT TRUTH, and the distinction is the whole contract. The
+       * poll in `projectMetadata` is the floor and is what makes the feature
+       * correct; this only moves the moment it notices from "within one pass" to
+       * "now". So a shell that never calls it, a watcher that dies, an event
+       * missed while the Mac was asleep — each costs latency and nothing else,
+       * which is why the desktop side (`main.js`) is allowed to be best-effort.
+       *
+       * NO BODY, AND IT NAMES NO PROJECT. The caller knows a disk moved; it does
+       * not know which registrations that concerns, and asking it to work that
+       * out would put the engine's rule in the shell. Every project is re-probed
+       * — three `stat`s each — and the answer says how many actually moved, which
+       * is what makes the desktop unit test able to assert the call landed.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/projects/reprobe") {
+        writeJson(response, 200, store.reprobeProjects());
+        return;
+      }
+      /**
        * The inbox's standing rule. Not under a session, because it is not about
        * one: it decides how EVERY session bands, which is why it is a document
        * of the environment rather than a field on each record.

@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell, webContents } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerMonitor, session, shell, webContents } = require("electron");
 const { autoUpdater, CancellationToken } = require("electron-updater");
 const { DesktopBrowserManager, managerForScope, createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
 const { attachHostHeader } = require("./host-header");
@@ -27,6 +27,7 @@ const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys")
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
+const { watchVolumes } = require("./volume-watch");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readProfileRegistry } = require("./browser-profiles");
@@ -1542,9 +1543,9 @@ ipcMain.on("telar:browser:human-input", (event) => {
  */
 let engineDiscovery = null;
 let discoveryReadAt = 0;
-function reportBrowserControl(change) {
-  // In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself,
-  // so discovery is read off disk lazily — same file waitForEngine proves.
+/** In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself, so
+ *  discovery is read off disk lazily — the same file `waitForEngine` proves. */
+function currentEngineDiscovery() {
   if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
     discoveryReadAt = Date.now();
     try {
@@ -1553,17 +1554,20 @@ function reportBrowserControl(change) {
       /* no engine on this machine right now */
     }
   }
-  const discovery = engineDiscovery;
+  return engineDiscovery;
+}
+
+/** One best-effort POST at the local engine. Nothing awaits it and no failure is
+ *  reported: every caller here is a hint the engine would have worked out for
+ *  itself on its next pass. */
+function postToEngine(routePath, body) {
+  const discovery = currentEngineDiscovery();
   if (!discovery?.port || !discovery?.token) return;
-  const payload = JSON.stringify({
-    controller: change.controller,
-    ...(change.tabId ? { tabId: change.tabId } : {}),
-    ...(change.interrupted ? { interrupted: true } : {}),
-  });
+  const payload = JSON.stringify(body ?? {});
   const request = http.request({
     host: discovery.host || "127.0.0.1",
     port: discovery.port,
-    path: `/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`,
+    path: routePath,
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -1575,6 +1579,30 @@ function reportBrowserControl(change) {
   request.on("error", () => {});
   request.on("timeout", () => request.destroy());
   request.end(payload);
+}
+
+function reportBrowserControl(change) {
+  postToEngine(`/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`, {
+    controller: change.controller,
+    ...(change.tabId ? { tabId: change.tabId } : {}),
+    ...(change.interrupted ? { interrupted: true } : {}),
+  });
+}
+
+/**
+ * A DISK MOVED — issue #534.
+ *
+ * The shell is the only process watching `/Volumes`; the engine is where the
+ * registry lives and where availability is decided. This carries nothing but
+ * "something changed, look now": which projects that concerns is the engine's
+ * question, and answering it here would put its rule in the shell.
+ *
+ * Best-effort like every other hint above. The engine re-probes on its own poll
+ * regardless, so an engine that was restarting when a drive was plugged in
+ * notices a pass later rather than not at all. See `volume-watch.js`.
+ */
+function reportVolumesChanged() {
+  postToEngine("/v2/projects/reprobe");
 }
 
 // --- Native folder picker -----------------------------------------------------
@@ -2796,6 +2824,14 @@ if (SMOKE) {
         }
         updaterWindow = createWindow(url);
         configureAutoUpdater();
+        /**
+         * AND WATCH THE MOUNT ROOTS — issue #534. After the window, because it
+         * is a hint rather than a precondition: the engine's own poll already
+         * makes a project on an unplugged drive correct, and this only decides
+         * how quickly the rail says so. See `volume-watch.js` for why it is
+         * `fs.watch` plus `resume` rather than a `diskutil activity` child.
+         */
+        watchVolumes({ onChanged: reportVolumesChanged, powerMonitor });
         app.on("activate", () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
         });
