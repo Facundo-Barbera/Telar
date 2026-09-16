@@ -122,8 +122,14 @@ struct AgentRow: Decodable, Equatable, Identifiable {
     var runId: String
     var at: Timestamp
     var kind: AgentRowKind
-    /// `user_message`, `assistant_message`, and a completed `turn_done`.
+    /// `user_message`, `assistant_message`, and a `turn_done` that failed.
     var text: String?
+    /// `assistant_message` — the id the live deltas are keyed by, so a streamed
+    /// bubble reconciles with the row that lands instead of drawing beside it.
+    /// This phone polls rather than streams, so nothing here uses it yet; it is
+    /// decoded because the row carries it and a reader that starts streaming
+    /// should not have to change the model to find it.
+    var itemId: String?
     /// `user_message` — absent or "user" is a person, anything else is a wake.
     var origin: String?
     var wakeReason: String?
@@ -133,7 +139,7 @@ struct AgentRow: Decodable, Equatable, Identifiable {
     var status: String?
 
     private enum CodingKeys: String, CodingKey { case id, runId, at, kind, detail }
-    private enum DetailKeys: String, CodingKey { case text, origin, wakeReason, name, output, status }
+    private enum DetailKeys: String, CodingKey { case text, itemId, origin, wakeReason, name, output, status }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -146,6 +152,7 @@ struct AgentRow: Decodable, Equatable, Identifiable {
         kind = try c.decode(AgentRowKind.self, forKey: .kind)
         let detail = try? c.nestedContainer(keyedBy: DetailKeys.self, forKey: .detail)
         text = try? detail?.decodeIfPresent(String.self, forKey: .text)
+        itemId = try? detail?.decodeIfPresent(String.self, forKey: .itemId)
         origin = try? detail?.decodeIfPresent(String.self, forKey: .origin)
         wakeReason = try? detail?.decodeIfPresent(String.self, forKey: .wakeReason)
         name = try? detail?.decodeIfPresent(String.self, forKey: .name)
@@ -153,12 +160,13 @@ struct AgentRow: Decodable, Equatable, Identifiable {
         status = try? detail?.decodeIfPresent(String.self, forKey: .status)
     }
 
-    init(id: Int, runId: String = "", at: Timestamp = 0, kind: AgentRowKind, text: String? = nil, origin: String? = nil, wakeReason: String? = nil, name: String? = nil, output: String? = nil, status: String? = nil) {
+    init(id: Int, runId: String = "", at: Timestamp = 0, kind: AgentRowKind, text: String? = nil, itemId: String? = nil, origin: String? = nil, wakeReason: String? = nil, name: String? = nil, output: String? = nil, status: String? = nil) {
         self.id = id
         self.runId = runId
         self.at = at
         self.kind = kind
         self.text = text
+        self.itemId = itemId
         self.origin = origin
         self.wakeReason = wakeReason
         self.name = name

@@ -127,19 +127,26 @@ struct AgentView: View {
 
     private let bottomAnchor = "agent-bottom"
 
-    /// WHAT IS WORTH DRAWING. `turn_started` says nothing the user message above
-    /// it does not, and the two request rows are the history of a decision whose
-    /// card is live state — so all three are dropped rather than rendered as
-    /// empty lines in the middle of a conversation.
+    /// WHAT IS WORTH DRAWING.
+    ///
+    /// `turn_started` says nothing the user message above it does not, and the
+    /// two request rows are the history of a decision whose card is live state
+    /// — so all three are dropped rather than rendered as empty lines in the
+    /// middle of a conversation.
+    ///
+    /// A COMPLETED `turn_done` IS DROPPED TOO, and that is the one worth
+    /// stating because it looks like a field going unused. It carries the FINAL
+    /// assistant text, deliberately duplicating the last `assistant_message`
+    /// row: it is there for a reader that wants one answer per turn without
+    /// folding the log. This screen folds the log, so drawing both would print
+    /// the closing sentence of every turn twice.
     private var drawn: [AgentRow] {
         rows.filter { row in
             switch row.kind {
             case .turnStarted, .requestOpened, .requestResolved: return false
             case .assistantMessage, .userMessage: return !(row.text ?? "").isEmpty
-            case .turnDone:
-                // A completed turn with nothing to say only ran tools; a failed
-                // or stopped one is worth a line either way.
-                return row.status != "completed" || !(row.text ?? "").isEmpty
+            // Only the two ways a turn ends without an answer.
+            case .turnDone: return row.status != "completed"
             case .toolCall: return true
             }
         }
@@ -280,18 +287,16 @@ struct AgentRowView: View {
             MarkdownText(text: row.text ?? "").frame(maxWidth: .infinity, alignment: .leading)
 
         case .turnDone:
-            if row.status == "completed" {
-                MarkdownText(text: row.text ?? "").frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                // A PERSON WHO PRESSED STOP KNOWS WHY THE TURN ENDED. One that
-                // fell over owes them the sentence.
-                Label(
-                    row.status == "stopped" ? "Stopped." : (row.text ?? "The turn failed."),
-                    systemImage: row.status == "stopped" ? "stop.circle" : "exclamationmark.triangle"
-                )
-                .font(.footnote)
-                .foregroundStyle(row.status == "stopped" ? Theme.textMuted : Theme.statusRed)
-            }
+            // A PERSON WHO PRESSED STOP KNOWS WHY THE TURN ENDED. One that fell
+            // over owes them the sentence. A COMPLETED turn reaches here only
+            // if `drawn` let it through, and it never does — its text is
+            // already on an `assistant_message` row.
+            Label(
+                row.status == "stopped" ? "Stopped." : (row.text ?? "The turn failed."),
+                systemImage: row.status == "stopped" ? "stop.circle" : "exclamationmark.triangle"
+            )
+            .font(.footnote)
+            .foregroundStyle(row.status == "stopped" ? Theme.textMuted : Theme.statusRed)
 
         case .toolCall:
             // ONE LINE UNTIL IT IS ASKED TO BE MORE. The Agent's tools are the

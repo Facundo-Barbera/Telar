@@ -47,7 +47,7 @@ export const MAX_THREAD_PAGES = 40;
  *  rather than stored, so a re-read cannot produce a different transcript. */
 export type AgentItem =
   | { kind: "user"; id: number; at: number; runId: string; text: string; origin?: string; wakeReason?: string }
-  | { kind: "assistant"; id: number; at: number; runId: string; text: string; streaming?: boolean }
+  | { kind: "assistant"; id: number; at: number; runId: string; text: string; itemId?: string; streaming?: boolean }
   | { kind: "tool"; id: number; at: number; runId: string; name: string; input: unknown; output: string; status: "completed" | "failed" | "declined" }
   | { kind: "failure"; id: number; at: number; runId: string; status: "failed" | "stopped"; message?: string };
 
@@ -77,14 +77,20 @@ export function mergeAgentRows(existing: readonly AgentRow[], incoming: readonly
 /**
  * ROWS INTO WHAT THE SCREEN DRAWS.
  *
- * ── WHERE THE ASSISTANT'S WORDS ACTUALLY LIVE ───────────────────────────────
- * BOTH PLACES ARE READ, and that is deliberate rather than defensive clutter.
- * The row log declares an `assistant_message` kind, but today's runtime puts
- * the answer on `turn_done`'s `text` instead. Reading only `turn_done` would
- * silently lose every word the Agent says BEFORE it calls a tool the moment the
- * engine starts emitting the row it already has a name for; reading only
- * `assistant_message` would show an empty conversation right now. So both
- * produce an assistant item, and neither is the one the other has to become.
+ * ── THE ASSISTANT SPEAKS IN `assistant_message` ROWS, AND ONLY THOSE ────────
+ * One row per finished text segment, so a turn that says something, calls a
+ * tool and then says something else produces two bubbles with the tool between
+ * them — which is the conversation that actually happened.
+ *
+ * `turn_done.detail.text` IS NOT DRAWN, and that is the part worth stating
+ * because it looks like a field going unused. It carries the FINAL assistant
+ * text, deliberately duplicating the last `assistant_message` row: it exists
+ * for a reader that wants one answer per turn without folding the log. This
+ * screen folds the log, so drawing both would print the closing sentence of
+ * every turn twice.
+ *
+ * WHAT `turn_done` IS STILL READ FOR is the two ways a turn can end without
+ * one: failed, and stopped.
  *
  * `turn_started` IS NOT DRAWN. It carries nothing a reader needs that the user
  * message above it does not already say, and a marker per turn would be noise
@@ -113,7 +119,10 @@ export function agentItems(rows: readonly AgentRow[]): AgentItem[] {
     }
     if (row.kind === "assistant_message") {
       const text = str(detail.text);
-      if (text) items.push({ kind: "assistant", id, at, runId, text });
+      // `itemId` IS WHAT THE LIVE DELTAS ARE KEYED BY, carried onto the item so
+      // a streamed bubble can be reconciled against the row that lands rather
+      // than drawn beside it. See `liveAssistantItem`.
+      if (text) items.push({ kind: "assistant", id, at, runId, text, ...(str(detail.itemId) ? { itemId: str(detail.itemId)! } : {}) });
       continue;
     }
     if (row.kind === "tool_call") {
@@ -131,14 +140,9 @@ export function agentItems(rows: readonly AgentRow[]): AgentItem[] {
       continue;
     }
     if (row.kind === "turn_done") {
-      // A COMPLETED TURN'S TEXT IS THE ANSWER — see the note above on where the
-      // assistant's words live. A completed turn with nothing to say (it only
-      // ran tools) draws nothing rather than an empty bubble.
-      if (detail.status === "completed") {
-        const text = str(detail.text);
-        if (text) items.push({ kind: "assistant", id, at, runId, text });
-        continue;
-      }
+      // A COMPLETED TURN DRAWS NOTHING. Its `text` duplicates the last
+      // `assistant_message` row on purpose — see the note above.
+      if (detail.status === "completed") continue;
       // FAILED AND STOPPED ARE BOTH SHOWN, and differently. A person who
       // pressed Cancel knows why the turn ended and needs no error; a turn that
       // fell over owes them the sentence.
@@ -158,19 +162,26 @@ export function agentItems(rows: readonly AgentRow[]): AgentItem[] {
 /**
  * THE LIVE SENTENCE, as an item the transcript can draw at its end.
  *
- * `undefined` WHENEVER THE BUFFER IS EMPTY OR ITS RUN HAS ALREADY LANDED A ROW,
- * which is what stops the text appearing twice: the delta is live-only, the row
- * that follows is durable, and the instant the durable one exists the buffer
- * has nothing left to add.
+ * ── RECONCILED BY `itemId`, WHICH IS THE WHOLE OF THIS FUNCTION ─────────────
+ * A delta and the row that follows it carry the SAME `itemId`, so the buffer is
+ * dropped the instant its own row lands — not when the run ends, and not when
+ * some other message in the same run lands.
+ *
+ * KEYING THIS BY RUN WOULD BE WRONG IN BOTH DIRECTIONS now that a turn can
+ * produce several messages. A first message landing would silence the buffer
+ * for a second one that is still streaming; and a reconnect mid-turn, which
+ * replays every row the client missed, would find the earlier row and hide a
+ * sentence still arriving. Keyed by message, both cases are simply the right
+ * answer.
  *
  * ITS ID IS ABOVE EVERY REAL ROW so it sorts to the bottom without the caller
  * having to special-case it. Nothing persists it, so the id never collides.
  */
-export function liveAssistantItem(rows: readonly AgentRow[], live: { runId: string; text: string } | undefined): AgentItem | undefined {
+export function liveAssistantItem(rows: readonly AgentRow[], live: { runId: string; itemId: string; text: string } | undefined): AgentItem | undefined {
   if (!live || !live.text) return undefined;
-  const landed = rows.some((row) => row.runId === live.runId && (row.kind === "assistant_message" || row.kind === "turn_done"));
+  const landed = rows.some((row) => row.kind === "assistant_message" && row.detail.itemId === live.itemId);
   if (landed) return undefined;
-  return { kind: "assistant", id: Number.MAX_SAFE_INTEGER, at: Date.now(), runId: live.runId, text: live.text, streaming: true };
+  return { kind: "assistant", id: Number.MAX_SAFE_INTEGER, at: Date.now(), runId: live.runId, itemId: live.itemId, text: live.text, streaming: true };
 }
 
 export type AgentThreadHandle = {
@@ -195,7 +206,7 @@ export type AgentThreadHandle = {
  */
 export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandle {
   const [rows, setRows] = useState<readonly AgentRow[]>([]);
-  const [live, setLive] = useState<{ runId: string; text: string }>();
+  const [live, setLive] = useState<{ runId: string; itemId: string; text: string }>();
   const [state, setState] = useState<AgentState>();
   const [credential, setCredential] = useState<AgentAnswer["credential"]>();
   const [loading, setLoading] = useState(true);
@@ -304,9 +315,14 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
               }
               if (event.type === "row") {
                 remember([event.row]);
-                // A ROW ENDS THE SENTENCE IT BELONGS TO. The durable text has
-                // landed, so the buffer that was standing in for it goes.
-                setLive((held) => (held && held.runId === event.row.runId && (event.row.kind === "assistant_message" || event.row.kind === "turn_done") ? undefined : held));
+                // A ROW ENDS THE SENTENCE IT BELONGS TO — the one with its own
+                // `itemId`, not merely one from the same run. A turn can say
+                // several things, and an earlier message landing must not
+                // silence a later one still arriving.
+                setLive((held) => (held && event.row.kind === "assistant_message" && event.row.detail.itemId === held.itemId ? undefined : held));
+                // AND A TURN THAT ENDS CLEARS WHATEVER IS LEFT. A run that
+                // failed mid-sentence has a buffer no row will ever land for.
+                if (event.row.kind === "turn_done") setLive((held) => (held && held.runId === event.row.runId ? undefined : held));
                 // The Agent's own state moves on a turn boundary or an
                 // approval — the cheapest place to notice is here.
                 if (event.row.kind === "turn_done" || event.row.kind === "request_opened" || event.row.kind === "request_resolved") {
@@ -318,7 +334,14 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
                   }).catch(() => undefined);
                 }
               } else if (event.type === "delta") {
-                setLive((held) => (held && held.runId === event.runId ? { runId: event.runId, text: held.text + event.text } : { runId: event.runId, text: event.text }));
+                // ACCUMULATED PER MESSAGE. A delta for a NEW `itemId` starts a
+                // fresh buffer rather than appending to the last one — the
+                // previous message has its own row on the way.
+                setLive((held) =>
+                  held && held.itemId === event.itemId
+                    ? { runId: event.runId, itemId: event.itemId, text: held.text + event.text }
+                    : { runId: event.runId, itemId: event.itemId, text: event.text },
+                );
               }
             }
           }

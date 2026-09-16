@@ -74,17 +74,42 @@ import Testing
           {"id":1,"threadId":"t","runId":"r","at":10,"kind":"user_message","detail":{"text":"hello","origin":"user"}},
           {"id":2,"threadId":"t","runId":"r","at":11,"kind":"tool_call",
            "detail":{"name":"sessions_list","input":{},"output":"rows","status":"completed"}},
-          {"id":3,"threadId":"t","runId":"r","at":12,"kind":"turn_done","detail":{"status":"completed","text":"done"}}
-        ],"cursor":3,"more":false,"threadId":"t"}
+          {"id":3,"threadId":"t","runId":"r","at":12,"kind":"assistant_message","detail":{"text":"done","itemId":"msg_1"}},
+          {"id":4,"threadId":"t","runId":"r","at":13,"kind":"turn_done","detail":{"status":"completed","text":"done"}}
+        ],"cursor":4,"more":false,"threadId":"t"}
         """
         let page = try JSONDecoder().decode(AgentThreadPage.self, from: Data(json.utf8))
-        #expect(page.rows.count == 3)
+        #expect(page.rows.count == 4)
         #expect(page.rows[0].text == "hello")
         #expect(page.rows[1].name == "sessions_list")
         #expect(page.rows[1].status == "completed")
         #expect(page.rows[2].text == "done")
-        #expect(page.cursor == 3)
+        // THE ID THE LIVE DELTAS ARE KEYED BY. This phone polls rather than
+        // streams, so nothing uses it yet — it is decoded because the row
+        // carries it, and a reader that starts streaming should not have to
+        // change the model to find it.
+        #expect(page.rows[2].itemId == "msg_1")
+        #expect(page.cursor == 4)
         #expect(!page.more)
+    }
+
+    @Test func aCompletedTurnDoneDuplicatesTheFinalMessageOnPurpose() throws {
+        // The engine sends BOTH: one `assistant_message` per finished segment,
+        // and `turn_done.detail.text` carrying the final one again for a reader
+        // that wants one answer per turn without folding the log. This screen
+        // folds the log — `AgentView.drawn` drops the completed `turn_done`, or
+        // every turn would print its closing sentence twice. What is asserted
+        // here is that both really do arrive, so that rule has something to be
+        // about.
+        let json = """
+        {"rows":[
+          {"id":1,"threadId":"t","runId":"r","at":10,"kind":"assistant_message","detail":{"text":"done","itemId":"msg_1"}},
+          {"id":2,"threadId":"t","runId":"r","at":11,"kind":"turn_done","detail":{"status":"completed","text":"done"}}
+        ],"cursor":2,"more":false}
+        """
+        let page = try JSONDecoder().decode(AgentThreadPage.self, from: Data(json.utf8))
+        #expect(page.rows.map(\.kind) == [.assistantMessage, .turnDone])
+        #expect(page.rows[0].text == page.rows[1].text)
     }
 
     @Test func aRowKindThisBuildHasNeverHeardOfIsSkippedNotFatal() throws {
@@ -150,7 +175,7 @@ import Testing
         // from the cursor it holds, and a poll that raced a write hands back a
         // row it already has. Appending would duplicate it on screen.
         let held = [AgentRow(id: 1, kind: .userMessage, text: "hello"), AgentRow(id: 2, kind: .turnStarted)]
-        let again = [AgentRow(id: 2, kind: .turnStarted), AgentRow(id: 3, kind: .turnDone, text: "hi", status: "completed")]
+        let again = [AgentRow(id: 2, kind: .turnStarted), AgentRow(id: 3, kind: .assistantMessage, text: "hi", itemId: "msg_1")]
         #expect(mergeAgentRows(held, again).map(\.id) == [1, 2, 3])
     }
 
@@ -170,8 +195,8 @@ import Testing
     @Test func aLaterPageReplacesARowRatherThanAddingASecond() {
         // The same id arriving twice is one row, not two — whichever answer
         // came last is the one the Mac stands behind.
-        let first = [AgentRow(id: 1, kind: .turnDone, text: "draft", status: "completed")]
-        let second = [AgentRow(id: 1, kind: .turnDone, text: "final", status: "completed")]
+        let first = [AgentRow(id: 1, kind: .assistantMessage, text: "draft", itemId: "msg_1")]
+        let second = [AgentRow(id: 1, kind: .assistantMessage, text: "final", itemId: "msg_1")]
         let merged = mergeAgentRows(first, second)
         #expect(merged.count == 1)
         #expect(merged[0].text == "final")

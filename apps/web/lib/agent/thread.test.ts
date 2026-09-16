@@ -10,9 +10,11 @@
  * twice. Neither failure is visible in a happy-path render; both are certain in
  * a long session.
  *
- * AND THE ONE ABOUT WHERE THE ASSISTANT'S WORDS LIVE. The log declares an
- * `assistant_message` kind and today's runtime puts the answer on `turn_done`
- * instead. Both must draw, or this screen is empty now or silently lossy later.
+ * AND THE ONE ABOUT `turn_done.detail.text`, which is a field this screen
+ * deliberately does NOT draw. It duplicates the final `assistant_message` row
+ * on purpose — it exists for a reader that wants one answer per turn without
+ * folding the log. This screen folds the log, so drawing both would print the
+ * closing sentence of every turn twice.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -59,20 +61,29 @@ describe("what rows draw", () => {
     expect(items[1]).toMatchObject({ kind: "user", origin: "wake", wakeReason: "turn_completed" });
   });
 
-  test("the assistant's words from BOTH places they can live", () => {
-    // Today's runtime puts the answer on `turn_done`…
-    expect(agentItems([row(1, "turn_done", { status: "completed", text: "done" })])).toEqual([
-      expect.objectContaining({ kind: "assistant", text: "done" }),
+  test("the assistant speaks in assistant_message rows", () => {
+    // One row per finished text segment, so a turn that says something, calls a
+    // tool and then says something else is drawn as the conversation that
+    // actually happened rather than as one closing paragraph.
+    const items = agentItems([
+      row(1, "assistant_message", { text: "looking", itemId: "msg_1" }),
+      row(2, "tool_call", { name: "sessions_list", input: {}, output: "rows", status: "completed" }),
+      row(3, "assistant_message", { text: "three of them", itemId: "msg_2" }),
     ]);
-    // …and the log declares a kind for it that a later runtime may emit.
-    expect(agentItems([row(1, "assistant_message", { text: "thinking aloud" })])).toEqual([
-      expect.objectContaining({ kind: "assistant", text: "thinking aloud" }),
-    ]);
+    expect(items.map((each) => each.kind)).toEqual(["assistant", "tool", "assistant"]);
+    expect(items[0]).toMatchObject({ text: "looking", itemId: "msg_1" });
+    expect(items[2]).toMatchObject({ text: "three of them", itemId: "msg_2" });
   });
 
-  test("a turn that only ran tools draws no empty bubble", () => {
-    expect(agentItems([row(1, "turn_done", { status: "completed" })])).toEqual([]);
-    expect(agentItems([row(1, "assistant_message", { text: "" })])).toEqual([]);
+  test("a completed turn_done draws nothing, because its text is already a row", () => {
+    // THE DUPLICATE IS DELIBERATE ON THE ENGINE'S SIDE. `turn_done` carries the
+    // FINAL assistant text for a reader that wants one answer per turn; this
+    // screen folds the log, so drawing both would say the last sentence twice.
+    const items = agentItems([
+      row(1, "assistant_message", { text: "done", itemId: "msg_1" }),
+      row(2, "turn_done", { status: "completed", text: "done" }),
+    ]);
+    expect(items).toEqual([expect.objectContaining({ kind: "assistant", text: "done" })]);
   });
 
   test("a tool row keeps its status, and an unknown status is not a failure", () => {
@@ -120,33 +131,53 @@ describe("what rows draw", () => {
 });
 
 describe("the live sentence", () => {
-  test("shows while its run has landed no durable row", () => {
-    const item = liveAssistantItem([row(1, "user_message", { text: "go" })], { runId: "run_one", text: "work" });
-    expect(item).toMatchObject({ kind: "assistant", text: "work", streaming: true });
+  test("shows while its own row has not landed", () => {
+    const item = liveAssistantItem([row(1, "user_message", { text: "go" })], { runId: "run_one", itemId: "msg_1", text: "work" });
+    expect(item).toMatchObject({ kind: "assistant", text: "work", itemId: "msg_1", streaming: true });
   });
 
-  test("disappears the moment the row that carries the same words lands", () => {
+  test("disappears the moment the row carrying the same itemId lands", () => {
     // THE BUG THIS PREVENTS is the sentence appearing twice — once from the
     // live buffer and once from the durable row that repeats it.
-    const landed = [row(1, "turn_done", { status: "completed", text: "work" })];
-    expect(liveAssistantItem(landed, { runId: "run_one", text: "work" })).toBeUndefined();
-    // …and the same for the row kind the log declares.
-    expect(liveAssistantItem([row(1, "assistant_message", { text: "work" })], { runId: "run_one", text: "work" })).toBeUndefined();
+    const landed = [row(1, "assistant_message", { text: "work", itemId: "msg_1" })];
+    expect(liveAssistantItem(landed, { runId: "run_one", itemId: "msg_1", text: "work" })).toBeUndefined();
   });
 
-  test("another run's row does not silence this one's buffer", () => {
-    const other = [row(1, "turn_done", { status: "completed", text: "earlier" }, "run_earlier")];
-    expect(liveAssistantItem(other, { runId: "run_two", text: "now" })).toMatchObject({ text: "now" });
+  test("an EARLIER message in the same run does not silence a later one", () => {
+    // THE REASON THIS IS KEYED BY MESSAGE AND NOT BY RUN. A turn can say
+    // several things; the first one landing must not hide the second while it
+    // is still arriving.
+    const earlier = [row(1, "assistant_message", { text: "looking", itemId: "msg_1" })];
+    expect(liveAssistantItem(earlier, { runId: "run_one", itemId: "msg_2", text: "three of" })).toMatchObject({ text: "three of" });
+  });
+
+  test("a reconnect that replays earlier rows does not hide a sentence still arriving", () => {
+    // Reconnecting replays every row from the client's cursor, so the buffer's
+    // run is certain to be represented in the rows. Only its own itemId counts.
+    const replayed = [
+      row(1, "turn_started"),
+      row(2, "assistant_message", { text: "looking", itemId: "msg_1" }),
+      row(3, "tool_call", { name: "sessions_list", status: "completed" }),
+    ];
+    expect(liveAssistantItem(replayed, { runId: "run_one", itemId: "msg_2", text: "three" })).toMatchObject({ text: "three" });
+  });
+
+  test("a completed turn_done does not silence a buffer, because it carries no itemId", () => {
+    // It duplicates the final message's text but is not that message's row —
+    // the hook clears the buffer on a turn ending, which is a different rule
+    // in a different place.
+    const done = [row(1, "turn_done", { status: "completed", text: "work" })];
+    expect(liveAssistantItem(done, { runId: "run_one", itemId: "msg_1", text: "work" })).toMatchObject({ text: "work" });
   });
 
   test("nothing at all when there is nothing buffered", () => {
     expect(liveAssistantItem([], undefined)).toBeUndefined();
-    expect(liveAssistantItem([], { runId: "run_one", text: "" })).toBeUndefined();
+    expect(liveAssistantItem([], { runId: "run_one", itemId: "msg_1", text: "" })).toBeUndefined();
   });
 
   test("it sorts to the end of the transcript", () => {
     const rows = [row(1, "user_message", { text: "go" })];
-    const item = liveAssistantItem(rows, { runId: "run_one", text: "work" })!;
+    const item = liveAssistantItem(rows, { runId: "run_one", itemId: "msg_1", text: "work" })!;
     expect(item.id).toBeGreaterThan(rows.at(-1)!.id);
   });
 });
