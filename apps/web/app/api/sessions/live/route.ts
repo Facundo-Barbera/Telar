@@ -91,7 +91,7 @@ export async function GET(request: Request) {
 async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Response> {
   try {
     const client = await engineClient();
-    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount } = live;
+    const { sessions, assignments, layout, daemonId, inbox, revision, settledCount, agent } = live;
     const { projects } = await client.listProjects();
     return Response.json({
       sessions,
@@ -124,6 +124,19 @@ async function compose(live: LiveSessionsAnswer, etag?: string): Promise<Respons
       // Absent from an engine that predates the filter, which reads as "you have
       // everything" rather than as an empty shelf.
       ...(settledCount === undefined ? {} : { settledCount }),
+      /**
+       * WHETHER THIS MAC HAS A BUILT-IN AGENT (#531) — the rail's entry, and the
+       * only thing it needs to draw one.
+       *
+       * FORWARDED EXPLICITLY, and that is the point of this line rather than a
+       * detail of it. This route RE-COMPOSES the engine's answer field by field;
+       * anything not named here is dropped. The hosts proxy forwards the engine
+       * verbatim, so a field omitted here is present for every PAIRED Mac and
+       * missing for the local one — a rail that draws the entry for other
+       * people's machines and never for your own, which is exactly what
+       * `mainSession` did before it.
+       */
+      ...(agent ? { agent } : {}),
     }, {
       // THE ENGINE'S TAG, HANDED STRAIGHT BACK (#457) — so the caller's next
       // `If-None-Match` is a tag this engine will recognise. Absent from an

@@ -463,6 +463,21 @@ export type LiveSessionsAnswer = {
    * "off" — the same thing it reads for an engine that has never been switched
    * on.
    */
+  /**
+   * WHETHER THIS MAC HAS A BUILT-IN AGENT — one flag, and deliberately only one
+   * (#531).
+   *
+   * IT RIDES THIS READ for `mainSession`'s reason, which is the whole of why
+   * `/v2/agent` exists and the rail never calls it: this is the one request
+   * every rail already makes, per host, per tick, and the entry it draws is a
+   * label and a link. A row that shows a word needs no thread, no model and no
+   * running flag, so sending them here would be four fields spent on nothing
+   * and a second thing to keep in step.
+   *
+   * ABSENT IS OFF, which is also what an engine older than the feature means.
+   * The two cases are indistinguishable here and should be: both draw the rail
+   * Telar always drew.
+   */
   agent?: { enabled: boolean };
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
@@ -872,6 +887,17 @@ export class EngineClient {
    * asked to start again rather than to lose what they had. It is also the only
    * patch that moves `generation`, which is how a cached transcript knows it is
    * about a thread that no longer exists.
+   *
+   * `key` IS WRITE-ONLY AND NEVER COMES BACK. The Agent's OpenCode Go key is
+   * rung 1 of the ladder in `agent/credentials.ts`, and the answer says only
+   * which rung ANSWERED — a field that could read a stored key back is one
+   * screen-share away from leaking it.
+   *
+   * AN EMPTY STRING CLEARS IT, and that is the one place this patch departs
+   * from the provider registry's rule that blank never clears. There the field
+   * is one of many on a shared form and blank means "I did not retype it"; here
+   * it is the only writer of this secret and a Remove button has to be able to
+   * say so. Absent still means "leave it alone".
    */
   setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }): Promise<AgentAnswer> {
     return this.request("PATCH", "/v2/agent", patch);
