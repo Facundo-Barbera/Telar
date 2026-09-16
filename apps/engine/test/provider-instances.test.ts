@@ -322,3 +322,120 @@ test("two logins on the same driver get separate probes when they pin separate b
   expect(asked).toEqual([undefined, "/opt/beta/claude"]);
   expect(probes.map((probe) => probe.version)).toEqual(["2.1.232", "2.1.232", "2.2.0"]);
 });
+
+/**
+ * ── UPGRADING PAST A RETIRED DRIVER — issue #531 ────────────────────────────
+ *
+ * `telar` was a driver kind for one day (#526). Every store that ran that build
+ * has a row naming it, and the registry read has to survive meeting one.
+ *
+ * The bug these pin: the read strict-parsed the whole array, so one stale row
+ * threw out of THE read behind every provider lookup. The settings page 400'd
+ * with `invalid provider instance registry`, and because `resolveProviderInstance`
+ * sits on the session claim, starting a session failed the same way — which is
+ * what "the engine isn't responding" looked like from the cockpit.
+ */
+
+/** A store whose registry was written by the #526 build, key and all. */
+function upgradedFrom526(directory: string, key = "sk-from-526"): void {
+  fs.writeFileSync(
+    path.join(directory, "provider-instances.json"),
+    JSON.stringify({
+      version: 2,
+      providerInstances: [
+        { id: "claude", driver: "claude", enabled: true, env: [], createdAt: 1, updatedAt: 1 },
+        { id: "codex", driver: "codex", enabled: true, env: [], createdAt: 1, updatedAt: 1 },
+        { id: "opencode", driver: "opencode", enabled: true, env: [], createdAt: 1, updatedAt: 1 },
+        {
+          id: "telar",
+          driver: "telar",
+          enabled: true,
+          env: [{ name: "OPENCODE_API_KEY", value: "", sensitive: true }],
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    }),
+  );
+  fs.writeFileSync(
+    path.join(directory, "provider-secrets.json"),
+    JSON.stringify({ version: 2, secrets: { [`telar OPENCODE_API_KEY`]: key } }),
+  );
+}
+
+test("a registry naming a driver this build retired still reads", () => {
+  const directory = root();
+  upgradedFrom526(directory);
+  const engine = new EngineStore(directory, () => 100);
+
+  // The whole point: no throw, and the three live logins come back.
+  expect(engine.listProviderInstances().map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
+  // Written back once, so the next read is not a second repair.
+  const onDisk = JSON.parse(fs.readFileSync(path.join(directory, "provider-instances.json"), "utf8"));
+  expect(onDisk.providerInstances.map((instance: { id: string }) => instance.id)).toEqual(["claude", "codex", "opencode"]);
+});
+
+test("the read drops the retired row but will not touch the key the carry still needs", () => {
+  /**
+   * THE ORDERING HAZARD, PINNED. `readProviderInstances` runs from anywhere —
+   * a worker, a route, a test — and can easily beat the daemon's startup sweep.
+   * If it deleted secrets the way `removeProviderInstance` does, whether the
+   * upgrade kept somebody's key would depend on which read happened to land
+   * first. So the lazy path takes the row and leaves the credential.
+   */
+  const directory = root();
+  upgradedFrom526(directory);
+  const engine = new EngineStore(directory, () => 100);
+
+  engine.listProviderInstances();
+  const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
+  expect(secrets.secrets["telar OPENCODE_API_KEY"]).toBe("sk-from-526");
+  // And the carry, running afterwards, still finds it.
+  expect(engine.carryOverAgentKey()).toBe(true);
+  expect(engine.agentCredential().set).toBe(true);
+});
+
+test("the sweep drops the orphaned secret only after the carry has read it", () => {
+  const directory = root();
+  upgradedFrom526(directory);
+  const engine = new EngineStore(directory, () => 100);
+
+  // The daemon's order: carry, then drop.
+  expect(engine.carryOverAgentKey()).toBe(true);
+  expect(engine.removeRetiredProviderSecrets()).toBe(true);
+
+  const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
+  expect(secrets.secrets["telar OPENCODE_API_KEY"]).toBeUndefined();
+  // The key survived the drop, in its new home.
+  expect(engine.agentCredential().set).toBe(true);
+  // Idempotent: a second start has nothing left to say.
+  expect(engine.removeRetiredProviderSecrets()).toBe(false);
+});
+
+test("a live login's secrets are never mistaken for an orphan", () => {
+  const engine = store();
+  engine.saveProviderInstance({
+    id: "claude_work",
+    driver: "claude",
+    env: [{ name: "ANTHROPIC_API_KEY", value: "sk-live", sensitive: true }],
+  });
+  expect(engine.removeRetiredProviderSecrets()).toBe(false);
+  expect(engine.resolveProviderInstance("claude_work", "claude").env[0]?.value).toBe("sk-live");
+});
+
+test("a malformed row is still corruption, and still refuses to read", () => {
+  /**
+   * THE PRUNE STAYS NARROW. Forgiving an unknown `driver` is a migration;
+   * forgiving anything else would let a login somebody configured disappear
+   * because one field got mangled, which is the worse failure of the two.
+   */
+  const directory = root();
+  fs.writeFileSync(
+    path.join(directory, "provider-instances.json"),
+    JSON.stringify({
+      version: 2,
+      providerInstances: [{ id: "claude", driver: "claude", enabled: "yes please", env: [], createdAt: 1, updatedAt: 1 }],
+    }),
+  );
+  expect(() => new EngineStore(directory, () => 100).listProviderInstances()).toThrow(EngineStateError);
+});
