@@ -50,13 +50,16 @@ type Bindable = string | number | bigint | null | Uint8Array;
 const bind = (args: unknown[]): Bindable[] =>
   args.map((arg) => (arg === undefined ? null : typeof arg === "boolean" ? (arg ? 1 : 0) : (arg as Bindable)));
 
-/** The narrow slice of either sqlite this adapter drives. */
-type NativeStatement = {
+/** The narrow slice of either sqlite this adapter drives. Exported because the
+ *  readable transcript (`./thread-log.ts`) lives in the SAME file and shares
+ *  this handle: two connections to one WAL database would be two things to
+ *  close before a reset could move it. */
+export type NativeStatement = {
   get(...args: Bindable[]): unknown;
   all(...args: Bindable[]): unknown[];
   run(...args: Bindable[]): unknown;
 };
-type NativeDatabase = {
+export type NativeDatabase = {
   exec(sql: string): unknown;
   prepare(sql: string): NativeStatement;
   close(): void;
@@ -131,6 +134,10 @@ function openNative(file: string): NativeDatabase {
 
 export type OpenedCheckpointer = {
   saver: BaseCheckpointSaver;
+  /** The same handle, for the transcript table beside the checkpoints — see
+   *  `NativeDatabase`. Nothing else may hold it: closing is the reset's
+   *  precondition and there must be exactly one thing to close. */
+  db: NativeDatabase;
   /** Where the thread lives, so a diagnostic can say it without this module
    *  having to know the layout. */
   location: string;
@@ -154,6 +161,7 @@ export function openAgentCheckpointer(file: string): OpenedCheckpointer {
   let closed = false;
   return {
     saver,
+    db,
     location: file,
     close: () => {
       if (closed) return;
