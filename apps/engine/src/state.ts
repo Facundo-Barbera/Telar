@@ -160,6 +160,7 @@ import { TELAR_ORIENTATION } from "./orientation";
 import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
 import { resolveGoCredential, type GoKeySource } from "./agent/credentials";
 import { isAgentSelf } from "./agent/identity";
+import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -2908,6 +2909,27 @@ export class EngineStore {
       ...(found ? { source: found.source } : {}),
       rejected: main.enabled && main.sessionId !== undefined ? this.mainTurnRejectedKey(main.sessionId) : false,
     };
+  }
+
+  /**
+   * RUNG 1 OF THE AGENT'S KEY LADDER, resolved (#531).
+   *
+   * The pasted key lives where every other provider's credential lives: a
+   * sensitive `OPENCODE_API_KEY` on the `telar` login, so it is a 0600 file the
+   * registry route never echoes back and a redacted round trip in the settings
+   * pane. This is the one read that turns that record into the environment
+   * `resolveGoCredential` takes — nothing here opens the value, and the caller
+   * hands it straight to the resolver.
+   */
+  agentCredentialEnv(): Record<string, string | undefined> {
+    return providerProcessEnv(this.resolveProviderInstance(defaultInstanceIdForDriver("telar"), "telar"));
+  }
+
+  /** WHICH RUNG ANSWERED, for the settings pane. Never the key — see
+   *  `agent/credentials.ts`. */
+  agentCredential(): { source?: GoKeySource } {
+    const found = resolveGoCredential({ instanceEnv: this.agentCredentialEnv() });
+    return found ? { source: found.source } : {};
   }
 
   /** Did the newest settled turn on this session fail because the provider
@@ -6734,6 +6756,18 @@ export class EngineStore {
      *  read every rail already makes, and both the cockpit's rail and the
      *  phone's sidebar draw their entry from it. */
     mainSession: MainSession;
+    /**
+     * WHETHER THIS MAC HAS AN AGENT (#531) — one flag, on the one read every
+     * rail already makes.
+     *
+     * `mainSession`'s own argument, and the reason it is a flag rather than the
+     * whole document: the rail draws an entry, and an entry needs to know
+     * whether to exist and nothing else. The thread id, the model and the
+     * pending request are `/v2/agent`'s business, which is the pane's read
+     * rather than the sidebar's — putting them here would cost every poll on
+     * every client for a row that only shows a label.
+     */
+    agent: { enabled: boolean };
     revision: number;
     settledCount: number;
   } {
@@ -6748,6 +6782,8 @@ export class EngineStore {
     // Read once and spread into both arms below, like `inbox`: the two paths
     // differ in how they find the ROWS, never in what rides beside them.
     const mainSession = this.resolveMainSession();
+    // ONE FLAG, read from the Agent's own document — see the field above.
+    const agent = { enabled: readAgentSettings(agentPaths(this.paths.root)).enabled };
     /**
      * THE DESIGNATED CONVERSATION IS NEVER SHELVED OUT OF THIS ANSWER (#522).
      *
@@ -6790,6 +6826,7 @@ export class EngineStore {
         sessions: full.sessions.map(liveRow),
         inbox,
         mainSession,
+        agent,
         revision,
         settledCount: indexed.settledCount,
       };
@@ -6830,6 +6867,7 @@ export class EngineStore {
         : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
       inbox,
       mainSession,
+      agent,
       revision,
       settledCount: shelved.size,
     };

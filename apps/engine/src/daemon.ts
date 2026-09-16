@@ -90,6 +90,10 @@ import {
   notesSocketConnectCard,
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
+import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
+import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
+import { agentChatModel } from "./agent/model";
+import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
@@ -125,6 +129,14 @@ export type EngineDaemonOptions = {
   engineRoot?: string;
   port?: number;
   now?: () => number;
+  /**
+   * THE AGENT'S MODEL, INJECTED — the same seam `models` is, and for a sharper
+   * reason (#531). The key ladder's third rung reads the OpenCode CLI's own
+   * credential, so on a developer's machine the default factory finds a real
+   * key and a route test would quietly spend real calls against a real API.
+   * A test passes a scripted model; nothing in production passes anything.
+   */
+  agentModel?: AgentRuntimeOptions["model"];
   /** Worker liveness is deliberately short; a lost running turn is stopped
    *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
@@ -1146,6 +1158,56 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   };
   const notesSocketTools = (): SocketTool[] => (notesToolsCache ??= collectNotesWallTools(buildNotesCapability()));
 
+  /**
+   * THE BUILT-IN AGENT — one per machine, in this process (#531).
+   *
+   * BUILT EAGERLY AND OPENED LAZILY. Constructing it costs nothing: the runtime
+   * reads `agent.json` per call and opens `threads.sqlite` on the first turn,
+   * thread read or stream, so an engine whose Agent has never been switched on
+   * never grows a database. What being built early buys is the wake sink below,
+   * which has to be in place before any turn can end.
+   *
+   * ITS WALL IS REBUILT PER TURN, through the same two builders the outward
+   * socket uses, with a `self` of `agent`. See `agent/tools.ts` for why the
+   * daemon's capability is the right one and why neither build carries the
+   * request gate.
+   */
+  const agentRuntime = new AgentRuntime({
+    engineRoot: root,
+    tools: () =>
+      collectAgentTools({
+        sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
+        notes: buildNotesCapability(),
+        query: {
+          find: async (query) => store.findSessions(query),
+          outline: async (sessionId, window) => store.turnOutline(sessionId, window),
+          answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
+        },
+      }),
+    model:
+      options.agentModel ??
+      ((input) =>
+        agentChatModel({
+          threadId: input.threadId,
+          ...(input.model ? { model: input.model } : {}),
+          instanceEnv: store.agentCredentialEnv(),
+        })),
+    ...(options.now ? { now: options.now } : {}),
+    // THE SAME PARAGRAPH EVERY OTHER TURN ON THIS MACHINE GETS, under the same
+    // switch — `AgentOrientation.preamble`. A coordinator that did not know
+    // what Telar is would be the one conversation on the machine that did not.
+    orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
+  });
+  /**
+   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES A TURN.
+   *
+   * The store fans subscriptions out and finds one subscriber that is not a
+   * session; this is where that one goes. Registered here rather than inside
+   * the runtime because the direction matters: the runtime knows about the
+   * store, and the store must not know about a graph.
+   */
+  store.setAgentWakeSink((wake) => agentRuntime.wake({ notice: wake.input, wakeReason: wake.wakeReason as unknown as Record<string, unknown> }));
+
   const execution = createExecutionPort(store, {
     registerWorker: async (workerId) => {
         stringValue(workerId, "worker id");
@@ -1437,6 +1499,128 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }),
           credential: store.mainSessionCredential(),
         });
+        return;
+      }
+      /**
+       * ══ THE BUILT-IN AGENT — issue #531 ══
+       *
+       * Seven routes, and they are deliberately NOT under `/v2/sessions/`: the
+       * Agent is not a session, it has no id in that namespace, and a client
+       * that reached it through a session route would be told a conversation
+       * exists that `sessions_read` cannot open.
+       *
+       * THE RAIL DOES NOT READ ANY OF THESE. It gets `agent: { enabled }` off
+       * `/v2/sessions/live`, which it already polls — one flag, because a row
+       * that only shows a label needs nothing else. These are the pane's reads
+       * and the composer's writes.
+       */
+      if (url.pathname === "/v2/agent" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "PATCH") {
+          const input = await body(request);
+          // FORWARDED BY PRESENCE, unvalidated, like every other settings patch
+          // here: the shape lives beside the schema in `agent/store.ts`, and a
+          // second copy at this seam could disagree with it.
+          agentRuntime.patch({
+            ...("enabled" in input ? { enabled: input.enabled } : {}),
+            ...("model" in input ? { model: input.model } : {}),
+            ...("reset" in input ? { reset: input.reset } : {}),
+          });
+        }
+        // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
+        // pane that decides whether to show a setup field, and asking in a
+        // second request would let the two disagree about one instant. Which
+        // RUNG answered, never the key.
+        writeJson(response, 200, { agent: agentRuntime.state(), credential: store.agentCredential() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/agent/turns") {
+        const input = await body(request);
+        const text = stringValue(input.text, "text") ?? "";
+        try {
+          writeJson(response, 201, { ...agentRuntime.submit({ text }), agent: agentRuntime.state() });
+        } catch (error) {
+          // A switched-off Agent and an empty message are both the caller's
+          // mistake, said in the sentence the runtime wrote for them.
+          throw new HttpError(409, "conflict", error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/turns/") && url.pathname.endsWith("/cancel")) {
+        const runId = url.pathname.slice("/v2/agent/turns/".length, -"/cancel".length);
+        // STOPPED IS A FACT, NOT A 404. A run that already finished answers
+        // `false` rather than an error: a Stop pressed a beat late is not a
+        // client bug, and it must not paint a failure over a turn that worked.
+        writeJson(response, 200, { stopped: agentRuntime.cancel(runId || undefined), agent: agentRuntime.state() });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/v2/agent/thread") {
+        writeJson(response, 200, agentRuntime.thread({
+          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
+          limit: positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit"),
+        }));
+        return;
+      }
+      if (request.method === "POST" && url.pathname.startsWith("/v2/agent/requests/")) {
+        const requestId = url.pathname.slice("/v2/agent/requests/".length);
+        const input = await body(request);
+        const decision = input.decision === "accept" ? "accept" : input.decision === "decline" ? "decline" : undefined;
+        if (!decision) throw new HttpError(400, "invalid_request", 'decision must be "accept" or "decline"');
+        // ANSWERED BY ID, so a client holding a stale question cannot approve
+        // the one that replaced it. `false` means it was already answered.
+        writeJson(response, 200, { resolved: agentRuntime.resolveRequest(requestId, decision), agent: agentRuntime.state() });
+        return;
+      }
+      /**
+       * THE ENGINE'S FIRST PUSH ROUTE, AND IT IS KEPT SMALL ON PURPOSE.
+       *
+       * Server-sent events over the same bearer auth as everything else: no
+       * second protocol, no upgrade, no library. `after` is a transcript cursor,
+       * so the contract is the one every other read here has — page what you
+       * missed, then watch.
+       *
+       * THE BACKLOG IS SENT FIRST, INSIDE THE SAME RESPONSE. A client that
+       * paged and then subscribed would have a gap between the two calls; this
+       * closes it by replaying from the caller's cursor before the live feed
+       * starts, on one connection.
+       *
+       * A DELTA IS NOT REPLAYABLE and is not replayed: it is live-only, and the
+       * assistant row that follows carries the whole text. A client joining
+       * mid-sentence sees the finished message a moment later rather than half
+       * of one for ever.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/stream") {
+        const after = positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after");
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        const send = (event: unknown) => {
+          try {
+            response.write(`data: ${JSON.stringify(event)}\n\n`);
+          } catch {
+            // The socket has gone; the close handler below unsubscribes.
+          }
+        };
+        for (const row of agentRuntime.thread({ after, limit: THREAD_PAGE_MAX }).rows) send({ type: "row", row });
+        const stop = agentRuntime.watch(send);
+        // A COMMENT FRAME ON A TIMER, because a stream that says nothing for
+        // twenty minutes is one a proxy closes. It is not an event and no
+        // client has to know about it.
+        const beat = setInterval(() => {
+          try {
+            response.write(": beat\n\n");
+          } catch {
+            /* the close handler is what actually tidies up */
+          }
+        }, 25_000);
+        beat.unref();
+        const finish = () => {
+          clearInterval(beat);
+          stop();
+        };
+        request.on("close", finish);
+        response.on("close", finish);
         return;
       }
       /**
@@ -4018,6 +4202,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
         await closeServer(server);
+        // AFTER THE SERVER, so no stream route is still holding a watcher, and
+        // before the execution store: the Agent's thread is a database handle
+        // this process owns, and a daemon that left it open would leave the
+        // next reset unable to move the file.
+        store.setAgentWakeSink(undefined);
+        agentRuntime.close();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
         removeOwnDiscovery(store, daemonId);

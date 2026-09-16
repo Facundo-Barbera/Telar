@@ -149,6 +149,8 @@ export class AgentRuntime {
   private watchers = new Set<(event: AgentStreamEvent) => void>();
   /** The turn currently pumping, so `submit` does not start a second pump. */
   private pumping = false;
+  /** Which conversation the live turn belongs to — see `row`. */
+  private turnThreadId?: string;
 
   constructor(private readonly options: AgentRuntimeOptions) {
     this.paths = agentPaths(options.engineRoot);
@@ -255,9 +257,20 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * ONE ROW, ON THE THREAD IT IS ABOUT — or nowhere.
+   *
+   * THE THREAD CHECK IS NOT PARANOIA, it is a reset. Resetting aborts the live
+   * turn, and that turn unwinds a moment LATER, in the pump's own catch — by
+   * which time `agent.json` names a different conversation. Without this, a
+   * brand-new thread's first row would be the ending of a turn from the
+   * conversation that was just archived, carrying a run id that appears
+   * nowhere else in it.
+   */
   private row(kind: AgentRow["kind"], runId: string, detail: Record<string, unknown>): AgentRow | undefined {
     const threadId = readAgentSettings(this.paths).threadId;
     if (!threadId) return undefined;
+    if (this.turnThreadId !== undefined && this.turnThreadId !== threadId) return undefined;
     const row = this.open().log.append({ threadId, runId, at: this.now(), kind, detail });
     this.push({ type: "row", row });
     return row;
@@ -375,6 +388,7 @@ export class AgentRuntime {
           this.live = undefined;
           this.pending = undefined;
           this.answer = undefined;
+          this.turnThreadId = undefined;
         }
       }
     } finally {
@@ -386,7 +400,8 @@ export class AgentRuntime {
     const settings = readAgentSettings(this.paths);
     const threadId = settings.threadId;
     if (!threadId) return;
-    const { opened } = this.open();
+    this.turnThreadId = threadId;
+    this.open();
 
     this.row("user_message", turn.runId, {
       text: turn.input,

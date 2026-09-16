@@ -300,6 +300,83 @@ export type MainSessionAnswer = {
   credential?: { source?: "setting" | "environment" | "cli"; rejected?: boolean };
 };
 
+/* ------------------------------------------------------------------ *
+ * THE BUILT-IN AGENT — issue #531.
+ *
+ * These are the ANSWER shapes rather than the stored document: `AgentSettings`
+ * is what is on disk, and this is that plus the three things only a running
+ * engine knows — whether a turn is executing, how many are behind it, and the
+ * one approval it may be parked on.
+ * ------------------------------------------------------------------ */
+
+/** What an approval asks, carried whole so a surface need not re-derive which
+ *  call it is about from the conversation. */
+export type AgentRequest = {
+  type: "approval";
+  id: string;
+  runId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  toolCallId: string;
+  /** One sentence in the words a person reads, specific to the call. */
+  reason: string;
+  openedAt: number;
+};
+
+export type AgentState = {
+  enabled: boolean;
+  threadId?: string;
+  model?: string;
+  /** Bumped by a reset and nothing else — a cached transcript compares it to
+   *  know it is about a thread that no longer exists. */
+  generation?: number;
+  /** A turn is executing right now. FALSE while one is parked for a person,
+   *  which is why `request` sits beside this rather than inside it. */
+  running: boolean;
+  runId?: string;
+  queued: number;
+  request?: AgentRequest;
+};
+
+export type AgentAnswer = {
+  agent: AgentState;
+  /** Which RUNG of the key ladder answered, never the key — see
+   *  `apps/engine/src/agent/credentials.ts`. */
+  credential?: { source?: "setting" | "environment" | "cli" };
+};
+
+/** One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
+ *  vocabulary so a client that already draws a session recognises the shapes;
+ *  `detail` is keyed by `kind`. */
+export type AgentRow = {
+  id: number;
+  threadId: string;
+  runId: string;
+  at: number;
+  kind: "user_message" | "assistant_message" | "tool_call" | "request_opened" | "request_resolved" | "turn_started" | "turn_done";
+  detail: Record<string, unknown>;
+};
+
+export type AgentThreadAnswer = {
+  rows: AgentRow[];
+  /** The id to pass as the next `after`. Unmoved when the page was empty. */
+  cursor: number;
+  more: boolean;
+  threadId?: string;
+};
+
+/**
+ * ONE FRAME OF `GET /v2/agent/stream`.
+ *
+ * A ROW IS DURABLE AND PAGEABLE; A DELTA IS NEITHER. Tokens are pushed live and
+ * stored nowhere — the `assistant_message` row that follows carries the whole
+ * text, so a client joining mid-sentence sees the finished message a moment
+ * later rather than half of one for ever.
+ */
+export type AgentStreamEvent =
+  | { type: "row"; row: AgentRow }
+  | { type: "delta"; runId: string; itemId: string; text: string };
+
 export type SessionBootstrap = SessionSnapshot & {
   /**
    * The journal from `cursor`. Empty on a quiet session, which is the ordinary
@@ -762,6 +839,89 @@ export class EngineClient {
    */
   setMainSession(patch: { enabled?: boolean; sessionId?: string; model?: string }): Promise<MainSessionAnswer> {
     return this.request("PATCH", "/v2/main-session", patch);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * THE BUILT-IN AGENT — issue #531.
+   *
+   * NOT UNDER `/v2/sessions/`, because the Agent is not one: it has no id in
+   * that namespace, its conversation is a LangGraph thread rather than a
+   * journal, and a client that reached it through a session route would be
+   * told a conversation exists that `events()` cannot open.
+   *
+   * The RAIL reads none of these — `liveSessions()` carries `agent: { enabled }`
+   * for the entry, which is the only thing a row that shows a label needs.
+   * ---------------------------------------------------------------- */
+
+  /** Whether this Mac has an Agent, which thread it is on, whether a turn is
+   *  running, and the one approval it may be parked on. The credential rides
+   *  along so a settings pane decides between a field and a setup prompt from
+   *  one instant — which RUNG answered, never the key. */
+  agent(): Promise<AgentAnswer> {
+    return this.request("GET", "/v2/agent");
+  }
+
+  /**
+   * Switch it on or off, pick its model, or start again.
+   *
+   * `reset: true` ARCHIVES the conversation and mints a new thread — the old
+   * file stays in `agent/` with a timestamp, because a person who resets has
+   * asked to start again rather than to lose what they had. It is also the only
+   * patch that moves `generation`, which is how a cached transcript knows it is
+   * about a thread that no longer exists.
+   */
+  setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean }): Promise<AgentAnswer> {
+    return this.request("PATCH", "/v2/agent", patch);
+  }
+
+  /** Say something to the Agent. Answers the run id before the turn runs, so a
+   *  composer has something to follow; a turn already running queues this one
+   *  behind it rather than interleaving. */
+  sendAgentTurn(text: string): Promise<{ runId: string; queued: number; agent: AgentState }> {
+    return this.request("POST", "/v2/agent/turns", { text });
+  }
+
+  /** Stop the Agent's live turn, or drop a queued one. `stopped: false` means
+   *  there was nothing left to stop, which is a fact rather than an error. */
+  cancelAgentTurn(runId: string): Promise<{ stopped: boolean; agent: AgentState }> {
+    return this.request("POST", `/v2/agent/turns/${encodeURIComponent(runId)}/cancel`);
+  }
+
+  /** The transcript, forward from a cursor. Bounded by a count AND a byte
+   *  budget, whichever is reached first — `#515`'s rule. */
+  agentThread(options: { after?: number; limit?: number } = {}): Promise<AgentThreadAnswer> {
+    const query = new URLSearchParams();
+    if (options.after !== undefined) query.set("after", String(options.after));
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.toString();
+    return this.request("GET", `/v2/agent/thread${suffix ? `?${suffix}` : ""}`);
+  }
+
+  /** Answer the parked approval. BY ID, so a client holding a stale question
+   *  cannot approve the one that replaced it; `resolved: false` means it had
+   *  already been answered. */
+  resolveAgentRequest(requestId: string, decision: "accept" | "decline"): Promise<{ resolved: boolean; agent: AgentState }> {
+    return this.request("POST", `/v2/agent/requests/${encodeURIComponent(requestId)}`, { decision });
+  }
+
+  /**
+   * The Agent's live feed, as a URL and a header rather than a method.
+   *
+   * SERVER-SENT EVENTS, so the response is a stream this client has no business
+   * buffering: a caller opens it with `fetch` plus a reader and reads `data:`
+   * frames of `AgentStreamEvent`. `after` replays the transcript from that
+   * cursor inside the same response before the live feed starts, which is what
+   * closes the gap a page-then-subscribe would leave.
+   *
+   * THE TOKEN IS RETURNED BESIDE THE URL because the route is behind the same
+   * bearer auth as every other one, and `EventSource` cannot send a header —
+   * a caller that needs one must use `fetch`.
+   */
+  agentStream(after = 0): { url: string; headers: Record<string, string> } {
+    return {
+      url: `http://${this.discovery.host}:${this.discovery.port}/v2/agent/stream?after=${after}`,
+      headers: { authorization: `Bearer ${this.discovery.token}` },
+    };
   }
 
   /** Where each project group sits in the rail — see `SidebarLayout`.
