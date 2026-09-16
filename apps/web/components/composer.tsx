@@ -416,6 +416,7 @@ export function Composer({
   sending,
   runtimeMode,
   session,
+  controls,
   projectId,
   projectName,
   usage,
@@ -463,6 +464,15 @@ export function Composer({
   sending: boolean;
   runtimeMode?: RuntimeMode;
   session?: Session;
+  /**
+   * THE CALLER'S OWN CONTROL PILLS, INSTEAD OF THIS COMPOSER'S (#539).
+   *
+   * One caller passes them: the Agent screen, whose three settings are the same
+   * three questions but none of the same sources — no provider catalogue, no
+   * per-model effort list, no session runtime mode. Given, the pills below are
+   * not rendered at all; absent, nothing changes for anybody.
+   */
+  controls?: React.ReactNode;
   /**
    * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
    * statement rather than a missing value — see `Session.projectId`'s own note.
@@ -1557,7 +1567,19 @@ export function Composer({
                * the access mode without opening anything, which is the point —
                * a menu that is always closed is state you cannot see.
                */}
-              {(session || (fresh && driver)) && (
+              {/**
+               * THE AGENT BRINGS ITS OWN THREE (#539).
+               *
+               * The controls below are gated on a session, and the gate is real
+               * rather than an oversight: they read a provider catalogue, a
+               * per-model effort list and one of the engine's session runtime
+               * modes, and the Agent has none of the three. Rendering the
+               * caller's row here rather than teaching this one about the Agent
+               * keeps `composer.tsx` about sessions and keeps the Agent's pills
+               * next to the state they write.
+               */}
+              {controls}
+              {!controls && (session || (fresh && driver)) && (
                 <>
                   <AgentControl
                     driver={activeDriver}

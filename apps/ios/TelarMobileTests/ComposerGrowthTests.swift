@@ -182,7 +182,7 @@ import UIKit
                 } else {
                     Spacer(minLength: 0)
                 }
-                ComposerView(draft: $model.draft, focus: $model.focused, store: store, onSend: {})
+                ComposerView(draft: $model.draft, focus: $model.focused, host: SessionComposerHost(store: store), onSend: {})
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { model.composerHeight = $0 }
                     .padding(.horizontal, 16)
             }

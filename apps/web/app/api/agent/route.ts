@@ -45,6 +45,10 @@ export async function PATCH(request: Request) {
         // lose.
         ...("enabled" in body ? { enabled: body.enabled as boolean } : {}),
         ...("model" in body ? { model: body.model as string } : {}),
+        // The composer's other two pills (#539). Same presence rule: a client
+        // setting an effort must not also be re-deciding who answers approvals.
+        ...("effort" in body ? { effort: body.effort as string } : {}),
+        ...("access" in body ? { access: body.access as string } : {}),
         ...("reset" in body ? { reset: body.reset as boolean } : {}),
         // WRITE-ONLY. It goes down and never comes back: the answer says which
         // rung answered and nothing else. See `EngineClient.setAgent`.

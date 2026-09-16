@@ -663,7 +663,13 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(draft: $draft, focus: $composerFocused, store: store, onSend: { pinToTail() })
+            ComposerView(
+                draft: $draft,
+                focus: $composerFocused,
+                host: SessionComposerHost(store: store),
+                controls: AnyView(SessionComposerControls(store: store)),
+                onSend: { pinToTail() }
+            )
         }
         .padding(.horizontal, 16)
         .readingColumn(gutter: Theme.readingGutter)
@@ -823,7 +829,15 @@ struct ComposerView: View {
     /// SwiftUI's focus system has no view of its own to move focus to. The
     /// field mirrors its first-responder state into this flag instead.
     let focus: Binding<Bool>
-    let store: SessionStore
+    /// WHAT THIS BOX IS ATTACHED TO — a session, or the Agent (#539). See
+    /// `ComposerHost`: the composer names the handful of facts it reads rather
+    /// than a store, so the Agent screen gets THIS composer instead of a bare
+    /// `TextField` with a send button.
+    let host: any ComposerHost
+    /// THE PILLS, SUPPLIED BY THE SCREEN. A session's three read a provider
+    /// catalogue and a runtime mode; the Agent's read `agent.json`. Neither is
+    /// this box's business — it owns the row they sit in and nothing else.
+    var controls: AnyView = AnyView(EmptyView())
     /// SENDING ALWAYS GOES TO THE END. The transcript's scroll lives a struct
     /// up, so the composer says "sent" and the transcript decides what that
     /// means for the viewport — the box has no business knowing about pins.
@@ -839,12 +853,12 @@ struct ComposerView: View {
     @State private var dropping = false
     @Environment(\.colorScheme) private var scheme
 
-    private var isRunning: Bool { store.hasRunningTurn }
-    private var queued: [JournalTurn] { store.queuedTurns }
+    private var isRunning: Bool { host.isRunning }
+    private var queued: [JournalTurn] { host.queuedTurns }
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !store.pendingAttachments.isEmpty
+            || !host.pendingAttachments.isEmpty
     }
 
     var body: some View {
@@ -873,7 +887,7 @@ struct ComposerView: View {
             Task {
                 for item in items {
                     if let data = try? await item.loadTransferable(type: Data.self) {
-                        await store.attach(
+                        await host.attach(
                             data: data,
                             name: (item.itemIdentifier ?? "photo") + ".jpg",
                             mediaType: item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
@@ -888,7 +902,7 @@ struct ComposerView: View {
 
     private var surface: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if focused && !store.pendingAttachments.isEmpty {
+            if focused && !host.pendingAttachments.isEmpty {
                 attachmentStrip.padding(.bottom, 10)
             }
             // AT REST THE ROW IS CENTRED: the field sits on the pill's centre
@@ -901,7 +915,7 @@ struct ComposerView: View {
                 // picture at all — see ComposerTextView.
                 ComposerTextView(
                     text: $draft,
-                    placeholder: "Ask the agent, or run a command…",
+                    placeholder: host.placeholder,
                     focused: focus,
                     maxLines: focused ? 7 : 1,
                     onPaste: { intake($0) }
@@ -909,8 +923,8 @@ struct ComposerView: View {
                 .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                 .padding(.vertical, focused ? 8 : 0)
                 if !focused {
-                    if !store.pendingAttachments.isEmpty {
-                        Text("+\(store.pendingAttachments.count)")
+                    if !host.pendingAttachments.isEmpty {
+                        Text("+\(host.pendingAttachments.count)")
                             .font(.system(Theme.footnote, weight: .bold))
                             .foregroundStyle(Theme.textMuted)
                             .frame(width: 30, height: 30)
@@ -969,7 +983,7 @@ struct ComposerView: View {
         Task {
             let (files, refusals) = await composerFiles(from: providers)
             for file in files {
-                await store.attach(data: file.data, name: file.name, mediaType: file.mediaType)
+                await host.attach(data: file.data, name: file.name, mediaType: file.mediaType)
             }
             note = refusals.isEmpty ? nil : refusals.joined(separator: " ")
         }
@@ -980,15 +994,15 @@ struct ComposerView: View {
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(store.pendingAttachments) { attachment in
+                ForEach(host.pendingAttachments) { attachment in
                     AttachmentChip(
                         name: attachment.name,
                         mediaType: attachment.mediaType,
-                        preview: store.attachmentPreviews[attachment.id],
-                        onRemove: { store.removeAttachment(attachment.id) }
+                        preview: host.attachmentPreviews[attachment.id],
+                        onRemove: { host.removeAttachment(attachment.id) }
                     )
                 }
-                if store.uploading {
+                if host.uploading {
                     ProgressView()
                         .frame(width: 72, height: 72)
                         .background(Theme.subtle)
@@ -1012,6 +1026,13 @@ struct ComposerView: View {
                     // could never be sent. The sheet is now presented from the
                     // composer's root (see `.photosPicker` on `body`), which
                     // outlives focus.
+                    // HIDDEN WHERE THE ROUTE CANNOT TAKE FILES — the Agent's
+                    // `POST /v2/agent/turns` takes `{ text }` and has no
+                    // attachment index to reference bytes by. A photo button
+                    // that uploaded into nowhere would be worse than none; see
+                    // `AgentComposerHost.acceptsAttachments`, the one line that
+                    // changes when the thread route grows attachments.
+                    if host.acceptsAttachments {
                     Button {
                         pickingPhotos = true
                     } label: {
@@ -1024,6 +1045,7 @@ struct ComposerView: View {
                             .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
                     }
                     .accessibilityLabel("Attach photos")
+                    }
                     // NO PASTE CONTROL HERE ANY MORE. A screenshot on the
                     // clipboard goes in through the field's own Paste, which
                     // is where a person looks for it.
@@ -1039,17 +1061,12 @@ struct ComposerView: View {
                         }
                         .accessibilityLabel("Stop the running turn")
                     }
-                    modelPill
-                    labeledPill(icon: "slider.horizontal.3",
-                                label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
-                        ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
-                            Button {
-                                Task { await store.setRuntimeMode(mode) }
-                            } label: {
-                                menuRow(label, selected: mode == runtimeMode)
-                            }
-                        }
-                    }
+                    // THE SCREEN'S OWN PILLS (#539). A session hands its model
+                    // and runtime-mode pills down; the Agent hands its model,
+                    // effort and access. The box owns the row, not the row's
+                    // contents — which is what let the Agent have this composer
+                    // at all.
+                    controls
                 }
             }
             Button {
@@ -1067,56 +1084,6 @@ struct ComposerView: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 2)
-    }
-
-    private var runtimeMode: String {
-        store.sync.session?.runtimeMode ?? "approval-required"
-    }
-
-    /// The fused provider+model pill — driver fixed (a session belongs to
-    /// its provider), everything else changeable per turn.
-    private var modelPill: some View {
-        let driver = store.sync.session?.driver ?? "claude"
-        let selection = store.sync.session?.model
-        return ModelPillView(
-            catalogues: store.catalogue.map { [driver: $0] } ?? [:],
-            choice: ModelChoice(
-                driver: driver, model: selection?.model,
-                effort: selection?.effort, fastMode: selection?.fastMode
-            ),
-            driversSwitchable: false,
-            onChange: { next in Task { await store.setModelChoice(next) } }
-        )
-        .task { await store.loadModels() }
-    }
-
-    @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {
-        if selected {
-            Label(label, systemImage: "checkmark")
-        } else {
-            Text(label)
-        }
-    }
-
-    private func labeledPill<Items: View>(icon: String, label: String, @ViewBuilder items: () -> Items) -> some View {
-        Menu {
-            items()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 14))
-                Text(label)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            .frame(maxWidth: 172)
-            .background(Theme.subtle)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
-        }
     }
 
     // MARK: the queue
@@ -1156,9 +1123,9 @@ struct ComposerView: View {
                                 .textCase(.uppercase)
                                 .foregroundStyle(Theme.statusSky)
                         } else {
-                            if isRunning && store.sync.session?.driver != "opencode" {
+                            if isRunning && host.canPromoteQueued {
                                 Button {
-                                    Task { await store.promote(turn.runId) }
+                                    Task { await host.promote(turn.runId) }
                                 } label: {
                                     Image(systemName: "bolt.fill")
                                         .font(.system(Theme.footnote))
@@ -1168,7 +1135,7 @@ struct ComposerView: View {
                                 .accessibilityLabel("Send now — the running turn hears it without stopping")
                             }
                             Button {
-                                Task { await store.withdraw(turn.runId) }
+                                Task { await host.withdraw(turn.runId) }
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(Theme.caption, weight: .medium))
@@ -1199,11 +1166,11 @@ struct ComposerView: View {
         // screen and the conversation looked frozen. Unconditional, unlike
         // `followTail` — you wrote it, so you are going to it.
         onSend()
-        Task { await store.send(text) }
+        Task { await host.send(text) }
     }
 
     private func stop() {
-        Task { await store.stopActiveTurn() }
+        Task { await host.stop() }
     }
 
     /// The whole box, emptied — the one thing the composer could not do
@@ -1230,7 +1197,7 @@ struct ComposerView: View {
             return
         }
         draft = ""
-        note = store.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
+        note = host.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
     }
 
     /// A RESTORE NEVER EATS WHAT IS ALREADY IN THE BOX.
@@ -1239,6 +1206,93 @@ struct ComposerView: View {
         draft = StashRules.appendPrompt(draft, taken.prompt)
         note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
         focus.wrappedValue = true
+    }
+
+}
+
+/// A 44pt labelled menu pill — the composer toolbar's own vocabulary (subtle
+/// fill, hairline, capsule, chevron). SHARED BY BOTH CONTROL ROWS (#539), so a
+/// session's pills and the Agent's cannot drift into two shapes.
+struct ComposerLabeledPill<Items: View>: View {
+    let icon: String
+    let label: String
+    @ViewBuilder let items: () -> Items
+
+    var body: some View {
+        Menu {
+            items()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .frame(maxWidth: 172)
+            .background(Theme.subtle)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+        }
+    }
+}
+
+/// A menu row with a tick where it is the one in force. Shared for the same
+/// reason as the pill above.
+@ViewBuilder func composerMenuRow(_ label: String, selected: Bool) -> some View {
+    if selected {
+        Label(label, systemImage: "checkmark")
+    } else {
+        Text(label)
+    }
+}
+
+/// THE SESSION'S TWO PILLS — model and runtime mode.
+///
+/// LIFTED OUT OF `ComposerView` (#539) so the box owns the ROW and not its
+/// contents: these read a provider catalogue and a session record, which is
+/// exactly what the Agent has none of. Nothing about what they draw changed.
+struct SessionComposerControls: View {
+    let store: SessionStore
+
+    private var runtimeMode: String {
+        store.sync.session?.runtimeMode ?? "approval-required"
+    }
+
+    /// The fused provider+model pill — driver fixed (a session belongs to
+    /// its provider), everything else changeable per turn.
+    private var modelPill: some View {
+        let driver = store.sync.session?.driver ?? "claude"
+        let selection = store.sync.session?.model
+        return ModelPillView(
+            catalogues: store.catalogue.map { [driver: $0] } ?? [:],
+            choice: ModelChoice(
+                driver: driver, model: selection?.model,
+                effort: selection?.effort, fastMode: selection?.fastMode
+            ),
+            driversSwitchable: false,
+            onChange: { next in Task { await store.setModelChoice(next) } }
+        )
+        .task { await store.loadModels() }
+    }
+
+    var body: some View {
+        modelPill
+        ComposerLabeledPill(
+            icon: "slider.horizontal.3",
+            label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration"
+        ) {
+            ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
+                Button {
+                    Task { await store.setRuntimeMode(mode) }
+                } label: {
+                    composerMenuRow(label, selected: mode == runtimeMode)
+                }
+            }
+        }
     }
 
     static let runtimeModes: [(String, String)] = [

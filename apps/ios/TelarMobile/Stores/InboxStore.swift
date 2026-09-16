@@ -153,6 +153,20 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     /// nothing and means off, and holding a stale `true` for it would put a row
     /// on this sidebar that its own rail does not draw.
     private(set) var agentEnabled = false
+    /// THE AGENT'S OWN STATE, for the sidebar row's status line (#539).
+    ///
+    /// A SECOND REQUEST, AND ONLY WHERE THERE IS A ROW TO PUT IT ON. It cannot
+    /// ride the live read beside `agentEnabled`: that read is CONDITIONAL on the
+    /// Mac's sessions revision, and the Agent's own turns move nothing in the
+    /// sessions store — so a status folded in there would freeze on whatever it
+    /// said when some unrelated session was last written, and read "working" for
+    /// an hour after the turn ended.
+    ///
+    /// So it is asked for separately, after the live read and only when that
+    /// read says this Mac HAS an Agent. On every phone whose Macs have never
+    /// switched one on — which is every phone out of the box — nothing extra is
+    /// ever fetched.
+    private(set) var agentState: AgentState?
     /// WHETHER THIS PHONE IS ASKING FOR THEM. Off until a reader opens the
     /// shelf, and it stays on afterwards: the rows cost nothing to keep, and
     /// turning it back off would mean re-fetching all of them the next time
@@ -171,6 +185,9 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
+                // AFTER the live read, because that read is what says whether
+                // this Mac has an Agent at all — see `agentState`.
+                await self?.refreshAgent()
                 // 3s while anything is live, 10s when the whole list idles.
                 let lively = self?.anythingLive ?? false
                 try? await Task.sleep(for: .seconds(lively ? 3 : 10))
@@ -181,6 +198,21 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     func stop() {
         loop?.cancel()
         loop = nil
+    }
+
+    /// The Agent's state for the sidebar row's line — nothing at all when this
+    /// Mac has no Agent, which is every Mac out of the box.
+    ///
+    /// A FAILED ASK KEEPS WHAT IS ON SCREEN, like every other read here: the row
+    /// is still worth pressing, and the next tick is seconds away. Only the
+    /// SWITCH going off clears the line, and it clears it because the row goes
+    /// with it.
+    func refreshAgent() async {
+        guard agentEnabled else {
+            agentState = nil
+            return
+        }
+        if let answer = try? await api.agent() { agentState = answer.agent }
     }
 
     /// A read receipt landed on a session this store lists. Clear its dot NOW.

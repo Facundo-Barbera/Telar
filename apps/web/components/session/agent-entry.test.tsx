@@ -21,10 +21,24 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { AgentRequest, AgentState } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
+import { agentStatus } from "@/lib/agent/status";
 import { AgentEntry, agentEntryActive, agentEntryShown, agentHref } from "./agent-entry";
 
 const enabled = (...hosts: string[]) => new Map(hosts.map((host) => [host, true]));
+
+const idle: AgentState = { enabled: true, running: false, queued: 0 };
+const request: AgentRequest = {
+  type: "approval",
+  id: "req_one",
+  runId: "run_one",
+  tool: "sessions_send",
+  args: {},
+  toolCallId: "call_one",
+  reason: "It wants to assign work to another session.",
+  openedAt: 1,
+};
 
 describe("whether the rail draws the row", () => {
   test("not at all until an engine says otherwise", () => {
@@ -102,6 +116,59 @@ describe("the entry itself", () => {
     // No id, and nothing composed with an absent value: the row takes no
     // session, which is the whole reason it cannot be broken by the list.
     expect(markup).not.toContain("undefined");
+  });
+
+  /**
+   * #539 — THE ROW IS BIGGER, AND IT SAYS SOMETHING.
+   *
+   * It shipped no taller than a conversation, on the argument that it answers
+   * only "where do I go to coordinate". The owner's first night says half of
+   * that was wrong: "is it working, is it waiting for me" is a question this
+   * row has, and answering nothing made the one always-present entry the least
+   * informative thing in the rail.
+   */
+  test("a card-like row: the taller padding, the larger glyph, the label at text-sm", () => {
+    const markup = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} />);
+    expect(markup).toContain("py-2.5");
+    expect(markup).toContain("size-4");
+    expect(markup).toContain("text-sm");
+    // The old row's own measurements are gone rather than sitting beside the new
+    // ones — `py-1` and a `size-3` label glyph were the "never taller than a
+    // conversation" rule this replaces.
+    expect(markup).not.toContain("py-1 ");
+  });
+
+  test("the status line reads the four things the row can say", () => {
+    const line = (state: Parameters<typeof agentStatus>[0]) =>
+      renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(state)} />);
+
+    expect(line(idle)).toContain("idle");
+    expect(line({ ...idle, running: true })).toContain("working");
+    expect(line({ ...idle, queued: 2 })).toContain("2 queued");
+    expect(line({ ...idle, lastUsage: { runId: "run_a", at: 1, usage: { input: 2_600, output: 90, total: 2_690 }, contextChars: 10, budgetChars: 100 } })).toContain(
+      "2,690 tokens last turn",
+    );
+  });
+
+  test("the rail's own grammar: a spinner for moving, a still dot for parked", () => {
+    const working = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus({ ...idle, running: true })} />);
+    expect(working).toContain("animate-spin");
+    expect(working).toContain("text-primary");
+
+    const waiting = renderToStaticMarkup(
+      <AgentEntry active={false} onNavigate={() => {}} status={agentStatus({ ...idle, request })} />,
+    );
+    // A request that has parked is exactly the thing that is NOT moving.
+    expect(waiting).not.toContain("animate-spin");
+    expect(waiting).toContain("waiting for you");
+    // `--warning` by the vocabulary's own rule: a person has to move.
+    expect(waiting).toContain("text-warning");
+  });
+
+  test("an idle row is quiet — no mark at all beside its line", () => {
+    const markup = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} />);
+    expect(markup).not.toContain("animate-spin");
+    expect(markup).toContain("text-sidebar-foreground/45");
   });
 
   test("a paired Mac's row opens that Mac", () => {

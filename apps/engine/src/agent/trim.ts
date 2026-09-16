@@ -84,23 +84,35 @@ export function messageBlocks(messages: readonly BaseMessage[]): Block[] {
 }
 
 /**
- * The tail of the conversation that fits, in order.
+ * The tail of the conversation that fits, AND WHAT IT COST.
  *
  * THE NEWEST BLOCK ALWAYS SURVIVES, whatever it costs. Dropping it means
  * answering a question nobody asked — `history.ts`'s rule about the current
  * turn, expressed as "the last block" because here the current turn is simply
  * the newest message rather than a separate argument.
+ *
+ * THE COST IS RETURNED BECAUSE THIS IS THE ONLY PLACE THAT KNOWS IT (#539). The
+ * Agent reported no context at all, and the honest number for "how full is this
+ * conversation" is the one the trim already computed on its way to deciding
+ * what to send: the reserved system prompt plus every block that fitted,
+ * measured against the same budget the decision used. A meter derived anywhere
+ * else would be a second estimate of the first.
+ *
+ * `spent` INCLUDES THE RESERVE and `dropped` counts what did not fit, so a
+ * reader can say "this turn sent 84% of its budget, and three exchanges fell
+ * off the top" without re-walking the messages.
  */
-export function trimAgentMessages(
+export function trimAgentHistory(
   messages: readonly BaseMessage[],
   options: { budgetChars?: number; reservedChars?: number } = {},
-): BaseMessage[] {
+): { messages: BaseMessage[]; chars: number; budgetChars: number; dropped: number } {
   const budget = options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS;
+  const reserved = options.reservedChars ?? 0;
   const blocks = messageBlocks(messages);
-  if (blocks.length === 0) return [];
+  if (blocks.length === 0) return { messages: [], chars: reserved, budgetChars: budget, dropped: 0 };
 
   const kept: Block[] = [];
-  let spent = options.reservedChars ?? 0;
+  let spent = reserved;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
     if (kept.length > 0 && spent + block.cost > budget) break;
@@ -108,5 +120,20 @@ export function trimAgentMessages(
     kept.push(block);
   }
   kept.reverse();
-  return kept.flatMap((block) => block.messages);
+  return {
+    messages: kept.flatMap((block) => block.messages),
+    chars: spent,
+    budgetChars: budget,
+    dropped: blocks.length - kept.length,
+  };
+}
+
+/** The messages alone — the shape every caller wanted before the meter existed,
+ *  kept so the trim's own tests read as tests of the trim rather than of a
+ *  measurement. */
+export function trimAgentMessages(
+  messages: readonly BaseMessage[],
+  options: { budgetChars?: number; reservedChars?: number } = {},
+): BaseMessage[] {
+  return trimAgentHistory(messages, options).messages;
 }

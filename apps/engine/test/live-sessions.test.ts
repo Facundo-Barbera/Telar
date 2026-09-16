@@ -76,7 +76,7 @@ test("the live list answers rows, not whole sessions — every key a rail draws 
    * each was being serialized for 267 rows several times a second. The full
    * record still carries them, which is what `?full=1` serves.
    */
-  for (const key of ["environmentId", "providerInstanceId", "runtimeMode", "interactionMode", "detached", "resumeCursor", "resumeAfterRateLimit", "unsettledAssignments", "agentMessagesBlocked", "paused", "origin"]) {
+  for (const key of ["environmentId", "providerInstanceId", "runtimeMode", "interactionMode", "detached", "resumeCursor", "resumeAfterRateLimit", "unsettledAssignments", "agentMessagesBlocked", "agentMessagesBlockedAt", "paused", "origin"]) {
     expect(row).not.toHaveProperty(key);
   }
   // The four this fixture can actually set are on the full record, so the

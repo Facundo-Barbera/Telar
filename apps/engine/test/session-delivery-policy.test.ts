@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
+import { AGENT_SELF_ID, type AgentSenderProof } from "../src/agent/identity";
 const homes: string[] = [];
 const stores: EngineStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.closeExecutionStore(); for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true }); });
@@ -88,6 +89,64 @@ test("an unawaited result is passive; a blocker wakes but never overrides human 
   expect(() => store.submitAgentTurn("session_host", { runId: "run_again", input: "urgent", intent: "blocker" }, proof)).toThrow("stopped by its user");
   expect(store.claimTurn("session_host", "worker_two")).toBeUndefined();
 });
+/**
+ * #539 — THE STOP LATCH IS AIMED AT A PEER NOBODY IS WATCHING, and the built-in
+ * Agent is the opposite of one.
+ *
+ * The latch exists for the orchestrator two rooms away that has not noticed the
+ * person pressed Stop. The Agent has no errand of its own: every send it makes
+ * is one a human asked for in the composer, seconds earlier, in front of them.
+ * Both halves are asserted here, on one stopped session, because the whole
+ * claim is that they DIFFER.
+ */
+test("a human Stop latches out a peer session and lets the built-in Agent through, saying so", () => {
+  const { store, proof } = setup();
+  store.stopSession("session_host", "user");
+  const blockedAt = store.getSession("session_host").agentMessagesBlockedAt;
+  expect(typeof blockedAt).toBe("number");
+
+  // THE PEER: refused, exactly as before.
+  expect(() => store.submitAgentTurn("session_host", { runId: "run_peer", input: "carry on", intent: "task" }, proof)).toThrow("stopped by its user");
+
+  // THE AGENT: through — and told whose Stop it just stepped over, and when.
+  const sent = store.submitAgentTurn("session_host", { runId: "run_agent", input: "the person asked me to", intent: "task" }, { sessionId: AGENT_SELF_ID });
+  expect(sent.turn.state).toBe("queued");
+  expect(sent.stoppedByUser).toEqual({ at: blockedAt });
+  // No sender is stamped: the Agent is not a session, so a link to one would
+  // be a dead end in every surface that draws this turn.
+  expect(sent.turn.sender).toEqual({});
+  expect(sent.turn.agentSourceRunId).toBeUndefined();
+
+  // AND THE LATCH STILL STANDS. The Agent going through does not hold the door
+  // for the peer behind it — only a human message on this session does that.
+  expect(store.getSession("session_host").agentMessagesBlocked).toBe(true);
+  expect(() => store.submitAgentTurn("session_host", { runId: "run_peer_again", input: "me too", intent: "task" }, proof)).toThrow("stopped by its user");
+
+  // The person speaking clears both the latch and its stamp.
+  store.submitTurn("session_host", { runId: "run_human", input: "go on then" });
+  expect(store.getSession("session_host").agentMessagesBlocked).toBeUndefined();
+  expect(store.getSession("session_host").agentMessagesBlockedAt).toBeUndefined();
+  expect(store.submitAgentTurn("session_host", { runId: "run_peer_ok", input: "back on", intent: "task" }, proof).stoppedByUser).toBeUndefined();
+});
+
+/**
+ * THE EXEMPTION IS A SHAPE, NOT A NAME — the two ways to reach for it wrongly.
+ *
+ * A claimless proof is the Agent's alone (a session has a claim and must show
+ * it), and a CLAIMED proof may not borrow the Agent's reserved id — which is
+ * the only form an HTTP body could take, since `AgentTurnInput` requires a run
+ * id and a token.
+ */
+test("a claimless proof belongs to the Agent alone, and no claim may borrow its name", () => {
+  const { store, proof } = setup();
+  expect(() =>
+    store.submitAgentTurn("session_host", { runId: "run_bare", input: "as the Agent" }, { sessionId: "session_worker" } as AgentSenderProof),
+  ).toThrow("built-in Agent alone");
+  expect(() =>
+    store.submitAgentTurn("session_host", { runId: "run_forged", input: "as the Agent" }, { sessionId: AGENT_SELF_ID, runId: proof.runId, claimToken: proof.claimToken }),
+  ).toThrow("not its own");
+});
+
 test("persistent monitoring hears the completion too, and keeps its subscription", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: false });

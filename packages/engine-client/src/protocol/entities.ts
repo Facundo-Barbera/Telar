@@ -965,6 +965,23 @@ export const Session = z.object({
    * It never holds or replays an old backlog. */
   agentMessagesBlocked: z.boolean().optional(),
 
+  /**
+   * WHEN THE PERSON PRESSED STOP — the companion stamp to the latch above, set
+   * and cleared with it.
+   *
+   * It exists because one sender is EXEMPT from the latch and still has to be
+   * told about it: the built-in Agent, which a human is driving turn by turn
+   * (#539). Its `sessions_send` goes through, and its tool answer says the
+   * session was stopped by the person and when — a sentence that needs a time,
+   * and `updatedAt` is not one (any later touch moves it). A peer session's
+   * send is still refused outright, so only the Agent ever reads this.
+   *
+   * ABSENT ON A RECORD LATCHED BEFORE THIS FIELD EXISTED, which is why every
+   * reader treats the time as optional and says "stopped by the person" without
+   * a time rather than inventing one.
+   */
+  agentMessagesBlockedAt: Timestamp.optional(),
+
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */
@@ -1016,6 +1033,7 @@ export const LiveSessionRow = Session.omit({
   resumeCursor: true,
   resumeAfterRateLimit: true,
   agentMessagesBlocked: true,
+  agentMessagesBlockedAt: true,
   paused: true,
   unsettledAssignments: true,
 });
@@ -1203,6 +1221,38 @@ export const AgentSettings = z.object({
    * than costing the thread.
    */
   generation: z.number().int().nonnegative().optional(),
+  /**
+   * HOW HARD THE MODEL SHOULD THINK — `reasoning_effort` on the wire (#539).
+   *
+   * THE NAME IS THE API'S, NOT OURS. OpenCode Go's surface is
+   * OpenAI-compatible, and `reasoning_effort` is that API's spelling for
+   * exactly this: a depth, not a token count. Three values rather than the
+   * seven OpenAI now accepts (`none` … `max`) because three is what a composer
+   * pill can be read at a glance, and because low/medium/high are the ones
+   * every model that supports the parameter at all understands.
+   *
+   * ABSENT MEANS THE PARAMETER IS NOT SENT — the provider's own default, and
+   * what every conversation before this field did. That distinction is the
+   * whole reason it is optional rather than defaulting to "medium": a model
+   * with no reasoning mode must not start receiving a field it will refuse.
+   */
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  /**
+   * WHETHER THE AGENT ASKS BEFORE THE GATED CALLS (#539).
+   *
+   * `ask` is what shipped and stays the default: the approval gate parks an
+   * `interrupt()` and a person answers it. `auto` resolves those interrupts BY
+   * POLICY — the same `resolvedBy: "policy"` a session's runtime mode uses —
+   * so the Agent runs unattended.
+   *
+   * THE GATED LIST DOES NOT WIDEN, and that is the load-bearing half. `auto` is
+   * about who ANSWERS the question, never about which calls raise one:
+   * `needsApproval` is untouched, so the same calls are still gated, still
+   * ledgered and still written to the transcript as decisions. A setting that
+   * quietly enlarged what the Agent may do would be a different feature wearing
+   * this one's name.
+   */
+  access: z.enum(["ask", "auto"]).optional(),
 });
 export type AgentSettings = z.infer<typeof AgentSettings>;
 

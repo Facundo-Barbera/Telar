@@ -43,6 +43,8 @@ import { useAgentThread, type AgentThreadHandle } from "@/lib/agent/thread";
 import { AgentTranscript } from "./agent-transcript";
 import { AgentApproval } from "./agent-approval";
 import { Composer } from "@/components/composer";
+import { ContextMeter } from "@/components/context-meter";
+import { AgentComposerControls, useAgentModels } from "./agent-composer-controls";
 import { Button } from "@/components/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 
@@ -111,6 +113,12 @@ export function AgentScreen() {
     void send(text);
   }, [draft, send]);
 
+  /** The composer's pickers. One read per screen, failing soft — an empty
+   *  picker carrying the service's reason beats one full of ids that 404. */
+  const catalogue = useAgentModels(hostId);
+  const { configure: write } = handle;
+  const configure = useCallback((patch: { model?: string; effort?: string; access?: string }) => void write(patch), [write]);
+
   if (view.kind === "loading") return <div className="flex min-h-0 flex-1" aria-busy="true" />;
 
   if (view.kind === "off") {
@@ -130,6 +138,9 @@ export function AgentScreen() {
 
   const running = handle.state?.running === true;
   const request = handle.state?.request;
+  // The LAST ENDED turn's cost, not the live one's: a meter that emptied itself
+  // the moment you spoke would answer a question nobody asked.
+  const lastUsage = handle.state?.lastUsage;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -141,6 +152,22 @@ export function AgentScreen() {
         <p role="status" className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-foreground">
           {handle.error}
         </p>
+      )}
+
+      {/* THE CONTEXT METER (#539). This screen has no masthead to hang it on —
+          the Agent is not a session, so there is no breadcrumb — so it gets the
+          thinnest strip that can hold it, above the conversation and below the
+          banners, which is where a masthead's would have sat anyway. It draws
+          nothing until a turn has ended, so a fresh thread is not topped with an
+          empty gauge. */}
+      {lastUsage && (
+        <div className="flex shrink-0 justify-end px-4 py-1">
+          <ContextMeter
+            {...(lastUsage.usage ? { usage: lastUsage.usage } : {})}
+            contextChars={lastUsage.contextChars}
+            budgetChars={lastUsage.budgetChars}
+          />
+        </div>
       )}
 
       <ConversationViewport className="min-h-0 flex-1">
@@ -173,6 +200,11 @@ export function AgentScreen() {
         ready
         attachments={[]}
         onAttach={() => {}}
+        /* THE AGENT'S OWN THREE PILLS (#539) — same look as the session
+           composer's, different sources, because the Agent has no provider
+           catalogue, no per-model effort list and no session runtime mode. See
+           `agent-composer-controls.tsx`. */
+        controls={<AgentComposerControls state={handle.state} models={catalogue.models} {...(catalogue.message ? { message: catalogue.message } : {})} onChange={configure} />}
         busy={running}
         sending={handle.sending}
         backgroundTasks={0}

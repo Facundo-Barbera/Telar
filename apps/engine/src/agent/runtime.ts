@@ -1,6 +1,33 @@
 /**
  * THE AGENT'S LOOP — a hand-built StateGraph, one thread per machine (#531).
  *
+ * ── THE AGENT HAS NO PROCESS OF ITS OWN ─────────────────────────────────────
+ * It runs INSIDE THE DAEMON, in the daemon's event loop. `daemon.ts` constructs
+ * one `AgentRuntime` and spawns nothing: no CLI, no worker, no child. A turn is
+ * an async function on this object, its state is `agent/threads.sqlite` under
+ * the engine root, and `shutdown` below ends any live turn before the daemon's
+ * server closes. Stop the engine and the Agent stops with it, mid-sentence;
+ * there is no second thing to kill and none to survive.
+ *
+ * THIS IS WRITTEN DOWN BECAUSE THE OWNER MEASURED THE OPPOSITE (#539). On the
+ * first night of the nightly the cockpit reported the engine down while the
+ * Agent kept answering, and the honest reading of that is "the Agent is
+ * somewhere else". It was not. The cockpit was wrong: #526's `telar` provider
+ * row broke `readProviderInstances`, so the claims route and the settings page
+ * failed and the engine READ as down while it was serving the Agent perfectly
+ * well (fixed in a36557fc). The daemon was up the entire time.
+ *
+ * WHICH IS WHY THE AGENT READS `resolveProviderInstance` NOWHERE, ON PURPOSE.
+ * A provider instance is a SESSION's account-and-model binding, resolved on the
+ * session claim; the Agent has no session, no claim and no driver, and its model
+ * is `agent.json`'s one field resolved through `./model.ts` and `./go.ts`
+ * against OpenCode Go, with the key ladder in `./credentials.ts`. So the read
+ * that broke is one this file cannot make — not by luck, and not as an
+ * optimisation, but because the Agent is not a provider session and borrowing a
+ * session's binding would give it a driver it does not have.
+ * `agent-in-engine.test.ts` holds both halves: that the daemon's stop ends an
+ * Agent turn, and that the whole Agent surface goes with the daemon.
+ *
  * ── WHY A `StateGraph` AND NOT `createReactAgent` ───────────────────────────
  * The installed package deprecates its own prebuilt: `@langchain/langgraph`
  * 1.4.15 ships `createReactAgent` with `@deprecated CreateReactAgentParams has
@@ -41,6 +68,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interrupt } from "@langchain/langgraph";
 import crypto from "node:crypto";
+import type { AgentSettings } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { toolInputSchema } from "../mcp-socket";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
@@ -48,7 +76,7 @@ import { AGENT_BRIEFING } from "./briefing";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
-import { trimAgentMessages } from "./trim";
+import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
 
 /**
  * HOW MANY TIMES ONE TURN MAY GO BACK TO THE MODEL — `MAX_ROUNDS`' own number
@@ -94,10 +122,53 @@ export type AgentTurnOrigin = "human" | "wake";
 
 export type AgentPendingRequest = AgentApprovalRequest & { id: string; runId: string; openedAt: number };
 
+/**
+ * WHAT ONE TURN COST THE MODEL — summed over its laps, not per call (#539).
+ *
+ * A turn that calls three tools goes back to the model four times, and the
+ * question a person asks is "what did that turn cost", so these are totals. The
+ * numbers are the PROVIDER'S, reported on `usage_metadata`; nothing here counts
+ * tokens itself.
+ */
+export type AgentUsage = { input: number; output: number; total: number };
+
+/**
+ * THE CONTEXT METER'S WHOLE INPUT — the last turn's cost and the size of the
+ * prompt that produced it.
+ *
+ * ON THE STATE RATHER THAN DERIVED PER READER: a cockpit, a phone and a later
+ * `GET /v2/agent` must show the same number, and three clients each folding the
+ * transcript would be three numbers waiting to disagree. It survives a restart
+ * because `restore` reads it back off the last `turn_done` row.
+ */
+export type AgentLastUsage = {
+  /** The turn these numbers came from, so a client can tell a stale meter from
+   *  a fresh one without a timestamp comparison. */
+  runId: string;
+  at: number;
+  /**
+   * ABSENT WHEN THE MODEL REPORTED NONE, which is a real case: an
+   * OpenAI-compatible server is not obliged to send usage, and a zero here
+   * would read as "that turn was free" rather than "nobody said".
+   */
+  usage?: AgentUsage;
+  /** What the prompt cost in CHARACTERS on the turn's last lap, as the trim
+   *  step measured it — system prompt included. See `./trim.ts`. */
+  contextChars: number;
+  /** The trim's ceiling those characters are measured against, so a reader can
+   *  draw a proportion without knowing the engine's constant. */
+  budgetChars: number;
+};
+
 export type AgentStateAnswer = {
   enabled: boolean;
   threadId?: string;
   model?: string;
+  /** `reasoning_effort` on the wire. Absent means the parameter is not sent —
+   *  see `AgentSettings.effort`. */
+  effort?: AgentSettings["effort"];
+  /** Absent means `ask`, which is what shipped. See `AgentSettings.access`. */
+  access?: AgentSettings["access"];
   generation?: number;
   /** A turn is executing right now. False while one is parked for a person —
    *  which is why `request` is reported beside it rather than inside it. */
@@ -107,6 +178,10 @@ export type AgentStateAnswer = {
   /** How many turns are waiting behind the live one. */
   queued: number;
   request?: AgentPendingRequest;
+  /** The context meter — what the last COMPLETED turn cost. Absent until one
+   *  has, and unchanged while the next runs, because a meter that emptied
+   *  itself the moment you spoke would answer a question nobody asked. */
+  lastUsage?: AgentLastUsage;
 };
 
 /** What a watcher is pushed. A row is durable and pageable; a delta is neither,
@@ -121,8 +196,9 @@ export type AgentRuntimeOptions = {
    *  object would pin. */
   tools: () => SocketTool[];
   /** The model, per turn, for the key ladder's reason: a person who pastes a
-   *  key gets the new answer on their next message, not their next restart. */
-  model: (input: { threadId: string; model?: string }) => BaseChatModel;
+   *  key gets the new answer on their next message, not their next restart.
+   *  `effort` rides with it for the same reason — see `AgentSettings.effort`. */
+  model: (input: { threadId: string; model?: string; effort?: AgentSettings["effort"] }) => BaseChatModel;
   now?: () => number;
   /** Appended after the briefing, exactly as a session's orientation is. */
   orientation?: () => string | undefined;
@@ -161,8 +237,16 @@ export class AgentRuntime {
   /** Resolves when the person answers. The parked turn awaits it. */
   private answer?: (decision: AgentApprovalDecision) => void;
   private watchers = new Set<(event: AgentStreamEvent) => void>();
-  /** The turn currently pumping, so `submit` does not start a second pump. */
-  private pumping = false;
+  /** The drain in flight, so `submit` does not start a second one — and so
+   *  `shutdown` has something to await. Cleared when the queue runs dry. */
+  private draining?: Promise<void>;
+  /** The context meter, last written by a completed turn and read back off the
+   *  transcript at startup. See `AgentLastUsage`. */
+  private lastUsage?: AgentLastUsage;
+  /** What the live turn has spent so far: the model's own numbers summed over
+   *  its laps, and the prompt size the most recent lap was trimmed to. Reset
+   *  when a turn starts, folded into `turn_done` when one ends. */
+  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
 
@@ -218,6 +302,11 @@ export class AgentRuntime {
     if (!settings.enabled || !settings.threadId || this.pending || this.live) return;
     try {
       const graph = this.buildGraph({ tools: [], model: undefined, runId: "" });
+      // THE METER SURVIVES THE RESTART, because the number it shows was never
+      // this process's — it is on the last `turn_done` row, where the turn that
+      // earned it wrote it. Read before the parked-request check, which returns
+      // early on every ordinary start.
+      this.lastUsage = this.lastTurnUsage(settings.threadId);
       const snapshot = await graph.getState({ configurable: { thread_id: settings.threadId } });
       const parked = firstInterrupt(snapshot);
       if (!parked) return;
@@ -231,6 +320,42 @@ export class AgentRuntime {
       // A thread whose checkpoint cannot be read is not a reason a daemon fails
       // to start. The conversation is still on disk for a later build.
     }
+  }
+
+  /**
+   * The newest `turn_done` on this thread, as the context meter — so a cockpit
+   * opened after a restart shows the last turn's cost rather than an empty
+   * gauge.
+   *
+   * Bounded to the same tail `lastUnresolvedRequest` reads: a turn that ended
+   * is one of the newest things on the thread, and a meter is not worth walking
+   * a transcript for. Absent when the tail holds no ended turn, which is a
+   * thread whose only turn is still running.
+   */
+  private lastTurnUsage(threadId: string): AgentLastUsage | undefined {
+    const log = this.log;
+    if (!log) return undefined;
+    const end = log.cursor(threadId);
+    const page = log.page(threadId, Math.max(0, end - 50), 50);
+    let found: AgentLastUsage | undefined;
+    for (const row of page.rows) {
+      if (row.kind !== "turn_done") continue;
+      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown };
+      // A row written before the meter existed carries no numbers. It is still
+      // the newest ended turn, so it CLEARS a stale meter rather than leaving
+      // an older turn's figures on screen.
+      const usage = detail.usage;
+      found = {
+        runId: row.runId,
+        at: row.at,
+        ...(typeof usage?.input === "number" && typeof usage.output === "number" && typeof usage.total === "number"
+          ? { usage: { input: usage.input, output: usage.output, total: usage.total } }
+          : {}),
+        contextChars: typeof detail.contextChars === "number" ? detail.contextChars : 0,
+        budgetChars: typeof detail.budgetChars === "number" ? detail.budgetChars : this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS,
+      };
+    }
+    return found;
   }
 
   /** The newest `request_opened` on this thread with no `request_resolved`
@@ -251,12 +376,43 @@ export class AgentRuntime {
     return found;
   }
 
-  /** Close the thread file. The reset path's precondition, and the daemon's
-   *  shutdown. Safe to call when nothing is open. */
+  /** Close the thread file. The reset path's precondition, where it must be
+   *  SYNCHRONOUS — `patchAgentSettings` will not move a database until its
+   *  `beforeArchive` hook has returned. Safe to call when nothing is open.
+   *
+   *  Not the daemon's shutdown: that is `shutdown` below, which ends the live
+   *  turn first. Closing the handle under a running turn only means the next
+   *  row it writes reopens it. */
   close(): void {
     this.opened?.close();
     this.opened = undefined;
     this.log = undefined;
+  }
+
+  /**
+   * THE ENGINE IS GOING AWAY, SO THE AGENT IS — and this method is the proof of
+   * the header's claim (#539).
+   *
+   * There is no process to signal and no child to reap: the turn is a promise
+   * in THIS event loop, so ending it is aborting its controller, and what makes
+   * that observable is the wait. The `turn_done` row a stopped turn writes is
+   * written by the drain's own catch, which runs a tick later; a shutdown that
+   * closed the database first would have that row reopen the handle behind it —
+   * the leak the daemon's teardown comment warns about — and a shutdown that
+   * did not wait at all would leave the transcript ending mid-turn, so the next
+   * process could not tell a stopped turn from one still running somewhere.
+   *
+   * So: drop the queue, abort the live turn, WAIT for the drain to settle, then
+   * close the file. `agent-in-engine.test.ts` asserts the whole of that from
+   * outside, through a second daemon reading the same transcript.
+   */
+  async shutdown(): Promise<void> {
+    this.queue = [];
+    this.cancel();
+    // `draining` is undefined when nothing was running, which is the ordinary
+    // case on an engine whose Agent is off.
+    await this.draining?.catch(() => undefined);
+    this.close();
   }
 
   /**
@@ -267,14 +423,16 @@ export class AgentRuntime {
    * refuses to move a database until its `beforeArchive` hook has run, and this
    * is what that hook is for.
    */
-  patch(patch: { enabled?: unknown; model?: unknown; reset?: unknown }): AgentStateAnswer {
+  patch(patch: { enabled?: unknown; model?: unknown; effort?: unknown; access?: unknown; reset?: unknown }): AgentStateAnswer {
     const result = patchAgentSettings(this.paths, patch, { now: this.now, beforeArchive: () => this.close() });
     if (patch.reset === true) {
-      // The conversation is gone; anything waiting to be said to it is too.
+      // The conversation is gone; anything waiting to be said to it is too —
+      // the meter included, since it measured a thread that no longer exists.
       this.queue = [];
       this.live?.controller.abort();
       this.pending = undefined;
       this.answer = undefined;
+      this.lastUsage = undefined;
     }
     if (result.settings.enabled === false) this.queue = [];
     return this.state();
@@ -286,11 +444,14 @@ export class AgentRuntime {
       enabled: settings.enabled,
       ...(settings.threadId ? { threadId: settings.threadId } : {}),
       ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.effort ? { effort: settings.effort } : {}),
+      ...(settings.access ? { access: settings.access } : {}),
       ...(settings.generation === undefined ? {} : { generation: settings.generation }),
       running: this.live !== undefined && this.pending === undefined,
       ...(this.live ? { runId: this.live.turn.runId } : {}),
       queued: this.queue.length,
       ...(this.pending ? { request: this.pending } : {}),
+      ...(this.lastUsage ? { lastUsage: this.lastUsage } : {}),
     };
   }
 
@@ -455,31 +616,38 @@ export class AgentRuntime {
    * The pump.
    * -------------------------------------------------------------- */
 
-  private async pump(): Promise<void> {
-    if (this.pumping) return;
-    this.pumping = true;
-    try {
-      for (;;) {
-        const next = this.queue.shift();
-        if (!next) return;
-        const controller = new AbortController();
-        this.live = { turn: next, controller };
-        try {
-          await this.runTurn(next, controller.signal);
-        } catch (error) {
-          this.row("turn_done", next.runId, {
-            status: controller.signal.aborted ? "stopped" : "failed",
-            ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
-          });
-        } finally {
-          this.live = undefined;
-          this.pending = undefined;
-          this.answer = undefined;
-          this.turnThreadId = undefined;
-        }
+  /** Start draining the queue, or join the drain already running. Returns the
+   *  same promise either way, which is what makes `shutdown` able to wait. */
+  private pump(): Promise<void> {
+    this.draining ??= this.drain().finally(() => {
+      this.draining = undefined;
+    });
+    return this.draining;
+  }
+
+  private async drain(): Promise<void> {
+    for (;;) {
+      const next = this.queue.shift();
+      if (!next) return;
+      const controller = new AbortController();
+      this.live = { turn: next, controller };
+      // The meter's accumulator, per turn. A stopped or failed turn reports
+      // what it had spent before it ended — the tokens were bought either way.
+      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0 };
+      try {
+        await this.runTurn(next, controller.signal);
+      } catch (error) {
+        this.endedRow(next.runId, {
+          status: controller.signal.aborted ? "stopped" : "failed",
+          ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
+        });
+      } finally {
+        this.live = undefined;
+        this.pending = undefined;
+        this.answer = undefined;
+        this.turnThreadId = undefined;
+        this.spend = undefined;
       }
-    } finally {
-      this.pumping = false;
     }
   }
 
@@ -503,7 +671,20 @@ export class AgentRuntime {
     }
 
     const tools = this.options.tools();
-    const graph = this.buildGraph({ tools, model: this.options.model({ threadId, ...(settings.model ? { model: settings.model } : {}) }), runId: turn.runId });
+    const graph = this.buildGraph({
+      tools,
+      // EFFORT RIDES THE MODEL, because it is a property of the REQUEST rather
+      // than of the conversation — read per turn, like the model itself and the
+      // key behind it, so a person changing the pill gets it on their next
+      // message and not on the next restart.
+      model: this.options.model({
+        threadId,
+        ...(settings.model ? { model: settings.model } : {}),
+        ...(settings.effort ? { effort: settings.effort } : {}),
+      }),
+      runId: turn.runId,
+      ...(settings.access ? { access: settings.access } : {}),
+    });
     const config: RunnableConfig = {
       configurable: { thread_id: threadId },
       // One lap is two supersteps, plus the final model call that answers.
@@ -546,7 +727,38 @@ export class AgentRuntime {
 
     const snapshot = await graph.getState(config);
     const text = lastAssistantText(snapshot.values?.messages ?? []);
-    this.row("turn_done", turn.runId, { status: "completed", ...(text ? { text } : {}) });
+    this.endedRow(turn.runId, { status: "completed", ...(text ? { text } : {}) });
+  }
+
+  /**
+   * THE ONE PLACE A TURN ENDS — `turn_done`, with the meter folded in (#539).
+   *
+   * Every ending goes through here (completed, stopped, failed) so the context
+   * meter cannot be a property of only the happy path: a turn that spent 40k
+   * tokens and then failed spent them, and a transcript whose usage appeared
+   * only on success would understate what the machine cost.
+   *
+   * IT ALSO UPDATES `lastUsage`, in the same call that writes the row, so the
+   * state a client polls and the transcript it pages can never disagree about
+   * which turn the meter is showing.
+   */
+  private endedRow(runId: string, detail: Record<string, unknown>): void {
+    const spend = this.spend;
+    const budgetChars = this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS;
+    const usage: AgentUsage | undefined = spend?.reported
+      ? { input: spend.input, output: spend.output, total: spend.total }
+      : undefined;
+    const contextChars = spend?.contextChars ?? 0;
+    const row = this.row("turn_done", runId, {
+      ...detail,
+      ...(usage ? { usage } : {}),
+      contextChars,
+      budgetChars,
+    });
+    // Only when the row landed: a row suppressed because the thread was reset
+    // mid-turn belongs to a conversation that no longer exists, and its meter
+    // with it.
+    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars };
   }
 
   /**
@@ -578,7 +790,7 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string }) {
+  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"] }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
@@ -605,14 +817,36 @@ export class AgentRuntime {
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
       // THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
       // MODEL sees and never what the transcript holds.
-      const history = trimAgentMessages(state.messages, {
+      const history = trimAgentHistory(state.messages, {
         ...(budget === undefined ? {} : { budgetChars: budget }),
         reservedChars: String(system.content).length,
       });
+      /**
+       * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
+       * denominator (#539). The LAST lap wins rather than the largest: a turn
+       * that called three tools ends with the fullest prompt it ever sent, and
+       * that is the number a person reading "how full is this conversation"
+       * means. Recorded before the call, so a turn the model refuses still
+       * reports what it tried to send.
+       */
+      if (this.spend) this.spend.contextChars = history.chars;
       // CONFIG IS PASSED THROUGH so the turn's abort signal reaches the
       // provider call. A cancel that unwound the graph and left the request in
       // flight would not be a cancel.
-      const answer = (await bound.invoke([system, ...history], config)) as AIMessage;
+      const answer = (await bound.invoke([system, ...history.messages], config)) as AIMessage;
+      /**
+       * THE MODEL'S OWN TOKEN COUNT, SUMMED OVER THE TURN'S LAPS. Nothing here
+       * counts tokens — `usage_metadata` is what the provider reported, and a
+       * provider that reported nothing leaves `reported` false so the meter can
+       * say "no count" rather than "zero".
+       */
+      const usage = answer.usage_metadata;
+      if (this.spend && usage) {
+        this.spend.input += usage.input_tokens ?? 0;
+        this.spend.output += usage.output_tokens ?? 0;
+        this.spend.total += usage.total_tokens ?? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+        this.spend.reported = true;
+      }
       /**
        * ONE ROW PER THING THE ASSISTANT SAYS, AS IT SAYS IT.
        *
@@ -660,7 +894,29 @@ export class AgentRuntime {
         // them for it would teach them that approvals are noise.
         const key = ledgerKey(call.name, args);
         if (key && state.effects[key] !== undefined) continue;
-        decisions.set(call.id ?? "", interrupt<AgentApprovalRequest, AgentApprovalDecision>(approvalRequest({ name: call.name, args }, call.id ?? "")));
+        const request = approvalRequest({ name: call.name, args }, call.id ?? "");
+        /**
+         * `access: "auto"` — THE QUESTION IS STILL ASKED, AND POLICY ANSWERS IT
+         * (#539).
+         *
+         * This is `openRequest`'s own shape for a session's runtime mode, one
+         * level down: the request is OPENED and then RESOLVED in the same
+         * breath, stamped `resolvedBy: "policy"`, so the transcript records
+         * that a gated call happened and who let it through. A mode that simply
+         * skipped the gate would leave a conversation in which the Agent
+         * created three sessions and nothing anywhere says a decision was made.
+         *
+         * WHAT DOES NOT CHANGE IS WHICH CALLS REACH HERE. `needsApproval` is
+         * untouched — same tools, same argument-aware `sessions_send` rule — so
+         * `auto` moves who answers and never what may be asked.
+         */
+        if (context.access === "auto") {
+          this.row("request_opened", context.runId, { ...request, id: `req_${crypto.randomUUID().replaceAll("-", "")}`, runId: context.runId, openedAt: this.now() });
+          this.row("request_resolved", context.runId, { requestId: request.toolCallId, decision: "accept", resolvedBy: "policy", tool: request.tool });
+          decisions.set(call.id ?? "", "accept");
+          continue;
+        }
+        decisions.set(call.id ?? "", interrupt<AgentApprovalRequest, AgentApprovalDecision>(request));
       }
 
       // PASS 2 — the effects, each recorded in the same state write as its

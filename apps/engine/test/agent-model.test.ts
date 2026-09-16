@@ -116,3 +116,35 @@ test("the CLI's own key is reached when nothing nearer answers", async () => {
     expect(seen()[0]!.headers.get("authorization")).toBe("Bearer sk-from-the-cli");
   });
 });
+
+/**
+ * EFFORT — `reasoning_effort` on the wire (#539).
+ *
+ * THE SPELLING IS THE API'S. OpenCode Go's own docs publish the base URL and
+ * the session header and no parameter list, but the endpoint is explicitly
+ * OpenAI-compatible and `reasoning_effort` is that API's field for a reasoning
+ * DEPTH. This test watches the socket rather than the configuration, which is
+ * the same thing the header test above does and for the same reason: what
+ * `ChatOpenAI` was told and what it sent are two different facts.
+ */
+test("effort reaches the wire as reasoning_effort when it is set", async () => {
+  await withServer(async (base, seen) => {
+    const agentDir = agentDirWith("sk-test-key");
+    await agentChatModel({ threadId: "thread_abc", effort: "high", agentDir, base, streaming: false }).invoke("hello");
+    expect(seen()[0]!.body.reasoning_effort).toBe("high");
+
+    await agentChatModel({ threadId: "thread_abc", effort: "low", agentDir, base, streaming: false }).invoke("hello");
+    expect(seen()[1]!.body.reasoning_effort).toBe("low");
+  });
+});
+
+test("an unset effort sends no reasoning field at all, rather than a default", async () => {
+  await withServer(async (base, seen) => {
+    await agentChatModel({ threadId: "thread_abc", agentDir: agentDirWith("k"), base, streaming: false }).invoke("hello");
+    // OMITTED, NOT DEFAULTED. A model with no reasoning mode is served today by
+    // a request that does not mention reasoning; sending "medium" on its behalf
+    // would change what every existing conversation asks for, and on a strict
+    // server it is a 400 where there was an answer.
+    expect("reasoning_effort" in seen()[0]!.body).toBe(false);
+  });
+});

@@ -59,20 +59,55 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
 /// conversation had fallen off the page drew nothing at all. The Agent is not a
 /// session — one flag decides, and the row is drawn the moment the Mac says it
 /// exists.
-func agentRows(_ parts: [(hostId: HostID, enabled: Bool)], filter: HostID?) -> [HostedAgent] {
+func agentRows(_ parts: [(hostId: HostID, enabled: Bool, state: AgentState?)], filter: HostID?) -> [HostedAgent] {
     parts.compactMap { part in
         guard filter == nil || part.hostId == filter else { return nil }
         guard part.enabled else { return nil }
-        return HostedAgent(hostId: part.hostId)
+        return HostedAgent(hostId: part.hostId, status: agentStatus(part.state))
     }
 }
 
-/// A MAC'S AGENT, as a thing the sidebar can put in a `ForEach`. It carries the
-/// host and nothing else, because the row shows a fixed word and opens a fixed
-/// destination — see `agentRows`.
+/// A MAC'S AGENT, as a thing the sidebar can put in a `ForEach`. The host says
+/// which Mac the fixed destination opens; the status is the one line under the
+/// word (#539).
 struct HostedAgent: Identifiable, Equatable {
     let hostId: HostID
+    var status: AgentStatus = AgentStatus(label: "…", tone: .idle)
     var id: HostID { hostId }
+}
+
+/// WHAT THE SIDEBAR'S AGENT ROW SAYS UNDERNEATH ITS NAME (#539).
+struct AgentStatus: Equatable {
+    enum Tone { case idle, working, waiting }
+    var label: String
+    var tone: Tone
+}
+
+/// THE STATUS LINE, from the Mac's own Agent state.
+///
+/// THE ORDER IS THE PRIORITY, and it is not alphabetical. A parked approval
+/// outranks everything: it is the only one of these a person can DO something
+/// about, and a row saying "working" while the Agent sat waiting for an answer
+/// would be the phone hiding the one thing that needed them. Then working, then
+/// what the last turn cost, then plain idle.
+///
+/// A FREE FUNCTION so the ladder is a test's to hold rather than a view's.
+func agentStatus(_ state: AgentState?) -> AgentStatus {
+    // Nothing has answered yet. The row is already drawn — the live read's flag
+    // put it there — so it needs a line, and the line must not assert "idle"
+    // about a Mac that may be mid-turn.
+    guard let state else { return AgentStatus(label: "…", tone: .idle) }
+    // WAITING BEATS RUNNING, and the Mac agrees: `running` is false while a turn
+    // is parked, which is why `request` sits beside it rather than inside.
+    if state.request != nil { return AgentStatus(label: "waiting for you", tone: .waiting) }
+    if state.running { return AgentStatus(label: "working", tone: .working) }
+    if state.queued > 0 { return AgentStatus(label: "\(state.queued) queued", tone: .working) }
+    // ABSENT IS NOT ZERO. A provider that reported no usage leaves this out, and
+    // "0 tokens last turn" would be a claim nobody made.
+    if let tokens = state.lastUsage?.usage?.total {
+        return AgentStatus(label: "\(tokens.formatted(.number.grouping(.automatic))) tokens last turn", tone: .idle)
+    }
+    return AgentStatus(label: "idle", tone: .idle)
 }
 
 @MainActor @Observable final class MergedInbox {
@@ -109,7 +144,7 @@ struct HostedAgent: Identifiable, Equatable {
     /// default, and empty on every phone whose Macs have never switched it on.
     /// The fold is `agentRows` above, where the tests can reach it.
     var agents: [HostedAgent] {
-        agentRows(order.compactMap { id in stores[id].map { (id, $0.agentEnabled) } }, filter: filter)
+        agentRows(order.compactMap { id in stores[id].map { (id, $0.agentEnabled, $0.agentState) } }, filter: filter)
     }
 
     /// HOW MANY SETTLED ROWS THE MACS ARE HOLDING BACK (#457), summed over the

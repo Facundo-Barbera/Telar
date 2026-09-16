@@ -46,41 +46,139 @@ struct AgentRequest: Decodable, Equatable, Identifiable {
     }
 }
 
-/// WHAT A MAC'S AGENT IS DOING RIGHT NOW — the stored document plus the three
-/// things only a running engine knows.
+/// WHAT ONE TURN COST THE MODEL — the provider's own count, summed over the
+/// turn's laps by the Mac. A turn that calls three tools goes back to the model
+/// four times; the question a person asks is what the TURN cost.
+struct AgentUsage: Decodable, Equatable {
+    var input: Int
+    var output: Int
+    var total: Int
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        input = (try? c.decode(Int.self, forKey: .input)) ?? 0
+        output = (try? c.decode(Int.self, forKey: .output)) ?? 0
+        total = (try? c.decode(Int.self, forKey: .total)) ?? (input + output)
+    }
+
+    private enum CodingKeys: String, CodingKey { case input, output, total }
+
+    init(input: Int, output: Int, total: Int) {
+        self.input = input
+        self.output = output
+        self.total = total
+    }
+}
+
+/// THE CONTEXT METER — what the last completed turn cost, and how full the
+/// prompt that produced it was (#539).
+///
+/// TWO NUMBERS OF DIFFERENT KINDS. `usage` is a PRICE, from the provider. The
+/// characters are a LEVEL, measured by the Mac's own trim step against the
+/// ceiling that will actually drop the oldest exchange — so the percentage is of
+/// Telar's budget rather than of the model's window, because Telar's is the one
+/// that bites first.
+struct AgentLastUsage: Decodable, Equatable {
+    var runId: String
+    var at: Timestamp?
+    /// ABSENT WHEN THE MODEL REPORTED NONE, which is a real case: an
+    /// OpenAI-compatible server need not send usage, and a zero here would read
+    /// as "that turn was free" rather than "nobody said".
+    var usage: AgentUsage?
+    var contextChars: Int
+    var budgetChars: Int
+
+    private enum CodingKeys: String, CodingKey { case runId, at, usage, contextChars, budgetChars }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        runId = (try? c.decode(String.self, forKey: .runId)) ?? ""
+        at = try? c.decodeIfPresent(Timestamp.self, forKey: .at)
+        usage = try? c.decodeIfPresent(AgentUsage.self, forKey: .usage)
+        contextChars = (try? c.decode(Int.self, forKey: .contextChars)) ?? 0
+        budgetChars = (try? c.decode(Int.self, forKey: .budgetChars)) ?? 0
+    }
+
+    init(runId: String, at: Timestamp? = nil, usage: AgentUsage? = nil, contextChars: Int, budgetChars: Int) {
+        self.runId = runId
+        self.at = at
+        self.usage = usage
+        self.contextChars = contextChars
+        self.budgetChars = budgetChars
+    }
+
+    /// 0–100, clamped. A prompt OVER budget reads full rather than overflowing:
+    /// the Mac's trim keeps the newest exchange whatever it costs, so above 100%
+    /// is a state that really happens and "full" is the honest way to draw it.
+    var percent: Int {
+        guard budgetChars > 0 else { return 0 }
+        return min(100, max(0, Int((Double(contextChars) / Double(budgetChars) * 100).rounded())))
+    }
+
+    /// THE LINE UNDER THE HEADER, or `nil` when there is nothing honest to say —
+    /// no ceiling to measure against. Tokens are dropped rather than zeroed when
+    /// the provider reported none.
+    var meterLine: String? {
+        guard budgetChars > 0 else { return nil }
+        guard let usage else { return "\(percent)% context" }
+        return "\(usage.total.formatted(.number.grouping(.automatic))) tokens · \(percent)% context"
+    }
+}
+
+/// WHAT A MAC'S AGENT IS DOING RIGHT NOW — the stored document plus the things
+/// only a running engine knows.
 struct AgentState: Decodable, Equatable {
     var enabled: Bool
     var threadId: String?
     var model: String?
+    /// `reasoning_effort` on the wire (#539). ABSENT MEANS THE PARAMETER IS NOT
+    /// SENT — the provider's own default — which is not the same as a default
+    /// value, and is why the composer's pill offers "Auto" rather than a level.
+    var effort: String?
+    /// Absent means `ask`, which is what shipped: a person answers the approval
+    /// gate. `auto` answers it by policy. NEITHER changes which calls are gated.
+    var access: String?
     /// A turn is executing. FALSE while one is parked for a person, which is
     /// why `request` sits beside this rather than inside it.
     var running: Bool
     var runId: String?
     var queued: Int
     var request: AgentRequest?
+    /// The context meter, from the last turn that ENDED. Absent until one has,
+    /// and unchanged while the next runs — a meter that emptied itself the
+    /// moment you spoke would answer a question nobody asked.
+    var lastUsage: AgentLastUsage?
 
-    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, running, runId, queued, request }
+    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, effort, access, running, runId, queued, request, lastUsage }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
         threadId = try? c.decodeIfPresent(String.self, forKey: .threadId)
         model = try? c.decodeIfPresent(String.self, forKey: .model)
+        effort = try? c.decodeIfPresent(String.self, forKey: .effort)
+        access = try? c.decodeIfPresent(String.self, forKey: .access)
         running = (try? c.decode(Bool.self, forKey: .running)) ?? false
         runId = try? c.decodeIfPresent(String.self, forKey: .runId)
         queued = (try? c.decode(Int.self, forKey: .queued)) ?? 0
         // A REQUEST THIS BUILD CANNOT READ COSTS THE CARD, NEVER THE SCREEN.
         request = try? c.decodeIfPresent(AgentRequest.self, forKey: .request)
+        // AND A METER THIS BUILD CANNOT READ COSTS THE LINE. An older Mac sends
+        // none at all, which is the same case.
+        lastUsage = try? c.decodeIfPresent(AgentLastUsage.self, forKey: .lastUsage)
     }
 
-    init(enabled: Bool, threadId: String? = nil, model: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil) {
+    init(enabled: Bool, threadId: String? = nil, model: String? = nil, effort: String? = nil, access: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil, lastUsage: AgentLastUsage? = nil) {
         self.enabled = enabled
         self.threadId = threadId
         self.model = model
+        self.effort = effort
+        self.access = access
         self.running = running
         self.runId = runId
         self.queued = queued
         self.request = request
+        self.lastUsage = lastUsage
     }
 }
 
@@ -212,6 +310,47 @@ struct AgentThreadPage: Decodable {
         self.more = more
         self.threadId = threadId
     }
+}
+
+/// `GET /api/agent/models` — the composer's model pill (#539).
+///
+/// FAILS SOFT BY DESIGN: a Mac that could not reach OpenCode Go, or has no key
+/// yet, answers an empty list and a `message`. Both halves are decoded, because
+/// an empty picker carrying the reason beats one full of ids that 404.
+struct AgentModelList: Decodable {
+    var models: [ProviderModel]
+    var message: String?
+
+    private enum CodingKeys: String, CodingKey { case models, message }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // A ROW THIS BUILD CANNOT READ IS DROPPED, never the list.
+        models = try c.decodeIfPresent([Skippable<ProviderModel>].self, forKey: .models)?.compactMap(\.value) ?? []
+        message = try? c.decodeIfPresent(String.self, forKey: .message)
+    }
+
+    init(models: [ProviderModel], message: String?) {
+        self.models = models
+        self.message = message
+    }
+}
+
+/// `PATCH /api/agent` — the three composer pills' write (#539).
+///
+/// BY PRESENCE, NEVER BY VALUE. A phone setting an effort must not also be
+/// re-deciding who answers approvals, so an absent field means "leave it alone"
+/// and `""` means "clear it" — the same contract the Mac's own route keeps.
+/// That is exactly what an optional encodes to with the default encoder, which
+/// is why there is nothing clever here.
+struct AgentSettingsPatch: Encodable {
+    var model: String?
+    /// `"low" | "medium" | "high"`, or `""` to stop sending `reasoning_effort`
+    /// at all — the provider's own default.
+    var effort: String?
+    /// `"ask"` (the default) or `"auto"`. `auto` answers the approval gate by
+    /// policy; it does NOT widen which calls are gated.
+    var access: String?
 }
 
 /// `POST /api/agent/turns`.

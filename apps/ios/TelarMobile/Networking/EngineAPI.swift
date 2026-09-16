@@ -110,6 +110,16 @@ protocol EngineAPI: Sendable {
     /// replaced it. Two decisions and not three: the Agent's gate is decided
     /// per call, so there is nothing an "always" could attach to.
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws
+    /// WHAT THE AGENT MAY RUN — the composer's model pill (#539).
+    ///
+    /// FAILS SOFT rather than throwing: a Mac that could not reach OpenCode Go,
+    /// or has no key yet, answers an EMPTY list and a `message`. An empty picker
+    /// carrying the reason beats one full of ids that 404.
+    func agentModels() async throws -> AgentModelList
+    /// THE THREE COMPOSER PILLS' WRITE — the same route that Mac's own Settings
+    /// uses, so the phone and the desktop read one value. Fields are sent BY
+    /// PRESENCE, and `""` clears one.
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer
     /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
     /// and the engine refuses while a turn is in flight (`EngineStore
     /// .deleteSession` throws a conflict on a queued, claimed or running one),
@@ -228,6 +238,8 @@ extension EngineAPI {
     func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
     func cancelAgentTurn(_ runId: String) async throws {}
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
+    func agentModels() async throws -> AgentModelList { AgentModelList(models: [], message: nil) }
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
 
     /// A double that models no registry has nothing to remove, and says so by
     /// returning rather than throwing: a test standing in for one endpoint
@@ -718,6 +730,14 @@ struct HTTPEngineAPI: EngineAPI {
         let _: IgnoredBody = try await post(
             "api/agent/requests/\(escape(requestId))", body: ["decision": AnyEncodable(accept ? "accept" : "decline")]
         )
+    }
+
+    func agentModels() async throws -> AgentModelList {
+        try await get("api/agent/models")
+    }
+
+    func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer {
+        try await send("PATCH", "api/agent", body: patch)
     }
 
     func deleteSession(_ id: EngineID) async throws {

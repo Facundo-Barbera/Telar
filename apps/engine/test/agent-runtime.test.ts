@@ -34,7 +34,13 @@ import { patchAgentSettings } from "../src/agent/store";
  * scenarios need: it proves the PATHS, never that a real model chooses them.
  * ------------------------------------------------------------------ */
 
-type Step = { text?: string; toolCalls?: ToolCall[] };
+type Step = {
+  text?: string;
+  toolCalls?: ToolCall[];
+  /** What this lap reports back as `usage_metadata`. Omitted on purpose by the
+   *  steps that test a provider which reports nothing. */
+  usage?: { input: number; output: number };
+};
 
 class ScriptedChatModel extends BaseChatModel {
   index = 0;
@@ -52,7 +58,13 @@ class ScriptedChatModel extends BaseChatModel {
     this.seen.push(messages);
     const step = this.script[this.index] ?? { text: "nothing left to say" };
     this.index += 1;
-    const message = new AIMessage({ content: step.text ?? "", tool_calls: step.toolCalls ?? [] });
+    const message = new AIMessage({
+      content: step.text ?? "",
+      tool_calls: step.toolCalls ?? [],
+      ...(step.usage
+        ? { usage_metadata: { input_tokens: step.usage.input, output_tokens: step.usage.output, total_tokens: step.usage.input + step.usage.output } }
+        : {}),
+    });
     return { generations: [{ text: step.text ?? "", message }] };
   }
 }
@@ -538,5 +550,171 @@ test("an assistant row carries the id its deltas carried, so a live bubble recon
   expect(row?.detail.itemId).toBe(delta!.itemId);
   // The row rides the stream too, so a watcher need not poll for it.
   expect(events.some((event) => event.type === "row" && event.row.kind === "assistant_message")).toBe(true);
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * The context meter — #539. The Agent reported no context at all, and a
+ * coordinator whose conversation is quietly being trimmed is one a person
+ * cannot reason about.
+ * ------------------------------------------------------------------ */
+
+test("a turn's usage is the model's own numbers summed over its laps, on the row and on the state", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }], usage: { input: 1_200, output: 30 } },
+      { text: "two sessions, both idle.", usage: { input: 1_400, output: 60 } },
+    ],
+    wall(landed),
+  );
+  const { runId } = agent.submit({ text: "what is running?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // TWO LAPS, ONE TURN. The question a person asks is what the TURN cost.
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.kind).toBe("turn_done");
+  expect(done.detail.usage).toEqual({ input: 2_600, output: 90, total: 2_690 });
+
+  // The prompt's size comes from the trim step, and the ceiling with it, so a
+  // client can draw a proportion without knowing the engine's constant.
+  expect(done.detail.contextChars).toBeGreaterThan(0);
+  expect(done.detail.budgetChars).toBe(120_000);
+  expect(done.detail.contextChars as number).toBeLessThan(done.detail.budgetChars as number);
+
+  // The state a cockpit polls says the same thing about the same turn.
+  expect(agent.state().lastUsage).toEqual({
+    runId,
+    at: done.at,
+    usage: { input: 2_600, output: 90, total: 2_690 },
+    contextChars: done.detail.contextChars as number,
+    budgetChars: 120_000,
+  });
+  agent.close();
+});
+
+test("a provider that reports no usage leaves the token count absent rather than zero", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "no numbers here" }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  // ABSENT, NOT ZERO: "nobody said" and "that turn was free" are different
+  // facts, and a meter reading 0 tokens would assert the second.
+  expect(done.detail.usage).toBeUndefined();
+  expect(agent.state().lastUsage?.usage).toBeUndefined();
+  // The context half still lands — it is the engine's own measurement.
+  expect(agent.state().lastUsage?.contextChars).toBeGreaterThan(0);
+  agent.close();
+});
+
+test("the meter survives a restart, because it was never this process's number", async () => {
+  const landed: Landed[] = [];
+  const { agent, engineRoot } = runtime([{ text: "first", usage: { input: 900, output: 40 } }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  const before = agent.state().lastUsage;
+  agent.close();
+
+  const second = new AgentRuntime({ engineRoot, tools: () => wall(landed), model: () => new ScriptedChatModel([{ text: "second" }]) });
+  // A fresh process has nothing in memory; `restore` reads the last ended turn.
+  expect(second.state().lastUsage).toBeUndefined();
+  await second.restore();
+  expect(second.state().lastUsage).toEqual(before!);
+  second.close();
+});
+
+test("a stopped turn still reports what it spent, because the tokens were bought", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }], usage: { input: 700, output: 20 } },
+      { text: "never said", usage: { input: 800, output: 25 } },
+    ],
+    wall(landed, { sessions_list: () => { agent.cancel(); return "rows"; } }),
+  );
+  agent.submit({ text: "what is running?" });
+  await until(() => agent.state().runId === undefined, "the turn to end");
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.kind).toBe("turn_done");
+  expect(done.detail.status).toBe("stopped");
+  // The first lap's tokens were spent before the stop landed, and they count.
+  expect(done.detail.usage).toEqual({ input: 700, output: 20, total: 720 });
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * `access: "auto"` — #539. The gate still asks; policy answers.
+ * ------------------------------------------------------------------ */
+
+test("auto access lets a gated call through and records that policy allowed it", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([sendTask("call_1"), { text: "sent" }], wall(landed));
+  agent.patch({ access: "auto" });
+
+  agent.submit({ text: "delegate it" });
+  await until(() => agent.state().runId === undefined, "the turn to finish");
+
+  // NOTHING PARKED, and the effect happened.
+  expect(agent.state().request).toBeUndefined();
+  expect(landed.map((call) => call.name)).toEqual(["sessions_send"]);
+
+  /**
+   * THE QUESTION IS STILL IN THE TRANSCRIPT. This is `openRequest`'s own shape
+   * for a session's runtime mode: opened and resolved in the same breath,
+   * stamped `resolvedBy: "policy"`. A mode that simply skipped the gate would
+   * leave a conversation in which the Agent assigned work and nothing anywhere
+   * says a decision was made.
+   */
+  const rows = agent.thread({ limit: 200 }).rows;
+  const opened = rows.find((row) => row.kind === "request_opened")!;
+  const resolved = rows.find((row) => row.kind === "request_resolved")!;
+  expect(opened.detail.tool).toBe("sessions_send");
+  expect(resolved.detail).toMatchObject({ decision: "accept", resolvedBy: "policy", tool: "sessions_send" });
+  agent.close();
+});
+
+test("auto access does not widen what is gated — a read is still never asked about", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [{ toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }] }, { text: "two sessions" }],
+    wall(landed),
+  );
+  agent.patch({ access: "auto" });
+  agent.submit({ text: "what is running?" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  // `needsApproval` is untouched by the mode: `auto` moves who ANSWERS the
+  // question, never which calls raise one. A read raises none either way, so
+  // there is no policy row to write.
+  expect(kinds(agent)).not.toContain("request_opened");
+  expect(kinds(agent)).not.toContain("request_resolved");
+  expect(landed.map((call) => call.name)).toEqual(["sessions_list"]);
+  agent.close();
+});
+
+test("ask is the default, so an Agent nobody configured still parks", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([sendTask("call_1"), { text: "sent" }], wall(landed));
+  expect(agent.state().access).toBeUndefined();
+  agent.submit({ text: "delegate it" });
+  await until(() => agent.state().request !== undefined, "the approval to park");
+  expect(landed).toHaveLength(0);
+  agent.cancel();
+  await until(() => agent.state().runId === undefined, "the turn");
+  agent.close();
+});
+
+test("effort and access are reported on the state a composer reads", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "ok" }], wall(landed));
+  expect(agent.state().effort).toBeUndefined();
+  const set = agent.patch({ effort: "high", access: "auto" });
+  expect(set.effort).toBe("high");
+  expect(set.access).toBe("auto");
+  // And a cleared pill disappears from the state rather than reading as a value.
+  expect(agent.patch({ effort: "" }).effort).toBeUndefined();
   agent.close();
 });

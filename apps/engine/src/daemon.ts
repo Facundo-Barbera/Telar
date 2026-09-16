@@ -91,6 +91,7 @@ import {
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
 import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
+import { isAgentSelf } from "./agent/identity";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
 import { readAgentModels } from "./models";
@@ -1133,9 +1134,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       list: async (options) => store.liveSessionRows({ all: options?.settled === true }),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
-      // An agent's words, with no session to attribute them to: the caller is
-      // the user's own chat client, outside any turn. Never the person's.
-      send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
+      /**
+       * An agent's words, with no session to attribute them to: the caller is
+       * the user's own chat client, outside any turn. Never the person's.
+       *
+       * THE AGENT'S BUILD PASSES ITS OWN NAME AS PROOF (#539), and that is the
+       * whole of the difference. It buys one thing — a human Stop on the
+       * recipient latches out peer sessions and not the Agent, which the person
+       * is typing at right now — and the store says in its answer when that
+       * latch was stepped over. The socket's build has no `self` and so sends
+       * unproven, exactly as before: a chat client is not the Agent.
+       */
+      send: async (sessionId, input) =>
+        store.submitAgentTurn(sessionId, input, self && isAgentSelf(self.sessionId) ? { sessionId: AGENT_SELF_ID } : undefined),
       read: async (sessionId, after, options) => store.readEvents(sessionId, after, options?.limit),
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).
@@ -1239,6 +1250,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         agentChatModel({
           threadId: input.threadId,
           ...(input.model ? { model: input.model } : {}),
+          // `reasoning_effort` on the wire, and only when somebody set it —
+          // see `agent/model.ts` for why it is omitted rather than defaulted.
+          ...(input.effort ? { effort: input.effort } : {}),
           agentDir: path.join(root, "agent"),
         })),
     ...(options.now ? { now: options.now } : {}),
@@ -1550,6 +1564,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           agentRuntime.patch({
             ...("enabled" in input ? { enabled: input.enabled } : {}),
             ...("model" in input ? { model: input.model } : {}),
+            // The composer's other two pills (#539). Same forwarding rule as the
+            // model beside them: presence, unvalidated, because the shape lives
+            // once beside the schema.
+            ...("effort" in input ? { effort: input.effort } : {}),
+            ...("access" in input ? { access: input.access } : {}),
             ...("reset" in input ? { reset: input.reset } : {}),
           });
           /**
@@ -4294,7 +4313,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // this process owns, and a daemon that left it open would leave the
         // next reset unable to move the file.
         store.setAgentWakeSink(undefined);
-        agentRuntime.close();
+        // AWAITED, and that is the whole of #539's item 5 in one line: the
+        // Agent's turn is a promise in THIS event loop, so stopping the engine
+        // ends it — there is nothing to outlive the daemon. `shutdown` aborts
+        // the live turn, waits for its `turn_done` to be written, and only then
+        // closes the thread file.
+        await agentRuntime.shutdown();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
         removeOwnDiscovery(store, daemonId);

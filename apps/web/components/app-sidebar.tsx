@@ -100,7 +100,7 @@ import {
   useProjectFilter,
 } from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
-import { AgentEntry, agentEntryActive, agentEntryShown } from "@/components/session/agent-entry";
+import { AgentEntryLive, agentEntryActive, agentEntryShown } from "@/components/session/agent-entry";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
@@ -1586,18 +1586,21 @@ function SidebarBody() {
           always in the same place, which is the whole of what a built-in
           coordinator buys. The bands under it are untouched.
 
-          A LINK AND A GLYPH, THE SIZE OF A DRAFT ROW. No status, no branch, no
-          activity — those are questions about work in progress, and this row
-          answers "where do I go to coordinate". Its rule sits underneath,
-          exactly like drafts and pinned, because the boundary that exists is
-          between this and what follows.
+          A CARD-LIKE ROW WITH ONE STATUS LINE (#539) — the only row in this
+          rail taller than a conversation. No branch and no provider: there is
+          no checkout and no provider session, so those are still questions it
+          does not have. But "is it working, is it waiting for me" is one it
+          does, and answering nothing made the one always-present entry the
+          least informative thing in the list. Its rule sits underneath, exactly
+          like drafts and pinned, because the boundary that exists is between
+          this and what follows.
 
           IT IS THE VIEWED MAC'S AGENT, not this cockpit's — see `agentHosts`.
         */}
         {showAgentEntry && (
           <SidebarGroup className="shrink-0 pb-0">
             <SidebarGroupContent>
-              <AgentEntry
+              <AgentEntryLive
                 {...(viewedHost === LOCAL_HOST_ID ? {} : { hostId: viewedHost })}
                 active={agentEntryActive(pathname, viewedHost)}
                 onNavigate={onNavigate}

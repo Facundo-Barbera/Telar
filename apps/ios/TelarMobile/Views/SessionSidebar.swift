@@ -106,21 +106,34 @@ struct SessionSidebar: View {
                                     )
                                 }
                             } label: {
+                                // A TALLER ROW WITH ONE STATUS LINE (#539). It
+                                // was a single line the height of a conversation,
+                                // on the argument that it only answers "where do
+                                // I go to coordinate". The owner's first night
+                                // says half of that was wrong: "is it working, is
+                                // it waiting for me" is a question this row has,
+                                // and answering nothing made the one
+                                // always-present entry the least informative
+                                // thing on the sidebar.
                                 Label {
-                                    HStack(spacing: 6) {
-                                        Text("Agent").font(.subheadline)
-                                        // WHICH MAC, and only when there is more
-                                        // than one to tell apart — the rule
-                                        // `HostLabel` applies to every other row
-                                        // on this sidebar.
-                                        if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
-                                            Text(name).font(.caption).foregroundStyle(Theme.textMuted)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text("Agent").font(.subheadline)
+                                            // WHICH MAC, and only when there is more
+                                            // than one to tell apart — the rule
+                                            // `HostLabel` applies to every other row
+                                            // on this sidebar.
+                                            if settings.hosts.count > 1, let name = settings.host(row.hostId)?.name {
+                                                Text(name).font(.caption).foregroundStyle(Theme.textMuted)
+                                            }
                                         }
+                                        .lineLimit(1)
+                                        agentStatusLine(row.status)
                                     }
                                 } icon: {
                                     Image(systemName: "sparkles")
                                 }
-                                .lineLimit(1)
+                                .padding(.vertical, 4)
                             }
                         }
                     } header: {
@@ -934,6 +947,35 @@ struct SessionSidebar: View {
         case .blocked: return Theme.statusAmber
         case .working, .queued, .monitoring: return Theme.accent
         case .idle: return nil
+        }
+    }
+
+    /// THE AGENT ROW'S STATUS LINE (#539) — the same grammar `statusSlot` gives
+    /// a session below, because a reader who has learned this list should not
+    /// have to learn one row separately.
+    ///
+    /// A PULSING DOT FOR "STILL GOING", A STILL DOT FOR "WAITING FOR A PERSON",
+    /// and nothing at all beside a quiet line: the motion is the fastest read on
+    /// the sidebar, and an approval that has parked is exactly the thing that is
+    /// NOT moving.
+    @ViewBuilder private func agentStatusLine(_ status: AgentStatus) -> some View {
+        HStack(spacing: 3) {
+            switch status.tone {
+            case .working: SteppedPulseDot(color: Theme.statusSky)
+            case .waiting: Image(systemName: "circle.circle").font(.system(size: 9))
+            case .idle: EmptyView()
+            }
+            Text(status.label).lineLimit(1)
+        }
+        .font(.caption2.weight(status.tone == .idle ? .regular : .medium))
+        .foregroundStyle(agentStatusTone(status.tone))
+    }
+
+    private func agentStatusTone(_ tone: AgentStatus.Tone) -> Color {
+        switch tone {
+        case .waiting: return Theme.statusAmber
+        case .working: return Theme.statusSky
+        case .idle: return Theme.textMuted.opacity(0.7)
         }
     }
 

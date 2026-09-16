@@ -28,3 +28,24 @@ export const AGENT_SELF_ID = "agent";
 export function isAgentSelf(id: string): boolean {
   return id === AGENT_SELF_ID;
 }
+
+/**
+ * WHO IS SENDING A `sessions_send`, PROVEN — and the two ways there are to
+ * prove it, which are different in kind rather than in detail (#539).
+ *
+ * A SESSION proves itself with the CLAIM of the turn doing the sending: a
+ * session id, a run id and the token the engine minted for that claim. The
+ * engine looks it up and stamps the sender from what it finds, so a model
+ * cannot name a session it is not.
+ *
+ * THE AGENT PROVES ITSELF BY BEING UNABLE TO. It is a LangGraph thread, not a
+ * session — no queue, no run, no token — so its proof is the reserved id alone.
+ * That is safe precisely because the shape is unreachable from outside: the
+ * wire schema (`AgentTurnInput`) requires the run id and the token, so no HTTP
+ * body can be a claimless proof, and `submitAgentTurn` refuses a CLAIMED proof
+ * that names `agent`. Only the in-process capability the daemon builds with a
+ * `self` can produce this arm.
+ */
+export type AgentSenderProof =
+  | { sessionId: string; runId: string; claimToken: string }
+  | { sessionId: typeof AGENT_SELF_ID; runId?: undefined; claimToken?: undefined };
