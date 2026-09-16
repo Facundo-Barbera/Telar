@@ -2512,7 +2512,7 @@ export class EngineStore {
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
   recordKernelState(sessionId: string, state: "starting" | "idle" | "busy" | "restarting" | "dead", reason?: string): void {
     try {
-      this.getSession(sessionId);
+      this.requireSession(sessionId);
     } catch {
       return; // a kernel outliving its session has nowhere to report
     }
@@ -2543,14 +2543,14 @@ export class EngineStore {
 
   /** The attachment index, for the plots gallery. Newest first. */
   listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     const all = [...this.readAttachments(sessionId).values()];
     const filtered = options.tag ? all.filter((a) => a.tags?.includes(options.tag!)) : all;
     return structuredClone(filtered.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
   }
 
   attachmentBytes(sessionId: string, attachmentId: string): { attachment: TurnAttachment; data: Uint8Array } {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     const attachment = this.readAttachments(sessionId).get(attachmentId);
     if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
     return { attachment: structuredClone(attachment), data: new Uint8Array(fs.readFileSync(attachment.path)) };
@@ -2558,7 +2558,7 @@ export class EngineStore {
 
   /** Replace an attachment's tags — how a plot is pinned and unpinned. */
   tagAttachment(sessionId: string, attachmentId: string, tags: string[]): TurnAttachment {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     const index = this.readAttachments(sessionId);
     const attachment = index.get(attachmentId);
     if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
@@ -2577,7 +2577,7 @@ export class EngineStore {
    * shell that re-reports the standing state journals nothing new.
    */
   recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string, interrupted = false): void {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     // Control is PER TAB (§6): the dedupe key carries the tab so tab 1
     // changing hands is never mistaken for a re-report about tab 0.
     const key = `${sessionId}:${tabId ?? ""}`;
@@ -6739,9 +6739,36 @@ export class EngineStore {
   }
 
   getSession(sessionId: string): Session {
+    return this.withActivity(structuredClone(this.requireSession(sessionId)));
+  }
+
+  /**
+   * "DOES THIS SESSION EXIST" — WITHOUT FOLDING ITS ACTIVITY (#545).
+   *
+   * Fifteen methods called `getSession` and threw the answer away: `readEvents`,
+   * `eventCursor`, `turns`, `items`, `tasks`, `requests`, `snapshotRequests`,
+   * `snapshotWindow` and the attachment readers all wanted one thing from it —
+   * a `not_found` when the id names nothing. Each was paying `withActivity` for
+   * it, which is three more documents parsed (`queue.json`, `requests.json`,
+   * `tasks.json`) to derive a pill the caller does not look at.
+   *
+   * IT ADDS UP ON THE PATH THAT MATTERS. `sessionSnapshot` makes SEVEN of those
+   * calls for one cockpit read — the cursor, the turns, the items, the tasks,
+   * the requests, the assignments and then the session itself — so a session
+   * being opened folded its activity seven times and its queue was parsed once
+   * per fold on top of the window read it actually wanted. On the running
+   * daemon `readQueue` under `getSession` under `readEvents` alone was 1.5% of
+   * an 8 s profile, beside 3.2% for `readRequests` on the same path.
+   *
+   * THE FAILURE IS IDENTICAL, which is what makes this safe to substitute: the
+   * missing-document check and the metadata parse are both still here, so a
+   * session that is absent or unreadable fails exactly as it did. Only the fold
+   * is gone, and only where its result was discarded.
+   */
+  private requireSession(sessionId: string): Session {
     const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
-    return this.withActivity(structuredClone(parseSession(stored)));
+    return parseSession(stored);
   }
 
   /**
@@ -7223,7 +7250,7 @@ export class EngineStore {
   }
 
   turns(sessionId: string): Turn[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return structuredClone(this.readQueue(sessionId).turns);
   }
 
@@ -7580,7 +7607,7 @@ export class EngineStore {
     requests: EngineRequest[];
     page: { before: string | null; more: boolean };
   } {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     const plan = this.windowedTurns(sessionId, window);
     const chosen = new Set(plan.turns.map((turn) => turn.runId));
     return structuredClone({
@@ -7644,17 +7671,17 @@ export class EngineStore {
    * has ever been asked is a different question from what a transcript renders.
    */
   snapshotRequests(sessionId: string): EngineRequest[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return structuredClone(boundedRequests([...this.readRequests(sessionId).values()]));
   }
 
   items(sessionId: string): Item[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return structuredClone([...this.readItems(sessionId).values()]);
   }
 
   tasks(sessionId: string): Task[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return structuredClone([...this.readTasks(sessionId).values()]);
   }
 
@@ -7671,7 +7698,7 @@ export class EngineStore {
    * client-supplied path is a client-supplied file read.
    */
   putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string; title?: string }): TurnAttachment {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
     if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
       throw new EngineStateError("invalid_request", "attachment is larger than the engine accepts");
@@ -8301,7 +8328,7 @@ export class EngineStore {
    */
   reportSessionTasks(sessionId: string, workerId: string, observations: unknown[]): { accepted: number } {
     assertId(workerId, "worker id");
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
     const tasks = this.readTasks(sessionId);
@@ -10135,7 +10162,7 @@ export class EngineStore {
   }
 
   requests(sessionId: string): EngineRequest[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return structuredClone([...this.readRequests(sessionId).values()]);
   }
 
@@ -10389,7 +10416,7 @@ export class EngineStore {
    * client that resumes from the last id it saw can neither skip nor repeat.
    */
   readEvents(sessionId: string, after = 0, limit?: number): EngineEvent[] {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new EngineStateError("invalid_request", "event limit is invalid");
     if (this.executionStore) return this.executionStore.events(sessionId, after, limit);
@@ -10404,7 +10431,7 @@ export class EngineStore {
    * line is the answer; only its tail is read.
    */
   eventCursor(sessionId: string): number {
-    this.getSession(sessionId);
+    this.requireSession(sessionId);
     return this.executionStore ? this.executionStore.cursor(sessionId) : lastEventId(eventsFile(this.paths, sessionId));
   }
 

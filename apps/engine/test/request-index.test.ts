@@ -58,11 +58,11 @@ function runningSession(store: EngineStore, sessionId: string, runId: string): s
  * path is not taken, and a spy on a seam the code could stop using would prove
  * nothing.
  */
-function requestDocumentReads(action: () => void): number {
+function documentReads(suffixes: string[], action: () => void): number {
   const real = fs.readFileSync;
   let reads = 0;
   (fs as { readFileSync: typeof fs.readFileSync }).readFileSync = ((file: Parameters<typeof fs.readFileSync>[0], ...rest: unknown[]) => {
-    if (typeof file === "string" && file.endsWith("requests.json")) reads += 1;
+    if (typeof file === "string" && suffixes.some((suffix) => file.endsWith(suffix))) reads += 1;
     return (real as (...args: unknown[]) => unknown)(file, ...rest);
   }) as typeof fs.readFileSync;
   try {
@@ -72,6 +72,8 @@ function requestDocumentReads(action: () => void): number {
   }
   return reads;
 }
+
+const requestDocumentReads = (action: () => void): number => documentReads(["requests.json"], action);
 
 test("the index follows one request through open, resolve and retire", () => {
   const store = readyStore();
@@ -172,6 +174,25 @@ test("the index does not keep a resolution for a session no worker is on", () =>
   expect(store.resolutionsForWorker("worker_one")).toEqual([]);
   // The record is untouched: only the in-memory copy went.
   expect(store.requests("session_one")).toMatchObject([{ id: "req_1", state: "resolved" }]);
+});
+
+test("an existence check folds no activity", () => {
+  // `readEvents`, `eventCursor`, `items`, `tasks` and the rest want one thing
+  // from `getSession`: a not_found when the id names nothing. Paying an activity
+  // fold for it meant three more documents parsed per call — and
+  // `sessionSnapshot` makes seven such calls to open one conversation.
+  const store = readyStore();
+  const token = runningSession(store, "session_one", "run_one");
+  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+
+  expect(documentReads(["queue.json", "requests.json", "tasks.json"], () => {
+    store.readEvents("session_one");
+    store.eventCursor("session_one");
+    store.items("session_one");
+  })).toBe(0);
+
+  // And the check still fails on a session that is not there.
+  expect(() => store.readEvents("session_missing")).toThrow("session does not exist");
 });
 
 test("a requests document that is not this store's is rejected rather than trusted", () => {
