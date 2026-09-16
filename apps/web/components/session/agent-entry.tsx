@@ -30,17 +30,35 @@
  * the Agent switched off has no row while you are looking at it, which is the
  * honest answer rather than a link into an empty screen.
  *
- * ── ONE LINE, LIKE A DRAFT ROW ──────────────────────────────────────────────
- * `SessionRow` spends three lines on status, branch and provider; none of those
- * answer the question this row is here for, which is "where do I go to
- * coordinate". So it is a glyph, a word, and the rail's own hover and accent
- * grammar — shared with `DraftRow`, which is the part that has to match,
- * without sharing a component.
+ * ── IT WAS ONE LINE, AND THAT WAS TOO QUIET (#539) ──────────────────────────
+ * The row shipped deliberately no taller than a conversation below it: a glyph,
+ * a word, `py-1` and `text-xs`, on the argument that it answers only "where do I
+ * go to coordinate" and `SessionRow`'s three lines of status, branch and
+ * provider answer questions it does not have.
+ *
+ * The owner's first night with it says the argument was half right. The BRANCH
+ * and the PROVIDER are still questions this row does not have — there is no
+ * checkout and no provider session. But "is it working, is it waiting for me"
+ * is a question it very much has, and a row that could not answer it made the
+ * one always-present entry in the rail the least informative thing in it.
+ *
+ * So it is a card-like row now: `py-2.5`, a `size-4` glyph, the label at
+ * `text-sm`, and ONE status line under it — the same four facts a session row
+ * shows in its badge slot (working, waiting, queued, or what the last turn
+ * cost), with the rail's own spinner-for-moving and dot-for-parked grammar, so
+ * a reader who has learned the list does not have to learn this row separately.
+ *
+ * WHERE THE STATUS COMES FROM is `lib/agent/status.ts`, and it is deliberately
+ * NOT the live read the `enabled` flag rides: that route is conditional on the
+ * sessions revision, which the Agent's own turns do not move, so a status folded
+ * into it would freeze. The flag still decides whether the row exists; the row
+ * asks for its own status once it does.
  */
 
 import Link from "next/link";
-import { SparklesIcon } from "lucide-react";
-import { hostPrefix } from "@/lib/hosts/client";
+import { CircleDashedIcon, CircleDotIcon, SparklesIcon } from "lucide-react";
+import { hostPrefix, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import { agentStatus, useAgentStatus } from "@/lib/agent/status";
 
 /** What the row says, and the only name this screen has. Spelled once so the
  *  rail, the page and the settings group cannot drift into three words. */
@@ -95,30 +113,76 @@ export function agentEntryActive(pathname: string, hostId?: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+/** The rail's own two tones for a row's status, by the vocabulary's rule:
+ *  `--warning` for "a person has to move", `--primary` for a live turn. */
+const STATUS_TONE = {
+  waiting: "text-warning",
+  working: "text-primary",
+  idle: "text-sidebar-foreground/45",
+} as const;
+
 export function AgentEntry({
   hostId,
   active,
   onNavigate,
+  status,
 }: {
   /** The Mac this row is about — the one the address bar names. `undefined`
    *  and `LOCAL_HOST_ID` both mean this cockpit's own engine. */
   hostId?: string;
   active: boolean;
   onNavigate: () => void;
+  /**
+   * THE STATUS, INJECTED, so this component renders on the server and in a test
+   * without a poll behind it. `AgentEntryLive` below is the one that asks; a
+   * caller with the state already in hand passes it straight through.
+   */
+  status?: ReturnType<typeof agentStatus>;
 }) {
+  const line = status ?? agentStatus(undefined);
   return (
     <div className={`group/agent relative flex items-center rounded-md ${active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"}`}>
       <Link
         href={agentHref(hostId)}
         onClick={onNavigate}
         {...(active ? { "aria-current": "page" as const } : {})}
-        // py-1 is `slim`'s own padding, exactly as `DraftRow` takes it: this row
-        // must never be taller than the conversations below it.
-        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        /* py-2.5 is the card-like height #539 asked for: this row is the one
+           thing always in the rail, and it now answers a question rather than
+           only pointing at a screen. It is deliberately the ONLY row that is
+           taller than a conversation. */
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <SparklesIcon aria-hidden className="size-3 shrink-0 text-sidebar-foreground/50" />
-        <span className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground">{AGENT_LABEL}</span>
+        <SparklesIcon aria-hidden className="size-4 shrink-0 text-sidebar-foreground/50" />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="min-w-0 truncate text-sm text-sidebar-foreground">{AGENT_LABEL}</span>
+          <span className={`inline-flex min-w-0 items-center gap-1 text-2xs ${STATUS_TONE[line.tone]}`}>
+            {/* THE RAIL'S OWN GRAMMAR, not a second one: a spinner means still
+                going, a still dot means parked and waiting for a person. The
+                motion is the fastest read in the list. */}
+            {line.tone === "working" ? (
+              <CircleDashedIcon aria-hidden className="size-3 shrink-0 animate-spin [animation-duration:3s]" />
+            ) : line.tone === "waiting" ? (
+              <CircleDotIcon aria-hidden className="size-3 shrink-0" />
+            ) : null}
+            {/* `role="status"` on the LABEL alone, as the session rows do. */}
+            <span role="status" className="truncate">
+              {line.label}
+            </span>
+          </span>
+        </span>
       </Link>
     </div>
   );
+}
+
+/**
+ * The entry with its own status behind it — what the rail mounts.
+ *
+ * SPLIT FROM THE RENDER ABOVE so the hook is the only thing that needs a live
+ * engine: the markup is a pure function of a status a test can hand it, and the
+ * poll is one line here rather than something to mock.
+ */
+export function AgentEntryLive({ hostId, active, onNavigate }: { hostId?: string; active: boolean; onNavigate: () => void }) {
+  const state = useAgentStatus(hostId ?? LOCAL_HOST_ID);
+  return <AgentEntry {...(hostId ? { hostId } : {})} active={active} onNavigate={onNavigate} status={agentStatus(state)} />;
 }

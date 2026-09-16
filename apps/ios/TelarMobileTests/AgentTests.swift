@@ -141,23 +141,23 @@ import Testing
         // Nothing paired, and a Mac that has answered "off" — both draw the
         // sidebar this phone always drew.
         #expect(agentRows([], filter: nil).isEmpty)
-        #expect(agentRows([(hostA, false)], filter: nil).isEmpty)
+        #expect(agentRows([(hostA, false, nil)], filter: nil).isEmpty)
     }
 
     @Test func oneRowForEachMacThatHasOne() {
-        #expect(agentRows([(hostA, true)], filter: nil).map(\.hostId) == [hostA])
+        #expect(agentRows([(hostA, true, nil)], filter: nil).map(\.hostId) == [hostA])
         // TWO MACS, TWO ROWS. Each machine has its own Agent, so a phone paired
         // with both is owed both — this is where the band differs most from the
         // desktop rail, which shows only the Mac you are looking at.
-        #expect(agentRows([(hostA, true), (hostB, true)], filter: nil).map(\.hostId) == [hostA, hostB])
+        #expect(agentRows([(hostA, true, nil), (hostB, true, nil)], filter: nil).map(\.hostId) == [hostA, hostB])
         // And a Mac with it switched off contributes nothing beside one that has.
-        #expect(agentRows([(hostA, false), (hostB, true)], filter: nil).map(\.hostId) == [hostB])
+        #expect(agentRows([(hostA, false, nil), (hostB, true, nil)], filter: nil).map(\.hostId) == [hostB])
     }
 
     @Test func theMacFilterNarrowsTheBandToo() {
         // Filtering the sidebar to one Mac must not leave another Mac's Agent
         // pinned above a list it is not part of.
-        let both: [(hostId: HostID, enabled: Bool)] = [(hostA, true), (hostB, true)]
+        let both: [(hostId: HostID, enabled: Bool, state: AgentState?)] = [(hostA, true, nil), (hostB, true, nil)]
         #expect(agentRows(both, filter: hostA).map(\.hostId) == [hostA])
         #expect(agentRows(both, filter: hostB).map(\.hostId) == [hostB])
     }
@@ -165,7 +165,7 @@ import Testing
     @Test func rowsKeepTheMacsOwnOrder() {
         // A band that re-sorted itself as conversations were touched would move
         // under the thumb.
-        #expect(agentRows([(hostB, true), (hostA, true)], filter: nil).map(\.hostId) == [hostB, hostA])
+        #expect(agentRows([(hostB, true, nil), (hostA, true, nil)], filter: nil).map(\.hostId) == [hostB, hostA])
     }
 
     // ── PAGING ───────────────────────────────────────────────────────────────
@@ -267,5 +267,56 @@ import Testing
         #expect(tolerant.agent.lastUsage == nil)
         // The screen is still perfectly usable.
         #expect(tolerant.agent.enabled)
+    }
+}
+
+/// WHAT THE SIDEBAR'S AGENT ROW SAYS UNDERNEATH ITS NAME (#539).
+///
+/// THE LADDER IS THE TEST, and its order is not alphabetical. A parked approval
+/// outranks everything because it is the only one of these a person can DO
+/// something about — a row saying "working" while the Agent sat waiting for an
+/// answer would be the phone hiding the one thing that needed them.
+@Suite struct AgentRowStatusTests {
+    private let host = HostID()
+    private let idle = AgentState(enabled: true)
+    private let parked = AgentRequest(id: EngineID("req_one"), runId: "run_one", tool: "sessions_send", reason: "It wants to assign work.")
+
+    @Test func waitingForAPersonBeatsEverything() {
+        #expect(agentStatus(AgentState(enabled: true, request: parked)) == AgentStatus(label: "waiting for you", tone: .waiting))
+        // The Mac reports `running: false` while a turn is parked, but a build
+        // that ever reported both must still show the one a person can act on.
+        #expect(agentStatus(AgentState(enabled: true, running: true, queued: 3, request: parked)).label == "waiting for you")
+    }
+
+    @Test func workingThenWhatIsWaitingBehindIt() {
+        #expect(agentStatus(AgentState(enabled: true, running: true)) == AgentStatus(label: "working", tone: .working))
+        #expect(agentStatus(AgentState(enabled: true, queued: 1)) == AgentStatus(label: "1 queued", tone: .working))
+    }
+
+    @Test func aQuietAgentSaysWhatTheLastTurnCost() {
+        let state = AgentState(
+            enabled: true,
+            lastUsage: AgentLastUsage(runId: "run_a", usage: AgentUsage(input: 2600, output: 90, total: 2690), contextChars: 30_000, budgetChars: 120_000)
+        )
+        #expect(agentStatus(state) == AgentStatus(label: "2,690 tokens last turn", tone: .idle))
+    }
+
+    @Test func aMacThatReportedNoTokensSaysIdleRatherThanZero() {
+        // ABSENT IS NOT ZERO. "0 tokens last turn" would be a claim nobody made.
+        let state = AgentState(enabled: true, lastUsage: AgentLastUsage(runId: "run_a", contextChars: 30_000, budgetChars: 120_000))
+        #expect(agentStatus(state) == AgentStatus(label: "idle", tone: .idle))
+    }
+
+    @Test func aMacThatHasNotAnsweredGetsAPlaceholderRatherThanAClaim() {
+        #expect(agentStatus(idle) == AgentStatus(label: "idle", tone: .idle))
+        // The row is already drawn — the live read's flag put it there — so it
+        // needs a line, and the line must not assert "idle" about a Mac that may
+        // be mid-turn.
+        #expect(agentStatus(nil) == AgentStatus(label: "…", tone: .idle))
+    }
+
+    @Test func theRowCarriesTheStatusItWasFoldedWith() {
+        let rows = agentRows([(host, true, AgentState(enabled: true, running: true))], filter: nil)
+        #expect(rows.map(\.status) == [AgentStatus(label: "working", tone: .working)])
     }
 }
