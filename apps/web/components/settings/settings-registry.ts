@@ -56,6 +56,7 @@ import {
   InfoIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  RotateCcwIcon,
   LayersIcon,
   LockIcon,
   MonitorIcon,
@@ -131,14 +132,52 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       /**
-       * THE MAIN ASSISTANT'S GROUP STOOD HERE and went with the pane (#531).
-       *
-       * NOT REPLACED BY THE AGENT'S YET, deliberately: every row this index
-       * carries has to be copy that exists on a pane, and the Agent's pane is
-       * the web half of #531. Indexing rows for a pane nobody has written would
-       * be a search result that navigates nowhere — which is exactly what
-       * `settings-registry.test.ts` refuses, and rightly.
+       * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's is what took its
+       * place (#531) — written once the pane below it existed, because every
+       * row this index carries has to be copy a pane actually renders.
+       * `settings-registry.test.ts` is what holds that.
        */
+      {
+        /**
+         * INDEXED THOUGH IT IS EXPERIMENTAL, for the same reason the Main group
+         * above: a feature nobody can find is one nobody can switch off either.
+         * The keywords are the ones somebody uses when they have SEEN the rail
+         * entry and want to know what it is — and "main" is among them, because
+         * this replaces what that word used to name and people will keep
+         * typing it.
+         */
+        title: "Agent",
+        rows: [
+          {
+            title: "Agent (experimental)",
+            hint: "One built-in conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
+            keywords: ["agent", "main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
+            icon: SparklesIcon,
+          },
+          {
+            title: "Model",
+            hint: "Which model OpenCode Go serves the Agent. Empty runs the default.",
+            keywords: ["agent", "model", "opencode", "go", "kimi"],
+            icon: SparklesIcon,
+          },
+          {
+            /** Indexed by the words somebody types when a turn has just failed
+             *  and the message said "key": the pane is where it is fixed. */
+            title: "OpenCode Go key",
+            hint: "The credential the Agent calls OpenCode Go with. Stored with this Mac's engine state.",
+            keywords: ["agent", "key", "api key", "opencode", "go", "credential", "token", "401"],
+            icon: KeyRoundIcon,
+          },
+          {
+            /** Indexed by "start over" and "clear", which is what somebody
+             *  looking for this calls it before they find the word Telar uses. */
+            title: "Reset conversation",
+            hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
+            keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
+            icon: RotateCcwIcon,
+          },
+        ],
+      },
       {
         title: "Generated text",
         rows: [

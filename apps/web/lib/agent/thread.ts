@@ -24,7 +24,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRow, AgentState, AgentStreamEvent } from "@telar/engine-client";
+import type { AgentAnswer, AgentRow, AgentState, AgentStreamEvent } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, rewriteApiPath, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
@@ -176,7 +176,7 @@ export function liveAssistantItem(rows: readonly AgentRow[], live: { runId: stri
 export type AgentThreadHandle = {
   items: AgentItem[];
   state: AgentState | undefined;
-  credential: { source?: "setting" | "environment" | "cli" } | undefined;
+  credential: AgentAnswer["credential"];
   /** True until the first read has answered. The screen shows nothing rather
    *  than an empty conversation it is about to contradict. */
   loading: boolean;
@@ -197,7 +197,7 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
   const [rows, setRows] = useState<readonly AgentRow[]>([]);
   const [live, setLive] = useState<{ runId: string; text: string }>();
   const [state, setState] = useState<AgentState>();
-  const [credential, setCredential] = useState<{ source?: "setting" | "environment" | "cli" }>();
+  const [credential, setCredential] = useState<AgentAnswer["credential"]>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);

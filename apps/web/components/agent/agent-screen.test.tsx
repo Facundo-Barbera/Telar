@@ -32,16 +32,16 @@ describe("which screen the Agent draws", () => {
   });
 
   test("off reads as off, which is every install's case out of the box", () => {
-    expect(agentView({ state: { enabled: false, running: false, queued: 0 }, credential: {}, loading: false })).toEqual({ kind: "off" });
+    expect(agentView({ state: { enabled: false, running: false, queued: 0 }, credential: { set: false }, loading: false })).toEqual({ kind: "off" });
   });
 
   test("on with a key is a quiet conversation", () => {
-    expect(agentView({ state: on, credential: { source: "setting" }, loading: false })).toEqual({ kind: "thread" });
-    expect(agentView({ state: on, credential: { source: "cli" }, loading: false })).toEqual({ kind: "thread" });
+    expect(agentView({ state: on, credential: { source: "setting", set: true }, loading: false })).toEqual({ kind: "thread" });
+    expect(agentView({ state: on, credential: { source: "cli", set: false }, loading: false })).toEqual({ kind: "thread" });
   });
 
   test("on with no key anywhere says so, and an engine that cannot say does not", () => {
-    expect(agentView({ state: on, credential: {}, loading: false })).toEqual({ kind: "thread", notice: "missing" });
+    expect(agentView({ state: on, credential: { set: false }, loading: false })).toEqual({ kind: "thread", notice: "missing" });
     // THE THIRD STATE. `undefined` is an engine too old to report a credential,
     // and reading it as "no key" would demand setup from somebody whose Agent
     // is working.
