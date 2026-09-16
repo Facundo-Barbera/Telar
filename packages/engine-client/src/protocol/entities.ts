@@ -1153,7 +1153,7 @@ export const MainSession = z.object({
    * re-picking it every time somebody designated a different conversation.
    *
    * ABSENT MEANS THE DRIVER'S OWN DEFAULT, which is a real id rather than a
-   * concept — see `main-session/go.ts`. Spelling that default here too would be
+   * concept — see `agent/go.ts`. Spelling that default here too would be
    * a second place it lives, and the one that goes stale.
    *
    * NEVER INTERPRETED. It is whatever OpenCode Go serves, passed through: this

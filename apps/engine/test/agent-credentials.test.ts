@@ -23,7 +23,7 @@ import {
   readOpenCodeCliKey,
   redactKey,
   resolveGoCredential,
-} from "../src/main-session/credentials";
+} from "../src/agent/credentials";
 
 const roots: string[] = [];
 const tempHome = (auth?: unknown): string => {

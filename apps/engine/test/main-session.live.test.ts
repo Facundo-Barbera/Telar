@@ -26,8 +26,8 @@
  * somebody twice for a mistake.
  */
 import { describe, expect, test } from "bun:test";
-import { describeGoCredential, redactKey, resolveGoCredential } from "../src/main-session/credentials";
-import { DEFAULT_GO_MODEL, goHeaders, goModelIds, OPENCODE_GO_BASE } from "../src/main-session/go";
+import { describeGoCredential, redactKey, resolveGoCredential } from "../src/agent/credentials";
+import { DEFAULT_GO_MODEL, goHeaders, goModelIds, OPENCODE_GO_BASE } from "../src/agent/go";
 
 const LIVE = process.env.TELAR_LIVE_SMOKE === "1";
 

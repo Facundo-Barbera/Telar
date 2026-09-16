@@ -1,6 +1,14 @@
 /**
  * WHERE THE OPENCODE GO KEY COMES FROM — three rungs, in one place (#526).
  *
+ * ── MOVED, NOT REWRITTEN (#531) ─────────────────────────────────────────────
+ * This lived in `main-session/` while the coordinator was a designated session.
+ * The Agent replaced that and this file did not change: the ladder, the rules
+ * below and the redaction are the same three rungs against the same API, and
+ * the only thing that moved is which module spends the key. `agent-lab`
+ * imported this resolver rather than copying it precisely so the evaluation was
+ * against the code that ships.
+ *
  * 1. THE KEY THE OWNER PASTED INTO TELAR. Stored through the provider-secrets
  *    pattern already in this engine: a sensitive `OPENCODE_API_KEY` on the
  *    `telar` login, which means a 0600 file the registry route never echoes
@@ -21,7 +29,7 @@
  * This is a different act and the difference is the whole justification. The
  * key is not being inspected, summarised or shown — it is being SPENT, at the
  * moment of the call, on the one API the user has already pointed the CLI at.
- * The owner asked for this rung explicitly, so that turning the Main assistant
+ * The owner asked for this rung explicitly, so that turning the Agent
  * on does not mean re-pasting a key the machine already holds. The rules that
  * keep it honest are the ones below.
  *
@@ -95,7 +103,7 @@ export function readOpenCodeCliKey(file: string = openCodeAuthFile()): string | 
  * The three rungs, most specific first.
  *
  * THE PASTED KEY IS THE EXPLICIT OVERRIDE and therefore wins outright: a person
- * who typed one into Telar has said which account this machine's Main assistant
+ * who typed one into Telar has said which account this machine's Agent
  * runs on, and an ambient variable or a CLI login must not quietly replace it.
  * That is the same ordering `providerProcessEnv` exists to protect for every
  * other provider — the instance declares, the environment does not.

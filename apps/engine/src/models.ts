@@ -31,7 +31,7 @@ import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
-import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./main-session/go";
+import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./agent/go";
 
 /**
  * How long to wait for a provider to describe itself.

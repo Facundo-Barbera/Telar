@@ -158,7 +158,7 @@ import {
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
-import { resolveGoCredential, type GoKeySource } from "./main-session/credentials";
+import { resolveGoCredential, type GoKeySource } from "./agent/credentials";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
@@ -2876,7 +2876,7 @@ export class EngineStore {
    *
    * THE KEY NEVER LEAVES. `resolveGoCredential` finds one; only its SOURCE is
    * returned, which is the one fact that helps somebody work out why the wrong
-   * account is being billed. See `main-session/credentials.ts`.
+   * account is being billed. See `agent/credentials.ts`.
    *
    * `rejected` IS DERIVED, NOT STORED, and that is what makes it self-clearing.
    * A rejected key fails the turn as `provider_unavailable` (the driver

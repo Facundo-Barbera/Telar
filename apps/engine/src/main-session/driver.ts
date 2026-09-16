@@ -40,9 +40,9 @@ import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
 import { notesTools } from "../notes-tools/tools";
 import { sessionsTools } from "../sessions-tools/tools";
 import { normalizeOutcome, ProviderUnavailableError, type DriverRun, type DriverResult, type TurnDriver } from "../provider-contract";
-import { describeGoCredential, redactKey, resolveGoCredential, type GoCredential } from "./credentials";
+import { describeGoCredential, redactKey, resolveGoCredential, type GoCredential } from "../agent/credentials";
 import { buildGoMessages, type GoMessage, type GoToolCall } from "./history";
-import { DEFAULT_GO_MODEL, goHeaders, OPENCODE_GO_BASE } from "./go";
+import { DEFAULT_GO_MODEL, goHeaders, OPENCODE_GO_BASE } from "../agent/go";
 
 /**
  * HOW MANY TIMES ONE TURN MAY GO BACK TO THE MODEL.
