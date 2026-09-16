@@ -2894,9 +2894,14 @@ export class EngineStore {
   removeRetiredProviderSecrets(): boolean {
     const secrets = this.readProviderSecrets();
     const live = new Set(this.listProviderInstances().map((instance) => instance.id));
-    const orphaned = Object.keys(secrets).filter(
-      (key) => !live.has(key.slice(0, key.indexOf(SECRET_KEY_SEPARATOR))),
-    );
+    // A key with no separator is not one `secretKey` could have minted, so it is
+    // not this sweep's to judge — `indexOf` would return -1 and `slice(0, -1)`
+    // would hand the set a plausible-looking prefix that never matches, which is
+    // a silent delete dressed up as a lookup. Left alone, like a malformed row.
+    const orphaned = Object.keys(secrets).filter((key) => {
+      const separator = key.indexOf(SECRET_KEY_SEPARATOR);
+      return separator > 0 && !live.has(key.slice(0, separator));
+    });
     if (orphaned.length === 0) return false;
     for (const key of orphaned) delete secrets[key];
     this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });

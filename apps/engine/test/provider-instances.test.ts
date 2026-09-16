@@ -439,3 +439,20 @@ test("a malformed row is still corruption, and still refuses to read", () => {
   );
   expect(() => new EngineStore(directory, () => 100).listProviderInstances()).toThrow(EngineStateError);
 });
+
+test("a secret key the registry could not have minted is left alone", () => {
+  /**
+   * `indexOf` returns -1 for a key with no separator, and `slice(0, -1)` would
+   * hand the live-id set a prefix that never matches — a silent delete wearing
+   * a lookup's clothes. Same judgement as a malformed row: not this sweep's.
+   */
+  const directory = root();
+  fs.writeFileSync(
+    path.join(directory, "provider-secrets.json"),
+    JSON.stringify({ version: 2, secrets: { NOSEPARATOR: "keep-me" } }),
+  );
+  const engine = new EngineStore(directory, () => 100);
+  expect(engine.removeRetiredProviderSecrets()).toBe(false);
+  const secrets = JSON.parse(fs.readFileSync(path.join(directory, "provider-secrets.json"), "utf8"));
+  expect(secrets.secrets.NOSEPARATOR).toBe("keep-me");
+});
