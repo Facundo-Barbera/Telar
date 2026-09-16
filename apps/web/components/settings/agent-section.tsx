@@ -37,25 +37,33 @@
  * to `OPENCODE_API_KEY` in its environment and then to the OpenCode CLI's own
  * login. The row says which, never the key.
  *
- * ── THE MODEL IS A TEXT FIELD, NOT A LIST ───────────────────────────────────
- * The engine CAN list what OpenCode Go serves (`agent/go.ts`), but nothing
- * exposes that on a route yet. A picker built against a list this cockpit
- * cannot fetch would be an empty dropdown, which is worse than a field: it
- * would look broken rather than open. When a route exists, this row is the one
- * place that has to learn about it.
+ * ── THE MODEL ROW IS BOTH A PICKER AND A FIELD ──────────────────────────────
+ * `GET /api/agent/models` lists what OpenCode Go serves, and it FAILS SOFT: an
+ * unreachable Go, or a machine with no key yet, answers an empty list and a
+ * sentence. That is not an edge case — opening this pane BEFORE pasting a key
+ * is at least as common as after, and it is exactly the state somebody is in
+ * when they come here to set the Agent up.
+ *
+ * So the row is a dropdown when there is a list and a TEXT FIELD when there is
+ * not. An empty dropdown would look broken where a field looks open, and a
+ * field alone would make somebody type an id they could have picked. The id is
+ * passed through untouched either way — Telar keeps no list of what Go serves,
+ * and the engine is what applies the default.
  *
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
  * what is stored and says why underneath.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KeyRoundIcon, RotateCcwIcon, SparklesIcon } from "lucide-react";
+import type { ProviderModel } from "@telar/engine-client";
+import { createEngineApi } from "@/lib/engine/client";
 import { DEFAULT_AGENT_MODEL, useAgentSettings } from "@/lib/agent/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 const KEY_VAR = "OPENCODE_API_KEY";
 
@@ -76,6 +84,27 @@ export function AgentSection() {
   /** The confirm, held here rather than in a dialog component: one boolean, and
    *  the row already has a place to put the second button. */
   const [confirmingReset, setConfirmingReset] = useState(false);
+  /** What Go serves, or nothing — see the note above on why both are ordinary.
+   *  Read once when the pane opens: it costs a call to another service, and it
+   *  is not something a write to this document changes. */
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [modelsMessage, setModelsMessage] = useState<string>();
+
+  useEffect(() => {
+    // Deferred a tick like every other loader on this pane.
+    const task = window.setTimeout(() => {
+      void createEngineApi()
+        .agentModels()
+        .then((answer) => {
+          setModels(answer.models);
+          setModelsMessage(answer.message);
+        })
+        // A LIST THAT DID NOT ARRIVE LEAVES THE FIELD, which is the same
+        // outcome as an empty one and needs no separate state.
+        .catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, []);
 
   const model = typedModel ?? agent.model ?? "";
   const hasKey = credential?.set === true;
@@ -116,26 +145,46 @@ export function AgentSection() {
       />
       <Row
         label="Model"
-        hint={`The model id OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}. It is passed through untouched — Telar keeps no list of what Go serves.`}
+        hint={
+          models.length > 0
+            ? `What OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}.`
+            : `The model id OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}. ${modelsMessage ?? "Its list could not be read, so type the id."}`
+        }
         control={
-          <Input
-            className="h-8 w-56 font-mono text-xs"
-            aria-label="Agent model"
-            placeholder={DEFAULT_AGENT_MODEL}
-            value={model}
-            disabled={loading}
-            onChange={(event) => setTypedModel(event.target.value)}
-            // ON BLUR AND ON ENTER, not on every keystroke: a model id is typed,
-            // and a PATCH per character would be a write per character.
-            onBlur={() => {
-              if (typedModel === undefined) return;
-              setTypedModel(undefined);
-              void save({ model: typedModel.trim() });
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-            }}
-          />
+          models.length > 0 ? (
+            <Dropdown<string>
+              value={model}
+              label="Agent model"
+              disabled={loading}
+              onChange={(next) => void save({ model: next })}
+              // THE DEFAULT IS AN OPTION, NOT AN ABSENCE. "Leave it to Telar" is
+              // a choice somebody can come back to, and an empty string is what
+              // the engine reads as "use your own default".
+              options={[
+                { value: "", label: `Default (${DEFAULT_AGENT_MODEL})` },
+                ...models.map((entry) => ({ value: entry.id, label: entry.label || entry.id })),
+              ]}
+            />
+          ) : (
+            <Input
+              className="h-8 w-56 font-mono text-xs"
+              aria-label="Agent model"
+              placeholder={DEFAULT_AGENT_MODEL}
+              value={model}
+              disabled={loading}
+              onChange={(event) => setTypedModel(event.target.value)}
+              // ON BLUR AND ON ENTER, not on every keystroke: a model id is
+              // typed, and a PATCH per character would be a write per character.
+              onBlur={() => {
+                if (typedModel === undefined) return;
+                setTypedModel(undefined);
+                void save({ model: typedModel.trim() });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+            />
+          )
         }
       />
       <Row

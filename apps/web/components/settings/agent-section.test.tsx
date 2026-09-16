@@ -26,7 +26,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { AgentAnswer, AgentState } from "@telar/engine-client";
+import type { AgentAnswer, AgentState, ProviderModel } from "@telar/engine-client";
 import { AgentSection } from "./agent-section";
 
 /**
@@ -61,6 +61,8 @@ const sent: Array<Record<string, unknown>> = [];
 /** What the engine answers next. Set per test, so "the answer is the state"
  *  can be shown by answering something the pane did not ask for. */
 let answer: AgentAnswer = { agent: { enabled: false, running: false, queued: 0 }, credential: { set: false } };
+/** What `GET /api/agent/models` answers next. */
+let models: { models: ProviderModel[]; message?: string } = { models: [], message: "OpenCode Go did not answer its model list." };
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -105,10 +107,15 @@ const state = (over: Partial<AgentState> = {}): AgentState => ({ enabled: false,
 beforeEach(() => {
   sent.length = 0;
   answer = { agent: state(), credential: { set: false } };
+  models = { models: [], message: "OpenCode Go did not answer its model list." };
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     // THE PATH IS ASSERTED BY BEING THE ONLY ONE ANSWERED. A patch sent
     // anywhere else falls through to the throw below and names the URL.
+    // THE LIST FAILS SOFT BY DESIGN, so the default fixture is the state
+    // somebody setting the Agent up is actually in: no key yet, so Go has
+    // nothing to list, and the model row is a text field.
+    if (url.startsWith("/api/agent/models")) return Response.json(models);
     if (url.startsWith("/api/agent")) {
       if (init?.method === "PATCH") sent.push(JSON.parse(String(init.body)) as Record<string, unknown>);
       return Response.json(answer);
@@ -185,6 +192,36 @@ describe("the key", () => {
     // shared provider form because it means "I did not retype it"; here this
     // field is the only writer of the secret and Remove has to mean it.
     expect(sent).toEqual([{ apiKey: "" }]);
+  });
+});
+
+describe("the model row", () => {
+  const model = (id: string): ProviderModel =>
+    ({ id, label: id, efforts: [], isDefault: false, hidden: false, fastMode: false, hiddenByUser: false, source: "provider" }) as ProviderModel;
+
+  test("a text field when Go could not be listed, and it says why", async () => {
+    // NOT AN EDGE CASE. Opening this pane before pasting a key is at least as
+    // common as after, and it is exactly the state somebody setting the Agent
+    // up is in — an empty dropdown would look broken where a field looks open.
+    answer = { agent: state({ enabled: true }), credential: { set: false } };
+    await mount();
+    expect(find('input[aria-label="Agent model"]')).toBeTruthy();
+    expect(container.textContent).toContain("OpenCode Go did not answer its model list.");
+  });
+
+  test("a picker when Go answered, with the default as a real option", async () => {
+    answer = { agent: state({ enabled: true }), credential: { source: "setting", set: true } };
+    models = { models: [model("kimi-k3"), model("qwen-3")] };
+    await mount();
+    // The field is gone — the list is what the row offers now. The options
+    // themselves live in a portal that opens on a click, so what is asserted
+    // here is the CONTROL: a dropdown rather than a text input, showing the
+    // default as a real choice somebody can come back to.
+    expect(container.querySelector('input[aria-label="Agent model"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Agent model"]')).toBeTruthy();
+    expect(container.textContent).toContain("Default (kimi-k3)");
+    // …and the row no longer apologises for a list it could not read.
+    expect(container.textContent).not.toContain("did not answer its model list");
   });
 });
 

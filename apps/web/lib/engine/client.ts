@@ -43,6 +43,7 @@ import type {
   AgentOrientation,
   EnvMode,
   AgentAnswer,
+  ProviderModel,
   AgentState,
   AgentThreadAnswer,
   SessionDefaults,
@@ -518,6 +519,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  that moves `generation`. */
     setAgent: (patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }) =>
       request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
+    /** What OpenCode Go serves the Agent — the model picker's list. FAILS
+     *  SOFT: an unreachable Go, or a machine with no key yet, answers an empty
+     *  list and a `message` rather than an error. */
+    agentModels: () => request<{ models: ProviderModel[]; message?: string }>(fetcher, "GET", "/api/agent/models"),
     /** Say something. The run id comes back before the turn runs, so the
      *  composer has something to name in a Cancel. */
     sendAgentTurn: (text: string) =>

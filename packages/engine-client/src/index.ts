@@ -45,6 +45,7 @@ import {
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
+  type ProviderModel,
   type SessionDiff,
   type McpOAuthStatus,
   type McpServer,
@@ -901,6 +902,21 @@ export class EngineClient {
    */
   setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }): Promise<AgentAnswer> {
     return this.request("PATCH", "/v2/agent", patch);
+  }
+
+  /**
+   * WHAT OPENCODE GO SERVES THE AGENT — the model picker's list.
+   *
+   * IT FAILS SOFT, and a caller must treat it that way: a Go that is
+   * unreachable, or a machine with no key yet, answers an EMPTY list and a
+   * `message` rather than an error. The pane then offers what it can and says
+   * why, which is the order people actually do this in — the setting is opened
+   * before the key is pasted at least as often as after.
+   *
+   * NO CREDENTIAL COMES BACK. `agent()` is where that lives; this is a list.
+   */
+  agentModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+    return this.request("GET", "/v2/agent/models");
   }
 
   /** Say something to the Agent. Answers the run id before the turn runs, so a
