@@ -6,10 +6,11 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   GitBranchIcon,
+  HardDriveIcon,
   GitBranchPlusIcon,
   GitCommitHorizontalIcon,
 } from "lucide-react";
-import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
+import type { GitOverview, GitRefEntry, ProjectAvailability, Session } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -366,6 +367,9 @@ export function EnvironmentStrip({
   onBase?: (next: { baseRef?: string; branchName?: string }) => void;
   onOpenChanges?: () => void;
 }) {
+  /** The project's disk, when it is not readable — stamped on the same `git`
+   *  read this strip already polls, so it costs no request. See #534. */
+  const away = git?.availability === "available" ? undefined : git?.availability;
   const worktreeBranch = session?.workspace.mode === "worktree" ? session.workspace.branch : undefined;
   const branch = worktreeBranch ?? git?.branch;
   const dirty = git?.dirtyFiles ?? 0;
@@ -423,9 +427,29 @@ export function EnvironmentStrip({
 
             {/* THE BRANCH: a readout, with the detail one click deep. */}
             <Popover>
-              <PopoverTrigger render={<button type="button" aria-label="Branch" title="Where this session's work lands" className={CONTROL} />}>
-                <GitBranchIcon className="size-3.5 shrink-0" />
-                <span className="min-w-0 truncate font-mono">{branch ?? "no branch"}</span>
+              {/*
+                THE DRIVE, NOT THE BRANCH, WHEN THERE IS NO DRIVE — issue #534.
+
+                Every number this control draws comes from a `git` that answered
+                about a path it could not read: no branch, zero dirty files, no
+                worktrees. Drawn as-is that is a clean checkout on no branch,
+                which is a reassuring picture of a disk nobody opened. The strip
+                names the cable instead, and the popover below says the rest.
+              */}
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={away ? "Drive" : "Branch"}
+                    title={away ? "This project's disk is not readable right now" : "Where this session's work lands"}
+                    className={CONTROL}
+                  />
+                }
+              >
+                {away ? <HardDriveIcon className="size-3.5 shrink-0" /> : <GitBranchIcon className="size-3.5 shrink-0" />}
+                <span className="min-w-0 truncate font-mono">
+                  {away === "unmounted" ? "drive away" : away === "missing" ? "folder gone" : (branch ?? "no branch")}
+                </span>
                 <ChevronDownIcon className="size-3 shrink-0" />
               </PopoverTrigger>
               <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
@@ -456,9 +480,15 @@ export function EnvironmentStrip({
                 </div>
                 {/* Prose only when something is WRONG. The ordinary cases were a
                     paragraph restating what the rows above already show. */}
-                {(!reachable || (git && !git.repository)) && (
+                {(!reachable || away || (git && !git.repository)) && (
                   <p className="px-2 pt-2 text-2xs text-muted-foreground">
-                    {!reachable ? "The engine did not answer — this may be out of date." : "Not a git repository."}
+                    {!reachable
+                      ? "The engine did not answer — this may be out of date."
+                      : away === "unmounted"
+                        ? "The drive holding this project is not connected, so nothing above was read from it. Plug it back in and this comes back as it was — the project keeps its id, its conversations and its settings."
+                        : away === "missing"
+                          ? "This project's folder is not on this machine any more, so nothing above was read from it."
+                          : "Not a git repository."}
                   </p>
                 )}
                 {/* The donor's footer, pointing at the same place: the surface that
@@ -498,7 +528,21 @@ export function EnvironmentStrip({
  * constantly — and a count that could not be read is drawn as NO count, never as
  * a reassuring zero.
  */
-export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable">) {
+export function WorkspaceEnvironment({
+  onAvailability,
+  ...props
+}: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable"> & {
+  /**
+   * TOLD WHEN THE PROJECT'S DISK CHANGES STATE — issue #534.
+   *
+   * REPORTED UP RATHER THAN POLLED TWICE. The composer has to refuse a send on
+   * an unplugged project, and this strip is already reading `projectGit` on a
+   * timer for the branch and the dirty count — an answer the engine now stamps
+   * its availability probe on. A second poller in the composer would be a
+   * second request for one enum and, worse, a second opinion about a cable.
+   */
+  onAvailability?: (availability: Exclude<ProjectAvailability, "available"> | undefined) => void;
+}) {
   const { projectId } = props;
   const [git, setGit] = useState<GitOverview>();
   const [reachable, setReachable] = useState(true);
@@ -508,10 +552,15 @@ export function WorkspaceEnvironment(props: Omit<Parameters<typeof EnvironmentSt
       const result = await api.projectGit(projectId);
       setGit(result.git);
       setReachable(true);
+      onAvailability?.(result.git.availability === "available" ? undefined : result.git.availability);
     } catch {
       setReachable(false);
+      // AN ENGINE THAT DID NOT ANSWER SAYS NOTHING ABOUT A DRIVE. Reporting
+      // "away" here would make a restarting daemon look like an unplugged disk
+      // and refuse a send for it; the strip's own `reachable` prose is the
+      // honest answer to that, and it is already there.
     }
-  }, [projectId]);
+  }, [projectId, onAvailability]);
 
   useEffect(() => {
     // Deferred to a task rather than called in the effect body: a synchronous

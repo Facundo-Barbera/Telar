@@ -344,6 +344,30 @@ export type LatexPackagesAnswer = z.infer<typeof LatexPackagesAnswer>;
 export const LatexJob = DataScienceJob;
 export type LatexJob = z.infer<typeof LatexJob>;
 
+/**
+ * WHETHER A PROJECT'S FILES CAN BE READ RIGHT NOW — issue #534.
+ *
+ * DERIVED, NEVER STORED, like `branch` and `icon`: it is a fact about a cable,
+ * and a registry that remembered it would be wrong the first time somebody
+ * unplugged a drive without asking Telar. The engine re-probes on every listing
+ * — three `stat`s — so every surface reads one answer rather than asking the
+ * filesystem its own version of the question.
+ *
+ * THE TWO FAILURES ARE DIFFERENT FAILURES, and keeping them apart is the point.
+ * `unmounted` is the drive being away, which is recoverable: plug it in and the
+ * project comes back with its id, its sessions and its settings. `missing` is
+ * the folder being gone from a disk that is present, which is not. A surface
+ * that knew only "cannot read it" would have to tell somebody to re-register a
+ * project whose only problem is a cable — and re-registering is exactly what
+ * mints a new id and strands their sessions.
+ *
+ * ABSENT ON A REMOVED PROJECT. Its checkout is not polled at all (see
+ * `listProjects`), so there is no probe behind the field and a value here would
+ * be a claim nobody checked.
+ */
+export const ProjectAvailability = z.enum(["available", "unmounted", "missing"]);
+export type ProjectAvailability = z.infer<typeof ProjectAvailability>;
+
 export const Project = z.object({
   id: Id,
   environmentId: EnvironmentId,
@@ -474,6 +498,46 @@ export const Project = z.object({
    * to name it — its own settings page, offering to put it back — asks.
    */
   removedAt: Timestamp.optional(),
+  /**
+   * WHICH REMOVABLE DISK THIS CHECKOUT LIVES ON, when it lives on one.
+   *
+   * STORED, AND THE ONE THING HERE THAT SURVIVES AN UNPLUG. Every other answer
+   * about an external drive is re-derived from the filesystem; this is the
+   * identity that outlives it, and `uuid` is the field that does the work.
+   * macOS mounts a volume whose name is already taken at `<name> 1`, so the
+   * PATH changes on an ordinary replug — a registry that recognised the drive
+   * by `mount` would mint a new project for the same disk and strand every
+   * session's `projectId`, every MCP server scoped to it and every browser
+   * profile keyed to it. `mount` is kept as the last place it was seen, which
+   * is a hint; the uuid is what a remount is matched on.
+   *
+   * ABSENT FOR A PROJECT ON THIS MACHINE'S OWN DISK, which is every project
+   * registered before this existed, and they behave exactly as they always
+   * did. Absent too for a removable disk with no readable uuid — a network
+   * share, a filesystem `diskutil` has no `VolumeUUID` for — because without a
+   * uuid there is nothing to recover a remount against, and half of this
+   * feature is worse than today's behaviour.
+   */
+  volume: z
+    .object({
+      mount: z.string().min(1),
+      uuid: z.string().min(1),
+    })
+    .optional(),
+  /**
+   * WHETHER ITS FILES CAN BE READ RIGHT NOW — see `ProjectAvailability`.
+   *
+   * DERIVED ON LIST, like `branch`, `icon` and `remoteUrl` above, and for the
+   * sharpest version of their reason: a drive is unplugged by a hand, without
+   * telling the engine anything.
+   *
+   * OPTIONAL ON THE SHAPE, PRESENT ON EVERY LISTED PROJECT. It is absent on a
+   * removed one (nothing probes a put-away checkout) and on a record read
+   * straight off disk, so a client treats absence as "nobody has said" rather
+   * than as a fourth state — which is what lets a cockpit that predates this
+   * field go on working against an engine that has it, and the other way round.
+   */
+  availability: ProjectAvailability.optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
@@ -1837,6 +1901,22 @@ export const SessionDiff = z.object({
   /** The file list is capped. Reported so a truncated review cannot read as a
    *  complete one. */
   truncated: z.boolean(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534.
+   *
+   * WHY IT RIDES THIS ANSWER rather than being fetched beside it. `repository:
+   * false` is what git reports for a path it cannot read, so an unplugged drive
+   * produced a diff that said "not a git repository, no changes" — a surface
+   * reading CLEAN when the truth is that nobody looked. The surface cannot tell
+   * those apart from the fields above, and asking it to fetch the project list
+   * to find out would make every review screen do a second read to explain the
+   * first.
+   *
+   * Absent when the engine has no project to ask about — a session with no
+   * checkout, an older engine — which reads as "nobody said", so the existing
+   * `repository: false` rendering is still what an unversioned directory gets.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
@@ -1877,6 +1957,13 @@ export const GitOverview = z.object({
    * HEAD", which is also what absent always meant.
    */
   defaultBase: z.string().min(1).optional(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument. Every number above is zero or absent for a path git cannot read,
+   * and the environment strip drew those as facts: no branch, a clean tree, no
+   * worktrees. Absent when the engine has no project to ask about.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
 
@@ -1914,6 +2001,14 @@ export const WorkspaceListing = z.object({
    *  repository — a tree that silently stops is worse than one that says it did. */
   truncated: z.boolean(),
   readAt: Timestamp,
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument exactly. An unplugged drive walked nothing and listed nothing, and
+   * an empty `files` array is indistinguishable from an empty repository: the
+   * tree read as a project with no files in it rather than as one nobody could
+   * open.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
 

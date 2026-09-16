@@ -33,6 +33,7 @@
 import {
   DEFAULT_AUTO_SETTLE_HOURS,
   type LiveSessionRow,
+  type ProjectAvailability,
   type SessionActivity,
   type SessionAssignment,
   type SessionPreparation,
@@ -110,6 +111,20 @@ export type SidebarSession = {
    * the project list is still loading.
    */
   projectRemote?: string;
+  /**
+   * `Project.availability` — whether this row's project can be READ right now,
+   * as the engine's one probe answered it (issue #534).
+   *
+   * CARRIED ON THE ROW LIKE THE REST, and off the same live read: the rail's
+   * badge, the composer's refusal and a row's "this path is not here" all ask
+   * the same question, and a surface that went and asked the filesystem its own
+   * version would be a second opinion about a cable.
+   *
+   * Absent while the project list is still loading, and on an engine that
+   * predates the field — which reads as "nobody has said", never as a fourth
+   * state, so an older engine draws exactly what it always did.
+   */
+  projectAvailability?: ProjectAvailability;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
@@ -209,6 +224,8 @@ export function toSidebarSession(
   projectIconName?: string,
   /** The title of the session named by `settledBy` — see `settledForTitle`. */
   coordinatorTitle?: string,
+  /** `Project.availability` — whether the project's disk is here (#534). */
+  projectAvailability?: ProjectAvailability,
 ): SidebarSession {
   return {
     id: session.id,
@@ -223,6 +240,7 @@ export function toSidebarSession(
     ...(projectIcon ? { projectIcon } : {}),
     ...(projectIconName ? { projectIconName } : {}),
     ...(projectRemote ? { projectRemote } : {}),
+    ...(projectAvailability ? { projectAvailability } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",

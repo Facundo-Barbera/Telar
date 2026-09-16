@@ -27,6 +27,7 @@ import {
   CornerDownLeftIcon,
   EraserIcon,
   FoldVerticalIcon,
+  HardDriveIcon,
   ImageIcon,
   LayersIcon,
   MonitorIcon,
@@ -37,7 +38,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { EngineRequest, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { EngineRequest, ProjectAvailability, ProviderDriverKind, ProviderSkills, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
   advance as advanceQuestion,
   buildAnswers,
@@ -521,6 +522,16 @@ export function Composer({
   onOpenChanges?: () => void;
 }) {
   const [armedRaw, setEscArmed] = useState(false);
+  /**
+   * THE PROJECT'S DISK, WHEN IT IS NOT READABLE — issue #534.
+   *
+   * Reported UP by the environment strip in this component's own foot rather
+   * than polled here: that strip already reads `projectGit` on a timer for the
+   * branch and the dirty count, and the engine stamps its availability probe on
+   * that answer. A second poll for the same fact would be a second opinion
+   * about a cable as well as a second request.
+   */
+  const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
   const armedAt = useRef<number>(0);
   const editor = useRef<ComposerEditorHandle>(null);
   /**
@@ -1050,7 +1061,7 @@ export function Composer({
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (draft.trim() && ready) onSubmit();
+        if (draft.trim() && ready && !driveAway) onSubmit();
         return;
       }
       if (event.key === "Escape" && busy) {
@@ -1112,7 +1123,7 @@ export function Composer({
         advanceOrSubmitQuestion();
         return;
       }
-      if (draft.trim() && ready) onSubmit();
+      if (draft.trim() && ready && !driveAway) onSubmit();
     },
     // No arming here, unlike Escape: ⌘. is not a key anybody presses by accident
     // mid-sentence, which is the whole reason Escape needs two presses.
@@ -1299,7 +1310,7 @@ export function Composer({
             advanceOrSubmitQuestion();
             return;
           }
-          if (draft.trim() && ready) onSubmit();
+          if (draft.trim() && ready && !driveAway) onSubmit();
         }}
       >
         {/* A TRANSLUCENT, BLURRED SURFACE — not a flat panel. The transcript
@@ -1670,9 +1681,33 @@ export function Composer({
           repository. Rendering it empty would be a row of blanks claiming the
           conversation lands somewhere; rendering it at all would be the widening
           this component was careful not to do. */}
+      {/*
+        THE ONE THING THAT STOPS A SEND HERE — issue #534.
+
+        The engine refuses a turn on an unplugged project with this same
+        sentence, so nothing is lost by pressing Send; what is lost is the
+        reader's time, because the refusal arrives after the message has been
+        typed and sent. Saying it above the box, and holding the send, is the
+        difference between a rule and a surprise.
+
+        IT IS NOT A NEW READ. The strip below already polls `projectGit` for
+        this foot, and the engine stamps its probe on that answer — so this
+        costs no request, and it goes quiet by itself when the drive comes back.
+      */}
+      {driveAway && (
+        <p className="mx-3 mt-2 flex items-start gap-2 rounded-xl bg-muted/50 px-3 py-2 text-2xs text-muted-foreground">
+          <HardDriveIcon className="mt-px size-3.5 shrink-0" />
+          <span>
+            {driveAway === "unmounted"
+              ? `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
+              : `${projectName ?? "This project"}'s folder is not on this machine any more, so nothing can run here.`}
+          </span>
+        </p>
+      )}
       {projectId && (
       <WorkspaceEnvironment
         projectId={projectId}
+        onAvailability={setDriveAway}
         {...(projectName ? { projectName } : {})}
         {...(session ? { session } : {})}
         {...(envMode ? { envMode } : {})}

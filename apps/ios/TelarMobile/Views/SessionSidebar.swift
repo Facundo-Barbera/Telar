@@ -34,6 +34,9 @@ struct SessionSidebar: View {
             marks: { inbox.project($0)?.mark ?? .none },
             remotes: { inbox.project($0)?.remoteUrl },
             hostNames: { settings.host($0)?.name },
+            // Off the SAME project record every line above reads — the Mac
+            // probed the disk and published the answer; the phone draws it.
+            availabilities: { inbox.project($0)?.availability },
             layouts: inbox.layouts
         )
     }
@@ -215,6 +218,18 @@ struct SessionSidebar: View {
                                 // semibold, near-full strength.
                                 Text(group.name).font(Theme.groupHeader).foregroundStyle(Theme.text.opacity(0.9))
                                     .lineLimit(1).truncationMode(.tail)
+                                // THE DRIVE IS AWAY — issue #534. The same muted
+                                // chip the host badges below use, and never a
+                                // warning colour: a project on an external drive
+                                // is unreadable whenever the drive is elsewhere,
+                                // which is the ordinary state of an external
+                                // drive. Nothing here is broken and nothing needs
+                                // fixing but a cable.
+                                if let away = group.awayLabel {
+                                    Text(away).font(Theme.metaSmall).foregroundStyle(Theme.textMuted)
+                                        .lineLimit(1).padding(.horizontal, 4)
+                                        .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
+                                }
                                 // ONE HEADER, EVERY MAC IT LIVES ON — the
                                 // desktop's rule (project-group.tsx). A group on
                                 // one Mac wears a badge only when there is more

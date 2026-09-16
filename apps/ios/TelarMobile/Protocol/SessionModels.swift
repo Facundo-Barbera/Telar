@@ -297,6 +297,16 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     /// Absence is never treated as an answer: those projects keep the old
     /// per-Mac key rather than folding on their name.
     var remoteUrl: String?
+    /// `Project.availability` — WHETHER THAT MAC CAN READ THIS PROJECT RIGHT
+    /// NOW (issue #534). The Mac probes its own disks; the phone only draws the
+    /// answer, because a phone has no way to know whether a drive is plugged
+    /// into a machine in another room.
+    ///
+    /// Absent on a Mac too old to answer, which is read as "nobody said" rather
+    /// than as a state — see `ProjectAvailability`, whose decode is deliberately
+    /// lenient so a value this build has never heard of costs a badge and never
+    /// the whole project row.
+    var availability: ProjectAvailability?
 
     /// THE THREE ANSWERS TO "WHAT DOES THIS PROJECT LOOK LIKE", carried
     /// together — see `ProjectMark`. One value rather than three fields at every

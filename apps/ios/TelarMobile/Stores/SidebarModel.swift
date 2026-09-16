@@ -57,6 +57,24 @@ struct SidebarProject: Identifiable {
     /// Every Mac this group lives on, in a stable order. One entry ordinarily;
     /// two when a repository is checked out on two of them.
     var places: [ProjectPlace] = []
+    /// THE DRIVE THIS GROUP'S WORK IS ON, WHEN IT IS NOT THERE — issue #534, and
+    /// the desktop's rule exactly (`session-groups.ts`): set ONLY when every Mac
+    /// in the group agrees it cannot be read. A repository checked out on two
+    /// Macs is reachable if the drive is plugged into one of them, and a header
+    /// saying otherwise would be false for half the rows under it.
+    ///
+    /// `nil` is available, or not yet known — a Mac that predates the field.
+    /// Both draw exactly what they always did.
+    var availability: ProjectAvailability?
+    /// What the header badge says, or nothing. Spelled on `Project` so the phone
+    /// and the cockpit cannot describe one cable two ways.
+    var awayLabel: String? {
+        switch availability {
+        case .unmounted: return "Drive away"
+        case .missing: return "Folder gone"
+        case .available, .unknown, nil: return nil
+        }
+    }
     /// EVERY CONVERSATION THIS GROUP HOLDS, at one level — issue #381. These
     /// used to be `[SidebarRow]`, a coordinator with whatever hung off it, and
     /// the list had to be flattened again before it could be drawn or reordered.
@@ -87,6 +105,10 @@ struct SidebarModel {
         /// What to call each Mac. Only used to give the places a stable reading
         /// order, so a badge list does not re-shuffle itself between polls.
         hostNames: (HostID) -> String? = { _ in nil },
+        /// Whether a row's project can be READ — the engine's own probe, never
+        /// this phone's guess (issue #534). `nil` for a Mac that predates the
+        /// field, which is why absence is not evidence of anything.
+        availabilities: @escaping (HostedSession) -> ProjectAvailability? = { _ in nil },
         layouts: [HostID: SidebarLayout] = [:]
     ) {
         attention = sessions.filter { $0.session.activity == .blocked }
@@ -124,6 +146,7 @@ struct SidebarModel {
                 name: first.name,
                 mark: first.mark,
                 places: places,
+                availability: SidebarModel.agreedAvailability(rows, availabilities: availabilities),
                 // EACH ROW BY ITS OWN MAC'S LIST, even inside a merged group:
                 // the two documents are two decisions, and reading one Mac's
                 // rank for the other Mac's row would place it by a decision
@@ -139,6 +162,26 @@ struct SidebarModel {
             let comparison = a.name.localizedStandardCompare(b.name)
             return comparison == .orderedSame ? a.id < b.id : comparison == .orderedAscending
         }
+    }
+
+    /// WHAT EVERY ROW IN A GROUP AGREES THE DISK IS DOING, or nothing — #534.
+    ///
+    /// One row with no answer is enough to say nothing: "not yet known" is not
+    /// evidence that a drive is away, and a badge that flickered on during every
+    /// first load would be worse than no badge. The desktop's `groupAvailability`
+    /// (apps/web/lib/session-groups.ts) makes the same fold; they have to agree,
+    /// or one screen would call a project away and the other would not.
+    static func agreedAvailability(
+        _ rows: [HostedSession],
+        availabilities: (HostedSession) -> ProjectAvailability?
+    ) -> ProjectAvailability? {
+        var agreed: ProjectAvailability?
+        for row in rows {
+            guard let state = availabilities(row), state != .available else { return nil }
+            if let agreed, agreed != state { return nil }
+            agreed = state
+        }
+        return agreed
     }
 
     /// A group folded on its repository wears this. Not decoration: a reduced

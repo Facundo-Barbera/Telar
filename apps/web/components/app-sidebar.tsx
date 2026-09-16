@@ -708,6 +708,10 @@ function SidebarBody() {
     // that is true on more than one Mac, and so the only thing two Macs'
     // registrations of the same work can be recognised by. See `projectGroupKey`.
     const remotes = new Map(result.projects.map((project) => [project.id, project.remoteUrl]));
+    // WHETHER EACH PROJECT'S DISK IS HERE (#534) — off this same read, because
+    // the badge is drawn on every pass and a second request per host per tick
+    // for one enum per project is exactly what this route exists to avoid.
+    const availability = new Map(result.projects.map((project) => [project.id, project.availability]));
     // WHO EACH SETTLED DELEGATE DID ITS WORK FOR — issue #378. Resolved once
     // here, off the list already in hand, because `settledBy` carries an id
     // (ids survive renames) and a row that went looking for a title would be a
@@ -731,6 +735,7 @@ function SidebarBody() {
         session.projectId ? remotes.get(session.projectId) : undefined,
         session.projectId ? glyphs.get(session.projectId) : undefined,
         session.settledBy ? titles.get(session.settledBy.coordinatorSessionId) : undefined,
+        session.projectId ? availability.get(session.projectId) : undefined,
       ),
     );
     const page: HostPage = {

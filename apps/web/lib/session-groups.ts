@@ -23,6 +23,7 @@
  * different verb, with a worktree behind it.
  */
 import { useCallback, useEffect, useState } from "react";
+import type { ProjectAvailability } from "@telar/engine-client";
 import { sessionKey, type SidebarSession, type SessionListResult } from "./session-list";
 
 const COLLAPSED_KEY = "telar:sidebar-collapsed-groups";
@@ -120,6 +121,20 @@ export type ProjectGroup = {
   iconName?: string;
   hostName?: string;
   /**
+   * THE DRIVE THIS GROUP'S WORK IS ON, WHEN IT IS NOT HERE — issue #534.
+   *
+   * ONLY WHEN EVERY PLACE AGREES, and that is the whole rule. A group can span
+   * two Macs (one repository, two checkouts — see `projectGroupKey`), and if the
+   * drive is plugged into one of them the work is reachable: a header badge
+   * saying otherwise would be false for half the rows under it. So this is set
+   * only when NO registration in the group can be read, which is also the case
+   * that is nearly always a single Mac with a cable out.
+   *
+   * Absent means available, or not yet known — an engine that predates the
+   * field, or a list still loading. Both draw exactly what they always did.
+   */
+  availability?: Exclude<ProjectAvailability, "available">;
+  /**
    * EVERY CONVERSATION THIS PROJECT HOLDS, and no row is held back — issue
    * #381. A pinned coordinator used to claim the rows it followed and this
    * group gave them up (`withholdFollowedRows`), paying for it with a
@@ -128,6 +143,24 @@ export type ProjectGroup = {
    */
   sessions: SidebarSession[];
 };
+
+/**
+ * What a whole group's rows agree the disk is doing, or nothing.
+ *
+ * One row with no answer is enough to say nothing: "not yet known" is not
+ * evidence that a drive is away, and a badge that flickered on during the first
+ * load of every rail would be worse than no badge.
+ */
+function groupAvailability(sessions: readonly SidebarSession[]): Exclude<ProjectAvailability, "available"> | undefined {
+  let agreed: Exclude<ProjectAvailability, "available"> | undefined;
+  for (const session of sessions) {
+    const state = session.projectAvailability;
+    if (state === undefined || state === "available") return undefined;
+    if (agreed !== undefined && agreed !== state) return undefined;
+    agreed = state;
+  }
+  return agreed;
+}
 
 export type GroupedSessions = {
   attention: SidebarSession[];
@@ -432,10 +465,16 @@ export function groupSessions(
   return {
     attention,
     pinned: orderSessions(pinned, rows.pinned),
-    groups: orderProjectGroups([...groups.values()], order).map((group) => ({
-      ...group,
-      sessions: orderSessions(group.sessions, rows.sessions?.[group.key]),
-    })),
+    groups: orderProjectGroups([...groups.values()], order).map((group) => {
+      // Folded here rather than when the group is first created: the answer is
+      // about ALL of its rows, and the last of them arrives after the first.
+      const availability = groupAvailability(group.sessions);
+      return {
+        ...group,
+        ...(availability ? { availability } : {}),
+        sessions: orderSessions(group.sessions, rows.sessions?.[group.key]),
+      };
+    }),
   };
 }
 

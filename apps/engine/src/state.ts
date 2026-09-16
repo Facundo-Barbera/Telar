@@ -185,6 +185,7 @@ import { applyModelOverlay } from "./model-overlay";
 import { LatexMachineSettings as LatexMachineSettingsSchema } from "./plugins/latex";
 import { DataScienceMachineSettings as DataScienceMachineSettingsSchema } from "./plugins/data-science";
 import { createSessionWorktreeAsync, createWorktreeQueue, defaultGitRunner, defaultAsyncGitRunner, defaultWorktreeGitRunner, type AsyncGitRunner, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type GitRunner, type WorktreePlan, type WorktreeQueue } from "./worktree";
+import { findVolumeMount, mountSignature, probeAvailability, volumeForRoot, type ProjectAvailability, type VolumeDeps } from "./volumes";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
 import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
@@ -2148,6 +2149,15 @@ export class EngineStore {
    * flight to order.
    */
   private readonly worktreeQueue: WorktreeQueue = createWorktreeQueue();
+  /**
+   * HOW THIS STORE ASKS THE MACHINE ABOUT DISKS — see `volumes.ts`.
+   *
+   * INJECTED BY TESTS ONLY, and the seam this whole feature is testable on: a
+   * fake mount is a temp directory with a stable uuid, so unplug, remount at a
+   * new path and the recreated-empty-mountpoint case are unit tests rather than
+   * a drawer of USB sticks.
+   */
+  private readonly volumes: VolumeDeps;
   private readonly gh: GhRunner;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
@@ -3757,6 +3767,10 @@ export class EngineStore {
        *  the default is the bundled one, and a test about the overlay should
        *  not have to know which models the manifest declares this week. */
       manifest?: ModelManifest;
+      /** How disks are asked about (`volumes.ts`). INJECTED BY TESTS ONLY — the
+       *  default reads the real machine's mounts and `diskutil`, and a test
+       *  about an unplugged drive should not need a drive. */
+      volumes?: VolumeDeps;
     } = {},
   ) {
     this.notifier = options.notifier;
@@ -3773,6 +3787,7 @@ export class EngineStore {
     // whole of git, and two seams would let a fake apply to half of it.
     this.worktreeGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultWorktreeGitRunner);
     this.gh = options.gh ?? defaultGhRunner;
+    this.volumes = options.volumes ?? {};
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -4052,8 +4067,88 @@ export class EngineStore {
         // A removed project's checkout is not polled: it is not on any surface
         // that shows a branch or an icon, and a removed row must not keep a
         // `git rev-parse` running against somebody's disk every ten seconds.
-        return project.removedAt === undefined ? { ...project, ...this.projectMetadata(project) } : project;
+        // Its availability is absent for the same reason — nothing probed it,
+        // so there is no answer to publish.
+        if (project.removedAt !== undefined) return project;
+        // THE METADATA READ IS WHAT PROBES (see `projectMetadata`), so the
+        // availability is asked for AFTER it rather than beside it: two probes
+        // in one listing would be two `stat`s per project for one answer.
+        const metadata = this.projectMetadata(project);
+        return { ...project, ...metadata, availability: this.projectAvailability(project) };
       });
+  }
+
+  /**
+   * WHAT EACH PROJECT'S AVAILABILITY WAS THE LAST TIME ANYBODY LOOKED.
+   *
+   * NOT A TTL CACHE, and that distinction is the whole design. The value is
+   * never served in place of a probe — `projectAvailability` probes every time,
+   * because three `stat`s are cheaper than any bookkeeping that would avoid
+   * them. What this remembers is the PREVIOUS answer, so a CHANGE can be
+   * noticed: a drive coming back is the moment the branch, the icon, the diff
+   * and the file tree cached while it was away all became lies, and they are
+   * dropped then rather than at the end of somebody's TTL.
+   *
+   * In memory, like every other cache here: it is a fact about a cable, and a
+   * stale one surviving a restart would be worse than probing once on open.
+   */
+  private readonly projectAvailabilityCache = new Map<string, ProjectAvailability>();
+
+  /**
+   * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
+   *
+   * The remount search is the expensive one — a `diskutil` child per mounted
+   * volume — and it can only succeed if a disk has arrived. Keyed by project and
+   * valued by `mountSignature`, so an unplugged drive that stays unplugged is
+   * searched for exactly once no matter how long the poll runs.
+   */
+  private readonly remountAttempts = new Map<string, string>();
+
+  /**
+   * IS THIS PROJECT'S DISK HERE — the one answer every surface reads.
+   *
+   * ONE OWNER, on purpose. A rail deciding for itself whether a folder is
+   * readable, a composer deciding again, and `assertProjectAvailable` deciding a
+   * third time is three chances to disagree about a cable, in three places a
+   * person would have to reconcile by hand. See `probeAvailability` for what it
+   * costs and why the mount is asked before the root.
+   *
+   * ALWAYS FRESH. The tick in `projectMetadata` decides how often anyone ASKS;
+   * it does not make this answer older than the question.
+   */
+  projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
+    const availability = probeAvailability(project, this.volumes);
+    const previous = this.projectAvailabilityCache.get(project.id);
+    if (previous === availability) return availability;
+    this.projectAvailabilityCache.set(project.id, availability);
+    /**
+     * THE FIRST ANSWER IS NOT A TRANSITION. On a cold store every project moves
+     * from "nobody has looked" to something, and dropping every cache for each
+     * of them would make the first read of every surface the slow one.
+     */
+    if (previous !== undefined) this.forgetProjectReads(project);
+    return availability;
+  }
+
+  /**
+   * DROP WHAT WAS READ OFF A DISK THAT HAS SINCE CHANGED UNDER US.
+   *
+   * Called on an availability TRANSITION in either direction. Going away, the
+   * branch and icon in hand were read from a disk nobody can see any more;
+   * coming back, they are whatever the failing reads left behind — a blank
+   * branch, a "no icon", a diff that said `repository: false`. Neither is worth
+   * the ten seconds a TTL would keep it.
+   */
+  private forgetProjectReads(project: Pick<Project, "id" | "root">): void {
+    this.projectMetadataCache.delete(project.id);
+    this.forgetProjectIcon(project.id);
+    // `gitReadCache` is keyed by PATH rather than by project — the overview, the
+    // diff and every file patch under this root — so the root is what identifies
+    // the entries to drop.
+    const prefix = `${project.root}`;
+    for (const key of [...this.gitReadCache.keys()]) {
+      if (key.includes(prefix)) this.gitReadCache.delete(key);
+    }
   }
 
   /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
@@ -4063,10 +4158,62 @@ export class EngineStore {
   }>();
 
   private projectMetadata(project: Project): Pick<Project, "branch" | "icon" | "remoteUrl"> {
+    /**
+     * THE DISK IS ASKED ABOUT FIRST, AND BEFORE THE CACHE IS READ — issue #534.
+     *
+     * NO NEW TIMER. This is the call every listing already makes, so the probe
+     * rides it rather than earning a ticker of its own; `reprobeProjects` and
+     * the sweep at daemon start are the same probe at other moments, never a
+     * second opinion.
+     *
+     * ON EVERY CALL RATHER THAN ON THE TEN-SECOND TICK BELOW, because the two
+     * costs are not comparable: the tick exists to bound three `git` children
+     * and a directory walk, and this is three `stat`s. Putting it on the tick
+     * would have made "how long after I plug the drive back in does the rail
+     * say so" up to ten seconds for no saving worth having.
+     *
+     * BEFORE THE LOOKUP, not after, and that ordering is load-bearing: a
+     * transition DELETES this very entry, so an `entry` read first would be
+     * written back over the invalidation and keep the branch that was read off a
+     * disk nobody can see.
+     */
+    const availability = this.projectAvailability(project);
     let entry = this.projectMetadataCache.get(project.id);
     if (!entry || entry.root !== project.root) {
       entry = { root: project.root, at: -Infinity, value: {} };
       this.projectMetadataCache.set(project.id, entry);
+    }
+    /**
+     * NOTHING IS SPAWNED AGAINST A DISK THAT IS NOT THERE.
+     *
+     * This is the churn #534 is named for: three `git` children per project
+     * every ten seconds, each failing into an unplugged drive, each turning
+     * ENOENT into a status 1 that nothing reported — about 18 children a minute
+     * for one away project, forever. The icon read is skipped for the same
+     * reason and a worse one: it WALKS the checkout.
+     *
+     * AND THE LABELS GO WITH THEM. A branch name left over from before the
+     * unplug is a claim about a disk nobody can read; the row says the drive is
+     * away instead, which is the true thing and a shorter sentence.
+     */
+    if (availability !== "available") {
+      entry.value = {};
+      /**
+       * AND THE POLL IS ALSO WHERE A DRIVE COMES BACK UNDER A NEW NAME — step 7.
+       *
+       * `POST /v2/projects/reprobe` is the fast path and does this within a
+       * quarter-second of a mount; this is the floor under it, for a cockpit
+       * running without the desktop shell, a shell whose watcher died, and a
+       * drive swapped while the Mac was off. Bounded twice over: only for a
+       * project that cannot be read, and only once per distinct mount
+       * configuration — see `recoverRemountedProject`.
+       *
+       * `at` IS STAMPED FIRST because the recovery DELETES this entry on
+       * success, and writing to it afterwards would resurrect a detached one.
+       */
+      entry.at = this.now();
+      this.recoverRemountedProject(project);
+      return entry.value;
     }
     if (!entry.pending && this.now() - entry.at >= 10_000) {
       const current = entry;
@@ -4100,6 +4247,190 @@ export class EngineStore {
     return entry.value;
   }
 
+  /**
+   * ASK EVERY PROJECT'S DISK NOW, rather than waiting for somebody to look.
+   *
+   * TWO CALLERS, ONE PROBE. The daemon runs this once at start, so an engine
+   * that came up with a drive already unplugged knows it before the first
+   * listing rather than on it; and `POST /v2/projects/reprobe` runs it when the
+   * desktop shell notices a mount or an unmount, which is what turns "within ten
+   * seconds" into "immediately". Neither is a second opinion — both go through
+   * `projectAvailability`, and the poll stays the floor under both.
+   *
+   * REMOVED PROJECTS ARE SKIPPED. A put-away project is on no surface that could
+   * show a drive badge, and probing it would be three `stat`s for a row nobody
+   * is drawing.
+   */
+  reprobeProjects(): { projects: number; changed: number; recovered: number } {
+    const registry = this.readDocument(this.paths.projects);
+    const projects = registry === undefined ? [] : parseRegistry(registry).projects.filter((project) => project.removedAt === undefined);
+    let changed = 0;
+    let recovered = 0;
+    for (const project of projects) {
+      const before = this.projectAvailabilityCache.get(project.id);
+      let availability = this.projectAvailability(project);
+      /**
+       * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
+       * `recoverRemountedProject`. Attempted only when the project cannot be
+       * read, which is what keeps the `diskutil` it costs off the poll path, and
+       * HERE rather than inside the probe because this is the call that happens
+       * when a disk has just appeared.
+       */
+      if (availability !== "available" && this.recoverRemountedProject(project) !== undefined) {
+        recovered += 1;
+        availability = this.projectAvailability(this.getProject(project.id));
+      }
+      if (availability !== before) changed += 1;
+    }
+    return { projects: projects.length, changed, recovered };
+  }
+
+  /**
+   * THE DRIVE IS BACK, UNDER A DIFFERENT NAME — issue #534, step 7.
+   *
+   * WHAT MACOS ACTUALLY DOES. A volume whose name is already taken in `/Volumes`
+   * — by the empty folder its own unmount left behind, or by another disk — is
+   * mounted at `<name> 1`. So replugging the drive a project was registered from
+   * routinely changes its PATH while changing nothing about the disk.
+   *
+   * WHY THE PATH CANNOT BE THE ANSWER. Before this, the only way back was to
+   * register the new folder, and `registerProject` mints a NEW id for a root it
+   * has not seen. Three things outlive a registration and are keyed by that id —
+   * a session's `projectId`, an MCP server's scope, a browser profile's binding
+   * — so the person would point Telar at the same disk and lose all three, from
+   * an action that reads like plugging a cable back in.
+   *
+   * THIS IS THE ONE SANCTIONED WRITE OF `Project.root`, and `updateProject`'s
+   * refusal still stands for every other caller: moving a project means
+   * registering the new folder. This is not a move. It is the same folder, on
+   * the same disk, and the uuid is what proves it — which is why the match is on
+   * the uuid and never on a name, a size or a label.
+   *
+   * IT REFUSES TO GUESS. The new root has to EXIST on the remounted volume; a
+   * drive that came back without the project's folder on it is a `missing`
+   * project, not a rename, and rewriting the record would point every session at
+   * a path that is not there either.
+   *
+   * Returns the updated project, or nothing when there was nothing to recover.
+   */
+  private recoverRemountedProject(project: Project): Project | undefined {
+    if (project.volume === undefined) return undefined;
+    /**
+     * THE CHEAP PRECONDITION FIRST — see `mountSignature`.
+     *
+     * The search below costs a `diskutil` child per mounted volume, and this
+     * runs on the ten-second poll for every away project. Paying that every tick
+     * would be a worse version of the git churn this issue exists to remove. A
+     * drive can only have come back if the set of mount points changed, and that
+     * question is a `readdir` and a `stat` each — so one attempt per project per
+     * distinct mount configuration, and nothing at all while a drive sits in
+     * somebody's bag.
+     */
+    const signature = mountSignature(this.volumes);
+    if (this.remountAttempts.get(project.id) === signature) return undefined;
+    this.remountAttempts.set(project.id, signature);
+    const mount = findVolumeMount(project.volume.uuid, this.volumes);
+    if (mount === undefined || mount === project.volume.mount) return undefined;
+    const within = path.relative(project.volume.mount, project.root);
+    // A root that is not under its own recorded mount is a record this cannot
+    // reason about; leave it alone rather than composing a path from a guess.
+    if (within.startsWith("..") || path.isAbsolute(within)) return undefined;
+    const root = within === "" ? mount : path.join(mount, within);
+    try {
+      if (!fs.statSync(root).isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
+
+    const registryDocument = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registryDocument);
+    const stored = parsed.projects.find((candidate) => candidate.id === project.id);
+    if (stored === undefined) return undefined;
+    const previousRoot = stored.root;
+    stored.root = root;
+    stored.volume = { mount, uuid: project.volume.uuid };
+    stored.updatedAt = this.now();
+    this.writeDocument(this.paths.projects, parsed);
+
+    /**
+     * AND EVERY SESSION THAT WORKS IN IT. A `local` session's workspace IS the
+     * project root, so a record left pointing at the old path would send a
+     * provider to a folder that no longer exists — the project would be back and
+     * its conversations would not.
+     *
+     * A WORKTREE SESSION IS DELIBERATELY UNTOUCHED. Its checkout lives under the
+     * engine root on the internal disk (see `worktree.ts`) and never moved; what
+     * was broken while the drive was away was the `.git` it points AT, and that
+     * is fixed by the drive being back.
+     */
+    const moved: string[] = [];
+    const prefix = previousRoot.endsWith(path.sep) ? previousRoot : `${previousRoot}${path.sep}`;
+    for (const session of this.readSessions()) {
+      if (session.projectId !== project.id) continue;
+      const current = workspacePath(session.workspace);
+      if (current === undefined) continue;
+      if (current !== previousRoot && !current.startsWith(prefix)) continue;
+      const next = current === previousRoot ? root : path.join(root, current.slice(prefix.length));
+      const updated: Session = {
+        ...session,
+        workspace: { ...session.workspace, path: next } as Session["workspace"],
+        updatedAt: this.now(),
+      };
+      this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(updated));
+      this.appendEvent(session.id, { type: "session.updated", session: updated });
+      moved.push(session.id);
+    }
+
+    // The reads in hand were taken off a disk that has since come back at
+    // another address; none of them describes anything that exists now.
+    this.forgetProjectReads({ id: project.id, root: previousRoot });
+    this.forgetProjectReads({ id: project.id, root });
+    this.projectAvailabilityCache.delete(project.id);
+
+    /**
+     * ONE LINE, because a record the engine rewrote on its own is exactly the
+     * kind of thing a person needs to be able to find afterwards — and because
+     * the alternative reading of a project that silently changed its path is
+     * that something is wrong with the store.
+     */
+    process.stdout.write(
+      `Telar engine: ${project.name} came back on its own drive at a new path — ${previousRoot} → ${root}` +
+        `${moved.length > 0 ? ` (${moved.length} session${moved.length === 1 ? "" : "s"} moved with it)` : ""}\n`,
+    );
+
+    this.retryWorktreesFailedWhileAway(project.id, root);
+    return structuredClone(stored);
+  }
+
+  /**
+   * ONE AUTOMATIC RETRY FOR A CUT THAT FAILED WHILE THE DISK WAS GONE.
+   *
+   * A worktree session created while the drive was away has a row saying so
+   * forever: `git worktree add` could not read the repository, the failure was
+   * recorded on the session (`SessionPreparation`), and nothing ever tried
+   * again. The reason it failed has just stopped being true, so this is the one
+   * moment a retry is not a guess.
+   *
+   * ONCE, AND ONLY HERE. Nothing retries on a timer and nothing retries a cut
+   * that failed for its own reasons — a branch that already exists, a bad base —
+   * because those failures are still failures with the drive plugged in. The
+   * gate is the RECOVERY, not the error text: a retry that fails again simply
+   * records the new failure, and the row says what git said this time.
+   */
+  private retryWorktreesFailedWhileAway(projectId: string, projectRoot: string): void {
+    for (const session of this.readSessions()) {
+      if (session.projectId !== projectId) continue;
+      if (session.preparation?.state !== "failed") continue;
+      if (session.workspace.mode !== "worktree") continue;
+      const plan: WorktreePlan = { path: session.workspace.path, branch: session.workspace.branch, named: false };
+      const baseSha = workspaceBaseRef(session.workspace);
+      // No recorded base is no commit to cut from, and inventing one would put
+      // the session on a checkout nobody chose. The row keeps its failure.
+      if (baseSha === undefined) continue;
+      this.prepareWorktree(session.id, projectRoot, plan, baseSha);
+    }
+  }
+
   registerProject(input: { id?: string; name: string; root: string }): Project {
     if (input.id !== undefined) assertId(input.id, "project id");
     if (typeof input.name !== "string" || input.name.trim() === "") {
@@ -4128,11 +4459,27 @@ export class EngineStore {
      * comes back whole: same id, same name unless a new one was typed, same
      * data-science and LaTeX blocks.
      */
+    /**
+     * WHICH DISK THIS IS ON, asked once, here — see `volumes.ts`.
+     *
+     * REGISTRATION IS THE ONLY AFFORDABLE MOMENT for the `diskutil` child this
+     * costs: it is a request somebody is waiting on, it happens once per
+     * project, and every later question about the drive is answered by three
+     * `stat`s against what it records. A project on this Mac's own disk gets
+     * nothing and is unchanged in every respect.
+     */
+    const volume = volumeForRoot(projectRoot, this.volumes);
     const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
     if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
       delete tombstone.removedAt;
       tombstone.name = input.name.trim();
       tombstone.updatedAt = this.now();
+      // RE-READ ON THE WAY BACK IN, because a project put away before this
+      // existed carries no volume at all, and one put away on a drive that has
+      // since been reformatted carries the wrong uuid. Restoring is the person
+      // pointing at this folder again, so what the disk says now wins.
+      if (volume === undefined) delete tombstone.volume;
+      else tombstone.volume = volume;
       this.writeDocument(this.paths.projects, parsed);
       this.forgetProjectIcon(tombstone.id);
       this.projectMetadataCache.delete(tombstone.id);
@@ -4151,6 +4498,7 @@ export class EngineStore {
       root: projectRoot,
       createdAt: at,
       updatedAt: at,
+      ...(volume === undefined ? {} : { volume }),
     };
     parsed.projects.push(project);
     this.writeDocument(this.paths.projects, parsed);
@@ -4263,8 +4611,34 @@ export class EngineStore {
    * restore is what was put away).
    */
   private assertProjectAvailable(projectId: string): void {
-    if (this.getProject(projectId).removedAt === undefined) return;
-    throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
+    const project = this.getProject(projectId);
+    if (project.removedAt !== undefined) {
+      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
+    }
+    /**
+     * AND THE DISK HAS TO BE THERE — issue #534.
+     *
+     * The same three places, and the same argument: reading stays open, starting
+     * work does not. What differs is WHY it is refused and therefore what the
+     * sentence has to say. A removed project needs a decision (restore it); an
+     * unplugged drive needs a cable, and telling somebody to re-register would
+     * be actively harmful — re-registering a different path mints a new project
+     * id and strands the sessions they are trying to get back to.
+     *
+     * PROBED FRESH RATHER THAN READ OFF THE LAST LISTING. This is the moment a
+     * provider would be spawned in the folder, and a ten-second-old answer about
+     * a cable is exactly old enough to be wrong.
+     *
+     * `unmounted` ONLY, AND `missing` DELIBERATELY NOT. A deleted folder already
+     * has a good answer and it is a BETTER-PLACED one: the turn is accepted, the
+     * worker's `assertProjectRoot` refuses to spawn, and the sentence naming the
+     * folder lands in the conversation the person is looking at rather than as a
+     * dialog on a button. Nothing about an external drive changes that, and
+     * moving the refusal earlier would only make it harder to read.
+     */
+    if (this.projectAvailability(project) === "unmounted") {
+      throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
+    }
   }
 
   getProject(projectId: string): Project {
@@ -4959,22 +5333,67 @@ export class EngineStore {
     return entry.value as Promise<T>;
   }
 
+  /**
+   * WHAT THE DISK WAS DOING, STAMPED ON A READ TAKEN OFF IT — issue #534.
+   *
+   * WHY THE REVIEW SURFACES NEED IT. `git` reports `repository: false` for a
+   * path it cannot read and a file walk of a path that is not there returns no
+   * files, so an unplugged drive produced a diff that said "not a repository, no
+   * changes" and a tree that said "no files" — both of which read as CLEAN when
+   * the truth is that nobody looked. The fields already there cannot tell those
+   * apart; this one can.
+   *
+   * OUTSIDE THE CACHE, DELIBERATELY. `cachedGitRead` holds the answer for two
+   * seconds, and a cable can move inside two seconds — stamping within the
+   * cached read would preserve an availability from before the unplug on a diff
+   * served after it. The expensive half is cached; this is three `stat`s and is
+   * taken fresh every time.
+   *
+   * ABSENT WHEN THERE IS NO PROJECT TO ASK ABOUT — a session with no checkout —
+   * rather than guessed at from the workspace path.
+   */
+  private async withAvailability<T extends object>(answer: Promise<T>, project: Project | undefined): Promise<T> {
+    const value = await answer;
+    return project === undefined ? value : { ...value, availability: this.projectAvailability(project) };
+  }
+
+  /** The project a session's work belongs to, when it has one. */
+  private projectOfSession(session: Session): Project | undefined {
+    if (session.projectId === undefined) return undefined;
+    try {
+      return this.getProject(session.projectId);
+    } catch {
+      // A session whose project id resolves to nothing is not this method's
+      // problem to report — the read it is decorating still answers.
+      return undefined;
+    }
+  }
+
   projectGitAsync(projectId: string): Promise<GitOverview> {
     const project = this.getProject(projectId);
-    return this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root));
+    return this.withAvailability(this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root)), project);
   }
 
   projectDiffAsync(projectId: string): Promise<SessionDiff> {
     const project = this.getProject(projectId);
-    return this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root }));
+    return this.withAvailability(this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root })), project);
   }
 
   sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
-    return this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-      cwd: workspaceRootOf(session),
-      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-    }));
+    /**
+     * A WORKTREE SESSION'S CHECKOUT IS ON THE INTERNAL DISK AND ITS `.git` IS
+     * NOT — see `worktree.ts`'s header. So the availability that matters to this
+     * read is the PROJECT's, not the workspace path's: the worktree directory is
+     * perfectly readable while every git command inside it fails.
+     */
+    return this.withAvailability(
+      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+        cwd: workspaceRootOf(session),
+        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+      })),
+      this.projectOfSession(session),
+    );
   }
 
   projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
@@ -5448,13 +5867,18 @@ export class EngineStore {
    * canvas has a project and no session, and the tree there is the same tree.
    */
   projectFilesAsync(projectId: string): Promise<WorkspaceListing> {
-    const cwd = this.getProject(projectId).root;
-    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+    const project = this.getProject(projectId);
+    const cwd = project.root;
+    return this.withAvailability(this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })), project);
   }
 
   sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    const cwd = workspaceRootOf(this.getSession(sessionId));
-    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+    const session = this.getSession(sessionId);
+    const cwd = workspaceRootOf(session);
+    return this.withAvailability(
+      this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })),
+      this.projectOfSession(session),
+    );
   }
 
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
@@ -5727,6 +6151,22 @@ export class EngineStore {
      * preference would let a machine-wide `worktree` turn into a refusal for a
      * session that never had a repository to cut from.
      */
+    /**
+     * THE LADDER NEVER ASKS GIT ABOUT A DISK THAT IS NOT THERE — issue #534.
+     *
+     * `assertProjectAvailable` above has already refused an unavailable project,
+     * so by here the answer is `"available"` and this is the value the cut below
+     * is handed rather than a second probe: one reading, one refusal, no chance
+     * of the ladder and the guard disagreeing about a cable between two lines.
+     *
+     * AND THAT IS ALSO WHY THERE IS NO SILENT DOWNGRADE LEFT HERE. The fallback
+     * to `local` exists for an UNVERSIONED project — a real directory with no
+     * `.git` — and it was reachable by an unplugged one too, because
+     * `isGitWorkTree` answers "not a repository" for a path it cannot read. That
+     * turned a cable into a session quietly pointed at a dead path in a mode
+     * nobody asked for. An unreadable project now never reaches this line.
+     */
+    const availability = project === undefined ? undefined : this.projectAvailability(project);
     const preferred = project === undefined ? "local" : (project.envMode ?? this.getSessionDefaults().envMode);
     const envMode =
       project === undefined ? "local" : (input.envMode ?? (preferred === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local"));
@@ -5772,7 +6212,9 @@ export class EngineStore {
             return prepareSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
+              projectName: project.name,
               sessionId: id,
+              ...(availability !== undefined ? { availability } : {}),
               ...(branchSlug !== undefined ? { branchSlug } : {}),
               ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
               ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
@@ -6447,7 +6889,15 @@ export class EngineStore {
    */
   liveSessions(only?: Set<string>): {
     sessions: Session[];
-    projects: Array<{ id: string; name: string }>;
+    /**
+     * `availability` RIDES THE ROW — issue #534, and for `layout`'s reason. The
+     * rail draws its "drive not connected" badge in the project group of THIS
+     * list; without it here the sidebar would have to fetch `/v2/projects`
+     * beside this on every pass, per paired host, for one enum per project.
+     *
+     * Absent on a removed project, which this list does not carry anyway.
+     */
+    projects: Array<{ id: string; name: string; availability?: ProjectAvailability }>;
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
   } {
@@ -6467,7 +6917,13 @@ export class EngineStore {
     const { sessions, assignments } = this.foldLiveSessions(only);
     return {
       sessions,
-      projects: projects.map((project) => ({ id: project.id, name: project.name })),
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        // Removed projects are in `projects` here (it is the raw registry), and
+        // a put-away checkout is never probed — see `listProjects`.
+        ...(project.removedAt === undefined ? { availability: this.projectAvailability(project) } : {}),
+      })),
       assignments,
       layout: this.getSidebarLayout(),
     };
@@ -7290,7 +7746,11 @@ export class EngineStore {
         // to waits in the queue until the checkout lands; `claimTurn` is what
         // holds it, and the row says why.
         const planned = prepareSessionWorktree(this.git, {
-          engineRoot: this.paths.root, projectRoot: project.root, sessionId,
+          engineRoot: this.paths.root, projectRoot: project.root, projectName: project.name, sessionId,
+          // The send that promotes a draft already went through
+          // `assertProjectAvailable`, so this is that reading rather than a
+          // second one — see the ladder in `createSession`.
+          availability: this.projectAvailability(project),
           branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
           ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
           ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
@@ -8845,7 +9305,7 @@ export class EngineStore {
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
       // unhappy would strand the session in a state a human cannot leave.
-      this.releaseWorktree(project.root, session.workspace.path);
+      this.releaseWorktree(project, session.workspace.path);
     }
     const at = this.now();
     session.state = "archived";
@@ -8904,8 +9364,17 @@ export class EngineStore {
    * IT STILL GOES THROUGH THE QUEUE, so a removal and the next session's cut on
    * the same project do not race on the index lock.
    */
-  private releaseWorktree(projectRoot: string, worktreePath: string): void {
-    void this.worktreeQueue(projectRoot, () => removeSessionWorktreeAsync(this.worktreeGit, projectRoot, worktreePath));
+  private releaseWorktree(project: Project, worktreePath: string): void {
+    /**
+     * READ ON THE QUEUE, NOT BEFORE IT — issue #534. The removal may wait behind
+     * another project's cut, and a cable can move while it waits; the question
+     * "is this repository readable" has to be asked at the moment git would
+     * actually be run. See `removeSessionWorktreeAsync` and `worktree.ts`'s
+     * header for why `prune` in particular must not run on a stale answer.
+     */
+    void this.worktreeQueue(project.root, () =>
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)),
+    );
   }
 
   private releaseDataScience(session: Session, reason: string): void {
@@ -8929,7 +9398,7 @@ export class EngineStore {
     // See `archiveSession` for why the project is checked beside the mode.
     if (session.workspace.mode === "worktree" && session.projectId) {
       const project = this.getProject(session.projectId);
-      this.releaseWorktree(project.root, session.workspace.path);
+      this.releaseWorktree(project, session.workspace.path);
     }
 
     // The event is appended BEFORE the directory goes, so a subscriber watching

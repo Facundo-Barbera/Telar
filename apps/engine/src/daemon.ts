@@ -101,6 +101,7 @@ import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
+import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
 
 /**
@@ -190,6 +191,13 @@ export type EngineDaemonOptions = {
   git?: GitRunner;
   /** Test seam: the provider model list, so a suite never spawns a real CLI. */
   models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
+  /**
+   * How the engine asks about disks (`volumes.ts`). INJECTED for `gh`'s reason
+   * and a sharper one: the default shells to `diskutil` and reads this Mac's
+   * real `/Volumes`, and a route test about an unplugged drive must be able to
+   * unplug one. See `test/fake-mount.ts`.
+   */
+  volumes?: VolumeDeps;
   /**
    * Run a worker inside the daemon process.
    *
@@ -713,6 +721,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     ...(options.git ? { git: options.git } : {}),
     ...(options.models ? { models: options.models } : {}),
+    ...(options.volumes ? { volumes: options.volumes } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -799,6 +808,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    */
   const mainSwept = mainSweepReport({ carriedKey: store.carryOverAgentKey(), removed: sweepMainSession(store.paths.root) });
   if (mainSwept) process.stdout.write(`${mainSwept}\n`);
+  /**
+   * WHICH PROJECTS' DISKS ARE HERE — issue #534.
+   *
+   * ONCE, ON THE WAY UP, so an engine that started with a drive already unplugged
+   * knows it BEFORE the first listing rather than on it. Without this the first
+   * `GET /v2/projects` after a boot is the probe, and until it lands the rail
+   * would draw an away project as an ordinary one and spawn git against it.
+   *
+   * NO TIMER FOLLOWS. The poll is `projectMetadata`'s existing call path and the
+   * mount events are `POST /v2/projects/reprobe`; this is the floor's first
+   * reading, not a third mechanism.
+   *
+   * ONE LINE, AND ONLY WHEN A DRIVE IS ACTUALLY AWAY, on the same argument as
+   * every sweep above: a daemon that reported "all disks present" on each start
+   * would train its reader past the start where one is not.
+   */
+  const away = store
+    .listProjects()
+    .map((project) => ({ project, availability: store.projectAvailability(project) }))
+    .filter((entry) => entry.availability !== "available");
+  if (away.length > 0) {
+    const named = away.map((entry) => `${entry.project.name} (${entry.availability})`).join(", ");
+    process.stdout.write(`Telar engine: ${away.length === 1 ? "a project is" : `${away.length} projects are`} unreadable — ${named}\n`);
+  }
   /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
@@ -1396,6 +1429,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // knowing the concept exists; its own settings page is the one caller
         // that has to name it in order to offer to restore it.
         writeJson(response, 200, { projects: store.listProjects({ includeRemoved: url.searchParams.get("includeRemoved") === "1" }) });
+        return;
+      }
+      /**
+       * A DRIVE WAS PLUGGED IN OR PULLED OUT — issue #534.
+       *
+       * ACCELERATION, NOT TRUTH, and the distinction is the whole contract. The
+       * poll in `projectMetadata` is the floor and is what makes the feature
+       * correct; this only moves the moment it notices from "within one pass" to
+       * "now". So a shell that never calls it, a watcher that dies, an event
+       * missed while the Mac was asleep — each costs latency and nothing else,
+       * which is why the desktop side (`main.js`) is allowed to be best-effort.
+       *
+       * NO BODY, AND IT NAMES NO PROJECT. The caller knows a disk moved; it does
+       * not know which registrations that concerns, and asking it to work that
+       * out would put the engine's rule in the shell. Every project is re-probed
+       * — three `stat`s each — and the answer says how many actually moved, which
+       * is what makes the desktop unit test able to assert the call landed.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/projects/reprobe") {
+        writeJson(response, 200, store.reprobeProjects());
         return;
       }
       /**
