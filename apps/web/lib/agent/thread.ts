@@ -1,0 +1,397 @@
+"use client";
+
+/**
+ * THE AGENT'S CONVERSATION, READ AND FOLLOWED (#531).
+ *
+ * TWO SOURCES FOR ONE LIST, and keeping them honest is this module's whole job.
+ * The transcript is PAGED from `/api/agent/thread` — durable rows, forward from
+ * a cursor — and then FOLLOWED on `/api/agent/stream`, which replays from that
+ * same cursor inside its own response before going live. Rows arrive from both,
+ * so everything here is keyed by row id and merged rather than appended.
+ *
+ * A DELTA IS NOT A ROW. Tokens are pushed live and stored nowhere; the row that
+ * follows carries the whole text. So a delta accumulates into a buffer that is
+ * DISCARDED the moment its run produces a durable row — a client that appended
+ * both would show the sentence twice, which is the one bug this shape exists to
+ * make impossible.
+ *
+ * ── WHY NOT `sessionConnection` ─────────────────────────────────────────────
+ * The cockpit's own sync is built on a session journal: turns, items, tasks,
+ * requests, a revision per session. The Agent has none of those — it has a flat
+ * row log and one thread — and threading a second entity through that machinery
+ * would make every future change to it a change to both. This is small because
+ * the thing it reads is small.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentRow, AgentState, AgentStreamEvent } from "@telar/engine-client";
+import { createEngineApi } from "@/lib/engine/client";
+import { hostFetcher, rewriteApiPath, LOCAL_HOST_ID } from "@/lib/hosts/client";
+
+/**
+ * HOW MANY PAGES A FIRST READ WILL WALK.
+ *
+ * THE ENGINE ONLY PAGES FORWARD. There is no "last N rows" read — `after` is
+ * exclusive and `0` is the beginning — so opening a long conversation means
+ * walking it. Each page is bounded by a count AND a byte budget (#515), and
+ * this bounds the WALK: a thread that has run for a month stops at a screenful
+ * of history rather than pulling the whole of it into a browser.
+ *
+ * IT IS A CEILING, NOT A TARGET. Almost every thread finishes in one or two
+ * pages and this never comes up; it exists so that the one that does not cannot
+ * hang the screen.
+ */
+export const MAX_THREAD_PAGES = 40;
+
+/** What the screen draws, one entry per thing that happened. Derived from rows
+ *  rather than stored, so a re-read cannot produce a different transcript. */
+export type AgentItem =
+  | { kind: "user"; id: number; at: number; runId: string; text: string; origin?: string; wakeReason?: string }
+  | { kind: "assistant"; id: number; at: number; runId: string; text: string; streaming?: boolean }
+  | { kind: "tool"; id: number; at: number; runId: string; name: string; input: unknown; output: string; status: "completed" | "failed" | "declined" }
+  | { kind: "failure"; id: number; at: number; runId: string; status: "failed" | "stopped"; message?: string };
+
+const str = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
+
+/**
+ * MERGE ROWS BY ID, newest paging and live push into one ordered list.
+ *
+ * BY ID AND NOT BY POSITION, because the same row legitimately arrives twice:
+ * the stream replays from the caller's cursor, and a reconnect replays again
+ * from wherever the client had got to. Appending would duplicate the overlap
+ * every time the connection blinked.
+ *
+ * SORTED BY ID rather than by `at`, because ids are monotonic within a thread
+ * and timestamps are not guaranteed to be — two rows written in the same
+ * millisecond would otherwise swap places between reads and make the transcript
+ * jitter.
+ */
+export function mergeAgentRows(existing: readonly AgentRow[], incoming: readonly AgentRow[]): AgentRow[] {
+  if (incoming.length === 0) return existing as AgentRow[];
+  const byId = new Map<number, AgentRow>();
+  for (const row of existing) byId.set(row.id, row);
+  for (const row of incoming) byId.set(row.id, row);
+  return [...byId.values()].sort((left, right) => left.id - right.id);
+}
+
+/**
+ * ROWS INTO WHAT THE SCREEN DRAWS.
+ *
+ * ── WHERE THE ASSISTANT'S WORDS ACTUALLY LIVE ───────────────────────────────
+ * BOTH PLACES ARE READ, and that is deliberate rather than defensive clutter.
+ * The row log declares an `assistant_message` kind, but today's runtime puts
+ * the answer on `turn_done`'s `text` instead. Reading only `turn_done` would
+ * silently lose every word the Agent says BEFORE it calls a tool the moment the
+ * engine starts emitting the row it already has a name for; reading only
+ * `assistant_message` would show an empty conversation right now. So both
+ * produce an assistant item, and neither is the one the other has to become.
+ *
+ * `turn_started` IS NOT DRAWN. It carries nothing a reader needs that the user
+ * message above it does not already say, and a marker per turn would be noise
+ * in a conversation that is mostly one exchange.
+ *
+ * A REQUEST IS NOT AN ITEM EITHER. The approval the Agent is parked on is LIVE
+ * state off `/api/agent` — one card at the bottom, not a row in the history —
+ * because a request that has been answered is over and its `request_resolved`
+ * row says so. Drawing an open card from history would resurrect decided ones.
+ */
+export function agentItems(rows: readonly AgentRow[]): AgentItem[] {
+  const items: AgentItem[] = [];
+  for (const row of rows) {
+    const { id, at, runId, detail } = row;
+    if (row.kind === "user_message") {
+      items.push({
+        kind: "user",
+        id,
+        at,
+        runId,
+        text: str(detail.text) ?? "",
+        ...(str(detail.origin) ? { origin: str(detail.origin)! } : {}),
+        ...(str(detail.wakeReason) ? { wakeReason: str(detail.wakeReason)! } : {}),
+      });
+      continue;
+    }
+    if (row.kind === "assistant_message") {
+      const text = str(detail.text);
+      if (text) items.push({ kind: "assistant", id, at, runId, text });
+      continue;
+    }
+    if (row.kind === "tool_call") {
+      const status = detail.status === "failed" ? "failed" : detail.status === "declined" ? "declined" : "completed";
+      items.push({
+        kind: "tool",
+        id,
+        at,
+        runId,
+        name: str(detail.name) ?? "tool",
+        input: detail.input,
+        output: str(detail.output) ?? "",
+        status,
+      });
+      continue;
+    }
+    if (row.kind === "turn_done") {
+      // A COMPLETED TURN'S TEXT IS THE ANSWER — see the note above on where the
+      // assistant's words live. A completed turn with nothing to say (it only
+      // ran tools) draws nothing rather than an empty bubble.
+      if (detail.status === "completed") {
+        const text = str(detail.text);
+        if (text) items.push({ kind: "assistant", id, at, runId, text });
+        continue;
+      }
+      // FAILED AND STOPPED ARE BOTH SHOWN, and differently. A person who
+      // pressed Cancel knows why the turn ended and needs no error; a turn that
+      // fell over owes them the sentence.
+      items.push({
+        kind: "failure",
+        id,
+        at,
+        runId,
+        status: detail.status === "stopped" ? "stopped" : "failed",
+        ...(str(detail.message) ? { message: str(detail.message)! } : {}),
+      });
+    }
+  }
+  return items;
+}
+
+/**
+ * THE LIVE SENTENCE, as an item the transcript can draw at its end.
+ *
+ * `undefined` WHENEVER THE BUFFER IS EMPTY OR ITS RUN HAS ALREADY LANDED A ROW,
+ * which is what stops the text appearing twice: the delta is live-only, the row
+ * that follows is durable, and the instant the durable one exists the buffer
+ * has nothing left to add.
+ *
+ * ITS ID IS ABOVE EVERY REAL ROW so it sorts to the bottom without the caller
+ * having to special-case it. Nothing persists it, so the id never collides.
+ */
+export function liveAssistantItem(rows: readonly AgentRow[], live: { runId: string; text: string } | undefined): AgentItem | undefined {
+  if (!live || !live.text) return undefined;
+  const landed = rows.some((row) => row.runId === live.runId && (row.kind === "assistant_message" || row.kind === "turn_done"));
+  if (landed) return undefined;
+  return { kind: "assistant", id: Number.MAX_SAFE_INTEGER, at: Date.now(), runId: live.runId, text: live.text, streaming: true };
+}
+
+export type AgentThreadHandle = {
+  items: AgentItem[];
+  state: AgentState | undefined;
+  credential: { source?: "setting" | "environment" | "cli" } | undefined;
+  /** True until the first read has answered. The screen shows nothing rather
+   *  than an empty conversation it is about to contradict. */
+  loading: boolean;
+  /** The engine refused or is not answering. Shown rather than swallowed. */
+  error?: string;
+  send: (text: string) => Promise<void>;
+  cancel: () => Promise<void>;
+  resolve: (requestId: string, decision: "accept" | "decline") => Promise<void>;
+  sending: boolean;
+};
+
+/**
+ * `hostId` DEFAULTS TO THIS MAC. `/agent` is this cockpit's own engine;
+ * `/hosts/<id>/agent` passes the Mac in the address bar and every call below is
+ * routed there — the same rule every other screen in this cockpit follows.
+ */
+export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandle {
+  const [rows, setRows] = useState<readonly AgentRow[]>([]);
+  const [live, setLive] = useState<{ runId: string; text: string }>();
+  const [state, setState] = useState<AgentState>();
+  const [credential, setCredential] = useState<{ source?: "setting" | "environment" | "cli" }>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [sending, setSending] = useState(false);
+  const api = useMemo(() => createEngineApi(hostFetcher(hostId)), [hostId]);
+  /** The highest row id this screen holds — where a reconnect resumes from.
+   *  A ref rather than state because the stream effect must not re-run every
+   *  time a row arrives; re-running it would reopen the connection per row. */
+  const cursor = useRef(0);
+
+  const remember = useCallback((incoming: readonly AgentRow[]) => {
+    if (incoming.length === 0) return;
+    for (const row of incoming) cursor.current = Math.max(cursor.current, row.id);
+    setRows((held) => mergeAgentRows(held, incoming));
+  }, []);
+
+  // THE FIRST READ: the Agent's own state, then the transcript, paged forward
+  // under a ceiling. Deferred a tick like every other loader here — setting
+  // state from an effect BODY is the cascade this app's lint forbids.
+  useEffect(() => {
+    let cancelled = false;
+    const task = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const answer = await api.agent();
+          if (cancelled) return;
+          setState(answer.agent);
+          setCredential(answer.credential);
+          let after = 0;
+          for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
+            const chunk = await api.agentThread({ after });
+            if (cancelled) return;
+            remember(chunk.rows);
+            after = chunk.cursor;
+            if (!chunk.more) break;
+          }
+        } catch (cause) {
+          if (!cancelled) setError(cause instanceof Error ? cause.message : "The engine is not answering.");
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(task);
+    };
+  }, [api, hostId, remember]);
+
+  /**
+   * THE LIVE FEED, and it is `fetch` rather than `EventSource`.
+   *
+   * WHY NOT `EventSource`. It cannot send a header, and while the cockpit's own
+   * `/api` needs none, the REMOTE hop does not change that — what it cannot do
+   * is be ABORTED on unmount without leaving the browser to reconnect on its
+   * own schedule, and it cannot resume from a cursor of our choosing. Reading
+   * the body with a reader gives both: the cursor is ours, and the abort is
+   * exact.
+   *
+   * RECONNECT IS THE NORMAL CASE, not the error case. A stream ends when a
+   * proxy times it out, when the engine restarts, when a laptop sleeps. Each
+   * time it reopens with `after` at the last row this screen holds, and the
+   * engine replays from there inside the new response — so nothing is missed
+   * and nothing is duplicated (rows merge by id).
+   *
+   * THE BACKOFF IS THERE FOR THE ENGINE THAT IS DOWN. Without it a reconnect
+   * loop against a refused port is a tight spin; with it a browser left open
+   * overnight against a stopped engine costs one request every few seconds.
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    let stopped = false;
+    let delay = 1_000;
+
+    const follow = async (): Promise<void> => {
+      while (!stopped) {
+        try {
+          const path = rewriteApiPath(`/api/agent/stream?after=${cursor.current}`, hostId);
+          const response = await fetch(path, { signal: controller.signal, headers: { accept: "text/event-stream" } });
+          if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
+          delay = 1_000;
+          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          let buffer = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done || stopped) break;
+            buffer += value;
+            // FRAMES ARE SPLIT ON THE BLANK LINE, which is SSE's own boundary.
+            // A partial frame stays in the buffer until the rest of it arrives
+            // — a chunk boundary falls wherever the network puts it, and
+            // parsing half a JSON row would drop it.
+            let boundary = buffer.indexOf("\n\n");
+            while (boundary !== -1) {
+              const frame = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              boundary = buffer.indexOf("\n\n");
+              // `: beat` is the engine's keep-alive. Not an event, and no
+              // client has to know about it.
+              if (!frame.startsWith("data:")) continue;
+              let event: AgentStreamEvent;
+              try {
+                event = JSON.parse(frame.slice("data:".length).trim()) as AgentStreamEvent;
+              } catch {
+                continue;
+              }
+              if (event.type === "row") {
+                remember([event.row]);
+                // A ROW ENDS THE SENTENCE IT BELONGS TO. The durable text has
+                // landed, so the buffer that was standing in for it goes.
+                setLive((held) => (held && held.runId === event.row.runId && (event.row.kind === "assistant_message" || event.row.kind === "turn_done") ? undefined : held));
+                // The Agent's own state moves on a turn boundary or an
+                // approval — the cheapest place to notice is here.
+                if (event.row.kind === "turn_done" || event.row.kind === "request_opened" || event.row.kind === "request_resolved") {
+                  void api.agent().then((answer) => {
+                    if (!stopped) {
+                      setState(answer.agent);
+                      setCredential(answer.credential);
+                    }
+                  }).catch(() => undefined);
+                }
+              } else if (event.type === "delta") {
+                setLive((held) => (held && held.runId === event.runId ? { runId: event.runId, text: held.text + event.text } : { runId: event.runId, text: event.text }));
+              }
+            }
+          }
+        } catch {
+          if (stopped) return;
+        }
+        if (stopped) return;
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, 30_000);
+      }
+    };
+
+    const task = window.setTimeout(() => void follow(), 0);
+    return () => {
+      stopped = true;
+      window.clearTimeout(task);
+      controller.abort();
+    };
+  }, [api, hostId, remember]);
+
+  const send = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setSending(true);
+    setError(undefined);
+    try {
+      const answer = await api.sendAgentTurn(trimmed);
+      setState(answer.agent);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The engine refused that message.");
+    } finally {
+      setSending(false);
+    }
+  }, [api]);
+
+  const cancel = useCallback(async () => {
+    const runId = state?.runId;
+    if (!runId) return;
+    try {
+      const answer = await api.cancelAgentTurn(runId);
+      setState(answer.agent);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The engine refused that.");
+    }
+  }, [api, state?.runId]);
+
+  const resolve = useCallback(async (requestId: string, decision: "accept" | "decline") => {
+    setSending(true);
+    try {
+      const answer = await api.resolveAgentRequest(requestId, decision);
+      setState(answer.agent);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The engine refused that decision.");
+    } finally {
+      setSending(false);
+    }
+  }, [api]);
+
+  const items = useMemo(() => {
+    const drawn = agentItems(rows);
+    const streaming = liveAssistantItem(rows, live);
+    return streaming ? [...drawn, streaming] : drawn;
+  }, [rows, live]);
+
+  return {
+    items,
+    state,
+    credential,
+    loading,
+    send,
+    cancel,
+    resolve,
+    sending,
+    ...(error === undefined ? {} : { error }),
+  };
+}
