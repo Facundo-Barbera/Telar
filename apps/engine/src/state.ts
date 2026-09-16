@@ -111,6 +111,9 @@ import {
   type TurnAttachment,
   type TurnModelSelection,
   type ProviderDriverKind,
+  // The runtime enum too, not just the type: `readProviderInstances` asks it
+  // whether a row on disk names a driver this build still has.
+  ProviderDriverKind as ProviderDriverKindSchema,
   type Task,
   type TaskSeed,
   type Project,
@@ -2877,6 +2880,35 @@ export class EngineStore {
   }
 
   /**
+   * AND THEN DROP WHAT THE CARRY LEFT BEHIND — see `carryOverAgentKey`.
+   *
+   * `readProviderInstances` removes the retired `telar` ROW but deliberately
+   * will not touch a credential, because it runs from anywhere and could beat
+   * the carry to it. This is the other half, and it has exactly one safe
+   * caller: the startup sweep, one step after the key has been moved.
+   *
+   * KEYED ON A RETIRED DRIVER, NOT ON `telar` THE STRING. Any secret whose
+   * instance id no longer appears in the registry is a secret nothing can ever
+   * present again — the row it belonged to is gone by the time this runs.
+   */
+  removeRetiredProviderSecrets(): boolean {
+    const secrets = this.readProviderSecrets();
+    const live = new Set(this.listProviderInstances().map((instance) => instance.id));
+    // A key with no separator is not one `secretKey` could have minted, so it is
+    // not this sweep's to judge — `indexOf` would return -1 and `slice(0, -1)`
+    // would hand the set a plausible-looking prefix that never matches, which is
+    // a silent delete dressed up as a lookup. Left alone, like a malformed row.
+    const orphaned = Object.keys(secrets).filter((key) => {
+      const separator = key.indexOf(SECRET_KEY_SEPARATOR);
+      return separator > 0 && !live.has(key.slice(0, separator));
+    });
+    if (orphaned.length === 0) return false;
+    for (const key of orphaned) delete secrets[key];
+    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
+    return true;
+  }
+
+  /**
    * Where each project group sits in the rail — see `SidebarLayout`.
    *
    * Same never-throws rule as `getInboxPolicy`: a malformed arrangement costs
@@ -3477,6 +3509,44 @@ export class EngineStore {
       const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
       return seeded;
+    }
+    /**
+     * A RETIRED DRIVER IS A MIGRATION, NOT A CORRUPT FILE.
+     *
+     * `telar` was a driver kind for one day (#526, reverted by #531) and anyone
+     * who ran that build has a row naming it. Strict-parsing the array as a
+     * whole turned that one stale row into a throw from THE read behind every
+     * provider lookup — so the settings page 400'd, and, because
+     * `resolveProviderInstance` sits on the session claim, so did starting a
+     * session. A registry that outlives a driver is an ordinary consequence of
+     * shipping, and it must cost the user nothing but the row.
+     *
+     * THE ROW GOES; THE SECRET IS LEFT EXACTLY WHERE IT IS. This is the half of
+     * the rule that matters, and it is the opposite of `removeProviderInstance`,
+     * which takes both. `carryOverAgentKey` still has to find that #526 key to
+     * move it into the Agent's own store, and this read runs from anywhere —
+     * a worker, a test, any route that lands before the daemon's startup sweep.
+     * A lazy read that deleted credentials would be a coin flip on whether the
+     * upgrade kept somebody's key. `agent/main-sweep.ts` removes the orphaned
+     * secret instead, one step AFTER the carry, where the order is guaranteed.
+     *
+     * THE PRUNE IS NARROW ON PURPOSE. Only an unknown `driver` is forgiven here;
+     * every other malformed row still throws below, because that is corruption
+     * rather than a word we retired, and silently dropping a login somebody
+     * configured would be the worse failure.
+     */
+    const rows = Array.isArray(stored.providerInstances) ? stored.providerInstances : [];
+    const kept = rows.filter(
+      (row) =>
+        !(
+          typeof row === "object" &&
+          row !== null &&
+          !ProviderDriverKindSchema.safeParse((row as { driver?: unknown }).driver).success
+        ),
+    );
+    if (kept.length !== rows.length) {
+      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: kept });
+      stored.providerInstances = kept;
     }
     const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");

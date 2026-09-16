@@ -806,7 +806,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * best-effort and silent unless something actually went — see
    * `agent/main-sweep.ts`.
    */
-  const mainSwept = mainSweepReport({ carriedKey: store.carryOverAgentKey(), removed: sweepMainSession(store.paths.root) });
+  // THREE STATEMENTS, NOT ONE ARGUMENT LITERAL. The carry must read the `telar`
+  // login's secret before anything drops it, and an ordering rule that survives
+  // only as long as nobody reorders the keys of an object literal is not a rule.
+  const carriedKey = store.carryOverAgentKey();
+  const droppedSecrets = store.removeRetiredProviderSecrets();
+  const mainSwept = mainSweepReport({ carriedKey, droppedSecrets, removed: sweepMainSession(store.paths.root) });
   if (mainSwept) process.stdout.write(`${mainSwept}\n`);
   /**
    * WHICH PROJECTS' DISKS ARE HERE — issue #534.

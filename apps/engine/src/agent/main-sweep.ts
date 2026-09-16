@@ -42,6 +42,14 @@ export type MainSweep = {
   removed: boolean;
   /** Whether a #526 key was moved to the Agent's own store on the way past. */
   carriedKey: boolean;
+  /**
+   * Whether the `telar` login's leftover secret was dropped afterwards.
+   *
+   * SEPARATE FROM `carriedKey` BECAUSE THE TWO CAN DISAGREE. A machine that
+   * pasted no key under #526 has a row to retire and nothing to carry, and the
+   * upgrade should still say it tidied the credential file.
+   */
+  droppedSecrets: boolean;
 };
 
 /**
@@ -65,9 +73,10 @@ export function sweepMainSession(engineRoot: string): boolean {
 /** The line, or nothing. Nothing is the ordinary case on every machine that
  *  never switched Main on, which is almost all of them. */
 export function mainSweepReport(sweep: MainSweep): string | undefined {
-  if (!sweep.removed && !sweep.carriedKey) return undefined;
+  if (!sweep.removed && !sweep.carriedKey && !sweep.droppedSecrets) return undefined;
   const parts: string[] = [];
   if (sweep.removed) parts.push("removed main-session.json — the Main session is now the Agent");
   if (sweep.carriedKey) parts.push("carried its OpenCode Go key over to the Agent's own settings");
+  if (sweep.droppedSecrets) parts.push("dropped the retired telar login's leftover secret");
   return `Telar engine: ${parts.join("; ")}.`;
 }

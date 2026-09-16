@@ -71,13 +71,17 @@ export type EnvironmentId = z.infer<typeof EnvironmentId>;
  * WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
  * `ProviderId` vocabulary so the two never disagree about the word "claude".
  *
- * `telar` IS THE ODD ONE AND SAYS SO HERE (#526). The other three name a
- * harness somebody else installed; this one is the engine's OWN agent loop,
- * running in the worker against a model API directly. It is in this enum rather
- * than beside it because everything downstream — routing, the claim, the
- * registry, a usage row — already keys on this word, and a second vocabulary
- * for "which loop runs this turn" would be a second place every one of those
- * decisions lives.
+ * EVERY MEMBER NAMES A HARNESS SOMEBODY ELSE INSTALLED. `telar` was briefly a
+ * fourth member (#526) for the engine's own agent loop and was withdrawn with
+ * the Main session (#531) — the Agent is not a provider a session routes to, it
+ * is its own thing with its own key, and giving it a driver kind put a row in
+ * the provider registry that no login was ever behind.
+ *
+ * RETIRING A MEMBER OF THIS ENUM IS A MIGRATION, and the stores that already
+ * wrote the old word are the ones that pay for it. `readProviderInstances` in
+ * `state.ts` drops a row whose driver this build no longer has, rather than
+ * refusing to read the registry at all; anything else added here and later
+ * removed needs that same courtesy.
  */
 export const ProviderDriverKind = z.enum(["claude", "codex", "opencode"]);
 export type ProviderDriverKind = z.infer<typeof ProviderDriverKind>;
