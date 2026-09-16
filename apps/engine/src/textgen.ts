@@ -54,6 +54,29 @@ export type TextGenDriverInput = {
  */
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/**
+ * THE KILL SWITCH — issue #532. `TELAR_TEXTGEN=off` means no generated title,
+ * no generated branch name, and no structured one-shot, whatever the stored
+ * preference says.
+ *
+ * READ HERE RATHER THAN IN `getTextGenPolicy`, deliberately: the environment is
+ * saying what this PROCESS may spend, not what the person prefers. Folding it
+ * into the stored policy would make the settings pane report titles as switched
+ * off, and a reader who then switched them "on" would change nothing. So the
+ * preference survives untouched and the two callers that can spend a model call
+ * consult this on the way past.
+ */
+export function textGenDisabledByEnv(): boolean {
+  return (process.env.TELAR_TEXTGEN ?? "").trim().toLowerCase() === "off";
+}
+
+/** The policy as this process may act on it. Both flags, because with titles
+ *  off the branch rename is unreachable anyway and saying so is clearer than
+ *  leaving a true beside a false that governs it. */
+function effectiveTextGenPolicy(policy: TextGenPolicy): TextGenPolicy {
+  return textGenDisabledByEnv() ? { ...policy, titles: false, renameBranches: false } : policy;
+}
+
 /** The one shape both generations share: a single required string field. */
 function oneStringSchema(key: string): object {
   return {
@@ -319,6 +342,9 @@ export async function runStructuredForPolicy(
   store: StructuredPolicyStore,
   input: { prompt: string; schema: object; model?: string; effort?: TextGenEffort; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | undefined> {
+  // The environment's switch first: a process told not to generate does not
+  // generate, whatever the stored preference or the caller's schema says.
+  if (textGenDisabledByEnv()) return undefined;
   let policy: TextGenPolicy;
   let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
   try {
@@ -379,7 +405,7 @@ export async function maybeRetitleSession(
   /** The harness call, injectable so the flow is testable without one. */
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
-  const policy = store.getTextGenPolicy();
+  const policy = effectiveTextGenPolicy(store.getTextGenPolicy());
   if (!policy.titles || policy.driver === "opencode" || policy.driver === "telar") return;
   let session: ReturnType<RetitleStore["getSession"]>;
   try {
