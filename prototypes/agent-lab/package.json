@@ -1,0 +1,32 @@
+{
+  "name": "@telar/agent-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Evidence lab for issue #528 — LangGraph.js (A) and Deep Agents JS (B) on one harness. Nothing here is imported by shipped code.",
+  "scripts": {
+    "test": "bun test --timeout 30000",
+    "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json",
+    "scenario:1": "bun run src/scenarios/1-own-state.ts",
+    "scenario:2": "bun run src/scenarios/2-streaming-read.ts",
+    "scenario:3": "bun run src/scenarios/3-approval-restart.ts",
+    "scenario:4": "bun run src/scenarios/4-delegation.ts",
+    "scenario:5": "bun run src/scenarios/5-cancellation.ts",
+    "scenario:6": "bun run src/scenarios/6-no-duplicate-delegation.ts",
+    "scenario:7": "bun run src/scenarios/7-growing-context.ts",
+    "scenarios": "bun run src/scenarios/all.ts",
+    "footprint": "bun run src/tools/footprint.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.11",
+    "@langchain/langgraph": "^1.4.15",
+    "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",
+    "@langchain/openai": "^1.5.13",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  }
+}
