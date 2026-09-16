@@ -453,3 +453,55 @@ test("a worktree cut that failed while the drive was away is retried once on rec
   expect(await until(() => cuts > failedAfter)).toBe(true);
   expect(await until(() => store.getSession("session_tree").preparation === undefined)).toBe(true);
 });
+
+/* ------------------------------------------------------------------ *
+ * Prune never runs on a repository nobody can read
+ * ------------------------------------------------------------------ */
+
+test("a worktree release PRUNES NOTHING while the project's drive is away", async () => {
+  // `prune` is the only operation here that deletes git's own records, and it
+  // decides what to delete by asking which registered worktree directories
+  // still exist. Asking that of a repository nobody can read is asking it of an
+  // answer nobody has.
+  const mounts = fixture();
+  const ran: string[] = [];
+  const store = new EngineStore(home(), () => 1_000, {
+    volumes: mounts.deps,
+    git: () => ({ status: 0, stdout: "true\n", stderr: "" }),
+    asyncGit: async (_cwd, args) => { ran.push(args.join(" ")); return { status: 0, stdout: "", stderr: "" }; },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+  store.createSession({ id: "session_tree", projectId: "project_one", envMode: "worktree" });
+  expect(await until(() => ran.some((call) => call.startsWith("worktree add")))).toBe(true);
+
+  mounts.unmount("TelarVR");
+  ran.length = 0;
+  store.archiveSession("session_tree");
+  await settle();
+
+  expect(ran.filter((call) => call.includes("prune"))).toEqual([]);
+  expect(ran.filter((call) => call.includes("worktree remove"))).toEqual([]);
+});
+
+test("…and prunes as it always did once the drive is back", async () => {
+  const mounts = fixture();
+  const ran: string[] = [];
+  const store = new EngineStore(home(), () => 1_000, {
+    volumes: mounts.deps,
+    git: () => ({ status: 0, stdout: "true\n", stderr: "" }),
+    asyncGit: async (_cwd, args) => { ran.push(args.join(" ")); return { status: 0, stdout: "", stderr: "" }; },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  store.registerProject({ id: "project_one", name: "One", root });
+  store.createSession({ id: "session_tree", projectId: "project_one", envMode: "worktree" });
+  expect(await until(() => ran.some((call) => call.startsWith("worktree add")))).toBe(true);
+
+  ran.length = 0;
+  store.archiveSession("session_tree");
+  expect(await until(() => ran.some((call) => call.includes("prune")))).toBe(true);
+});

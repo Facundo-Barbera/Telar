@@ -22,6 +22,35 @@
  *
  * So the engine owns `<TELAR_HOME>/engine/worktrees` — inside its own root, not
  * a sibling of core's.
+ *
+ * ══ A WORKTREE AND ITS REPOSITORY CAN BE ON DIFFERENT DISKS — issue #534 ══
+ *
+ * That follows from the paragraph above and was never a design goal: the engine
+ * root is on this Mac's own disk, so a project registered from an external drive
+ * has its `.git` on the drive and every worktree cut from it in
+ * `<TELAR_HOME>/engine/worktrees` on the internal one. The directory and the
+ * repository it belongs to are separately reachable.
+ *
+ * WHAT THAT MEANS WHEN THE DRIVE IS UNPLUGGED. The worktree directory is still
+ * perfectly readable — the files are right there — and every `git` command
+ * inside it fails, because the `.git` file in it points at a `gitdir` on a disk
+ * that is not present. On remount it all works again, unchanged and with no
+ * repair step: nothing was broken, something was absent.
+ *
+ * SO `git worktree prune` MUST NEVER RUN WHILE A PROJECT IS UNAVAILABLE, and
+ * this is the rule the module exists to state. `prune` is the only operation
+ * here that DELETES git's own records, and it decides what to delete by asking
+ * which registered worktree directories still exist. Asking that question of a
+ * repository nobody can read is asking it of an answer nobody has: on the
+ * recreated-empty-mountpoint case (`volumes.ts`) git can even be pointed at a
+ * *different* tree at the same path, and the registrations it would then find
+ * unaccounted for belong to sessions whose work is sitting on the drive in
+ * somebody's bag. The removal is best-effort and a leaked worktree is bounded
+ * and reapable; a pruned registration is neither.
+ *
+ * `removeSessionWorktreeAsync` takes the project's availability and refuses on
+ * anything but `available`. The caller passes what the store's one probe said —
+ * see `EngineStore.projectAvailability`.
  */
 import crypto from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
@@ -473,8 +502,27 @@ export async function createSessionWorktreeAsync(
  * THE BRANCH IS DELIBERATELY NOT DELETED. It is the session's output. Removing
  * the worktree frees the checkout; destroying the commits is a separate,
  * human decision.
+ *
+ * AND NEITHER GIT COMMAND RUNS WHEN THE PROJECT'S DISK IS NOT THERE — issue
+ * #534, and `prune` is the one that made this necessary. See this module's
+ * header for the full argument; the short version is that `prune` is the only
+ * operation here that DELETES git's own bookkeeping, it decides what to delete
+ * by asking which worktree directories still exist, and a repository nobody can
+ * read is not a repository anyone should be answering that question about.
  */
-export async function removeSessionWorktreeAsync(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<boolean> {
+export async function removeSessionWorktreeAsync(
+  git: AsyncGitRunner,
+  projectRoot: string,
+  worktreePath: string,
+  availability?: ProjectAvailability,
+): Promise<boolean> {
+  if (availability !== undefined && availability !== "available") {
+    // The directory is on the internal disk and is still the honest answer to
+    // "is it gone" — it is not, because nothing removed it. A leaked worktree is
+    // bounded inside the engine's root and reapable later; a pruned registration
+    // is not recoverable at all.
+    return !fs.existsSync(worktreePath);
+  }
   try {
     await git(projectRoot, ["worktree", "remove", "--force", worktreePath]);
   } catch {

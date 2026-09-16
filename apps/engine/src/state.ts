@@ -9305,7 +9305,7 @@ export class EngineStore {
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
       // unhappy would strand the session in a state a human cannot leave.
-      this.releaseWorktree(project.root, session.workspace.path);
+      this.releaseWorktree(project, session.workspace.path);
     }
     const at = this.now();
     session.state = "archived";
@@ -9364,8 +9364,17 @@ export class EngineStore {
    * IT STILL GOES THROUGH THE QUEUE, so a removal and the next session's cut on
    * the same project do not race on the index lock.
    */
-  private releaseWorktree(projectRoot: string, worktreePath: string): void {
-    void this.worktreeQueue(projectRoot, () => removeSessionWorktreeAsync(this.worktreeGit, projectRoot, worktreePath));
+  private releaseWorktree(project: Project, worktreePath: string): void {
+    /**
+     * READ ON THE QUEUE, NOT BEFORE IT — issue #534. The removal may wait behind
+     * another project's cut, and a cable can move while it waits; the question
+     * "is this repository readable" has to be asked at the moment git would
+     * actually be run. See `removeSessionWorktreeAsync` and `worktree.ts`'s
+     * header for why `prune` in particular must not run on a stale answer.
+     */
+    void this.worktreeQueue(project.root, () =>
+      removeSessionWorktreeAsync(this.worktreeGit, project.root, worktreePath, this.projectAvailability(project)),
+    );
   }
 
   private releaseDataScience(session: Session, reason: string): void {
@@ -9389,7 +9398,7 @@ export class EngineStore {
     // See `archiveSession` for why the project is checked beside the mode.
     if (session.workspace.mode === "worktree" && session.projectId) {
       const project = this.getProject(session.projectId);
-      this.releaseWorktree(project.root, session.workspace.path);
+      this.releaseWorktree(project, session.workspace.path);
     }
 
     // The event is appended BEFORE the directory goes, so a subscriber watching
