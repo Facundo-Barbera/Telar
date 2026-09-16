@@ -56,6 +56,34 @@ struct ProjectPlugins: Decodable, Equatable {
     }
 }
 
+/// Whether a project's files can be read right now — the engine's `availability`
+/// (issue #534). The phone decides nothing here: the Mac's engine probes the
+/// disk, and this is the answer it published.
+///
+/// DECODED LENIENTLY, AND THAT IS THE LOAD-BEARING PART. A Mac newer than this
+/// build may name a state this one has never heard of, and the default decode of
+/// a raw-value enum THROWS on one — which, inside a project record, does not cost
+/// a badge: it costs the whole project, which vanishes from the phone's rail. So
+/// an unrecognised value becomes `unknown`, which every surface here treats
+/// exactly as it treats "nobody said": draw what you always drew.
+enum ProjectAvailability: String, Codable, Equatable {
+    case available
+    case unmounted
+    case missing
+    /// Anything a newer engine names. Never sent by an engine; never a badge.
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ProjectAvailability(rawValue: raw) ?? .unknown
+    }
+
+    /// The drive is here and the folder is on it. A state this build does not
+    /// recognise counts as readable, because refusing on a word we cannot read
+    /// would be the phone overruling a Mac that knows more than it does.
+    var isReadable: Bool { self != .unmounted && self != .missing }
+}
+
 /// `GET /api/projects` — the record the cockpit reads to decide which panel
 /// tabs a session gets. The plugin map and the two legacy opt-ins it shadows.
 struct Project: Decodable, Identifiable, Equatable {
@@ -67,8 +95,12 @@ struct Project: Decodable, Identifiable, Equatable {
     /// Present once the project has been migrated; absent on one that never
     /// was, and on one an older engine stripped on its way past.
     var plugins: ProjectPlugins?
+    /// Absent on an older engine and on a removed project, which is read as
+    /// "nobody said" rather than as a fourth state — so a phone paired with a
+    /// Mac that predates this draws exactly what it always did.
+    var availability: ProjectAvailability?
 
-    private enum CodingKeys: String, CodingKey { case id, name, root, dataScience, latex, plugins }
+    private enum CodingKeys: String, CodingKey { case id, name, root, dataScience, latex, plugins, availability }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(EngineID.self, forKey: .id)
@@ -79,11 +111,34 @@ struct Project: Decodable, Identifiable, Equatable {
         // A map that will not parse is NOT a migrated project: fall through to
         // the legacy blocks rather than dropping the project from the list.
         plugins = try? c.decodeIfPresent(ProjectPlugins.self, forKey: .plugins)
+        // `try?` for the same reason: a state this build has never heard of must
+        // cost a badge, never the whole project row.
+        availability = try? c.decodeIfPresent(ProjectAvailability.self, forKey: .availability)
     }
 
-    init(id: EngineID, name: String, root: String? = nil, dataScience: DataScienceConfig? = nil, latex: LatexConfig? = nil, plugins: ProjectPlugins? = nil) {
+    init(
+        id: EngineID,
+        name: String,
+        root: String? = nil,
+        dataScience: DataScienceConfig? = nil,
+        latex: LatexConfig? = nil,
+        plugins: ProjectPlugins? = nil,
+        availability: ProjectAvailability? = nil
+    ) {
         self.id = id; self.name = name; self.root = root
         self.dataScience = dataScience; self.latex = latex; self.plugins = plugins
+        self.availability = availability
+    }
+
+    /// What a header badge says, or nothing when the disk is fine. Phrased here
+    /// rather than at each call site so the phone and the cockpit cannot end up
+    /// describing one cable two ways.
+    var awayLabel: String? {
+        switch availability {
+        case .unmounted: return "Drive away"
+        case .missing: return "Folder gone"
+        case .available, .unknown, nil: return nil
+        }
     }
 
     /// Whether a plugin is on for this project — the engine's one read path

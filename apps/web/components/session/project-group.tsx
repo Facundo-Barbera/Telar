@@ -7,6 +7,7 @@ import {
   ChevronUpIcon,
   FolderOpenIcon,
   FoldVerticalIcon,
+  HardDriveIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
   SlidersHorizontalIcon,
@@ -353,6 +354,35 @@ export function ProjectGroupSection({
                 size={16}
               />
               <span className="min-w-0 truncate text-xs-plus font-semibold text-sidebar-foreground/90">{group.name}</span>
+              {/*
+                THE DRIVE IS AWAY — issue #534.
+
+                A WORD, NOT A WARNING COLOUR. Nothing is wrong here and nothing
+                needs fixing: a project on an external drive is unreadable
+                whenever the drive is elsewhere, which is the ordinary state of
+                an external drive. The rows underneath still open, their history
+                still reads, and plugging the disk back in is the whole of the
+                remedy — so this is the same muted chip the host badges beside it
+                use, and never an error.
+
+                IT DOES NOT SAY "RE-REGISTER". That is the one piece of advice
+                that would cost the person their project id, their sessions and
+                their browser profile, which is exactly what the engine's
+                refusal sentences also refuse to suggest.
+              */}
+              {group.availability ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs text-sidebar-foreground/60"
+                  title={
+                    group.availability === "unmounted"
+                      ? `The drive holding ${group.name} is not connected. Plug it back in and this project comes back as it was.`
+                      : `The folder for ${group.name} is not on this machine any more.`
+                  }
+                >
+                  <HardDriveIcon className="size-2.5" />
+                  <span className="max-w-20 truncate">{group.availability === "unmounted" ? "drive away" : "folder gone"}</span>
+                </span>
+              ) : null}
               {badges.map((place) => {
                 const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");
                 return (

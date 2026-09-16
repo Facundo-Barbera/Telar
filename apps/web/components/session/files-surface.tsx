@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, RotateCwIcon, SearchIcon } from "lucide-react";
+import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, HardDriveIcon, RotateCwIcon, SearchIcon } from "lucide-react";
 import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
@@ -576,6 +576,29 @@ export function FilesSurface({
     return (
       <PanelEmpty icon={<FolderTreeIcon />} title="Could not read the checkout">
         {error}
+      </PanelEmpty>
+    );
+  }
+  /**
+   * THE DRIVE IS AWAY — issue #534.
+   *
+   * A walk of a path that is not there returns no files, and an empty `files`
+   * array is indistinguishable from an empty repository: the tree read as a
+   * project with nothing in it rather than as one nobody could open. The engine
+   * stamps what its own probe found (see `WorkspaceListing.availability`), which
+   * is what lets this say the true thing instead.
+   */
+  if (listing?.availability === "unmounted") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The drive is not connected">
+        This project lives on a drive that is not plugged in. Its files are still on it — reconnect the drive and the tree comes back.
+      </PanelEmpty>
+    );
+  }
+  if (listing?.availability === "missing") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The project folder is gone">
+        {listing.workspacePath} is not on this machine any more.
       </PanelEmpty>
     );
   }

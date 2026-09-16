@@ -380,3 +380,58 @@ describe("groupSessions honours the stored row orders", () => {
     expect(out.attention.map((s) => s.id)).toEqual(["z", "y"]);
   });
 });
+
+/**
+ * THE DRIVE BADGE ON A PROJECT GROUP — issue #534.
+ *
+ * The rule is a fold over the group's rows, and the interesting half is when it
+ * declines to answer: a group spanning two Macs is reachable if the drive is
+ * plugged into one of them, and "not yet known" is not evidence of anything.
+ */
+describe("a group's drive badge", () => {
+  test("says the drive is away only when every row agrees", () => {
+    const groups = groupSessions({
+      pinned: [],
+      sessions: [row("a", { projectAvailability: "unmounted" }), row("b", { projectAvailability: "unmounted" })],
+    }).groups;
+    expect(groups[0]!.availability).toBe("unmounted");
+  });
+
+  test("says nothing when one place can still read the project", () => {
+    // Two Macs, one repository — see `projectGroupKey`. The work is reachable
+    // on the Mac that has the drive, so a header badge would be false for half
+    // the rows under it.
+    const groups = groupSessions({
+      pinned: [],
+      sessions: [
+        row("a", { projectRemote: "github.com/o/r", projectAvailability: "unmounted" }),
+        row("b", { projectRemote: "github.com/o/r", hostId: "mini", projectAvailability: "available" }),
+      ],
+    }).groups;
+    expect(groups[0]!.availability).toBeUndefined();
+  });
+
+  test("says nothing while an answer is still missing, rather than flickering on", () => {
+    const groups = groupSessions({
+      pinned: [],
+      sessions: [row("a", { projectAvailability: "unmounted" }), row("b")],
+    }).groups;
+    expect(groups[0]!.availability).toBeUndefined();
+  });
+
+  test("says nothing at all on an engine that predates the field", () => {
+    const groups = groupSessions({ pinned: [], sessions: [row("a"), row("b")] }).groups;
+    expect(groups[0]!.availability).toBeUndefined();
+  });
+
+  test("does not mix two different failures into one badge", () => {
+    const groups = groupSessions({
+      pinned: [],
+      sessions: [
+        row("a", { projectRemote: "github.com/o/r", projectAvailability: "unmounted" }),
+        row("b", { projectRemote: "github.com/o/r", hostId: "mini", projectAvailability: "missing" }),
+      ],
+    }).groups;
+    expect(groups[0]!.availability).toBeUndefined();
+  });
+});

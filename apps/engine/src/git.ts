@@ -27,7 +27,7 @@
  * reports `repository: false` and stops. Throwing here would make the composer's
  * foot a failure state for a configuration the engine supports on purpose.
  */
-import type { GitChangeStatus, GitCommitEntry, GitFileChange, SessionDiff } from "@telar/engine-client";
+import type { GitChangeStatus, GitCommitEntry, GitFileChange, ProjectAvailability, SessionDiff } from "@telar/engine-client";
 import type { AsyncGitRunner, GitRunner } from "./worktree.js";
 
 export type GitWorktreeEntry = {
@@ -60,6 +60,9 @@ export type GitOverview = {
   worktrees: GitWorktreeEntry[];
   /** Cuttable bases, newest commit first, capped. Absent on a non-repository. */
   refs?: GitRefEntry[];
+  /** Whether the project's disk was there at all — stamped by the store, never
+   *  by this module, which has no project to ask about. See `withAvailability`. */
+  availability?: ProjectAvailability;
 };
 
 const EMPTY: GitOverview = { repository: false, dirtyFiles: 0, worktrees: [] };

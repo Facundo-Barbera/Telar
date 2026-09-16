@@ -1901,6 +1901,22 @@ export const SessionDiff = z.object({
   /** The file list is capped. Reported so a truncated review cannot read as a
    *  complete one. */
   truncated: z.boolean(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534.
+   *
+   * WHY IT RIDES THIS ANSWER rather than being fetched beside it. `repository:
+   * false` is what git reports for a path it cannot read, so an unplugged drive
+   * produced a diff that said "not a git repository, no changes" — a surface
+   * reading CLEAN when the truth is that nobody looked. The surface cannot tell
+   * those apart from the fields above, and asking it to fetch the project list
+   * to find out would make every review screen do a second read to explain the
+   * first.
+   *
+   * Absent when the engine has no project to ask about — a session with no
+   * checkout, an older engine — which reads as "nobody said", so the existing
+   * `repository: false` rendering is still what an unversioned directory gets.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
@@ -1941,6 +1957,13 @@ export const GitOverview = z.object({
    * HEAD", which is also what absent always meant.
    */
   defaultBase: z.string().min(1).optional(),
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument. Every number above is zero or absent for a path git cannot read,
+   * and the environment strip drew those as facts: no branch, a clean tree, no
+   * worktrees. Absent when the engine has no project to ask about.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
 
@@ -1978,6 +2001,14 @@ export const WorkspaceListing = z.object({
    *  repository — a tree that silently stops is worse than one that says it did. */
   truncated: z.boolean(),
   readAt: Timestamp,
+  /**
+   * WHETHER THE PROJECT'S DISK WAS EVEN THERE — issue #534, and `SessionDiff`'s
+   * argument exactly. An unplugged drive walked nothing and listed nothing, and
+   * an empty `files` array is indistinguishable from an empty repository: the
+   * tree read as a project with no files in it rather than as one nobody could
+   * open.
+   */
+  availability: ProjectAvailability.optional(),
 });
 export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
 

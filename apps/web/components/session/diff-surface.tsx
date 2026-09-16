@@ -63,6 +63,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   GitBranchIcon,
+  HardDriveIcon,
   GitCommitHorizontalIcon,
   ListFilterIcon,
   RotateCwIcon,
@@ -650,6 +651,30 @@ export function DiffSurface({
       <p className="flex items-center gap-2 px-4 py-3 text-2xs text-muted-foreground">
         <Spinner className="size-3" /> reading the repository…
       </p>
+    );
+  }
+  /**
+   * THE DRIVE IS AWAY — issue #534, and it is checked BEFORE `repository`.
+   *
+   * `git` answers "not a git repository" for a path it cannot read, so an
+   * unplugged drive landed on the empty state below and this panel read CLEAN:
+   * no diff, nothing to review, as if the work had been finished. It had not
+   * been looked at. The engine stamps what its own probe found on this answer
+   * (see `SessionDiff.availability`), which is the only way this surface can
+   * tell "no changes" from "nobody could look".
+   */
+  if (diff.availability === "unmounted") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The drive is not connected">
+        This project lives on a drive that is not plugged in, so there is nothing to read — not nothing to review. Reconnect it and this comes back as it was.
+      </PanelEmpty>
+    );
+  }
+  if (diff.availability === "missing") {
+    return (
+      <PanelEmpty icon={<HardDriveIcon />} title="The project folder is gone">
+        {diff.workspacePath} is not on this machine any more.
+      </PanelEmpty>
     );
   }
   if (!diff.repository) {

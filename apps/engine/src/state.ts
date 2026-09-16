@@ -5150,22 +5150,67 @@ export class EngineStore {
     return entry.value as Promise<T>;
   }
 
+  /**
+   * WHAT THE DISK WAS DOING, STAMPED ON A READ TAKEN OFF IT — issue #534.
+   *
+   * WHY THE REVIEW SURFACES NEED IT. `git` reports `repository: false` for a
+   * path it cannot read and a file walk of a path that is not there returns no
+   * files, so an unplugged drive produced a diff that said "not a repository, no
+   * changes" and a tree that said "no files" — both of which read as CLEAN when
+   * the truth is that nobody looked. The fields already there cannot tell those
+   * apart; this one can.
+   *
+   * OUTSIDE THE CACHE, DELIBERATELY. `cachedGitRead` holds the answer for two
+   * seconds, and a cable can move inside two seconds — stamping within the
+   * cached read would preserve an availability from before the unplug on a diff
+   * served after it. The expensive half is cached; this is three `stat`s and is
+   * taken fresh every time.
+   *
+   * ABSENT WHEN THERE IS NO PROJECT TO ASK ABOUT — a session with no checkout —
+   * rather than guessed at from the workspace path.
+   */
+  private async withAvailability<T extends object>(answer: Promise<T>, project: Project | undefined): Promise<T> {
+    const value = await answer;
+    return project === undefined ? value : { ...value, availability: this.projectAvailability(project) };
+  }
+
+  /** The project a session's work belongs to, when it has one. */
+  private projectOfSession(session: Session): Project | undefined {
+    if (session.projectId === undefined) return undefined;
+    try {
+      return this.getProject(session.projectId);
+    } catch {
+      // A session whose project id resolves to nothing is not this method's
+      // problem to report — the read it is decorating still answers.
+      return undefined;
+    }
+  }
+
   projectGitAsync(projectId: string): Promise<GitOverview> {
     const project = this.getProject(projectId);
-    return this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root));
+    return this.withAvailability(this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root)), project);
   }
 
   projectDiffAsync(projectId: string): Promise<SessionDiff> {
     const project = this.getProject(projectId);
-    return this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root }));
+    return this.withAvailability(this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root })), project);
   }
 
   sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
     const session = this.getSession(sessionId);
-    return this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
-      cwd: workspaceRootOf(session),
-      ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
-    }));
+    /**
+     * A WORKTREE SESSION'S CHECKOUT IS ON THE INTERNAL DISK AND ITS `.git` IS
+     * NOT — see `worktree.ts`'s header. So the availability that matters to this
+     * read is the PROJECT's, not the workspace path's: the worktree directory is
+     * perfectly readable while every git command inside it fails.
+     */
+    return this.withAvailability(
+      this.cachedGitRead(`diff:${workspaceRootOf(session)}:${workspaceBaseRef(session.workspace) ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+        cwd: workspaceRootOf(session),
+        ...(workspaceBaseRef(session.workspace) ? { baseRef: workspaceBaseRef(session.workspace) } : {}),
+      })),
+      this.projectOfSession(session),
+    );
   }
 
   projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
@@ -5639,13 +5684,18 @@ export class EngineStore {
    * canvas has a project and no session, and the tree there is the same tree.
    */
   projectFilesAsync(projectId: string): Promise<WorkspaceListing> {
-    const cwd = this.getProject(projectId).root;
-    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+    const project = this.getProject(projectId);
+    const cwd = project.root;
+    return this.withAvailability(this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })), project);
   }
 
   sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    const cwd = workspaceRootOf(this.getSession(sessionId));
-    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+    const session = this.getSession(sessionId);
+    const cwd = workspaceRootOf(session);
+    return this.withAvailability(
+      this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() })),
+      this.projectOfSession(session),
+    );
   }
 
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {

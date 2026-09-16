@@ -33,6 +33,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotIcon,
+  HardDriveIcon,
   ClockIcon,
   GitBranchIcon,
   MonitorIcon,
@@ -522,7 +523,37 @@ export function SessionRow({
    * create '.git/index.lock'` tells them what to do about it. The rest of the
    * stderr rides in `title`, because the slot is one line and git's is not.
    */
-  const statusSlot = session.preparation ? (
+  /**
+   * THE DISK BEFORE EVERYTHING ELSE — issue #534.
+   *
+   * WHY IT OUTRANKS `preparation`. A worktree cut that failed while the drive
+   * was away shows git's own first line here, and git's first line is about a
+   * repository it could not open — true, and not the useful sentence. "Drive
+   * away" is, and the cut retries by itself on reconnect (see the engine's
+   * recovery), so the failure the row would otherwise shout about is one that
+   * is already being fixed.
+   *
+   * IT SAYS NOTHING WHEN THE DISK IS FINE, which is every row this list has
+   * drawn until now, and nothing on an engine too old to have an opinion.
+   */
+  const driveSlot =
+    session.projectAvailability === "unmounted" || session.projectAvailability === "missing" ? (
+      <span
+        className={`inline-flex min-w-0 shrink items-center gap-1 text-2xs font-medium text-muted-foreground ${yieldOnHover}`}
+        title={
+          session.projectAvailability === "unmounted"
+            ? `The drive holding ${session.projectName ?? "this project"} is not connected. Its work is still on it.`
+            : `${session.workspacePath ?? "This session's folder"} is not on this machine any more.`
+        }
+      >
+        <HardDriveIcon className="size-3 shrink-0" />
+        <span role="status" className="truncate">
+          {session.projectAvailability === "unmounted" ? "Drive away" : "Folder gone"}
+        </span>
+      </span>
+    ) : undefined;
+
+  const statusSlot = driveSlot ?? (session.preparation ? (
     <span
       className={`inline-flex min-w-0 shrink items-center gap-1 text-2xs font-medium ${
         session.preparation.state === "failed" ? "text-warning" : "text-muted-foreground"
@@ -568,7 +599,7 @@ export function SessionRow({
     </span>
   ) : (
     <span className={`shrink-0 text-2xs tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
-  );
+  ));
 
   /**
    * …AND ⌘N SITS ON TOP OF IT WHILE ⌘ IS HELD — issue #401.
