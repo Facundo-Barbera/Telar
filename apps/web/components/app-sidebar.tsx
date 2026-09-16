@@ -100,6 +100,7 @@ import {
   useProjectFilter,
 } from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
+import { AgentEntry, agentEntryActive, agentEntryShown } from "@/components/session/agent-entry";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
@@ -117,7 +118,7 @@ import {
   type SidebarSession,
 } from "@/lib/session-list";
 import { applyRowChange, type SessionRowChange, type SessionRowChanged } from "@/lib/session-mutations";
-import { hostFetcher } from "@/lib/hosts/client";
+import { hostFetcher, hostFromPathname } from "@/lib/hosts/client";
 import { projectPlaces } from "@/lib/hosts/project-places";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import type { PublicHost } from "@/lib/hosts/store";
@@ -370,15 +371,9 @@ type HostPage = {
    *  opens it. Absent from an engine that predates the filter — which means "you
    *  have everything", so the count is taken from the rows instead. */
   settledCount?: number;
-  /**
-   * WHETHER THIS MAC HAS AN AGENT (#531). Rides the same read for `policy`'s
-   * reason — the rail already polls it — and absent from an engine older than
-   * the feature, which reads as off.
-   *
-   * THE ENTRY ITSELF IS NOT BUILT YET. #531's engine half landed first; the
-   * rail's Agent row, its route and its settings pane are the web half. This
-   * field is carried so the flag is already here when that is written.
-   */
+  /** Whether THIS Mac has a built-in Agent (#531). Rides the same read for
+   *  `policy`'s reason, and absent from an engine older than the feature —
+   *  which reads as off, exactly as a `false` does. */
   agent?: { enabled: boolean };
 };
 
@@ -391,6 +386,23 @@ function SidebarBody() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
+  /**
+   * WHICH MACS HAVE AN AGENT — one boolean per host, and `undefined` for a Mac
+   * that has not answered yet (#531).
+   *
+   * A MAP RATHER THAN ONE FLAG, which is the difference from the Main entry
+   * this replaces. That row was the LOCAL Mac's coordinator and only ever
+   * that, so one value served. The Agent's row is the VIEWED Mac's: walking
+   * into
+   * `/hosts/<id>/…` must swap which Agent it opens, and a single flag would have
+   * drawn this cockpit's own answer over somebody else's machine.
+   *
+   * FILLED BY THE FAN-OUT THAT WAS HAPPENING ANYWAY. Every paired Mac is
+   * already read once per pass; this takes one field off each answer. A Mac
+   * that did not answer is simply absent, and an absent Mac draws no row —
+   * see `agentEntryShown`.
+   */
+  const [agentHosts, setAgentHosts] = useState<ReadonlyMap<string, boolean>>(new Map());
   /**
    * Started conversations with no session behind them yet.
    *
@@ -734,8 +746,8 @@ function SidebarBody() {
       // the filter, and absent must read as "it sent everything" — the shelf is
       // then counted off the rows, exactly as it always was.
       ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
-      // WHETHER THIS MAC HAS AN AGENT (#531), straight off the read that was
-      // happening anyway — the rail will cost no request for the entry it draws.
+      // WHETHER THIS MAC HAS AN AGENT (#531), off the same read — the entry
+      // costs the rail no request of its own, per host, per tick.
       ...(result.agent === undefined ? {} : { agent: result.agent }),
     };
     // Held so the next not-modified answer has something to BE. Only alongside
@@ -792,6 +804,13 @@ function SidebarBody() {
       const reads: { daemonId?: string; sessions: SidebarSession[]; settledCount?: number }[] = [local.value];
       const remoteProjects: RemoteProject[] = [];
       const windows = new Map<string, number | null>();
+      // WHICH MACS HAVE AN AGENT, gathered on the pass that was reading them
+      // anyway (#531). Only Macs that ANSWERED go in: a host that is away is
+      // absent rather than `false`, so its row does not blink off and back on
+      // across one failed poll — it is simply not the Mac being viewed, or it
+      // is and the rail is already saying it cannot be reached.
+      const agents = new Map<string, boolean>();
+      if (local.value.agent) agents.set(LOCAL_HOST_ID, local.value.agent.enabled);
       if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
       // Each Mac's last read, kept so a host going away dims its rows instead
       // of vanishing them. The local engine writes under LOCAL_HOST; every
@@ -803,6 +822,7 @@ function SidebarBody() {
           next = rememberRows(next, host.id, page.value.sessions);
           reads.push(page.value);
           if (page.value.policy) windows.set(host.id, page.value.policy.autoSettleAfterHours);
+          if (page.value.agent) agents.set(host.id, page.value.agent.enabled);
           // A paired Mac that is THIS Mac offers nothing the local list does
           // not; its projects are the local ones, reachable without the hop.
           if (!page.value.daemonId || page.value.daemonId !== local.value.daemonId) {
@@ -824,6 +844,7 @@ function SidebarBody() {
       }
       setStaleByHost(remembered);
       setUnreachable(away);
+      setAgentHosts(agents);
       // WHAT THE ENGINES KEPT (#457), summed over the Macs that answered. Not
       // deduplicated the way the rows are: two addresses onto one engine would
       // double it, which is the same caveat the closed shelf's count carries and
@@ -1001,6 +1022,16 @@ function SidebarBody() {
   // renders dimmed under a line saying so, and "Engine unavailable" is left for
   // the browser that has nothing cached to show instead.
   const showingStale = unavailable && sessions.length > 0;
+  /**
+   * THE AGENT'S ROW — the VIEWED Mac's, or none (#531).
+   *
+   * NOTHING IS LOOKED UP IN `sessions`, which is the whole difference from the
+   * line above: the Agent is not a session, so there is no id to find and no
+   * title to read. One flag off the live answer decides, and the rule lives
+   * beside the component that draws it so a test can hold it.
+   */
+  const viewedHost = hostFromPathname(pathname);
+  const showAgentEntry = agentEntryShown(agentHosts, viewedHost);
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
@@ -1544,22 +1575,32 @@ function SidebarBody() {
         </div>
 
         {/*
-          THE MAIN SESSION, ABOVE THE BANDS AND BELOW SEARCH — experimental, and
-          drawn only when this Mac has one switched on (#522).
+          THE AGENT, ABOVE EVERYTHING INCLUDING DRAFTS (#531).
 
-          ABOVE EVERYTHING INCLUDING DRAFTS, because it is not a band and not a
-          conversation in the list: it is the one entry that is always in the
-          same place, which is the whole of what designating it buys. The bands
-          under it are unchanged, and the conversation itself is still in its
-          project group down there — one row somewhere is not a promise the
-          other one is gone.
+          It is not a band and not an entry in the list: it is the row that is
+          always in the same place, which is the whole of what a built-in
+          coordinator buys. The bands under it are untouched.
 
-          A LINK AND A GLYPH, THE SIZE OF A DRAFT ROW. It needs no status, no
-          branch and no activity: those are questions about work in progress,
-          and this row answers "where do I go to coordinate". Its rule sits
-          underneath, exactly like drafts and pinned, because the boundary that
-          exists is between this and what follows.
+          A LINK AND A GLYPH, THE SIZE OF A DRAFT ROW. No status, no branch, no
+          activity — those are questions about work in progress, and this row
+          answers "where do I go to coordinate". Its rule sits underneath,
+          exactly like drafts and pinned, because the boundary that exists is
+          between this and what follows.
+
+          IT IS THE VIEWED MAC'S AGENT, not this cockpit's — see `agentHosts`.
         */}
+        {showAgentEntry && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <SidebarGroupContent>
+              <AgentEntry
+                {...(viewedHost === LOCAL_HOST_ID ? {} : { hostId: viewedHost })}
+                active={agentEntryActive(pathname, viewedHost)}
+                onNavigate={onNavigate}
+              />
+            </SidebarGroupContent>
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+          </SidebarGroup>
+        )}
 
         {/*
           DRAFTS SIT ABOVE EVERYTHING, AND COST ONE LINE EACH.

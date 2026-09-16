@@ -42,6 +42,10 @@ import type {
   InboxPolicy,
   AgentOrientation,
   EnvMode,
+  AgentAnswer,
+  ProviderModel,
+  AgentState,
+  AgentThreadAnswer,
   SessionDefaults,
   SidebarLayout,
   TextGenPolicy,
@@ -359,9 +363,10 @@ export type LiveSessionsPage = {
    *  behind `?all=1`. Absent from an engine that predates the filter, which
    *  means "you have everything", never "the shelf is empty". */
   settledCount?: number;
-  /** Whether this Mac has an Agent (#531) — one flag. Rides this read for
-   *  `inbox`'s reason: the rail already polls it, per host, per tick. Absent
-   *  from an engine older than the feature, which reads as off. */
+  /** Whether this Mac has a built-in Agent (#531) — one flag, which is all a
+   *  pinned row showing a label needs. Rides this read for `inbox`'s reason:
+   *  the rail already polls it, per host, per tick. Absent is off, and so is an
+   *  engine older than the feature. */
   agent?: { enabled: boolean };
   unchanged?: false;
 };
@@ -494,6 +499,51 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /* -------------------------------------------------------------- *
+     * THE BUILT-IN AGENT — issue #531.
+     *
+     * NOT UNDER `/api/sessions/`, because the Agent is not one: its
+     * conversation is a thread rather than a journal, and a screen that
+     * reached it through a session route would be told a conversation exists
+     * that `sessionBootstrap` cannot open.
+     *
+     * The RAIL calls none of these — `liveSessions` above carries
+     * `agent: { enabled }`, which is the whole of what the entry needs.
+     * -------------------------------------------------------------- */
+    /** Whether this Mac has an Agent, which thread, whether a turn runs, and
+     *  the one approval it may be parked on. The credential rides along —
+     *  which RUNG answered, never the key. */
+    agent: () => request<AgentAnswer>(fetcher, "GET", "/api/agent"),
+    /** Switch it on, pick its model, paste its key, or start again. `reset`
+     *  archives the conversation and mints a new thread; it is the only patch
+     *  that moves `generation`. */
+    setAgent: (patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }) =>
+      request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
+    /** What OpenCode Go serves the Agent — the model picker's list. FAILS
+     *  SOFT: an unreachable Go, or a machine with no key yet, answers an empty
+     *  list and a `message` rather than an error. */
+    agentModels: () => request<{ models: ProviderModel[]; message?: string }>(fetcher, "GET", "/api/agent/models"),
+    /** Say something. The run id comes back before the turn runs, so the
+     *  composer has something to name in a Cancel. */
+    sendAgentTurn: (text: string) =>
+      request<{ runId: string; queued: number; agent: AgentState }>(fetcher, "POST", "/api/agent/turns", { text }),
+    /** Stop the live turn, or drop a queued one. `stopped: false` means there
+     *  was nothing left to stop, which is a fact rather than an error. */
+    cancelAgentTurn: (runId: string) =>
+      request<{ stopped: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/turns/${encodeURIComponent(runId)}/cancel`),
+    /** The transcript forward from a cursor, bounded by a count AND a byte
+     *  budget — #515's rule. Page until `more` is false. */
+    agentThread: (options: { after?: number; limit?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (options.after !== undefined) query.set("after", String(options.after));
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      const suffix = query.toString();
+      return request<AgentThreadAnswer>(fetcher, "GET", `/api/agent/thread${suffix ? `?${suffix}` : ""}`);
+    },
+    /** Answer the parked approval BY ID, so a stale question cannot approve the
+     *  one that replaced it. `resolved: false` means it was already answered. */
+    resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
+      request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),

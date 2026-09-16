@@ -62,9 +62,28 @@ const UPSTREAM_TIMEOUT_MS = 60_000;
 const LIST_READ_TIMEOUT_MS = 10_000;
 const LIST_READS = new Set(["sessions/live", "health", "inbox", "projects"]);
 
+/**
+ * A STREAM HAS NO DEADLINE, and this is the one read here that does not (#531).
+ *
+ * Every bound above exists because silence means a Mac has hung. On the Agent's
+ * SSE feed silence is the NORMAL state: an idle Agent emits nothing for hours,
+ * and the engine sends a comment frame every 25 seconds precisely so an open
+ * connection is not mistaken for a dead one. A minute's timeout here would
+ * sever a healthy stream every minute, on a schedule — the remote Agent screen
+ * would reconnect for ever and look, from the reader's side, like a feed that
+ * keeps dropping.
+ *
+ * `Infinity` RATHER THAN A BIGGER NUMBER, because there is no honest number:
+ * the connection ends when the client goes away or the engine does, and both of
+ * those close the socket. `AbortSignal.timeout` is simply not armed for it.
+ */
+const STREAMS = new Set(["agent/stream"]);
+
 export function upstreamTimeout(request: Pick<Request, "method">, path: readonly string[]): number {
   if (request.method.toUpperCase() !== "GET") return UPSTREAM_TIMEOUT_MS;
-  return LIST_READS.has(path.join("/")) ? LIST_READ_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+  const route = path.join("/");
+  if (STREAMS.has(route)) return Number.POSITIVE_INFINITY;
+  return LIST_READS.has(route) ? LIST_READ_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
 }
 
 export function upstreamUrl(host: Pick<Host, "baseUrl">, path: string[], search: string): string {
@@ -95,6 +114,7 @@ export async function forward(
 
   const method = request.method.toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";
+  const timeout = upstreamTimeout(request, path);
   let upstream: Response;
   try {
     upstream = await fetcher(upstreamUrl(host, path, url.search), {
@@ -102,7 +122,10 @@ export async function forward(
       headers,
       ...(hasBody ? { body: request.body, duplex: "half" } : {}),
       redirect: "manual",
-      signal: AbortSignal.timeout(upstreamTimeout(request, path)),
+      // An unbounded route arms no timer at all — see `upstreamTimeout`. The
+      // caller's own disconnect is what ends a stream, and that signal rides
+      // the request already.
+      ...(Number.isFinite(timeout) ? { signal: AbortSignal.timeout(timeout) } : {}),
     } as RequestInit);
   } catch {
     // The one answer this hop mints itself: the same code the local adapter

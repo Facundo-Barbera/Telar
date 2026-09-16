@@ -84,6 +84,32 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// ── THE BUILT-IN AGENT (#531) ───────────────────────────────────────────
+    ///
+    /// NOT UNDER `api/sessions/`, because the Agent is not one: its conversation
+    /// is a thread rather than a journal, and a phone that reached it through a
+    /// session route would be told a conversation exists that `sessionEvents`
+    /// cannot open.
+    ///
+    /// THE SIDEBAR CALLS NONE OF THESE. It reads `agent: { enabled }` off the
+    /// live list it already polls, which is all a row showing a word needs.
+    ///
+    /// DEFAULTED IN THE EXTENSION BELOW, like `sidebarLayout()`: a double that
+    /// models the transcript should not have to implement four routes it will
+    /// never be asked for.
+    func agent() async throws -> AgentAnswer
+    /// The transcript forward from a cursor. Bounded by a count AND a byte
+    /// budget, whichever is reached first — page until `more` is false.
+    func agentThread(after: Int) async throws -> AgentThreadPage
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted
+    /// `stopped: false` means there was nothing left to stop, which is a fact
+    /// rather than an error — a Stop pressed a beat late must not paint a
+    /// failure over a turn that worked.
+    func cancelAgentTurn(_ runId: String) async throws
+    /// BY ID, so a phone holding a stale question cannot approve the one that
+    /// replaced it. Two decisions and not three: the Agent's gate is decided
+    /// per call, so there is nothing an "always" could attach to.
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws
     /// REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
     /// and the engine refuses while a turn is in flight (`EngineStore
     /// .deleteSession` throws a conflict on a queued, claimed or running one),
@@ -193,6 +219,15 @@ extension EngineAPI {
     /// A double that models the transcript and not the rail answers "nobody has
     /// arranged anything", which is a real arrangement and not an error.
     func sidebarLayout() async throws -> SidebarLayout { SidebarLayout() }
+
+    /// A double that models the transcript models no Agent — which is also what
+    /// a Mac that has never switched one on answers, so the screen's "off"
+    /// state is what a caller gets rather than a failure.
+    func agent() async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
+    func agentThread(after: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: after, more: false) }
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
+    func cancelAgentTurn(_ runId: String) async throws {}
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
 
     /// A double that models no registry has nothing to remove, and says so by
     /// returning rather than throwing: a test standing in for one endpoint
@@ -659,6 +694,30 @@ struct HTTPEngineAPI: EngineAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
+    }
+
+    // ── THE BUILT-IN AGENT (#531) ────────────────────────────────────────────
+
+    func agent() async throws -> AgentAnswer {
+        try await get("api/agent")
+    }
+
+    func agentThread(after: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [URLQueryItem(name: "after", value: String(after))])
+    }
+
+    func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted {
+        try await post("api/agent/turns", body: ["text": AnyEncodable(text)])
+    }
+
+    func cancelAgentTurn(_ runId: String) async throws {
+        let _: IgnoredBody = try await post("api/agent/turns/\(escape(runId))/cancel", body: [:])
+    }
+
+    func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {
+        let _: IgnoredBody = try await post(
+            "api/agent/requests/\(escape(requestId))", body: ["decision": AnyEncodable(accept ? "accept" : "decline")]
+        )
     }
 
     func deleteSession(_ id: EngineID) async throws {
