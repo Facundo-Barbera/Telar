@@ -14,7 +14,14 @@ import path from "node:path";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import { allowCliInThisFile } from "./allow-cli";
 import { EngineClient } from "@telar/engine-client";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  its daemon's Claude driver resolves one before every claim, against injected model probes.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
 
 const roots: string[] = [];
 const root = (): string => {

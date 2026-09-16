@@ -29,7 +29,7 @@ import { promisify } from "node:util";
  * and the cache is what makes them acceptable to call from a popover.
  */
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
-import { requireCli } from "./cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
 import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "./main-session/go";
 
@@ -153,8 +153,19 @@ function defaultModelListExecutable(): string | undefined {
  * abort in `finally` is what stops the process; without it the parked generator
  * would keep it alive for the life of the daemon.
  */
+/**
+ * The SDK, behind the test gate — issue #532. Named and exported rather than
+ * inlined as a default argument so the gate is something a test can hold this
+ * module to directly, instead of inferring it from an empty catalogue that a
+ * machine with no install produces too.
+ */
+export async function loadClaudeModelSdk(): Promise<ClaudeModelSdk> {
+  refuseCliSpawnUnderTest("the Claude Agent SDK model probe");
+  return (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeModelSdk;
+}
+
 export async function readClaudeModels(
-  loadSdk: () => Promise<ClaudeModelSdk> = () => import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeModelSdk>,
+  loadSdk: () => Promise<ClaudeModelSdk> = loadClaudeModelSdk,
   timeoutMs = MODEL_LIST_TIMEOUT_MS,
   resolveExecutable: () => string | undefined = defaultModelListExecutable,
 ): Promise<{ models: ProviderModel[]; message?: string }> {

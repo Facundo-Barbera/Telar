@@ -644,6 +644,37 @@ export function cliUsable(resolution: Pick<CliResolution, "status">): boolean {
 }
 
 /**
+ * WHY A TEST MAY NOT REACH A REAL PROVIDER — issue #532.
+ *
+ * The suite runs on a developer's machine, where a real `claude` is on PATH and
+ * signed in. Nothing about a test says so, and for months nothing stopped one:
+ * a store built under `mkdtemp` took a first turn, the default text-generation
+ * policy asked a small model for a title, and the machine's own subscription
+ * paid for it. 41,937 print-mode transcripts (8.2 GB) accumulated under
+ * `~/.claude/projects/-private-tmp/` before anybody looked, at up to 9,311 a
+ * day against 22 real sessions.
+ *
+ * SO THE GATE IS HERE, at the one function every spawn path resolves its binary
+ * through, rather than at each call site that could grow a new one. Under
+ * `NODE_ENV=test` a provider spawn is a bug until a test says otherwise, and it
+ * says so with `TELAR_ALLOW_CLI=1` — read from the environment on every call, so
+ * a single test can turn it on around one assertion and off again.
+ */
+export const CLI_TEST_REFUSAL = "refused under NODE_ENV=test: a test must not spawn a real provider (set TELAR_ALLOW_CLI=1 to opt in)";
+
+/** Whether this process may spawn a provider CLI at all. */
+export function cliSpawnAllowed(): boolean {
+  return process.env.NODE_ENV !== "test" || process.env.TELAR_ALLOW_CLI === "1";
+}
+
+/** The gate itself. `what` names the thing that wanted to spawn, so a failing
+ *  test reads as a refusal rather than as a missing install. */
+export function refuseCliSpawnUnderTest(what: string): void {
+  if (cliSpawnAllowed()) return;
+  throw new Error(`${what} ${CLI_TEST_REFUSAL}`);
+}
+
+/**
  * The executable to spawn, or a thrown, ACTIONABLE refusal.
  *
  * The alternative is what both providers used to do in a packaged app — spawn
@@ -653,6 +684,7 @@ export function cliUsable(resolution: Pick<CliResolution, "status">): boolean {
  * install rather than an errno.
  */
 export function requireCli(id: CliId, options: CliResolveOptions = {}): string {
+  refuseCliSpawnUnderTest(SPECS[id].label);
   const resolution = resolveCli(id, options);
   if (!cliUsable(resolution)) {
     throw new Error(resolution.message ?? `No ${SPECS[id].label} installation found.`);

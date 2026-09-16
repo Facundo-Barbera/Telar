@@ -20,6 +20,13 @@ import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver,
 import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
 import { SteerMailbox } from "../src/steering";
+import { allowCliInThisFile } from "./allow-cli";
+
+/** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —
+ *  the driver resolves one on its way to the repo’s fake `codex` app-server fixture.
+ *  So this file opts past issue #532’s no-spawn gate, for its own scope only.
+ *  See ./allow-cli.ts. */
+allowCliInThisFile();
 
 const FAKE_BIN = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 

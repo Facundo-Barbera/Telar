@@ -42,7 +42,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderSkill, ProviderSkillSource, ProviderSkills } from "@telar/engine-client";
-import { requireCli } from "./cli-resolution";
+import { refuseCliSpawnUnderTest, requireCli } from "./cli-resolution";
 
 /**
  * How long to wait for the provider to list its own commands.
@@ -391,9 +391,18 @@ export type LoadProviderCommands = (input: { driver: ProviderDriverKind; cwd: st
  * project's `.claude/commands` are only in the list when the CLI was started
  * where they are.
  */
+/** The SDK, behind the test gate — issue #532, and the same reasoning as
+ *  `loadClaudeModelSdk`: exported so a test can hold the gate directly rather
+ *  than infer it from an empty list this function also returns when there is no
+ *  install at all. */
+export async function loadClaudeCommandSdk(): Promise<ClaudeCommandSdk> {
+  refuseCliSpawnUnderTest("the Claude Agent SDK skills probe");
+  return (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeCommandSdk;
+}
+
 export async function readClaudeSupportedCommands(
   cwd: string,
-  loadSdk: () => Promise<ClaudeCommandSdk> = () => import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeCommandSdk>,
+  loadSdk: () => Promise<ClaudeCommandSdk> = loadClaudeCommandSdk,
   timeoutMs = SUPPORTED_COMMANDS_TIMEOUT_MS,
 ): Promise<ProviderSkill[]> {
   let sdk: ClaudeCommandSdk;
