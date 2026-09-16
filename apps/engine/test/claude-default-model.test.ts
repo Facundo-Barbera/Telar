@@ -263,8 +263,17 @@ test("a probe that NEVER answers becomes an actionable failure, not a turn pendi
   await f.client.createSession({ id: "session_one", projectId: "project_one", driver: "claude" });
   await f.client.submitTurn("session_one", { runId: "run_one", input: "hello" });
 
+  /**
+   * THE LOOP HAS TO OUTLAST THE DEADLINE IT IS WAITING FOR. `prepareClaudeCatalogue`
+   * gives the probe 2 000 ms before it reaches its verdict, and this loop used to
+   * budget 30 × 60 ms = 1 800 ms — it only ever passed on the round-trip latency of
+   * its own polls making up the other 200 ms. On a fast run it exhausted first and
+   * failed on a turn that was still legitimately `queued`. 60 polls is 3 600 ms of
+   * sleep alone, comfortably past the deadline and nowhere near the suite's 20 s
+   * ceiling; the loop still exits the moment the verdict lands.
+   */
   let state: string | undefined;
-  for (let poll = 1; poll <= 30 && state !== "failed"; poll += 1) {
+  for (let poll = 1; poll <= 60 && state !== "failed"; poll += 1) {
     const attempt = await f.client.claimTurn("worker_one", poll);
     // Never claimed: no provider is started for a window Telar cannot name.
     expect(attempt.claim).toBeUndefined();
