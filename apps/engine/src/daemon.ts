@@ -4305,7 +4305,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // this process owns, and a daemon that left it open would leave the
         // next reset unable to move the file.
         store.setAgentWakeSink(undefined);
-        agentRuntime.close();
+        // AWAITED, and that is the whole of #539's item 5 in one line: the
+        // Agent's turn is a promise in THIS event loop, so stopping the engine
+        // ends it — there is nothing to outlive the daemon. `shutdown` aborts
+        // the live turn, waits for its `turn_done` to be written, and only then
+        // closes the thread file.
+        await agentRuntime.shutdown();
         clearInterval(workerPruner);
         clearInterval(delegationSweeper);
         removeOwnDiscovery(store, daemonId);

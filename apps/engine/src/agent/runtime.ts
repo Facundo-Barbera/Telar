@@ -1,6 +1,33 @@
 /**
  * THE AGENT'S LOOP — a hand-built StateGraph, one thread per machine (#531).
  *
+ * ── THE AGENT HAS NO PROCESS OF ITS OWN ─────────────────────────────────────
+ * It runs INSIDE THE DAEMON, in the daemon's event loop. `daemon.ts` constructs
+ * one `AgentRuntime` and spawns nothing: no CLI, no worker, no child. A turn is
+ * an async function on this object, its state is `agent/threads.sqlite` under
+ * the engine root, and `shutdown` below ends any live turn before the daemon's
+ * server closes. Stop the engine and the Agent stops with it, mid-sentence;
+ * there is no second thing to kill and none to survive.
+ *
+ * THIS IS WRITTEN DOWN BECAUSE THE OWNER MEASURED THE OPPOSITE (#539). On the
+ * first night of the nightly the cockpit reported the engine down while the
+ * Agent kept answering, and the honest reading of that is "the Agent is
+ * somewhere else". It was not. The cockpit was wrong: #526's `telar` provider
+ * row broke `readProviderInstances`, so the claims route and the settings page
+ * failed and the engine READ as down while it was serving the Agent perfectly
+ * well (fixed in a36557fc). The daemon was up the entire time.
+ *
+ * WHICH IS WHY THE AGENT READS `resolveProviderInstance` NOWHERE, ON PURPOSE.
+ * A provider instance is a SESSION's account-and-model binding, resolved on the
+ * session claim; the Agent has no session, no claim and no driver, and its model
+ * is `agent.json`'s one field resolved through `./model.ts` and `./go.ts`
+ * against OpenCode Go, with the key ladder in `./credentials.ts`. So the read
+ * that broke is one this file cannot make — not by luck, and not as an
+ * optimisation, but because the Agent is not a provider session and borrowing a
+ * session's binding would give it a driver it does not have.
+ * `agent-in-engine.test.ts` holds both halves: that the daemon's stop ends an
+ * Agent turn, and that the whole Agent surface goes with the daemon.
+ *
  * ── WHY A `StateGraph` AND NOT `createReactAgent` ───────────────────────────
  * The installed package deprecates its own prebuilt: `@langchain/langgraph`
  * 1.4.15 ships `createReactAgent` with `@deprecated CreateReactAgentParams has
@@ -161,8 +188,9 @@ export class AgentRuntime {
   /** Resolves when the person answers. The parked turn awaits it. */
   private answer?: (decision: AgentApprovalDecision) => void;
   private watchers = new Set<(event: AgentStreamEvent) => void>();
-  /** The turn currently pumping, so `submit` does not start a second pump. */
-  private pumping = false;
+  /** The drain in flight, so `submit` does not start a second one — and so
+   *  `shutdown` has something to await. Cleared when the queue runs dry. */
+  private draining?: Promise<void>;
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
 
@@ -251,12 +279,43 @@ export class AgentRuntime {
     return found;
   }
 
-  /** Close the thread file. The reset path's precondition, and the daemon's
-   *  shutdown. Safe to call when nothing is open. */
+  /** Close the thread file. The reset path's precondition, where it must be
+   *  SYNCHRONOUS — `patchAgentSettings` will not move a database until its
+   *  `beforeArchive` hook has returned. Safe to call when nothing is open.
+   *
+   *  Not the daemon's shutdown: that is `shutdown` below, which ends the live
+   *  turn first. Closing the handle under a running turn only means the next
+   *  row it writes reopens it. */
   close(): void {
     this.opened?.close();
     this.opened = undefined;
     this.log = undefined;
+  }
+
+  /**
+   * THE ENGINE IS GOING AWAY, SO THE AGENT IS — and this method is the proof of
+   * the header's claim (#539).
+   *
+   * There is no process to signal and no child to reap: the turn is a promise
+   * in THIS event loop, so ending it is aborting its controller, and what makes
+   * that observable is the wait. The `turn_done` row a stopped turn writes is
+   * written by the drain's own catch, which runs a tick later; a shutdown that
+   * closed the database first would have that row reopen the handle behind it —
+   * the leak the daemon's teardown comment warns about — and a shutdown that
+   * did not wait at all would leave the transcript ending mid-turn, so the next
+   * process could not tell a stopped turn from one still running somewhere.
+   *
+   * So: drop the queue, abort the live turn, WAIT for the drain to settle, then
+   * close the file. `agent-in-engine.test.ts` asserts the whole of that from
+   * outside, through a second daemon reading the same transcript.
+   */
+  async shutdown(): Promise<void> {
+    this.queue = [];
+    this.cancel();
+    // `draining` is undefined when nothing was running, which is the ordinary
+    // case on an engine whose Agent is off.
+    await this.draining?.catch(() => undefined);
+    this.close();
   }
 
   /**
@@ -455,31 +514,34 @@ export class AgentRuntime {
    * The pump.
    * -------------------------------------------------------------- */
 
-  private async pump(): Promise<void> {
-    if (this.pumping) return;
-    this.pumping = true;
-    try {
-      for (;;) {
-        const next = this.queue.shift();
-        if (!next) return;
-        const controller = new AbortController();
-        this.live = { turn: next, controller };
-        try {
-          await this.runTurn(next, controller.signal);
-        } catch (error) {
-          this.row("turn_done", next.runId, {
-            status: controller.signal.aborted ? "stopped" : "failed",
-            ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
-          });
-        } finally {
-          this.live = undefined;
-          this.pending = undefined;
-          this.answer = undefined;
-          this.turnThreadId = undefined;
-        }
+  /** Start draining the queue, or join the drain already running. Returns the
+   *  same promise either way, which is what makes `shutdown` able to wait. */
+  private pump(): Promise<void> {
+    this.draining ??= this.drain().finally(() => {
+      this.draining = undefined;
+    });
+    return this.draining;
+  }
+
+  private async drain(): Promise<void> {
+    for (;;) {
+      const next = this.queue.shift();
+      if (!next) return;
+      const controller = new AbortController();
+      this.live = { turn: next, controller };
+      try {
+        await this.runTurn(next, controller.signal);
+      } catch (error) {
+        this.row("turn_done", next.runId, {
+          status: controller.signal.aborted ? "stopped" : "failed",
+          ...(controller.signal.aborted ? {} : { message: error instanceof Error ? error.message : String(error) }),
+        });
+      } finally {
+        this.live = undefined;
+        this.pending = undefined;
+        this.answer = undefined;
+        this.turnThreadId = undefined;
       }
-    } finally {
-      this.pumping = false;
     }
   }
 
