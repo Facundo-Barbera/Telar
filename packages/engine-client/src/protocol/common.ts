@@ -79,21 +79,13 @@ export type EnvironmentId = z.infer<typeof EnvironmentId>;
  * for "which loop runs this turn" would be a second place every one of those
  * decisions lives.
  */
-export const ProviderDriverKind = z.enum(["claude", "codex", "opencode", "telar"]);
+export const ProviderDriverKind = z.enum(["claude", "codex", "opencode"]);
 export type ProviderDriverKind = z.infer<typeof ProviderDriverKind>;
 
 export const PROVIDER_CAPABILITIES: Record<ProviderDriverKind, { liveSteering: boolean; compaction: boolean; backgroundTaskStop: boolean }> = {
   claude: { liveSteering: true, compaction: true, backgroundTaskStop: true },
   codex: { liveSteering: true, compaction: true, backgroundTaskStop: false },
   opencode: { liveSteering: false, compaction: false, backgroundTaskStop: false },
-  /**
-   * ALL THREE FALSE, AND EACH ONE IS A FACT RATHER THAN A GAP. The loop has no
-   * mid-turn input channel (a turn is one request/response cycle against the
-   * model, steering lands on the next one); it has no compaction, so history is
-   * a character budget for now (#526 keeps compaction out of scope); and it
-   * launches no background processes, so there is no task to stop.
-   */
-  telar: { liveSteering: false, compaction: false, backgroundTaskStop: false },
 };
 
 /**

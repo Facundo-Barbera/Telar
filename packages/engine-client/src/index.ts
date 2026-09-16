@@ -30,7 +30,6 @@ import {
   type ComputerUseStatus,
   type AgentOrientation,
   type InboxPolicy,
-  type MainSession,
   type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
@@ -295,10 +294,7 @@ export type SessionSnapshot = {
  * key" — the difference between a quiet pane and one demanding setup from
  * somebody whose assistant is working.
  */
-export type MainSessionAnswer = {
-  mainSession: MainSession;
-  credential?: { source?: "setting" | "environment" | "cli"; rejected?: boolean };
-};
+
 
 /* ------------------------------------------------------------------ *
  * THE BUILT-IN AGENT — issue #531.
@@ -340,9 +336,13 @@ export type AgentState = {
 
 export type AgentAnswer = {
   agent: AgentState;
-  /** Which RUNG of the key ladder answered, never the key — see
-   *  `apps/engine/src/agent/credentials.ts`. */
-  credential?: { source?: "setting" | "environment" | "cli" };
+  /**
+   * WHICH RUNG ANSWERED, AND WHETHER THIS MACHINE HOLDS ONE ITSELF — never the
+   * key, not even redacted. `set` is the only rung a person can clear from the
+   * pane; `source` is the rung the next call would actually spend, which is
+   * what explains a surprising bill. See `apps/engine/src/agent/credentials.ts`.
+   */
+  credential?: { source?: "setting" | "environment" | "cli"; set: boolean };
 };
 
 /** One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
@@ -428,24 +428,24 @@ export type LiveSessionsAnswer = {
    */
   settledCount?: number;
   /**
-   * WHICH CONVERSATION THIS MAC CALLS MAIN, if any — see `MainSession` (#522).
+   * WHETHER THIS MAC HAS AN AGENT — one flag (#531).
    *
    * IT RIDES THIS READ for the reason `daemonId`, `inbox` and `layout` do: this
    * is the one request every rail already makes, per host, per tick, and a
-   * two-field document fetched beside it would be a second round trip for
+   * one-field document fetched beside it would be a second round trip for
    * something that moves twice a year. The desktop rail and the phone's sidebar
-   * then read the flag from the same answer, which is what stops them
+   * read the same flag from the same answer, which is what stops them
    * disagreeing about whether the entry is there.
    *
-   * AND THE CURSOR MOVES WITH IT. `main-session.json` is on the engine's
-   * `listRevision` allowlist, so flipping the switch invalidates every rail's
-   * conditional read — without that this would ride an answer no rail asks for
-   * again until something else happens on the machine.
+   * A FLAG AND NOTHING MORE. The thread, the model and any parked approval are
+   * `/v2/agent`'s business — the pane's read, not the sidebar's. Putting them
+   * here would cost every poll on every client for a row that shows a label.
    *
-   * Absent from an engine older than the feature, which a client reads as "off"
-   * — the same thing it reads for an engine that has never been switched on.
+   * Absent from an engine older than the feature, which a client reads as
+   * "off" — the same thing it reads for an engine that has never been switched
+   * on.
    */
-  mainSession?: MainSession;
+  agent?: { enabled: boolean };
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
@@ -821,25 +821,6 @@ export class EngineClient {
     return this.request("PATCH", "/v2/session-defaults", patch);
   }
 
-  /** Which conversation this Mac calls main, and whether it is switched on —
-   *  see `MainSession`. Environment-wide, like the two rules above. */
-  mainSession(): Promise<MainSessionAnswer> {
-    return this.request("GET", "/v2/main-session");
-  }
-
-  /**
-   * Switch it on or off, and say which conversation it is.
-   *
-   * `sessionId` DESIGNATES AN EXISTING ONE — a conversation somebody already
-   * has, which keeps its project and its provider and becomes ordinary again
-   * when the switch goes off. With nothing designated, `{ enabled: true }` MINTS
-   * one: project-less, on the engine's own driver. There is nothing left to
-   * choose, which is what makes enable / disable / re-enable and a restart
-   * incapable of leaving two.
-   */
-  setMainSession(patch: { enabled?: boolean; sessionId?: string; model?: string }): Promise<MainSessionAnswer> {
-    return this.request("PATCH", "/v2/main-session", patch);
-  }
 
   /* ---------------------------------------------------------------- *
    * THE BUILT-IN AGENT — issue #531.
@@ -864,13 +845,17 @@ export class EngineClient {
   /**
    * Switch it on or off, pick its model, or start again.
    *
+   * `apiKey` IS WRITE-ONLY: it is stored 0600 beside the thread and read back
+   * only as `credential.set`. An empty string clears it, which is what a person
+   * emptying the field means.
+   *
    * `reset: true` ARCHIVES the conversation and mints a new thread — the old
    * file stays in `agent/` with a timestamp, because a person who resets has
    * asked to start again rather than to lose what they had. It is also the only
    * patch that moves `generation`, which is how a cached transcript knows it is
    * about a thread that no longer exists.
    */
-  setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean }): Promise<AgentAnswer> {
+  setAgent(patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }): Promise<AgentAnswer> {
     return this.request("PATCH", "/v2/agent", patch);
   }
 

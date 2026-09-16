@@ -1542,7 +1542,6 @@ export class EngineWorker {
         // The coordinator briefing, forwarded the same way and for the same
         // reason. Absence is the honest "this is not the designated session, or
         // the switch is off" — which is every session but at most one.
-        ...(claim.mainBriefing ? { mainBriefing: claim.mainBriefing } : {}),
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH

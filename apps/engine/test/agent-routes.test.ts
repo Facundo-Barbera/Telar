@@ -201,12 +201,55 @@ test("reset archives the conversation and bumps the generation", async () => {
   expect(fs.readdirSync(agentDir).some((name) => /^threads-\d{8}T\d{6}\.sqlite$/.test(name))).toBe(true);
 });
 
-test("which rung the key came from rides the same answer — never the key", async () => {
-  const { client } = await engine();
-  const answer = await client.agent();
-  // Whatever this machine has, the shape is a source and nothing else.
-  expect(Object.keys(answer.credential ?? {})).not.toContain("key");
+test("the key is write-only: it is stored 0600 and read back only as a boolean", async () => {
+  const { daemon, client } = await engine();
+  expect((await client.agent()).credential?.set).toBe(false);
+
+  const after = await client.setAgent({ apiKey: "sk-pasted-into-settings" });
+  expect(after.credential).toEqual({ source: "setting", set: true });
+  // NEVER THE KEY, on any read — not redacted, not a prefix, not its length.
+  expect(JSON.stringify(after)).not.toContain("sk-pasted-into-settings");
+
+  const file = path.join(daemon.store.paths.root, "agent", "credentials.json");
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+
+  // An empty string is what a person emptying the field means.
+  expect((await client.setAgent({ apiKey: "" })).credential?.set).toBe(false);
 });
+
+test("the startup sweep deletes main-session.json and carries its key across", async () => {
+  const directory = root();
+  // A machine that had #526's Main assistant: the document, and a key pasted
+  // as a sensitive variable on the `telar` provider login.
+  fs.writeFileSync(path.join(directory, "main-session.json"), JSON.stringify({ version: 1, enabled: true, sessionId: "session_old" }));
+  fs.writeFileSync(
+    path.join(directory, "provider-secrets.json"),
+    JSON.stringify({ version: 1, secrets: { "telar OPENCODE_API_KEY": "sk-from-526" } }),
+  );
+
+  const daemon = await startEngine({ models: stubModels, engineRoot: directory, agentModel: () => new ScriptedChatModel({}) });
+  daemons.push(daemon);
+
+  expect(fs.existsSync(path.join(directory, "main-session.json"))).toBe(false);
+  const client = new EngineClient(daemon.discovery);
+  // The key came across, so nobody re-pastes — and it is still only ever a
+  // boolean on the way out.
+  expect((await client.agent()).credential).toEqual({ source: "setting", set: true });
+});
+
+test("a machine that never switched Main on is swept silently and gains no key", async () => {
+  const { daemon, client } = await engine();
+  expect(fs.existsSync(path.join(daemon.store.paths.root, "main-session.json"))).toBe(false);
+  expect((await client.agent()).credential?.set).toBe(false);
+});
+
+/*
+ * `/v2/agent/models` IS NOT TESTED HERE, ON PURPOSE. It delegates to
+ * `readAgentModels`, which calls opencode.ai — and a test in the default suite
+ * that reaches the network is the thing `EngineDaemonOptions.agentModel` exists
+ * to prevent. It is covered by `agent.live.test.ts`, which lists models against
+ * the real endpoint and runs only under TELAR_LIVE_SMOKE=1.
+ */
 
 async function until(check: () => Promise<boolean>, label: string, ms = 15_000): Promise<void> {
   const deadline = Date.now() + ms;

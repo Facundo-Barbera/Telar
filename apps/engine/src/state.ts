@@ -18,12 +18,10 @@ import {
   AgentOrientation as AgentOrientationSchema,
   DEFAULT_AGENT_ORIENTATION,
   DEFAULT_INBOX_POLICY,
-  DEFAULT_MAIN_SESSION,
   DEFAULT_SESSION_DEFAULTS,
   DEFAULT_SIDEBAR_LAYOUT,
   DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
-  MainSession as MainSessionSchema,
   MAX_SIDEBAR_PROJECT_ORDER,
   MAX_SIDEBAR_SESSION_ORDER,
   SessionDefaults as SessionDefaultsSchema,
@@ -96,7 +94,6 @@ import {
   type GitignoreResult,
   type AgentOrientation,
   type InboxPolicy,
-  type MainSession,
   type SessionDefaults,
   type SidebarLayout,
   type TextGenPolicy,
@@ -157,8 +154,7 @@ import {
   type OutlineRow,
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
-import { MAIN_SESSION_BRIEFING } from "./main-session/briefing";
-import { resolveGoCredential, type GoKeySource } from "./agent/credentials";
+import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { isAgentSelf } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -656,18 +652,6 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
-  /**
-   * Which conversation this Mac calls main, and whether it is switched on —
-   * see `MainSession`.
-   *
-   * ITS OWN DOCUMENT, on `SessionDefaults`' own instruction: a field belongs
-   * there only if it decides what a NEW session is built with, and this decides
-   * nothing about creation — it names one conversation that already exists.
-   * Environment-scoped like the rest, for `AgentOrientation`'s reason: it
-   * decides what one session on this machine is told, so a per-browser copy
-   * would brief an agent some of this engine's own clients had switched off.
-   */
-  mainSession: string;
   /** Where each project group sits in the rail — see `SidebarLayout`.
    *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
   sidebarLayout: string;
@@ -773,7 +757,6 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
-    mainSession: path.join(resolved, "main-session.json"),
     sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
@@ -1958,10 +1941,7 @@ export class EngineStore {
       if (path.basename(file) !== "items.json") this.listRevision = this.nextRevision();
       return;
     }
-    // `mainSession` is on this list for the same reason the other three are: it
-    // rides the live answer, so a rail holding a cursor would otherwise keep
-    // being told "unchanged" while the entry it should be drawing appeared.
-    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox || file === this.paths.mainSession) {
+    if (file === this.paths.projects || file === this.paths.sidebarLayout || file === this.paths.inbox) {
       this.listRevision = this.nextRevision();
     }
   }
@@ -2835,259 +2815,55 @@ export class EngineStore {
     return { ...next };
   }
 
-  /**
-   * Which conversation this Mac calls main — see `MainSession`.
+  /* ---------------------------------------------------------------- *
+   * THE AGENT'S KEY — issue #531.
    *
-   * Same never-throws rule as `getInboxPolicy`, and here the fallback is the
-   * feature being OFF: a document somebody hand-edited into nonsense must cost
-   * the designation rather than briefing an arbitrary session or failing every
-   * claim on the machine.
-   */
-  getMainSession(): MainSession {
-    try {
-      const parsed = MainSessionSchema.safeParse(this.readDocument(this.paths.mainSession));
-      return parsed.success ? parsed.data : { ...DEFAULT_MAIN_SESSION };
-    } catch {
-      return { ...DEFAULT_MAIN_SESSION };
-    }
+   * `MainSession` and its designation stood here. What is left of that feature
+   * in this file is the one thing that was never about a session: where the
+   * OpenCode Go key comes from, and whether there is one.
+   * ---------------------------------------------------------------- */
+
+  /** `<engineRoot>/agent`, for the rungs and the store that live in it. */
+  private get agentDir(): string {
+    return path.join(this.paths.root, "agent");
   }
 
   /**
-   * Is THIS the designated conversation, right now?
+   * WHICH RUNG ANSWERED, AND WHETHER A KEY IS SET HERE — the two facts a
+   * settings pane needs to decide between a field and a setup prompt.
    *
-   * THE EXISTENCE CHECK IS NOT HERE, deliberately: the only caller is the claim,
-   * which is holding the session it is asking about. `resolveMainSession` is the
-   * one that has to ask, because it answers about an id nobody is holding.
+   * NEVER THE KEY, not even redacted, not even its length: all three are how a
+   * secret ends up in a log one pass later. `set` is whether THIS machine's own
+   * rung holds one, which is the only rung a person can clear from the pane;
+   * `source` says which rung the next call would actually spend, which is what
+   * explains a surprising bill. See `agent/credentials.ts`.
    */
-  private isMainSession(sessionId: string): boolean {
-    const main = this.getMainSession();
-    return main.enabled && main.sessionId === sessionId;
+  agentCredential(): { source?: GoKeySource; set: boolean } {
+    const found = resolveGoCredential({ agentDir: this.agentDir });
+    return { ...(found ? { source: found.source } : {}), set: readAgentKey(this.agentDir) !== undefined };
+  }
+
+  /** Store the pasted key, or clear it with an empty string. The one write, so
+   *  the 0600 file has exactly one author. */
+  setAgentKey(key: unknown): { source?: GoKeySource; set: boolean } {
+    if (typeof key !== "string") throw new EngineStateError("invalid_request", "the Agent's key must be text");
+    if (key.length > 4096) throw new EngineStateError("invalid_request", "that key is too long");
+    writeAgentKey(this.agentDir, key);
+    return this.agentCredential();
   }
 
   /**
-   * The designation, with the dangling case resolved — what a client should
-   * draw a rail entry from.
+   * CARRY A #526 KEY ACROSS, ONCE — see `carryOverLegacyKey`.
    *
-   * A CONVERSATION SOMEBODY DELETED IS NOT A DESIGNATION. The id is kept on
-   * disk through a disable (that is what makes re-enabling reuse it), so the
-   * one thing that can outlive it is the session itself; a rail pointed at a
-   * deleted one would draw a row that navigates to a 404. Reading it away here
-   * rather than pruning the document keeps this a read: a getter that wrote
-   * would race every other reader on the machine.
+   * Read from where the old pane put it: a sensitive `OPENCODE_API_KEY` on the
+   * `telar` provider login, which no longer exists as a driver and whose row is
+   * swept away at startup. Reading the secret store directly rather than
+   * through `resolveProviderInstance` is deliberate — that path is typed by
+   * `ProviderDriverKind`, and the whole point is that `telar` is no longer one.
    */
-  resolveMainSession(): MainSession {
-    const main = this.getMainSession();
-    if (main.sessionId === undefined) return main;
-    return this.sessionExists(main.sessionId) ? main : { enabled: main.enabled };
-  }
-
-  /**
-   * WHETHER THE MAIN ASSISTANT HAS A KEY, AND WHETHER THE LAST ONE WORKED —
-   * what the settings pane decides between "here is the field" and "here is the
-   * setup you still owe me" (#526).
-   *
-   * THE KEY NEVER LEAVES. `resolveGoCredential` finds one; only its SOURCE is
-   * returned, which is the one fact that helps somebody work out why the wrong
-   * account is being billed. See `agent/credentials.ts`.
-   *
-   * `rejected` IS DERIVED, NOT STORED, and that is what makes it self-clearing.
-   * A rejected key fails the turn as `provider_unavailable` (the driver
-   * translates 401 and 403 into exactly that), so the answer is "the newest
-   * settled turn on the designated session failed that way" — and the next turn
-   * that completes makes it false again without anybody having to remember to
-   * clear a flag. A stored boolean would outlive the key it was about.
-   *
-   * ONLY THE ENGINE'S OWN LOOP. A session designated under #523 runs a CLI and
-   * has nothing to do with an OpenCode Go key; reporting one as rejected
-   * because a Claude turn failed would send somebody to fix the wrong thing.
-   */
-  mainSessionCredential(): { source?: GoKeySource; rejected: boolean } {
-    const instance = this.resolveProviderInstance(defaultInstanceIdForDriver("telar"), "telar");
-    const found = resolveGoCredential({ instanceEnv: providerProcessEnv(instance) });
-    const main = this.resolveMainSession();
-    return {
-      ...(found ? { source: found.source } : {}),
-      rejected: main.enabled && main.sessionId !== undefined ? this.mainTurnRejectedKey(main.sessionId) : false,
-    };
-  }
-
-  /**
-   * RUNG 1 OF THE AGENT'S KEY LADDER, resolved (#531).
-   *
-   * The pasted key lives where every other provider's credential lives: a
-   * sensitive `OPENCODE_API_KEY` on the `telar` login, so it is a 0600 file the
-   * registry route never echoes back and a redacted round trip in the settings
-   * pane. This is the one read that turns that record into the environment
-   * `resolveGoCredential` takes — nothing here opens the value, and the caller
-   * hands it straight to the resolver.
-   */
-  agentCredentialEnv(): Record<string, string | undefined> {
-    return providerProcessEnv(this.resolveProviderInstance(defaultInstanceIdForDriver("telar"), "telar"));
-  }
-
-  /** WHICH RUNG ANSWERED, for the settings pane. Never the key — see
-   *  `agent/credentials.ts`. */
-  agentCredential(): { source?: GoKeySource } {
-    const found = resolveGoCredential({ instanceEnv: this.agentCredentialEnv() });
-    return found ? { source: found.source } : {};
-  }
-
-  /** Did the newest settled turn on this session fail because the provider
-   *  could not run? Never throws: a session that has gone, or a queue that will
-   *  not parse, is simply not evidence of a bad key. */
-  private mainTurnRejectedKey(sessionId: string): boolean {
-    try {
-      const session = this.getSession(sessionId);
-      if (session.driver !== "telar") return false;
-      const settled = this.readQueue(sessionId).turns.filter((turn) => turn.state === "completed" || turn.state === "failed");
-      const newest = settled.at(-1);
-      return newest?.state === "failed" && newest.failure?.code === "provider_unavailable";
-    } catch {
-      return false;
-    }
-  }
-
-  /** Does a session document exist, without the throw `getSession` makes? The
-   *  designation asks this about an id that may be months old. */
-  private sessionExists(sessionId: string): boolean {
-    if (!ID.test(sessionId)) return false;
-    return this.readDocument(sessionMetadataFile(this.paths, sessionId)) !== undefined;
-  }
-
-  /**
-   * SWITCH IT ON OR OFF, AND SAY WHICH CONVERSATION IT IS — the whole of
-   * designation, in one place (#522).
-   *
-   * WHY THE CREATE LIVES HERE rather than in the route: "enable, disable,
-   * re-enable and a restart must never leave two" is a rule about the ORDER of
-   * a read and a write, and a route that read the document, decided, and then
-   * called `createSession` would be a second place that order lives. So the
-   * ladder is stated once:
-   *
-   *   1. An explicit `sessionId` designates that conversation. It must exist —
-   *      naming one that does not is a bad request, not a silent create.
-   *   2. Otherwise, whatever is already designated and still exists is reused.
-   *      This is the rung that makes re-enabling and a restart idempotent.
-   *   3. Otherwise one is MINTED: project-less, on the `telar` driver, with no
-   *      checkout and no working directory.
-   *
-   * ── RUNG 3 IS THE CORRECTION #526 MADE ──────────────────────────────────────
-   * #523 asked for a project and opened an ORDINARY session inside it, "with
-   * nothing said beyond the title… because a main session that quietly ran on a
-   * different provider from every other session would be a second kind of
-   * session after all". The owner's answer was that it is a second kind of
-   * session, and that was the point: the coordinator is not assigned to a
-   * working directory like the rest. So the `projectId` rung is gone, enabling
-   * no longer needs anything to be chosen, and what gets minted is deliberately
-   * not an ordinary conversation.
-   *
-   * ENABLING NEVER REFUSES NOW. There is nothing left to guess: no project to
-   * pick, no checkout to cut, and one Main conversation per machine.
-   *
-   * RUNG 1 STILL TAKES AN ORDINARY SESSION, and that is not a leftover. A
-   * conversation designated under #523 keeps its history, keeps its project and
-   * its driver, and becomes ordinary again when the switch goes off — the
-   * designation is a role, and un-designating has never been allowed to rewrite
-   * what a session is.
-   *
-   * DISABLING KEEPS THE ID AND THE CONVERSATION. It stops the briefing and the
-   * rail entry, and it drops the subscriptions the main session took out — so
-   * "off" means monitoring actually stops rather than merely being invisible.
-   * It deletes no history, stops nothing it delegated to, and leaves an
-   * ordinary resumable session behind.
-   */
-  setMainSession(patch: { enabled?: unknown; sessionId?: unknown; model?: unknown }): MainSession {
-    const stored = this.getMainSession();
-    const next: MainSession = { ...stored };
-    delete next.generation;
-
-    /**
-     * THE MODEL IS NOT PART OF THE DESIGNATION, so it is settled first and it
-     * does NOT move the generation below. Changing which model the coordinator
-     * runs is not a change to "who is Main, and is it on" — invalidating a turn
-     * that is legitimately still coordinating because somebody edited a text
-     * field would be exactly the over-firing that counter exists to avoid.
-     *
-     * EMPTY CLEARS IT, back to the driver's own default. That is what a person
-     * emptying the field means, and storing `""` would be a model id nothing
-     * serves.
-     */
-    if (patch.model !== undefined) {
-      if (typeof patch.model !== "string") throw new EngineStateError("invalid_request", "main session model must be text");
-      const model = patch.model.trim();
-      if (model.length > 120) throw new EngineStateError("invalid_request", "that model id is too long");
-      if (model) next.model = model;
-      else delete next.model;
-    }
-
-    if (patch.sessionId !== undefined) {
-      assertId(patch.sessionId, "session id");
-      // Throws `not_found` for an id nobody holds — the refusal a person typing
-      // one in wants, rather than a designation that draws a broken row.
-      this.getSession(patch.sessionId);
-      next.sessionId = patch.sessionId;
-    } else if (next.sessionId !== undefined && !this.sessionExists(next.sessionId)) {
-      // The designated conversation is gone. Forget it here, where we are
-      // writing anyway, so the create below is reached rather than refused.
-      delete next.sessionId;
-    }
-
-    if (patch.enabled !== undefined) {
-      if (typeof patch.enabled !== "boolean") {
-        throw new EngineStateError("invalid_request", "main session enabled must be true or false");
-      }
-      next.enabled = patch.enabled;
-    }
-
-    if (next.enabled && next.sessionId === undefined) {
-      /**
-       * NO PROJECT, AND THE ENGINE'S OWN DRIVER — the whole of what makes this
-       * conversation a coordinator rather than a worker with a good view.
-       *
-       * Nothing else is said. No model: the machine setting decides, and a
-       * model named here would be a second place that lives. No `envMode`: a
-       * project-less create is `local` by construction and refuses a worktree
-       * outright. No provider instance: `telar` has exactly one slot, which
-       * `createSession` derives from the driver.
-       */
-      next.sessionId = this.createSession({ title: "Main", driver: "telar" }).id;
-    }
-
-    /**
-     * THE GENERATION MOVES WHEN THE ANSWER DOES, and not otherwise.
-     *
-     * "Who is Main, and is it on" is the whole of what it counts, so enabling
-     * an already-enabled designation with the same session writes the same
-     * number — a settings pane that saved twice must not invalidate a turn that
-     * is legitimately still coordinating. Every real change bumps it: off, on
-     * again, or moved to another conversation. See `MainSession.generation`.
-     */
-    const moved = next.enabled !== stored.enabled || next.sessionId !== stored.sessionId;
-    next.generation = moved ? (stored.generation ?? 0) + 1 : stored.generation ?? 0;
-    this.writeDocument(this.paths.mainSession, { version: STATE_VERSION, ...next });
-    /**
-     * OFF MEANS THE WAKES STOP. A subscription the main session took out while
-     * coordinating would otherwise keep starting turns on a conversation that
-     * is no longer briefed to coordinate — which is the one way a disabled
-     * feature could still spend a person's provider quota. Only the ones it
-     * SUBSCRIBED to: a subscription some other session holds ON it is that
-     * session's, and dropping it would stop work nobody switched off.
-     *
-     * AND THE WAKES ALREADY IN THE QUEUE, all of them — not just the ones whose
-     * subscription is still there to be matched. A `once` subscription is
-     * removed the moment it fires, so the wake it produced a second before the
-     * switch went off has nothing left to link it to its subscription, and it
-     * would run, spend a turn, and report on work nobody is coordinating any
-     * more. Only WAKE turns: a queued human message and a queued peer task are
-     * explicitly requested work, and disabling a briefing is not a reason to
-     * throw either away. A wake already claimed or running is the worker's and
-     * finishes.
-     */
-    if (!next.enabled && stored.sessionId !== undefined) {
-      this.dropSubscriptionsBy(stored.sessionId);
-      this.discardQueuedWakes(stored.sessionId);
-    }
-    return { ...next };
+  carryOverAgentKey(): boolean {
+    const legacy = this.readProviderSecrets()[secretKey("telar", "OPENCODE_API_KEY")];
+    return carryOverLegacyKey(this.agentDir, legacy);
   }
 
   /**
@@ -3556,7 +3332,7 @@ export class EngineStore {
     const instances = this.readProviderInstances();
     const existing = instances.find((instance) => instance.id === input.id);
     const driver = input.driver === undefined ? existing?.driver : input.driver;
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
       throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex, opencode or telar");
     }
     /**
@@ -3631,8 +3407,7 @@ export class EngineStore {
     if (
       id === defaultInstanceIdForDriver("claude") ||
       id === defaultInstanceIdForDriver("codex") ||
-      id === defaultInstanceIdForDriver("opencode") ||
-      id === defaultInstanceIdForDriver("telar")
+      id === defaultInstanceIdForDriver("opencode")
     ) {
       throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
     }
@@ -3689,7 +3464,7 @@ export class EngineStore {
     const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
     if (stored === undefined) {
       const at = this.now();
-      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at), seedProviderInstance("telar", at)];
+      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
       return seeded;
     }
@@ -3701,7 +3476,7 @@ export class EngineStore {
      * `seedProviderInstance` on every claim rather than to a row a person can
      * switch off. One pass, written back once, for each slot that is missing.
      */
-    const missing = (["opencode", "telar"] as const).filter((driver) => !parsed.data.some((instance) => instance.id === driver));
+    const missing = (["opencode"] as const).filter((driver) => !parsed.data.some((instance) => instance.id === driver));
     if (missing.length > 0) {
       for (const driver of missing) parsed.data.push(seedProviderInstance(driver, this.now()));
       this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: parsed.data });
@@ -5254,7 +5029,7 @@ export class EngineStore {
     driver: ProviderDriverKind,
     options: { force?: boolean; instanceId?: string } = {},
   ): Promise<ModelCatalogue> {
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
       throw new EngineStateError("invalid_request", "unknown provider driver");
     }
     const cached = this.modelCache.get(driver);
@@ -5960,7 +5735,7 @@ export class EngineStore {
     }
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
-    if (driver !== "claude" && driver !== "codex" && driver !== "opencode" && driver !== "telar") {
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
       throw new EngineStateError("invalid_request", "unknown provider driver");
     }
     if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
@@ -6751,18 +6526,14 @@ export class EngineStore {
     assignments: Record<string, SessionAssignment[]>;
     layout: SidebarLayout;
     inbox: InboxPolicy;
-    /** Which conversation this Mac calls main (#522) — resolved, so a deleted
-     *  one reads as none. Rides this answer for `inbox`'s reason: it is the one
-     *  read every rail already makes, and both the cockpit's rail and the
-     *  phone's sidebar draw their entry from it. */
-    mainSession: MainSession;
     /**
      * WHETHER THIS MAC HAS AN AGENT (#531) — one flag, on the one read every
      * rail already makes.
      *
-     * `mainSession`'s own argument, and the reason it is a flag rather than the
-     * whole document: the rail draws an entry, and an entry needs to know
-     * whether to exist and nothing else. The thread id, the model and the
+     * IT RIDES THIS ANSWER for `inbox`'s reason: it is the one read every rail
+     * already makes, so the entry costs no request of its own. A FLAG rather
+     * than the whole document because the rail draws an entry, and an entry
+     * needs to know whether to exist and nothing else. The thread id, the model and the
      * pending request are `/v2/agent`'s business, which is the pane's read
      * rather than the sidebar's — putting them here would cost every poll on
      * every client for a row that only shows a label.
@@ -6781,26 +6552,18 @@ export class EngineStore {
     const inbox = this.getInboxPolicy();
     // Read once and spread into both arms below, like `inbox`: the two paths
     // differ in how they find the ROWS, never in what rides beside them.
-    const mainSession = this.resolveMainSession();
-    // ONE FLAG, read from the Agent's own document — see the field above.
     const agent = { enabled: readAgentSettings(agentPaths(this.paths.root)).enabled };
     /**
-     * THE DESIGNATED CONVERSATION IS NEVER SHELVED OUT OF THIS ANSWER (#522).
+     * NOTHING IS EXEMPTED FROM THE SHELF ANY MORE (#531).
      *
-     * The rail draws its Main entry from the row in this list, and settling is
-     * a TIME rule — three days quiet by default — so without this the entry the
-     * setting promises would disappear on its own, on a Tuesday, for a feature
-     * the person had not switched off. It is the same argument the pinned band
-     * makes: a row somebody said to keep in front of them is not one a window
-     * gets to hide. It is exempted from `settledCount` too, because it is on
-     * the list rather than behind the shelf.
-     *
-     * ONLY WHILE ENABLED. A designation that is switched off is an ordinary
-     * conversation and settles like any other — which is exactly what "the
-     * session remains an ordinary resumable session" has to mean.
+     * #522 kept the designated conversation on this list whatever the settling
+     * clock said, because the rail drew its Main entry from a ROW here and a
+     * time rule would have made that entry vanish on a Tuesday. The Agent has
+     * no row: its entry is drawn from the flag above and exists whether or not
+     * any session does. So the exemption goes with the designation, and every
+     * conversation now settles by the same rule.
      */
-    const keep = mainSession.enabled ? mainSession.sessionId : undefined;
-    const indexed = this.shelfFromIndex(inbox, options.all === true, keep);
+    const indexed = this.shelfFromIndex(inbox, options.all === true);
     if (indexed) {
       /**
        * ══ THE INDEXED PATH — issue #493 ══
@@ -6825,7 +6588,6 @@ export class EngineStore {
         ...full,
         sessions: full.sessions.map(liveRow),
         inbox,
-        mainSession,
         agent,
         revision,
         settledCount: indexed.settledCount,
@@ -6849,10 +6611,7 @@ export class EngineStore {
        * there is one). Converting here is what lets the rule be one function.
        */
       const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
-      // `keep` is the designated conversation — see the note where it is
-      // resolved. The document path has to agree with the indexed one above, or
-      // the rail's Main entry would depend on which backend answered.
-      if (session.id !== keep && isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
+      if (isShelved(settleable, settlingActivityOf(session), at)) shelved.add(session.id);
     }
     const sessions = options.all === true ? full.sessions : full.sessions.filter((session) => !shelved.has(session.id));
     return {
@@ -6866,7 +6625,6 @@ export class EngineStore {
         ? full.assignments
         : Object.fromEntries(Object.entries(full.assignments).filter(([id]) => !shelved.has(id))),
       inbox,
-      mainSession,
       agent,
       revision,
       settledCount: shelved.size,
@@ -7805,15 +7563,6 @@ export class EngineStore {
     // The watermark rides the claim: everything submitted from here on was
     // written against a session the person had reason to think was live.
     turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
-    /**
-     * AND WHICH MAIN DESIGNATION IT IS RUNNING UNDER, if any — see
-     * `Turn.mainGeneration` (#522). Stamped in the same breath as the claim and
-     * on the same condition as the coordinator briefing, so the two can never
-     * disagree about whether this turn is a coordinator's: a turn that was
-     * briefed to coordinate is exactly the one that must stop being able to
-     * re-subscribe once the switch goes off.
-     */
-    if (this.isMainSession(sessionId)) turn.mainGeneration = this.getMainSession().generation ?? 0;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -8188,6 +7937,27 @@ export class EngineStore {
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
     for (const candidate of candidates) {
+      /**
+       * A SESSION ON THE DRIVER THAT NO LONGER EXISTS IS REFUSED, ONCE (#531).
+       *
+       * The owner confirmed no `telar`-driver session exists on any store, so
+       * there is no migration and this is not one — it is the refusal that
+       * makes that confirmation safe to have acted on. Checked BEFORE the claim
+       * so nothing is marked running, and the turn is left queued rather than
+       * failed: if such a session somehow exists, the person still has their
+       * conversation and a later Telar can decide what to do with it.
+       *
+       * ONE LOG LINE, and not per scan — `warnedLegacyDriver` is what keeps a
+       * refused session from writing a line every time a worker polls.
+       */
+      const candidateSession = this.getSession(candidate.sessionId);
+      if ((candidateSession.driver as string) === "telar") {
+        if (!this.warnedLegacyDriver.has(candidate.sessionId)) {
+          this.warnedLegacyDriver.add(candidate.sessionId);
+          console.error(`[telar] session ${candidate.sessionId} runs on the removed "telar" driver and will not be claimed (#531).`);
+        }
+        continue;
+      }
       const turn = this.claimTurn(candidate.sessionId, workerId);
       if (!turn) continue;
       const session = this.getSession(candidate.sessionId);
@@ -8289,16 +8059,10 @@ export class EngineStore {
          * nothing.
          */
         ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
-        /**
-         * THE COORDINATOR BRIEFING, DECIDED HERE AND NOWHERE ELSE (#522).
-         *
-         * Same rule as the orientation above, one condition narrower: the words
-         * are the engine's and so is "is this the designated session", so the
-         * claim carries the OUTCOME. Resolved at CLAIM TIME, which is what makes
-         * the disable rule true as stated — a turn already in flight keeps the
-         * briefing it started with, and the next turn is claimed without one.
-         */
-        ...(this.isMainSession(session.id) ? { mainBriefing: MAIN_SESSION_BRIEFING } : {}),
+        // THE COORDINATOR BRIEFING IS GONE FROM HERE (#531). It was resolved at
+        // claim time because the coordinator was a session; the Agent is not
+        // one, so its briefing is a constant in its own runtime and no claim
+        // carries it. See `agent/briefing.ts`.
         turn,
       };
     }
@@ -8385,19 +8149,6 @@ export class EngineStore {
     instanceId: string,
   ): ModelSelection | undefined {
     const normalized = this.normalizeModelSelection(driver, selection);
-    /**
-     * THE MACHINE'S CHOICE FOR THE MAIN ASSISTANT, when the turn and the session
-     * named none (#526). It lives on the Main document rather than on the
-     * session, so it survives the designation moving — see `MainSession.model`.
-     *
-     * STILL ABSENT WHEN NOBODY PICKED ONE, deliberately: the driver has a real
-     * default id and spelling it here too would be a second place it lives, and
-     * the one that goes stale.
-     */
-    if (driver === "telar" && !normalized?.model) {
-      const configured = this.getMainSession().model;
-      return configured ? { ...(normalized ?? { instanceId }), model: configured } : normalized;
-    }
     if (driver !== "claude" || normalized?.model) return normalized;
     const model = this.defaultClaudeModelId();
     // Nothing known: unchanged. A guess here would be the 200k bug wearing a
@@ -9208,46 +8959,6 @@ export class EngineStore {
   // ── Subscriptions — one session asking to be woken by another ─────────────
 
   /**
-   * REFUSE A COORDINATOR THAT IS NO LONGER ONE — the second half of "disable
-   * stops the monitoring" (#522).
-   *
-   * THE RACE IT CLOSES. A turn claimed while its session was Main keeps the
-   * coordinator briefing for its whole run; that is deliberate, and it means
-   * the turn is still being told to delegate and subscribe long after somebody
-   * may have switched Main off. Dropping the subscriptions at disable is a
-   * one-time sweep, and that turn can simply make new ones — so the monitoring
-   * a person just stopped comes back, silently, on the next tool call.
-   *
-   * WHAT IS REFUSED IS A TURN, NOT A CONVERSATION, and the distinction is the
-   * whole design. The formerly-designated session stays an ordinary, fully
-   * usable session: a later human turn in it is claimed with no generation at
-   * all and subscribes through the ordinary permissions, exactly like any other
-   * conversation. Only a turn that is STILL EXECUTING under a designation the
-   * store has moved past is told no. Ordinary sessions never carry a generation
-   * and are never touched by this.
-   *
-   * IT COVERS EVERY DOOR because it lives in `subscribe` rather than in a tool:
-   * the `sessions` wall, the sessions socket and `POST /v2/sessions/:id/
-   * subscriptions` all bottom out here.
-   *
-   * A SENTENCE THE MODEL CAN ACT ON. It says what happened and what is still
-   * true, because the alternative is a coordinator that retries the same call.
-   */
-  private refuseStaleCoordinator(subscriberSessionId: string): void {
-    // The calling turn is the session's live one — one turn per session is the
-    // invariant every path here relies on, so there is no ambiguity about which.
-    const live = this.readQueue(subscriberSessionId).turns.find((turn) => turn.state === "claimed" || turn.state === "running");
-    if (live?.mainGeneration === undefined) return;
-    const main = this.getMainSession();
-    if (main.enabled && main.sessionId === subscriberSessionId && (main.generation ?? 0) === live.mainGeneration) return;
-    throw new EngineStateError(
-      "conflict",
-      "this session is no longer Telar's Main session, so this turn cannot take out new subscriptions — its monitoring was deliberately stopped. " +
-        "Nothing else about the turn is restricted: finish what you were asked to do and report it. A later turn in this conversation subscribes normally.",
-    );
-  }
-
-  /**
    * SUBSCRIBE. Both sessions must be live: an archived subscriber has nowhere
    * to be woken, and an archived target has nothing left to do. IDEMPOTENT ON
    * THE PAIR — a retried tool call returns the one subscription, with the
@@ -9261,17 +8972,13 @@ export class EngineStore {
     /**
      * THE BUILT-IN AGENT IS A SUBSCRIBER THAT IS NOT A SESSION (#531).
      *
-     * Everything below about the SUBSCRIBER asks the session store about it —
-     * does it exist, is it archived, is its live turn coordinating under a
-     * designation that has moved. None of the three has an answer for the
-     * Agent: it has no session document, it cannot be archived, and it takes no
-     * claim. So the subscriber-side checks are skipped by name, and every
-     * TARGET-side check below still runs unchanged — which is the half that
-     * protects the other session.
+     * Both subscriber-side checks below ask the session store about it — does
+     * it exist, is it archived — and neither has an answer for the Agent: it
+     * has no session document and cannot be archived. So they are skipped by
+     * name, and every TARGET-side check still runs unchanged, which is the half
+     * that protects the other session.
      */
-    const agentSubscriber = isAgentSelf(subscriberSessionId);
-    if (!agentSubscriber) {
-      this.refuseStaleCoordinator(subscriberSessionId);
+    if (!isAgentSelf(subscriberSessionId)) {
       const subscriber = this.getSession(subscriberSessionId);
       if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
     }
@@ -9321,6 +9028,9 @@ export class EngineStore {
     this.agentWakeSink = sink;
   }
   private agentWakeSink?: (wake: AgentWake) => void;
+  /** Sessions already refused for running on the removed `telar` driver, so the
+   *  refusal is one log line rather than one per worker poll (#531). */
+  private readonly warnedLegacyDriver = new Set<string>();
 
   /** With `subscriberSessionId`, another session's subscription reads as
    *  absent — a session may not remove what it did not ask for. */
@@ -9711,9 +9421,9 @@ export class EngineStore {
     const at = this.now();
     /**
      * `targetSessionId` NARROWS IT TO ONE SOURCE; omitting it means every wake
-     * this session is still holding, whoever it was about — which is what
-     * switching Main off asks for (see `setMainSession`), and what an
-     * unsubscribe must NOT do.
+     * this session is still holding, whoever it was about — which is what a
+     * session being decommissioned asks for, and what an unsubscribe must NOT
+     * do.
      *
      * `wakeReason` IS THE WHOLE TEST OF "AUTOMATED", and it is exact rather than
      * convenient: a turn is `origin: "session"` for two different reasons, and

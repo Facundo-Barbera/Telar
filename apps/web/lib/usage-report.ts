@@ -39,11 +39,17 @@ export type UsageFold = {
   sessions: number;
 };
 
-/** Every provider a usage row can name — `telar` included, because the engine's
- *  own loop spends tokens like any other and a report that omitted it would
- *  under-count the machine. */
-export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode", "telar"];
-export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", telar: "Telar" };
+/**
+ * Every provider a usage row can name.
+ *
+ * `telar` WAS A FOURTH until #531 removed the driver. The Agent still spends
+ * tokens, and this report does not yet count them — it folds per-SESSION usage,
+ * and the Agent has no session. Counting it is a separate question from
+ * removing the driver, and answering it here would have meant inventing a row
+ * shape nothing writes.
+ */
+export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
+export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 const zeroTokens = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
 const zeroTotals = (): UsageTotals => ({ tokens: zeroTokens(), processed: 0, costUsd: 0, priced: true, turns: 0 });

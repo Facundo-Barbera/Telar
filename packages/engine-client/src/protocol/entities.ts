@@ -1093,93 +1093,16 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
 /**
- * THE ONE DESIGNATED COORDINATOR CONVERSATION — experimental, off by default,
- * and the whole of what "Main session" is (#522).
- *
- * IT DESIGNATES, IT DOES NOT CREATE A KIND. A main session is an ORDINARY
- * session: the same `createSession` path, the same project and model
- * conventions, the same rail row underneath, the same tools behind the same
- * gate. What being main adds is a briefing at the prompt seam and an entry near
- * the top of the rail. Being main widens no permission and no tool.
- *
- * SAME ENVIRONMENT SCOPE AS THE DOCUMENTS ABOVE, and for `AgentOrientation`'s
- * own reason: this decides what one session on this machine is TOLD, and a
- * per-browser copy would mean a desktop shell and a phone disagreeing about
- * which conversation that is.
- *
- * `sessionId` OUTLIVES `enabled`, DELIBERATELY. Disabling keeps the id, so
- * re-enabling designates the conversation that was already main rather than
- * minting a second one — the requirement that enable, disable, re-enable and a
- * restart can never leave two. The engine still checks the session EXISTS
- * before reusing it; a conversation somebody deleted is not a designation.
- */
-export const MainSession = z.object({
-  /** Off out of the box. Every user who never opens the setting sees exactly
-   *  the Telar they had: no rail entry, no briefing, no document. */
-  enabled: z.boolean(),
-  /** Which conversation is main. Absent means none has been designated yet —
-   *  a distinct state from "designated and switched off". */
-  sessionId: Id.optional(),
-  /**
-   * WHICH DESIGNATION THIS IS — a counter, bumped every time the answer to
-   * "who is Main, and is it on" actually changes.
-   *
-   * IT EXISTS FOR ONE RACE. A turn that was claimed while this session was Main
-   * keeps the coordinator briefing for its whole run — that is the rule, and it
-   * is the right one: a turn in flight finishes with what it started with. But
-   * that turn can still CALL TOOLS after somebody switches Main off, and
-   * `sessions_subscribe` is the one that would quietly restart the monitoring
-   * the switch just stopped. Removing the subscriptions once cannot fix it,
-   * because the turn simply makes new ones.
-   *
-   * SO THE TURN CARRIES THE GENERATION IT WAS CLAIMED UNDER (`Turn.
-   * mainGeneration`), and `subscribe` refuses a caller whose turn's generation
-   * is no longer the current one. A turn with NO generation — an ordinary
-   * session, or this same session on a later human turn after the switch went
-   * off — subscribes exactly as it always did. What is refused is stale
-   * COORDINATOR EXECUTION, not the conversation.
-   *
-   * ABSENT MEANS ZERO, so a document written before this field parses as
-   * "generation nought" rather than failing and costing the designation.
-   */
-  generation: z.number().int().nonnegative().optional(),
-  /**
-   * WHICH MODEL THE MAIN ASSISTANT RUNS, as the provider's own identifier
-   * (#526).
-   *
-   * ON THE MACHINE'S DOCUMENT RATHER THAN ON THE SESSION, and the difference
-   * shows the moment the designation moves: "which model this Mac's coordinator
-   * runs" is a preference about the ROLE, and a copy on each session would mean
-   * re-picking it every time somebody designated a different conversation.
-   *
-   * ABSENT MEANS THE DRIVER'S OWN DEFAULT, which is a real id rather than a
-   * concept — see `agent/go.ts`. Spelling that default here too would be
-   * a second place it lives, and the one that goes stale.
-   *
-   * NEVER INTERPRETED. It is whatever OpenCode Go serves, passed through: this
-   * engine has no list to validate against that would not be out of date the
-   * week after it was written.
-   */
-  model: z.string().min(1).max(120).optional(),
-});
-export type MainSession = z.infer<typeof MainSession>;
-
-/** Off, and nothing designated — what this engine did before the document
- *  existed, which is what an install that never opens Settings keeps doing. */
-export const DEFAULT_MAIN_SESSION: MainSession = { enabled: false };
-
-/**
  * THE BUILT-IN AGENT, AND EVERYTHING THIS MACHINE REMEMBERS ABOUT IT (#531).
  *
- * WHAT CHANGED FROM `MainSession`, WHICH THIS REPLACES. That document
- * DESIGNATED a conversation: it named a session id, and the coordinator was an
- * ordinary session wearing a briefing. The Agent is not a session at all — it
- * has its own identity, its own history and its own lifecycle, and Telar
- * sessions are resources it operates on through tools. So the id this document
- * carries is a THREAD id, and nothing in the rail has to exist for it to be
- * real.
+ * WHAT IT REPLACED, AND WHY THE SHAPE CHANGED. `MainSession` DESIGNATED a
+ * conversation: it named a session id, and the coordinator was an ordinary
+ * session wearing a briefing. The Agent is not a session at all — it has its
+ * own identity, its own history and its own lifecycle, and Telar sessions are
+ * resources it operates on through tools. So the id this document carries is a
+ * THREAD id, and nothing in the rail has to exist for it to be real.
  *
- * ENVIRONMENT-SCOPED, for `MainSession`'s own reason: remote web, the desktop
+ * ENVIRONMENT-SCOPED, like the documents above it: remote web, the desktop
  * shell and a paired phone must agree about whether the Agent exists, and a
  * per-browser copy would put an entry in one client's rail and not another's.
  */
@@ -1191,8 +1114,8 @@ export const AgentSettings = z.object({
    * THE CONVERSATION, as LangGraph's `thread_id` and as OpenCode Go's
    * `x-opencode-session`. One id, one conversation, both sides.
    *
-   * IT OUTLIVES `enabled`, exactly as `MainSession.sessionId` did and for the
-   * same requirement: switching the Agent off keeps the thread, so switching it
+   * IT OUTLIVES `enabled`, on the requirement the designation had before it:
+   * switching the Agent off keeps the thread, so switching it
    * back on resumes the conversation that was already there rather than minting
    * a second one. Absent means the Agent has never been switched on.
    */
@@ -1207,9 +1130,8 @@ export const AgentSettings = z.object({
   /**
    * WHICH CONVERSATION THIS IS — bumped by a RESET and by nothing else.
    *
-   * NARROWER THAN `MainSession.generation`, which counted every change to "who
-   * is Main, and is it on". There is no designation left to move, and enabling
-   * or disabling does not start a new conversation — only a reset does. It is
+   * NARROW ON PURPOSE. Enabling or disabling does not start a new conversation
+   * — only a reset does, so only a reset moves this. It is
    * what a client compares to know its cached transcript is about a thread that
    * no longer exists.
    *
@@ -1739,26 +1661,6 @@ export const Turn = z.object({
   completedAt: Timestamp.optional(),
 
   claim: TurnClaim.optional(),
-  /**
-   * WHICH MAIN-SESSION DESIGNATION THIS TURN WAS CLAIMED UNDER — see
-   * `MainSession.generation` (#522).
-   *
-   * STAMPED BY THE ENGINE AT CLAIM TIME and only when this session WAS the
-   * designated one: it is the counterpart of the coordinator briefing on the
-   * claim, and it exists so a turn still running after somebody switched Main
-   * off can be told apart from an ordinary turn in the same conversation.
-   * `subscribe` is the one caller that reads it.
-   *
-   * ON THE TURN RATHER THAN ON THE WIRE, deliberately. The alternative was to
-   * carry it out to the worker and back on every subscribe call, which would
-   * have made a security-shaped rule depend on a client sending a field
-   * faithfully. Here the engine stamps it, the engine reads it, and no tool
-   * shape anywhere carries it — so a model cannot name a generation at all.
-   *
-   * ABSENT IS THE ORDINARY CASE: every turn of every session but the designated
-   * one, and every later turn of that one once the switch is off.
-   */
-  mainGeneration: z.number().int().nonnegative().optional(),
   usage: UsageSnapshot.optional(),
 
   /** The assistant's final text. The full timeline is in the journal; this is

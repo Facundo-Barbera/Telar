@@ -11,10 +11,27 @@
  *   - no key is a refusal a settings pane can act on, never a quiet fallback.
  */
 import { expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AIMessage } from "@langchain/core/messages";
 import { AgentCredentialError, agentChatModel } from "../src/agent/model";
 import { DEFAULT_GO_MODEL } from "../src/agent/go";
 import { TELAR_ENGINE_VERSION } from "../src/version";
+
+/**
+ * A REAL `agent/` DIRECTORY WITH A REAL KEY IN IT — rung 1, on disk.
+ *
+ * The rungs below it are the machine's: `OPENCODE_API_KEY` in this process's
+ * environment, and the OpenCode CLI's own credential. A test that did not write
+ * one of its own would silently pass on a developer's machine using THEIR key,
+ * which is how the first version of this file spent real calls.
+ */
+function agentDirWith(key: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-key-"));
+  fs.writeFileSync(path.join(dir, "credentials.json"), JSON.stringify({ key }), { mode: 0o600 });
+  return dir;
+}
 
 /** A server that records what it was asked and answers one short completion. */
 async function withServer<T>(run: (base: string, seen: () => { headers: Headers; body: Record<string, unknown> }[]) => Promise<T>): Promise<T> {
@@ -41,7 +58,7 @@ test("the three headers reach the wire, and the key reaches it once", async () =
   await withServer(async (base, seen) => {
     const model = agentChatModel({
       threadId: "thread_abc",
-      instanceEnv: { OPENCODE_API_KEY: "sk-test-key" },
+      agentDir: agentDirWith("sk-test-key"),
       base,
       streaming: false,
     });
@@ -57,18 +74,18 @@ test("the three headers reach the wire, and the key reaches it once", async () =
 
 test("the model id defaults to go.ts's, and a setting overrides it", async () => {
   await withServer(async (base, seen) => {
-    const env = { OPENCODE_API_KEY: "sk-test-key" };
-    await agentChatModel({ threadId: "thread_abc", instanceEnv: env, base, streaming: false }).invoke("hello");
+    const agentDir = agentDirWith("sk-test-key");
+    await agentChatModel({ threadId: "thread_abc", agentDir, base, streaming: false }).invoke("hello");
     expect(seen()[0]!.body.model).toBe(DEFAULT_GO_MODEL);
 
-    await agentChatModel({ threadId: "thread_abc", model: "some-other-model", instanceEnv: env, base, streaming: false }).invoke("hello");
+    await agentChatModel({ threadId: "thread_abc", model: "some-other-model", agentDir, base, streaming: false }).invoke("hello");
     expect(seen()[1]!.body.model).toBe("some-other-model");
   });
 });
 
 test("an empty model setting is the default rather than a model id nothing serves", async () => {
   await withServer(async (base, seen) => {
-    await agentChatModel({ threadId: "thread_abc", model: "   ", instanceEnv: { OPENCODE_API_KEY: "k" }, base, streaming: false }).invoke("hello");
+    await agentChatModel({ threadId: "thread_abc", model: "   ", agentDir: agentDirWith("k"), base, streaming: false }).invoke("hello");
     expect(seen()[0]!.body.model).toBe(DEFAULT_GO_MODEL);
   });
 });
@@ -76,7 +93,7 @@ test("an empty model setting is the default rather than a model id nothing serve
 test("no key on any rung refuses, and the refusal names all three", () => {
   let threw: unknown;
   try {
-    agentChatModel({ threadId: "thread_abc", instanceEnv: {}, readCliKey: () => undefined, base: "http://127.0.0.1:1" });
+    agentChatModel({ threadId: "thread_abc", agentDir: agentDirWith(""), readCliKey: () => undefined, base: "http://127.0.0.1:1" });
   } catch (error) {
     threw = error;
   }
@@ -91,7 +108,7 @@ test("the CLI's own key is reached when nothing nearer answers", async () => {
   await withServer(async (base, seen) => {
     await agentChatModel({
       threadId: "thread_abc",
-      instanceEnv: {},
+      agentDir: agentDirWith(""),
       readCliKey: () => "sk-from-the-cli",
       base,
       streaming: false,

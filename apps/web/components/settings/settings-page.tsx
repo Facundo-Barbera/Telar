@@ -59,7 +59,6 @@ import { useSectionFromUrl } from "./use-section-from-url";
 const AppearanceSection = dynamic(() => import("./appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
-const MainSessionSection = dynamic(() => import("./main-session-section").then((mod) => mod.MainSessionSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
 const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
@@ -311,7 +310,6 @@ export function SettingsPage() {
           {/* AFTER THE THREE THAT APPLY TO EVERY SESSION, because this one
               applies to exactly one — and it is experimental, so it should not
               be the first thing a reader meets on the pane they open most. */}
-          <MainSessionSection />
           <TextGenSection />
           {/* Merged in from the retired Application pane. */}
           <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />

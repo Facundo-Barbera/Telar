@@ -1,20 +1,24 @@
 /**
  * WHERE THE OPENCODE GO KEY COMES FROM — three rungs, in one place (#526).
  *
- * ── MOVED, NOT REWRITTEN (#531) ─────────────────────────────────────────────
+ * ── MOVED, AND RUNG 1 REHOUSED (#531) ───────────────────────────────────────
  * This lived in `main-session/` while the coordinator was a designated session.
- * The Agent replaced that and this file did not change: the ladder, the rules
- * below and the redaction are the same three rungs against the same API, and
- * the only thing that moved is which module spends the key. `agent-lab`
- * imported this resolver rather than copying it precisely so the evaluation was
- * against the code that ships.
+ * Rungs 2 and 3 are unchanged — same variable, same file, same rules. Rung 1
+ * moved, because the place it used to live is gone: the pasted key was a
+ * sensitive variable on the `telar` provider LOGIN, and `telar` is no longer a
+ * `ProviderDriverKind`. A login that is not a driver would be a row in the
+ * Providers pane that nothing runs, which is the thing #531 removed the driver
+ * to avoid.
  *
- * 1. THE KEY THE OWNER PASTED INTO TELAR. Stored through the provider-secrets
- *    pattern already in this engine: a sensitive `OPENCODE_API_KEY` on the
- *    `telar` login, which means a 0600 file the registry route never echoes
- *    back, a redacted round trip in the settings pane, and the value arriving
- *    on the claim exactly as every other provider's credential does. No new
- *    store, no new route, no second redaction to remember.
+ * So the Agent's key has its own 0600 file beside its own thread, and the
+ * settings surface is the Agent's own rather than the Providers pane's. What is
+ * NOT lost is a key somebody already pasted under #526: `carryOverLegacyKey`
+ * moves it across on first read, once, so nobody re-pastes.
+ *
+ * 1. THE KEY THE OWNER PASTED INTO TELAR, at `<engineRoot>/agent/credentials.json`,
+ *    mode 0600, written only through `writeAgentKey` and read back to a client
+ *    only as the boolean `set`. Never echoed, not even redacted: there is no
+ *    round trip to preserve, because the only field is one a person retypes.
  * 2. `OPENCODE_API_KEY` IN THE ENGINE'S OWN ENVIRONMENT. What a person who
  *    already exports it for other tools expects to just work.
  * 3. THE OPENCODE CLI'S OWN CREDENTIAL, at `~/.local/share/opencode/auth.json`,
@@ -49,10 +53,77 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { atomicWrite } from "../atomic";
 
 /** The variable, on both the pasted rung and the ambient one — one spelling, so
  *  a person who exports it and a person who pastes it name the same thing. */
 export const GO_API_KEY_VAR = "OPENCODE_API_KEY";
+
+/* ------------------------------------------------------------------ *
+ * RUNG 1 — the key this machine was given, in a file of its own.
+ * ------------------------------------------------------------------ */
+
+/** `<engineRoot>/agent/credentials.json`. Its own file rather than a field on
+ *  `agent.json` for `providerSecrets`' own reason: the settings document is
+ *  handed to every client that opens the pane, and a key stored on it would be
+ *  one redaction away from being echoed back to a browser. */
+export function agentKeyFile(agentDir: string): string {
+  return path.join(agentDir, "credentials.json");
+}
+
+/**
+ * The pasted key, or nothing.
+ *
+ * NEVER THROWS, for `readOpenCodeCliKey`'s reason one rung down: an absent,
+ * unreadable or malformed file simply means this rung has no key, and the next
+ * one is the answer. An exception here would take down a turn over a file the
+ * person may never have written.
+ */
+export function readAgentKey(agentDir: string): string | undefined {
+  try {
+    const stored = JSON.parse(fs.readFileSync(agentKeyFile(agentDir), "utf8")) as { key?: unknown };
+    const key = typeof stored.key === "string" ? stored.key.trim() : "";
+    return key ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Store a key, or clear it.
+ *
+ * AN EMPTY STRING CLEARS, which is what a person emptying the field means; the
+ * file is left in place holding nothing rather than deleted, so its mode and
+ * its existence are one less thing to re-derive.
+ *
+ * 0600 IS PASSED EXPLICITLY even though it is `atomicWrite`'s default, because
+ * this is the one file in `agent/` where the mode is the point.
+ */
+export function writeAgentKey(agentDir: string, key: string | undefined): void {
+  const trimmed = key?.trim();
+  atomicWrite(agentKeyFile(agentDir), trimmed ? { key: trimmed } : {}, 0o600);
+}
+
+/**
+ * CARRY A #526 KEY ACROSS, ONCE.
+ *
+ * A person who pasted an OpenCode Go key while the Main assistant existed
+ * stored it as a sensitive variable on the `telar` provider login. That login
+ * is gone with the driver kind, and asking them to paste the same key a second
+ * time would be the upgrade losing something it did not have to.
+ *
+ * ONLY WHEN THIS RUNG IS EMPTY. A key set here is the person's newer answer and
+ * must not be overwritten by one the old pane happened to still hold. Returns
+ * whether it moved anything, so a startup can say so out loud — a silent
+ * migration is indistinguishable from nothing having happened.
+ */
+export function carryOverLegacyKey(agentDir: string, legacy: string | undefined): boolean {
+  const key = legacy?.trim();
+  if (!key) return false;
+  if (readAgentKey(agentDir)) return false;
+  writeAgentKey(agentDir, key);
+  return true;
+}
 
 /** Which rung answered. The only thing about a key that may be shown. */
 export type GoKeySource = "setting" | "environment" | "cli";
@@ -105,22 +176,23 @@ export function readOpenCodeCliKey(file: string = openCodeAuthFile()): string | 
  * THE PASTED KEY IS THE EXPLICIT OVERRIDE and therefore wins outright: a person
  * who typed one into Telar has said which account this machine's Agent
  * runs on, and an ambient variable or a CLI login must not quietly replace it.
- * That is the same ordering `providerProcessEnv` exists to protect for every
- * other provider — the instance declares, the environment does not.
+ * That is the same ordering `providerProcessEnv` protects for every other
+ * provider — the setting declares, the environment does not.
  *
  * EVERY INPUT IS PASSED IN. No rung reads a global here except through a
  * default argument, so the whole ladder is testable with three fakes and the
  * test never has to have a key on the machine running it.
  */
 export function resolveGoCredential(input: {
-  /** The `telar` login's resolved environment — rung 1. */
-  instanceEnv?: Record<string, string | undefined>;
+  /** `<engineRoot>/agent` — rung 1 reads `credentials.json` inside it. Absent
+   *  in a test that only wants the two ambient rungs. */
+  agentDir?: string;
   /** The engine or worker process's own environment — rung 2. */
   processEnv?: Record<string, string | undefined>;
   /** Rung 3, injected so a test never touches a real home directory. */
   readCliKey?: () => string | undefined;
 }): GoCredential | undefined {
-  const pasted = input.instanceEnv?.[GO_API_KEY_VAR]?.trim();
+  const pasted = input.agentDir ? readAgentKey(input.agentDir) : undefined;
   if (pasted) return { key: pasted, source: "setting" };
   const ambient = (input.processEnv ?? process.env)[GO_API_KEY_VAR]?.trim();
   if (ambient) return { key: ambient, source: "environment" };

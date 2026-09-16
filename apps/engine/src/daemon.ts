@@ -93,11 +93,13 @@ import type { NotesCapability } from "./notes-tools/tools";
 import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
+import { readAgentModels } from "./models";
 import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
 import { sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
+import { mainSweepReport, sweepMainSession } from "./agent/main-sweep";
 import type { AsyncGitRunner, GitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
@@ -787,6 +789,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
   if (decommissioned) process.stdout.write(`${decommissioned}\n`);
   /**
+   * AND WHAT THE MAIN SESSION LEFT — issue #531.
+   *
+   * THE KEY IS CARRIED FIRST, then the document goes. The order is the rule: the
+   * carry reads the `telar` login's secret, and a sweep that deleted before
+   * reading would lose the one thing the owner asked to keep. Both are
+   * best-effort and silent unless something actually went — see
+   * `agent/main-sweep.ts`.
+   */
+  const mainSwept = mainSweepReport({ carriedKey: store.carryOverAgentKey(), removed: sweepMainSession(store.paths.root) });
+  if (mainSwept) process.stdout.write(`${mainSwept}\n`);
+  /**
    * THE `telar` SKILL, PUT WHERE EACH PROVIDER READS SKILLS FROM — or taken
    * away. Run once on start and again on every PATCH of the toggle.
    *
@@ -939,13 +952,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
-      // Telar's own loop has no CLI to update — it ships with the engine. Said
-      // here rather than at the route so the injected test double keeps the
-      // same signature, and refused rather than pretended: a button that
-      // reported "already up to date" would be describing nothing.
-      if (driver === "telar") {
-        throw new EngineStateError("invalid_request", "Telar's own agent loop ships with the engine; update Telar itself.");
-      }
       return runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) });
     });
   /**
@@ -1190,7 +1196,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         agentChatModel({
           threadId: input.threadId,
           ...(input.model ? { model: input.model } : {}),
-          instanceEnv: store.agentCredentialEnv(),
+          agentDir: path.join(root, "agent"),
         })),
     ...(options.now ? { now: options.now } : {}),
     // THE SAME PARAGRAPH EVERY OTHER TURN ON THIS MACHINE GETS, under the same
@@ -1452,59 +1458,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * THE ONE DESIGNATED COORDINATOR CONVERSATION — experimental, off by
-       * default (#522). A document of the environment like the two above, so
-       * the desktop, a browser tab and a paired phone agree about which
-       * conversation this is rather than each keeping an answer of its own.
-       *
-       * THE PATCH IS WHERE DESIGNATION HAPPENS, and it is the store that does
-       * it: enabling with nothing designated creates through the ordinary
-       * `createSession` path, and enabling with something designated reuses it.
-       * Both rungs live in `setMainSession` because "never a second one" is a
-       * rule about the order of a read and a write — see it there.
-       *
-       * FORWARDED UNVALIDATED, like the two rules above: the shape lives next to
-       * the schema in the store, and a second copy here could disagree with it.
-       *
-       * THE RAIL DOES NOT READ THIS ROUTE. It gets the same answer off
-       * `/v2/sessions/live`, which it already polls; this is the settings pane's
-       * read and every client's write.
-       */
-      if (url.pathname === "/v2/main-session" && (request.method === "GET" || request.method === "PATCH")) {
-        if (request.method === "GET") {
-          // RESOLVED, not the raw document: a designation whose conversation was
-          // deleted must not put a row in front of somebody that navigates
-          // nowhere. See `resolveMainSession`.
-          //
-          // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
-          // pane that has to decide whether to show a setup field — and asking
-          // in a second request would let the two disagree about the same
-          // instant. Which RUNG answered, never the key. See
-          // `EngineStore.mainSessionCredential`.
-          writeJson(response, 200, { mainSession: store.resolveMainSession(), credential: store.mainSessionCredential() });
-          return;
-        }
-        const input = await body(request);
-        writeJson(response, 200, {
-          mainSession: store.setMainSession({
-            // By PRESENCE, like every other patch here: a client saying only
-            // `sessionId` must not also be re-deciding the switch.
-            //
-            // `projectId` IS GONE (#526). Turning Main on mints a project-less
-            // session on the engine's own driver; there is nothing to choose,
-            // and a client still sending one is ignored rather than obeyed.
-            ...("enabled" in input ? { enabled: input.enabled } : {}),
-            ...("sessionId" in input ? { sessionId: input.sessionId } : {}),
-            ...("model" in input ? { model: input.model } : {}),
-          }),
-          credential: store.mainSessionCredential(),
-        });
-        return;
-      }
-      /**
        * ══ THE BUILT-IN AGENT — issue #531 ══
        *
-       * Seven routes, and they are deliberately NOT under `/v2/sessions/`: the
+       * Eight routes, and they are deliberately NOT under `/v2/sessions/`: the
        * Agent is not a session, it has no id in that namespace, and a client
        * that reached it through a session route would be told a conversation
        * exists that `sessions_read` cannot open.
@@ -1525,12 +1481,37 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("model" in input ? { model: input.model } : {}),
             ...("reset" in input ? { reset: input.reset } : {}),
           });
+          /**
+           * THE KEY IS WRITE-ONLY, AND IS NOT PART OF THE SETTINGS DOCUMENT.
+           *
+           * Stored 0600 beside the thread rather than on `agent.json`, for
+           * `providerSecrets`' own reason: the settings document is handed to
+           * every client that opens the pane, and a key on it would be one
+           * redaction away from being echoed back to a browser. There is no
+           * redacted round trip to preserve either — the only field is one a
+           * person retypes, and an empty string clears it.
+           */
+          if ("apiKey" in input) store.setAgentKey(input.apiKey);
         }
         // THE CREDENTIAL RIDES ALONG, because the pane that reads this is the
         // pane that decides whether to show a setup field, and asking in a
         // second request would let the two disagree about one instant. Which
         // RUNG answered, never the key.
         writeJson(response, 200, { agent: agentRuntime.state(), credential: store.agentCredential() });
+        return;
+      }
+      /**
+       * WHAT THE AGENT MAY RUN.
+       *
+       * ITS OWN ROUTE because `/v2/models/:driver` is keyed by
+       * `ProviderDriverKind` and answers "what can this SESSION run" — and the
+       * Agent is not a session. Same list, same public endpoint, no credential
+       * (the docs publish it as open), and it fails soft with the service's own
+       * words: an empty picker carrying the reason beats one full of ids that
+       * 404.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/models") {
+        writeJson(response, 200, await readAgentModels());
         return;
       }
       if (request.method === "POST" && url.pathname === "/v2/agent/turns") {

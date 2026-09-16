@@ -46,8 +46,9 @@ export type AgentModelInput = {
   threadId: string;
   /** From `agent.json`; absent means `DEFAULT_GO_MODEL`. */
   model?: string;
-  /** The `telar` login's resolved environment — rung 1 of the key ladder. */
-  instanceEnv?: Record<string, string | undefined>;
+  /** `<engineRoot>/agent` — rung 1 of the key ladder reads `credentials.json`
+   *  inside it. Absent in a test that means to reach no key at all. */
+  agentDir?: string;
   /** Rung 3, injected so a test never reads a real home directory. */
   readCliKey?: () => string | undefined;
   /** Overridden by tests to point at a local server. */
@@ -59,6 +60,10 @@ export type AgentModelInput = {
    *  only wants a token count. */
   streaming?: boolean;
   temperature?: number;
+  /** A ceiling on the answer. Unset for a turn — the model stops when it has
+   *  finished — and set to 1 by the live smoke, which is buying a round trip
+   *  rather than an answer. */
+  maxTokens?: number;
 };
 
 /**
@@ -85,7 +90,7 @@ export class AgentCredentialError extends Error {
  */
 export function agentChatModel(input: AgentModelInput): BaseChatModel {
   const credential = resolveGoCredential({
-    ...(input.instanceEnv ? { instanceEnv: input.instanceEnv } : {}),
+    ...(input.agentDir ? { agentDir: input.agentDir } : {}),
     ...(input.readCliKey ? { readCliKey: input.readCliKey } : {}),
   });
   if (!credential) {
@@ -119,6 +124,7 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
     // usage at all, and a turn with no token count is a turn missing from the
     // usage report.
     streamUsage: true,
+    ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     configuration: { baseURL: input.base ?? OPENCODE_GO_BASE, fetch: withTelarHeaders },
   });
 }
