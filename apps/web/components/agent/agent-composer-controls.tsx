@@ -30,8 +30,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { GaugeIcon, ShieldCheckIcon, SparklesIcon } from "lucide-react";
-import type { AgentState, ProviderModel } from "@telar/engine-client";
+import { GaugeIcon, ShieldCheckIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import type { AgentModelCatalogue, AgentState } from "@telar/engine-client";
+import { AgentModelList, agentModelTrouble } from "@/components/agent/agent-model-picker";
 import { ChoiceRow, CompactRow, ControlDivider, ControlTrigger, MenuHeading } from "@/components/composer-controls";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createEngineApi } from "@/lib/engine/client";
@@ -63,29 +64,42 @@ export const AGENT_ACCESS_HELP: Record<AgentAccess, string> = {
 };
 
 /**
- * THE MODEL PILL — `GET /v2/agent/models`, which is `go.ts`'s public list.
+ * THE MODEL PILL — `GET /v2/agent/models`, now a described catalogue (#551).
  *
- * NO CATALOGUE, NO FAMILIES, NO STARS. Those are the provider catalogue's
- * apparatus and the Agent has no provider: this is one flat list of ids from one
- * OpenAI-compatible endpoint, so the menu is that list plus the row that means
- * "whatever the service defaults to".
+ * IT USED TO BE A FLAT LIST OF RAW IDS, because that is all the endpoint
+ * answered: `{ id, object, created, owned_by }`, in Go's own order. The engine
+ * merges models.dev's names and limits into it now, and a transcribed table
+ * saying which of Go's three endpoints each id answers on — so the menu groups,
+ * searches, and greys out the sixteen models this client cannot reach. The
+ * list itself is `AgentModelList`, shared verbatim with the settings pane.
+ *
+ * THE PILL READS THE NAME, NOT THE ID. "Kimi K3" is what the row said when it
+ * was picked; `kimi-k3` is still what goes on the wire, and the popover's rows
+ * carry it in their titles for anybody who needs to see it.
  */
 export function AgentModelControl({
   model,
-  models,
-  message,
+  catalogue,
   onChange,
 }: {
   model?: string;
-  models: readonly ProviderModel[];
-  /** The service's own words when the list could not be fetched. An empty
-   *  picker carrying the reason beats one full of ids that 404. */
-  message?: string;
+  catalogue: AgentModelCatalogue;
   onChange?: (patch: AgentControlPatch) => void;
 }) {
   const [open, setOpen] = useState(false);
   const readOnly = !onChange;
-  const label = model ?? "Model";
+  const row = catalogue.models.find((entry) => entry.id === model);
+  const label = row?.name ?? model ?? "Model";
+  /**
+   * THE MODEL ABOUT TO RUN IS ONE THIS CLIENT CANNOT SPEAK TO (#551).
+   *
+   * Reachable without going through this picker at all: typed into Settings
+   * before the picker existed, set from the phone, or moved to another endpoint
+   * by Go since. The pill is the last thing a person looks at before pressing
+   * send, so it is where the warning belongs — the fix is one row away in the
+   * menu this pill opens, and the settings pane offers it as a single press.
+   */
+  const trouble = agentModelTrouble(catalogue, model);
   const pick = (next: string) => {
     onChange?.({ model: next });
     setOpen(false);
@@ -96,28 +110,22 @@ export function AgentModelControl({
         render={
           <ControlTrigger
             open={open}
-            icon={<SparklesIcon className="size-3.5" />}
+            // THE GLYPH CARRIES IT, not the colour alone: this pill sits in a
+            // row of three, and a person who cannot tell `--warning` from
+            // `--muted-foreground` would otherwise have no signal at all.
+            icon={trouble ? <TriangleAlertIcon className="size-3.5 text-warning" /> : <SparklesIcon className="size-3.5" />}
             label={label}
-            ariaLabel={`Model: ${model ?? "the service default"}`}
+            {...(trouble ? { title: trouble.obstacle } : {})}
+            ariaLabel={trouble ? `Model: ${label} — ${trouble.obstacle}` : `Model: ${label === "Model" ? "the service default" : label}`}
             className="min-w-0 max-w-56 justify-start"
           />
         }
       />
-      <PopoverContent align="start" side="top" sideOffset={8} className="max-h-[min(26rem,70vh)] w-64 gap-0 overflow-y-auto rounded-xl p-1">
-        <MenuHeading>Model</MenuHeading>
-        {/* THE DEFAULT IS A ROW, not an empty state: sending no model IS asking
-            for the service's default, and a menu with nothing ticked reads as
-            broken rather than unset. */}
-        <CompactRow label="Default" selected={!model} disabled={readOnly} onSelect={() => pick("")} />
-        {models.map((row) => (
-          <CompactRow key={row.id} label={row.id} selected={model === row.id} disabled={readOnly} onSelect={() => pick(row.id)} />
-        ))}
-        {/* A model this list does not carry — set in Settings, or added upstream
-            since. Shown, so the pill never reads as running something it is not. */}
-        {model && !models.some((row) => row.id === model) && (
-          <CompactRow label={model} hint="external" selected disabled onSelect={() => undefined} />
-        )}
-        {models.length === 0 && message && <p className="px-2 py-1.5 text-2xs leading-snug text-muted-foreground">{message}</p>}
+      {/* FIXED HEIGHT, like the session picker's: the list is thirty-eight rows
+          and a query narrows it to two, and a popover that re-sized under the
+          pointer on every keystroke would be unusable. */}
+      <PopoverContent align="start" side="top" sideOffset={8} className="h-[min(26rem,70vh)] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0">
+        <AgentModelList {...(model ? { model } : {})} catalogue={catalogue} readOnly={readOnly} onPick={pick} />
       </PopoverContent>
     </Popover>
   );
@@ -206,18 +214,16 @@ export function AgentAccessControl({ access, onChange }: { access?: AgentAccess;
  *  labels, exactly as the session composer draws its three. */
 export function AgentComposerControls({
   state,
-  models,
-  message,
+  catalogue,
   onChange,
 }: {
   state: AgentState | undefined;
-  models: readonly ProviderModel[];
-  message?: string;
+  catalogue: AgentModelCatalogue;
   onChange?: (patch: AgentControlPatch) => void;
 }) {
   return (
     <>
-      <AgentModelControl {...(state?.model ? { model: state.model } : {})} models={models} {...(message ? { message } : {})} {...(onChange ? { onChange } : {})} />
+      <AgentModelControl {...(state?.model ? { model: state.model } : {})} catalogue={catalogue} {...(onChange ? { onChange } : {})} />
       <ControlDivider />
       <AgentEffortControl {...(state?.effort ? { effort: state.effort } : {})} {...(onChange ? { onChange } : {})} />
       <ControlDivider />
@@ -227,16 +233,23 @@ export function AgentComposerControls({
 }
 
 /**
- * The Agent's model list, once per screen.
+ * The Agent's described model catalogue, once per screen.
  *
  * NOT `useModelCatalogue`: that is keyed by driver and login and spawns a
  * provider CLI. This is one public HTTP read with no credential — see
  * `agent/go.ts` — and it fails soft, answering an empty list and the service's
  * own words rather than throwing, because the picker is opened before the key
  * is pasted at least as often as after.
+ *
+ * THE EMPTY ANSWER IS SHAPED LIKE A REAL ONE, both stamps null: the picker
+ * renders it during the first fetch, and a loader that had to guard every field
+ * would be guarding against its own initial state rather than against the
+ * engine.
  */
-export function useAgentModels(hostId: string = LOCAL_HOST_ID): { models: ProviderModel[]; message?: string } {
-  const [answer, setAnswer] = useState<{ models: ProviderModel[]; message?: string }>({ models: [] });
+export const NO_AGENT_MODELS: AgentModelCatalogue = { models: [], source: { go: null, modelsDev: null } };
+
+export function useAgentModels(hostId: string = LOCAL_HOST_ID): AgentModelCatalogue {
+  const [answer, setAnswer] = useState<AgentModelCatalogue>(NO_AGENT_MODELS);
   useEffect(() => {
     let cancelled = false;
     const api = createEngineApi(hostFetcher(hostId));

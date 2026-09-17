@@ -1222,21 +1222,42 @@ struct ComposerLabeledPill<Items: View>: View {
         Menu {
             items()
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon).font(.system(size: 14))
-                Text(label)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            .frame(maxWidth: 172)
-            .background(Theme.subtle)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+            ComposerPillLabel(icon: icon, label: label)
         }
+    }
+}
+
+/// THE PILL'S LOOK, WITHOUT THE MENU BEHIND IT.
+///
+/// Lifted out of `ComposerLabeledPill` (#551) because one control no longer
+/// opens a menu: the Agent's model pill opens a searchable SHEET, a `Menu`
+/// being unable to search or section thirty-eight described models. It must
+/// still be the same pill — that is the whole rule these shapes are shared
+/// under — so the drawing lives in one place and the two triggers wrap it.
+///
+/// `tint` IS THE ONE THING A CALLER MAY CHANGE, and only to warn: the Agent's
+/// pill turns its glyph amber when the model about to run is on an endpoint
+/// Telar cannot speak to.
+struct ComposerPillLabel: View {
+    let icon: String
+    let label: String
+    var tint: Color = Theme.text
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(tint)
+            Text(label)
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(Theme.text)
+            Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .frame(maxWidth: 172)
+        .background(Theme.subtle)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
     }
 }
 

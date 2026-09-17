@@ -21,33 +21,35 @@ import SwiftUI
 /// pill says "Ask".
 struct AgentComposerControls: View {
     let state: AgentState?
-    let models: [ProviderModel]
-    /// The service's own words when the list could not be fetched.
-    let modelsMessage: String?
+    let catalogue: AgentModelList
     /// Writes `PATCH /api/agent`. Fields by presence; `""` clears one.
     let onPatch: (AgentSettingsPatch) async -> Void
+
+    @State private var picking = false
 
     private static let efforts: [(String, String)] = [("low", "Low"), ("medium", "Medium"), ("high", "High")]
     private static let accesses: [(String, String)] = [("ask", "Ask"), ("auto", "Auto")]
 
     var body: some View {
-        // THE MODEL. No families, no stars, no connections — those are the
-        // provider catalogue's apparatus and the Agent has no provider. One flat
-        // list of ids from one OpenAI-compatible endpoint.
-        ComposerLabeledPill(icon: "sparkles", label: state?.model ?? "Model") {
-            // THE DEFAULT IS A ROW, not an empty state: sending no model IS
-            // asking for the service's default, and a menu with nothing ticked
-            // reads as broken rather than unset.
-            Button { patch(AgentSettingsPatch(model: "")) } label: {
-                composerMenuRow("Default", selected: state?.model == nil)
-            }
-            ForEach(models) { row in
-                Button { patch(AgentSettingsPatch(model: row.id)) } label: {
-                    composerMenuRow(row.id, selected: state?.model == row.id)
-                }
-            }
-            if models.isEmpty, let modelsMessage {
-                Text(modelsMessage)
+        // THE MODEL — a searchable sheet rather than a menu (#551).
+        //
+        // It was a flat `Menu` of OpenCode Go's raw ids in Go's own order,
+        // because the endpoint answered ids and nothing else. It answers a
+        // described catalogue now, and thirty-eight rows across thirteen
+        // families is not something a menu can present: it cannot search and it
+        // cannot section. See `AgentModelPickerSheet`.
+        Button { picking = true } label: {
+            ComposerPillLabel(icon: obstacle == nil ? "sparkles" : "exclamationmark.triangle.fill", label: modelLabel, tint: obstacle == nil ? Theme.text : Theme.statusAmber)
+        }
+        .buttonStyle(.plain)
+        // THE MODEL ABOUT TO RUN IS ONE THIS CLIENT CANNOT SPEAK TO. Reachable
+        // without going through this picker at all — typed into the Mac's own
+        // settings field, or moved to another endpoint by Go since. The pill is
+        // the last thing read before send, so it is where the warning belongs.
+        .accessibilityLabel(obstacle.map { "Model: \(modelLabel) — \($0)" } ?? "Model: \(modelLabel)")
+        .sheet(isPresented: $picking) {
+            AgentModelPickerSheet(catalogue: catalogue, selected: state?.model) { next in
+                patch(AgentSettingsPatch(model: next))
             }
         }
 
@@ -76,6 +78,19 @@ struct AgentComposerControls: View {
             }
         }
     }
+
+    /// THE NAME, NOT THE ID (#551). "Kimi K3" is what the row said when it was
+    /// picked; `kimi-k3` is still what goes on the wire. A stored model the
+    /// catalogue does not carry has no name to fall back on, so it shows as
+    /// itself — the pill must never read as running something it is not.
+    private var modelLabel: String {
+        guard let model = state?.model else { return "Model" }
+        return catalogue.models.first { $0.id == model }?.name ?? model
+    }
+
+    /// Set when what will run is on an endpoint this client cannot speak to.
+    /// See `agentModelObstacle`.
+    private var obstacle: String? { agentModelObstacle(catalogue, state?.model) }
 
     /// An unchosen level names the QUESTION rather than repeating "Auto" beside
     /// the access pill, which would be one word twice with nothing to say which

@@ -257,10 +257,12 @@ test("a machine that never switched Main on is swept silently and gains no key",
 
 /*
  * `/v2/agent/models` IS NOT TESTED HERE, ON PURPOSE. It delegates to
- * `readAgentModels`, which calls opencode.ai — and a test in the default suite
- * that reaches the network is the thing `EngineDaemonOptions.agentModel` exists
- * to prevent. It is covered by `agent.live.test.ts`, which lists models against
- * the real endpoint and runs only under TELAR_LIVE_SMOKE=1.
+ * `readAgentModels`, which calls opencode.ai and models.dev — and a test in the
+ * default suite that reaches the network is the thing
+ * `EngineDaemonOptions.agentModel` exists to prevent. What it DOES with those
+ * two answers — the merge, the route table, the cache, the default — is
+ * `agent-catalogue.test.ts`, which injects both and touches no network. The
+ * real endpoints are `agent.live.test.ts`, under TELAR_LIVE_SMOKE=1.
  */
 
 async function until(check: () => Promise<boolean>, label: string, ms = 15_000): Promise<void> {

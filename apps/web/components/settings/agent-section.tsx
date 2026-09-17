@@ -44,11 +44,18 @@
  * is at least as common as after, and it is exactly the state somebody is in
  * when they come here to set the Agent up.
  *
- * So the row is a dropdown when there is a list and a TEXT FIELD when there is
+ * So the row is a picker when there is a list and a TEXT FIELD when there is
  * not. An empty dropdown would look broken where a field looks open, and a
  * field alone would make somebody type an id they could have picked. The id is
  * passed through untouched either way — Telar keeps no list of what Go serves,
  * and the engine is what applies the default.
+ *
+ * THE PICKER IS THE COMPOSER PILL'S, NOT A SECOND ONE THAT MATCHES IT (#551).
+ * It was a `Dropdown` of raw ids, which was honest while the endpoint answered
+ * raw ids; the engine describes them now, and thirty-eight rows across thirteen
+ * families — sixteen of which this client cannot actually run — is not a
+ * `<select>`. `AgentModelList` is that list, mounted here and in the composer,
+ * so the two cannot drift.
  *
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
@@ -56,14 +63,17 @@
  */
 
 import { useEffect, useState } from "react";
-import { KeyRoundIcon, RotateCcwIcon, SparklesIcon } from "lucide-react";
-import type { ProviderModel } from "@telar/engine-client";
+import { ChevronDownIcon, KeyRoundIcon, RotateCcwIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import type { AgentModelCatalogue } from "@telar/engine-client";
+import { NO_AGENT_MODELS } from "@/components/agent/agent-composer-controls";
+import { AgentModelList, agentModelTrouble } from "@/components/agent/agent-model-picker";
 import { createEngineApi } from "@/lib/engine/client";
 import { DEFAULT_AGENT_MODEL, useAgentSettings } from "@/lib/agent/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { Dropdown, Row, SettingsGroup } from "./settings-shell";
+import { Row, SettingsGroup } from "./settings-shell";
 
 const KEY_VAR = "OPENCODE_API_KEY";
 
@@ -87,18 +97,17 @@ export function AgentSection() {
   /** What Go serves, or nothing — see the note above on why both are ordinary.
    *  Read once when the pane opens: it costs a call to another service, and it
    *  is not something a write to this document changes. */
-  const [models, setModels] = useState<ProviderModel[]>([]);
-  const [modelsMessage, setModelsMessage] = useState<string>();
+  const [catalogue, setCatalogue] = useState<AgentModelCatalogue>(NO_AGENT_MODELS);
+  /** The picker popover. Held here rather than inside it: picking a model has
+   *  to close the menu, and the write that follows lives on this pane. */
+  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     // Deferred a tick like every other loader on this pane.
     const task = window.setTimeout(() => {
       void createEngineApi()
         .agentModels()
-        .then((answer) => {
-          setModels(answer.models);
-          setModelsMessage(answer.message);
-        })
+        .then(setCatalogue)
         // A LIST THAT DID NOT ARRIVE LEAVES THE FIELD, which is the same
         // outcome as an empty one and needs no separate state.
         .catch(() => undefined);
@@ -107,6 +116,16 @@ export function AgentSection() {
   }, []);
 
   const model = typedModel ?? agent.model ?? "";
+  /** The stored model's row, when the catalogue carries it. Absent for a model
+   *  somebody typed before this pane had a picker, or one withdrawn since. */
+  const selected = catalogue.models.find((row) => row.id === model);
+  /** What "Default" actually runs, named rather than left as a word. The engine
+   *  marks the row; `DEFAULT_AGENT_MODEL` is the id it falls back to before the
+   *  list has arrived. */
+  const fallbackName = catalogue.models.find((row) => row.isDefault)?.name ?? DEFAULT_AGENT_MODEL;
+  /** Whether what will run is something Telar's Agent can actually speak to,
+   *  and what to offer instead. See `agentModelTrouble`. */
+  const trouble = agentModelTrouble(catalogue, model || undefined);
   const hasKey = credential?.set === true;
 
   async function saveKey(value: string): Promise<void> {
@@ -146,25 +165,42 @@ export function AgentSection() {
       <Row
         label="Model"
         hint={
-          models.length > 0
+          catalogue.models.length > 0
             ? `What OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}.`
-            : `The model id OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}. ${modelsMessage ?? "Its list could not be read, so type the id."}`
+            : `The model id OpenCode Go serves this conversation. Empty runs ${DEFAULT_AGENT_MODEL}. ${catalogue.message ?? "Its list could not be read, so type the id."}`
         }
         control={
-          models.length > 0 ? (
-            <Dropdown<string>
-              value={model}
-              label="Agent model"
-              disabled={loading}
-              onChange={(next) => void save({ model: next })}
-              // THE DEFAULT IS AN OPTION, NOT AN ABSENCE. "Leave it to Telar" is
-              // a choice somebody can come back to, and an empty string is what
-              // the engine reads as "use your own default".
-              options={[
-                { value: "", label: `Default (${DEFAULT_AGENT_MODEL})` },
-                ...models.map((entry) => ({ value: entry.id, label: entry.label || entry.id })),
-              ]}
-            />
+          catalogue.models.length > 0 ? (
+            // THE SAME PICKER THE COMPOSER PILL OPENS, not a second control
+            // that agrees with it — #551 asks for one picker in both places,
+            // and "one" has to mean one component. A `Dropdown` could not carry
+            // it: the list is thirty-eight rows across thirteen families, it
+            // needs a search field, and sixteen of its rows are unpickable.
+            <Popover open={picking} onOpenChange={setPicking}>
+              <PopoverTrigger
+                render={
+                  <Button variant="outline" size="sm" className="w-56 justify-between font-normal" disabled={loading} aria-label="Agent model">
+                    {/* `model` IS `""` WHEN NOTHING IS STORED, not undefined —
+                        the pane's own field needs a string. So the fall-through
+                        is `||`, not `??`, or an unset model draws a blank pill
+                        where it should name the default. */}
+                    <span className="min-w-0 truncate">{selected?.name ?? (model || `Default (${fallbackName})`)}</span>
+                    <ChevronDownIcon className="size-3.5 shrink-0 opacity-60" />
+                  </Button>
+                }
+              />
+              <PopoverContent align="end" className="h-[min(26rem,70vh)] w-72 flex-col gap-0 overflow-hidden rounded-xl p-0">
+                <AgentModelList
+                  {...(model ? { model } : {})}
+                  catalogue={catalogue}
+                  readOnly={loading}
+                  onPick={(next) => {
+                    setPicking(false);
+                    void save({ model: next });
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
           ) : (
             <Input
               className="h-8 w-56 font-mono text-xs"
@@ -186,7 +222,31 @@ export function AgentSection() {
             />
           )
         }
-      />
+      >
+        {/**
+         * THE MODEL ABOUT TO RUN IS ONE THIS CLIENT CANNOT SPEAK TO (#551).
+         *
+         * The picker cannot have caused it — it greys those rows — so this is
+         * an id that arrived another way: typed into the field above before the
+         * picker existed, set from the phone, or moved to another endpoint by
+         * Go since. The composer pill warns too, but only this pane can offer
+         * the fix as ONE PRESS, which is the whole point: a person reading a
+         * warning they cannot act on will learn to scroll past it.
+         */}
+        {trouble && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-2">
+            <TriangleAlertIcon className="size-3.5 shrink-0 text-warning" />
+            <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+              <span className="text-foreground">{trouble.running.name}</span> {trouble.obstacle}
+            </p>
+            {trouble.switchTo && (
+              <Button size="sm" disabled={loading} onClick={() => void save({ model: trouble.switchTo!.id })}>
+                Switch to {trouble.switchTo.name}
+              </Button>
+            )}
+          </div>
+        )}
+      </Row>
       <Row
         label="OpenCode Go key"
         icon={KeyRoundIcon}

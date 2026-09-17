@@ -312,26 +312,138 @@ struct AgentThreadPage: Decodable {
     }
 }
 
-/// `GET /api/agent/models` — the composer's model pill (#539).
+/// ONE MODEL THE AGENT MAY RUN, described (#551).
 ///
-/// FAILS SOFT BY DESIGN: a Mac that could not reach OpenCode Go, or has no key
-/// yet, answers an empty list and a `message`. Both halves are decoded, because
-/// an empty picker carrying the reason beats one full of ids that 404.
+/// ── WHY THE ROWS CARRY MORE THAN AN ID NOW ──────────────────────────────────
+/// OpenCode Go's `/models` answers `{ id, object, created, owned_by }` and
+/// nothing else, so the pill was a flat list of raw strings in Go's own order.
+/// The Mac's engine merges models.dev's names and limits into it, plus a
+/// transcribed table saying which of Go's three endpoints each id answers on.
+/// `route` is the load-bearing one: the Agent speaks `chat/completions` and
+/// only that, so a `/messages` or `/responses` model has to be shown as
+/// unreachable rather than sold and then refused by a 400.
+///
+/// ── EVERY NEW FIELD IS OPTIONAL-TOLERANT, ON PURPOSE ────────────────────────
+/// This app talks to whatever engine the paired Mac is running, which may be
+/// older than this build. A synthesised `Decodable` would make `route` required
+/// and drop every row from such a Mac — an empty picker, with no message to say
+/// why. So each field falls back: no `name` means the id, no `route` means
+/// `unknown`, and an unstated `supported` is `true`, because an engine that
+/// never heard of routes was serving a list this client could already run.
+struct AgentModel: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var family: String
+    /// "chat" | "messages" | "responses" | "unknown". A STRING rather than an
+    /// enum: a fourth value invented by a newer engine must not fail the decode
+    /// of a row this screen can still list.
+    var route: String
+    var supported: Bool
+    var described: Bool
+    var reasoning: Bool?
+    var toolCall: Bool?
+    var attachment: Bool?
+    var context: Int?
+    var output: Int?
+    var releaseDate: String?
+    /// The engine's own default, marked on one row. What "Default" means.
+    var isDefault: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, label, family, route, supported, described, reasoning, toolCall, attachment, context, output, releaseDate, isDefault
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // `decodeIfPresent` under `try?` answers a DOUBLE optional — the outer
+        // one is "the decode threw", the inner "the key was absent". `?? nil`
+        // flattens both into the same answer, which is what every fallback
+        // below wants.
+        func text(_ key: CodingKeys) -> String? { (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil }
+        func flag(_ key: CodingKeys) -> Bool? { (try? c.decodeIfPresent(Bool.self, forKey: key)) ?? nil }
+        func number(_ key: CodingKeys) -> Int? { (try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil }
+
+        // THE ID IS THE ONLY THING WORTH FAILING OVER — it is what goes on the
+        // wire, and a row without one cannot be picked.
+        id = try c.decode(String.self, forKey: .id)
+        // `label` is the older engine's name for the same string.
+        name = text(.name) ?? text(.label) ?? id
+        family = text(.family) ?? "Models"
+        route = text(.route) ?? "unknown"
+        supported = flag(.supported) ?? true
+        described = flag(.described) ?? false
+        reasoning = flag(.reasoning)
+        toolCall = flag(.toolCall)
+        attachment = flag(.attachment)
+        context = number(.context)
+        output = number(.output)
+        releaseDate = text(.releaseDate)
+        isDefault = flag(.isDefault) ?? false
+    }
+
+    /// For previews and tests. Every described field defaults to absent, which
+    /// is the state a Go-only id is really in.
+    init(
+        id: String,
+        name: String,
+        family: String = "Models",
+        route: String = "chat",
+        supported: Bool = true,
+        described: Bool = true,
+        context: Int? = nil,
+        releaseDate: String? = nil,
+        isDefault: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.family = family
+        self.route = route
+        self.supported = supported
+        self.described = described
+        self.reasoning = nil
+        self.toolCall = nil
+        self.attachment = nil
+        self.context = context
+        self.output = nil
+        self.releaseDate = releaseDate
+        self.isDefault = isDefault
+    }
+}
+
+/// `GET /api/agent/models` — the composer's model pill (#539, described by #551).
+///
+/// FAILS SOFT IN TWO INDEPENDENT HALVES, which is why `source` is decoded
+/// rather than collapsed into one flag. `go == nil` is a Mac that could not
+/// reach OpenCode Go, or has no key yet: an empty list and a `message`.
+/// `modelsDev == nil` is a full list of ids nobody described — usable, but the
+/// picker should say so rather than let it read as the old raw-id list.
 struct AgentModelList: Decodable {
-    var models: [ProviderModel]
+    struct Source: Decodable, Equatable {
+        var go: Double?
+        var modelsDev: Double?
+    }
+
+    var models: [AgentModel]
+    var source: Source
     var message: String?
 
-    private enum CodingKeys: String, CodingKey { case models, message }
+    private enum CodingKeys: String, CodingKey { case models, source, message }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         // A ROW THIS BUILD CANNOT READ IS DROPPED, never the list.
-        models = try c.decodeIfPresent([Skippable<ProviderModel>].self, forKey: .models)?.compactMap(\.value) ?? []
+        models = try c.decodeIfPresent([Skippable<AgentModel>].self, forKey: .models)?.compactMap(\.value) ?? []
+        // AN ENGINE TOO OLD TO SEND `source` IS NOT A FAILURE. It served a list
+        // it had really read, so the honest reading of a missing stamp is
+        // "unknown when", not "both halves are down" — and the only thing this
+        // field drives is a footnote.
+        source = ((try? c.decodeIfPresent(Source.self, forKey: .source)) ?? nil) ?? Source(go: nil, modelsDev: nil)
         message = try? c.decodeIfPresent(String.self, forKey: .message)
     }
 
-    init(models: [ProviderModel], message: String?) {
+    init(models: [AgentModel], message: String?, source: Source = Source(go: nil, modelsDev: nil)) {
         self.models = models
+        self.source = source
         self.message = message
     }
 }

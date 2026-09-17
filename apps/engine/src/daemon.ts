@@ -1591,17 +1591,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * WHAT THE AGENT MAY RUN.
+       * WHAT THE AGENT MAY RUN, DESCRIBED.
        *
        * ITS OWN ROUTE because `/v2/models/:driver` is keyed by
        * `ProviderDriverKind` and answers "what can this SESSION run" — and the
-       * Agent is not a session. Same list, same public endpoint, no credential
-       * (the docs publish it as open), and it fails soft with the service's own
-       * words: an empty picker carrying the reason beats one full of ids that
-       * 404.
+       * Agent is not a session. Go's public endpoint, no credential (the docs
+       * publish it as open), merged with models.dev's descriptions and the
+       * transcribed route table — see `agent/catalogue.ts`.
+       *
+       * THE AGENT DIRECTORY IS PASSED BECAUSE THE DESCRIPTIONS ARE CACHED IN
+       * IT: models.dev's `api.json` is 4.6 MB, so it is read at most once a day
+       * into `<engineRoot>/agent/catalogue.json`. It still fails soft with the
+       * service's own words — an empty picker carrying the reason beats one
+       * full of ids that 404.
        */
       if (request.method === "GET" && url.pathname === "/v2/agent/models") {
-        writeJson(response, 200, await readAgentModels());
+        writeJson(response, 200, await readAgentModels(path.join(root, "agent")));
         return;
       }
       if (request.method === "POST" && url.pathname === "/v2/agent/turns") {

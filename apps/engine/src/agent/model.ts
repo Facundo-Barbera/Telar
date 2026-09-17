@@ -169,6 +169,16 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
 
   return new ChatOpenAI({
     apiKey: credential.key,
+    /**
+     * THE NAMED DEFAULT, NOT THE CHECKED ONE — deliberately (#551).
+     *
+     * `agent/catalogue.ts`'s `defaultAgentModel` checks `DEFAULT_GO_MODEL`
+     * against what Go is serving on a route this client speaks, and the picker
+     * reads it. Doing that HERE would mean a `GET /models` on every turn: a
+     * network round trip, and a new way for a turn to fail, bought against a
+     * case that has never happened. The picker warns when what will run is
+     * unreachable and offers the switch in one press; this stays a constant.
+     */
     model: input.model?.trim() || DEFAULT_GO_MODEL,
     temperature: input.temperature ?? 0,
     streaming: input.streaming ?? true,
