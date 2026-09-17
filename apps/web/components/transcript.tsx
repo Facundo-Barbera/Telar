@@ -664,6 +664,114 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
 }
 
 /**
+ * WHAT A NOTIFICATION IS CALLED, in one line — issue #550.
+ *
+ * HERE, BESIDE `sessionWakeLabel`, AND FOR ITS REASON: the cockpit draws a
+ * notification that opened its own turn and this file draws one that landed
+ * mid-turn, and two spellings of "Session finished a turn" is the bug this file
+ * already fixed, reintroduced in words.
+ */
+export function notificationLabel(detail: NonNullable<JournalTurn["notification"]>): { verb: string; Icon: typeof BotIcon } {
+  if (detail.kind === "peer_message") {
+    const intent = detail.intent ?? "report";
+    return {
+      verb:
+        intent === "task"
+          ? "A session assigned work"
+          : intent === "blocker"
+            ? "A session reported a blocker"
+            : intent === "result"
+              ? "A session sent a result"
+              : "A session sent a message",
+      Icon: BotIcon,
+    };
+  }
+  if (detail.kind === "request") return { verb: "Session asked a question", Icon: BotIcon };
+  return detail.wakeKind ? sessionWakeLabel({ kind: detail.wakeKind, sessionId: detail.sessionId ?? "" }) : { verb: "Session activity", Icon: BotIcon };
+}
+
+/**
+ * A NOTIFICATION ROW — the thing #550 exists to draw.
+ *
+ * NOT A BUBBLE, OF EITHER KIND. A peer's message, a wake and a parked request
+ * all reached this session without anybody typing; drawing any of them in the
+ * person's bubble was the visual half of the same mistake the drivers made in
+ * the prompt. One line collapsed — an icon, what happened, whose session — with
+ * the notice itself behind a disclosure and a link to read the message.
+ *
+ * A COHORT IS THE SAME ROW. Several wakes merged into one notification list
+ * their summaries under the same disclosure rather than earning a second shape:
+ * the reader's question ("what happened while I was working") has one answer,
+ * however many things are in it.
+ */
+export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
+  const [open, setOpen] = useState(false);
+  const [reading, setReading] = useState(false);
+  const { verb, Icon } = notificationLabel(detail);
+  const body = detail.body.trim();
+  const entries = detail.entries ?? [];
+  /**
+   * "READ THE MESSAGE" IS ONLY OFFERED WHEN THERE IS ONE HERE.
+   *
+   * A peer's message is stored on this very turn, so the row can show what was
+   * actually sent — which is the whole point of a notice that announces rather
+   * than quotes. A wake announces something that happened in ANOTHER session and
+   * has no body on this side; a button promising one would be a dead end.
+   */
+  const peerMessage = detail.kind === "peer_message" && message && message.trim() !== body ? message.trim() : undefined;
+  return (
+    <div className="py-0.5" aria-label="Notification">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        disabled={!body}
+        aria-expanded={body ? open : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0">{verb}</span>
+        {entries.length > 1 && <span className="shrink-0 text-2xs text-muted-foreground">{`and ${entries.length - 1} more`}</span>}
+        {detail.sessionId && (
+          <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{`session …${detail.sessionId.slice(-6)}`}</span>
+        )}
+        {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+      </button>
+      {open && body && (
+        <div className="px-1.5 pb-1">
+          {entries.length > 1 && (
+            <ul className="mb-1 space-y-0.5">
+              {entries.map((entry, index) => (
+                <li key={`${entry.runId ?? entry.sessionId ?? index}-${index}`} className="truncate text-2xs text-muted-foreground">
+                  {entry.summary}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">{body}</p>
+          {/* THE ACTION THE ROW IS FOR. The notice announces a message rather
+              than quoting it — that is what keeps a recipient's context cheap —
+              so the row has to offer the thing it announced, or the reader is
+              left holding a headline. */}
+          {peerMessage && (
+            <button
+              type="button"
+              className="mt-1 rounded-md px-1 py-0.5 text-2xs text-muted-foreground underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              aria-expanded={reading}
+              onClick={() => setReading((current) => !current)}
+            >
+              {reading ? "Hide the message" : "Read the message"}
+            </button>
+          )}
+          {reading && peerMessage && (
+            <p className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words border-l-2 border-border pl-2 text-xs">{peerMessage}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * A MESSAGE SENT INTO A RUNNING TURN — and it is drawn as a message, not as a
  * thing that happened during one.
  *
@@ -740,6 +848,10 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
+  // A NOTIFICATION IS NOT A MESSAGE ROW OF ANY KIND — #550. Its own arm, above
+  // `user_message`, because the whole point of the type is that narrowing on it
+  // is what gives you the payload: there is no field left to forget to check.
+  if (item.detail.type === "notification") return <NotificationRow detail={item.detail.notification} />;
   if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} {...(onInsert ? { onInsert } : {})} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} {...gestures} />;
@@ -882,7 +994,10 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 // something the reader can otherwise only experience as the session hanging,
 // and folding it into a run tally ("18 steps · Ran command ×12") would hide the
 // one row that says why nothing happened for four minutes.
-const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
+// `notification` joins the seam for `user_message`'s reason: something
+// ARRIVED, and what follows is the turn's answer to it rather than more of
+// what came before (#550).
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait"]);
 
 /**
  * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a
@@ -904,7 +1019,7 @@ export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
 export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {
   const responses: TurnResponse[] = [{ items: [] }];
   for (const item of items) {
-    if (item.detail.type === "user_message") responses.push({ boundary: item, items: [] });
+    if (item.detail.type === "user_message" || item.detail.type === "notification") responses.push({ boundary: item, items: [] });
     else responses.at(-1)!.items.push(item);
   }
   // A turn whose only message is its own prompt is one response, and renders

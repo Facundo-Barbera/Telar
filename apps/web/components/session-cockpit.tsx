@@ -57,7 +57,7 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -811,6 +811,8 @@ function sameTurnContent(prev: JournalTurn, next: JournalTurn): boolean {
     prev.agentDelivery === next.agentDelivery &&
     prev.agentIntent === next.agentIntent &&
     prev.agentNotice === next.agentNotice &&
+    prev.notification?.summary === next.notification?.summary &&
+    prev.notification?.deliveries === next.notification?.deliveries &&
     prev.assignmentScope === next.assignmentScope &&
     prev.attachments?.length === next.attachments?.length &&
     prev.startedAt === next.startedAt &&
@@ -1010,7 +1012,13 @@ function SessionTurnBody({
               model. No human typed anything, so no bubble: the wake-up is a
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
-          {turn.origin === "session" && turn.sender ? (
+          {/* A NOTIFICATION TURN IS A NOTIFICATION ROW — #550, and FIRST,
+              because it is the honest description of every session-origin turn
+              the engine now writes. The two arms under it are what a turn
+              stored before this existed still falls back to. */}
+          {turn.notification ? (
+            <NotificationRow detail={turn.notification} {...(turn.sender ? { message: turn.prompt } : {})} />
+          ) : turn.origin === "session" && turn.sender ? (
             <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentNotice ? { notice: turn.agentNotice } : {})} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />

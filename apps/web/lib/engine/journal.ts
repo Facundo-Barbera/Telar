@@ -52,6 +52,12 @@ export type JournalTurn = {
   /** The engine's one-line announcement of that message — the collapsed row's
    *  label, and what the recipient's model was handed instead of `prompt`. */
   agentNotice?: Turn["agentNotice"];
+  /**
+   * THIS TURN IS A NOTIFICATION — a peer's message, a wake, a parked request.
+   * Nobody typed `prompt`, and the transcript draws a notification row rather
+   * than any kind of bubble. See `NotificationDetail`.
+   */
+  notification?: Turn["notification"];
   /** What the sender said the task covers. Descriptive; confers nothing. */
   assignmentScope?: Turn["assignmentScope"];
   /** Files sent WITH this message. On the turn because that is what they
@@ -193,6 +199,7 @@ export function projectJournal(
         ...(turn.agentDelivery ? { agentDelivery: turn.agentDelivery } : {}),
         ...(turn.agentIntent ? { agentIntent: turn.agentIntent } : {}),
         ...(turn.agentNotice ? { agentNotice: turn.agentNotice } : {}),
+        ...(turn.notification ? { notification: turn.notification } : {}),
         ...(turn.assignmentScope ? { assignmentScope: turn.assignmentScope } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
@@ -312,6 +319,7 @@ export function projectJournal(
             ...(event.turn.agentDelivery ? { agentDelivery: event.turn.agentDelivery } : {}),
             ...(event.turn.agentIntent ? { agentIntent: event.turn.agentIntent } : {}),
             ...(event.turn.agentNotice ? { agentNotice: event.turn.agentNotice } : {}),
+            ...(event.turn.notification ? { notification: event.turn.notification } : {}),
             ...(event.turn.assignmentScope ? { assignmentScope: event.turn.assignmentScope } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,

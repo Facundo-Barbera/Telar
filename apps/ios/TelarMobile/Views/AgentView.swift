@@ -413,13 +413,37 @@ struct AgentRowView: View {
     var body: some View {
         switch row.kind {
         case .userMessage:
-            VStack(alignment: .trailing, spacing: 4) {
-                if let wake = row.wakeLabel {
-                    Text(wake).font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
+            // A TURN WITH NO HUMAN BEHIND IT IS NOT THE PERSON'S BUBBLE — #550.
+            //
+            // The Agent subscribes to the work it delegates, and a completion on
+            // one of those enqueues a turn whose input is the engine's notice.
+            // This drew it as a right-aligned bubble with a small label over the
+            // top: the label said "Woken", the SHAPE said "you typed this", and
+            // the shape is what a reader takes in first. It is a notification
+            // row now, in the muted lane, the same as everywhere else.
+            //
+            // KEYED ON `wakeLabel`, which reads the structured `origin`/
+            // `wakeReason` the Agent's thread already carries — this phone does
+            // not classify on the notice's text, here or anywhere.
+            if let wake = row.wakeLabel {
+                HStack(spacing: 6) {
+                    Image(systemName: "bell").font(.system(Theme.caption))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wake).font(Theme.meta)
+                        if let text = row.text, !text.isEmpty {
+                            Text(text).font(Theme.monoSmall).lineLimit(3)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+                .foregroundStyle(Theme.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Notification: \(wake)")
+            } else {
                 UserBubble(text: row.text ?? "")
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
 
         case .assistantMessage:
             MarkdownText(text: row.text ?? "").frame(maxWidth: .infinity, alignment: .leading)
