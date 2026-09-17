@@ -6,12 +6,17 @@ microphone on push-to-talk, transcribes it, and has to put the resulting text in
 the composer. That client can run JavaScript in the page and nothing else: no
 extension, no bridge, no second origin.
 
-**The second caller is inside this app.** The composer's mic button (#544) opens
-its own socket to a transcription service and inserts through `dictate` rather
-than reaching into the editor, so there is one insertion path on this app and
-not two — and the rule below about interim text is its rule. `dictate` inserts
-and cannot retract, so a live transcription's unconfirmed guesses are shown
-beside the button and only finalised phrases are written into the box.
+**These three calls insert and never retract, and that is a boundary rather than
+an omission.** An API that could reach back and delete a run of the draft could
+delete what the *person* last typed — the composer is a live box, and a
+dictation is not the only thing going into it. So a client holding a live
+transcription that revises itself should write only phrases it has settled on;
+each `dictate` continues the sentence rather than replacing it.
+
+The composer's own mic button (#544) does rewrite its unconfirmed words in
+place, and it reaches a `replace` on the composer registry underneath this file
+to do it — not through here. In-process callers get the sharper tool; this
+shape is what external clients are promised and it does not move.
 
 Everything here is something the person at the keyboard could do with their
 hands. There is no engine access, no reading of other sessions, and no way to
