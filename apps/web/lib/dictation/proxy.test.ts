@@ -18,7 +18,7 @@ import { forward, upstreamTimeout, upstreamUrl } from "@/lib/hosts/proxy";
 
 const host = { id: "host_b", name: "mini", baseUrl: "http://mini:3000", deviceToken: "tlr_remote" };
 
-function fake(answer: (input: string, init: RequestInit) => Response): typeof fetch {
+function fake(answer: (input: string, init: RequestInit) => Response | Promise<Response>): typeof fetch {
   return ((input: string | URL | Request, init?: RequestInit) => answer(String(input), init ?? {})) as typeof fetch;
 }
 
