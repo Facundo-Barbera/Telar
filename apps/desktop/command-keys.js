@@ -103,14 +103,23 @@ const COMMANDS = [
   // and the empty-space menu are one thing rather than three.
   { id: "add-project", label: "Add Project…", group: "Rail", icon: "folder-plus", defaultChord: "" },
   { id: "toggle-rail", label: "Toggle Rail", group: "Rail", icon: "panel-left", defaultChord: "CommandOrControl+B" },
-  // jump-1..jump-9: the Nth conversation in the rail, top to bottom as drawn.
+  // jump-1..jump-9: the Nth ENTRY in the rail, top to bottom as drawn.
   // Generated, not hand-written nine times — see railRowsForCommandKeys in
   // apps/web/lib/session-groups.ts for exactly which rows count.
+  //
+  // THE LABEL STOPPED SAYING "CONVERSATION" (#569), and that is the whole of
+  // what this table had to learn: the Agent's entry sits above every band, so
+  // on a Mac with the Agent switched on ⌘1 opens it and the conversations
+  // start at ⌘2. Which entry a number lands on is the RAIL's answer and
+  // changes with what is on screen — a menu row cannot name it without going
+  // stale between two polls, and "Jump to Conversation 1" over a key that
+  // opens the Agent is worse than a generic row. So the row names the NUMBER,
+  // and the cockpit resolves it.
   ...Array.from({ length: 9 }, (_, index) => {
     const n = index + 1;
     return {
       id: `jump-${n}`,
-      label: `Jump to Conversation ${n}`,
+      label: `Jump to ${n}`,
       group: "Rail",
       // The digit is the whole of what distinguishes these nine, and the
       // palette never lists them anyway — one glyph for the set is honest.
