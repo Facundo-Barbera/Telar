@@ -11,7 +11,10 @@
  *   - a prompt over budget draws full rather than overflowing — the newest block
  *     survives any budget, so >100% is a real state;
  *   - nothing is drawn at all before a turn has ended, because a gauge reading
- *     empty is a number that is wrong rather than missing.
+ *     empty is a number that is wrong rather than missing;
+ *   - a fold says how many turns it cost (#567), and only when it cost some: the
+ *     engine now folds to a LOW-water mark, so the reading really does fall from
+ *     full to two thirds between two turns and needs a sentence beside it.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -39,6 +42,22 @@ describe("what the meter reads", () => {
   test("a prompt over budget reads full rather than overflowing", () => {
     // The trim keeps the newest block whatever it costs, so this is reachable.
     expect(contextMeterReading({ contextChars: 400_000, budgetChars: 120_000 })!.percent).toBe(100);
+  });
+
+  test("a fold that happened is named, so a meter that halved itself explains why", () => {
+    const reading = contextMeterReading({ usage: { input: 60_000, output: 400, total: 60_400 }, contextChars: 68_000, budgetChars: 120_000, folded: 9 });
+    expect(reading).toMatchObject({ folded: "folded 9 turns", label: "60,400 tokens · 57% context · folded 9 turns" });
+    expect(reading!.title).toContain("folded 9 turns to one line each");
+    // One turn is one turn.
+    expect(contextMeterReading({ contextChars: 68_000, budgetChars: 120_000, folded: 1 })!.label).toBe("57% context · folded 1 turn");
+  });
+
+  test("a turn that folded nothing says nothing — and neither does a Mac too old to say", () => {
+    // "folded 0 turns" on every ordinary turn would be noise in the one place
+    // on this screen that has to stay quiet.
+    expect(contextMeterReading({ contextChars: 12_000, budgetChars: 120_000, folded: 0 })!.label).toBe("10% context");
+    expect(contextMeterReading({ contextChars: 12_000, budgetChars: 120_000, folded: 0 })!.folded).toBeUndefined();
+    expect(contextMeterReading({ contextChars: 12_000, budgetChars: 120_000 })!.folded).toBeUndefined();
   });
 
   test("there is no reading before a turn has ended, or without a ceiling to measure against", () => {

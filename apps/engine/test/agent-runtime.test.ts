@@ -28,6 +28,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import type { NotificationDetail, WakeKind } from "@telar/engine-client";
 import type { SocketTool } from "../src/mcp-socket";
 import { wakeNotification } from "../src/notification";
+import { AGENT_BRIEF_ANSWER } from "../src/agent/briefing";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
 import { patchAgentSettings } from "../src/agent/store";
 
@@ -90,7 +91,7 @@ function wall(landed: Landed[], overrides: Record<string, (args: Record<string, 
   return ["sessions_list", "sessions_send", "sessions_create", "sessions_read"].map(make);
 }
 
-function runtime(script: Step[], tools: SocketTool[], options: { now?: () => number } = {}) {
+function runtime(script: Step[], tools: SocketTool[], options: { now?: () => number; budgetChars?: number } = {}) {
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-rt-"));
   const model = new ScriptedChatModel(script);
   const agent = new AgentRuntime({
@@ -98,6 +99,9 @@ function runtime(script: Step[], tools: SocketTool[], options: { now?: () => num
     tools: () => tools,
     model: () => model,
     ...(options.now ? { now: options.now } : {}),
+    // A ceiling a scenario can actually cross. The default is 120k, which no
+    // scripted conversation is ever going to reach.
+    ...(options.budgetChars !== undefined ? { budgetChars: options.budgetChars } : {}),
   });
   agent.patch({ enabled: true });
   return { agent, model, engineRoot };
@@ -709,6 +713,56 @@ test("a stopped turn still reports what it spent, because the tokens were bought
   expect(done.detail.status).toBe("stopped");
   // The first lap's tokens were spent before the stop landed, and they count.
   expect(done.detail.usage).toEqual({ input: 700, output: 20, total: 720 });
+  agent.close();
+});
+
+test("the turns a fold cost ride the same reading the meter does", async () => {
+  const landed: Landed[] = [];
+  // A ceiling the system block alone nearly fills, and messages heavy enough to
+  // cross it: the second turn's prompt is over budget, so the fold must run.
+  const { agent } = runtime([{ text: "one" }, { text: "two" }], wall(landed), { budgetChars: 6_000 });
+  const long = "x".repeat(2_000);
+
+  agent.submit({ text: long });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  // NOTHING TO FOLD YET. The turn being answered is never folded, and it is the
+  // only turn there is — so the field is 0 rather than absent.
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.folded).toBe(0);
+  expect(agent.state().lastUsage?.folded).toBe(0);
+
+  agent.submit({ text: long });
+  await until(() => agent.state().runId === undefined, "the second turn");
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.kind).toBe("turn_done");
+  // The first turn became one line, and the count says so on the row a client
+  // pages and on the state it polls — one reading, two readers.
+  expect(done.detail.folded).toBe(1);
+  expect(agent.state().lastUsage).toMatchObject({ runId: done.runId, folded: 1 });
+  agent.close();
+});
+
+test("brief asks for a spoken answer, on that turn and no other", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([{ text: "two are idle." }, { text: "nothing has changed." }], wall(landed));
+
+  agent.submit({ text: "what is running?", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+  const spoken = model.seen[0]![0]!;
+  expect(spoken.getType()).toBe("system");
+  expect(String(spoken.content)).toContain(AGENT_BRIEF_ANSWER);
+  // THE ROW SAYS WHY THE ANSWER WAS SHORT. A two-sentence reply under a
+  // question that deserved a page is something a person comes back to.
+  const started = agent.thread({ limit: 200 }).rows.find((row) => row.kind === "turn_started")!;
+  expect(started.detail.brief).toBe(true);
+
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined && model.seen.length === 2, "the written turn");
+  // IT DOES NOT PERSIST. The sentence was never in the conversation — only in
+  // that one turn's system block, which is rebuilt per turn and never
+  // checkpointed — so the next turn is an ordinary written one.
+  expect(String(model.seen[1]![0]!.content)).not.toContain(AGENT_BRIEF_ANSWER);
+  const rows = agent.thread({ limit: 200 }).rows.filter((row) => row.kind === "turn_started");
+  expect(rows.at(-1)!.detail.brief).toBeUndefined();
   agent.close();
 });
 
