@@ -33,17 +33,19 @@
  *
  * ── THE BOUNDS, AND WHY BOTH OF THEM ────────────────────────────────────────
  * Deepgram documents a budget for keyterm prompting rather than a count, and the
- * headset settled on forty. Both are kept:
- *
- *   FORTY TERMS, because that is what has been working on the headset for
- *   months against the same model, and because a query string is a URL that has
- *   to survive every proxy on the path.
+ * headset settled on forty. ONLY DEEPGRAM'S OWN BOUND IS KEPT (owner,
+ * 2026-09-17): the count of forty was the headset's habit rather than a rule,
+ * and the marginal cost of the sixty terms it was hiding is zero — keyterm
+ * prompting is an add-on billed per minute DICTATED, not per term, so a longer
+ * glossary costs exactly what a shorter one does. The owner accepted that
+ * per-minute add-on explicitly. What remains is the budget Deepgram documents,
+ * which is also the real bound: forty session titles can be two thousand
+ * characters, so a count never was one.
  *
  *   ~500 TOKENS, counted as four characters to a token — the ordinary
  *   approximation, and deliberately an approximation: the alternative is a
  *   tokenizer on the token-minting path for a cap whose exact edge changes
- *   nothing. Forty session titles can be two thousand characters on their own,
- *   so the count alone is not a bound.
+ *   nothing.
  *
  * WHATEVER DOES NOT FIT IS DROPPED FROM THE TAIL rather than skipped over, so
  * the list is always a PREFIX of the order below. Skipping a long title to fit
@@ -65,10 +67,7 @@ export type DictationContext = {
   branches: readonly string[];
 };
 
-/** At most this many `keyterm=` parameters, which is what the headset sends. */
-export const DEEPGRAM_KEYTERM_LIMIT = 40;
-
-/** Deepgram's own budget for a keyterm prompt. */
+/** Deepgram's own budget for a keyterm prompt, and the only bound there is. */
 export const DEEPGRAM_KEYTERM_TOKEN_BUDGET = 500;
 
 /** The usual approximation, and the reason the budget above is a `~`. */
@@ -140,9 +139,9 @@ export function deepgramKeyterms(input: { vocabulary: readonly string[]; context
     if (!term || term.length > MAX_TERM_CHARACTERS) continue;
     const key = term.toLocaleLowerCase();
     if (seen.has(key)) continue;
-    // BOTH BOUNDS STOP THE LIST rather than skipping this one entry — see the
+    // THE BUDGET STOPS THE LIST rather than skipping this one entry — see the
     // header for why the answer is always a prefix.
-    if (kept.length >= DEEPGRAM_KEYTERM_LIMIT || spent + term.length > budget) break;
+    if (spent + term.length > budget) break;
     seen.add(key);
     kept.push(term);
     spent += term.length;

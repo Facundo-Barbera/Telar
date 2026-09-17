@@ -439,10 +439,12 @@ test("the list stays bounded however many conversations are open", async () => {
     daemon.store.createSession({ id: `session_${index}`, projectId: "project_one", title: `Conversation number ${index}` });
   }
   const { keyterms } = await client.dictationToken();
-  expect(keyterms.length).toBeLessThanOrEqual(40);
-  // AND THE BUDGET HOLDS TOO — forty titles can be two thousand characters on
-  // their own, so the count alone is not a bound.
+  // THE BUDGET IS THE BOUND, and the only one (owner, 2026-09-17): the count of
+  // forty was the headset's habit, and the terms it hid were free — keyterm
+  // prompting bills per minute dictated, not per term.
   expect(keyterms.join("").length).toBeLessThanOrEqual(2000);
+  // Sixty short titles now all fit, which the old count would have cut at forty.
+  expect(keyterms.length).toBeGreaterThan(40);
   // The app's own name survives a busy Mac, which is the failure mode the
   // obvious ordering has.
   expect(keyterms).toContain("Telar");

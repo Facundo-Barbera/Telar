@@ -7,6 +7,11 @@
  * and stopped — so the one surface that understood the glossary was the one
  * nobody was asking about.
  *
+ * THE COUNT OF FORTY IS NO LONGER A BOUND (owner, 2026-09-17): it was the
+ * headset's habit, and the terms it hid were free — keyterm prompting is billed
+ * per minute dictated, not per term. Deepgram's ~500-token budget is what is
+ * left, and it always was the real one.
+ *
  * What must not drift:
  *
  *   - the person's OWN terms come first, because they typed them into a box for
@@ -22,7 +27,6 @@
  */
 import { expect, test } from "bun:test";
 import {
-  DEEPGRAM_KEYTERM_LIMIT,
   DEEPGRAM_KEYTERM_TOKEN_BUDGET,
   TELAR_KEYTERMS,
   deepgramKeyterms,
@@ -67,22 +71,23 @@ test("and the app's own words sit second, ahead of anything read off the store",
   expect(terms.slice(0, 1 + TELAR_KEYTERMS.length)).toEqual(["Kubernetes", ...TELAR_KEYTERMS]);
 });
 
-test("forty is the ceiling, and it cuts from the tail", () => {
-  const many = Array.from({ length: 120 }, (_, index) => `Term${index}`);
+test("the budget is the only ceiling, and short terms get far past the old forty", () => {
+  // THE COUNT OF FORTY IS GONE (owner, 2026-09-17): keyterm prompting bills per
+  // minute dictated rather than per term, so the terms it was hiding cost
+  // nothing. Six-character terms fit the budget roughly three hundred times.
+  const many = Array.from({ length: 400 }, (_, index) => `Term${index}`);
   const terms = built({ vocabulary: many });
-  expect(terms).toHaveLength(DEEPGRAM_KEYTERM_LIMIT);
-  // A PREFIX, not a selection: the first forty of what was offered, in order.
-  expect(terms).toEqual(many.slice(0, DEEPGRAM_KEYTERM_LIMIT));
+  expect(terms.length).toBeGreaterThan(40);
+  // A PREFIX, not a selection: what was offered, in order, until the budget.
+  expect(terms).toEqual(many.slice(0, terms.length));
 });
 
-test("the token budget bounds it too, since forty titles can be two thousand characters", () => {
-  // Sixty characters each: the count alone would let all forty through at 2400
-  // characters, which is past the budget.
+test("the token budget bounds it, since a few dozen titles can be two thousand characters", () => {
   const long = Array.from({ length: 40 }, (_, index) => `${String(index).padStart(2, "0")}-${"x".repeat(57)}`);
   const terms = built({ vocabulary: long });
   const spent = terms.join("").length;
   expect(spent).toBeLessThanOrEqual(DEEPGRAM_KEYTERM_TOKEN_BUDGET * 4);
-  expect(terms.length).toBeLessThan(DEEPGRAM_KEYTERM_LIMIT);
+  expect(terms.length).toBeLessThan(long.length);
   expect(terms).toEqual(long.slice(0, terms.length));
 });
 
