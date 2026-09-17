@@ -990,6 +990,85 @@ export const ProviderModel = z.object({
 });
 export type ProviderModel = z.infer<typeof ProviderModel>;
 
+/**
+ * WHICH OF OPENCODE GO'S THREE ENDPOINTS A MODEL ANSWERS ON (#551).
+ *
+ * Go publishes three request shapes — OpenAI's `chat/completions`, an
+ * Anthropic-shaped `/messages`, and OpenAI's `/responses` — and a model belongs
+ * to exactly one. Telar's Agent client speaks `chat/completions` and only that,
+ * so this is the field that decides whether a row can be picked at all.
+ *
+ * `unknown` IS THIS BUILD ADMITTING IT DOES NOT KNOW, not a fourth endpoint.
+ * The mapping exists in one table on opencode.ai/docs/go and nowhere machine-
+ * readable, so the engine carries a transcription of it; an id Go starts
+ * serving before anybody updates that table lands here.
+ */
+export const GoRoute = z.enum(["chat", "messages", "responses", "unknown"]);
+export type GoRoute = z.infer<typeof GoRoute>;
+
+/**
+ * ONE MODEL THE BUILT-IN AGENT MAY RUN — Go's id, described.
+ *
+ * ── WHY IT EXTENDS `ProviderModel` RATHER THAN REPLACING IT ─────────────────
+ * The fields below `route` are the new ones and the reason this type exists:
+ * Go's `/models` answers `{ id, object, created, owned_by }` and nothing else,
+ * so a picker built on it is raw strings in arbitrary order. models.dev
+ * describes them, the engine merges the two, and these are the merged facts.
+ *
+ * The `ProviderModel` half is a COMPATIBILITY TAIL, and it is deliberate. An
+ * iPhone ships from the App Store on its own clock and talks to whatever engine
+ * the Mac is running; `AgentModelList` decodes its rows as `ProviderModel` and
+ * DROPS any it cannot read, so an engine that answered only the new shape would
+ * empty the model pill on every phone that had not updated — silently, and with
+ * no message to explain it. Six keys is a cheap price for that not happening.
+ * A later release may retire them once no supported client reads them.
+ */
+export const AgentModel = ProviderModel.extend({
+  /** models.dev's display name — "Kimi K3" — or the id when nobody described
+   *  it. `label` carries the same string for the older clients. */
+  name: z.string().min(1),
+  /** The section a picker files it under: "GLM", "Kimi", "DeepSeek". Derived by
+   *  the engine from the id, NOT models.dev's own `family`, which files three
+   *  Qwens as three families and leaves other models without one. */
+  family: z.string().min(1),
+  route: GoRoute,
+  /** Whether Telar's Agent client can actually run it. `chat` and `unknown`
+   *  yes; `messages` and `responses` no — see `GoRoute`. */
+  supported: z.boolean(),
+  /** Whether models.dev had anything to say. False leaves every optional field
+   *  below absent, and the row still lists: an id you can run is worth showing
+   *  whether or not a third party has described it. */
+  described: z.boolean(),
+  reasoning: z.boolean().optional(),
+  toolCall: z.boolean().optional(),
+  attachment: z.boolean().optional(),
+  /** Tokens in and tokens out. Absent rather than zero when undescribed. */
+  context: z.number().int().positive().optional(),
+  output: z.number().int().positive().optional(),
+  /** `YYYY-MM-DD`, models.dev's own — what "newest first" is sorted on. */
+  releaseDate: z.string().min(1).optional(),
+});
+export type AgentModel = z.infer<typeof AgentModel>;
+
+/**
+ * `GET /v2/agent/models` — what the Agent may run, and where each half came
+ * from.
+ *
+ * THE TWO SOURCES FAIL INDEPENDENTLY, which is why they are reported
+ * separately rather than as one "ok" flag. `go: null` means Go did not answer
+ * and `models` is empty — the only state with no picker. `modelsDev: null`
+ * means the descriptions are missing and every row is `described: false`, which
+ * is a worse-looking but entirely usable list. A surface says which happened by
+ * reading these, never by inferring it from a row.
+ */
+export const AgentModelCatalogue = z.object({
+  models: z.array(AgentModel),
+  source: z.object({ go: Timestamp.nullable(), modelsDev: Timestamp.nullable() }),
+  /** The service's own words when a half failed. Never invented. */
+  message: z.string().min(1).optional(),
+});
+export type AgentModelCatalogue = z.infer<typeof AgentModelCatalogue>;
+
 /** Where a catalogue came from, so a surface can say whether it is asking or
  *  guessing. `builtin` is this cockpit's own list and is a known gap. */
 export const ModelCatalogueSource = z.enum(["provider", "builtin"]);

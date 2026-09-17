@@ -42,6 +42,7 @@ import {
   type ProjectNote,
   type ProjectNoteAuthor,
   type NotesMcpInfo,
+  type AgentModelCatalogue,
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
@@ -971,7 +972,7 @@ export class EngineClient {
    *
    * NO CREDENTIAL COMES BACK. `agent()` is where that lives; this is a list.
    */
-  agentModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+  agentModels(): Promise<AgentModelCatalogue> {
     return this.request("GET", "/v2/agent/models");
   }
 

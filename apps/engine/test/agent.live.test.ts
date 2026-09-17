@@ -38,6 +38,7 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { goRouteGaps } from "../src/agent/catalogue";
 import { describeGoCredential, redactKey, resolveGoCredential } from "../src/agent/credentials";
 import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "../src/agent/go";
 import { agentChatModel } from "../src/agent/model";
@@ -83,6 +84,23 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
     const ids = answer.models.map((model) => model.id);
     say(`[live] models → ${ids.length}, default ${DEFAULT_GO_MODEL} ${ids.includes(DEFAULT_GO_MODEL) ? "served" : "NOT in list"}${answer.message ? ` (${answer.message})` : ""}`);
     expect(ids.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * THE ROUTE TABLE, AGAINST THE REAL LIST (#551).
+   *
+   * `agent-catalogue.test.ts` asks the same question of a RECORDED list, which
+   * is what CI can afford and what makes the tripwire fire on a fixture
+   * refresh. This asks the service, so a smoke run says the day Go adds a model
+   * rather than the day somebody re-records the fixture. The remedy is the
+   * same: read the "Model ID / Endpoint" table at opencode.ai/docs/go and add
+   * the row to `GO_ROUTES`.
+   */
+  test("every id Go serves has a transcribed route", async () => {
+    const ids = (await readOpenCodeGoModels()).models.map((model) => model.id);
+    const gaps = goRouteGaps(ids);
+    say(`[live] routes → ${ids.length - gaps.length}/${ids.length} placed${gaps.length ? `, missing ${gaps.join(", ")}` : ""}`);
+    expect(gaps, "transcribe these from the endpoint table at opencode.ai/docs/go into GO_ROUTES").toEqual([]);
   });
 
   test("one completion, one token, through agentChatModel", async () => {
