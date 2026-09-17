@@ -17,10 +17,15 @@ const AUTOMATIC_START_ATTEMPTS = 3;
 export async function deliverRecord(record: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<number>, now = Date.now() / 1000): Promise<PushRecord | undefined> {
   if ((record.retryAt ?? 0) > now) return record;
   let failed = false;
+  // WHEN APNS LAST TOOK SOMETHING, for the Settings pane that has to tell a
+  // phone which is merely registered from one which is actually being reached
+  // (#579). A 410 is the device saying it is gone; that is not a delivery.
+  let delivered: number | undefined;
   const safeSend = async (delivery: Delivery) => {
     let status: number;
     try { status = await send(delivery); } catch { status = 0; }
     if (status !== 200 && status !== 410) failed = true;
+    if (status === 200) delivered = now;
     return status;
   };
   const next: PushRecord = { ...record, seen: { ...record.seen }, activitySent: { ...record.activitySent }, activities: [...record.activities] };
@@ -71,6 +76,7 @@ export async function deliverRecord(record: PushRecord, sessions: SessionSignal[
   }
   next.failures = failed ? (record.failures ?? 0) + 1 : 0;
   next.retryAt = failed ? now + Math.min(300, 5 * 2 ** Math.min(next.failures - 1, 6)) : undefined;
+  next.lastDeliveryAt = delivered ?? record.lastDeliveryAt;
   next.baselined = true;
   return next;
 }
