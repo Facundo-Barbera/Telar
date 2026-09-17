@@ -123,10 +123,14 @@ protocol EngineAPI: Sendable {
     /// back, so the phone's field shows whether one is saved and never what it
     /// is.
     ///
+    /// `vocabulary` IS THE WHOLE LIST, EVERY TIME (#581) — it is a box of
+    /// terms rather than a row of fields, so a save is what it now contains and
+    /// an EMPTY ARRAY clears it. Absent still means "leave it alone".
+    ///
     /// DEFAULTED BELOW TO A REFUSAL rather than a lie: a double that quietly
     /// accepted a write would have a settings screen report a change that
     /// never happened.
-    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer
     /// The transcript forward from a cursor. Bounded by a count AND a byte
     /// budget, whichever is reached first — page until `more` is false.
     func agentThread(after: Int) async throws -> AgentThreadPage
@@ -307,7 +311,7 @@ extension EngineAPI {
         )
     }
 
-    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer {
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot change dictation settings.", status: 409)
     }
 
@@ -841,11 +845,12 @@ struct HTTPEngineAPI: EngineAPI {
     /// BY PRESENCE, every field — an absent one is "leave it alone", which is
     /// what lets the provider picker, the language picker and the key field be
     /// three separate saves on one screen without any of them undoing another.
-    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer {
+    func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
         var patch: [String: AnyEncodable] = [:]
         if let provider { patch["provider"] = AnyEncodable(provider) }
         if let apiKey { patch["apiKey"] = AnyEncodable(apiKey) }
         if let language { patch["language"] = AnyEncodable(language) }
+        if let vocabulary { patch["vocabulary"] = AnyEncodable(vocabulary) }
         return try await send("PATCH", "api/dictation", body: patch)
     }
 

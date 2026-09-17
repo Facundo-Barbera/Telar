@@ -465,7 +465,23 @@ export type DictationLanguage = { code: string; label: string };
  * English-only, which is the bug this field closes.
  */
 export type DictationAnswer = {
-  dictation: { provider: DictationProviderId; configured: boolean; language: string; languages: DictationLanguage[] };
+  dictation: {
+    provider: DictationProviderId;
+    configured: boolean;
+    language: string;
+    languages: DictationLanguage[];
+    /**
+     * THE PERSON'S OWN WORDS FOR THE RECOGNISER (#581) — a plain list of terms,
+     * one per line in the box that writes it.
+     *
+     * NOT `keyterm`S. That is Deepgram's name for the wire parameter, and the
+     * mapping happens on the engine so this setting outlives the provider it
+     * was typed under — see `apps/engine/src/dictation/keyterms.ts`. What a
+     * client edits is the glossary; what a socket carries is whatever that
+     * provider makes of it.
+     */
+    vocabulary: string[];
+  };
 };
 
 /** A credential minted for one dictation, valid for minutes. `provider` is what
@@ -474,7 +490,32 @@ export type DictationAnswer = {
  *  round trip serves the whole press of the button. `expiresAt` is epoch
  *  milliseconds rather than a duration, so a client compares it against its own
  *  clock instead of timing a request it did not observe the start of. */
-export type DictationTokenAnswer = { provider: DictationProviderId; token: string; expiresAt: number; language: string };
+export type DictationTokenAnswer = {
+  provider: DictationProviderId;
+  token: string;
+  expiresAt: number;
+  language: string;
+  /**
+   * WHAT TO PRIME THE RECOGNISER WITH, in the provider's own shape (#581) —
+   * for Deepgram, the values of the repeated `keyterm` parameter.
+   *
+   * IT RIDES THE TOKEN because only the engine can build it: the list is the
+   * person's stored glossary plus what this Mac is currently about — unsettled
+   * conversation titles, project names, branches — and a client has none of
+   * that. Bounded and ordered there; a client appends it and does not think
+   * about it.
+   *
+   * THIS ENGINE ALWAYS SENDS IT, empty when there is nothing to say — but it
+   * is OPTIONAL on the type, because an engine that predates the field is a
+   * real thing a client can be pointed at: a cockpit updates on its own
+   * schedule and the phone reaches a paired Mac through the host proxy.
+   * ABSENT HAS TO READ AS "NO GLOSSARY", which is what every dictation had
+   * until now; arriving as `undefined` in a builder that iterates it would
+   * break the mic button outright over a feature that is an improvement to
+   * begin with.
+   */
+  keyterms?: string[];
+};
 
 /**
  * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
@@ -1236,7 +1277,15 @@ export class EngineClient {
    * next press of the mic button, which is a long way from the pane that caused
    * it. `multi` is what an engine that has never been told answers.
    */
-  setDictation(patch: { provider?: DictationProviderId; apiKey?: string; language?: string }): Promise<DictationAnswer> {
+  setDictation(patch: {
+    provider?: DictationProviderId;
+    apiKey?: string;
+    language?: string;
+    /** The whole glossary, every time — this is a list box and not a row of
+     *  fields, so a save is what it now contains. An EMPTY ARRAY clears it,
+     *  which is what emptying the box means; omitting the field leaves it. */
+    vocabulary?: string[];
+  }): Promise<DictationAnswer> {
     return this.request("PATCH", "/v2/dictation", patch);
   }
 

@@ -71,6 +71,16 @@ describe("search lands on it", () => {
     expect(first("deepgram")?.pageId).toBe("dictation");
   });
 
+  test("the words somebody types after a name came back wrong (#581)", () => {
+    // "glossary" and "keyterms" are what the issue and the headset call it;
+    // "vocabulary" is what the row is called. None of the three is a word the
+    // provider or key rows use, so all three have exactly one place to land.
+    for (const query of ["vocabulary", "glossary", "keyterms"]) {
+      expect(first(query)?.pageId).toBe("dictation");
+      expect(first(query)?.title).toBe("Vocabulary");
+    }
+  });
+
   test("nothing in the index still points at General for dictation", () => {
     // The group moved panes; an entry left behind would navigate somebody to a
     // pane the rows are no longer on.
@@ -157,6 +167,35 @@ describe("what the pane shows before anybody has chosen", () => {
     // inside one sentence is the thing picking `es` would break.
     expect(host.textContent).toContain("inside one sentence");
 
+    await unmount();
+  });
+
+  /* ---------------------------------------------------------------- *
+   * THE VOCABULARY BOX — issue #581.
+   * ---------------------------------------------------------------- */
+
+  test("the vocabulary box shows the stored terms, one per line", async () => {
+    const { host, unmount } = await pane({
+      provider: "deepgram",
+      configured: true,
+      language: "multi",
+      languages: [{ code: "multi", label: "Automatic (any supported language)" }],
+      vocabulary: ["Kubernetes", "Zarigüeya"],
+    });
+
+    const box = host.querySelector('textarea[aria-label="Dictation vocabulary"]') as HTMLTextAreaElement | null;
+    expect(box).not.toBeNull();
+    expect(box?.value).toBe("Kubernetes\nZarigüeya");
+    // AND IT SAYS WHAT IT DOES NOT NEED TO BE TOLD. Somebody who types their
+    // own project names in here is doing work the engine already did.
+    expect(host.textContent).toContain("already sent");
+
+    await unmount();
+  });
+
+  test("and it is not there while dictation is off, like every other row under the provider", async () => {
+    const { host, unmount } = await pane({ provider: "off", configured: false, language: "multi", languages: [], vocabulary: [] });
+    expect(host.querySelector('textarea[aria-label="Dictation vocabulary"]')).toBeNull();
     await unmount();
   });
 

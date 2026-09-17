@@ -120,6 +120,11 @@ struct CardField: View {
     /// The field never DISPLAYS a stored secret either way — that is the
     /// caller's contract, and every caller here shows a placeholder instead.
     var secure = false
+    /// A LIST, NOT A VALUE — the field grows with what is typed into it and
+    /// keeps its newlines, which is how a one-term-per-line box is written
+    /// (#581). The same field rather than a second one beside it, for the
+    /// reason `secure` gives: two near-identical field types drift.
+    var multiline = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -129,6 +134,8 @@ struct CardField: View {
             Group {
                 if secure {
                     SecureField(placeholder, text: $text)
+                } else if multiline {
+                    TextField(placeholder, text: $text, axis: .vertical).lineLimit(4...10)
                 } else {
                     TextField(placeholder, text: $text)
                 }

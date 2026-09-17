@@ -162,7 +162,8 @@ import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
 import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
-import { readDictationSettings, writeDictationSettings } from "./dictation/settings";
+import { cleanDictationVocabulary, readDictationSettings, writeDictationSettings } from "./dictation/settings";
+import type { DictationContext } from "./dictation/keyterms";
 import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -2995,7 +2996,13 @@ export class EngineStore {
    * claimed otherwise would have somebody paste it a second time. Switching a
    * provider off does not throw a credential away.
    */
-  dictationState(): { provider: DictationProviderId; configured: boolean; language: string; languages: readonly DictationLanguage[] } {
+  dictationState(): {
+    provider: DictationProviderId;
+    configured: boolean;
+    language: string;
+    languages: readonly DictationLanguage[];
+    vocabulary: string[];
+  } {
     // `languages` RIDES THE SAME ANSWER rather than getting a route of its own
     // (#560). It is the vocabulary the `language` beside it is written in, and
     // a client that had to fetch the two separately could draw a picker with
@@ -3024,6 +3031,63 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", "that is not a language this engine's transcription provider can transcribe");
     }
     writeDictationSettings(this.dictationDir, { ...readDictationSettings(this.dictationDir), language });
+  }
+
+  /**
+   * THE PERSON'S OWN GLOSSARY — the words nothing on this Mac could have
+   * guessed (#581).
+   *
+   * TIDIED RATHER THAN REFUSED, which is the opposite of the language above and
+   * deliberately so: a code the provider cannot transcribe is a setting that
+   * will fail at a handshake three panes away, whereas a blank line in a list of
+   * words is a person pressing return. `cleanDictationVocabulary` drops the
+   * blanks and the repeats and stores the rest.
+   */
+  setDictationVocabulary(vocabulary: unknown): void {
+    if (!Array.isArray(vocabulary)) throw new EngineStateError("invalid_request", "the dictation vocabulary must be a list of terms");
+    writeDictationSettings(this.dictationDir, {
+      ...readDictationSettings(this.dictationDir),
+      vocabulary: cleanDictationVocabulary(vocabulary),
+    });
+  }
+
+  /**
+   * WHAT THIS MAC IS CURRENTLY ABOUT, for whoever is about to transcribe it
+   * (#581).
+   *
+   * IT IS THE RAIL'S OWN LIST, `liveSessionRows`, and not a second fold written
+   * here. The question is the same one a sidebar asks — which conversations are
+   * unsettled, newest first — so asking it the same way means the words the
+   * recogniser is primed with are exactly the rows a person can see, on both
+   * storage backends, forever. A private walk over the sqlite index would have
+   * been cheaper and would have answered NOTHING on a JSON-backed store, which
+   * is every test that does not ask for sqlite.
+   *
+   * UNSETTLED ONLY, which is that method's default: a conversation the rail has
+   * shelved is one nobody has looked at in days, and forty of them would crowd
+   * out the seven that are on screen.
+   *
+   * ONCE PER PRESS OF A MIC BUTTON, against a read every connected cockpit
+   * already makes every three seconds. The cost is the settled rows it does not
+   * open, which is the whole of #493.
+   */
+  dictationContext(): DictationContext {
+    const { sessions } = this.liveSessionRows();
+    // THE RAW REGISTRY, not `listProjects`: that probes every checkout for a
+    // branch and an icon, and this wants a name. Several `git` calls per project
+    // to prime a recogniser would be the cost of the feature.
+    const registry = this.readDocument(this.paths.projects);
+    const projects = registry === undefined ? [] : parseRegistry(registry).projects;
+    return {
+      sessionTitles: sessions.flatMap((session) => (session.title ? [session.title] : [])),
+      // A REMOVED PROJECT IS NOT ONE ANYBODY IS TALKING ABOUT — the same filter
+      // every picker and the rail apply, and the reason `listProjects` exists.
+      projectNames: projects.flatMap((project) => (project.removedAt === undefined ? [project.name] : [])),
+      // ONLY A WORKTREE SESSION HAS A BRANCH OF ITS OWN. A `local` one is
+      // working on whatever branch the checkout happens to be on, which belongs
+      // to the project rather than to the conversation.
+      branches: sessions.flatMap((session) => (session.workspace.mode === "worktree" ? [session.workspace.branch] : [])),
+    };
   }
 
   /** Store the pasted key, or clear it with an empty string. The one write, so

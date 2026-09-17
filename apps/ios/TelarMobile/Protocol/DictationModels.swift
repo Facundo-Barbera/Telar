@@ -33,9 +33,21 @@ struct DictationTokenAnswer: Decodable, Sendable {
     /// a token it could have spent — code-switching is also the better guess
     /// than English for a Mac that never got to be asked.
     var language: String?
+    /// WHAT TO PRIME THE RECOGNISER WITH (#581), in the provider's own shape —
+    /// for Deepgram, the values of the repeated `keyterm` parameter.
+    ///
+    /// BUILT ON THAT MAC AND CARRIED HERE because only it can: the list is the
+    /// person's stored glossary plus its unsettled conversations, its projects
+    /// and their branches. This phone appends them and decides nothing.
+    ///
+    /// OPTIONAL, AND ABSENT MEANS NONE — a Mac on a build from before this
+    /// field existed answers without it, and a dictation with no glossary is
+    /// exactly what every dictation was until now.
+    var keyterms: [String]?
 
     var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
     var listenLanguage: String { language ?? DictationLanguages.automatic }
+    var listenKeyterms: [String] { keyterms ?? [] }
 }
 
 /// WHO TRANSCRIBES ON THAT MAC, AND WHETHER IT COULD.
@@ -63,6 +75,18 @@ struct DictationAnswer: Decodable, Sendable {
         /// client are seventy names that go stale the day the provider adds
         /// one, and there would be a second copy on the desktop.
         var languages: [DictationLanguageOption]?
+        /// THE PERSON'S OWN WORDS FOR THE RECOGNISER (#581) — a plain list of
+        /// terms, kept on that Mac beside the language.
+        ///
+        /// NOT `keyterm`S, which is Deepgram's name for the wire parameter: the
+        /// Mac merges this with what it knows about itself and expresses the
+        /// result the provider's way, so the setting outlives the provider it
+        /// was typed under.
+        ///
+        /// OPTIONAL FOR `language`'S REASON — a Mac on a build from before this
+        /// existed answers without it, which is a screen with one fewer card
+        /// rather than a decode failure.
+        var vocabulary: [String]?
     }
     var dictation: State
 }

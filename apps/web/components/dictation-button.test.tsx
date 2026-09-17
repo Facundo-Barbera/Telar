@@ -62,6 +62,15 @@ let provider: "off" | "deepgram" = "deepgram";
  *  what the badge at the caret reads — so it is a knob for the same reason. */
 let language = "multi";
 /**
+ * WHAT THE MAC SAYS TO PRIME THE RECOGNISER WITH (#581).
+ *
+ * A knob rather than a constant for one case in particular: `undefined` is what
+ * an engine from before this field answers, and this button has to open the
+ * socket anyway. Dictating without a glossary is what it did for its whole life
+ * until now; refusing to dictate at all would be the regression.
+ */
+let keyterms: string[] | undefined = ["Telar", "Zarigüeya"];
+/**
  * WHERE happy-dom SAYS THE CARET IS (#561).
  *
  * There is no layout in happy-dom, so `Range.getBoundingClientRect()` answers
@@ -131,6 +140,7 @@ beforeEach(() => {
   tokenCalls = 0;
   provider = "deepgram";
   language = "multi";
+  keyterms = ["Telar", "Zarigüeya"];
   caretAt = { x: 120, y: 400 };
   // ONE LINE HIGH AND ZERO WIDE, which is what a real collapsed caret rect is.
   // Height matters: `caretRectIn` reads a zero-height rect as "no layout yet"
@@ -166,7 +176,7 @@ beforeEach(() => {
     const url = String(typeof input === "object" && "url" in input ? input.url : input);
     if (url.includes("/api/dictation/token")) {
       tokenCalls += 1;
-      return Response.json({ provider: "deepgram", token: "jwt-abc", expiresAt: Date.now() + 300_000, language });
+      return Response.json({ provider: "deepgram", token: "jwt-abc", expiresAt: Date.now() + 300_000, language, keyterms });
     }
     if (url.includes("/api/dictation")) return Response.json({ dictation: { provider, configured: provider !== "off" } });
     return Response.json({});
@@ -368,6 +378,26 @@ describe("the mic button on a composer", () => {
     // Deepgram with close 1002, and `["bearer", jwt]` is what opens.
     expect(live!.protocols).toEqual(["bearer", "jwt-abc"]);
     expect(new URL(live!.url).searchParams.get("access_token")).toBeNull();
+  });
+
+  test("and it primes the recogniser with the glossary the Mac sent (#581)", async () => {
+    // THE WHOLE OF THE BUG. The headset put up to forty of these on every
+    // socket and this button put none, which is why the VR client understood
+    // the app's own vocabulary and the cockpit did not.
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(new URL(live!.url).searchParams.getAll("keyterm")).toEqual(["Telar", "Zarigüeya"]);
+  });
+
+  test("a Mac that sends no glossary still opens the socket", async () => {
+    // An engine from before this field. Dictating with nothing primed is what
+    // every dictation did until now; a mic button that refused to open would
+    // be a regression shipped by an improvement.
+    keyterms = undefined;
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(live).toBeDefined();
+    expect(new URL(live!.url).searchParams.has("keyterm")).toBe(false);
   });
 
   test("audio only goes up once the socket is open, so the container header is not lost", async () => {

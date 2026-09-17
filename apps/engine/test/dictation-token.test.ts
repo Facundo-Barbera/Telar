@@ -347,6 +347,118 @@ test("a Mac nobody has narrowed mints tokens that say `multi`", async () => {
   expect((await client.dictationToken()).language).toBe("multi");
 });
 
+/* ------------------------------------------------------------------ *
+ * THE VOCABULARY, AND THE KEYTERMS BUILT OUT OF IT — issue #581.
+ *
+ * The bug was that these clients primed the recogniser with NOTHING
+ * while the headset primed it with forty terms, so the VR client was
+ * the only surface that understood the app's own glossary. What must
+ * not drift here:
+ *
+ *   - `vocabulary` is a stored setting like the other two, empty by
+ *     default, and round-trips without disturbing them;
+ *   - blanks and repeats are TIDIED rather than refused — the only
+ *     thing a person can do wrong in a list box is press return;
+ *   - the token answer carries the built list, so a press of the mic
+ *     button is still one round trip;
+ *   - what this Mac is about is IN it: a conversation's title, its
+ *     project's name;
+ *   - and the person's own terms are first.
+ *
+ * The ordering and the two bounds are `dictation-keyterms.test.ts`;
+ * this file is about the route.
+ * ------------------------------------------------------------------ */
+
+test("out of the box the vocabulary is empty, and the keyterms are still not", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  expect((await client.dictation()).dictation.vocabulary).toEqual([]);
+  // A Mac with no glossary typed into it still knows what it is called.
+  expect((await client.dictationToken()).keyterms).toContain("Telar");
+});
+
+test("the vocabulary round-trips, and choosing one leaves the provider, the key and the language alone", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  await client.setDictation({ language: "es" });
+  const saved = await client.setDictation({ vocabulary: ["Kubernetes", "Wispr Flow"] });
+  expect(saved.dictation.vocabulary).toEqual(["Kubernetes", "Wispr Flow"]);
+  expect(saved.dictation.provider).toBe("deepgram");
+  expect(saved.dictation.configured).toBe(true);
+  expect(saved.dictation.language).toBe("es");
+  expect((await client.dictation()).dictation.vocabulary).toEqual(["Kubernetes", "Wispr Flow"]);
+});
+
+test("a patch that names no vocabulary leaves the stored one alone, and an empty list clears it", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  await client.setDictation({ vocabulary: ["Kubernetes"] });
+  expect((await client.setDictation({ language: "ja" })).dictation.vocabulary).toEqual(["Kubernetes"]);
+  // EMPTY IS THE EXPLICIT CLEAR, which is what emptying the box means — the
+  // same departure the key field's empty string makes.
+  expect((await client.setDictation({ vocabulary: [] })).dictation.vocabulary).toEqual([]);
+});
+
+test("blank lines and repeats are tidied away rather than refused", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  // A LIST BOX IS ONE PER LINE, so a trailing return is the commonest thing in
+  // it. Refusing a save over one would be a settings box that argues.
+  const saved = await client.setDictation({ vocabulary: ["  Kubernetes ", "", "   ", "kubernetes", "Wispr"] });
+  expect(saved.dictation.vocabulary).toEqual(["Kubernetes", "Wispr"]);
+});
+
+test("the token answer carries the keyterms, with the person's own terms first", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  await client.setDictation({ vocabulary: ["Kubernetes", "Wispr Flow"] });
+  const { keyterms } = await client.dictationToken();
+  // ONE ROUND TRIP FOR THE WHOLE PRESS, like the language beside it: neither
+  // client reads the settings route on the path that opens a socket.
+  expect(keyterms.slice(0, 2)).toEqual(["Kubernetes", "Wispr Flow"]);
+  expect(keyterms).toContain("Telar");
+});
+
+test("an unsettled conversation and its project are words the recogniser is told about", async () => {
+  const { daemon, client } = await engine();
+  await switchedOn(client);
+  daemon.store.registerProject({ id: "project_one", name: "Zarigüeya", root: "/tmp" });
+  daemon.store.createSession({ id: "session_one", projectId: "project_one", title: "Nightly build triage" });
+  const { keyterms } = await client.dictationToken();
+  // THE NAMES A BROWSER TAB CANNOT SEE. This is the whole reason the list is
+  // built on the engine rather than by whoever opens the socket.
+  expect(keyterms).toContain("Nightly build triage");
+  expect(keyterms).toContain("Zarigüeya");
+});
+
+test("the list stays bounded however many conversations are open", async () => {
+  const { daemon, client } = await engine();
+  await switchedOn(client);
+  daemon.store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  for (let index = 0; index < 60; index += 1) {
+    daemon.store.createSession({ id: `session_${index}`, projectId: "project_one", title: `Conversation number ${index}` });
+  }
+  const { keyterms } = await client.dictationToken();
+  expect(keyterms.length).toBeLessThanOrEqual(40);
+  // AND THE BUDGET HOLDS TOO — forty titles can be two thousand characters on
+  // their own, so the count alone is not a bound.
+  expect(keyterms.join("").length).toBeLessThanOrEqual(2000);
+  // The app's own name survives a busy Mac, which is the failure mode the
+  // obvious ordering has.
+  expect(keyterms).toContain("Telar");
+});
+
+test("a settings file with a vocabulary this build cannot read still answers its provider", async () => {
+  const { daemon, client } = await engine();
+  await switchedOn(client);
+  const file = path.join(daemon.store.paths.root, "dictation", "settings.json");
+  fs.writeFileSync(file, JSON.stringify({ provider: "deepgram", language: "de", vocabulary: "not a list" }));
+  const state = (await client.dictation()).dictation;
+  expect(state.provider).toBe("deepgram");
+  expect(state.language).toBe("de");
+  expect(state.vocabulary).toEqual([]);
+});
+
 test("a settings file with a language this build cannot place still answers its provider", async () => {
   const { daemon, client } = await engine();
   await switchedOn(client);

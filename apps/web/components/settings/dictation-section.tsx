@@ -43,6 +43,19 @@
  * file would be the list that is wrong the day Deepgram adds one, and a second
  * copy on the phone would make two.
  *
+ * ── AND THE WORDS NOTHING COULD HAVE GUESSED (#581) ─────────────────────────
+ * Dictation was primed with no vocabulary at all, so anything Deepgram had no
+ * reason to expect — "Telar", a colleague's surname, a product spelled the
+ * unobvious way — came back as whatever it sounded closest to. The engine
+ * already sends what it can work out on its own: the conversations that are
+ * unsettled, the projects, the branches. This box is for the rest, which is the
+ * half only the person knows.
+ *
+ * ONE PER LINE, AND IT SAVES WHEN THE BOX LOSES FOCUS. A list is not a value
+ * that can be saved on every keystroke — half a word typed is not a term — and
+ * a Save button beside a textarea is a button people forget to press. Blur is
+ * the moment somebody is done with it.
+ *
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
  * what is stored and says why underneath.
@@ -50,12 +63,13 @@
 
 import { useState } from "react";
 import type { DictationProviderId } from "@telar/engine-client";
-import { KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
+import { BookMarkedIcon, KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
 import { useDictationSettings } from "@/lib/dictation/settings";
 import { DICTATION_AUTOMATIC } from "@/lib/dictation/automatic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 /** The names a person picks between. `off` is a member rather than an absent
@@ -73,9 +87,17 @@ const PROVIDER_HINT: Record<DictationProviderId, string> = {
 };
 
 export function DictationSection() {
-  const { provider, configured, language, languages, loading, save, error } = useDictationSettings();
+  const { provider, configured, language, languages, vocabulary, loading, save, error } = useDictationSettings();
   const [key, setKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
+  /**
+   * `undefined` MEANS "SHOW WHAT IS STORED", which is what keeps this box in
+   * step with the engine without an effect syncing two copies of one list. It
+   * holds a draft only while somebody is typing in it, and drops back to the
+   * engine's answer the moment the save lands — so a refused write leaves the
+   * stored terms on screen rather than the ones that did not take.
+   */
+  const [terms, setTerms] = useState<string>();
 
   async function saveKey(value: string): Promise<void> {
     setKeySaved(false);
@@ -87,6 +109,15 @@ export function DictationSection() {
     await save({ apiKey: value.trim() });
     setKey("");
     if (value.trim()) setKeySaved(true);
+  }
+
+  /** One per line, and the engine tidies the rest: blanks and repeats go there
+   *  rather than here, so a hand-written file and this box agree about what a
+   *  stored term is. */
+  async function saveTerms(): Promise<void> {
+    if (terms === undefined) return;
+    await save({ vocabulary: terms.split("\n") });
+    setTerms(undefined);
   }
 
   return (
@@ -204,6 +235,25 @@ export function DictationSection() {
           >
             {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. The mic button on the composer works now.</p>}
           </Row>
+          <Row
+            label="Vocabulary"
+            icon={BookMarkedIcon}
+            hint="Words the recogniser has no reason to expect — a product name, a colleague's surname, a piece of jargon — one per line. Your conversations, your projects and their branches are already sent; this is for the rest. Saved when you click away."
+            control={
+              <Textarea
+                className="h-28 w-64 font-mono text-xs"
+                aria-label="Dictation vocabulary"
+                placeholder={"Kubernetes\nZarigüeya\nPostgres"}
+                // THE STORED LIST WHEN NOBODY IS TYPING — see `terms`. Joined
+                // here rather than kept as text anywhere, so what is on screen
+                // is what the engine actually holds.
+                value={terms ?? vocabulary.join("\n")}
+                disabled={loading}
+                onChange={(event) => setTerms(event.target.value)}
+                onBlur={() => void saveTerms()}
+              />
+            }
+          />
           <Row
             label="How it works"
             icon={MicIcon}

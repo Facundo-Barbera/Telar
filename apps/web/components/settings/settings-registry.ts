@@ -44,6 +44,7 @@
 
 import {
   BlocksIcon,
+  BookMarkedIcon,
   CameraIcon,
   CircleUserRoundIcon,
   DownloadIcon,
@@ -689,6 +690,29 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
             keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
             icon: KeyRoundIcon,
+          },
+          {
+            /** WHAT SOMEBODY TYPES AFTER A NAME COMES BACK WRONG (#581) —
+             *  "glossary", "vocabulary", "keyterms", "custom words". The row is
+             *  the only place any of those can be fixed, and none of them is a
+             *  word the two rows above use. */
+            title: "Vocabulary",
+            hint: "Words the recogniser has no reason to expect, one per line. Your conversations, projects and branches are already sent; this is the rest.",
+            keywords: [
+              "dictation",
+              "vocabulary",
+              "glossary",
+              "keyterm",
+              "keyterms",
+              "terms",
+              "custom words",
+              "jargon",
+              "names",
+              "spelling",
+              "accuracy",
+              "wrong word",
+            ],
+            icon: BookMarkedIcon,
           },
           {
             /** Indexed because "why is nothing being typed" is the question
