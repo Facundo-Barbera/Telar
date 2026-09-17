@@ -32,10 +32,13 @@ struct AgentView: View {
     let hostId: HostID
     let api: any EngineAPI
 
-    @State private var rows: [AgentRow] = []
+    /// THE TRANSCRIPT AND WHERE IT IS UP TO (#580) — rows, the tip the poll
+    /// resumes from, and the floor the pull reads back from. One type rather
+    /// than four `@State`s, because the three reads that move them disagree
+    /// about which ones they move; see `AgentThreadPager`.
+    @State private var thread = AgentThreadPager()
     @State private var state: AgentState?
     @State private var credential: AgentCredential?
-    @State private var cursor = 0
     @State private var draft = ""
     @State private var loading = true
     @State private var sending = false
@@ -74,14 +77,19 @@ struct AgentView: View {
      */
     @State private var scroll = AgentTranscriptScroll()
 
-    /// HOW MANY PAGES A FIRST READ WILL WALK.
+    /// HOW MANY PAGES A FORWARD CATCH-UP WILL WALK.
     ///
-    /// The Mac pages FORWARD only — `after` is exclusive and `0` is the
-    /// beginning — so opening a long conversation means walking it. Each page is
-    /// bounded by a count and a byte budget over there; this bounds the walk, so
-    /// a thread that has run for a month costs a screenful of history rather
-    /// than the whole of it. A ceiling, not a target.
+    /// This used to bound the OPEN, because the Mac paged forward only — `after`
+    /// was exclusive and `0` was the beginning, so opening a conversation meant
+    /// walking it from the first thing it ever said. It bounds a poll now: a
+    /// phone that was asleep for an hour catches up in a few pages, and one
+    /// behind a thread that ran all night stops rather than pulling the lot.
     private static let maxPages = 20
+
+    /// HOW MANY ROWS THE OPEN ASKS FOR — the LAST that many (#580). The Mac
+    /// bounds a page by a count AND a byte budget, whichever is reached first,
+    /// so this is a ceiling on the count half of that.
+    private static let tailRows = 50
 
     /// HOW OFTEN IT ASKS AGAIN — the phone's ordinary cadence, and deliberately
     /// not faster. This screen is watching a conversation another machine is
@@ -183,7 +191,7 @@ struct AgentView: View {
                     if let failure {
                         notice(failure)
                     }
-                    if rows.isEmpty {
+                    if thread.rows.isEmpty {
                         Text("Nothing yet. Ask it what is happening across your sessions, or hand it something to delegate.")
                             .font(.subheadline)
                             .foregroundStyle(Theme.textMuted)
@@ -225,6 +233,12 @@ struct AgentView: View {
         // rule on `SessionView`, and the composer is a real field now, so this
         // screen needs it too.
         .scrollDismissesKeyboard(.immediately)
+        // PULLING DOWN AT THE TOP READS BACKWARDS (#580) — the screen opens on
+        // the last page, so this is how the rest of the conversation is
+        // reached. Attached only while there IS something older, so a reader at
+        // the beginning of the thread gets no spinner for a read that would
+        // return nothing.
+        .refreshable { if thread.hasOlder { await loadOlder() } }
     }
 
 
@@ -242,7 +256,7 @@ struct AgentView: View {
     /// folding the log. This screen folds the log, so drawing both would print
     /// the closing sentence of every turn twice.
     private var drawn: [AgentRow] {
-        rows.filter { row in
+        thread.rows.filter { row in
             switch row.kind {
             case .turnStarted, .requestOpened, .requestResolved: return false
             case .assistantMessage, .userMessage: return !(row.text ?? "").isEmpty
@@ -400,18 +414,18 @@ struct AgentView: View {
 
     // ── READS AND WRITES ─────────────────────────────────────────────────────
 
-    /// Page the transcript once, then keep asking from the cursor.
+    /// Open on the LAST page (#580), then keep asking from the cursor.
     private func follow() async {
         await refreshState()
         await loadModels()
-        await page()
+        await openTail()
         await readInbox()
         loading = false
         // AFTER THE FIRST PAGE, AND ON EVERY RE-OPEN. This is the case the old
         // `onChange(of: rows.count)` anchor could not reach: the first page
         // lands in one assignment before layout, and a re-open starts with the
         // rows already in hand, so the count never changes. See `scroll`.
-        scroll.rowsChanged(to: rows.count)
+        scroll.rowsChanged(to: thread.rows.count)
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(Self.pollSeconds))
             if Task.isCancelled { return }
@@ -420,7 +434,7 @@ struct AgentView: View {
             await readInbox()
             // NEW ROWS FOLLOW THE TAIL; a reader who scrolled up keeps their
             // place, because `rowsChanged` only pins when the count moved.
-            scroll.rowsChanged(to: rows.count)
+            scroll.rowsChanged(to: thread.rows.count)
         }
     }
 
@@ -480,15 +494,30 @@ struct AgentView: View {
         }
     }
 
+    /// THE OPEN — the last page and nothing above it (#580).
+    ///
+    /// ONE ROUND TRIP, whatever the conversation weighs. This screen used to
+    /// call `page()` with a cursor of `0`, which on a thread of a few hundred
+    /// rows was a dozen sequential requests and most of a megabyte before the
+    /// first line was drawn — over a host proxy, on a phone, on cellular.
+    ///
+    /// `cursor` TAKES THE THREAD'S TIP and not this window's top, so the poll
+    /// below picks up where the conversation actually is. A re-open runs this
+    /// again against rows already held, and they merge by id.
+    private func openTail() async {
+        await thread.open(api, limit: Self.tailRows)
+    }
+
+    /// ONE PAGE FURTHER BACK — what pulling down at the top asks for. The count
+    /// moved and the tail did not, so the scroll is told so rather than pinned;
+    /// see `rowsPrepended`.
+    private func loadOlder() async {
+        await thread.older(api, limit: Self.tailRows)
+        scroll.rowsPrepended(to: thread.rows.count)
+    }
+
     private func page() async {
-        var after = cursor
-        for _ in 0..<Self.maxPages {
-            guard let page = try? await api.agentThread(after: after) else { return }
-            rows = mergeAgentRows(rows, page.rows)
-            after = page.cursor
-            cursor = after
-            if !page.more { return }
-        }
+        await thread.poll(api, maxPages: Self.maxPages)
     }
 
     /// The composer hands the text over; it has already cleared the box and
@@ -506,7 +535,7 @@ struct AgentView: View {
             // Waiting for the next poll would leave the strip claiming updates
             // the Agent has already been handed.
             await readInbox()
-            scroll.rowsChanged(to: rows.count)
+            scroll.rowsChanged(to: thread.rows.count)
         } catch {
             failure = "That Mac refused the message."
             // THE TEXT COMES BACK rather than being lost to a failed send.
