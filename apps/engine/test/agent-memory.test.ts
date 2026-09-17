@@ -32,6 +32,8 @@ import {
 import { agentPaths } from "../src/agent/store";
 import { AgentRuntime } from "../src/agent/runtime";
 import { collectAgentTools } from "../src/agent/tools";
+import { AgentThreadLog, searchText } from "../src/agent/thread-log";
+import { openAgentCheckpointer, type NativeDatabase } from "../src/agent/checkpointer";
 import type { SocketTool } from "../src/mcp-socket";
 
 const root = () => fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-memory-"));
@@ -346,4 +348,83 @@ test("disable keeps everything — the standing state included", async () => {
   agent.patch({ enabled: true });
   expect(readStanding(paths).sections.doing).toBe("coordinating #541");
   agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * recall on both sqlite builds.
+ * ------------------------------------------------------------------ */
+
+/** A database that answers everything except `CREATE VIRTUAL TABLE … fts5` —
+ *  which is the OTHER supported configuration, not a fault: `node:sqlite` under
+ *  Electron-as-Node may be built without the module. `execution-store.ts` takes
+ *  the same two paths for the same reason. */
+function withoutFts5(db: NativeDatabase): NativeDatabase {
+  return {
+    exec: (sql: string) => {
+      if (sql.includes("fts5")) throw new Error("no such module: fts5");
+      return db.exec(sql);
+    },
+    prepare: (sql: string) => db.prepare(sql),
+    close: () => db.close(),
+  };
+}
+
+function rows(log: AgentThreadLog, threadId: string) {
+  log.append({ threadId, runId: "run_1", at: 1, kind: "user_message", detail: { text: "what happened with the dictation language picker" } });
+  log.append({ threadId, runId: "run_1", at: 2, kind: "assistant_message", detail: { text: "It went in on Tuesday, on both platforms." } });
+  log.append({ threadId, runId: "run_1", at: 3, kind: "turn_started", detail: {} });
+  log.append({ threadId, runId: "run_2", at: 4, kind: "user_message", detail: { text: "and the appearance rework?" } });
+}
+
+test("recall finds the same row with fts5 and without it", () => {
+  const opened = openAgentCheckpointer(":memory:");
+  const fast = new AgentThreadLog(opened.db);
+  expect(fast.searchIndex).toBe("fts5");
+  rows(fast, "thread_a");
+  const found = fast.search("thread_a", ["dictation"], 5);
+  expect(found).toHaveLength(1);
+  expect(found[0]!.kind).toBe("user_message");
+  expect(found[0]!.why).toContain("dictation");
+  opened.close();
+
+  const plain = openAgentCheckpointer(":memory:");
+  const slow = new AgentThreadLog(withoutFts5(plain.db));
+  expect(slow.searchIndex).toBe("like");
+  rows(slow, "thread_a");
+  const scanned = slow.search("thread_a", ["dictation"], 5);
+  expect(scanned).toHaveLength(1);
+  expect(scanned[0]!.why).toContain("dictation");
+  plain.close();
+});
+
+test("a row that says nothing is not in the index for every query to skip", () => {
+  const opened = openAgentCheckpointer(":memory:");
+  const log = new AgentThreadLog(opened.db);
+  rows(log, "thread_a");
+  // `turn_started` carries no text, so nothing matches a search for its kind.
+  expect(log.search("thread_a", ["turn_started"], 5)).toEqual([]);
+  expect(searchText("turn_started", {})).toBe("");
+  opened.close();
+});
+
+test("rows written before the index existed are caught up on the next open", () => {
+  const opened = openAgentCheckpointer(":memory:");
+  // A log that never had the virtual table writes the rows and indexes nothing.
+  const before = new AgentThreadLog(withoutFts5(opened.db));
+  rows(before, "thread_a");
+  expect(before.searchIndex).toBe("like");
+
+  // The same database, opened by a build that HAS fts5: the catch-up runs once.
+  const after = new AgentThreadLog(opened.db);
+  expect(after.searchIndex).toBe("fts5");
+  expect(after.search("thread_a", ["dictation"], 5)).toHaveLength(1);
+  opened.close();
+});
+
+test("recall is scoped to one thread — an archived conversation answers nothing", () => {
+  const opened = openAgentCheckpointer(":memory:");
+  const log = new AgentThreadLog(opened.db);
+  rows(log, "thread_a");
+  expect(log.search("thread_b", ["dictation"], 5)).toEqual([]);
+  opened.close();
 });

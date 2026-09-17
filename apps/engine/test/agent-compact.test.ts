@@ -397,3 +397,42 @@ test("one line is a fixed size whatever the turn weighed", () => {
   expect(line.length).toBeLessThan(FOLD_INPUT_CHARS + FOLD_ANSWER_CHARS + 120);
   expect(line).toContain("sessions_find ×2");
 });
+
+test("through the runtime: the prompt folds, and every row is still in the thread", async () => {
+  const wordy = "z".repeat(2_000);
+  const tools: SocketTool[] = [
+    { name: "sessions_list", description: "a fixture", shape: {}, run: async () => ({ content: [{ type: "text", text: wordy }] }) },
+  ];
+  const model = new ScriptedChatModel([
+    { toolCalls: [{ id: "call_1", name: "sessions_list", args: {}, type: "tool_call" }] },
+    { text: "two are running" },
+    { toolCalls: [{ id: "call_2", name: "sessions_list", args: {}, type: "tool_call" }] },
+    { text: "still two" },
+    { text: "nothing new" },
+  ]);
+  const agent = new AgentRuntime({
+    engineRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-fold-")),
+    tools: () => tools,
+    model: () => model,
+    // Small enough that two ordinary turns cross it.
+    budgetChars: 3_000,
+  });
+  agent.patch({ enabled: true });
+  for (const text of ["what is running", "and now", "anything else"]) {
+    agent.submit({ text });
+    await until(() => agent.state().running === false && agent.state().queued === 0, `the turn for "${text}"`);
+  }
+
+  const last = model.seen.at(-1)!;
+  expect(last.some((message) => isFold(message))).toBe(true);
+  const block = last.find((message) => isFold(message) && message.getType() === "ai")!;
+  expect(String(block.content)).toContain("what is running");
+  expect(String(block.content)).toContain("sessions_list");
+
+  // THE TRANSCRIPT KEEPS EVERYTHING. What the prompt folded is still a row, and
+  // still carries the tool's whole answer.
+  const rows = agent.thread({ limit: 200 }).rows;
+  expect(rows.filter((row) => row.kind === "user_message").map((row) => row.detail.text)).toEqual(["what is running", "and now", "anything else"]);
+  expect(rows.find((row) => row.kind === "tool_call")!.detail.output).toBe(wordy);
+  agent.close();
+});
