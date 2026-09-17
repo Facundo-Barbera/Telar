@@ -17,6 +17,12 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  * `provider` IS THE SETTING, and `off` is the default. It decides whether there
  * is a mic button at all, and where there is one, which socket it opens and
  * what it encodes. See `apps/engine/src/dictation/provider.ts`.
+ *
+ * `language` IS THE SECOND ONE, and `multi` is ITS default (#560) — Nova-3
+ * code-switching rather than the `en` Deepgram falls back to when nobody says.
+ * The answer carries `languages` beside it so a pane can draw a picker from one
+ * document; the names are the engine's, for the same reason the provider list
+ * is.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -38,12 +44,13 @@ export async function PATCH(request: Request) {
       // must not be read as switching dictation off. An empty key string is the
       // explicit clear, which is what the Remove button sends.
       //
-      // THE PROVIDER IS NOT VALIDATED HERE. The engine owns the set of names it
-      // knows and refuses an unknown one with a sentence; a second list in this
-      // process would be one more thing to forget the day a third provider
-      // lands.
+      // NEITHER THE PROVIDER NOR THE LANGUAGE IS VALIDATED HERE. The engine
+      // owns both sets of names and refuses an unknown one with a sentence; a
+      // second list in this process would be one more thing to forget the day a
+      // third provider lands, or the day Deepgram adds a language.
       await (await engineClient()).setDictation({
         ...("provider" in body ? { provider: body.provider as DictationProviderId } : {}),
+        ...("language" in body ? { language: String(body.language ?? "") } : {}),
         ...("apiKey" in body ? { apiKey: String(body.apiKey ?? "") } : {}),
       }),
     );

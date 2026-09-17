@@ -40,16 +40,32 @@
  * hands over a container (WebM/Opus, or MP4 on Safari) and Deepgram reads the
  * container's own header. Declaring `linear16` beside Opus bytes is how a
  * stream transcribes as silence.
+ *
+ * ── AND `language`, WHICH NOT SENDING IT WAS THE BUG (#560) ─────────────────
+ * Deepgram defaults to `en`. So a socket opened without this parameter
+ * transcribed Spanish as whatever English it sounded closest to — words in the
+ * box, confidently wrong, which is worse than a refusal. It is a REQUIRED
+ * argument here rather than one with a default, so the next caller cannot open
+ * a socket without deciding: the value comes from the setting, and the token
+ * answer is what carries it.
  */
 
 export const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
 
-/** The address, which carries no credential — see the header. */
-export function listenUrl(base: string = DEEPGRAM_LISTEN_URL): string {
+/**
+ * The address, which carries no credential — see the header.
+ *
+ * `language` IS DEEPGRAM'S OWN CODE, mapped from the setting by the engine
+ * before it reached this browser. Nothing here validates it: this file writes a
+ * query, and a second copy of the vendor's language table on the client is
+ * exactly what putting the list on the engine's answer avoids.
+ */
+export function listenUrl(language: string, base: string = DEEPGRAM_LISTEN_URL): string {
   const url = new URL(base);
   url.searchParams.set("model", "nova-3");
   url.searchParams.set("interim_results", "true");
   url.searchParams.set("smart_format", "true");
+  url.searchParams.set("language", language);
   // The one that ends an utterance on a pause rather than on the socket
   // closing, so a final lands while the person is still talking.
   url.searchParams.set("endpointing", "300");

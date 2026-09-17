@@ -21,7 +21,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { DictationAnswer, DictationProviderId } from "@telar/engine-client";
+import type { DictationAnswer, DictationLanguage, DictationProviderId } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 
 const CHANGED = "telar:dictation";
@@ -34,12 +34,20 @@ export type DictationSettingsHandle = {
    *  `dictation/credentials.ts`. Answered even while the provider is off,
    *  because a key pasted before is still there. */
   configured: boolean;
+  /** What to transcribe, or `multi` for all of them at once (#560). The mic
+   *  button does NOT read this — the language rides the token answer, so one
+   *  round trip serves the press; it is here for the pane that sets it. */
+  language: string;
+  /** What may be chosen, named by the engine. Held there rather than here so
+   *  no client carries a copy of a vendor's language table that goes stale the
+   *  day the vendor adds one. */
+  languages: DictationLanguage[];
   /** True until the engine has answered once. The row keeps its controls
    *  disabled until then rather than offering one that might be wrong. */
   loading: boolean;
-  /** Both fields by presence. The key is WRITE-ONLY, and an empty string
+  /** Every field by presence. The key is WRITE-ONLY, and an empty string
    *  clears it, which is what Remove sends. */
-  save: (patch: { provider?: DictationProviderId; apiKey?: string }) => Promise<void>;
+  save: (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) => Promise<void>;
   /** The engine refused, or is not answering. Shown on the row rather than
    *  swallowed — the engine's answer is the state. */
   error?: string;
@@ -53,8 +61,12 @@ export type DictationSettingsHandle = {
  * A first paint claiming a provider is chosen would put a mic button on every
  * composer for that same moment and then take it away — a control that blinks
  * in and out on load is worse than one that arrives a beat late.
+ *
+ * AND AN EMPTY `languages` RATHER THAN A GUESSED LIST: the names belong to the
+ * engine, so before it has answered there are none to offer. The picker is
+ * disabled while `loading` either way.
  */
-const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false };
+const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false, language: "multi", languages: [] };
 
 export function useDictationSettings(): DictationSettingsHandle {
   const [dictation, setDictation] = useState(NONE);
@@ -83,7 +95,7 @@ export function useDictationSettings(): DictationSettingsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string }) => {
+  const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) => {
     try {
       const result = await createEngineApi().setDictation(patch);
       setDictation(result.dictation);

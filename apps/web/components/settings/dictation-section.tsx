@@ -32,6 +32,17 @@
  * sentence, because "paste your API key into a web app" is a thing a careful
  * person is right to hesitate over.
  *
+ * ── AND WHICH LANGUAGE, WHICH IS A ROW BECAUSE IT WAS A BUG (#560) ──────────
+ * Nothing sent `language` on the socket and Deepgram defaults to English, so
+ * dictation quietly transcribed everybody into English-shaped words. The row
+ * answers "Automatic" by default — Nova-3 code-switching between the languages
+ * it supports, mid-sentence — and naming one is the NARROWING, offered for the
+ * accuracy it buys in a single tongue rather than as the thing to pick first.
+ *
+ * THE NAMES COME FROM THE ENGINE. Seventy of them, per provider; a copy in this
+ * file would be the list that is wrong the day Deepgram adds one, and a second
+ * copy on the phone would make two.
+ *
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
  * what is stored and says why underneath.
@@ -39,12 +50,12 @@
 
 import { useState } from "react";
 import type { DictationProviderId } from "@telar/engine-client";
-import { KeyRoundIcon, MicIcon, MicOffIcon } from "lucide-react";
+import { KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
 import { useDictationSettings } from "@/lib/dictation/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 /** The names a person picks between. `off` is a member rather than an absent
  *  choice: "nobody has chosen" and "chosen: nobody" are the same state here,
@@ -61,7 +72,7 @@ const PROVIDER_HINT: Record<DictationProviderId, string> = {
 };
 
 export function DictationSection() {
-  const { provider, configured, loading, save, error } = useDictationSettings();
+  const { provider, configured, language, languages, loading, save, error } = useDictationSettings();
   const [key, setKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
 
@@ -117,6 +128,35 @@ export function DictationSection() {
           row that goes away, not the secret. */}
       {provider === "deepgram" && (
         <>
+          {/* AUTOMATIC IS FIRST AND IS THE DEFAULT. It is the engine that puts
+              it there — the row renders the order it was given rather than
+              hoisting a code it would have to recognise by name. */}
+          <Row
+            label="Language"
+            icon={LanguagesIcon}
+            hint={
+              language === "multi"
+                ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence — which is what a name dropped into another language actually is. Narrow it below only if you speak one language and want the accuracy of saying so."
+                : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
+            }
+            control={
+              // `Dropdown` RATHER THAN A SELECT WRITTEN OUT HERE, for the one
+              // thing it fixes in a single place: a bare `<SelectValue />`
+              // renders the VALUE, so this trigger would read "es" where a
+              // person chose Spanish (#318).
+              <Dropdown<string>
+                value={language}
+                onChange={(next) => void save({ language: next })}
+                options={languages.map(({ code, label }) => ({ value: code, label }))}
+                className="w-64"
+                label="Dictation language"
+                // NO LANGUAGES MEANS THE ENGINE HAS NOT ANSWERED YET. A picker
+                // with nothing in it is a control that does nothing when it is
+                // opened.
+                disabled={loading || languages.length === 0}
+              />
+            }
+          />
           <Row
             label="Deepgram key"
             icon={KeyRoundIcon}
