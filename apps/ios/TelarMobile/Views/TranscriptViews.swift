@@ -117,7 +117,13 @@ struct TurnView: View {
             // and drawing them as bubbles put words in the reader's mouth —
             // twenty lines of another agent's status, right-aligned, as though
             // they had typed it.
-            if turn.isWake || turn.isProviderStarted {
+            // A NOTIFICATION TURN IS A NOTIFICATION ROW (#550), and first —
+            // it is the honest description of every session-origin turn the
+            // engine now writes. The arms under it are what a turn stored
+            // before this existed still falls back to.
+            if turn.notification != nil {
+                NotificationTurnRow(turn: turn)
+            } else if turn.isWake || turn.isProviderStarted {
                 WakeRow(turn: turn)
             } else if turn.isFromAgent {
                 AgentMessageRow(turn: turn)
@@ -228,7 +234,11 @@ struct TurnResponse: Equatable {
 func splitAtMessageBoundaries(_ items: [JournalItem]) -> [TurnResponse] {
     var responses: [TurnResponse] = [TurnResponse(boundary: nil, items: [])]
     for item in items {
+        // `notification` seams for `user_message`'s reason: something ARRIVED,
+        // and what follows is the turn's answer to it (#550).
         if case .userMessage = item.detail {
+            responses.append(TurnResponse(boundary: item, items: []))
+        } else if case .notification = item.detail {
             responses.append(TurnResponse(boundary: item, items: []))
         } else {
             responses[responses.count - 1].items.append(item)
@@ -566,6 +576,7 @@ struct ActivityRunView: View {
         case .reasoning: "Thought"
         // "You steered" is a claim about who typed it, so it is only true of a
         // message the person actually sent.
+        case .notification(let detail): describeNotification(detail)
         case .userMessage(let message):
             message.wakeReason != nil ? "Woken" : message.sender != nil ? "Agent message" : "You steered"
         case .task: "Delegated"
@@ -732,6 +743,116 @@ struct WakeRow: View {
     }
 }
 
+/// WHAT A NOTIFICATION IS CALLED, in one line — issue #550.
+///
+/// Beside `describeWake` and for its reason: the same happening must not be
+/// given two names by the two places that draw it.
+func describeNotification(_ detail: NotificationDetail) -> String {
+    switch detail.kind {
+    case "peer_message":
+        switch detail.intent ?? "report" {
+        case "task": return "A session assigned work"
+        case "blocker": return "A session reported a blocker"
+        case "result": return "A session sent a result"
+        default: return "A session sent a message"
+        }
+    case "request": return "Session asked a question"
+    default: return detail.wakeKind.map { describeWake(WakeReason(kind: $0)) } ?? "Session activity"
+    }
+}
+
+/// A NOTIFICATION — a peer's message, a wake, a parked request. #550.
+///
+/// NOT A BUBBLE OF ANYONE'S, which is the whole point: all three reached this
+/// session without a person typing, and this phone drew two of them on the
+/// right of the screen as though the reader had. One line collapsed — a bell,
+/// what happened, whose session — with the notice behind a tap, and the peer's
+/// actual message behind a second one when there IS one on this side.
+struct NotificationRow: View {
+    let detail: NotificationDetail
+    /// The body as sent, for a peer's message. A wake announces something in
+    /// ANOTHER session's run and has none here.
+    var message: String? = nil
+    @State private var expanded = false
+    @State private var reading = false
+
+    private var peerMessage: String? {
+        guard detail.kind == "peer_message", let message, !message.isEmpty, message != detail.body else { return nil }
+        return message
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "bell").font(.system(Theme.caption))
+                    Text(describeNotification(detail)).font(Theme.meta)
+                    if let entries = detail.entries, entries.count > 1 {
+                        Text("and \(entries.count - 1) more").font(Theme.monoSmall)
+                    }
+                    if let sessionId = detail.sessionId {
+                        Text("session …\(String(sessionId.suffix(6)))").font(Theme.monoSmall)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(Theme.caption))
+                }
+                .foregroundStyle(Theme.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                NestedDetail {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let entries = detail.entries, entries.count > 1 {
+                            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                                Text(entry.summary).font(Theme.monoSmall).foregroundStyle(Theme.textMuted).lineLimit(2)
+                            }
+                        }
+                        Text(detail.body)
+                            .font(Theme.meta)
+                            .foregroundStyle(Theme.textMuted)
+                            .textSelection(.enabled)
+                        // THE ACTION THE ROW IS FOR. The notice announces a
+                        // message rather than quoting it — that is what keeps a
+                        // recipient's context cheap — so the row has to offer
+                        // the thing it announced.
+                        if let peerMessage {
+                            Button(reading ? "Hide the message" : "Read the message") {
+                                withAnimation(.easeInOut(duration: 0.2)) { reading.toggle() }
+                            }
+                            .font(Theme.monoSmall)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.textMuted)
+                            if reading {
+                                MarkdownText(text: peerMessage)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 240)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Notification: \(describeNotification(detail))")
+    }
+}
+
+/// A TURN THAT IS A NOTIFICATION — the row above, filled from the turn.
+struct NotificationTurnRow: View {
+    let turn: JournalTurn
+
+    var body: some View {
+        if let detail = turn.notification {
+            // The body is only this turn's when a PEER sent it; a wake's turn
+            // carries a machine label, and offering that as "the message" would
+            // be a dead end.
+            NotificationRow(detail: detail, message: turn.sender != nil ? turn.prompt : nil)
+        }
+    }
+}
+
 struct UserBubble: View {
     let text: String
 
@@ -819,6 +940,11 @@ struct ItemRowView: View {
             // polls once a second and would otherwise paint each second's
             // deltas in one block. Mirrors the web's `running(item)`.
             StreamingMarkdown(text: item.text, streaming: item.status == .inProgress)
+        case .notification(let detail):
+            // #550: its own arm, ABOVE `user_message`, because the point of the
+            // type is that narrowing on it is what gives you the payload —
+            // there is no `sender` or `wakeReason` field left to forget.
+            NotificationRow(detail: detail)
         case .userMessage(let message):
             // Steered messages land mid-run as user_message items — and WHO
             // SENT ONE decides what it looks like, exactly as it does for a

@@ -2458,6 +2458,118 @@ describe("a person's message is stamped as one, and nothing else is", () => {
   });
 });
 
+/**
+ * #550 — A NOTIFICATION REACHES CLAUDE ON A CHANNEL THAT IS NOT THE PERSON'S.
+ *
+ * The block above proves a person is stamped and nobody else is. Absence is not
+ * a role, though: a peer's report still went down the user channel, and the only
+ * thing separating it from an instruction was prose at the top of the text.
+ * These pin the two mechanisms that replace that prose — the SDK's own `origin`,
+ * and the `<system-reminder>` wrapper that survives a CLI which drops an origin
+ * kind it does not know.
+ */
+describe("a notification is delivered as system-authored, stamped with its real provenance", () => {
+  const peer = {
+    kind: "peer_message" as const,
+    sessionId: "session_peer",
+    runId: "run_x",
+    intent: "report" as const,
+    summary: "[agent message · report] from session session_peer",
+    fetch: { sessionId: "session_me", runId: "run_x" },
+    body: "[agent message · report] from session session_peer (run run_x, 12 chars)",
+  };
+  const wake = { ...peer, kind: "wake" as const, wakeKind: "turn_completed" as const, body: "[wake: completed] Session session_peer — turn run_x completed." };
+
+  const deliver = async (extra: Record<string, unknown>) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    await run(driver, extra).result;
+    return seen[0]!;
+  };
+
+  test("a peer's message is stamped `peer` and wrapped as system-authored", async () => {
+    const message = await deliver({ prompt: peer.body, notification: peer });
+    expect(message.origin).toEqual({ kind: "peer", from: "session_peer", fromSession: "session_peer" });
+    // NOT the person's, even though the wire's role field says "user" — the SDK
+    // has no other role, which is exactly why the content half exists.
+    expect(message.origin).not.toEqual({ kind: "human" });
+    const content = (message.message as { content: string }).content;
+    expect(content).toStartWith("<system-reminder>");
+    expect(content).toContain(peer.body);
+    expect(content).toEndWith("</system-reminder>");
+  });
+
+  test("a wake is stamped `task-notification` — the engine reporting, not a peer speaking", async () => {
+    const message = await deliver({ prompt: wake.body, notification: wake });
+    expect(message.origin).toEqual({ kind: "task-notification" });
+    expect((message.message as { content: string }).content).toContain("[wake: completed]");
+  });
+
+  test("a send from the outward socket names no session it cannot name", async () => {
+    const { sessionId: _omitted, ...anonymous } = peer;
+    const message = await deliver({ prompt: peer.body, notification: anonymous });
+    // `from` is required by the SDK and `fromSession` is a navigation target; an
+    // agent outside any session has no id, so neither is invented.
+    expect(message.origin).toEqual({ kind: "peer", from: "sessions-socket" });
+  });
+
+  test("a person's prompt is untouched by any of this", async () => {
+    const message = await deliver({ prompt: "please fix the editor", promptFromHuman: true });
+    expect(message.origin).toEqual({ kind: "human" });
+    expect((message.message as { content: string }).content).toBe("please fix the editor");
+  });
+
+  test("a steered batch of only notifications goes in system-authored too", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          if (seen.length < 2) continue;
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    const steer = new SteerMailbox();
+    steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: peer });
+    await run(driver, { steer }).result;
+    expect(seen[1]?.origin).toEqual({ kind: "peer", from: "session_peer", fromSession: "session_peer" });
+    expect((seen[1]?.message as { content: string }).content).toStartWith("<system-reminder>");
+    // TIMING DOES NOT CHANGE THE ROLE — the same happening arriving on an idle
+    // session and on a busy one is delivered the same way.
+    expect((seen[1]?.message as { content: string }).content).toContain(peer.body);
+  });
+
+  test("a batch mixing a notification with typed words stays the person's", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<Record<string, unknown>> }) {
+        for await (const message of prompt) {
+          seen.push(message);
+          if (seen.length < 2) continue;
+          yield { type: "result", subtype: "success" };
+          return;
+        }
+      },
+    }) as never);
+    const steer = new SteerMailbox();
+    steer.push({ text: "the body", sender: { sessionId: "session_peer" }, notification: peer });
+    steer.push("and the person weighs in");
+    await run(driver, { steer }).result;
+    expect(seen[1]?.origin).toEqual({ kind: "human" });
+    expect((seen[1]?.message as { content: string }).content).not.toContain("<system-reminder>");
+  });
+});
+
 test("an AGENT report and an engine WAKE do NOT interrupt — a notice is not a change of direction", async () => {
   /**
    * The boundary of the interrupt above. Cutting a running answer for a peer's

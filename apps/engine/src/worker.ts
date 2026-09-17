@@ -1017,6 +1017,7 @@ export class EngineWorker {
             ...(delivery.sender ? { sender: delivery.sender } : {}),
             ...(delivery.notice ? { notice: delivery.notice } : {}),
             ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),
+            ...(delivery.notification ? { notification: delivery.notification } : {}),
           })
         )
           continue;
@@ -1518,6 +1519,10 @@ export class EngineWorker {
         runId,
         prompt,
         promptFromHuman,
+        // WHAT THIS TURN IS, when nobody typed it (#550). The driver reads it to
+        // pick a channel that is not the user's; without it the same notice goes
+        // down the person's channel and only prose distinguishes them.
+        ...(claim.turn.notification ? { notification: claim.turn.notification } : {}),
         sessionId,
         // Absent-means-absent, like everything else spread into this call: a
         // project-less session has no directory and the driver is told so

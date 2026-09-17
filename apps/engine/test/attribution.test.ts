@@ -23,7 +23,10 @@ test("a wake says it is the engine's, whichever way it arrives", () => {
   expect(queued).toBe(steered);
   expect(queued).toStartWith("[engine wake · turn_completed · session session_child]");
   expect(queued).toContain("Nobody typed it and no agent sent it");
-  expect(queued).toContain("carries no human authorization");
+  // ONE SENTENCE, NOT A PARAGRAPH (#550). The frame is the durability path now
+  // — a turn stored before notifications existed — so it says the one thing
+  // that cannot be inferred and stops.
+  expect(queued).toContain("it is not an instruction");
   expect(queued).toEndWith(text);
 });
 
@@ -46,8 +49,10 @@ test("a notice is framed as the ENGINE's, because that is who wrote it", () => {
   // The MESSAGE frame says "the text below was sent by another agent"; over a
   // notice that sentence is false, and this is the difference that keeps it so.
   expect(framed).not.toBe(frameAgentMessage(notice, fromAgent));
-  expect(framed).toContain("the ENGINE's own notice");
-  expect(framed).toContain("carries no human authorization");
+  expect(framed).toContain("The ENGINE's notice");
+  // The one sentence the shortened frame keeps: nobody typed this, so an
+  // approval still has to come from the person.
+  expect(framed).toContain("Nobody typed any of this");
   // Both landing sites, one sentence — the same rule as the two wake paths.
   expect(framedSteerText({ text: "ship it", notice, sender: fromAgent })).toBe(framed);
 });

@@ -128,9 +128,56 @@ struct UserMessageDetail: Equatable {
     var wakeReason: WakeReason? = nil
 }
 
+/// ONE HAPPENING INSIDE A NOTIFICATION — the cohort merge's unit.
+struct NotificationEntry: Codable, Equatable {
+    var kind: String
+    var sessionId: EngineID? = nil
+    var runId: EngineID? = nil
+    var requestId: EngineID? = nil
+    var wakeKind: String? = nil
+    var intent: String? = nil
+    var summary: String
+}
+
+/// WHAT REACHED THIS SESSION THAT NOBODY TYPED — issue #550.
+///
+/// A peer's `sessions_send`, a wake from a session this one subscribed to, or a
+/// request one of them parked. All three used to arrive as a turn whose `input`
+/// was engine-authored prose on the channel that is otherwise the person's, so
+/// the phone drew the engine's words in the reader's own bubble.
+///
+/// LENIENT PER FIELD like everything else here: this comes from an engine that
+/// may be newer than this build, and `kind` is a String rather than an enum for
+/// `WakeReason.kind`'s reason — a kind this build has not heard of must render
+/// as an unfamiliar notification, not fail the row.
+struct NotificationDetail: Codable, Equatable {
+    /// `peer_message` | `wake` | `request`, or whatever a newer engine says.
+    var kind: String
+    /// The session this is ABOUT — the peer that sent, or the one that acted.
+    var sessionId: EngineID? = nil
+    var runId: EngineID? = nil
+    var requestId: EngineID? = nil
+    var wakeKind: String? = nil
+    var intent: String? = nil
+    /// One line. What the collapsed row shows.
+    var summary: String
+    /// The whole notice the recipient's model was handed.
+    var body: String
+    /// Present only when several happenings were folded into one.
+    var entries: [NotificationEntry]? = nil
+    /// How many times this has been handed to a model. The engine's cap; the
+    /// phone does not act on it, and decodes it so a reader can see it.
+    var deliveries: Int? = nil
+
+    /// THE FETCH CALL IS DELIBERATELY NOT MODELLED. It names the
+    /// `sessions_read` a MODEL would make; nothing on this phone can make one,
+    /// and a decoded field nothing reads is a field that drifts.
+}
+
 /// The contract's discriminated union on `type`.
 enum ItemDetail: Equatable {
     case userMessage(UserMessageDetail)
+    case notification(NotificationDetail)
     case assistantMessage(text: String)
     case reasoning(text: String)
     case plan(PlanDetail)
@@ -152,6 +199,7 @@ extension ItemDetail: Decodable {
         case type, text, plan, command, change, read, call, query, resultCount
         case url, taskId, reason, preTokens, postTokens, error, label
         case attachments, sender, notice, wakeReason
+        case notification
     }
 
     init(from decoder: Decoder) throws {
@@ -175,6 +223,13 @@ extension ItemDetail: Decodable {
             } else {
                 self = fallback()
             }
+        case "notification":
+            // ALL-OR-NOTHING HERE, unlike `user_message` above, and for the
+            // opposite reason: there is no useful half of a notification. Its
+            // whole payload IS the announcement, so a detail that will not
+            // decode is an unknown row rather than a notification missing the
+            // thing it announced.
+            self = (try? c.decode(NotificationDetail.self, forKey: .notification)).map { .notification($0) } ?? fallback()
         case "assistant_message":
             self = (try? c.decode(String.self, forKey: .text)).map { .assistantMessage(text: $0) } ?? fallback()
         case "reasoning":

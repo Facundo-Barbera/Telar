@@ -9,7 +9,7 @@
  * and the driver must not import from `warp/`.
  */
 
-import type { TurnAttachment, WakeReason } from "@telar/engine-client";
+import type { NotificationDetail, TurnAttachment, WakeReason } from "@telar/engine-client";
 
 /**
  * A turn boundary the prompt generator can wait on.
@@ -83,6 +83,11 @@ export type SteerMessage = {
    *  Framed as the engine's own notice and drawn as a wake row, not a bubble.
    *  Never set together with `sender`. */
   wakeReason?: WakeReason;
+  /** What this delivery IS, when nobody typed it — a peer's message, a wake, a
+   *  parked request. Present on every agent-sent and engine-written delivery;
+   *  absent means a person typed the words. The driver reads it to pick a
+   *  channel that is not the user's. See `NotificationDetail`. */
+  notification?: NotificationDetail;
 };
 
 export class SteerMailbox {

@@ -20,7 +20,7 @@
  */
 import { z } from "zod";
 import { Id, ProviderRefs, RateLimitType, Timestamp, TurnAttachment } from "./common";
-import { WakeReason } from "./entities";
+import { NotificationDetail, WakeReason } from "./entities";
 
 /**
  * The subset of item types that represent a tool doing something. These are the
@@ -51,6 +51,14 @@ export type ToolItemType = z.infer<typeof ToolItemType>;
 
 export const ItemType = z.enum([
   "user_message",
+  /**
+   * SOMETHING REACHED THIS SESSION THAT NOBODY TYPED — a peer's message, a wake
+   * from a session it subscribed to, a request one of them parked. Its own type
+   * rather than a flag on `user_message` precisely so that no renderer and no
+   * driver can treat it as the person speaking by forgetting to check a field.
+   * See `NotificationDetail`.
+   */
+  "notification",
   "assistant_message",
   /** Extended thinking. Carried as its own item type rather than folded into
    *  assistant_message so a client can collapse it independently — which is the
@@ -282,6 +290,17 @@ export const ItemDetail = z.discriminatedUnion("type", [
      */
     wakeReason: WakeReason.optional(),
   }),
+  /**
+   * A PEER'S MESSAGE, A WAKE, OR A PARKED REQUEST — announced, not ventriloquised.
+   *
+   * THE WHOLE POINT IS THE TYPE. A `user_message` carrying `sender` or
+   * `wakeReason` said the same facts, but it said them in fields a renderer or a
+   * driver had to REMEMBER to look at — and the one that forgot drew engine prose
+   * as the person's bubble and handed it to the model as the person's
+   * instruction. A distinct arm cannot be forgotten: narrowing on the type is
+   * what gives you the payload at all.
+   */
+  z.object({ type: z.literal("notification"), notification: NotificationDetail }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
   z.object({ type: z.literal("plan"), plan: PlanDetail }),

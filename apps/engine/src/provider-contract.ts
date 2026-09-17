@@ -1,6 +1,6 @@
 import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
-import type { Item, McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./notes-tools/tools";
 import type { DsCapability } from "./ds/capability";
@@ -50,6 +50,28 @@ export type DriverRun = {
    * is the one mistake this whole seam exists to prevent.
    */
   promptFromHuman?: boolean;
+  /**
+   * THIS TURN IS A NOTIFICATION, AND `prompt` IS ITS NOTICE — issue #550.
+   *
+   * `promptFromHuman` is the NEGATIVE fact ("not the person") and it left the
+   * driver with nothing to do about it: every sender still went down the user
+   * channel, and the only thing distinguishing a peer's report from a person's
+   * instruction was a paragraph of prose at the top of the text. Prose is not a
+   * role — it is content, indistinguishable from content a peer could write.
+   *
+   * THIS IS THE POSITIVE FACT, and each provider has somewhere honest to put it:
+   *   - Claude: `origin: {kind:"peer"|"task-notification"}` on the SDK message,
+   *     which is the CLI's own provenance channel, plus a `<system-reminder>`
+   *     wrapper so the text is system-authored rather than user-authored.
+   *   - Codex: a per-turn `developerInstructions` — the developer role, which is
+   *     exactly what an engine announcement is.
+   *   - OpenCode: a text part marked `synthetic`, the SDK's own word for "this
+   *     was generated, not typed".
+   *
+   * ABSENT MEANS A PERSON'S MESSAGE OR AN ORDINARY TURN. A driver that ignores
+   * it degrades to the previous behaviour rather than to a wrong one.
+   */
+  notification?: NotificationDetail;
   /**
    * WHICH SESSION THIS TURN BELONGS TO — the key the Claude driver holds its
    * live runtime under (see ./claude-runtime.ts). Without it every turn is an

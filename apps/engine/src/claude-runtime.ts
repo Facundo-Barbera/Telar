@@ -39,15 +39,25 @@ export type FeedMessage = {
   /**
    * THE PROVIDER'S OWN PROVENANCE CHANNEL, and the one value on it that works.
    *
-   * The CLI drops every origin kind it does not recognise and persists exactly
-   * `{kind:"human"}` (measured — `docs/investigations/delivery-as-harness-input-2026-09-11.md`
-   * §1, the `neutral.mjs` matrix). Telar sent none at all, so a real person's
-   * message failed the SDK's own `isHuman` gate along with every wake and peer
-   * report. Stamped ONLY for a human; absence is what every other sender gets,
-   * and the prose frames (`attribution.ts`) remain the load-bearing half —
-   * a dropped origin fails silently and open.
+   * `{kind:"human"}` is the one value the CLI was measured to persist
+   * (`docs/investigations/delivery-as-harness-input-2026-09-11.md` §1, the
+   * `neutral.mjs` matrix) — every other kind it did not recognise was dropped.
+   * Telar sent none at all, so a real person's message failed the SDK's own
+   * `isHuman` gate along with every wake and peer report.
+   *
+   * WIDENED FOR #550 to the SDK's declared `SDKMessageOrigin`, of which Telar
+   * sends three: `human` for a person, `peer` for another session's message,
+   * `task-notification` for the engine's own announcements. The two new ones
+   * may still be dropped by a CLI older than the SDK that declares them —
+   * which is exactly why they are not the only mechanism. See
+   * `claudeNotificationContent`: a dropped origin fails silently and open, and
+   * the `<system-reminder>` wrapper is what does not.
+   *
+   * Left open rather than enumerated: this is a structural mirror of the SDK's
+   * type, and narrowing it here would mean editing two places whenever the SDK
+   * adds a kind.
    */
-  origin?: { kind: "human" };
+  origin?: { kind: string; [field: string]: unknown };
 };
 
 /**

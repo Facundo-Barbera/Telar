@@ -69,6 +69,10 @@ struct Turn: Codable, Identifiable, Equatable {
     /// A one-line summary the engine writes for a collapsed row. Preferred
     /// verbatim when present; derived locally when it is not.
     var agentNotice: String?
+    /// THIS TURN IS A NOTIFICATION — a peer's message, a wake, a parked
+    /// request. Nobody typed `prompt`, and the transcript draws a notification
+    /// row rather than a bubble of anyone's. See `NotificationDetail` (#550).
+    var notification: NotificationDetail?
     /// Why the PROVIDER started a turn nobody asked for — a background task
     /// ending, usually. These turns carry an EMPTY `input`, so without this
     /// they drew as an empty right-aligned bubble.

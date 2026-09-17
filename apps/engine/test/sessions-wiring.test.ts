@@ -315,11 +315,16 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   const wake = turns.find((turn) => turn.origin === "session");
   expect(wake).toBeDefined();
   expect(wake!.wakeReason).toEqual({ kind: "turn_completed", sessionId: made!.id, runId: "run_made" });
-  expect(wake!.input).toContain("[wake: completed]");
+  // #550: the engine's prose rides the notification over the wire, and `input`
+  // is the machine label — so a client cannot draw it as the person's bubble
+  // by reading the field it always read.
+  expect(wake!.notification!.kind).toBe("wake");
+  expect(wake!.notification!.body).toContain("[wake: completed]");
+  expect(wake!.input).toStartWith("[notification: wake");
   // A PING OVER THE WIRE TOO: the answer is not in the notice, the run-scoped
   // read that fetches it is.
-  expect(wake!.input).not.toContain("all done here");
-  expect(wake!.input).toContain(`runId: "run_made"`);
+  expect(wake!.notification!.body).not.toContain("all done here");
+  expect(wake!.notification!.body).toContain(`runId: "run_made"`);
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.
   expect(["queued", "claimed", "running", "completed"]).toContain(wake!.state);
@@ -426,8 +431,10 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
     await Bun.sleep(5);
   }
   expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toStartWith(`[agent message from session ${hostId}]`);
-  expect(prompts[0]).toContain("carries no human authorization");
+  // #550: the prose frame that used to precede this was standing in for a role
+  // the channel could not express. The notice goes over as written, and the
+  // role rides the notification item and the driver's own channel.
+  expect(prompts[0]).toStartWith("[agent message · task]");
   /**
    * AND THE PROVIDER IS HANDED THE NOTICE, NOT THE BODY — end to end, over the
    * real HTTP surface and a real worker, which is the only place the whole

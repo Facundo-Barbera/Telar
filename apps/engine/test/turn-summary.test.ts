@@ -383,3 +383,33 @@ test("every query route answers under its budget on a 300-session engine", async
   // And a ceiling is a ceiling: asking past it is clamped, never served.
   expect(((await get("/v2/sessions/session_0/outline?limit=9999")).body.turns as unknown[]).length).toBeLessThanOrEqual(100);
 });
+
+/**
+ * #550 — A NOTIFICATION TURN'S ROW SHOWS THE NOTIFICATION'S LINE.
+ *
+ * `input` on such a turn is either a machine label or a peer's whole message,
+ * and neither is what an orchestrator scanning twenty rows is asking for.
+ */
+test("a wake's outline row is its summary line, not the machine label on `input`", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-summary-notify-"));
+  roots.push(home);
+  const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" });
+  stores.push(store);
+  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_host", "session_child"]) store.createSession({ id, projectId: "project_one", title: id });
+  store.subscribe("session_host", { targetSessionId: "session_child" });
+
+  store.submitTurn("session_child", { runId: "run_child", input: "work" });
+  const token = store.claimTurn("session_child", "worker_one")!.claim!.token;
+  store.markRunning("session_child", "run_child", token);
+  store.completeTurn("session_child", "run_child", token, { text: "all done" });
+
+  const wake = store.turns("session_host")[0]!;
+  const row = summariseTurn(wake, store.items("session_host"));
+  expect(row.input).toStartWith("[wake: completed]");
+  expect(row.input).not.toContain("[notification:");
+  expect(row.input.length).toBeLessThanOrEqual(INPUT_LINE_CHARS);
+
+  // The same line the transcript row shows, because it is the same string.
+  expect(row.input).toBe(wake.notification!.summary.slice(0, row.input.length));
+});

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Turn } from "@telar/engine-client";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
 
 const roots: string[] = [];
@@ -3062,6 +3063,16 @@ describe("subscriptions", () => {
     }
   }
   const wakes = (store: EngineStore, sessionId: string) => store.turns(sessionId).filter((turn) => turn.origin === "session");
+  /**
+   * THE WAKE'S WORDS, WHEREVER THEY LIVE — #550 moved them off `input`.
+   *
+   * The engine writes a wake's prose, so it is no longer stored in the slot a
+   * person's words occupy: `input` is a machine label and the notice is the
+   * notification's `body`. Everything these tests assert about the notice — that
+   * it is a ping, that it carries no result body, that it names the one fetch
+   * call — is unchanged; only where to read it is.
+   */
+  const notice = (turn: Turn) => turn.notification?.body ?? turn.input;
 
   test("a wake landing on a RUNNING subscriber keeps its identity all the way to the worker, and through requeue and pause (#194)", () => {
     /**
@@ -3074,7 +3085,11 @@ describe("subscriptions", () => {
      * attribution — decided only by whether a turn was in flight.
      */
     const { store } = pair();
-    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
+    // #550 MADE THE STEER THE OPT-IN. `settled_only` is the default now, so a
+    // wake landing on a busy subscriber is held rather than steered — the case
+    // below this one. `always` is what still reaches the worker mid-turn, and
+    // the identity invariant this test pins is unchanged on that path.
+    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"], completionWake: "always" });
     // session_one is BUSY when the wake arrives — the whole point.
     store.submitTurn("session_one", { runId: "run_busy", input: "thinking" });
     const busy = store.claimTurn("session_one", "worker_one")!;
@@ -3129,15 +3144,22 @@ describe("subscriptions", () => {
 
     const [wake] = wakes(store, "session_one");
     expect(wake).toMatchObject({ origin: "session", state: "queued", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
-    expect(wake!.input.startsWith("[wake: completed] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
+    expect(notice(wake!).startsWith("[wake: completed] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
     // Not one character of the answer, not even a prefix of it.
-    expect(wake!.input).not.toContain("all done");
-    expect(wake!.input).not.toContain("xxxxxxxxxx");
-    expect(wake!.input).toContain("characters. The text is not in this notice.");
+    expect(notice(wake!)).not.toContain("all done");
+    expect(notice(wake!)).not.toContain("xxxxxxxxxx");
+    expect(notice(wake!)).toContain("characters. The text is not in this notice.");
     // The whole notice stays small whatever the child wrote.
-    expect(wake!.input.length).toBeLessThan(600);
-    expect(wake!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_w")');
-    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session" } });
+    expect(notice(wake!).length).toBeLessThan(600);
+    expect(notice(wake!)).toContain('sessions_read(sessionId: "session_two", runId: "run_w")');
+    // The accept, then the notification's own row — written at accept rather
+    // than when a provider gets round to it, so a queued wake is visible in the
+    // transcript while the session is still busy. See `writeNotificationItem`.
+    expect(store.readEvents("session_one").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
+      type: "turn.accepted",
+      turn: { origin: "session" },
+    });
+    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "item.completed", item: { detail: { type: "notification" } } });
     // The file is at the engine root and outlives the store instance.
     expect(new EngineStore(store.paths.root, () => 100).subscriptionsFor("session_one")).toHaveLength(1);
   });
@@ -3152,15 +3174,20 @@ describe("subscriptions", () => {
     const kinds = wakes(store, "session_one").map((turn) => turn.wakeReason!.kind);
     expect(kinds).toEqual(["turn_failed", "turn_stopped", "request_opened"]);
     const [failed, , parked] = wakes(store, "session_one");
-    expect(failed!.input).toContain("FAILED (driver_failed)");
-    expect(failed!.input).toContain("the CLI died");
+    expect(notice(failed!)).toContain("FAILED (driver_failed)");
+    expect(notice(failed!)).toContain("the CLI died");
     expect(parked!.wakeReason).toMatchObject({ requestId: "req_q", runId: "run_p" });
     // The short title says what it is; the fields are a read away, not here.
-    expect(parked!.input).toContain("Which database?");
-    expect(parked!.input).not.toContain("choices:");
-    expect(parked!.input).not.toContain("- db (choice)");
-    expect(parked!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
-    expect(parked!.input).toContain("sessions_resolve_request");
+    expect(notice(parked!)).toContain("Which database?");
+    expect(notice(parked!)).not.toContain("choices:");
+    // A PARKED REQUEST IS ITS OWN NOTIFICATION KIND — it is the one a recipient
+    // can act on, and answering is a different verb from reading an outcome.
+    expect(parked!.notification!.kind).toBe("request");
+    expect(parked!.notification!.requestId).toBe("req_q");
+    expect(failed!.notification!.kind).toBe("wake");
+    expect(notice(parked!)).not.toContain("- db (choice)");
+    expect(notice(parked!)).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
+    expect(notice(parked!)).toContain("sessions_resolve_request");
 
     // Under `auto`, a command resolves itself — nothing parked, nothing to wake for.
     store.updateSession("session_two", { runtimeMode: "auto" });
@@ -3198,20 +3225,20 @@ describe("subscriptions", () => {
     });
 
     const [parked] = wakes(store, "session_one");
-    expect(parked!.input.startsWith("[wake: waiting]")).toBe(true);
+    expect(notice(parked!).startsWith("[wake: waiting]")).toBe(true);
     // What it is: the request, its kind, a clamped title.
-    expect(parked!.input).toContain("request req_many");
-    expect(parked!.input).toContain("kind user_input");
+    expect(notice(parked!)).toContain("request req_many");
+    expect(notice(parked!)).toContain("kind user_input");
     // NO fields, no choices, no counts of either — none of it is here.
-    expect(parked!.input).not.toContain("field_0");
-    expect(parked!.input).not.toContain("choices:");
-    expect(parked!.input).not.toContain("more fields");
-    expect(parked!.input).not.toContain("l".repeat(300));
-    expect(parked!.input).not.toContain("c".repeat(300));
+    expect(notice(parked!)).not.toContain("field_0");
+    expect(notice(parked!)).not.toContain("choices:");
+    expect(notice(parked!)).not.toContain("more fields");
+    expect(notice(parked!)).not.toContain("l".repeat(300));
+    expect(notice(parked!)).not.toContain("c".repeat(300));
     // Both calls, and a notice that stays one however big the request was.
-    expect(parked!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_many")');
-    expect(parked!.input).toContain("sessions_resolve_request");
-    expect(parked!.input.length).toBeLessThan(800);
+    expect(notice(parked!)).toContain('sessions_read(sessionId: "session_two", runId: "run_many")');
+    expect(notice(parked!)).toContain("sessions_resolve_request");
+    expect(notice(parked!).length).toBeLessThan(800);
 
     /**
      * AND THE LENGTH DOES NOT FOLLOW THE PAYLOAD — the property, rather than a
@@ -3221,7 +3248,7 @@ describe("subscriptions", () => {
      */
     // Captured before the first turn ends: finishing it REWRITES that wake in
     // place (the coalescing rule), and the string under comparison is this one.
-    const notice = parked!.input;
+    const captured = notice(parked!);
     const first = store.turns("session_two").find((turn) => turn.runId === "run_many")!.claim!.token;
     store.resolveRequest("session_two", "req_many", { decision: "accept" });
     store.completeTurn("session_two", "run_many", first, { text: "" });
@@ -3246,9 +3273,9 @@ describe("subscriptions", () => {
     const bigger = wakes(store, "session_one").find((turn) => turn.wakeReason?.runId === "run_huge_req");
     // Within a few characters — the ids differ in length and nothing else can.
     // The payload grew by two orders of magnitude; the notice did not grow.
-    expect(Math.abs(bigger!.input.length - notice.length)).toBeLessThan(20);
-    expect(bigger!.input).not.toContain("l".repeat(300));
-    expect(bigger!.input).not.toContain("c".repeat(300));
+    expect(Math.abs(notice(bigger!).length - captured.length)).toBeLessThan(20);
+    expect(notice(bigger!)).not.toContain("l".repeat(300));
+    expect(notice(bigger!)).not.toContain("c".repeat(300));
   });
 
   test("events narrows; once fires once; subscribing twice merges into one", () => {
@@ -3274,7 +3301,7 @@ describe("subscriptions", () => {
     // Park → the first wake. Then the same turn's approval is answered and it finishes → the second event.
     runTurn(store, "session_two", "run_p", "park");
     const [parked] = wakes(store, "session_one");
-    expect(parked!.input.startsWith("[wake: waiting]")).toBe(true);
+    expect(notice(parked!).startsWith("[wake: waiting]")).toBe(true);
     expect(parked!.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_q" });
 
     store.resolveRequest("session_two", "req_q", { decision: "accept", answers: { db: "postgres" } });
@@ -3284,7 +3311,12 @@ describe("subscriptions", () => {
     const after = wakes(store, "session_one");
     expect(after).toHaveLength(1);
     expect(after[0]!.runId).toBe(parked!.runId);
-    expect(after[0]!.input.startsWith("[wake: completed]")).toBe(true);
+    expect(notice(after[0]!).startsWith("[wake: completed]")).toBe(true);
+    // The ROW moved with the turn: a transcript showing the superseded line
+    // beside a turn that announces something else is the same lie, drawn.
+    expect(after[0]!.notification!.wakeKind).toBe("turn_completed");
+    const row = store.items("session_one").find((item) => item.runId === after[0]!.runId && item.detail.type === "notification")!;
+    expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(after[0]!.notification!);
     expect(after[0]!.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_p" });
     expect(after[0]!.wakeReason).not.toHaveProperty("requestId");
     // The rewrite is announced as a replay of the same run, so a client redraws the chip.
@@ -3295,14 +3327,23 @@ describe("subscriptions", () => {
     // AND THE REWRITE IS STILL A PING. Coalescing must not smuggle a result
     // body in: the notice that replaced the parked one carries the size and the
     // run-scoped read, exactly as a first notice would.
-    expect(after[0]!.input).not.toContain("done");
-    expect(after[0]!.input).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
-    expect(after[0]!.input.length).toBeLessThan(600);
+    expect(notice(after[0]!)).not.toContain("done");
+    expect(notice(after[0]!)).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
+    expect(notice(after[0]!).length).toBeLessThan(600);
 
-    // A wake the worker already CLAIMED is not rewritten: a fresh one queues behind it.
-    store.claimTurn("session_one", "worker_one");
+    // A wake the worker already CLAIMED is not rewritten — and under
+    // `settled_only` (#550) a fresh one does not queue behind it either: the
+    // subscriber is BUSY, so it is held until that turn settles.
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", claimed.runId, claimed.claim!.token);
     runTurn(store, "session_two", "run_next");
-    expect(wakes(store, "session_one")).toHaveLength(2);
+    expect(wakes(store, "session_one")).toHaveLength(1);
+    expect(store.pendingNotifications("session_one").map((each) => each.runId)).toEqual(["run_next"]);
+    // And settling it delivers what was held, as its own turn.
+    store.completeTurn("session_one", claimed.runId, claimed.claim!.token, { text: "read it" });
+    const delivered = wakes(store, "session_one").find((turn) => turn.notification?.runId === "run_next");
+    expect(delivered).toBeDefined();
+    expect(store.pendingNotifications("session_one")).toHaveLength(0);
   });
 
   test("unsubscribe withdraws the wakes still waiting from that session, and leaves everything else", () => {
@@ -3637,7 +3678,10 @@ describe("an agent's message is attributed, never the person's", () => {
     const { turn } = store.submitAgentTurn("session_two", { intent: "task", runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
     expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_one" }, state: "queued", input: "please do X" });
     expect(turn.wakeReason).toBeUndefined();
-    expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session", sender: { sessionId: "session_one" } } });
+    expect(store.readEvents("session_two").filter((event) => event.type === "turn.accepted").at(-1)).toMatchObject({
+      type: "turn.accepted",
+      turn: { origin: "session", sender: { sessionId: "session_one" } },
+    });
 
     // A forged proof — wrong token — is refused rather than attributed.
     expect(() => store.submitAgentTurn("session_two", { intent: "task", runId: "run_forged", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) })).toThrow(EngineStateError);

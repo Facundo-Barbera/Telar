@@ -956,7 +956,7 @@ describe("sessions_read returns the message a notice stands in for", () => {
     expect(tools.get("sessions_read")!.description).toContain("a peer's message in full");
     expect(TELAR_SKILL).toContain("A wake or a peer's message is a PING");
     expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
-    expect(tools.get("sessions_subscribe")!.description).toContain("a PING, not a report");
+    expect(tools.get("sessions_subscribe")!.description).toContain("It is a PING");
   });
 });
 
@@ -1020,7 +1020,10 @@ describe("subscribing and answering", () => {
     const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
     expect(subscribed.isError).toBe(false);
     expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, targetSessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
-    expect(String(subscribed.json!.note)).toContain("[wake");
+    // #550: the wake is a NOTIFICATION now, and the note says when it lands —
+    // `settled_only` by default, so it waits rather than interrupting.
+    expect(String(subscribed.json!.note)).toContain("woken with a notification");
+    expect(String(subscribed.json!.note)).toContain("waits for you to finish the turn you are in");
 
     const listed = await call(tools, "sessions_subscriptions");
     expect((listed.json!.subscriptions as unknown[]).length).toBe(1);

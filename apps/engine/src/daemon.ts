@@ -1160,7 +1160,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The last event id, so the wall can serve "what happened lately" from
       // one page rather than by walking a journal to reach its end (#515).
       cursor: async (sessionId) => store.eventCursor(sessionId),
-      status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
+      status: async (sessionId) => ({
+        session: store.getSession(sessionId),
+        turns: store.turns(sessionId),
+        // The held mail, so the cap's "stays pending and pollable" has a poll.
+        pendingNotifications: store.pendingNotifications(sessionId),
+      }),
       // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
       // same work a person's Stop ends, and leaves the session idle rather
       // than latched — see `stopSession`.
@@ -3926,6 +3931,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               targetSessionId: stringValue(input.targetSessionId, "target session id")!,
               ...(events && events.length > 0 ? { events } : {}),
               ...(input.once === true ? { once: true } : {}),
+              // A CLOSED SET, read off the body rather than trusted from it:
+              // anything else is absent, which the store reads as the default.
+              ...(input.completionWake === "always" || input.completionWake === "settled_only"
+                ? { completionWake: input.completionWake }
+                : {}),
             }),
           });
           return;

@@ -32,7 +32,7 @@ import {
   TurnAttachment,
   UsageSnapshot,
 } from "./common";
-import { AgentMessageIntent, Turn, WakeReason } from "./entities";
+import { AgentMessageIntent, NotificationDetail, Turn, WakeReason } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
 import { TaskSeed } from "./tasks";
@@ -426,6 +426,17 @@ export const WorkerStatus = z.object({
          * only difference was whether a turn happened to be in flight.
          */
         wakeReason: WakeReason.optional(),
+        /**
+         * WHAT THIS DELIVERY IS, when it is not the person speaking — #550.
+         *
+         * Travels for the same reason `sender` and `wakeReason` do, and
+         * supersedes both at the driver: with it the seam knows to deliver on a
+         * channel that is not the user's (a peer origin on Claude, a developer
+         * instruction on Codex, a synthetic part on OpenCode) and to draw a
+         * notification row rather than a bubble. Without it a peer's message
+         * arriving mid-turn was, structurally, the person interrupting.
+         */
+        notification: NotificationDetail.optional(),
       }),
     )
     .default([]),
