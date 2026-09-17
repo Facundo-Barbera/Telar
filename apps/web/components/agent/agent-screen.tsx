@@ -185,7 +185,10 @@ export function AgentScreen() {
               Nothing yet. Ask it what is happening across your sessions, or hand it something to delegate.
             </p>
           ) : (
-            <AgentTranscript items={handle.items} />
+            // `running` IS WHAT MAKES THE LAST RUN A WINDOW RATHER THAN A TALLY
+            // (#569): the step the Agent is on stays visible while a turn is in
+            // flight, and folds away with the rest the moment it ends.
+            <AgentTranscript items={handle.items} running={running} />
           )}
           {/* THE OPEN APPROVAL IS LIVE STATE, NOT HISTORY — one card at the
               bottom, off `/api/agent`. A card drawn from the row log would
