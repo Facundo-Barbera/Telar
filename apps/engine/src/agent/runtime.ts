@@ -79,13 +79,15 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { toolInputSchema } from "../mcp-socket";
+import { agentToolSpecs, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
+import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
-import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
+import { clearStanding, preferencesOf, readStanding, rememberSection, renderStanding } from "./memory";
+import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
 import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
 
@@ -228,6 +230,20 @@ export type AgentRuntimeOptions = {
   orientation?: () => string | undefined;
   maxLaps?: number;
   budgetChars?: number;
+  /**
+   * WHERE THE PREFERENCES GO WHEN A RESET TAKES EVERYTHING ELSE — #541's owner
+   * decision 3.
+   *
+   * INJECTED, because a notebook is the ENGINE's and this object owns only the
+   * Agent's own directory. The daemon wires it to the Agent's own notebook file
+   * (`notes/agent.json`, under the reserved id the sessions wall already knows);
+   * a test wires it to a function and asserts the order.
+   *
+   * ABSENT IS LEGITIMATE. A runtime built without one resets exactly as it did
+   * before — the preferences go with everything else — rather than refusing to
+   * reset because nothing was listening.
+   */
+  keepPreferences?: (preferences: string) => void;
 };
 
 type QueuedTurn = {
@@ -463,6 +479,36 @@ export class AgentRuntime {
    * is what that hook is for.
    */
   patch(patch: { enabled?: unknown; model?: unknown; effort?: unknown; access?: unknown; reset?: unknown }): AgentStateAnswer {
+    /**
+     * THE PREFERENCES ARE KEPT BEFORE ANYTHING IS DESTROYED — #541's owner
+     * decision 3, and the ORDER is the decision.
+     *
+     * Three of the four standing sections describe work in flight and are
+     * exactly what a person resetting has asked to be rid of. The fourth is not
+     * about the work at all: it is what they taught the Agent about themselves,
+     * over many conversations, and making them teach it again is the reset
+     * costing them something they did not ask to lose.
+     *
+     * So it is written out FIRST, into the Agent's own notebook, and only then
+     * is the document deleted and the thread archived. A reset that failed
+     * halfway would leave the note written and the conversation intact, which is
+     * the harmless half of the two.
+     *
+     * DISABLE KEEPS EVERYTHING and takes none of this path: switching the Agent
+     * off is a switch on an entry in the rail, which is `store.ts`'s rule for
+     * the thread and is the same rule for what the thread learned.
+     */
+    if (patch.reset === true) {
+      const preferences = preferencesOf(readStanding(this.paths));
+      if (preferences) {
+        try {
+          this.options.keepPreferences?.(preferences);
+        } catch {
+          // A notebook that will not take the note must not block the reset the
+          // person asked for. They said start again; this is the courtesy.
+        }
+      }
+    }
     const result = patchAgentSettings(this.paths, patch, { now: this.now, beforeArchive: () => this.close() });
     if (patch.reset === true) {
       // The conversation is gone; anything waiting to be said to it is too —
@@ -472,6 +518,10 @@ export class AgentRuntime {
       this.pending = undefined;
       this.answer = undefined;
       this.lastUsage = undefined;
+      // AND WHAT IT WAS HOLDING. The standing state describes the conversation
+      // that has just been retired; carrying it into the new one would be the
+      // Agent starting again with somebody else's notes.
+      clearStanding(this.paths);
     }
     if (result.settings.enabled === false) this.queue = [];
     return this.state();
@@ -527,6 +577,30 @@ export class AgentRuntime {
     const threadId = readAgentSettings(this.paths).threadId;
     if (!threadId) return 0;
     return this.open().log.cursor(threadId);
+  }
+
+  /**
+   * THE AGENT'S OWN MEMORY, AS A CAPABILITY THE WALL CAN BE BUILT OVER (#541 F).
+   *
+   * HANDED OUT RATHER THAN HELD, because the daemon assembles the tool list and
+   * this object owns the two things these verbs touch: the standing document
+   * beside `agent.json`, and the transcript's own search index. A wall built
+   * over this reaches neither directly.
+   *
+   * `recall` IS SCOPED TO THE LIVE THREAD, and answers nothing when the Agent is
+   * off or has been reset — an archived conversation is a different file, and
+   * searching it would answer a question about a thread the person retired.
+   */
+  memory(): AgentMemoryCapability {
+    return {
+      remember: (section, text) => ({ sections: rememberSection(this.paths, section, text, this.now).sections }),
+      recall: (query, limit): AgentRecallHit[] => {
+        const threadId = readAgentSettings(this.paths).threadId;
+        if (!threadId) return [];
+        const terms = query.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+        return this.open().log.search(threadId, terms, limit);
+      },
+    };
   }
 
   /** Push events to a watcher until it unsubscribes. The caller is responsible
@@ -944,15 +1018,40 @@ export class AgentRuntime {
      * id the idempotency key is derived from. Wrapping each wall tool in a
      * LangChain `tool()` would add a second zod bridge and put the framework
      * between us and the call id, for nothing.
+     *
+     * `agentToolSpecs` IS WHERE THE SHAPE IS NARROWED for this one binding —
+     * see it for why `$schema` goes and why only here (#563).
      */
-    const specs = context.tools.map((tool) => ({
-      type: "function" as const,
-      function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool.shape) },
-    }));
-    // THE DIGEST GOES LAST, under the briefing and the orientation: it is the
-    // most recent thing in the prompt and the least permanent, and a reader
-    // arriving at it has already been told what it is looking at.
-    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), context.digest].filter(Boolean).join("\n\n"));
+    const specs = agentToolSpecs(context.tools);
+    /**
+     * THE SYSTEM BLOCK, IN FOUR, FROM MOST PERMANENT TO LEAST: the briefing, the
+     * orientation, WHAT THE AGENT REMEMBERS, and then the news.
+     *
+     * STANDING STATE IS NOT IN THE TRANSCRIPT (#541 part F). It is what is TRUE
+     * NOW rather than something that was said, so it is rewritten in place by
+     * `remember` and read here once per turn; putting it in the message list
+     * would make every edit an append and leave three contradicting copies in
+     * the history.
+     *
+     * THE DIGEST STAYS LAST, under it (#541 A). Both are engine prose in the one
+     * slot that is rebuilt per turn and never checkpointed, and the order is the
+     * argument each made for itself: the standing state is a settled account of
+     * the work and the digest is what happened since the person last spoke, so a
+     * reader arriving at the news has already been told what it is looking at.
+     *
+     * AND THE ORDER IS WHAT A CACHE PREFIX CAN MATCH. The briefing and the
+     * orientation are the same characters on every turn of every conversation,
+     * the standing state changes between turns, and the digest changes every
+     * turn — which is the shape #563 item 3 will want when it marks a prefix
+     * cacheable, in its own PR.
+     *
+     * READ PER TURN, not per lap: a `remember` call inside this turn lands on
+     * the NEXT turn's prompt. The alternative is a system block that changes
+     * between laps of one turn, which is a cache miss on every lap and a model
+     * watching its own instructions move mid-thought.
+     */
+    const standing = renderStanding(readStanding(this.paths));
+    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest].filter(Boolean).join("\n\n"));
     const budget = this.options.budgetChars;
 
     const callModel = async (state: AgentGraphStateType, config?: RunnableConfig): Promise<Partial<AgentGraphStateType>> => {
@@ -965,12 +1064,28 @@ export class AgentRuntime {
       // it ever reached the model leaves the news unread for the next one.
       if (context.digest) this.digestDelivered = true;
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
-      // THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
-      // MODEL sees and never what the transcript holds.
-      const history = trimAgentHistory(state.messages, {
-        ...(budget === undefined ? {} : { budgetChars: budget }),
-        reservedChars: String(system.content).length,
-      });
+      /**
+       * THE PRE-MODEL STEP, IN THREE, AND THE ORDER IS THE ARGUMENT.
+       *
+       * 1. COMPACT THIS TURN'S LAPS (#563). Earlier laps' results collapse to a
+       *    line each. This is what makes a 16-lap turn cost what a 3-lap one
+       *    does, and it runs first because it is the cheapest and the most of
+       *    what a long turn weighs.
+       * 2. FOLD OLDER TURNS (#541 part F). What is still over budget after that
+       *    is a long CONVERSATION rather than a long turn, so the oldest turns
+       *    are replaced by one deterministic line each — the projection in
+       *    `./compact.ts`, never a model call, never a summary of a summary.
+       * 3. TRIM, AS A BACKSTOP — see `./trim.ts`. It DROPS, which is why it is
+       *    last and should now never fire: everything it would have thrown away
+       *    has already become a line the model can still read.
+       *
+       * THE METER MEASURES THE END OF THAT, so what a person is shown is what
+       * was really sent rather than what would have been.
+       */
+      const budgetChars = budget ?? DEFAULT_AGENT_BUDGET_CHARS;
+      const reservedChars = String(system.content).length;
+      const folded = foldOldTurns(compactToolResults(state.messages), { budgetChars, reservedChars });
+      const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
        * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
        * denominator (#539). The LAST lap wins rather than the largest: a turn
@@ -1097,7 +1212,7 @@ export class AgentRuntime {
         const key = ledgerKey(call.name, args);
         const already = key ? state.effects[key] : undefined;
         if (already !== undefined) {
-          messages.push(new ToolMessage({ tool_call_id: id, content: `${already}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }));
+          messages.push(new ToolMessage({ tool_call_id: id, content: `${minifyToolResult(already)}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }));
           continue;
         }
         if (needsApproval({ name: call.name, args }) && decisions.get(id) !== "accept") {
@@ -1129,8 +1244,18 @@ export class AgentRuntime {
           failed = true;
         }
         if (key) effects[key] = text;
+        /**
+         * THE ROW GETS THE ANSWER WHOLE; THE MODEL GETS IT MINIFIED (#563).
+         *
+         * `json()` pretty-prints at two spaces because a PERSON reads the
+         * transcript, and that whitespace is about a third of every structured
+         * result. The row is written from `text` — unchanged, so the cockpit
+         * still renders the outline it always did — and the message that enters
+         * the checkpoint is the compact form, which every later lap of this
+         * turn then resends at the smaller size.
+         */
         this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: text, status: failed ? "failed" : "completed" });
-        messages.push(new ToolMessage({ tool_call_id: id, content: text }));
+        messages.push(new ToolMessage({ tool_call_id: id, content: minifyToolResult(text) }));
       }
       config?.signal?.throwIfAborted();
       return { messages, effects };

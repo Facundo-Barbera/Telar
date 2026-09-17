@@ -91,6 +91,7 @@ import {
 } from "./notes-tools/socket";
 import type { NotesCapability } from "./notes-tools/tools";
 import { AGENT_SELF_ID, collectAgentTools } from "./agent/tools";
+import { PREFERENCES_NOTE_TITLE } from "./agent/memory";
 import { isAgentSelf } from "./agent/identity";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
@@ -1248,9 +1249,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * daemon's capability is the right one and why neither build carries the
    * request gate.
    */
-  const agentRuntime = new AgentRuntime({
+  const agentRuntime: AgentRuntime = new AgentRuntime({
     engineRoot: root,
-    tools: () =>
+    tools: (): SocketTool[] =>
       collectAgentTools({
         sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
         notes: buildNotesCapability(),
@@ -1258,6 +1259,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           find: async (query) => store.findSessions(query),
           outline: async (sessionId, window) => store.turnOutline(sessionId, window),
           answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
+        },
+        // THE AGENT'S OWN, from the runtime being constructed here: it owns the
+        // standing document and the transcript's search index, and this closure
+        // is not called until a turn runs. See `AgentRuntime.memory`.
+        memory: agentRuntime.memory(),
+        /**
+         * THE ONE READ THAT LEAVES THIS MACHINE — #541's owner decision 4.
+         *
+         * BOTH VERBS ARE THE STORE'S OWN, which is what keeps this bounded: they
+         * are the same cached, timeout-guarded, injectable-`gh` reads the panel
+         * uses (`projectIssue`, `projectPull`), so an Agent asking about a pull
+         * request four times in a turn spends one round trip and the second is
+         * the same thirty-second cache the cockpit hits.
+         */
+        github: {
+          issue: (projectId, number) => store.projectIssue(projectId, number),
+          pull: (projectId, number) => store.projectPull(projectId, number),
+          projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
         },
       }),
     model:
@@ -1276,6 +1295,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // switch — `AgentOrientation.preamble`. A coordinator that did not know
     // what Telar is would be the one conversation on the machine that did not.
     orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
+    /**
+     * THE AGENT'S OWN NOTEBOOK — `notes/agent.json`, under the reserved id the
+     * sessions wall already knows it by (#541's owner decision 3).
+     *
+     * NOT A PROJECT'S NOTEBOOK, because the Agent owns no project and the
+     * preferences are not about one: pinning "Facundo prefers small PRs" to
+     * whichever repository happened to be busy that week would put a fact about
+     * a person in a strip about a codebase. It is a real note file in the real
+     * notes directory, so `notes_read` reaches it and nothing new had to be
+     * invented to hold it.
+     *
+     * REWRITTEN RATHER THAN ACCUMULATED — see `PREFERENCES_NOTE_TITLE`.
+     */
+    keepPreferences: (preferences) => {
+      const existing = notebook.readNotes(store.paths, AGENT_SELF_ID).find((note) => note.title === PREFERENCES_NOTE_TITLE);
+      if (existing) notebook.updateNote(store.paths, AGENT_SELF_ID, existing.id, { body: preferences, pinned: true });
+      else notebook.createNote(store.paths, AGENT_SELF_ID, { title: PREFERENCES_NOTE_TITLE, body: preferences, pinned: true, author: "session" });
+    },
   });
   /**
    * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES AN INBOX

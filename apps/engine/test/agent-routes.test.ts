@@ -27,6 +27,10 @@ import type { ChatResult } from "@langchain/core/outputs";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { stubModels } from "./stub-models";
+import * as notebook from "../src/notes";
+import { AGENT_SELF_ID } from "../src/agent/identity";
+import { agentPaths } from "../src/agent/store";
+import { readStanding, rememberSection } from "../src/agent/memory";
 
 /**
  * A MODEL THAT NEVER LEAVES THE MACHINE.
@@ -215,6 +219,37 @@ test("reset archives the conversation and bumps the generation", async () => {
   expect((await client.agentThread()).rows).toEqual([]);
   const agentDir = path.join(daemon.store.paths.root, "agent");
   expect(fs.readdirSync(agentDir).some((name) => /^threads-\d{8}T\d{6}\.sqlite$/.test(name))).toBe(true);
+});
+
+/**
+ * #541 part F, owner decision 3 — through the real daemon, because the thing
+ * being asserted is the WIRING: which notebook the preferences land in.
+ */
+test("reset leaves the preferences as a pinned note in the Agent's own notebook", async () => {
+  const { daemon, client } = await engine();
+  await client.setAgent({ enabled: true });
+  rememberSection(agentPaths(daemon.store.paths.root), "doing", "coordinating #541");
+  rememberSection(agentPaths(daemon.store.paths.root), "preferences", "Small PRs, and ask before opening one.");
+
+  await client.setAgent({ reset: true });
+
+  const notes = notebook.readNotes(daemon.store.paths, AGENT_SELF_ID);
+  expect(notes).toHaveLength(1);
+  expect(notes[0]!.pinned).toBe(true);
+  expect(notes[0]!.body).toBe("Small PRs, and ask before opening one.");
+  // NOT A PROJECT'S NOTEBOOK: the Agent owns none, and a fact about a person
+  // does not belong in a strip about a codebase.
+  expect(notes[0]!.projectId).toBe(AGENT_SELF_ID);
+  // Everything else went.
+  expect(readStanding(agentPaths(daemon.store.paths.root))).toEqual({ sections: {} });
+
+  // A SECOND RESET REWRITES THE NOTE rather than growing a pile of them.
+  await client.setAgent({ enabled: true });
+  rememberSection(agentPaths(daemon.store.paths.root), "preferences", "Small PRs. Conventional commits.");
+  await client.setAgent({ reset: true });
+  const again = notebook.readNotes(daemon.store.paths, AGENT_SELF_ID);
+  expect(again).toHaveLength(1);
+  expect(again[0]!.body).toBe("Small PRs. Conventional commits.");
 });
 
 test("the key is write-only: it is stored 0600 and read back only as a boolean", async () => {
