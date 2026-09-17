@@ -42,6 +42,12 @@
  * guessing which socket to open from the shape of the reply.
  */
 
+// TYPE-ONLY, so the cycle with `provider.ts` (which imports this file's
+// `grantDictationToken`) is erased at compile time and there is none at run
+// time. The alternative — a second copy of the id union here — is two lists to
+// keep in step the day a third provider arrives.
+import type { DictationProviderId } from "./provider";
+
 /** Deepgram's grant endpoint. Overridable only so a test can point at a stub. */
 export const DEEPGRAM_GRANT_URL = "https://api.deepgram.com/v1/auth/grant";
 
@@ -55,7 +61,7 @@ export const DICTATION_TTL_SECONDS = 300;
 
 /** What a client gets. `provider` is what tells it which socket to open. */
 export type DictationToken = {
-  provider: "deepgram";
+  provider: DictationProviderId;
   /** The JWT. Short-lived, single-purpose, and the only credential that ever
    *  leaves this engine towards a browser or a phone. */
   token: string;
@@ -74,7 +80,7 @@ export type DictationToken = {
  */
 export class DictationError extends Error {
   constructor(
-    readonly kind: "unconfigured" | "upstream",
+    readonly kind: "off" | "unconfigured" | "upstream",
     message: string,
   ) {
     super(message);
@@ -84,6 +90,14 @@ export class DictationError extends Error {
 
 export const NO_KEY_CONFIGURED =
   "No Deepgram key is configured on this Mac, so dictation cannot start. Paste one in Settings → General → Dictation.";
+
+/** WHAT A MAC WITH NO PROVIDER CHOSEN SAYS, and it is not an error report: off
+ *  is the default and the ordinary state, so the sentence names the decision
+ *  rather than a failure. No client should ever see it — every surface hides
+ *  the mic button when the provider is off — which is exactly why the route
+ *  still says it: a client that asks anyway is out of step with this Mac, and
+ *  a silent 200 with no token in it would be the confusing way to say so. */
+export const DICTATION_OFF = "Dictation is switched off on this Mac. Choose a provider in Settings → Dictation to turn it on.";
 
 /**
  * Spend the key once and hand back a token.

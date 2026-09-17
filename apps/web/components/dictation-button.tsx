@@ -22,6 +22,12 @@
  * it pulses. The words themselves are now the loudest signal there is: they
  * appear in the composer as they are heard.
  *
+ * ── AND IT IS NOT THERE UNLESS SOMEBODY ASKED FOR IT ────────────────────────
+ * `dictation.provider` defaults to `off` and there is no button until it is
+ * something else. macOS dictation and Wispr Flow work on this composer already
+ * — it is a plain editable — so a mic button that appeared uninvited would be
+ * Telar claiming a job the reader may have given to something else.
+ *
  * ── WHAT IT DOES NOT DO ─────────────────────────────────────────────────────
  * It does not send. A spoken message that goes out before the person has read
  * it back is a message they cannot take back, and the Enter key is right there.
@@ -32,6 +38,7 @@ import { useCallback } from "react";
 import { MicIcon } from "lucide-react";
 import { activeComposer } from "@/lib/composer-registry";
 import { useDictation } from "@/lib/dictation/use-dictation";
+import { useDictationSettings } from "@/lib/dictation/settings";
 import type { DictationBox } from "@/lib/dictation/interim";
 import { cn } from "@/lib/utils";
 
@@ -40,11 +47,17 @@ export function DictationButton({ className }: { className?: string }) {
   // whose answer changes with focus, and the hook asks it once per dictation.
   const box = useCallback((): DictationBox | undefined => activeComposer(), []);
   const { phase, error, toggle, supported } = useDictation({ box });
+  const { provider } = useDictationSettings();
 
-  // NO BUTTON AT ALL where the browser cannot record: an insecure origin, an
-  // embed with no microphone permission, a browser without `MediaRecorder`. A
-  // control that is always disabled is an advertisement for something the
-  // reader cannot have.
+  // NO BUTTON WHERE NOBODY ASKED FOR ONE — `off` is the default, and while the
+  // engine's answer is still in flight the hook reports `off` too, so this
+  // never flashes a control that is about to vanish.
+  if (provider === "off") return null;
+
+  // NO BUTTON AT ALL where the browser cannot record either: an insecure
+  // origin, an embed with no microphone permission, a browser without
+  // `MediaRecorder`. A control that is always disabled is an advertisement for
+  // something the reader cannot have.
   if (!supported) return null;
 
   const listening = phase === "listening";

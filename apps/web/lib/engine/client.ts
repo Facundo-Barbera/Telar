@@ -47,6 +47,7 @@ import type {
   AgentState,
   AgentThreadAnswer,
   DictationAnswer,
+  DictationProviderId,
   DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
@@ -561,9 +562,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Which provider transcribes, and whether this Mac has its key. NEVER the
      *  key — `configured` is the whole of what may be said about it. */
     dictation: () => request<DictationAnswer>(fetcher, "GET", "/api/dictation"),
-    /** Paste the key, or clear it with an empty string. WRITE-ONLY: it goes
-     *  down and never comes back. Absent leaves the stored one alone. */
-    setDictation: (patch: { apiKey?: string }) => request<DictationAnswer>(fetcher, "PATCH", "/api/dictation", patch),
+    /** Choose a provider, paste its key, or clear the key with an empty string.
+     *  The key is WRITE-ONLY: it goes down and never comes back. Either field
+     *  absent leaves the stored one alone — switching providers does not throw
+     *  a key away. */
+    setDictation: (patch: { provider?: DictationProviderId; apiKey?: string }) =>
+      request<DictationAnswer>(fetcher, "PATCH", "/api/dictation", patch),
     /** Mint a token for one dictation. Fetch one per press of the button
      *  rather than holding one: it expires in minutes, and `expiresAt` is an
      *  instant so a caller compares it against its own clock. */

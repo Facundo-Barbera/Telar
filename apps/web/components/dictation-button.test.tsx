@@ -55,6 +55,9 @@ class FakeTrack {
 }
 let tracks: FakeTrack[] = [];
 let tokenCalls = 0;
+/** What `GET /api/dictation` answers. The button's whole existence hangs on
+ *  it, so it is a knob rather than a constant. */
+let provider: "off" | "deepgram" = "deepgram";
 
 class FakeSocket {
   static OPEN = 1;
@@ -114,6 +117,7 @@ beforeEach(() => {
   sent = [];
   tracks = [];
   tokenCalls = 0;
+  provider = "deepgram";
   const media = globalThis as unknown as Record<string, unknown>;
   media.MediaRecorder = FakeRecorder;
   // `new` ON A FUNCTION THAT RETURNS AN OBJECT YIELDS THAT OBJECT, which is how
@@ -144,6 +148,7 @@ beforeEach(() => {
       tokenCalls += 1;
       return Response.json({ provider: "deepgram", token: "jwt-abc", expiresAt: Date.now() + 300_000 });
     }
+    if (url.includes("/api/dictation")) return Response.json({ dictation: { provider, configured: provider !== "off" } });
     return Response.json({});
   }) as typeof fetch;
 });
@@ -187,6 +192,23 @@ function mount(node: React.ReactNode): HTMLElement {
   return host;
 }
 
+/**
+ * Mount and let the provider setting land.
+ *
+ * THE BUTTON IS NOT THERE ON THE FIRST PAINT, by design: `off` is the default
+ * and the hook reports it until the engine answers, so a mic never flashes into
+ * a toolbar and back out. Every test here is about a Mac where dictation is on,
+ * so they all have to wait for that answer — which is a real macrotask, not a
+ * countable number of microtasks.
+ */
+async function mounted(node: React.ReactNode): Promise<HTMLElement> {
+  const host = mount(node);
+  await act(async () => {
+    await new Promise((settle) => setTimeout(settle, 0));
+  });
+  return host;
+}
+
 afterEach(() => {
   for (const { root, host } of roots.splice(0)) {
     act(() => root.unmount());
@@ -220,9 +242,33 @@ async function press(button: HTMLButtonElement): Promise<void> {
   });
 }
 
+describe("whether there is a mic button at all", () => {
+  test("no button on a Mac where dictation is off — which is every Mac by default", async () => {
+    provider = "off";
+    const host = await mounted(<Box kind="session" />);
+    // NOT A DISABLED ONE. macOS dictation and Wispr Flow already work in this
+    // box, so an uninvited mic would be Telar claiming a job the reader may
+    // have given to something else.
+    expect(host.querySelector('button[aria-label="Dictate"]')).toBeNull();
+    expect(host.querySelector('button[aria-label="Stop dictating"]')).toBeNull();
+  });
+
+  test("nothing is even asked for while it is off", async () => {
+    provider = "off";
+    await mounted(<Box kind="session" />);
+    // No token minted, no microphone prompt — there is no control to press.
+    expect(tokenCalls).toBe(0);
+  });
+
+  test("it appears once a provider is chosen", async () => {
+    const host = await mounted(<Box kind="session" />);
+    expect(host.querySelector('button[aria-label="Dictate"]')).not.toBeNull();
+  });
+});
+
 describe("the mic button on a composer", () => {
   test("interim words go into the draft React owns and are replaced in place", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     const button = micIn(host);
 
     await press(button);
@@ -248,7 +294,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("nothing unconfirmed is printed beside the button any more", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     const button = micIn(host);
     await press(button);
     live!.open();
@@ -264,7 +310,7 @@ describe("the mic button on a composer", () => {
   test("the same button, on the Agent's composer", async () => {
     // The Agent screen renders this same component with `kind="agent"`, which
     // is what keeps one button from becoming two.
-    const host = mount(<Box kind="agent" />);
+    const host = await mounted(<Box kind="agent" />);
     await press(micIn(host));
     live!.open();
     live!.say(results("summarise the rail", true));
@@ -272,7 +318,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("a person typing mid-guess keeps their keystrokes and the dictation carries on", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     await press(micIn(host));
     live!.open();
     live!.say(results("recording", false));
@@ -295,7 +341,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("it opens the socket with the token it was just minted, as the bearer subprotocol", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     await press(micIn(host));
     expect(tokenCalls).toBe(1);
     // THE WHOLE OF THE BUG #555 SHIPPED: the query parameter is refused by
@@ -305,7 +351,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("audio only goes up once the socket is open, so the container header is not lost", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     await press(micIn(host));
     // Before `onopen` there is no recorder at all — a chunk produced now would
     // be the WebM header, and losing it makes everything after it unreadable.
@@ -315,7 +361,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("pressing again stops, flushes the tail, and puts the microphone down", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     const button = micIn(host);
     await press(button);
     live!.open();
@@ -333,7 +379,7 @@ describe("the mic button on a composer", () => {
   });
 
   test("leaving the screen mid-dictation releases the microphone", async () => {
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     await press(micIn(host));
     live!.open();
     for (const { root, host: node } of roots.splice(0)) {
@@ -355,18 +401,40 @@ describe("the mic button on a composer", () => {
         },
       },
     });
-    const host = mount(<Box kind="session" />);
+    const host = await mounted(<Box kind="session" />);
     const button = micIn(host);
     await press(button);
     expect(button.getAttribute("aria-label")).toBe("Dictate");
     expect(host.textContent).toContain("did not allow the microphone");
   });
 
-  test("a Mac with no key refuses with the engine's sentence, not a status", async () => {
-    globalThis.fetch = (async () =>
-      Response.json({ error: { code: "conflict", message: "No Deepgram key is configured on this Mac, so dictation cannot start." } }, { status: 409 })) as typeof fetch;
-    const host = mount(<Box kind="session" />);
+  test("a Mac with a provider chosen but no key refuses with the engine's sentence, not a status", async () => {
+    // ONLY THE MINT REFUSES. The provider read still answers, because that is
+    // the state this Mac is actually in: dictation is switched on, so there IS
+    // a button, and pressing it is what finds out the key is missing.
+    const settings = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === "object" && "url" in input ? input.url : input);
+      if (!url.includes("/api/dictation/token")) return settings(input, init);
+      return Response.json({ error: { code: "conflict", message: "No Deepgram key is configured on this Mac, so dictation cannot start." } }, { status: 409 });
+    }) as typeof fetch;
+    const host = await mounted(<Box kind="session" />);
     await press(micIn(host));
     expect(host.textContent).toContain("No Deepgram key is configured");
+  });
+
+  test("a provider this browser cannot drive is refused by name rather than opening the wrong socket", async () => {
+    const settings = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(typeof input === "object" && "url" in input ? input.url : input);
+      if (!url.includes("/api/dictation/token")) return settings(input, init);
+      // A Mac that has moved on to a provider this build does not know. Its
+      // socket, format and credential scheme are all different.
+      return Response.json({ provider: "openai", token: "jwt-abc", expiresAt: Date.now() + 300_000 });
+    }) as typeof fetch;
+    const host = await mounted(<Box kind="session" />);
+    await press(micIn(host));
+    expect(live).toBeUndefined();
+    expect(host.textContent).toContain("openai");
   });
 });

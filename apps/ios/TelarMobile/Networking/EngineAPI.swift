@@ -106,6 +106,15 @@ protocol EngineAPI: Sendable {
     /// models the transcript has no business minting credentials, and should
     /// not have to implement one to compile.
     func dictationToken() async throws -> DictationTokenAnswer
+    /// WHETHER THAT MAC DICTATES AT ALL, read before the mic button is drawn.
+    /// `provider` is `off` by default and there is no button until it is
+    /// something else — the phone's own keyboard dictation already works on the
+    /// composer, so an uninvited one would be Telar claiming a job somebody may
+    /// have given elsewhere.
+    ///
+    /// DEFAULTED BELOW TO `off`, which is the honest answer for a double and
+    /// for a Mac too old to serve the route: no button either way.
+    func dictation() async throws -> DictationAnswer
     /// The transcript forward from a cursor. Bounded by a count AND a byte
     /// budget, whichever is reached first — page until `more` is false.
     func agentThread(after: Int) async throws -> AgentThreadPage
@@ -257,6 +266,13 @@ extension EngineAPI {
     /// show.
     func dictationToken() async throws -> DictationTokenAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+    }
+
+    /// OFF IS THE ORDINARY ANSWER, so a double says it rather than throwing —
+    /// and so does a cockpit too old to serve the route. Either way there is no
+    /// mic button, which is the right outcome in both cases.
+    func dictation() async throws -> DictationAnswer {
+        DictationAnswer(dictation: DictationAnswer.State(provider: DictationProvider.off, configured: false))
     }
 
     /// A double that models no registry has nothing to remove, and says so by
@@ -767,6 +783,13 @@ struct HTTPEngineAPI: EngineAPI {
     /// so the button has a sentence rather than a status.
     func dictationToken() async throws -> DictationTokenAnswer {
         try await post("api/dictation/token", body: [:])
+    }
+
+    /// GET because it MINTS NOTHING: it reads a setting and whether a key is
+    /// there. The key itself never crosses this wire in either direction — the
+    /// phone does not paste it and is never shown it.
+    func dictation() async throws -> DictationAnswer {
+        try await get("api/dictation")
     }
 
     func deleteSession(_ id: EngineID) async throws {

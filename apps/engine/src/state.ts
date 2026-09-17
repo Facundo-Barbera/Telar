@@ -161,6 +161,8 @@ import {
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
+import { isDictationProviderId, type DictationProviderId } from "./dictation/provider";
+import { readDictationProvider, writeDictationProvider } from "./dictation/settings";
 import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -2975,6 +2977,26 @@ export class EngineStore {
    *  all. */
   dictationCredential(): { configured: boolean } {
     return dictationCredential(this.dictationDir);
+  }
+
+  /**
+   * WHO TRANSCRIBES ON THIS MAC, AND WHETHER IT COULD — the whole of what any
+   * client is told about dictation.
+   *
+   * `configured` IS ANSWERED EVEN WHEN THE PROVIDER IS OFF, on purpose: a key
+   * pasted before dictation was switched off is still there, and a pane that
+   * claimed otherwise would have somebody paste it a second time. Switching a
+   * provider off does not throw a credential away.
+   */
+  dictationState(): { provider: DictationProviderId; configured: boolean } {
+    return { provider: readDictationProvider(this.dictationDir), ...this.dictationCredential() };
+  }
+
+  /** Choose a provider, or switch dictation off. The only writer, so `off` is
+   *  a value somebody chose rather than a state derived from an empty key. */
+  setDictationProvider(provider: unknown): void {
+    if (!isDictationProviderId(provider)) throw new EngineStateError("invalid_request", "that is not a dictation provider this engine knows");
+    writeDictationProvider(this.dictationDir, provider);
   }
 
   /** Store the pasted key, or clear it with an empty string. The one write, so

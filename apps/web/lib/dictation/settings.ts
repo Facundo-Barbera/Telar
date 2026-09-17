@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * THE DICTATION KEY, FROM THE SETTINGS SIDE (#544).
+ * WHO DICTATES ON THIS MAC, AND WITH WHOSE KEY (#544).
  *
  * A HOOK RATHER THAN LOCAL STATE, for `useAgentSettings`' reason: the pane is
- * not the only surface that has to know — the mic button's refusal names this
- * row — and a same-window CustomEvent carries a change across without either
- * side polling a preference that moves twice a year.
+ * not the only surface that has to know — the mic button reads the provider to
+ * decide whether to exist at all — and a same-window CustomEvent carries a
+ * change across without either side polling a preference that moves twice a
+ * year. Switching the provider on in settings makes the button appear on a
+ * composer in another tab of this window without a reload.
  *
  * ENGINE STATE, NOT LOCAL STORAGE. Whether this Mac can dictate is a fact about
  * the machine: the desktop shell, a browser tab and a paired phone read one
@@ -19,30 +21,40 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { DictationAnswer } from "@telar/engine-client";
+import type { DictationAnswer, DictationProviderId } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 
 const CHANGED = "telar:dictation";
 
 export type DictationSettingsHandle = {
-  provider: "deepgram";
+  /** Who transcribes, or `off`. The mic button's whole existence hangs on
+   *  this — see `components/dictation-button.tsx`. */
+  provider: DictationProviderId;
   /** Whether this Mac holds a key. NEVER the key — see the engine's
-   *  `dictation/credentials.ts`. */
+   *  `dictation/credentials.ts`. Answered even while the provider is off,
+   *  because a key pasted before is still there. */
   configured: boolean;
   /** True until the engine has answered once. The row keeps its controls
    *  disabled until then rather than offering one that might be wrong. */
   loading: boolean;
-  /** WRITE-ONLY. An empty string clears, which is what Remove sends. */
-  save: (patch: { apiKey: string }) => Promise<void>;
+  /** Both fields by presence. The key is WRITE-ONLY, and an empty string
+   *  clears it, which is what Remove sends. */
+  save: (patch: { provider?: DictationProviderId; apiKey?: string }) => Promise<void>;
   /** The engine refused, or is not answering. Shown on the row rather than
    *  swallowed — the engine's answer is the state. */
   error?: string;
 };
 
-/** NOT CONFIGURED IS THE ANSWER UNTIL THE ENGINE GIVES A BETTER ONE. A first
- *  paint claiming a key is saved would read as "somebody else set this up" for
- *  the length of one fetch. */
-const NONE: DictationAnswer["dictation"] = { provider: "deepgram", configured: false };
+/**
+ * OFF AND UNCONFIGURED IS THE ANSWER UNTIL THE ENGINE GIVES A BETTER ONE.
+ *
+ * Both halves matter and for different reasons. A first paint claiming a key is
+ * saved would read as "somebody else set this up" for the length of one fetch.
+ * A first paint claiming a provider is chosen would put a mic button on every
+ * composer for that same moment and then take it away — a control that blinks
+ * in and out on load is worse than one that arrives a beat late.
+ */
+const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false };
 
 export function useDictationSettings(): DictationSettingsHandle {
   const [dictation, setDictation] = useState(NONE);
@@ -71,7 +83,7 @@ export function useDictationSettings(): DictationSettingsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { apiKey: string }) => {
+  const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string }) => {
     try {
       const result = await createEngineApi().setDictation(patch);
       setDictation(result.dictation);

@@ -213,6 +213,14 @@ export function useDictation(input: {
       // dictate at all, which is a prompt with nothing behind it.
       const minted = await createEngineApi().dictationToken();
       if (abandoned()) return;
+      // WHICH SOCKET TO OPEN IS THE ANSWER'S TO SAY, not this file's to assume.
+      // Everything below — the URL, the subprotocol, the container audio — is
+      // Deepgram's shape; an OpenAI or on-device provider arrives with a
+      // different one. Refusing by name is what keeps a future Mac from being
+      // driven by an older browser tab that would send it the wrong bytes.
+      if (minted.provider !== "deepgram") {
+        throw new Error(`This browser does not know how to dictate with ${minted.provider}. Update Telar, or choose another provider in Settings → Dictation.`);
+      }
       const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
       // A PERMISSION PROMPT CAN OUTLAST THE PRESS. Granted after a stop, the
       // track is live and owned by nobody — so it is stopped here rather than

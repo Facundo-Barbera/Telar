@@ -389,21 +389,33 @@ export type AgentAnswer = {
 /**
  * WHO TRANSCRIBES, AND WHETHER THIS MAC CAN — issue #544.
  *
- * `provider` IS ON THE ANSWER RATHER THAN ASSUMED, because it decides which
- * socket a client opens and which audio format it encodes. Deepgram is the only
- * value today; the field is what lets OpenAI or an on-device model follow
- * without a new route and without every client being rebuilt to guess.
+ * `off` IS THE DEFAULT AND IT IS A REAL CHOICE. macOS and iOS dictation already
+ * work on the composer — it is a plain editable — and so does Wispr Flow and
+ * everything like it, so a mic button that appeared uninvited would be Telar
+ * claiming a job somebody may have given to something else. With `off` there is
+ * no key row and no mic button on any surface.
+ *
+ * THE SET IS OPEN BY DESIGN. OpenAI transcription and an on-device model are
+ * the two the engine's provider interface exists to hold
+ * (`apps/engine/src/dictation/provider.ts`); neither is built. A client that
+ * meets a provider it does not know should read it as "not one I can drive"
+ * rather than failing to parse the document.
  *
  * `configured` IS THE WHOLE OF WHAT IS SAID ABOUT THE KEY. Not a prefix, not a
  * length, not a redaction — all three are how a secret ends up in a log one
- * pass later. See `apps/engine/src/dictation/credentials.ts`.
+ * pass later. It is answered even when the provider is off, because a key
+ * pasted before is still there and a pane that said otherwise would have
+ * somebody paste it twice. See `apps/engine/src/dictation/credentials.ts`.
  */
-export type DictationAnswer = { dictation: { provider: "deepgram"; configured: boolean } };
+export type DictationProviderId = "off" | "deepgram";
 
-/** A credential minted for one dictation, valid for minutes. `expiresAt` is
+export type DictationAnswer = { dictation: { provider: DictationProviderId; configured: boolean } };
+
+/** A credential minted for one dictation, valid for minutes. `provider` is what
+ *  tells the client which socket to open and what to encode. `expiresAt` is
  *  epoch milliseconds rather than a duration, so a client compares it against
  *  its own clock instead of timing a request it did not observe the start of. */
-export type DictationTokenAnswer = { provider: "deepgram"; token: string; expiresAt: number };
+export type DictationTokenAnswer = { provider: DictationProviderId; token: string; expiresAt: number };
 
 /**
  * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
@@ -1063,15 +1075,20 @@ export class EngineClient {
   }
 
   /**
-   * Paste the provider's key, or clear it.
+   * Choose a provider, paste its key, or clear it.
    *
-   * WRITE-ONLY, AND IT NEVER COMES BACK. An empty string clears — the same
-   * departure `setAgent` makes from the provider registry's "blank never
-   * clears", and for the same reason: this field is the only writer of the
-   * secret and a Remove button has to be able to mean it. Absent still means
-   * "leave it alone".
+   * BY PRESENCE, BOTH FIELDS. A patch that names no provider must not switch
+   * dictation off, and one that names no key must not clear it.
+   *
+   * THE KEY IS WRITE-ONLY AND NEVER COMES BACK. An empty string clears it —
+   * the same departure `setAgent` makes from the provider registry's "blank
+   * never clears", and for the same reason: this field is the only writer of
+   * the secret and a Remove button has to be able to mean it.
+   *
+   * SWITCHING A PROVIDER OFF DOES NOT THROW ITS KEY AWAY, so turning dictation
+   * back on is one click rather than a trip to the vendor's console.
    */
-  setDictation(patch: { apiKey?: string }): Promise<DictationAnswer> {
+  setDictation(patch: { provider?: DictationProviderId; apiKey?: string }): Promise<DictationAnswer> {
     return this.request("PATCH", "/v2/dictation", patch);
   }
 

@@ -869,6 +869,11 @@ struct ComposerView: View {
     /// the box: a dictation that outlived this view would have nowhere to put
     /// its words, and the microphone would stay live under nothing.
     @State private var dictation: Dictation?
+    /// WHETHER THAT MAC DICTATES AT ALL (#544). Read once from
+    /// `GET /api/dictation`; `off` is the default and there is no mic button
+    /// until somebody chooses a provider over there. FALSE UNTIL THE MAC
+    /// ANSWERS, so the button never blinks into a toolbar and back out.
+    @State private var canDictate = false
     @Environment(\.colorScheme) private var scheme
 
     private var isRunning: Bool { host.isRunning }
@@ -933,6 +938,16 @@ struct ComposerView: View {
             }
             live.onEnd = { words.forget() }
             dictation = live
+        }
+        // ASKED ONCE PER MOUNT, not polled: a provider is a decision somebody
+        // makes on the Mac twice a year, and a phone re-reading it on a timer
+        // would be a request a minute for a word that never changes. A Mac that
+        // is unreachable, or too old to serve the route, leaves this false —
+        // no button, which is the right outcome either way.
+        .task {
+            guard let api else { return }
+            let answer = try? await api.dictation()
+            canDictate = DictationProvider.canDictateHere(answer?.dictation.provider ?? DictationProvider.off)
         }
         // LEAVING THE SCREEN RELEASES THE MICROPHONE. Without this, walking
         // back to the rail mid-dictation leaves a socket streaming the room
@@ -1119,7 +1134,11 @@ struct ComposerView: View {
                     // message. It is on BOTH screens because the Agent renders
                     // this same composer (#539) — one button, not two that
                     // agree.
-                    if let dictation {
+                    // AND ONLY WHERE THAT MAC ACTUALLY DICTATES. `off` is the
+                    // default: the keyboard's own dictation already works in
+                    // this box, so an uninvited mic would be Telar claiming a
+                    // job somebody may have given elsewhere.
+                    if let dictation, canDictate {
                         ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
                             dictation.toggle()
                         } label: {

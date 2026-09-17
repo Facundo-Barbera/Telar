@@ -24,15 +24,39 @@ struct DictationTokenAnswer: Decodable, Sendable {
     var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
 }
 
-/// Whether this Mac can dictate at all, and whose service it would use. Read by
-/// nothing on the phone today — the key is pasted on the Mac, and the mic
-/// button learns "no key" from the token route's own refusal, which carries the
-/// sentence. Declared because the route answers it and a client that decoded
-/// half a document would be the surprising half.
+/// WHO TRANSCRIBES ON THAT MAC, AND WHETHER IT COULD.
+///
+/// READ BEFORE THE MIC BUTTON IS DRAWN. `provider` defaults to `off` and there
+/// is no button until it is something else: iOS dictation works on this
+/// composer already, so a mic button that appeared uninvited would be Telar
+/// claiming a job the person may have given to the keyboard's own.
+///
+/// `provider` IS A PLAIN STRING, not an enum, and that is the point: a Mac that
+/// has moved on to a provider this build has never heard of must not fail to
+/// decode. It should say it does not know that one — which is what
+/// `DictationProvider.canDictateHere` is for.
 struct DictationAnswer: Decodable, Sendable {
     struct State: Decodable, Sendable {
         var provider: String
         var configured: Bool
     }
     var dictation: State
+}
+
+enum DictationProvider {
+    /// Nobody chose one. The default, and an ordinary state rather than a
+    /// misconfiguration.
+    static let off = "off"
+    /// The only one this phone can actually drive: it opens its own socket with
+    /// a minted token and sends 16 kHz PCM. An OpenAI or on-device provider is
+    /// a different shape and a later build's job.
+    static let deepgram = "deepgram"
+
+    /// Whether a mic button belongs on this screen at all. FALSE FOR A NAME
+    /// THIS BUILD DOES NOT KNOW, not just for `off`: a button that opened the
+    /// wrong kind of socket and sent the wrong bytes would fail at the
+    /// handshake with nothing on screen explaining why.
+    static func canDictateHere(_ provider: String) -> Bool {
+        provider == deepgram
+    }
 }

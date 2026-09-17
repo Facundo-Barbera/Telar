@@ -109,6 +109,16 @@ import Foundation
             // nothing behind it.
             let minted = try await api.dictationToken()
             guard generation == mine else { return }
+            // WHICH SOCKET TO OPEN IS THE ANSWER'S TO SAY, not this file's to
+            // assume. Everything below — the URL, the header, the 16 kHz PCM —
+            // is one provider's shape; another arrives with a different one,
+            // and opening this socket anyway would fail at the handshake with
+            // nothing on screen explaining why.
+            guard DictationProvider.canDictateHere(minted.provider) else {
+                throw DictationFailure.audio(
+                    "This version of Telar cannot dictate with \(minted.provider). Update the app, or choose another provider in that Mac's Dictation settings."
+                )
+            }
             guard try await allowedToRecord() else {
                 phase = .idle
                 error = "Telar does not have permission to use the microphone. Allow it in Settings and tap again."
