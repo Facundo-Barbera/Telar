@@ -138,7 +138,17 @@ export function summariseTurn(turn: Turn, items: Item[]): TurnSummary {
     state: turn.state,
     ...(turn.startedAt === undefined ? {} : { startedAt: turn.startedAt }),
     ...(endedAt(turn) === undefined ? {} : { endedAt: endedAt(turn)! }),
-    input: firstLine(turn.input, INPUT_LINE_CHARS),
+    /**
+     * A NOTIFICATION'S SUMMARY IS ITS LINE — issue #550 clause 4.
+     *
+     * `input` on such a turn is a machine label (`[notification: wake · …]`) or
+     * a peer's whole message, and neither is what an outline page is for: an
+     * orchestrator scanning twenty rows wants "Session session_a finished a
+     * turn", which is exactly the line the notification already carries. Read
+     * from the stored summary rather than re-derived, for the reason every other
+     * one-liner here is: one author per sentence.
+     */
+    input: turn.notification ? firstLine(turn.notification.summary, INPUT_LINE_CHARS) : firstLine(turn.input, INPUT_LINE_CHARS),
     itemCount: mine.length,
     itemTitles: mine.slice(0, ITEM_TITLES).map((item) => firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS)),
     answerHead: head(answer, ANSWER_HEAD_CHARS),
