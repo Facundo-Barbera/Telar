@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentInboxRow } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { inboxSubject, notificationVerbs } from "@/lib/notifications";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
 /**
@@ -39,32 +40,16 @@ export const AGENT_INBOX_POLL_MS = 15_000;
  *
  * The block the model was shown says "WAITING ON YOU", "FAILED", "finished";
  * this strip is the person's view of the same rows, and two spellings of one
- * happening is the bug `sessionWakeLabel` already exists to prevent, one surface
- * over. `tone` is the rail's pair: `warning` for "a person has to move".
+ * happening is the bug `notificationVerbs` exists to prevent. `tone` is the
+ * rail's pair: `warning` for "a person has to move".
+ *
+ * THE REGISTER IS THIS STRIP'S; THE CLASSIFICATION IS NOT (#572). It used to
+ * keep its own switch on kind and intent — a second place for a new intent to be
+ * forgotten in, and a second place to decide a peer's message was a wake.
  */
 export function agentInboxLabel(row: Pick<AgentInboxRow, "kind" | "intent">): { verb: string; tone: "warning" | "muted" } {
-  switch (row.kind) {
-    case "request_opened":
-      return { verb: "Waiting on you", tone: "warning" };
-    case "turn_failed":
-      return { verb: "Failed", tone: "warning" };
-    case "turn_completed":
-      return { verb: "Finished", tone: "muted" };
-    case "turn_stopped":
-      return { verb: "Stopped", tone: "muted" };
-    case "peer_message":
-      return {
-        verb:
-          row.intent === "task"
-            ? "Assigned work"
-            : row.intent === "blocker"
-              ? "Reported a blocker"
-              : row.intent === "result"
-                ? "Sent a result"
-                : "Sent a message",
-        tone: row.intent === "blocker" ? "warning" : "muted",
-      };
-  }
+  const { short, tone } = notificationVerbs(inboxSubject(row));
+  return { verb: short, tone };
 }
 
 /**

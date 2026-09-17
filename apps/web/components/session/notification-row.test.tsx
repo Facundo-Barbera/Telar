@@ -12,7 +12,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NotificationDetail } from "@telar/engine-client";
-import { NotificationRow, notificationLabel } from "../transcript";
+import { NotificationRow, notificationLabel, sessionWakeLabel } from "../transcript";
 
 const PEER: NotificationDetail = {
   kind: "peer_message",
@@ -28,7 +28,7 @@ const render = (detail: NotificationDetail, message?: string) =>
   renderToStaticMarkup(<NotificationRow detail={detail} {...(message ? { message } : {})} />);
 
 test("a peer's message draws a notification row, not a bubble of anyone's", () => {
-  const html = render(PEER, "Rewrite the parser's error recovery, and mind the column.");
+  const html = render(PEER, `Rewrite the parser error recovery, and mind the column. ${"Then ".repeat(40)}`);
   expect(html).toContain("A session assigned work");
   // The sender by its id's tail, as every other cross-session row names one.
   expect(html).toContain("session …123456");
@@ -36,7 +36,10 @@ test("a peer's message draws a notification row, not a bubble of anyone's", () =
   // COLLAPSED BY DEFAULT: the notice is the reason this costs little, and a row
   // that printed it in full would be the body problem drawn instead of sent.
   expect(html).not.toContain("It opens:");
-  expect(html).not.toContain("mind the column");
+  // THE HEAD IS DELIBERATE AND BOUNDED (#572). Enough to tell two notices from
+  // one session apart; not the message, which is behind the disclosure.
+  expect(html).toContain("Rewrite the parser error recovery");
+  expect(html).not.toContain("Then Then Then Then Then Then Then Then Then Then Then Then Then Then Then Then Then");
 });
 
 test("each kind says which it is", () => {
@@ -44,10 +47,59 @@ test("each kind says which it is", () => {
   expect(notificationLabel({ ...PEER, intent: "blocker" }).verb).toBe("A session reported a blocker");
   expect(notificationLabel({ ...PEER, intent: "result" }).verb).toBe("A session sent a result");
   expect(notificationLabel({ ...PEER, intent: "report" }).verb).toBe("A session sent a message");
-  // A wake borrows `sessionWakeLabel`, so a wake that opened its own turn and
-  // one that landed mid-turn cannot be given two different names.
+  // A wake comes through the SAME function, so a wake that opened its own turn
+  // and one that landed mid-turn cannot be given two different names.
   expect(notificationLabel({ ...PEER, kind: "wake", wakeKind: "turn_failed" }).verb).toBe("Session failed a turn");
   expect(notificationLabel({ ...PEER, kind: "request", wakeKind: "request_opened" }).verb).toBe("Session asked a question");
+  // A WAKE IS THE SAME HAPPENING IN ANOTHER SHAPE — #572. `sessionWakeLabel`
+  // translates rather than deciding, or the second switch is back.
+  expect(sessionWakeLabel({ kind: "turn_completed", sessionId: "s" })).toEqual(notificationLabel({ ...PEER, kind: "wake", wakeKind: "turn_completed" }));
+  expect(sessionWakeLabel({ kind: "request_opened", sessionId: "s" }).verb).toBe("Session asked a question");
+});
+
+test("a peer's row carries the head of what was sent; a wake's carries none", () => {
+  // WHICH RESULT, not just that one arrived.
+  expect(notificationLabel({ ...PEER, intent: "result" }, "Three commits landed: the parser, its tests, the changelog.").head)
+    .toBe("Three commits landed: the parser, its tests, the changelog.");
+  // Without the body on this side, the engine's own summary line stands in —
+  // minus the bracketed kind, which the verb beside it already says.
+  expect(notificationLabel(PEER).head).toBe("session session_worker123456 ASSIGNED this session work");
+  // A wake announces something in ANOTHER session's run and has no body here.
+  expect(notificationLabel({ ...PEER, kind: "wake", wakeKind: "turn_completed" }, "not this turn's").head).toBeUndefined();
+});
+
+/**
+ * THE BUG, AS A TEST — issue #572.
+ *
+ * A worker sends its coordinator a result and its turn ends seconds later. #240
+ * keeps those two facts on purpose; the screenshot that opened the issue had
+ * both rows titled "Session finished a turn", 24 seconds apart, which reads as
+ * one notification delivered twice.
+ */
+test("a result and the completion that follows it render as two different rows", () => {
+  const result: NotificationDetail = {
+    ...PEER,
+    intent: "result",
+    summary: "[agent message · result] session session_worker123456 sent a result (run run_report, 5,793 chars)",
+  };
+  const completion: NotificationDetail = {
+    ...PEER,
+    kind: "wake",
+    wakeKind: "turn_completed",
+    summary: "[wake: completed] Session session_worker123456 — turn run_report completed.",
+    body: "[wake: completed] Session session_worker123456 — turn run_report completed.",
+  };
+  const first = render(result, "Three commits landed: the parser, its tests, the changelog.");
+  const second = render(completion);
+  expect(first).toContain("A session sent a result");
+  expect(second).toContain("Session finished a turn");
+  expect(first).not.toContain("Session finished a turn");
+  // And the same session's tail on both, so the ROW is what tells them apart.
+  expect(first).toContain("session …123456");
+  expect(second).toContain("session …123456");
+  expect(first).not.toBe(second);
+  // The head is the second difference, for a reader who does not read verbs.
+  expect(first).toContain("Three commits landed");
 });
 
 test("a cohort says how many things it is, and stays one row", () => {

@@ -56,7 +56,9 @@ import { Composer, MAX_ATTACHMENTS } from "./composer";
 // `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
-// turn header here. One vocabulary, or the two spellings drift apart.
+// turn header here. It is now an adapter onto `notificationLabel`, which is the
+// one function every notification verb in this app comes from (#572) — so this
+// header cannot name a happening differently from the row below it.
 import { ActivityGroup, LiveActivity, Marker, NotificationRow, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, TranscriptWorkspace, turnActivity, TurnFailureRow, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, editorInstanceKey, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";

@@ -50,6 +50,7 @@ import {
 import type { Item, RateLimitType, TurnFailureCode } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
+import { notificationHead, notificationVerbs, type NotificationSubject } from "@/lib/notifications";
 import { CONSULT_TALLY_LABEL, foldHarnessRows, harnessConsult } from "@/lib/harness-paths";
 import { toolInputSummary } from "@/lib/tool-input-summary";
 import { attachmentUrl } from "@/lib/ds";
@@ -615,23 +616,15 @@ function ProviderWaitRow({ item }: { item: JournalItem }) {
  * the peer by its id's tail, since the wake text itself carries the title on
  * expand.
  *
- * HERE RATHER THAN IN THE COCKPIT because both surfaces name a wake and only
- * one import direction exists (cockpit → transcript): a wake that lands while
- * the session is idle is a turn header there, and the same wake landing
- * mid-turn is a row here. Two spellings of "Session finished a turn" would be
- * the bug this file already fixed, reintroduced in words.
+ * AN ADAPTER, NOT A VOCABULARY (#572). A wake reaches this file as a
+ * `WakeReason` and a notification reaches it as a `NotificationDetail`; they are
+ * the same happening in two shapes, so this translates one into the other and
+ * `notificationLabel` answers. The switch that used to be here was the second
+ * spelling of "Session finished a turn", and a peer's `result` classified
+ * against it read as a completion.
  */
 export function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { verb: string; Icon: typeof BotIcon } {
-  switch (reason.kind) {
-    case "turn_completed":
-      return { verb: "Session finished a turn", Icon: BotIcon };
-    case "turn_failed":
-      return { verb: "Session failed a turn", Icon: BotIcon };
-    case "turn_stopped":
-      return { verb: "Session was stopped", Icon: BotIcon };
-    case "request_opened":
-      return { verb: "Session asked a question", Icon: BotIcon };
-  }
+  return notificationLabel({ kind: reason.kind === "request_opened" ? "request" : "wake", wakeKind: reason.kind });
 }
 
 /**
@@ -664,30 +657,28 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
 }
 
 /**
- * WHAT A NOTIFICATION IS CALLED, in one line — issue #550.
+ * WHAT A NOTIFICATION IS CALLED, in one line — issue #550, and the ONE caller
+ * of `notificationVerbs` every surface in this app goes through (#572).
  *
- * HERE, BESIDE `sessionWakeLabel`, AND FOR ITS REASON: the cockpit draws a
- * notification that opened its own turn and this file draws one that landed
- * mid-turn, and two spellings of "Session finished a turn" is the bug this file
- * already fixed, reintroduced in words.
+ * The cockpit draws a notification that opened its own turn, this file draws one
+ * that landed mid-turn, and `sessionWakeLabel` above hands a wake in wearing the
+ * other shape. Three drawings, one classification.
+ *
+ * `head` IS WHY A RESULT AND THE COMPLETION AFTER IT LOOK DIFFERENT. Both come
+ * from one worker seconds apart and #240 keeps them two facts on purpose; the
+ * verb now says which is which, and the head of what was actually sent says
+ * which result. A wake has no body on this side and gets none.
  */
-export function notificationLabel(detail: NonNullable<JournalTurn["notification"]>): { verb: string; Icon: typeof BotIcon } {
-  if (detail.kind === "peer_message") {
-    const intent = detail.intent ?? "report";
-    return {
-      verb:
-        intent === "task"
-          ? "A session assigned work"
-          : intent === "blocker"
-            ? "A session reported a blocker"
-            : intent === "result"
-              ? "A session sent a result"
-              : "A session sent a message",
-      Icon: BotIcon,
-    };
-  }
-  if (detail.kind === "request") return { verb: "Session asked a question", Icon: BotIcon };
-  return detail.wakeKind ? sessionWakeLabel({ kind: detail.wakeKind, sessionId: detail.sessionId ?? "" }) : { verb: "Session activity", Icon: BotIcon };
+export function notificationLabel(
+  detail: NotificationSubject & Partial<Pick<NonNullable<JournalTurn["notification"]>, "summary">>,
+  /** The peer's message as sent, when the surface has it — the turn's own
+   *  `prompt`. Falls back to the engine's summary line, which is all a row
+   *  drawing a bare item has. */
+  message?: string,
+): { verb: string; Icon: typeof BotIcon; head?: string } {
+  const { verb } = notificationVerbs(detail);
+  const head = detail.kind === "peer_message" ? notificationHead(message ?? detail.summary) : undefined;
+  return { verb, Icon: BotIcon, ...(head ? { head } : {}) };
 }
 
 /**
@@ -707,7 +698,7 @@ export function notificationLabel(detail: NonNullable<JournalTurn["notification"
 export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
   const [open, setOpen] = useState(false);
   const [reading, setReading] = useState(false);
-  const { verb, Icon } = notificationLabel(detail);
+  const { verb, Icon, head } = notificationLabel(detail, message);
   const body = detail.body.trim();
   const entries = detail.entries ?? [];
   /**
@@ -730,6 +721,9 @@ export function NotificationRow({ detail, message }: { detail: NonNullable<Journ
       >
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">{verb}</span>
+        {/* WHICH RESULT, not just that one arrived — #572. Two notices from one
+            session on one screen have to be told apart without expanding both. */}
+        {head && <span className="min-w-0 truncate text-2xs text-muted-foreground">{head}</span>}
         {entries.length > 1 && <span className="shrink-0 text-2xs text-muted-foreground">{`and ${entries.length - 1} more`}</span>}
         {detail.sessionId && (
           <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{`session …${detail.sessionId.slice(-6)}`}</span>
