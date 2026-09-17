@@ -225,7 +225,23 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
    *  make every row say `max_tokens` and prove nothing about the exchange. */
   const SMOKE_MAX_TOKENS = 64;
 
-  type Row = { id: string; route: GoRoute; ok: boolean; sentence: string };
+  type Row = { id: string; route: GoRoute; ok: boolean; sentence: string; unavailable?: boolean };
+
+  /**
+   * GO SAYING "THE MODEL IS DOWN" IS NOT THIS SUITE'S BUSINESS.
+   *
+   * Two ids Go LISTS answer `Upstream request failed: Model is unavailable.` —
+   * `qwen3.5-plus` and `grok-4.5`, on every endpoint including chat/completions,
+   * so it is not a fact about a request shape. A smoke that treated it as one
+   * would be red for as long as somebody else's capacity problem lasts, and a
+   * permanently red smoke is a smoke nobody reads.
+   *
+   * MATCHED ON GO'S OWN SENTENCE, narrowly. Anything else — a 401, a rejected
+   * parameter, a field this build should not have sent — is about US and still
+   * fails, which is the whole point of running the table. The rows are reported
+   * either way; only the verdict differs.
+   */
+  const unavailableUpstream = (sentence: string) => sentence.includes("Model is unavailable");
 
   async function smokeOne(id: string): Promise<Row> {
     const route = goRouteOf(id);
@@ -256,7 +272,8 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
       // wording is what a reader needs to tell a 401 from a 400 from a model
       // that is simply not served today, and it is what goes in the PR body.
       const message = error instanceof Error ? error.message : String(error);
-      return { id, route, ok: false, sentence: `${status || "no response"} — ${message.replace(/\s+/g, " ").slice(0, 160)}` };
+      const sentence = `${status || "no response"} — ${message.replace(/\s+/g, " ").slice(0, 160)}`;
+      return { id, route, ok: false, sentence, ...(unavailableUpstream(sentence) ? { unavailable: true } : {}) };
     }
   }
 
@@ -274,10 +291,28 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
     // key is a rate-limit report dressed up as a test failure.
     for (const id of ids) rows.push(await smokeOne(id));
 
-    for (const row of rows) say(`[live] ${row.id} (${row.route}) → ${row.ok ? "ok" : "FAIL"} — ${row.sentence}`);
+    for (const row of rows) say(`[live] ${row.id} (${row.route}) → ${row.ok ? "ok" : row.unavailable ? "down at Go" : "FAIL"} — ${row.sentence}`);
 
-    const broken = rows.filter((row) => !row.ok && routeSupported(row.route));
-    say(`[live] routes → ${rows.filter((row) => row.ok).length}/${rows.length} ok, ${broken.length} failing on a route this build claims`);
+    /**
+     * TWO VERDICTS, AND THEY ANSWER DIFFERENT QUESTIONS.
+     *
+     * `broken` is a request this build got wrong on a route it CLAIMS — a 401,
+     * a rejected parameter, a field that should not have been sent. Any one of
+     * those is a bug here and fails.
+     *
+     * `covered` is the route-level question #571 actually asks: is each claimed
+     * route proven by something? A route where every id is down at Go is a
+     * route with no evidence behind it, and marking it supported on no evidence
+     * is the thing the smoke exists to prevent — so that fails too, separately,
+     * and says which route rather than which model.
+     */
+    const broken = rows.filter((row) => !row.ok && !row.unavailable && routeSupported(row.route));
+    const claimed = [...new Set(rows.filter((row) => routeSupported(row.route)).map((row) => row.route))];
+    const unproven = claimed.filter((route) => !rows.some((row) => row.ok && row.route === route));
+
+    const down = rows.filter((row) => row.unavailable);
+    say(`[live] routes → ${rows.filter((row) => row.ok).length}/${rows.length} ok, ${broken.length} wrong here, ${down.length} down at Go (${down.map((row) => row.id).join(", ") || "none"})`);
     expect(broken.map((row) => `${row.id}: ${row.sentence}`)).toEqual([]);
+    expect(unproven).toEqual([]);
   });
 });
