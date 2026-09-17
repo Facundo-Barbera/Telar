@@ -1,5 +1,17 @@
 // Personal relay: unique revocable host credentials, production Telar destinations only.
 const reply = (status, body = {}, headers = {}) => Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
+/**
+ * ONE HOST'S DAILY CEILING — issue #584.
+ *
+ * The per-minute limiter (120) is 172,800 a day, which is exactly what one Mac
+ * spent the day pinned against, taking the whole Cloudflare account past its
+ * 100k free-plan quota and breaking the desktop updater with it. A daily budget
+ * is the limit that actually corresponds to the thing being protected. 5,000 is
+ * two orders of magnitude above ordinary use and two below the ceiling that
+ * caused the outage.
+ */
+const DAILY_BUDGET = 5000;
+const DAY = 86400000;
 /** Apple names a rejection in its JSON body. ONLY that word travels back to the
  *  host: no provider body, no credential, no device token, no payload. */
 async function appleReason(response) {
@@ -71,14 +83,28 @@ export class RelayHost {
     const match = path.match(/^\/v1\/devices\/([a-zA-Z0-9_-]{1,128})(\/push)?$/);
     if (!match) return reply(404);
     const deviceKey = `device:${match[1]}`;
-    const minute = Math.floor(Date.now()/60000);
+    const now = Date.now();
+    const minute = Math.floor(now/60000);
+    const day = Math.floor(now/DAY);
+    // THE BURST LIMIT AND THE BILL ARE DIFFERENT LIMITS. The minute limiter
+    // keeps one bad loop from saturating an isolate; the daily budget is what
+    // keeps a month of bad loops off the account's quota (#584). Counted in one
+    // transaction so a host cannot spend past either by racing itself.
     const allowed = await this.state.storage.transaction(async tx => {
       const rate = await tx.get('rate');
       const count = rate?.minute === minute ? rate.count : 0;
-      if (count >= 120) return false;
-      await tx.put('rate', { minute, count: count+1 }); return true;
+      if (count >= 120) return 'minute';
+      const budget = await tx.get('budget');
+      const spent = budget?.day === day ? budget.count : 0;
+      if (spent >= DAILY_BUDGET) return 'day';
+      await tx.put('rate', { minute, count: count+1 });
+      await tx.put('budget', { day, count: spent+1 });
+      return 'ok';
     });
-    if (!allowed) return reply(429);
+    // `Retry-After` IS THE POINT, not decoration: the host pauses this Mac's
+    // sends until it elapses rather than discovering the refusal per push.
+    if (allowed === 'day') return reply(429, { error: 'daily_budget' }, { 'retry-after': String(Math.max(1, Math.ceil(((day+1)*DAY - now)/1000))) });
+    if (allowed !== 'ok') return reply(429, {}, { 'retry-after': String(Math.max(1, 60 - Math.floor((now%60000)/1000))) });
     if (!match[2] && request.method === 'DELETE') { await this.state.storage.delete(deviceKey); return reply(200); }
     let body;
     try { body = await readJSON(request); } catch { return reply(400); }

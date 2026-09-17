@@ -71,6 +71,26 @@ test("Apple's rejection reason travels back, alone, and a disowned token drops t
     assert.deepEqual(await (await host.fetch(request('/v1/devices/phone/push','POST',delivery))).json(),{status:503});
   } finally {globalThis.fetch=original;}
 });
+test('a host that spends its daily budget is refused with the seconds until it resets',async()=>{
+  const host=new RelayHost(store(),{});
+  const realNow=Date.now;
+  try {
+    // A fixed day, advanced a minute per hundred calls so the BURST limiter
+    // never fires and only the daily budget can be what refuses (#584).
+    const base=Date.UTC(2026,0,2,0,0,0);
+    let calls=0;
+    Date.now=()=>base+Math.floor(calls/100)*60000;
+    for(;calls<5000;calls++) assert.equal((await host.fetch(request('/v1/devices/phone'))).status,200);
+    const refused=await host.fetch(request('/v1/devices/phone'));
+    assert.equal(refused.status,429);
+    assert.equal((await refused.json()).error,'daily_budget');
+    const after=Number(refused.headers.get('retry-after'));
+    assert.ok(after>0&&after<=86400,`retry-after was ${after}`);
+    // The next day is a fresh budget, not a permanently closed door.
+    Date.now=()=>base+86400000;
+    assert.equal((await host.fetch(request('/v1/devices/phone'))).status,200);
+  } finally {Date.now=realNow;}
+});
 test('signing token survives signer eviction and rotates with credentials',async()=>{
   const key=()=>Buffer.from(generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({format:'pem',type:'pkcs8'})).toString('base64');
   const state={...store(),blockConcurrencyWhile:fn=>fn()};
