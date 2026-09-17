@@ -74,4 +74,4 @@ export const AGENT_BRIEFING =
  * Agent's voice is its own.
  */
 export const AGENT_BRIEF_ANSWER =
-  "THIS ANSWER WILL BE SPOKEN ALOUD: reply in two or three sentences of plain prose. No lists, no headings, no code, no markdown.";
+  "THIS ANSWER WILL BE SPOKEN ALOUD: reply in ONE sentence of plain prose, and offer more only if there is more. No lists, no headings, no code, no markdown.";
