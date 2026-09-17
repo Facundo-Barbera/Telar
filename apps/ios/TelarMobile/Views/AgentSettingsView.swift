@@ -161,9 +161,9 @@ struct AgentSettingsView: View {
             SettingsSectionLabel("Model")
             SettingsCard {
                 // THE COMPOSER'S OWN PICKER, not a menu that agrees with it. The
-                // list is thirty-eight rows across thirteen families, it needs a
-                // search field, and sixteen of its rows are unpickable — which is
-                // exactly what `AgentModelPickerSheet` already draws.
+                // list is thirty-eight rows across thirteen families and it needs
+                // a search field — which is exactly what
+                // `AgentModelPickerSheet` already draws.
                 CardNavRow(
                     icon: "sparkles",
                     title: AgentSettings.modelRowLabel(catalogue, state?.model),

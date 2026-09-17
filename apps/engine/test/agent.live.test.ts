@@ -38,7 +38,7 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
-import { goRouteGaps } from "../src/agent/catalogue";
+import { GO_ROUTES, type GoRoute, goRouteGaps, goRouteOf, routeSupported } from "../src/agent/catalogue";
 import { describeGoCredential, redactKey, resolveGoCredential } from "../src/agent/credentials";
 import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "../src/agent/go";
 import { agentChatModel } from "../src/agent/model";
@@ -182,5 +182,137 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
     }
     say(`[live] ${TOOL_SMOKE_MODEL} tool round trip → ${status}`);
     expect(status).toBe(200);
+  });
+
+  /**
+   * ── EVERY ROUTE, EVERY MODEL, ONE TOOL LAP EACH (#571) ──────────────────────
+   *
+   * The test above proves the shape on one id. This proves it on ALL of them,
+   * and it is the evidence `routeSupported` is allowed to move on: #571's rule
+   * is that a route becomes supported when a smoke says it works and stays
+   * unsupported with its reason recorded when it does not. A flag flipped
+   * because the code looked right is the thing that rule exists to forbid.
+   *
+   * ── WHAT EACH ROW BUYS ──────────────────────────────────────────────────────
+   * One request per id: a bound tool, a question, and the previous lap handed
+   * over as history so the request is tool-using in BOTH directions — the
+   * assistant's `tool_call` and the `ToolMessage` answering it are the two
+   * shapes that differ most between the three wire formats, and #549 is the
+   * standing proof that "it accepted a greeting" says nothing about them.
+   *
+   * THE HISTORY IS BUILT, NOT PROVOKED, for the reason the test above gives:
+   * asking a model to please call a tool costs a second completion and still
+   * depends on it choosing to. Whether one comes BACK is recorded but not
+   * asserted — a model that answers the tool result in prose has still proven
+   * every byte of the round trip this is about.
+   *
+   * ── AND THE ASSERTION READS `routeSupported`, WHICH IS THE POINT ────────────
+   * A failure is only a failure for a route this build CLAIMS. That keeps the
+   * two halves honest in both directions: an unsupported route may fail here
+   * without breaking the suite, and a route cannot be marked supported without
+   * this test being the thing that says so.
+   */
+  const TOOL = {
+    type: "function" as const,
+    function: {
+      name: "sessions_list",
+      description: "List Telar sessions. Used only by Telar's live smoke.",
+      parameters: { type: "object", properties: { settled: { type: "boolean" } }, required: [] },
+    },
+  };
+
+  /** Room for a short answer or a tool call, and no more. A ceiling of 1 would
+   *  make every row say `max_tokens` and prove nothing about the exchange. */
+  const SMOKE_MAX_TOKENS = 64;
+
+  type Row = { id: string; route: GoRoute; ok: boolean; sentence: string; unavailable?: boolean };
+
+  /**
+   * GO SAYING "THE MODEL IS DOWN" IS NOT THIS SUITE'S BUSINESS.
+   *
+   * Two ids Go LISTS answer `Upstream request failed: Model is unavailable.` —
+   * `qwen3.5-plus` and `grok-4.5`, on every endpoint including chat/completions,
+   * so it is not a fact about a request shape. A smoke that treated it as one
+   * would be red for as long as somebody else's capacity problem lasts, and a
+   * permanently red smoke is a smoke nobody reads.
+   *
+   * MATCHED ON GO'S OWN SENTENCE, narrowly. Anything else — a 401, a rejected
+   * parameter, a field this build should not have sent — is about US and still
+   * fails, which is the whole point of running the table. The rows are reported
+   * either way; only the verdict differs.
+   */
+  const unavailableUpstream = (sentence: string) => sentence.includes("Model is unavailable");
+
+  async function smokeOne(id: string): Promise<Row> {
+    const route = goRouteOf(id);
+    let status = 0;
+    try {
+      const model = agentChatModel({
+        threadId: SMOKE_THREAD,
+        model: id,
+        ...(agentDir ? { agentDir } : {}),
+        streaming: false,
+        maxTokens: SMOKE_MAX_TOKENS,
+        fetchImpl: async (url, init) => {
+          const response = await fetch(url, init);
+          status = response.status;
+          return response;
+        },
+      });
+      const answer = (await model.bindTools!([TOOL]).invoke([
+        new HumanMessage("What is running? Use the tool."),
+        new AIMessage({ content: "", tool_calls: [{ id: "call_telar_smoke", name: "sessions_list", args: { settled: false } }] }),
+        // THE MESSAGE #549 IS ABOUT: the call id and the answer, and no `name`.
+        new ToolMessage({ tool_call_id: "call_telar_smoke", content: "one session" }),
+      ])) as AIMessage;
+      const calls = answer.tool_calls?.length ?? 0;
+      return { id, route, ok: true, sentence: `${status} — tool result accepted, ${calls ? `${calls} further tool call` : "answered in prose"}` };
+    } catch (error) {
+      // THE PROVIDER'S OWN SENTENCE, redacted like every other line: that
+      // wording is what a reader needs to tell a 401 from a 400 from a model
+      // that is simply not served today, and it is what goes in the PR body.
+      const message = error instanceof Error ? error.message : String(error);
+      const sentence = `${status || "no response"} — ${message.replace(/\s+/g, " ").slice(0, 160)}`;
+      return { id, route, ok: false, sentence, ...(unavailableUpstream(sentence) ? { unavailable: true } : {}) };
+    }
+  }
+
+  test("every model on every route accepts a tool lap", async () => {
+    if (!credential) return;
+    /**
+     * THE CONTROL IS FIRST AND IT IS A CHAT MODEL. If the whole table fails,
+     * the control says whether that is about the two new routes or about this
+     * machine's key — which is the difference between a finding and an outage.
+     */
+    const ids = [DEFAULT_GO_MODEL, ...Object.keys(GO_ROUTES).filter((id) => goRouteOf(id) !== "chat")];
+
+    const rows: Row[] = [];
+    // SEQUENTIAL, DELIBERATELY. Seventeen concurrent completions against one
+    // key is a rate-limit report dressed up as a test failure.
+    for (const id of ids) rows.push(await smokeOne(id));
+
+    for (const row of rows) say(`[live] ${row.id} (${row.route}) → ${row.ok ? "ok" : row.unavailable ? "down at Go" : "FAIL"} — ${row.sentence}`);
+
+    /**
+     * TWO VERDICTS, AND THEY ANSWER DIFFERENT QUESTIONS.
+     *
+     * `broken` is a request this build got wrong on a route it CLAIMS — a 401,
+     * a rejected parameter, a field that should not have been sent. Any one of
+     * those is a bug here and fails.
+     *
+     * `covered` is the route-level question #571 actually asks: is each claimed
+     * route proven by something? A route where every id is down at Go is a
+     * route with no evidence behind it, and marking it supported on no evidence
+     * is the thing the smoke exists to prevent — so that fails too, separately,
+     * and says which route rather than which model.
+     */
+    const broken = rows.filter((row) => !row.ok && !row.unavailable && routeSupported(row.route));
+    const claimed = [...new Set(rows.filter((row) => routeSupported(row.route)).map((row) => row.route))];
+    const unproven = claimed.filter((route) => !rows.some((row) => row.ok && row.route === route));
+
+    const down = rows.filter((row) => row.unavailable);
+    say(`[live] routes → ${rows.filter((row) => row.ok).length}/${rows.length} ok, ${broken.length} wrong here, ${down.length} down at Go (${down.map((row) => row.id).join(", ") || "none"})`);
+    expect(broken.map((row) => `${row.id}: ${row.sentence}`)).toEqual([]);
+    expect(unproven).toEqual([]);
   });
 });

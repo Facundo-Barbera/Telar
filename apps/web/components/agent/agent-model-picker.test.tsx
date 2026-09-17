@@ -10,9 +10,14 @@
  *   - SEARCH matches the display name AND the raw wire id, because a person who
  *     knows "k2.7" and a person who knows "Kimi" are both looking for the same
  *     row;
- *   - a model on an endpoint Telar cannot speak is SHOWN AND UNPICKABLE, never
- *     hidden — hiding it would make the withholding suspicion true, and offering
- *     it would sell somebody a 400 halfway through a turn;
+ *   - a row THE ENGINE MARKS UNSUPPORTED is SHOWN AND UNPICKABLE, never hidden
+ *     — hiding it would make the withholding suspicion true, and offering it
+ *     would sell somebody a 400 halfway through a turn. Since #571 the engine
+ *     runs all three of Go's endpoints and marks nothing unsupported, so these
+ *     rows are built with `supported: false` DIRECTLY rather than by naming a
+ *     route: the behaviour under test is "what the picker does when the engine
+ *     says no", and tying it to whichever routes happen to be unreachable today
+ *     is what made this file need editing when that changed;
  *   - a Go id models.dev has never described still lists, named by its own id;
  *   - "Default" is a row that says which model it actually means.
  *
@@ -29,6 +34,7 @@ import type { AgentModel, AgentModelCatalogue } from "@telar/engine-client";
 import {
   AgentModelList,
   AgentModelRows,
+  AGENT_ROUTE_UNSUPPORTED,
   agentModelTrouble,
   agentRouteObstacle,
   groupAgentFamilies,
@@ -52,7 +58,10 @@ afterAll(async () => {
 
 function row(over: Partial<AgentModel> & Pick<AgentModel, "id" | "name" | "family" | "route">): AgentModel {
   return {
-    supported: over.route === "chat" || over.route === "unknown",
+    // THE ENGINE'S DEFAULT, WHICH IS NOW "yes" FOR EVERY ROUTE (#571). A row
+    // that is unsupported says so explicitly at its call site, where the test
+    // asking about it can be read without knowing the route table.
+    supported: true,
     described: true,
     label: over.name,
     isDefault: false,
@@ -106,8 +115,8 @@ function rowsIn(): HTMLButtonElement[] {
  * asserted nothing. The rows below are really rendered against the real filter;
  * only the field's own `setQuery` is taken on faith, and it is one line.
  */
-function search(query: string): void {
-  mount(<AgentModelRows catalogue={catalogue} query={query} onPick={() => undefined} />);
+function search(query: string, over: AgentModelCatalogue = catalogue): void {
+  mount(<AgentModelRows catalogue={over} query={query} onPick={() => undefined} />);
 }
 
 describe("grouping", () => {
@@ -155,10 +164,20 @@ describe("what a row says", () => {
   });
 });
 
-describe("unsupported routes", () => {
+/**
+ * THE SAME CATALOGUE WITH NAMED ROWS MARKED UNRUNNABLE — the engine's `no`, made
+ * explicit. Every test below is about what the picker DOES with that answer,
+ * which is a question worth asking in a build where the engine says it about
+ * nothing.
+ */
+function onlyUnsupported(...ids: string[]): AgentModelCatalogue {
+  return { ...catalogue, models: catalogue.models.map((model) => (ids.includes(model.id) ? { ...model, supported: false } : model)) };
+}
+
+describe("a row the engine will not run", () => {
   test("are shown, greyed, and refuse a click", () => {
     const picked: string[] = [];
-    mount(<AgentModelList catalogue={catalogue} onPick={(id) => picked.push(id)} />);
+    mount(<AgentModelList catalogue={onlyUnsupported("qwen3.8-max", "grok-4.6")} onPick={(id) => picked.push(id)} />);
     for (const id of ["qwen3.8-max", "grok-4.6"]) {
       const button = rowsIn().find((entry) => entry.dataset.modelId === id)!;
       // SHOWN — hiding them would make the "Go is withholding models"
@@ -172,14 +191,22 @@ describe("unsupported routes", () => {
     expect(picked).toEqual([]);
   });
 
-  test("say why, in the words the issue asks for", () => {
-    expect(agentRouteObstacle("messages")).toContain("Not supported by Telar's Agent yet");
-    expect(agentRouteObstacle("responses")).toContain("Not supported by Telar's Agent yet");
-    expect(agentRouteObstacle("chat")).toBeUndefined();
-    // An id nobody transcribed is Telar's gap, not the model's — no warning.
-    expect(agentRouteObstacle("unknown")).toBeUndefined();
-    mount(<AgentModelList catalogue={catalogue} onPick={() => undefined} />);
-    expect(rowsIn().find((entry) => entry.dataset.modelId === "grok-4.6")!.title).toContain("Responses API");
+  test("say why, even on a route with no wording of its own", () => {
+    // NO ROUTE HAS ITS OWN SENTENCE TODAY — the Agent speaks all three, so
+    // there is nothing route-specific left to explain.
+    for (const route of ["chat", "messages", "responses", "unknown"] as const) {
+      expect(agentRouteObstacle(route)).toBeUndefined();
+    }
+    // WHICH MUST NOT BECOME SILENCE. `supported: false` is the engine's answer
+    // and the row has to say something; the fallback is what it says. A greyed
+    // row with an empty tooltip is the failure this pins.
+    const withOne = onlyUnsupported("qwen3.8-max");
+    mount(<AgentModelList catalogue={withOne} onPick={() => undefined} />);
+    const greyed = rowsIn().find((entry) => entry.dataset.modelId === "qwen3.8-max")!;
+    expect(greyed.title).toContain("qwen3.8-max");
+    expect(greyed.title).toContain(AGENT_ROUTE_UNSUPPORTED);
+    // And a row the engine DOES run carries its id and no apology.
+    expect(rowsIn().find((entry) => entry.dataset.modelId === "kimi-k3")!.title).toBe("kimi-k3");
   });
 
   test("a supported row does select", () => {
@@ -225,11 +252,17 @@ describe("search", () => {
     expect(rowsIn().map((button) => button.dataset.modelId)).toEqual(["glm-5.3"]);
   });
 
-  test("finds an unsupported model too — and it is still unpickable", () => {
-    // Searching must not quietly become a way past the greying.
-    search("grok");
+  test("finds a row the engine will not run — and it is still unpickable", () => {
+    // Searching must not quietly become a way past the greying. Marked
+    // unsupported here rather than named by route: what is under test is the
+    // engine's `no` surviving a filter, not which endpoints are reachable.
+    search("grok", onlyUnsupported("grok-4.6"));
     expect(rowsIn().map((button) => button.dataset.modelId)).toEqual(["grok-4.6"]);
     expect(rowsIn()[0]!.disabled).toBe(true);
+
+    // AND THE SAME ROW THE ENGINE DOES RUN IS PICKABLE THROUGH THE SAME FILTER.
+    search("grok");
+    expect(rowsIn()[0]!.disabled).toBe(false);
   });
 
   test("a query that matches nothing says which query", () => {
@@ -274,9 +307,9 @@ describe("the Default row", () => {
  */
 describe("a stored model this client cannot speak to", () => {
   test("is flagged, with the reason and something to switch to", () => {
-    const trouble = agentModelTrouble(catalogue, "qwen3.8-max")!;
+    const trouble = agentModelTrouble(onlyUnsupported("qwen3.8-max"), "qwen3.8-max")!;
     expect(trouble.running.id).toBe("qwen3.8-max");
-    expect(trouble.obstacle).toContain("Not supported by Telar's Agent yet");
+    expect(trouble.obstacle).toBe(AGENT_ROUTE_UNSUPPORTED);
     // The marked default when it is usable — the nearest thing that WOULD run.
     expect(trouble.switchTo?.id).toBe("kimi-k3");
   });
@@ -290,6 +323,10 @@ describe("a stored model this client cannot speak to", () => {
     expect(agentModelTrouble(catalogue, "some-model-added-this-morning")).toBeUndefined();
     // Nor is an empty catalogue, which is a Go that did not answer.
     expect(agentModelTrouble({ models: [], source: { go: null, modelsDev: null } }, "qwen3.8-max")).toBeUndefined();
+    // AND SINCE #571, NEITHER IS A MESSAGES OR RESPONSES MODEL. The engine runs
+    // them; a cockpit that still warned would be warning about nothing.
+    expect(agentModelTrouble(catalogue, "qwen3.8-max")).toBeUndefined();
+    expect(agentModelTrouble(catalogue, "grok-4.6")).toBeUndefined();
   });
 
   /** Storing nothing means the ENGINE'S default runs, so that is what gets

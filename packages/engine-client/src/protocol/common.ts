@@ -995,8 +995,10 @@ export type ProviderModel = z.infer<typeof ProviderModel>;
  *
  * Go publishes three request shapes — OpenAI's `chat/completions`, an
  * Anthropic-shaped `/messages`, and OpenAI's `/responses` — and a model belongs
- * to exactly one. Telar's Agent client speaks `chat/completions` and only that,
- * so this is the field that decides whether a row can be picked at all.
+ * to exactly one. The Agent builds a client per shape since #571 and speaks all
+ * three, so this rides as a per-row BADGE rather than as a refusal; whether a
+ * row can be picked is `AgentModel.supported`, which the engine decides and
+ * which no surface may second-guess from this field.
  *
  * `unknown` IS THIS BUILD ADMITTING IT DOES NOT KNOW, not a fourth endpoint.
  * The mapping exists in one table on opencode.ai/docs/go and nowhere machine-

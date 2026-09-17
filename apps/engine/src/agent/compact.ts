@@ -44,6 +44,7 @@
  */
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { firstLine } from "../turn-summary";
+import { assistantText } from "./content";
 
 /** How much of a shapeless result a stub carries. Enough to recognise which
  *  answer it was; nowhere near enough to work from, which is the point — the
@@ -270,7 +271,11 @@ export function foldedTurnLine(turn: readonly BaseMessage[]): string {
   for (const message of turn) {
     if (message.getType() !== "ai") continue;
     for (const call of (message as AIMessage).tool_calls ?? []) calls.push(call.name);
-    const said = typeof message.content === "string" ? message.content : "";
+    // EITHER SHAPE — on the two Anthropic/Responses routes the model's answer
+    // arrives as text BLOCKS, and reading it as a string meant a folded turn
+    // from those routes lost the one sentence it was summarising. See
+    // `./content.ts`; `agent-runtime-parity.test.ts` folds on all three.
+    const said = assistantText(message.content);
     if (said.trim()) answer = said;
   }
   const did = calls.length > 0 ? ` · ${countCalls(calls)}` : "";

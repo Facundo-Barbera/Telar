@@ -70,7 +70,8 @@ export const AGENT_ACCESS_HELP: Record<AgentAccess, string> = {
  * answered: `{ id, object, created, owned_by }`, in Go's own order. The engine
  * merges models.dev's names and limits into it now, and a transcribed table
  * saying which of Go's three endpoints each id answers on — so the menu groups,
- * searches, and greys out the sixteen models this client cannot reach. The
+ * searches, badges each row with its endpoint, and greys out any the engine
+ * says this client cannot reach (since #571, none: it speaks all three). The
  * list itself is `AgentModelList`, shared verbatim with the settings pane.
  *
  * THE PILL READS THE NAME, NOT THE ID. "Kimi K3" is what the row said when it

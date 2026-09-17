@@ -9,9 +9,16 @@
  * `deepseek-flash` under `glm-5.3-flash`, no names, no grouping, nothing to
  * type into. The complaint in #551 is the obvious consequence — "it's really
  * hard to find them" — plus a second one that looked like a missing model and
- * was not: every id IS there, and sixteen of them are on endpoints Telar's
- * Agent client cannot speak, so picking one bought a 400 halfway through a
- * turn. The engine now describes the list; this draws what it describes.
+ * was not: every id IS there, and the ones on endpoints Telar's Agent client
+ * could not speak bought a 400 halfway through a turn. The engine now describes
+ * the list; this draws what it describes.
+ *
+ * SINCE #571 THERE ARE NONE OF THOSE LEFT. The Agent builds a client per
+ * endpoint and every id Go serves was proved by a live smoke, so all 38 rows
+ * are pickable and the greying below has nothing to grey. It stays because the
+ * engine, not this bundle, decides — see `agentRouteObstacle`. No count is
+ * written here on purpose: `agent-catalogue.test.ts` counts the table, which is
+ * the only place a number can be checked.
  *
  * ── THE SESSION COMPOSER'S FURNITURE, THE AGENT'S OWN SOURCE ────────────────
  * `MenuHeading`, `CompactRow`, the fixed search field above a scrolling list,
@@ -66,15 +73,39 @@ export const ROUTE_LABEL: Record<GoRoute, string | undefined> = {
 };
 
 /**
- * WHY A ROW CANNOT BE PICKED, in the words the person reads. The engine decides
- * `supported`; this is the same fact in a sentence, and the two are kept in one
- * place each so neither can drift into a half-truth.
+ * WHAT TO SAY ABOUT A ROW THE ENGINE WILL NOT RUN.
+ *
+ * ── THE ENGINE DECIDES; THIS ONLY FINDS THE WORDS ───────────────────────────
+ * `AgentModel.supported` is the engine's own answer per row and it travels on
+ * the wire. It is the AUTHORITY, and this function is not: both callers below
+ * check `supported` first and only then ask for a sentence. That ordering is
+ * what makes the cockpit track a fact it does not own — the day the engine
+ * greys a row, this greys it too, with no redeploy and no second table of
+ * routes kept in a browser bundle.
+ *
+ * ── AND `undefined` HERE IS NOT "IT IS FINE" ────────────────────────────────
+ * It means this build has no ROUTE-SPECIFIC wording, which is different from
+ * the row being runnable, and the callers say `?? AGENT_ROUTE_UNSUPPORTED`
+ * rather than falling through to silence. Getting that backwards is how a
+ * greyed row with no explanation reaches somebody.
+ *
+ * ── THERE IS NO ROUTE-SPECIFIC WORDING TODAY ────────────────────────────────
+ * Two of Go's three endpoints used to have a sentence here, because the Agent
+ * sent chat/completions and nothing else. #571 gave it a client per endpoint —
+ * `ChatAnthropic` for `/messages`, the Responses mode of `ChatOpenAI` for
+ * `/responses` — and a live smoke over every id Go serves proved each one
+ * before `routeSupported` moved in the engine. No route is left to apologise
+ * for; the seam stays for the fourth one.
  */
 export function agentRouteObstacle(route: GoRoute): string | undefined {
-  if (route === "messages") return "Not supported by Telar's Agent yet — Go serves this one in Anthropic's shape, which the Agent's chat/completions request cannot use.";
-  if (route === "responses") return "Not supported by Telar's Agent yet — Go serves this one on the Responses API, which the Agent cannot send.";
+  void route;
   return undefined;
 }
+
+/** What a row the engine refuses says when its route has no wording of its own.
+ *  Deliberately about TELAR rather than about the model: "we cannot" is the
+ *  true half, and "it is broken" would be a claim about somebody else's service. */
+export const AGENT_ROUTE_UNSUPPORTED = "Not supported by Telar's Agent in this build.";
 
 /**
  * THE MODEL THAT WILL ACTUALLY RUN, and whether Telar can run it (#551).
@@ -101,8 +132,10 @@ export function agentModelTrouble(
 ): { running: AgentModel; obstacle: string; switchTo?: AgentModel } | undefined {
   const running = model ? catalogue.models.find((row) => row.id === model) : catalogue.models.find((row) => row.isDefault);
   if (!running || running.supported) return undefined;
-  const obstacle = agentRouteObstacle(running.route);
-  if (!obstacle) return undefined;
+  // THE ENGINE ALREADY SAID NO. A route with no wording of its own must not
+  // turn that into silence — the pill would then show a person nothing at all
+  // about a model that is about to fail their next turn.
+  const obstacle = agentRouteObstacle(running.route) ?? AGENT_ROUTE_UNSUPPORTED;
   /** The nearest thing that WOULD run: the marked default when it is usable,
    *  otherwise the newest supported row — the catalogue already arrives in that
    *  order, so `find` is the answer rather than a second sort. */
@@ -145,13 +178,17 @@ export function groupAgentFamilies(models: readonly AgentModel[]): { family: str
 /**
  * ONE ROW: the name, what it can hold, and where it runs.
  *
- * AN UNSUPPORTED ROW IS SHOWN, NOT HIDDEN. Dropping the sixteen would answer
- * the owner's other suspicion — that Go is withholding models — with a picker
- * that actually does withhold them. Greyed and unpressable, with the reason on
- * hover, says the true thing: the model exists, Telar cannot reach it yet.
+ * AN UNSUPPORTED ROW IS SHOWN, NOT HIDDEN. Dropping unreachable rows would
+ * answer the owner's other suspicion — that Go is withholding models — with a
+ * picker that actually does withhold them. Greyed and unpressable, with the
+ * reason on hover, says the true thing: the model exists, Telar cannot reach it
+ * yet. Since #571 no row is in that state; the rule survives the day one is.
  */
 function AgentModelRow({ model, selected, readOnly, onSelect }: { model: AgentModel; selected: boolean; readOnly: boolean; onSelect: () => void }) {
-  const obstacle = agentRouteObstacle(model.route);
+  // THE ENGINE'S ANSWER FIRST. A sentence is only looked up for a row the
+  // engine itself says cannot run, so a supported row can never carry a stale
+  // explanation shipped in this bundle — see `agentRouteObstacle`.
+  const obstacle = model.supported ? undefined : (agentRouteObstacle(model.route) ?? AGENT_ROUTE_UNSUPPORTED);
   const disabled = readOnly || !model.supported;
   const badge = ROUTE_LABEL[model.route];
   return (
@@ -171,8 +208,8 @@ function AgentModelRow({ model, selected, readOnly, onSelect }: { model: AgentMo
         selected ? "bg-accent" : !disabled && "hover:bg-accent/60",
         disabled && "cursor-default",
         // The greying is the UNSUPPORTED signal, so a read-only picker (no
-        // write in hand) must not borrow it — that would read as sixteen
-        // models becoming thirty-eight broken ones.
+        // write in hand) must not borrow it — that would read as the whole
+        // catalogue having gone unrunnable.
         !model.supported && "opacity-45",
       )}
     >

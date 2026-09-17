@@ -53,9 +53,8 @@
  * THE PICKER IS THE COMPOSER PILL'S, NOT A SECOND ONE THAT MATCHES IT (#551).
  * It was a `Dropdown` of raw ids, which was honest while the endpoint answered
  * raw ids; the engine describes them now, and thirty-eight rows across thirteen
- * families — sixteen of which this client cannot actually run — is not a
- * `<select>`. `AgentModelList` is that list, mounted here and in the composer,
- * so the two cannot drift.
+ * families is not a `<select>`. `AgentModelList` is that list, mounted here and
+ * in the composer, so the two cannot drift.
  *
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
@@ -264,8 +263,8 @@ export function AgentSection() {
             // THE SAME PICKER THE COMPOSER PILL OPENS, not a second control
             // that agrees with it — #551 asks for one picker in both places,
             // and "one" has to mean one component. A `Dropdown` could not carry
-            // it: the list is thirty-eight rows across thirteen families, it
-            // needs a search field, and sixteen of its rows are unpickable.
+            // it: the list is thirty-eight rows across thirteen families and
+            // it needs a search field.
             <Popover open={picking} onOpenChange={setPicking}>
               <PopoverTrigger
                 render={
