@@ -87,8 +87,14 @@ struct AgentLastUsage: Decodable, Equatable {
     var usage: AgentUsage?
     var contextChars: Int
     var budgetChars: Int
+    /// HOW MANY OLDER TURNS THE LAST TURN FOLDED to one line each (#567). The
+    /// Mac folds to a LOW-water mark, so the reading really does fall from full
+    /// to about two thirds between two turns — and a gauge that halves itself
+    /// with nothing said beside it reads as a bug rather than as the engine
+    /// working. Zero on an ordinary turn, and on a Mac too old to send it.
+    var folded: Int
 
-    private enum CodingKeys: String, CodingKey { case runId, at, usage, contextChars, budgetChars }
+    private enum CodingKeys: String, CodingKey { case runId, at, usage, contextChars, budgetChars, folded }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -97,14 +103,16 @@ struct AgentLastUsage: Decodable, Equatable {
         usage = try? c.decodeIfPresent(AgentUsage.self, forKey: .usage)
         contextChars = (try? c.decode(Int.self, forKey: .contextChars)) ?? 0
         budgetChars = (try? c.decode(Int.self, forKey: .budgetChars)) ?? 0
+        folded = (try? c.decode(Int.self, forKey: .folded)) ?? 0
     }
 
-    init(runId: String, at: Timestamp? = nil, usage: AgentUsage? = nil, contextChars: Int, budgetChars: Int) {
+    init(runId: String, at: Timestamp? = nil, usage: AgentUsage? = nil, contextChars: Int, budgetChars: Int, folded: Int = 0) {
         self.runId = runId
         self.at = at
         self.usage = usage
         self.contextChars = contextChars
         self.budgetChars = budgetChars
+        self.folded = folded
     }
 
     /// 0–100, clamped. A prompt OVER budget reads full rather than overflowing:
@@ -117,11 +125,14 @@ struct AgentLastUsage: Decodable, Equatable {
 
     /// THE LINE UNDER THE HEADER, or `nil` when there is nothing honest to say —
     /// no ceiling to measure against. Tokens are dropped rather than zeroed when
-    /// the provider reported none.
+    /// the provider reported none, and the fold is named only when there was
+    /// one: "folded 0 turns" on every ordinary turn would be noise in the one
+    /// place on this screen that has to stay quiet.
     var meterLine: String? {
         guard budgetChars > 0 else { return nil }
-        guard let usage else { return "\(percent)% context" }
-        return "\(usage.total.formatted(.number.grouping(.automatic))) tokens · \(percent)% context"
+        let tokens = usage.map { "\($0.total.formatted(.number.grouping(.automatic))) tokens" }
+        let fold = folded > 0 ? "folded \(folded.formatted(.number.grouping(.automatic))) turn\(folded == 1 ? "" : "s")" : nil
+        return [tokens, "\(percent)% context", fold].compactMap { $0 }.joined(separator: " · ")
     }
 }
 

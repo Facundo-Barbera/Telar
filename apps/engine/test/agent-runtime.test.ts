@@ -653,6 +653,9 @@ test("a turn's usage is the model's own numbers summed over its laps, on the row
     usage: { input: 2_600, output: 90, total: 2_690 },
     contextChars: done.detail.contextChars as number,
     budgetChars: 120_000,
+    // A short conversation folds nothing, and says so rather than staying
+    // silent — see `endedRow`.
+    folded: 0,
   });
   agent.close();
 });

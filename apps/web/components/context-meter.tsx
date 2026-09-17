@@ -40,6 +40,9 @@ export type ContextMeterInput = {
   contextChars: number;
   /** The trim ceiling those characters are a proportion of. */
   budgetChars: number;
+  /** How many older turns the last turn folded to one line each (#567). Absent
+   *  on a Mac too old to say; zero on the ordinary turn that folded nothing. */
+  folded?: number;
 };
 
 export type ContextMeterReading = {
@@ -49,6 +52,8 @@ export type ContextMeterReading = {
   percent: number;
   /** "2,690 tokens" — absent when the provider reported none. */
   tokens?: string;
+  /** "folded 9 turns" — absent unless the last turn actually folded some. */
+  folded?: string;
   /** The whole line, as a reader sees it. */
   label: string;
   /** The longer sentence, for the tooltip: what each number actually is. */
@@ -64,13 +69,24 @@ export function contextMeterReading(input: ContextMeterInput | undefined): Conte
   if (!input || input.budgetChars <= 0) return undefined;
   const percent = Math.min(100, Math.max(0, Math.round((input.contextChars / input.budgetChars) * 100)));
   const tokens = input.usage ? `${input.usage.total.toLocaleString("en-US")} tokens` : undefined;
+  /**
+   * WHY THE METER DROPPED (#567). The engine folds to a LOW-water mark, so the
+   * reading really does fall from full to about two thirds between two turns —
+   * and a gauge that does that with nothing said beside it reads as a bug. Drawn
+   * only when the last turn folded something: "folded 0 turns" on every
+   * ordinary turn would be noise in the one place that has to stay quiet.
+   */
+  const count = input.folded ?? 0;
+  const folded = count > 0 ? `folded ${count.toLocaleString("en-US")} turn${count === 1 ? "" : "s"}` : undefined;
   return {
     percent,
     ...(tokens ? { tokens } : {}),
-    label: tokens ? `${tokens} · ${percent}% context` : `${percent}% context`,
+    ...(folded ? { folded } : {}),
+    label: [tokens, `${percent}% context`, folded].filter(Boolean).join(" · "),
     title: [
       tokens ? `${tokens} on the last turn, as the model reported them.` : "The model reported no token count for the last turn.",
       `The prompt was ${input.contextChars.toLocaleString("en-US")} of ${input.budgetChars.toLocaleString("en-US")} characters — Telar trims the oldest exchanges past that.`,
+      ...(folded ? [`It ${folded} to one line each to make room; the thread keeps them whole.`] : []),
     ].join(" "),
   };
 }

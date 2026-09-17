@@ -171,6 +171,20 @@ export type AgentLastUsage = {
   /** The trim's ceiling those characters are measured against, so a reader can
    *  draw a proportion without knowing the engine's constant. */
   budgetChars: number;
+  /**
+   * HOW MANY OLDER TURNS THIS TURN FOLDED to one line each (#567).
+   *
+   * THE METER'S MISSING SENTENCE. A fold now drops the reading from full to
+   * about 60% (see `FOLD_TARGET_RATIO`), and a gauge that halves itself between
+   * two turns with nothing to explain it looks like a bug rather than like the
+   * engine working. This is what the clients say beside it.
+   *
+   * THE LAST LAP WINS, exactly as `contextChars` does — the fold is recomputed
+   * from the raw turns on every lap, so the number that means anything is the
+   * one from the prompt that was actually sent last. `0` on the ordinary turn
+   * that folded nothing.
+   */
+  folded: number;
 };
 
 export type AgentStateAnswer = {
@@ -289,7 +303,7 @@ export class AgentRuntime {
   /** What the live turn has spent so far: the model's own numbers summed over
    *  its laps, and the prompt size the most recent lap was trimmed to. Reset
    *  when a turn starts, folded into `turn_done` when one ends. */
-  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number };
+  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number; folded: number };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
   /** The inbox rows the live turn's digest accounts for, marked read when it
@@ -394,7 +408,7 @@ export class AgentRuntime {
     let found: AgentLastUsage | undefined;
     for (const row of page.rows) {
       if (row.kind !== "turn_done") continue;
-      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown };
+      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown; folded?: unknown };
       // A row written before the meter existed carries no numbers. It is still
       // the newest ended turn, so it CLEARS a stale meter rather than leaving
       // an older turn's figures on screen.
@@ -407,6 +421,7 @@ export class AgentRuntime {
           : {}),
         contextChars: typeof detail.contextChars === "number" ? detail.contextChars : 0,
         budgetChars: typeof detail.budgetChars === "number" ? detail.budgetChars : this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS,
+        folded: typeof detail.folded === "number" ? detail.folded : 0,
       };
     }
     return found;
@@ -800,7 +815,7 @@ export class AgentRuntime {
       this.live = { turn: next, controller };
       // The meter's accumulator, per turn. A stopped or failed turn reports
       // what it had spent before it ended — the tokens were bought either way.
-      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0 };
+      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0, folded: 0 };
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
@@ -942,16 +957,22 @@ export class AgentRuntime {
       ? { input: spend.input, output: spend.output, total: spend.total }
       : undefined;
     const contextChars = spend?.contextChars ?? 0;
+    // WRITTEN EVEN WHEN IT IS ZERO, like the two numbers beside it: these three
+    // are one reading, and a field that appeared only on the turns that folded
+    // would leave a client unable to tell "folded nothing" from "an engine too
+    // old to say".
+    const folded = spend?.folded ?? 0;
     const row = this.row("turn_done", runId, {
       ...detail,
       ...(usage ? { usage } : {}),
       contextChars,
       budgetChars,
+      folded,
     });
     // Only when the row landed: a row suppressed because the thread was reset
     // mid-turn belongs to a conversation that no longer exists, and its meter
     // with it.
-    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars };
+    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars, folded };
     /**
      * THE DIGEST'S ROWS ARE READ NOW — every ending, not only the happy one
      * (#541 A).
@@ -1094,7 +1115,13 @@ export class AgentRuntime {
        * means. Recorded before the call, so a turn the model refuses still
        * reports what it tried to send.
        */
-      if (this.spend) this.spend.contextChars = history.chars;
+      if (this.spend) {
+        this.spend.contextChars = history.chars;
+        // AND HOW MANY TURNS IT COST TO GET THERE (#567). Same lap, same rule:
+        // the fold is recomputed from the raw turns every lap, so the last
+        // lap's count is the one that describes the prompt that was sent.
+        this.spend.folded = folded.folded;
+      }
       // CONFIG IS PASSED THROUGH so the turn's abort signal reaches the
       // provider call. A cancel that unwound the graph and left the request in
       // flight would not be a cancel.
