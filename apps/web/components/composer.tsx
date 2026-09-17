@@ -710,6 +710,22 @@ export function Composer({
           });
           return { ok: true, draft };
         },
+        /**
+         * THE SAME WRITE, BY OFFSETS — how a live dictation revises the words
+         * it has not finalised yet (#544). Flushed for `insert`'s reason: the
+         * caller is outside React and reads the committed draft back
+         * synchronously to know where its own span now ends.
+         */
+        replace: (start, end, text) => {
+          if (!live.current.ready) return { ok: false, reason: "This conversation is not ready yet." };
+          const box = editor.current;
+          if (!box) return { ok: false, reason: "The message box is not on screen." };
+          let draft = "";
+          flushSync(() => {
+            draft = box.replaceRange(start, end, text);
+          });
+          return { ok: true, draft };
+        },
         submit: () => live.current.submit(),
       }),
     [token, editorId, kind],

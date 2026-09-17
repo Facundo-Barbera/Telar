@@ -6,8 +6,9 @@ import Foundation
 /// ── THE SHAPE, WHICH IS THE WEB'S ───────────────────────────────────────────
 /// Tap the mic: ask the paired Mac for a token that dies in five minutes, ask
 /// iOS for the microphone, open a socket straight to the transcription service
-/// with that token, and push 16 kHz mono PCM up it. Finalised phrases are
-/// merged into the composer's draft. Tap again and everything unwinds.
+/// with that token, and push 16 kHz mono PCM up it. Words go INTO the
+/// composer's draft as they are heard and are rewritten in place until the
+/// service settles them. Tap again and everything unwinds.
 ///
 /// THE AUDIO NEVER TOUCHES THE MAC, which is the whole reason the route is a
 /// token route: a phone on a tailnet relaying every frame through a Mac that
@@ -37,7 +38,8 @@ import Foundation
 /// Hold-to-talk on a phone means holding a finger on the screen while the
 /// keyboard is up, over the thing you are dictating about. So it is a toggle,
 /// and the failure mode of a toggle is a recording somebody forgot: `phase` is
-/// what the button draws in red, and `heard` is printed under the composer.
+/// what the button draws in red, and the words appearing in the box as they are
+/// spoken are the loudest signal there is that this is running.
 @MainActor @Observable final class Dictation {
     enum Phase: Equatable {
         /// Nothing running, microphone released.
@@ -49,15 +51,20 @@ import Foundation
     }
 
     private(set) var phase: Phase = .idle
-    /// The current guess at what is still being said. SHOWN, never merged —
-    /// see `DictationTranscript`.
-    private(set) var heard = ""
     /// Why it stopped, or would not start. A sentence: the only move a button
     /// has is to show it to a person.
     private(set) var error: String?
 
-    /// Where a finalised phrase goes. Set by the composer that owns this.
-    var onCommit: ((String) -> Void)?
+    /// WHAT THE SERVICE JUST SAID, handed to whoever owns the draft. Settled or
+    /// not — the composer's `DictationDraftWriter` is what knows the difference
+    /// and where in the box the unconfirmed run currently sits. Nothing about
+    /// the span lives in here: this object owns a microphone and a socket.
+    var onWords: ((DictationWords) -> Void)?
+    /// THIS DICTATION IS OVER, so the span must be forgotten. Without it the
+    /// next press would open by REPLACING the words the last one left behind —
+    /// the draft guard only catches a person who typed in between, and most
+    /// people just press the button again.
+    var onEnd: (() -> Void)?
 
     private let api: EngineAPI
     private let engine = AVAudioEngine()
@@ -218,12 +225,14 @@ import Foundation
                 guard let self, self.socket === task else { return }
                 switch result {
                 case .success(let message):
-                    if case .string(let text) = message, let frame = DictationFrame.read(text) {
-                        let step = DictationTranscript.step(frame)
-                        self.heard = step.interim
-                        // ONE COMMIT PER FINAL, and the reducer hands back only
-                        // what THIS frame finalised.
-                        if !step.commit.isEmpty { self.onCommit?(step.commit) }
+                    if case .string(let text) = message,
+                       let frame = DictationFrame.read(text),
+                       // A FRAME THAT SAYS NOTHING ABOUT THE WORDS — metadata,
+                       // an utterance end, a keep-alive — must not reach the
+                       // draft at all, which is why the reducer answers `nil`
+                       // rather than an empty pair.
+                       let words = DictationTranscript.read(frame) {
+                        self.onWords?(words)
                     }
                     self.listen()
                 case .failure:
@@ -251,7 +260,9 @@ import Foundation
         }
         socket = nil
         teardownAudio()
-        heard = ""
+        // THE WORDS STAY IN THE BOX, the span does not — including a guess the
+        // service never got to settle. They said it; they can edit it.
+        onEnd?()
         phase = .idle
     }
 

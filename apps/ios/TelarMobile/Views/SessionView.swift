@@ -889,16 +889,16 @@ struct ComposerView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
-            // WHAT THE MIC IS HEARING, AND IT IS NOT IN THE BOX (#544). The
-            // service revises its interim guesses and the draft is not rewritten
-            // behind the person's cursor, so unconfirmed words live here and
-            // only finalised phrases are merged. A refusal takes the same line:
-            // one place above the box for "what just happened to this message".
-            if let dictation, let line = dictationLine(dictation) {
-                Text(line.text)
+            // WHY THE MIC STOPPED, AND NOTHING ELSE (#544). The unconfirmed
+            // words used to be printed here; they are in the box now, rewritten
+            // in place as the service revises them. What is left is the one
+            // thing that still has nowhere else to go — a refusal — on the same
+            // line as `note`, which is where "what just happened to this
+            // message" is said.
+            if let dictation, let refusal = dictation.error {
+                Text(refusal)
                     .font(.system(Theme.footnote))
-                    .italic(line.unsettled)
-                    .foregroundStyle(line.unsettled ? Theme.textMuted : Theme.statusRed)
+                    .foregroundStyle(Theme.statusRed)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)
@@ -922,9 +922,16 @@ struct ComposerView: View {
             // whatever the box held when the mic was first mounted — every
             // dictated phrase would then land on top of a stale draft.
             let box = $draft
-            live.onCommit = { commit in
-                box.wrappedValue = DictationTranscript.merge(draft: box.wrappedValue, commit: commit)
+            // THE SPAN LIVES BESIDE THE CLOSURE, not in `@State`: it is not
+            // drawn, and a `@State` mutation per interim frame would re-render
+            // the whole composer several times a second to no visible effect.
+            // Its own guard is the draft comparison inside it, which is what
+            // makes typing mid-guess safe — see `DictationDraftWriter`.
+            let words = DictationDraftBox()
+            live.onWords = { heard in
+                box.wrappedValue = words.write(heard, into: box.wrappedValue)
             }
+            live.onEnd = { words.forget() }
             dictation = live
         }
         // LEAVING THE SCREEN RELEASES THE MICROPHONE. Without this, walking
@@ -1027,19 +1034,6 @@ struct ComposerView: View {
                     .strokeBorder(Theme.accent, lineWidth: 2)
             }
         }
-    }
-
-    /// The one line the dictation gets above the box: a refusal if there is
-    /// one, otherwise the words still being heard. `unsettled` is what decides
-    /// between muted italics and the red of something that went wrong.
-    ///
-    /// AN ERROR OUTRANKS THE PREVIEW because a stopped dictation has no preview
-    /// left to show, and a reason nobody sees is a feature that silently does
-    /// nothing.
-    private func dictationLine(_ dictation: Dictation) -> (text: String, unsettled: Bool)? {
-        if let error = dictation.error { return (error, false) }
-        guard dictation.phase == .listening, !dictation.heard.isEmpty else { return nil }
-        return (dictation.heard, true)
     }
 
     /// ONE PATH FOR BOTH. A paste and a drop deliver the same item providers,

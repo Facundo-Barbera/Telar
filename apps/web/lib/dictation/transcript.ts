@@ -1,28 +1,23 @@
 /**
  * WHAT DEEPGRAM SAYS, TURNED INTO WHAT GOES IN THE BOX (#544).
  *
- * ── THE CONSTRAINT THAT SHAPES ALL OF THIS ──────────────────────────────────
- * `window.telar.dictate` INSERTS. It cannot retract, and it must not learn how:
- * it writes through the composer's own `insertAtCaret`, and an API that could
- * also reach back and delete what it last wrote would be an API that could
- * delete what the PERSON last typed — the composer is a live box, and a
- * dictation is not the only thing going into it.
+ * ── ONE FRAME IN, ONE DECISION OUT ──────────────────────────────────────────
+ * A live transcription REVISES itself. Deepgram streams interim guesses —
+ * "recur", "record", "recording" — and marks only some of them final. This file
+ * is the half that has rules about which frames are results and which results
+ * are settled; `interim.ts` is the half that decides what to do to the draft
+ * about it, and the socket around both is plumbing.
  *
- * A live transcription is the opposite shape. Deepgram streams interim guesses
- * that it revises — "recur", "record", "recording" — and only some of them are
- * marked final. Inserting every one of those would put all three in the box.
+ * THE SHAPE SAYS WHETHER IT IS SETTLED, rather than carrying a `commit` string
+ * that is empty when it is not. The writer has to tell three cases apart — new
+ * guess, settled phrase, and a finalised SILENCE that should take the guess
+ * back out of the box — and a pair of strings could only ever describe two of
+ * them. That ambiguity is what the earlier shape had, and it was invisible
+ * while interim words lived in a caption nobody wrote to.
  *
- * SO INTERIM TEXT IS SHOWN, NOT INSERTED. The unconfirmed words live in the
- * button's own caption where they can be replaced freely, and only a FINAL
- * lands in the composer, once, through `dictate`. That is also the behaviour
- * `dictate` was designed for: "focus and the caret are left after the text, so
- * a second call continues the sentence" (docs/page-api.md).
- *
- * ── WHY THIS IS A PURE REDUCER AND NOT PART OF THE SOCKET ───────────────────
- * It is the half that has rules — which frames are results, which results are
- * final, what spacing a committed phrase needs — and it is the half a test can
- * drive with a list of frames and no microphone, no socket and no browser. The
- * socket code around it is plumbing.
+ * ── WHY IT IS A PURE REDUCER AND NOT PART OF THE SOCKET ─────────────────────
+ * A test can drive it with a list of frames and no microphone, no socket and no
+ * browser.
  */
 
 /** One frame off the live socket, as much of it as matters here. Deepgram sends
@@ -35,32 +30,34 @@ export type DeepgramFrame = {
   channel?: { alternatives?: Array<{ transcript?: string }> };
 };
 
-export type DictationTranscript = {
-  /** Words Deepgram has committed to, ready to go into the composer. Empty
-   *  unless the last frame finalised something. */
-  commit: string;
-  /** Its current guess at what is still being said. Shown, never inserted. */
-  interim: string;
+/** What one frame decided about the words on screen. */
+export type DictationWords = {
+  /** Everything Deepgram currently believes this utterance says. It REPLACES
+   *  the last guess rather than continuing it — that is the whole shape of an
+   *  interim result. */
+  text: string;
+  /** Settled. The words stop being the dictation's to rewrite and become
+   *  ordinary text in somebody's draft. */
+  final: boolean;
 };
 
-export const EMPTY_TRANSCRIPT: DictationTranscript = { commit: "", interim: "" };
-
 /**
- * One frame in, one decision out.
+ * One frame in, one decision out — or nothing at all.
  *
- * `commit` IS WHAT THIS FRAME FINALISED, not everything said so far. The caller
- * inserts it and forgets it — accumulating here and re-inserting the whole
- * utterance each time is how a dictation ends up saying everything twice.
+ * `undefined` IS "THIS FRAME SAYS NOTHING ABOUT THE WORDS": a `Metadata` frame,
+ * an `UtteranceEnd`, a keep-alive. The writer must not touch the draft for one
+ * of those, which is different from being told the utterance is now empty.
  *
- * AN EMPTY FINAL CLEARS THE PREVIEW AND COMMITS NOTHING. Deepgram finalises
- * silence at the end of an utterance, and a blank insertion is a spurious space
- * in somebody's message.
+ * A FINAL WITH NO WORDS IS STILL A FINAL. Deepgram finalises the silence at the
+ * end of an utterance, and the right answer is `{ text: "", final: true }` — it
+ * settles the span at whatever was last guessed being removed, rather than
+ * leaving an unconfirmed guess sitting in the box forever.
  */
-export function readFrame(frame: DeepgramFrame): DictationTranscript {
-  if (frame.type !== undefined && frame.type !== "Results") return EMPTY_TRANSCRIPT;
-  const said = frame.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
-  if (!frame.is_final) return { commit: "", interim: said };
-  return said ? { commit: said, interim: "" } : EMPTY_TRANSCRIPT;
+export function readFrame(frame: DeepgramFrame): DictationWords | undefined {
+  if (frame.type !== undefined && frame.type !== "Results") return undefined;
+  const alternatives = frame.channel?.alternatives;
+  if (alternatives === undefined) return undefined;
+  return { text: alternatives[0]?.transcript?.trim() ?? "", final: frame.is_final === true };
 }
 
 /**

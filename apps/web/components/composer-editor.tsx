@@ -240,8 +240,16 @@ export type ComposerEditorHandle = {
   focused: () => boolean;
   /** The caret's index in the draft, or the draft's length when unfocused. */
   caret: () => number;
-  /** Swap a run of the draft — how a completion replaces its own trigger. */
-  replaceRange: (start: number, end: number, text: string) => void;
+  /**
+   * Swap a run of the draft — how a completion replaces its own trigger, and
+   * how a live dictation revises the words it has not finalised yet.
+   *
+   * RETURNS THE COMMITTED DRAFT, for `insertAtCaret`'s reason: a caller
+   * outside React cannot wait for the render to learn what the box now holds,
+   * and the dictation writer needs it to know where its own span ended up.
+   * The completion menu ignores it, which is what a return value is for.
+   */
+  replaceRange: (start: number, end: number, text: string) => string;
   /**
    * Splice text in at the caret, spaced the way a person would type it, and
    * return the draft that was committed.
@@ -346,6 +354,7 @@ export const ComposerEditor = forwardRef<
       replaceRange: (start, end, text) => {
         const next = replaceTextRange(painted.current, start, end, text);
         rewrite(next.text, next.cursor);
+        return next.text;
       },
       insertAtCaret: (text) => {
         const box = root.current;

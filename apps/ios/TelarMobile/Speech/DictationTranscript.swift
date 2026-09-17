@@ -3,29 +3,34 @@ import Foundation
 /// WHAT THE TRANSCRIBER SAYS, TURNED INTO WHAT GOES IN THE COMPOSER (#544).
 ///
 /// ── THE SAME RULE AS THE WEB'S, AND IT IS NOT A COINCIDENCE ─────────────────
-/// `apps/web/lib/dictation/transcript.ts` is this file in TypeScript, and both
-/// exist for one constraint: a live transcription REVISES itself. Deepgram
-/// streams interim guesses — "recur", "record", "recording" — and marks only
-/// some of them final. Writing every guess into the box puts all three in
-/// somebody's message.
+/// `apps/web/lib/dictation/transcript.ts` and `interim.ts` are this file in
+/// TypeScript. Both exist for one fact: a live transcription REVISES itself.
+/// The service streams interim guesses — "recur", "record", "recording" — and
+/// marks only some of them final.
 ///
-/// So interim text is SHOWN and only a final is COMMITTED. On the web that is
-/// forced by `window.telar.dictate`, which inserts and cannot retract. Here the
-/// composer's draft is a `String` this app owns and could be rewritten freely —
-/// so the rule is a CHOICE rather than a constraint, and it is made the same
-/// way on purpose: a person dictating the same sentence into the phone and into
-/// the desktop must not watch their words behave differently.
+/// The first cut showed those guesses in a line above the box and only merged a
+/// phrase once it was settled. It reads as lag: you speak, the box stays empty,
+/// and a sentence appears a beat after you stopped. So the words go INTO the
+/// draft as they are heard and are rewritten in place until the service settles
+/// them, which is what the desktop does and what every dictation people already
+/// use does.
 ///
-/// ── AND THE DRAFT IS NOT ALWAYS EMPTY ───────────────────────────────────────
-/// The reason this is a merge rather than an assignment: dictation starts at
-/// whatever the box already holds, which is frequently something half-typed. So
-/// the committed phrase is APPENDED, spaced the way a paste is, and what the
-/// person typed is never overwritten. `merge` is that, and it is the whole of
-/// what this file has rules about.
+/// ── THE SPAN IS FRAGILE, AND THAT IS THE WHOLE PROBLEM ──────────────────────
+/// The unconfirmed words occupy a run of the draft, and the draft is a `String`
+/// this app owns but the PERSON is also typing into. They can type inside the
+/// guess, delete it, or paste over it, and an offset range does not survive any
+/// of that — writing through a stale one would eat text nobody dictated.
+///
+/// The guard is one comparison: `DictationDraftWriter` remembers the draft it
+/// last wrote, and a draft that is not that one means somebody else wrote. The
+/// span is then DROPPED and the next guess starts a fresh one. Deliberately
+/// blunt: nothing here works out whether the edit was inside the span or before
+/// it, because both answers end in the same place and the arithmetic of the
+/// other would be a source of exactly the bug it avoids.
 
 /// One frame off the live socket, as much of it as matters here. The service
 /// also sends `Metadata`, `SpeechStarted` and `UtteranceEnd`; anything that is
-/// not a `Results` with words in it is nothing to this.
+/// not a `Results` with a channel on it is nothing to this.
 struct DictationFrame: Decodable, Sendable {
     var type: String?
     var isFinal: Bool?
@@ -53,36 +58,38 @@ struct DictationFrame: Decodable, Sendable {
     }
 }
 
-/// What one frame decided.
-struct DictationStep: Equatable, Sendable {
-    /// Words the service committed to, ready for the composer. Empty unless
-    /// this frame finalised something.
-    var commit: String = ""
-    /// Its current guess at what is still being said. Shown, never committed.
-    var interim: String = ""
-
-    static let nothing = DictationStep()
+/// What one frame decided about the words on screen.
+struct DictationWords: Equatable, Sendable {
+    /// Everything the service currently believes this utterance says. It
+    /// REPLACES the last guess rather than continuing it, which is the whole
+    /// shape of an interim result.
+    var text: String
+    /// Settled. The words stop being the dictation's to rewrite and become
+    /// ordinary text in somebody's draft.
+    var final: Bool
 }
 
 enum DictationTranscript {
-    /// One frame in, one decision out.
+    /// One frame in, one decision out — or nothing at all.
     ///
-    /// `commit` IS WHAT THIS FRAME FINALISED, not everything said so far — the
-    /// caller appends it and forgets it. Accumulating here and re-appending the
-    /// whole utterance each time is how a dictation says everything twice.
+    /// `nil` IS "THIS FRAME SAYS NOTHING ABOUT THE WORDS": a `Metadata` frame,
+    /// an `UtteranceEnd`, a keep-alive. The draft must not be touched for one
+    /// of those, which is a different thing from being told the utterance is
+    /// now empty.
     ///
-    /// A FINALISED SILENCE COMMITS NOTHING. The service finalises the quiet at
-    /// the end of an utterance, and a blank commit is a spurious space in
-    /// somebody's message.
-    static func step(_ frame: DictationFrame) -> DictationStep {
-        if let type = frame.type, type != "Results" { return .nothing }
-        let said = (frame.channel?.alternatives?.first?.transcript ?? "")
+    /// A FINAL WITH NO WORDS IS STILL A FINAL. The service finalises the quiet
+    /// at the end of an utterance, and the right answer is empty-and-settled —
+    /// it takes the last unconfirmed guess back out of the box rather than
+    /// leaving it sitting there for the person to delete.
+    static func read(_ frame: DictationFrame) -> DictationWords? {
+        if let type = frame.type, type != "Results" { return nil }
+        guard let alternatives = frame.channel?.alternatives else { return nil }
+        let said = (alternatives.first?.transcript ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard frame.isFinal == true else { return DictationStep(commit: "", interim: said) }
-        return said.isEmpty ? .nothing : DictationStep(commit: said, interim: "")
+        return DictationWords(text: said, final: frame.isFinal == true)
     }
 
-    /// Put a committed phrase into a draft the way a paste would land.
+    /// Put a phrase into a draft the way a paste would land.
     ///
     /// SPACED ONLY WHERE A SPACE IS MISSING, so a dictation that continues a
     /// half-typed line reads as one sentence and one that follows another
@@ -97,5 +104,93 @@ enum DictationTranscript {
         guard let last = draft.last else { return phrase }
         if last.isWhitespace { return draft + phrase }
         return draft + " " + phrase
+    }
+}
+
+/// THE UNCONFIRMED RUN, AND WHO IS ALLOWED TO HAVE MOVED IT.
+///
+/// A value type rather than an object: it holds two facts and is owned by the
+/// view that owns the draft, so there is nothing to keep alive and nothing to
+/// leak when the screen goes away. Every rule in it is checked against a plain
+/// `String` in `DictationTranscriptTests` — no microphone, no socket, no view.
+struct DictationDraftWriter {
+    /// Character offsets into the draft. Absent between utterances, and after
+    /// anybody else has written.
+    private var span: Range<Int>?
+    /// The draft this writer last produced — the whole of the "did somebody
+    /// else type?" test.
+    private var committed: String?
+
+    init() {}
+
+    /// Forget the span without touching the draft. Called when a dictation
+    /// ends: whatever was heard is the person's draft now, including a guess
+    /// the service never got to settle — they said it, and they can edit it.
+    mutating func forget() {
+        span = nil
+        committed = nil
+    }
+
+    /// The draft this frame's words leave behind.
+    mutating func write(_ words: DictationWords, into draft: String) -> String {
+        // SOMEBODY ELSE WROTE, so the offsets mean nothing now. Dropping the
+        // span is the whole recovery: the guess already in the box becomes
+        // ordinary text, and the next one opens a span at the end.
+        if span != nil, draft != committed { span = nil }
+
+        if let live = span {
+            let next = Self.replacing(draft, live, with: words.text)
+            committed = next
+            span = words.final ? nil : live.lowerBound ..< (live.lowerBound + words.text.count)
+            return next
+        }
+
+        // NOTHING TO OPEN A SPAN WITH. An empty interim is silence being heard
+        // and an empty final is that silence being settled; writing either
+        // would be a spurious space in somebody's message.
+        guard !words.text.isEmpty else { return draft }
+        let next = merged(draft, words.text)
+        committed = next
+        // A FINAL NEVER LEAVES A SPAN BEHIND: the words are the person's now.
+        // `merge` appends, so the phrase is the tail of what came back.
+        span = words.final ? nil : (next.count - words.text.count) ..< next.count
+        return next
+    }
+
+    private func merged(_ draft: String, _ text: String) -> String {
+        DictationTranscript.merge(draft: draft, commit: text)
+    }
+
+    /// Swap a run of a string by character offset, clamped at both ends — the
+    /// draft can have shrunk under a span that was live a frame ago.
+    private static func replacing(_ text: String, _ range: Range<Int>, with replacement: String) -> String {
+        let count = text.count
+        let start = min(max(0, range.lowerBound), count)
+        let end = min(max(start, range.upperBound), count)
+        let lower = text.index(text.startIndex, offsetBy: start)
+        let upper = text.index(text.startIndex, offsetBy: end)
+        return text.replacingCharacters(in: lower ..< upper, with: replacement)
+    }
+}
+
+/// THE WRITER, SOMEWHERE A SOCKET CALLBACK CAN REACH IT.
+///
+/// The span is not drawn, so it must not be `@State`: a mutation per interim
+/// frame would re-render the whole composer several times a second to no
+/// visible effect. But the frames arrive in a closure that outlives the render
+/// that made it, and a `struct` captured there would be a copy nobody's next
+/// frame could see. One main-actor reference is the smallest thing that is both
+/// — the rules stay in the value type, where a test can drive them.
+@MainActor final class DictationDraftBox {
+    private var writer = DictationDraftWriter()
+
+    init() {}
+
+    func write(_ words: DictationWords, into draft: String) -> String {
+        writer.write(words, into: draft)
+    }
+
+    func forget() {
+        writer.forget()
     }
 }

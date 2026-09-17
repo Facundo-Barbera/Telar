@@ -32,7 +32,10 @@ export type ComposerKind = "session" | "agent";
  *  external client's only move is to show it to a person. */
 export type ComposerRefusal = { ok: false; reason: string };
 
-export type ComposerInsert = { ok: true; draft: string } | ComposerRefusal;
+/** What a write to the box answers: the draft it committed, or why it would
+ *  not. One shape for `insert` and `replace` — the caller's next move is the
+ *  same either way. */
+export type ComposerWrite = { ok: true; draft: string } | ComposerRefusal;
 export type ComposerSubmit = { ok: true } | ComposerRefusal;
 
 export type ComposerEntry = {
@@ -45,7 +48,25 @@ export type ComposerEntry = {
   /** Is the caret in it, as opposed to merely being the last box that had it? */
   focused: () => boolean;
   /** Splice text in at the caret and report the committed draft. */
-  insert: (text: string) => ComposerInsert;
+  insert: (text: string) => ComposerWrite;
+  /**
+   * Swap a run of the draft for other text, by draft offsets.
+   *
+   * WHY THIS IS HERE AND NOT ON THE PAGE API (#544). A live dictation revises
+   * itself — "recur", "record", "recording" — and the owner wants those words
+   * IN the box, replaced in place, rather than parked in a caption beside the
+   * button. That needs an insertion that can be taken back, which is exactly
+   * what `window.telar.dictate` must never grow: an external client that could
+   * reach back and delete a run of the draft could delete what the PERSON
+   * typed. So the retraction lives on the registry, where the only callers are
+   * this app's own components, and `lib/page-api.ts` keeps its three calls.
+   *
+   * THE CALLER OWNS THE OFFSETS AND MUST CHECK THEM. Nothing here knows
+   * whether `start..end` still spans what the caller put there — the composer
+   * is a live box, and somebody typing in the middle of a range invalidates
+   * it. `lib/dictation/interim.ts` is how that is tracked.
+   */
+  replace: (start: number, end: number, text: string) => ComposerWrite;
   /** Send, behind the same guard the Enter key passes. */
   submit: () => ComposerSubmit;
 };

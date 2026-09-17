@@ -7,10 +7,14 @@
  * JavaScript in the page and nothing else: no extension, no other origin, no
  * bridge.
  *
- * AND THE SECOND CALLER IS IN THIS APP. The composer's own mic button (#544)
- * goes through these calls rather than around them — it is in-process and could
- * read the registry directly, but dictation arriving by two paths on one app is
- * two behaviours to keep in step. `components/dictation-button.tsx`.
+ * THESE THREE CALLS INSERT AND NEVER RETRACT, and that is a boundary rather
+ * than an omission. An API that could reach back and delete a run of the draft
+ * could delete what the PERSON last typed — the composer is a live box and a
+ * dictation is not the only thing going into it. The composer's own mic button
+ * (#544) DOES need to take its words back, because it rewrites Deepgram's
+ * guesses in place, so it reaches `replace` on the registry underneath this
+ * file instead. In-process callers get the sharper tool; the page API's shape
+ * is what `docs/page-api.md` promises and does not move.
  *
  * WHY A PAGE API AND NOT `execCommand`. The composer is not a textarea.
  * `components/composer-editor.tsx` is an imperative `contentEditable` whose

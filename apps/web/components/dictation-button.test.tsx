@@ -1,16 +1,17 @@
 /**
  * THE MIC BUTTON, END TO END, WITH A FAKE MICROPHONE (#544).
  *
- * The real `Composer` is mounted and the real `window.telar.dictate` is the
- * insertion path, because every claim here is about that seam: a finalised
- * phrase has to arrive in the draft React owns, through the editor's own
- * insertion, and interim guesses have to stay out of it. A test that called the
- * reducer directly would pass with the button wired to nothing.
+ * The real `Composer` is mounted and the real composer registry is the write
+ * path, because every claim here is about that seam: interim words have to
+ * arrive in the draft React owns and be REPLACED there as Deepgram revises
+ * them, through the editor's own writes. A test that called the writer
+ * directly would pass with the button wired to nothing — `lib/dictation/
+ * interim.test.ts` is that test, and this is the one that holds the wiring.
  *
  * WHAT IS FAKED IS THE BROWSER, NOT THE FEATURE. `MediaRecorder`,
  * `getUserMedia` and `WebSocket` do not exist in happy-dom, and the token route
  * is on the other side of a fetch. Those three are stubbed; the hook, the
- * reducer, the page API and the composer are the real ones.
+ * reducer, the registry and the composer are the real ones.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -220,7 +221,7 @@ async function press(button: HTMLButtonElement): Promise<void> {
 }
 
 describe("the mic button on a composer", () => {
-  test("a finalised phrase lands in the draft React owns; interim guesses do not", async () => {
+  test("interim words go into the draft React owns and are replaced in place", async () => {
     const host = mount(<Box kind="session" />);
     const button = micIn(host);
 
@@ -228,19 +229,36 @@ describe("the mic button on a composer", () => {
     live!.open();
     expect(button.getAttribute("aria-label")).toBe("Stop dictating");
 
-    // The three guesses Deepgram walks through before it commits. None of them
-    // may reach the box: `dictate` inserts and cannot retract.
+    // Each guess REPLACES the last in the box rather than joining it — the
+    // whole of what changed here. Three guesses, one phrase on screen.
     live!.say(results("fix", false));
+    expect(draftOf(host)).toBe("fix ");
     live!.say(results("fix the", false));
-    expect(draftOf(host)).toBe("");
+    expect(draftOf(host)).toBe("fix the ");
 
     live!.say(results("fix the failing test", true));
-    // Through the editor's own insertion, spaced as a paste would be.
     expect(draftOf(host)).toBe("fix the failing test ");
 
-    // A second utterance continues the sentence rather than replacing it.
+    // A second utterance continues the sentence rather than replacing it: the
+    // final settled the words and the span was forgotten.
+    live!.say(results("and push", false));
+    expect(draftOf(host)).toBe("fix the failing test and push ");
     live!.say(results("and push it", true));
     expect(draftOf(host)).toBe("fix the failing test and push it ");
+  });
+
+  test("nothing unconfirmed is printed beside the button any more", async () => {
+    const host = mount(<Box kind="session" />);
+    const button = micIn(host);
+    await press(button);
+    live!.open();
+    live!.say(results("in the box", false));
+
+    expect(draftOf(host)).toBe("in the box ");
+    // THE CAPTION IS GONE. Its wrapper holds the button and a refusal and
+    // nothing else — a live transcription printed in two places on one screen
+    // is the thing that was taken out.
+    expect(button.parentElement!.textContent).toBe("Listening");
   });
 
   test("the same button, on the Agent's composer", async () => {
@@ -251,6 +269,29 @@ describe("the mic button on a composer", () => {
     live!.open();
     live!.say(results("summarise the rail", true));
     expect(draftOf(host)).toBe("summarise the rail ");
+  });
+
+  test("a person typing mid-guess keeps their keystrokes and the dictation carries on", async () => {
+    const host = mount(<Box kind="session" />);
+    await press(micIn(host));
+    live!.open();
+    live!.say(results("recording", false));
+    expect(draftOf(host)).toBe("recording ");
+
+    // Typing into the box through the editor itself, which is what makes the
+    // writer's own guard fire: the draft is no longer the one it committed.
+    const editable = host.querySelector<HTMLElement>('[data-slot="composer-editor"]')!;
+    act(() => {
+      editable.textContent = "typed over it";
+      editable.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(draftOf(host)).toBe("typed over it");
+
+    live!.say(results("recording now", false));
+    // NOT ONE CHARACTER OF THEIRS IS EATEN. The stale span was dropped and the
+    // new guess opened a fresh one.
+    expect(draftOf(host)).toContain("typed over it");
+    expect(draftOf(host)).toContain("recording now");
   });
 
   test("it opens the socket with the token it was just minted, as the bearer subprotocol", async () => {
