@@ -117,6 +117,14 @@ struct DictationDraftWriter {
     /// Character offsets into the draft. Absent between utterances, and after
     /// anybody else has written.
     private var span: Range<Int>?
+
+    /// THE UNCONFIRMED RUN AS IT STANDS, for whoever draws it (#561).
+    ///
+    /// A reader rather than a second copy: the rules that move this span are
+    /// all in `write`, so an indicator that tracked it separately would be a
+    /// second answer to a question that has one. `nil` is exactly when there is
+    /// nothing to dim.
+    var unconfirmed: Range<Int>? { span }
     /// The draft this writer last produced — the whole of the "did somebody
     /// else type?" test.
     private var committed: String?
@@ -185,6 +193,11 @@ struct DictationDraftWriter {
     private var writer = DictationDraftWriter()
 
     init() {}
+
+    /// The run still being revised, for the composer to draw dimmer (#561).
+    /// Read after each write rather than published: the box is not observable,
+    /// and the one caller is already in the middle of the frame that moved it.
+    var unconfirmed: Range<Int>? { writer.unconfirmed }
 
     func write(_ words: DictationWords, into draft: String) -> String {
         writer.write(words, into: draft)
