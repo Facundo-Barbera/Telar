@@ -162,18 +162,18 @@ describe("telling a registered phone from a reached one", () => {
 
   test("a delivery is recorded, and a poll that sent nothing does not invent one", async () => {
     const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
-    const sent = await deliverRecord(record(), [blocked], async () => 200, 5_000);
+    const sent = await deliverRecord(record(), [blocked], async () => ({ status: 200 }), 5_000);
     expect(sent!.lastDeliveryAt).toBe(5_000);
 
     // NOTHING CHANGED, so nothing was sent, so the timestamp must not move —
     // otherwise "last delivery 2 seconds ago" would be true of every idle Mac.
-    const quiet = await deliverRecord(sent!, [working], async () => 200, 9_000);
+    const quiet = await deliverRecord(sent!, [working], async () => ({ status: 200 }), 9_000);
     expect(quiet!.lastDeliveryAt).toBe(5_000);
   });
 
   test("a failed send does not count as a delivery", async () => {
     const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
-    const attempted = await deliverRecord(record(), [blocked], async () => 503, 5_000);
+    const attempted = await deliverRecord(record(), [blocked], async () => ({ status: 503 }), 5_000);
     expect(attempted!.lastDeliveryAt).toBeUndefined();
     expect(attempted!.failures).toBe(1);
   });
@@ -190,6 +190,11 @@ describe("what counts as a relay config", () => {
   const token = "a".repeat(64);
   test("an https origin with no path, and a 64-hex token", () => {
     expect(parseRelayConfig({ url: "https://relay.example.com/", token })).toEqual({ url: "https://relay.example.com", token });
+  });
+  test("the host id rides along when the Keychain item carries one", () => {
+    expect(parseRelayConfig({ url: "https://relay.example.com/", token, id: "mac-one" })).toEqual({ url: "https://relay.example.com", token, id: "mac-one" });
+    // An id that is not one names nobody; the config still pushes without it.
+    expect(parseRelayConfig({ url: "https://relay.example.com/", token, id: "not a host id!" })).toEqual({ url: "https://relay.example.com", token });
   });
   test("every plausible paste that must not be stored", () => {
     for (const input of [

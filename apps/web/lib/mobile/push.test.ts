@@ -31,9 +31,9 @@ describe("mobile push delivery", () => {
     expect(new URL(delivery.payload.url!).searchParams.get("host")).toBe(registration.hostId);
   });
   test("sessions created after the initial baseline can alert on their first sight", async () => {
-    const initial = await deliverRecord(record(), [], async () => 200);
+    const initial = await deliverRecord(record(), [], async()=>({status:200}));
     let sent = 0;
-    await deliverRecord(initial!, [blocked], async () => { sent++; return 200; });
+    await deliverRecord(initial!, [blocked], async () => { sent++; return { status: 200 }; });
     expect(sent).toBe(1);
   });
   test("mute and completion preferences are enforced independently", () => {
@@ -45,18 +45,19 @@ describe("mobile push delivery", () => {
   });
   test("failed delivery retries and successful delivery checkpoints", async () => {
     const initial = record(); initial.seen[working.id] = signalKey(working);
-    const failed = await deliverRecord(initial, [blocked], async () => 503, 1000);
+    const failed = await deliverRecord(initial, [blocked], async()=>({status:503}), 1000);
     expect(failed?.seen[working.id]).toBe(signalKey(working));
     let retries = 0;
-    await deliverRecord(failed!, [blocked], async () => { retries++; return 200; }, 1001);
+    await deliverRecord(failed!, [blocked], async () => { retries++; return { status: 200 }; }, 1001);
     expect(retries).toBe(0);
-    expect(failed?.retryAt).toBe(1005);
-    const sent = await deliverRecord(failed!, [blocked], async () => 200, 1010);
+    // Thirty seconds, not five: a retry floor that cost 173k relay calls a day (#584).
+    expect(failed?.retryAt).toBe(1030);
+    const sent = await deliverRecord(failed!, [blocked], async()=>({status:200}), 1040);
     expect(sent?.seen[working.id]).toBe(signalKey(blocked));
     let count = 0;
-    await deliverRecord(sent!, [blocked], async () => { count++; return 200; });
+    await deliverRecord(sent!, [blocked], async () => { count++; return { status: 200 }; });
     expect(count).toBe(0);
-    expect(await deliverRecord(initial, [blocked], async () => 410)).toBeUndefined();
+    expect(await deliverRecord(initial, [blocked], async()=>({status:410}))).toBeUndefined();
   });
   test("Live Activity uses the widget contract, separate topic and ends on completion", async () => {
     const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
@@ -66,7 +67,7 @@ describe("mobile push delivery", () => {
     expect(payload.payload.aps.event).toBe("update");
     expect(payload.payload.aps["content-state"]).toMatchObject({ title: "Telar session", updatedAt: 821692860, ended: false });
     expect(activityDelivery(r, follow, undefined, 1800000060).payload.aps.event).toBe("end");
-    const ended = await deliverRecord(r, [{ ...working, activity: "idle" }], async () => 200, 1800000060);
+    const ended = await deliverRecord(r, [{ ...working, activity: "idle" }], async()=>({status:200}), 1800000060);
     expect(ended?.activities).toEqual([]);
   });
   test("registrations are device scoped, private on disk, and preserve checkpoints", () => {

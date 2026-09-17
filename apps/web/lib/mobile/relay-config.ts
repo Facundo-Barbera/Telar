@@ -16,6 +16,17 @@
 export interface RelayConfig {
   url: string;
   token: string;
+  /**
+   * THIS MAC'S RELAY HOST ID — the `id` `provision-host.swift` already writes
+   * beside the token, surfaced here for #584. It is what makes "one sender per
+   * relay host" expressible: a record is stamped with the id of the Mac whose
+   * cockpit the phone registered against, and no other Mac serves it.
+   *
+   * OPTIONAL, because a Keychain item written before this was read stores the
+   * id but a hand-pasted config may not carry one, and a Mac with no id simply
+   * serves the records that carry none — which is the single-Mac install.
+   */
+  id?: string;
 }
 
 /**
@@ -33,10 +44,13 @@ export function parseRelayConfig(input: unknown): RelayConfig | undefined {
   if (!input || typeof input !== "object") return;
   const x = input as Record<string, unknown>;
   if (typeof x.url !== "string" || typeof x.token !== "string" || !/^[a-f0-9]{64}$/i.test(x.token)) return;
+  // An id that is not one is dropped rather than refusing the config: it names
+  // the sender, and a config without it still pushes (see `RelayConfig.id`).
+  const id = typeof x.id === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(x.id) ? x.id : undefined;
   try {
     const url = new URL(x.url);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") return;
-    return { url: url.origin, token: x.token };
+    return { url: url.origin, token: x.token, ...(id === undefined ? {} : { id }) };
   } catch {
     return;
   }
