@@ -106,6 +106,7 @@ import {
   type EngineEvent,
   type Item,
   type McpServer,
+  type NotificationDetail,
   type ProviderInstance,
   type ProviderInstanceEnvVar,
   type TurnAttachment,
@@ -169,7 +170,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { agentNotice } from "./agent-notice";
+import { notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -7795,6 +7796,16 @@ export class EngineStore {
       /** The short line the MODEL reads in place of `input` — minted by
        *  `submitAgentTurn` and by nothing else. See `Turn.agentNotice`. */
       agentNotice?: string;
+      /**
+       * THIS TURN IS A NOTIFICATION, NOT WORDS — minted by `notification.ts`
+       * for `submitAgentTurn` (a peer's message) and `fireSubscriptions` (a
+       * wake, a parked request), and by nothing else.
+       *
+       * Its presence is what makes the engine write a `notification` item
+       * instead of leaving the turn to be drawn as a bubble, and what tells the
+       * drivers to deliver it off the user channel. See `Turn.notification`.
+       */
+      notification?: NotificationDetail;
       assignmentScope?: string;
       origin?: "session";
       wakeReason?: WakeReason;
@@ -7925,6 +7936,7 @@ export class EngineStore {
       ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
       ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
       ...(input.agentNotice ? { agentNotice: input.agentNotice } : {}),
+      ...(input.notification ? { notification: input.notification } : {}),
       ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
       ...(passive ? { completedAt: at, resultText: "" } : {}),
       state: passive ? "completed" : "queued",
@@ -8024,6 +8036,9 @@ export class EngineStore {
     if (passive) {
       // Delivery completed, not a model turn: never claim, steer, or notify
       // subscribers about a routine report. The payload remains inspectable.
+      // The ROW is still written — a passive report reaches no model but it
+      // does reach the transcript, and it is a notification there too.
+      if (turn.notification) this.writeNotificationItem(sessionId, turn);
       this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
       return { turn: structuredClone(turn), replayed: false };
     }
@@ -8031,9 +8046,52 @@ export class EngineStore {
     // model; it always waits its turn.
     if (kind !== "compact" && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
       const steered = this.steerIfRunning(sessionId, turn.runId);
+      // A STEERED NOTIFICATION'S ROW IS THE DRIVER'S, not this one's. The turn
+      // is being folded into a RUNNING one, so its row belongs on that turn's
+      // timeline in the order the provider actually received it — which only
+      // the seam that hands it over knows. See `onSteered` in the drivers.
       if (steered) return { turn: steered, replayed: false };
     }
+    if (turn.notification) this.writeNotificationItem(sessionId, turn);
     return { turn: structuredClone(turn), replayed: false };
+  }
+
+  /**
+   * THE NOTIFICATION'S ROW, WRITTEN AT ACCEPT — issue #550.
+   *
+   * WRITTEN BY THE ENGINE RATHER THAN A DRIVER, which is the difference between
+   * this and every other item in the projection. A driver's rows are what a
+   * provider did; this one is what ARRIVED, and it is true the moment the turn
+   * is accepted — before any worker claims it, and whether or not one ever does.
+   * A notification that only appeared once a provider got round to it would
+   * leave a queued wake invisible in the transcript for as long as the session
+   * was busy, which is exactly when a person is looking.
+   *
+   * OPENED AND CLOSED IN ONE BREATH. Nothing about an arrival is in progress.
+   */
+  private writeNotificationItem(sessionId: string, turn: Turn): void {
+    const detail = turn.notification;
+    if (!detail) return;
+    const at = this.now();
+    const items = this.readItems(sessionId);
+    const item: Item = {
+      // DERIVED FROM THE RUN, not random: `submitTurn` is idempotent on the run
+      // id, and a replay that minted a second row would put two notifications
+      // on one arrival.
+      id: `notification_${turn.runId}`,
+      runId: turn.runId,
+      sessionId,
+      status: "completed",
+      title: detail.summary,
+      detail: { type: "notification", notification: detail },
+      startedAt: at,
+      completedAt: at,
+    };
+    if (items.has(item.id)) return;
+    items.set(item.id, item);
+    this.writeItems(sessionId, items);
+    this.appendEvent(sessionId, { type: "item.started", item }, turn.runId);
+    this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
   }
 
   /**
@@ -8211,19 +8269,39 @@ export class EngineStore {
     const stoppedByUser = latched?.agentMessagesBlocked
       ? { ...(latched.agentMessagesBlockedAt !== undefined ? { at: latched.agentMessagesBlockedAt } : {}) }
       : undefined;
+    /**
+     * THE NOTICE AND THE NOTIFICATION ARE ONE STRING NOW (#550).
+     *
+     * `agentNotice` used to be minted here and the row, the prompt and a later
+     * `sessions_read` all quoted it. The notification carries the same text on
+     * `body` — so it is minted ONCE, in `notification.ts`, and `agentNotice` is
+     * DERIVED from it rather than computed a second time from the same inputs.
+     * Two mints of one sentence is two sentences waiting to disagree, and the
+     * contract's whole claim about this field is that they cannot.
+     */
+    const notification = peerNotification({
+      recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
+      ...(sender.sessionId ? { sender } : {}),
+      ...(scope ? { scope } : {}),
+    });
     const result = this.submitTurn(sessionId, {
-      runId: input.runId, input: input.input,
+      runId: input.runId,
+      /**
+       * THE BODY STAYS ON THE TURN, EXACTLY AS SENT. A wake's and a request's
+       * prose is the engine's and moves onto the notification, but this is the
+       * only copy of what the peer actually wrote: `sessions_read` hands it back
+       * whole and the transcript expands to it. What CHANGED is that nothing
+       * draws it as the person's words or hands it to a model as one.
+       */
+      input: input.input,
       ...(input.attachments ? { attachments: input.attachments } : {}),
       origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
       // The Agent's proof names no run — it has none — so there is no source
       // run to carry. A session sender's always does.
       ...(proof?.runId ? { agentSourceRunId: proof.runId } : {}),
       ...(fromBuiltInAgent ? { fromBuiltInAgent: true as const } : {}),
-      agentNotice: agentNotice({
-        recipientSessionId: sessionId, runId: input.runId, body: input.input, intent,
-        ...(sender.sessionId ? { sender } : {}),
-        ...(scope ? { scope } : {}),
-      }),
+      notification,
+      agentNotice: notification.body,
       // Only a TASK carries a scope. A report that named one would read as an
       // assignment in every surface that folds these turns.
       ...(scope ? { assignmentScope: scope } : {}),
@@ -9965,7 +10043,22 @@ export class EngineStore {
         runId: turn.runId,
         ...(context.request ? { requestId: context.request.id } : {}),
       };
-      const input = wakeMessage(kind, target, turn, context);
+      /**
+       * THE WAKE TEXT BECOMES THE NOTIFICATION'S BODY, not the turn's input.
+       *
+       * Same sentence, same author — what changed is where it sits. On `input`
+       * it was engine prose in the slot a person's words occupy, and every
+       * reader downstream had to be told in prose not to believe it. On the
+       * notification it is labelled as what it is, and `input` says only that a
+       * notification arrived. See `notificationLabel`.
+       */
+      const notification = wakeNotification({
+        wakeKind: kind,
+        targetSessionId,
+        runId: turn.runId,
+        ...(context.request ? { requestId: context.request.id } : {}),
+        body: wakeMessage(kind, target, turn, context),
+      });
       try {
         /**
          * ONE QUEUED WAKE PER CHILD TURN. A child that parks an approval,
@@ -9978,13 +10071,14 @@ export class EngineStore {
          * turn finishing. A wake already claimed or running is not touched;
          * it is the worker's now.
          */
-        const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, input, wakeReason);
+        const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, notification, wakeReason);
         if (!coalesced) {
           this.submitTurn(subscriberId, {
             runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-            input,
+            input: notificationLabel(notification),
             origin: "session",
             wakeReason,
+            notification,
           });
         }
         // ONLY AN ENDING SPENDS A ONE-SHOT — see `TERMINAL_WAKE_KINDS`. A
@@ -10147,22 +10241,43 @@ export class EngineStore {
   }
 
   /** Rewrite a still-queued wake about the same child run with newer words. True when one was found. */
-  private coalesceQueuedWake(subscriberId: string, targetSessionId: string, input: string, wakeReason: WakeReason): boolean {
+  private coalesceQueuedWake(subscriberId: string, targetSessionId: string, notification: NotificationDetail, wakeReason: WakeReason): boolean {
     const queue = this.readQueue(subscriberId);
     const waiting = queue.turns.find(
       (turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId && turn.wakeReason.runId === wakeReason.runId,
     );
     if (!waiting) return false;
     const at = this.now();
-    waiting.input = input;
+    waiting.input = notificationLabel(notification);
+    waiting.notification = notification;
     waiting.wakeReason = wakeReason;
     waiting.updatedAt = at;
     this.writeQueue(subscriberId, queue);
     this.touchSession(subscriberId, at);
+    // The ROW is rewritten with the turn: the transcript's notification says
+    // what the turn says, or a person reads a superseded line beside a turn that
+    // will announce something else.
+    this.rewriteNotificationItem(subscriberId, waiting);
     // The strip redraws from `turn.accepted`; re-announcing the same run id
     // with `replayed: true` is how a client learns the words changed.
     this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
     return true;
+  }
+
+  /** The other half of `writeNotificationItem`: the row a coalesce superseded. */
+  private rewriteNotificationItem(sessionId: string, turn: Turn): void {
+    const detail = turn.notification;
+    if (!detail) return;
+    const items = this.readItems(sessionId);
+    const existing = items.get(`notification_${turn.runId}`);
+    if (!existing) {
+      this.writeNotificationItem(sessionId, turn);
+      return;
+    }
+    const item: Item = { ...existing, title: detail.summary, detail: { type: "notification", notification: detail } };
+    items.set(item.id, item);
+    this.writeItems(sessionId, items);
+    this.appendEvent(sessionId, { type: "item.updated", item }, turn.runId);
   }
 
   /**
@@ -10439,6 +10554,13 @@ export class EngineStore {
             // the provider and the transcript as a person's typed message. The
             // stamp is the turn's; it rides the delivery.
             ...(turn.origin === "session" && turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
+            // AND SO DOES WHAT IT IS. The two stamps above say who; this says
+            // the delivery is a notification, which is what lets the driver put
+            // it on a channel that is not the person's. A promotion that
+            // dropped it would make the SAME message honest when the recipient
+            // was idle and a fake user message when it was busy — the asymmetry
+            // #550 is closing.
+            ...(turn.notification ? { notification: turn.notification } : {}),
           }),
         ];
       });

@@ -346,7 +346,7 @@ test("a coordinator following the session is WOKEN by the failure", async () => 
   const coordinator = await f.client.session("session_coordinator");
   const wake = coordinator.turns.find((turn) => turn.wakeReason?.kind === "turn_failed");
   expect(wake?.wakeReason).toMatchObject({ kind: "turn_failed", sessionId: "session_one", runId: "run_one" });
-  expect(wake?.input).toContain("[wake: failed]");
+  expect(wake?.notification?.body).toContain("[wake: failed]");
 });
 
 test("the probe happens ONCE, not per claim — and never for a Codex-only queue", async () => {

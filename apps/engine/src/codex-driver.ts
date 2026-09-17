@@ -867,16 +867,22 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                     kind: "item.started",
                     item: {
                       id: rowId,
-                      detail: {
-                        type: "user_message",
-                        text: message.text,
-                        ...(files.length > 0 ? { attachments: files } : {}),
-                        ...(message.sender ? { sender: message.sender } : {}),
-                        // Body in `text`, the engine's one-line notice beside
-                        // it — the same pair the Claude seam emits.
-                        ...(message.notice ? { notice: message.notice } : {}),
-                        ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
-                      },
+                      // A notification steered into a running turn draws the
+                      // same row the engine writes when it opens its own turn —
+                      // see the Claude seam's `onSteered` for why the seam owns
+                      // this one.
+                      detail: message.notification
+                        ? { type: "notification", notification: message.notification }
+                        : {
+                            type: "user_message",
+                            text: message.text,
+                            ...(files.length > 0 ? { attachments: files } : {}),
+                            ...(message.sender ? { sender: message.sender } : {}),
+                            // Body in `text`, the engine's one-line notice beside
+                            // it — the same pair the Claude seam emits.
+                            ...(message.notice ? { notice: message.notice } : {}),
+                            ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
+                          },
                       title: steerRowTitle(message),
                     },
                   });

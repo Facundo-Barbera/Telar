@@ -11,7 +11,7 @@
  * are NOT a human decision. Approvals still come through the engine's gate,
  * where the person answers; the frame only stops the model from assuming one.
  */
-import type { Turn, WakeReason } from "@telar/engine-client";
+import type { NotificationDetail, Turn, WakeReason } from "@telar/engine-client";
 
 export type MessageSender = { sessionId?: string };
 
@@ -65,7 +65,18 @@ export function frameAgentNotice(notice: string, sender: MessageSender): string 
  * transcript. The fallback to `input` is not a nicety: turns stored before the
  * notice existed have none, and replaying one must still frame it as a peer's.
  */
-export function framedTurnInput(turn: Pick<Turn, "input" | "origin" | "sender" | "wakeReason" | "agentNotice">): string {
+export function framedTurnInput(turn: Pick<Turn, "input" | "origin" | "sender" | "wakeReason" | "agentNotice" | "notification">): string {
+  /**
+   * A NOTIFICATION NEEDS NO FRAME, WHICH IS THE POINT OF #550.
+   *
+   * The frames below are prose standing in for a role the channel could not
+   * express: every one of them exists to say "this is not the person" on a wire
+   * where everything looked like the person. A turn carrying a notification is
+   * delivered on a channel that says so structurally — a peer origin, a
+   * developer instruction, a synthetic part — so the body goes as written and
+   * the one sentence about authorization travels on the item, once.
+   */
+  if (turn.notification) return turn.notification.body;
   if (turn.origin !== "session") return turn.input;
   if (turn.wakeReason) return frameWakeMessage(turn.input, turn.wakeReason);
   if (!turn.sender) return turn.input;
@@ -102,14 +113,24 @@ export function frameWakeMessage(text: string, reason: WakeReason): string {
  *  steered into a running turn is the one that costs the MOST, arriving in a
  *  context already full of the work it interrupted. `text` stays the body so
  *  the transcript row still expands to what was actually sent. */
-export function framedSteerText(message: { text: string; notice?: string; sender?: MessageSender; wakeReason?: WakeReason }): string {
+export function framedSteerText(message: {
+  text: string;
+  notice?: string;
+  sender?: MessageSender;
+  wakeReason?: WakeReason;
+  notification?: NotificationDetail;
+}): string {
+  // Same rule as `framedTurnInput`: a notification arrives with its role on the
+  // channel, so its body needs no prose standing in for one.
+  if (message.notification) return message.notification.body;
   if (message.wakeReason) return frameWakeMessage(message.text, message.wakeReason);
   if (!message.sender) return message.text;
   return message.notice ? frameAgentNotice(message.notice, message.sender) : frameAgentMessage(message.text, message.sender);
 }
 
 /** The collapsed label for a steered message's transcript row. */
-export function steerRowTitle(message: { sender?: MessageSender; wakeReason?: WakeReason }): string {
+export function steerRowTitle(message: { sender?: MessageSender; wakeReason?: WakeReason; notification?: NotificationDetail }): string {
+  if (message.notification) return message.notification.summary;
   if (message.wakeReason) return "Woken by a session";
   if (message.sender) return "Sent by an agent";
   return "Sent now";

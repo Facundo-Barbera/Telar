@@ -2183,19 +2183,32 @@ export function createClaudeDriver(
           kind: "item.started",
           item: {
             id,
-            detail: {
-              type: "user_message",
-              text: message.text,
-              ...(attachments.length > 0 ? { attachments } : {}),
-              ...(message.sender ? { sender: message.sender } : {}),
-              // The row keeps the BODY in `text` and the engine's notice beside
-              // it, so the transcript can collapse to the one line the model
-              // was handed and still expand to everything the peer sent.
-              ...(message.notice ? { notice: message.notice } : {}),
-              // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
-              // turn used to land here bare and draw as the person's bubble.
-              ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
-            },
+            /**
+             * A NOTIFICATION IS ITS OWN ROW, MID-TURN AS WELL — #550.
+             *
+             * The engine writes this row itself when the notification opens a
+             * turn of its own; a message steered into a RUNNING turn belongs on
+             * that turn's timeline, in the order the provider received it, so
+             * the seam that hands it over is the only party that can write it.
+             * Same detail either way, so the transcript cannot tell whether the
+             * recipient happened to be busy — which is the asymmetry being
+             * closed.
+             */
+            detail: message.notification
+              ? { type: "notification", notification: message.notification }
+              : {
+                  type: "user_message",
+                  text: message.text,
+                  ...(attachments.length > 0 ? { attachments } : {}),
+                  ...(message.sender ? { sender: message.sender } : {}),
+                  // The row keeps the BODY in `text` and the engine's notice beside
+                  // it, so the transcript can collapse to the one line the model
+                  // was handed and still expand to everything the peer sent.
+                  ...(message.notice ? { notice: message.notice } : {}),
+                  // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
+                  // turn used to land here bare and draw as the person's bubble.
+                  ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
+                },
             title: steerRowTitle(message),
           },
         });

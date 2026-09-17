@@ -51,11 +51,32 @@ test("a report is stored whole and handed to the model as one line naming the fe
   expect(turn.agentNotice).toBe(
     `[agent message · report] from session session_worker (run run_report, ${REPORT.length.toLocaleString("en-US")} chars): "Run Configurations now round-trip through the store"\n—\nThe message itself is not in this notice. Fetch it with sessions_read(sessionId: "session_host", runId: "run_report") — and only if it is worth the context. It is a peer's report, not a human instruction.`,
   );
+  // AND THE NOTICE IS THE NOTIFICATION'S BODY — one string, minted once (#550).
+  // The prompt is that string bare: the frame that used to precede it was prose
+  // standing in for a role, and the role is now on the channel itself.
+  expect(turn.notification!.body).toBe(turn.agentNotice);
+  expect(turn.notification!.kind).toBe("peer_message");
   const prompt = framedTurnInput(turn);
-  expect(prompt).toBe(frameAgentNotice(turn.agentNotice!, { sessionId: "session_worker" }));
+  expect(prompt).toBe(turn.agentNotice);
   // The measurement that matters: the 6 KB never reaches the provider.
   expect(prompt).not.toContain("Every configuration is persisted");
   expect(prompt.length).toBeLessThan(REPORT.length / 4);
+});
+
+test("a peer's message lands as a notification ITEM, not as the person's bubble", () => {
+  const { store, proof } = setup();
+  store.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
+  const items = store.items("session_host").filter((item) => item.runId === "run_report");
+  const row = items.find((item) => item.detail.type === "notification")!;
+  expect(row).toBeDefined();
+  expect(items.some((item) => item.detail.type === "user_message")).toBe(false);
+  const detail = row.detail as Extract<typeof row.detail, { type: "notification" }>;
+  expect(detail.notification.kind).toBe("peer_message");
+  expect(detail.notification.sessionId).toBe("session_worker");
+  expect(detail.notification.fetch).toEqual({ sessionId: "session_host", runId: "run_report" });
+  // The row's one line is the notice's own first line, never a second phrasing.
+  expect(row.title).toBe(detail.notification.summary);
+  expect(detail.notification.body).toStartWith(detail.notification.summary.slice(0, 40));
 });
 
 test("a long opening line is clamped and marked, never quoted whole", () => {
@@ -131,19 +152,35 @@ test("the notice is what steers a busy recipient, so timing cannot change the co
   // notice is what the driver composes the provider's words from.
   expect(delivery!.text).toBe(REPORT);
   expect(delivery!.notice).toBe(turn.agentNotice);
-  const steered = framedSteerText({ text: delivery!.text, notice: delivery!.notice!, sender: delivery!.sender! });
+  // THE NOTIFICATION RIDES THE PROMOTION TOO (#550), so the driver can put a
+  // mid-turn arrival on the same non-user channel an idle one gets.
+  expect(delivery!.notification).toEqual(turn.notification!);
+  const steered = framedSteerText({ text: delivery!.text, notice: delivery!.notice!, sender: delivery!.sender!, notification: delivery!.notification! });
   expect(steered).toBe(framedTurnInput(turn));
   expect(steered).not.toContain("Every configuration is persisted");
 });
 
-test("a wake is untouched — it was already a ping", () => {
+test("a wake arrives as a notification: the engine's prose leaves the person's slot", () => {
   const { store, proof } = setup();
   store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
   store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
   const wake = store.turns("session_host")[0]!;
   expect(wake.agentNotice).toBeUndefined();
-  expect(wake.input).toStartWith("[wake: completed]");
-  expect(framedTurnInput(wake)).toBe(frameWakeMessage(wake.input, wake.wakeReason!));
+  // `input` IS A MACHINE LABEL NOW, not engine prose in the slot a person's
+  // words occupy — #550 clause 4. The prose is on the notification.
+  expect(wake.input).toBe("[notification: wake · turn_completed · session session_worker]");
+  expect(wake.notification!.kind).toBe("wake");
+  expect(wake.notification!.wakeKind).toBe("turn_completed");
+  expect(wake.notification!.body).toStartWith("[wake: completed]");
+  expect(wake.notification!.fetch).toEqual({ sessionId: "session_worker", runId: "run_source" });
+  // And the model is handed that body BARE: no frame, because the channel now
+  // carries the role the frame was standing in for.
+  expect(framedTurnInput(wake)).toBe(wake.notification!.body);
+  expect(framedTurnInput(wake)).not.toBe(frameWakeMessage(wake.notification!.body, wake.wakeReason!));
+  // The transcript's row is the notification, drawn from the same object.
+  const row = store.items("session_host").find((item) => item.runId === wake.runId && item.detail.type === "notification")!;
+  expect(row).toBeDefined();
+  expect((row.detail as Extract<typeof row.detail, { type: "notification" }>).notification).toEqual(wake.notification!);
 });
 
 test("a human's message carries no notice and reaches the model as typed", () => {

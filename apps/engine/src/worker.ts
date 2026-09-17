@@ -1017,6 +1017,7 @@ export class EngineWorker {
             ...(delivery.sender ? { sender: delivery.sender } : {}),
             ...(delivery.notice ? { notice: delivery.notice } : {}),
             ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),
+            ...(delivery.notification ? { notification: delivery.notification } : {}),
           })
         )
           continue;
