@@ -221,6 +221,30 @@ export const FOLD_ANSWER_CHARS = 200;
  */
 export const FOLD_BLOCK_CHARS = 12_000;
 
+/**
+ * HOW FAR DOWN A FOLD GOES — the LOW-WATER MARK (#567).
+ *
+ * ── THE BUG THIS NUMBER IS ─────────────────────────────────────────────────
+ * The fold used to stop the moment what was left fitted, which is the SAME
+ * number that triggered it. So a conversation that had saturated once folded
+ * one turn, landed a few hundred characters under the ceiling, and was over it
+ * again on the next message: six consecutive turns measured 119382, 119570,
+ * 94489, 102165, 119512 and 109347 against a 120k budget. The engine was
+ * compacting on almost every turn and the meter never moved — which reads as
+ * "it is not compacting" and, worse, leaves a multi-lap turn no room to run in.
+ *
+ * ── SO THE TRIGGER AND THE TARGET ARE DIFFERENT NUMBERS ────────────────────
+ * Over `budgetChars` starts a fold; the fold then keeps going until what is
+ * left is under `budgetChars * FOLD_TARGET_RATIO`. At 120k that is a floor of
+ * 72k, so one fold buys about 48k characters of room, the meter visibly drops,
+ * and the turns after it do not re-fold. The gap between the two marks is the
+ * hysteresis — the reason this is a ratio and not a second constant.
+ *
+ * A conversation BETWEEN the marks is not folded: the trigger is the ceiling,
+ * never the floor, so a history sitting at 70% is left exactly as it is.
+ */
+export const FOLD_TARGET_RATIO = 0.6;
+
 /** The stamp that says a message is the engine's fold rather than something
  *  anybody said. See `foldOldTurns` for what it is for. */
 export const FOLD_MARKER = "telar_turn_fold";
@@ -305,7 +329,8 @@ export function isFold(message: BaseMessage): boolean {
  * the function idempotent.
  *
  * ── AND THE NEWEST TURNS ARE VERBATIM ───────────────────────────────────────
- * Folding stops as soon as what is left fits the budget, oldest first, and the
+ * Folding runs oldest first and stops at the LOW-WATER MARK — see
+ * `FOLD_TARGET_RATIO` for why that is not the mark that triggered it — and the
  * turn being answered is never folded. A conversation inside its budget comes
  * back untouched, which is every ordinary one.
  */
@@ -314,15 +339,27 @@ export function foldOldTurns(
   options: { budgetChars: number; reservedChars?: number },
 ): { messages: BaseMessage[]; folded: number } {
   const raw = messages.filter((message) => !isFold(message));
-  const turns = splitTurns(raw);
-  const lines: string[] = [];
+  const reserved = options.reservedChars ?? 0;
+  // THE CEILING IS THE TRIGGER AND NOTHING ELSE. A conversation between the two
+  // marks is one a previous fold already made room in, and folding it again
+  // would spend its history to buy room it has.
+  let verbatim = reserved + cost(raw);
+  if (verbatim <= options.budgetChars) return { messages: [...raw], folded: 0 };
 
-  let spent = (options.reservedChars ?? 0) + cost(raw);
+  const turns = splitTurns(raw);
+  const target = options.budgetChars * FOLD_TARGET_RATIO;
+  const lines: string[] = [];
   let folded = 0;
-  while (spent > options.budgetChars && folded < turns.length - 1) {
+  // THE BLOCK IS CHARGED FOR AS IT GROWS, by building it rather than estimating
+  // it: the lines that replace the folded turns are themselves part of what the
+  // next prompt sends, and a fold that counted only what it removed would stop
+  // a block's worth above the floor it was aiming at.
+  let block = 0;
+  while (verbatim + block > target && folded < turns.length - 1) {
     const turn = turns[folded]!;
     lines.push(foldedTurnLine(turn));
-    spent -= cost(turn);
+    verbatim -= cost(turn);
+    block = cost(foldBlock(lines));
     folded += 1;
   }
   if (folded === 0) return { messages: [...raw], folded: 0 };
