@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
 import { installNavigationMarks, isMeasuredHref, markNavigation, startNavigation } from "@/lib/perf-marks";
+import { installPageApi } from "@/lib/page-api";
 
 /**
  * THE RAIL IS A SEPARATE CHUNK, because this file is in the ROOT LAYOUT and the
@@ -74,6 +75,19 @@ export function AppShell({ children }: { children: ReactNode }) {
    * measured by the component that knows what landed in it — is still the one
    * recorded, and this is a no-op.
    */
+  /**
+   * `window.telar`, FITTED IN THE SAME PLACE AND FOR THE SAME REASON (#548).
+   *
+   * An external client — the Quest cockpit, which runs this app in a WebView
+   * and can only run JavaScript in the page — has to find the three calls
+   * whatever route the window opened on, and on EVERY host: this is the web
+   * app, not the desktop shell, so gating it on `window.telarDesktop` would
+   * hide it from the one client that asked for it. Idempotent, so mounting
+   * this shell again costs nothing. See lib/page-api.ts.
+   */
+  useEffect(() => {
+    installPageApi();
+  }, []);
   useEffect(() => {
     installNavigationMarks();
     if (!isMeasuredHref(pathname)) return;
