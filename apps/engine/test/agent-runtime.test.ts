@@ -836,6 +836,86 @@ test("a turn that answers early reports its own laps and never meets the cap", a
   agent.close();
 });
 
+/* ------------------------------------------------------------------ *
+ * One message's calls run together (#570).
+ * ------------------------------------------------------------------ */
+
+/** A wall whose calls take measurable time and say when they ran. `delays` is
+ *  keyed by the argument each call carries, so one tool name can be called
+ *  twice in a batch and still be told apart. */
+function timedWall(spans: Array<{ at: string; start: number; end: number }>, delays: Record<string, number>): SocketTool[] {
+  return [
+    {
+      name: "sessions_read",
+      description: "the sessions_read tool",
+      shape: {},
+      run: async (args) => {
+        const at = String(args.sessionId ?? "");
+        const start = Date.now();
+        await new Promise((resolve) => setTimeout(resolve, delays[at] ?? 0));
+        spans.push({ at, start, end: Date.now() });
+        return { content: [{ type: "text", text: `read ${at}` }] };
+      },
+    },
+  ];
+}
+
+test("two calls in one AI message run together, not one after the other", async () => {
+  const spans: Array<{ at: string; start: number; end: number }> = [];
+  // THE SECOND CALL FINISHES FIRST on purpose: it makes the ordering assertion
+  // below mean something, because completion order and the model's order differ.
+  const { agent } = runtime(
+    [
+      {
+        toolCalls: [
+          { id: "call_slow", name: "sessions_read", args: { sessionId: "slow" }, type: "tool_call" },
+          { id: "call_fast", name: "sessions_read", args: { sessionId: "fast" }, type: "tool_call" },
+        ],
+      },
+      { text: "both read." },
+    ],
+    timedWall(spans, { slow: 140, fast: 10 }),
+  );
+
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the batched turn");
+
+  const slow = spans.find((span) => span.at === "slow")!;
+  const fast = spans.find((span) => span.at === "fast")!;
+  // CONCURRENT: the fast call ran while the slow one was still running. Run one
+  // after the other, it could not have started before the slow one ended.
+  expect(fast.start).toBeLessThan(slow.end);
+  expect(fast.end).toBeLessThan(slow.end);
+  // And the batch cost about the slowest call, not the sum of both.
+  expect(Math.max(slow.end, fast.end) - Math.min(slow.start, fast.start)).toBeLessThan(140 + 10);
+  agent.close();
+});
+
+test("the results still reach the model in the order it asked for them", async () => {
+  const spans: Array<{ at: string; start: number; end: number }> = [];
+  const { agent, model } = runtime(
+    [
+      {
+        toolCalls: [
+          { id: "call_slow", name: "sessions_read", args: { sessionId: "slow" }, type: "tool_call" },
+          { id: "call_fast", name: "sessions_read", args: { sessionId: "fast" }, type: "tool_call" },
+        ],
+      },
+      { text: "both read." },
+    ],
+    timedWall(spans, { slow: 140, fast: 10 }),
+  );
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the batched turn");
+
+  // `fast` FINISHED FIRST but pairs second, because a tool result list pairs
+  // with `tool_calls` positionally and some providers check that it does.
+  expect(spans.map((span) => span.at)).toEqual(["fast", "slow"]);
+  const answered = model.seen.at(-1)!.filter((message) => message.getType() === "tool");
+  expect(answered.map((message) => (message as { tool_call_id?: string }).tool_call_id)).toEqual(["call_slow", "call_fast"]);
+  agent.close();
+});
+
 test("brief asks for a spoken answer, on that turn and no other", async () => {
   const landed: Landed[] = [];
   const { agent, model } = runtime([{ text: "two are idle." }, { text: "nothing has changed." }], wall(landed));

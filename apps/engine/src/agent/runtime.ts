@@ -1316,8 +1316,40 @@ export class AgentRuntime {
         decisions.set(call.id ?? "", interrupt<AgentApprovalRequest, AgentApprovalDecision>(request));
       }
 
-      // PASS 2 — the effects, each recorded in the same state write as its
-      // answer.
+      /**
+       * PASS 2 — THE EFFECTS, ALL OF THEM AT ONCE (#570).
+       *
+       * ── WHY CONCURRENTLY ────────────────────────────────────────────────────
+       * One AI message's `tool_calls` are the calls the model decided it could
+       * make WITHOUT seeing each other's answers — that is what putting them in
+       * one message means. Running them one after another spends the sum of
+       * their latencies to buy nothing: four session reads that each take 300 ms
+       * cost 1.2 s sequentially and 300 ms together, and the model waits either
+       * way. This node is the only thing between "the model asked for four
+       * reads" and "the model has four answers", so it is the only place that
+       * choice exists.
+       *
+       * ── WHAT IS DELIBERATELY UNCHANGED ──────────────────────────────────────
+       * THE APPROVALS PASS ABOVE STAYS SEQUENTIAL, and that is the invariant the
+       * whole node is built around: every gated call is asked about BEFORE any
+       * effect runs, `interrupt()` parks the node on the first, and the node
+       * replays from the top on resume. Starting effects concurrently with the
+       * asking would land the ungated half of a batch while a person was still
+       * looking at the gated half.
+       *
+       * THE RESULTS STAY IN THE MODEL'S OWN ORDER. `Promise.all` resolves in
+       * argument order whatever order the work finished in, so the `ToolMessage`
+       * list pairs with `tool_calls` positionally as it always did — some
+       * providers care, and a reader of the checkpoint certainly does. Only the
+       * transcript ROWS land in completion order now, which is the honest thing
+       * for them to do: a row says a call happened, and they happened together.
+       *
+       * THE LEDGER IS UNAFFECTED because it is read from `state.effects` — the
+       * state as this node was entered — and written once, below, from what the
+       * batch produced. Two identical sends in ONE message both ran before this
+       * change too; what the ledger has always prevented is a REPLAY of this
+       * node, and that still reads a committed state write.
+       */
       /**
        * A TOOL RESULT CARRIES ITS CALL ID AND NOTHING ELSE (#549).
        *
@@ -1336,59 +1368,61 @@ export class AgentRuntime {
        * `model.ts`'s wrapper strips it from the body as well, so a library
        * version that starts inferring one cannot put it back.
        */
-      const messages: ToolMessage[] = [];
-      const effects: Record<string, string> = {};
-      for (const call of calls) {
-        const id = call.id ?? "";
-        const args = (call.args ?? {}) as Record<string, unknown>;
-        const key = ledgerKey(call.name, args);
-        const already = key ? state.effects[key] : undefined;
-        if (already !== undefined) {
-          messages.push(new ToolMessage({ tool_call_id: id, content: `${minifyToolResult(already)}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }));
-          continue;
-        }
-        if (needsApproval({ name: call.name, args }) && decisions.get(id) !== "accept") {
-          this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: DECLINED_ANSWER, status: "declined" });
-          messages.push(new ToolMessage({ tool_call_id: id, content: DECLINED_ANSWER }));
-          continue;
-        }
-        const tool = byName.get(call.name);
-        if (!tool) {
-          const message = `There is no tool called ${call.name} in this conversation. Use one of the tools you were given.`;
-          this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: message, status: "failed" });
-          messages.push(new ToolMessage({ tool_call_id: id, content: message }));
-          continue;
-        }
-        let text: string;
-        let failed = false;
-        try {
-          // THE CALL ID GOES THROUGH, which is what makes `sessions_send`
-          // idempotent across a replay of this node.
-          const answer = await tool.run(args, { toolCallId: id });
-          text = textOf(answer.content);
-          failed = answer.isError === true;
-        } catch (error) {
-          // EVERY OUTCOME IS A TOOL RESULT, never a thrown turn. A refusal, a
-          // bad argument and a handler that threw are all things the model can
-          // respond to; failing the turn would throw away a conversation over
-          // one bad call.
-          text = error instanceof Error ? error.message : String(error);
-          failed = true;
-        }
-        if (key) effects[key] = text;
-        /**
-         * THE ROW GETS THE ANSWER WHOLE; THE MODEL GETS IT MINIFIED (#563).
-         *
-         * `json()` pretty-prints at two spaces because a PERSON reads the
-         * transcript, and that whitespace is about a third of every structured
-         * result. The row is written from `text` — unchanged, so the cockpit
-         * still renders the outline it always did — and the message that enters
-         * the checkpoint is the compact form, which every later lap of this
-         * turn then resends at the smaller size.
-         */
-        this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: text, status: failed ? "failed" : "completed" });
-        messages.push(new ToolMessage({ tool_call_id: id, content: minifyToolResult(text) }));
-      }
+      const settled = await Promise.all(
+        calls.map(async (call): Promise<{ message: ToolMessage; effect?: [string, string] }> => {
+          const id = call.id ?? "";
+          const args = (call.args ?? {}) as Record<string, unknown>;
+          const key = ledgerKey(call.name, args);
+          const already = key ? state.effects[key] : undefined;
+          if (already !== undefined) {
+            return { message: new ToolMessage({ tool_call_id: id, content: `${minifyToolResult(already)}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }) };
+          }
+          if (needsApproval({ name: call.name, args }) && decisions.get(id) !== "accept") {
+            this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: DECLINED_ANSWER, status: "declined" });
+            return { message: new ToolMessage({ tool_call_id: id, content: DECLINED_ANSWER }) };
+          }
+          const tool = byName.get(call.name);
+          if (!tool) {
+            const message = `There is no tool called ${call.name} in this conversation. Use one of the tools you were given.`;
+            this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: message, status: "failed" });
+            return { message: new ToolMessage({ tool_call_id: id, content: message }) };
+          }
+          let text: string;
+          let failed = false;
+          try {
+            // THE CALL ID GOES THROUGH, which is what makes `sessions_send`
+            // idempotent across a replay of this node.
+            const answer = await tool.run(args, { toolCallId: id });
+            text = textOf(answer.content);
+            failed = answer.isError === true;
+          } catch (error) {
+            // EVERY OUTCOME IS A TOOL RESULT, never a thrown turn. A refusal, a
+            // bad argument and a handler that threw are all things the model can
+            // respond to; failing the turn would throw away a conversation over
+            // one bad call. It is also what keeps ONE bad call in a batch from
+            // rejecting the `Promise.all` and losing its siblings' answers.
+            text = error instanceof Error ? error.message : String(error);
+            failed = true;
+          }
+          /**
+           * THE ROW GETS THE ANSWER WHOLE; THE MODEL GETS IT MINIFIED (#563).
+           *
+           * `json()` pretty-prints at two spaces because a PERSON reads the
+           * transcript, and that whitespace is about a third of every structured
+           * result. The row is written from `text` — unchanged, so the cockpit
+           * still renders the outline it always did — and the message that enters
+           * the checkpoint is the compact form, which every later lap of this
+           * turn then resends at the smaller size.
+           */
+          this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: text, status: failed ? "failed" : "completed" });
+          return {
+            message: new ToolMessage({ tool_call_id: id, content: minifyToolResult(text) }),
+            ...(key ? { effect: [key, text] as [string, string] } : {}),
+          };
+        }),
+      );
+      const messages = settled.map((one) => one.message);
+      const effects = Object.fromEntries(settled.flatMap((one) => (one.effect ? [one.effect] : [])));
       config?.signal?.throwIfAborted();
       return { messages, effects };
     };
