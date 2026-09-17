@@ -11,8 +11,8 @@
  *   - a cancel ends the live turn and does not undo what already landed;
  *   - one turn at a time: a second message queues rather than interleaving;
  *   - the transcript is rows with a cursor, so a phone can page it;
- *   - a wake runs as a turn on the same thread and sees the first turn's
- *     history;
+ *   - a wake writes ONE INBOX ROW and starts no turn (#541 A), the row survives
+ *     a restart, and marking it read moves it exactly once;
  *   - everything the assistant SAYS reaches a row, including the sentence
  *     before a tool call — which `turn_done.detail.text` alone could never
  *     carry, because it holds the turn's last message.
@@ -25,7 +25,9 @@ import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatResult } from "@langchain/core/outputs";
+import type { NotificationDetail, WakeKind } from "@telar/engine-client";
 import type { SocketTool } from "../src/mcp-socket";
+import { wakeNotification } from "../src/notification";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
 import { patchAgentSettings } from "../src/agent/store";
 
@@ -338,31 +340,91 @@ test("a second message while a turn runs is queued, and runs after it", async ()
 });
 
 /* ------------------------------------------------------------------ *
- * 4 — wakes.
+ * 4 — wakes land in the inbox and start nothing (#541 A).
  * ------------------------------------------------------------------ */
 
-test("a wake runs as a turn on the same thread, marked as something that arrived", async () => {
+/** A wake as the store now hands it over: the notification `notification.ts`
+ *  minted for every subscriber to that transition (#550). */
+const wakeOf = (sessionId: string, runId: string, kind: WakeKind, body: string): NotificationDetail =>
+  wakeNotification({ wakeKind: kind, targetSessionId: sessionId, runId, body });
+
+test("a wake writes one inbox row and starts no turn", async () => {
   const landed: Landed[] = [];
-  const { agent } = runtime([{ text: "noted" }, { text: "acted on it" }], wall(landed));
+  const { agent } = runtime([{ text: "noted" }], wall(landed));
   agent.submit({ text: "watch session_peer" });
   await until(() => agent.state().runId === undefined, "the first turn");
+  const before = agent.thread({ limit: 200 }).rows.length;
 
-  agent.wake({ notice: "session_peer finished run_9", wakeReason: { kind: "turn_completed", sessionId: "session_peer", runId: "run_9" } });
-  await until(() => agent.state().runId === undefined && agent.state().queued === 0, "the wake turn");
+  agent.wake({ notification: wakeOf("session_peer", "run_9", "turn_completed", "[wake: completed] Session session_peer — turn run_9 completed.") });
 
-  const users = agent.thread({ limit: 200 }).rows.filter((row) => row.kind === "user_message");
-  expect(users).toHaveLength(2);
-  expect(users[1]!.detail.origin).toBe("wake");
-  expect(users[1]!.detail.text).toBe("session_peer finished run_9");
-  expect((users[1]!.detail.wakeReason as { runId: string }).runId).toBe("run_9");
+  // NOTHING RAN. No queued turn, no live turn, and not one new transcript row:
+  // the whole point of #541 A is that a completion costs an INSERT rather than
+  // a conversation.
+  expect(agent.state().queued).toBe(0);
+  expect(agent.state().running).toBe(false);
+  expect(agent.thread({ limit: 200 }).rows).toHaveLength(before);
+
+  const inbox = agent.inbox();
+  expect(inbox.rows).toHaveLength(1);
+  expect(inbox.rows[0]).toMatchObject({ sessionId: "session_peer", runId: "run_9", kind: "turn_completed", read: false });
+  // The summary is the notification's own first line, not a second phrasing.
+  expect(inbox.rows[0]!.summary).toBe("[wake: completed] Session session_peer — turn run_9 completed.");
+  expect(inbox.unread).toBe(1);
+  expect(agent.state().inboxUnread).toBe(1);
+  agent.close();
+});
+
+test("a wake is pushed to a watcher so a cockpit can badge it without polling", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "noted" }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+
+  const seen: AgentStreamEvent[] = [];
+  const stop = agent.watch((event) => seen.push(event));
+  agent.wake({ notification: wakeOf("session_peer", "run_1", "request_opened", "[wake: waiting] Session session_peer — is WAITING on a request") });
+  stop();
+
+  const pushed = seen.filter((event) => event.type === "inbox");
+  expect(pushed).toHaveLength(1);
+  expect(pushed[0]).toMatchObject({ type: "inbox", row: { kind: "request_opened", sessionId: "session_peer" } });
+  agent.close();
+});
+
+test("the inbox survives a restart, because it is a table in the thread's own file", async () => {
+  const landed: Landed[] = [];
+  const { agent, engineRoot } = runtime([{ text: "noted" }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  agent.wake({ notification: wakeOf("session_peer", "run_2", "turn_failed", "[wake: failed] Session session_peer — turn run_2 FAILED") });
+  agent.close();
+
+  const second = new AgentRuntime({ engineRoot, tools: () => wall(landed), model: () => new ScriptedChatModel([{ text: "again" }]) });
+  expect(second.inbox().rows.map((row) => row.kind)).toEqual(["turn_failed"]);
+  expect(second.state().inboxUnread).toBe(1);
+  second.close();
+});
+
+test("marking a row read moves it once, and a second attempt moves nothing", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "noted" }], wall(landed));
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+  agent.wake({ notification: wakeOf("session_peer", "run_3", "turn_completed", "[wake: completed] one") });
+  agent.wake({ notification: wakeOf("session_other", "run_4", "turn_completed", "[wake: completed] two") });
+
+  const ids = agent.inbox().rows.map((row) => row.id);
+  expect(agent.markInboxRead([ids[0]!])).toEqual({ read: 1, unread: 1 });
+  expect(agent.markInboxRead([ids[0]!])).toEqual({ read: 0, unread: 1 });
+  expect(agent.inbox({ unreadOnly: true }).rows.map((row) => row.runId)).toEqual(["run_4"]);
   agent.close();
 });
 
 test("a wake for a switched-off Agent is dropped rather than throwing at the turn that caused it", () => {
   const landed: Landed[] = [];
   const { agent } = runtime([{ text: "x" }], wall(landed));
-  agent.patch({ enabled: false });
-  agent.wake({ notice: "session_peer finished" });
+  agent.patch({ enabled: false, reset: true });
+  expect(agent.wake({ notification: wakeOf("session_peer", "run_5", "turn_completed", "[wake: completed] x") })).toBeUndefined();
   expect(agent.state().queued).toBe(0);
   agent.close();
 });

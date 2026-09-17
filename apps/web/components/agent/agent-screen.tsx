@@ -40,8 +40,10 @@ import { SparklesIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 import { hostFromPathname, hostName, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { useAgentThread, type AgentThreadHandle } from "@/lib/agent/thread";
+import { useAgentInbox } from "@/lib/agent/inbox";
 import { AgentTranscript } from "./agent-transcript";
 import { AgentApproval } from "./agent-approval";
+import { AgentInbox } from "./agent-inbox";
 import { Composer } from "@/components/composer";
 import { ContextMeter } from "@/components/context-meter";
 import { AgentComposerControls, useAgentModels } from "./agent-composer-controls";
@@ -105,6 +107,9 @@ export function AgentScreen() {
    */
   const hostId = hostFromPathname(usePathname());
   const handle = useAgentThread(hostId);
+  /** The wake inbox, on its own small poll — nudged by the thread's stream so a
+   *  row that lands while this screen is open appears at once (#541 A). */
+  const inbox = useAgentInbox(hostId ?? LOCAL_HOST_ID, handle.inboxNudge);
   const view = agentView(handle);
   const [draft, setDraft] = useState("");
 
@@ -192,6 +197,13 @@ export function AgentScreen() {
         </ConversationContent>
         <ConversationScrollButton />
       </ConversationViewport>
+
+      {/* WHAT CAME IN WHILE NOBODY WAS TALKING TO IT (#541 A). A wake no longer
+          starts a turn, so nothing in the conversation above says four workers
+          finished overnight — the model is told at the top of its next turn and
+          the person is told here, before they type. Drawn only when there is
+          something unread. */}
+      <AgentInbox rows={inbox.rows} unread={inbox.unread} onDismiss={(ids) => void inbox.dismiss(ids)} />
 
       {/* THE COCKPIT'S OWN COMPOSER, with no session and no project. Its model
           picker, its git strip and its `@`-completion over a repository are all

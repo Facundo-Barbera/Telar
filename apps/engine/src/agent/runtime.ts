@@ -60,20 +60,31 @@
  * human message while a turn runs is QUEUED rather than steered: LangGraph's
  * unit of execution is a graph invocation on a thread, and injecting into one
  * mid-flight would mean writing to `messages` from outside the graph, behind
- * the checkpointer's back. Wakes queue on the same line, so a person's message
- * and a session's completion cannot interleave into one prompt.
+ * the checkpointer's back.
+ *
+ * ── AND A WAKE IS NOT A TURN AT ALL ANY MORE (#541 A) ───────────────────────
+ * A wake used to queue on that same line, on the reading that a person's
+ * message and a session's completion must not interleave into one prompt. True,
+ * and beside the point: a completion is not something to say to the Agent, it is
+ * something to TELL THE PERSON, next time they speak. So `wake` writes a row in
+ * `./inbox.ts` and starts nothing, and `./digest.ts` renders what is unread at
+ * the top of the next turn a PERSON begins — a projection, with no model call in
+ * it. Four workers finishing overnight cost four INSERTs and one paragraph,
+ * where they used to cost four conversations.
  */
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interrupt } from "@langchain/langgraph";
 import crypto from "node:crypto";
-import type { AgentSettings } from "@telar/engine-client";
+import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { toolInputSchema } from "../mcp-socket";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
+import { renderDigest } from "./digest";
+import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
 import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
@@ -182,13 +193,26 @@ export type AgentStateAnswer = {
    *  has, and unchanged while the next runs, because a meter that emptied
    *  itself the moment you spoke would answer a question nobody asked. */
   lastUsage?: AgentLastUsage;
+  /** How many wakes are waiting in the inbox (#541 A) — the badge's number, on
+   *  the state the rail already polls. `0` on a machine with no thread. */
+  inboxUnread: number;
 };
 
-/** What a watcher is pushed. A row is durable and pageable; a delta is neither,
- *  and is folded into the assistant row when the message completes. */
+/**
+ * What a watcher is pushed. A row is durable and pageable; a delta is neither,
+ * and is folded into the assistant row when the message completes.
+ *
+ * AN `inbox` FRAME IS A NUDGE, NOT A FEED (#541 A). It is pushed when a wake
+ * lands so a cockpit can badge the entry without waiting for its next poll, and
+ * it is deliberately NOT replayed by the stream's `after` — that cursor is the
+ * TRANSCRIPT's, and an inbox row has its own id space. A client that reconnects
+ * reads `GET /v2/agent/inbox`, which is the authoritative list; this frame only
+ * saves it the wait.
+ */
 export type AgentStreamEvent =
   | { type: "row"; row: AgentRow }
-  | { type: "delta"; runId: string; itemId: string; text: string };
+  | { type: "delta"; runId: string; itemId: string; text: string }
+  | { type: "inbox"; row: AgentInboxRow };
 
 export type AgentRuntimeOptions = {
   engineRoot: string;
@@ -231,6 +255,9 @@ export class AgentRuntime {
   private readonly now: () => number;
   private opened?: OpenedCheckpointer;
   private log?: AgentThreadLog;
+  /** The wake inbox, on the same handle as the transcript — see `open`. Named
+   *  `inboxTable` because `inbox()` is the read method beside it. */
+  private inboxTable?: AgentInbox;
   private queue: QueuedTurn[] = [];
   private live?: { turn: QueuedTurn; controller: AbortController };
   private pending?: AgentPendingRequest;
@@ -249,6 +276,13 @@ export class AgentRuntime {
   private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
+  /** The inbox rows the live turn's digest accounts for, marked read when it
+   *  ends. See `renderDigest` for why the overflow is in here too. */
+  private pendingDigest?: number[];
+  /** Whether a prompt carrying that digest was actually built. A turn stopped
+   *  before its first model call has shown the person nothing, so its rows stay
+   *  unread for the next turn. */
+  private digestDelivered = false;
 
   constructor(private readonly options: AgentRuntimeOptions) {
     this.paths = agentPaths(options.engineRoot);
@@ -266,13 +300,17 @@ export class AgentRuntime {
    * first turn, the first thread read or the first stream opens it; a machine
    * that never switches the Agent on never has one.
    */
-  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog } {
-    if (!this.opened || !this.log) {
+  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox } {
+    if (!this.opened || !this.log || !this.inboxTable) {
       const opened = openAgentCheckpointer(this.paths.threads);
       this.opened = opened;
       this.log = new AgentThreadLog(opened.db);
+      // THE SAME HANDLE, a third table on it. Two connections to one WAL
+      // database would be two things to close before a reset could move it —
+      // see `thread-log.ts`.
+      this.inboxTable = new AgentInbox(opened.db);
     }
-    return { opened: this.opened, log: this.log };
+    return { opened: this.opened, log: this.log, inbox: this.inboxTable };
   }
 
   /**
@@ -387,6 +425,7 @@ export class AgentRuntime {
     this.opened?.close();
     this.opened = undefined;
     this.log = undefined;
+    this.inboxTable = undefined;
   }
 
   /**
@@ -440,8 +479,24 @@ export class AgentRuntime {
 
   state(): AgentStateAnswer {
     const settings = readAgentSettings(this.paths);
+    /**
+     * THE BADGE'S NUMBER RIDES THE STATE THE RAIL ALREADY POLLS (#541 A).
+     *
+     * `/v2/agent` is asked every three seconds by the sidebar entry's own hook,
+     * for the status line; a second route for one integer would be a second
+     * request on the same cadence answering a question this one is already
+     * making a round trip for. It is a COUNT and not the rows: the section above
+     * the composer pages those when it is opened.
+     *
+     * ZERO WHEN THERE IS NO THREAD, which is the guard that keeps a machine
+     * whose Agent has never been switched on from growing a database because
+     * something read its state — the same condition `thread()` and `cursor()`
+     * check before they open anything.
+     */
+    const unread = settings.threadId ? this.inbox({ limit: 1 }).unread : 0;
     return {
       enabled: settings.enabled,
+      inboxUnread: unread,
       ...(settings.threadId ? { threadId: settings.threadId } : {}),
       ...(settings.model ? { model: settings.model } : {}),
       ...(settings.effort ? { effort: settings.effort } : {}),
@@ -540,24 +595,62 @@ export class AgentRuntime {
   }
 
   /**
-   * A SESSION'S COMPLETION OR PARKED REQUEST, AS A TURN.
+   * A SESSION'S COMPLETION OR PARKED REQUEST, AS AN INBOX ROW — AND NO TURN
+   * (#541 A).
    *
-   * The notice is the input, exactly as it is for a session: what a wake hands
-   * a model is the engine's own sentence about what happened, not the peer's
-   * text — which the Agent can read with `sessions_read` if it wants it.
-   * Marked `origin: "wake"` so the transcript can draw it as something that
-   * arrived rather than something the person said.
+   * THIS IS THE CHANGE THE ISSUE IS ABOUT. A wake used to `submit` a turn whose
+   * input was the engine's notice: a model call, a lap of the graph, a
+   * transcript row, tokens — to announce a fact nobody had asked about. Four
+   * workers under one Agent meant four such turns at 3am, each re-reading the
+   * whole conversation to say "that one finished too". The Agent does not ACT on
+   * a completion; it tells the person about it the next time they speak. So the
+   * happening becomes one row in `./inbox.ts`, and `./digest.ts` renders what is
+   * unread at the top of the next turn a PERSON begins.
    *
-   * SILENT WHEN THE AGENT IS OFF. A subscription outliving the switch is a real
-   * state — the store keeps subscription rows — and a wake it produces has
-   * nowhere to go. Throwing would fail the turn whose ending caused it.
+   * THE ROW IS PUSHED to whoever is watching the stream, so a cockpit can badge
+   * it without waiting for its next poll.
+   *
+   * SILENT WHEN THE AGENT IS OFF, and for the same reason it always was: a
+   * subscription outliving the switch is a real state — the store keeps
+   * subscription rows — and a wake it produces has nowhere to go. Throwing would
+   * fail the turn whose ending caused it.
    */
-  wake(input: { notice: string; wakeReason?: Record<string, unknown> }): void {
+  wake(input: { notification: NotificationDetail }): AgentInboxRow | undefined {
     try {
-      this.submit({ text: input.notice, origin: "wake", ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}) });
+      const threadId = readAgentSettings(this.paths).threadId;
+      if (!threadId) return undefined;
+      const fields = inboxRowFromNotification(input.notification);
+      if (!fields) return undefined;
+      const row = this.open().inbox.append({ threadId, at: this.now(), ...fields });
+      this.push({ type: "inbox", row });
+      return row;
     } catch {
       // Switched off, or reset out from under the subscription.
+      return undefined;
     }
+  }
+
+  /* -------------------------------------------------------------- *
+   * The inbox.
+   * -------------------------------------------------------------- */
+
+  /** A page of the inbox, newest-ward from a cursor. `unreadOnly` is what the
+   *  section above the composer asks for. */
+  inbox(options: { after?: number; limit?: number; unreadOnly?: boolean } = {}): { rows: AgentInboxRow[]; cursor: number; more: boolean; unread: number } {
+    const threadId = readAgentSettings(this.paths).threadId;
+    if (!threadId) return { rows: [], cursor: 0, more: false, unread: 0 };
+    const { inbox } = this.open();
+    return { ...inbox.page(threadId, options), unread: inbox.unreadCount(threadId) };
+  }
+
+  /** Mark rows read by id, and answer how many actually moved. A client that
+   *  sends an id twice, or one already read, is told `0` rather than being
+   *  congratulated on a write that did nothing. */
+  markInboxRead(ids: readonly number[]): { read: number; unread: number } {
+    const threadId = readAgentSettings(this.paths).threadId;
+    if (!threadId) return { read: 0, unread: 0 };
+    const { inbox } = this.open();
+    return { read: inbox.markRead(threadId, ids), unread: inbox.unreadCount(threadId) };
   }
 
   /**
@@ -647,6 +740,8 @@ export class AgentRuntime {
         this.answer = undefined;
         this.turnThreadId = undefined;
         this.spend = undefined;
+        this.pendingDigest = undefined;
+        this.digestDelivered = false;
       }
     }
   }
@@ -670,9 +765,33 @@ export class AgentRuntime {
       this.row("turn_started", turn.runId, { origin: turn.origin });
     }
 
+    /**
+     * THE DIGEST OPENS EVERY TURN A PERSON BEGAN (#541 A).
+     *
+     * ── WHY ONLY A HUMAN-STARTED TURN ───────────────────────────────────────
+     * Nothing else starts one any more. A wake writes a row and stops (see
+     * `wake`), and a RESUME continues a turn that already opened with a digest —
+     * re-rendering it after an approval would tell the model the same news twice
+     * inside one conversation, and mark rows read against a turn that had
+     * already accounted for them.
+     *
+     * ── AND WHY IT RIDES THE SYSTEM MESSAGE ─────────────────────────────────
+     * The digest is ENGINE PROSE, and #550 is exactly about engine prose not
+     * riding the channel a person types on. The system message is rebuilt per
+     * turn and is never checkpointed (`buildGraph` passes `[system, ...history]`
+     * and only `history` is graph state), so it is also the one slot where a
+     * digest cannot accumulate: turn forty does not re-read turn three's news,
+     * and the trim budget accounts for the block honestly through
+     * `reservedChars`.
+     */
+    const digest = !turn.resume && turn.origin === "human" ? renderDigest(this.open().inbox.unread(threadId)) : undefined;
+    this.pendingDigest = digest?.rowIds;
+    this.digestDelivered = false;
+
     const tools = this.options.tools();
     const graph = this.buildGraph({
       tools,
+      ...(digest ? { digest: digest.text } : {}),
       // EFFORT RIDES THE MODEL, because it is a property of the REQUEST rather
       // than of the conversation — read per turn, like the model itself and the
       // key behind it, so a person changing the pill gets it on their next
@@ -759,6 +878,30 @@ export class AgentRuntime {
     // mid-turn belongs to a conversation that no longer exists, and its meter
     // with it.
     if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars };
+    /**
+     * THE DIGEST'S ROWS ARE READ NOW — every ending, not only the happy one
+     * (#541 A).
+     *
+     * A turn that was shown the news and then failed was still shown it, and
+     * re-announcing four completions at the top of the next turn because the
+     * first one fell over would make the digest a thing that repeats until a
+     * turn happens to succeed. The guard is `digestDelivered`, not the status:
+     * what matters is whether a prompt carrying the block was ever built.
+     *
+     * NOT GUARDED ON `row` LIKE THE METER ABOVE. A reset mid-turn archives the
+     * whole database, inbox and all, so there is nothing left to mark and the
+     * call is a no-op on the new file's empty table.
+     */
+    if (this.pendingDigest && this.digestDelivered) {
+      try {
+        this.markInboxRead(this.pendingDigest);
+      } catch {
+        // A thread closed or archived underneath this is not worth failing a
+        // turn's ending over.
+      }
+    }
+    this.pendingDigest = undefined;
+    this.digestDelivered = false;
   }
 
   /**
@@ -790,7 +933,7 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"] }) {
+  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
@@ -806,7 +949,10 @@ export class AgentRuntime {
       type: "function" as const,
       function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool.shape) },
     }));
-    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.()].filter(Boolean).join("\n\n"));
+    // THE DIGEST GOES LAST, under the briefing and the orientation: it is the
+    // most recent thing in the prompt and the least permanent, and a reader
+    // arriving at it has already been told what it is looking at.
+    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), context.digest].filter(Boolean).join("\n\n"));
     const budget = this.options.budgetChars;
 
     const callModel = async (state: AgentGraphStateType, config?: RunnableConfig): Promise<Partial<AgentGraphStateType>> => {
@@ -814,6 +960,10 @@ export class AgentRuntime {
       // state — so a node that somehow ran without one says so rather than
       // dereferencing undefined.
       if (!context.model) throw new Error("the Agent has no model for this turn");
+      // THE DIGEST HAS BEEN DELIVERED once a prompt carrying it has been built.
+      // `endedRow` marks its rows read only after this, so a turn stopped before
+      // it ever reached the model leaves the news unread for the next one.
+      if (context.digest) this.digestDelivered = true;
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
       // THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
       // MODEL sees and never what the transcript holds.

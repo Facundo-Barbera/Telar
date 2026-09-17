@@ -119,6 +119,26 @@ struct SessionSidebar: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
                                             Text("Agent").font(.subheadline)
+                                            // WHAT CAME IN WHILE THE SCREEN WAS
+                                            // SHUT (#541 A). A wake no longer
+                                            // starts a turn, so without this the
+                                            // sidebar cannot say anything
+                                            // arrived. A COUNT and never a tone:
+                                            // whether any of it is waiting on a
+                                            // person is the status line's job,
+                                            // one line down, and two things
+                                            // competing to signal urgency on one
+                                            // row is how neither gets read.
+                                            if let badge = row.badge {
+                                                Text(badge)
+                                                    .font(Theme.monoSmall)
+                                                    .monospacedDigit()
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 1)
+                                                    .background(Theme.surface, in: Capsule())
+                                                    .foregroundStyle(Theme.textMuted)
+                                                    .accessibilityLabel("\(badge) unread")
+                                            }
                                             // WHICH MAC, and only when there is more
                                             // than one to tell apart — the rule
                                             // `HostLabel` applies to every other row

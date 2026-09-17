@@ -10,7 +10,10 @@
  *     so rather than 500ing;
  *   - the transcript pages by cursor;
  *   - the stream replays from a cursor and then pushes, on one connection;
- *   - reset archives and bumps the generation.
+ *   - reset archives and bumps the generation;
+ *   - a wake writes an inbox row and starts no turn (#541 A), the inbox pages
+ *     and clamps, marking read moves a row once, the row is pushed on the
+ *     stream, and the next human turn opens with the digest and clears it.
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -22,6 +25,7 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { ChatResult } from "@langchain/core/outputs";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import { AGENT_SELF_ID } from "../src/agent/identity";
 import { stubModels } from "./stub-models";
 
 /**
@@ -384,4 +388,148 @@ test("the thread route and the stream both carry what the assistant said before 
 
   controller.abort();
   await pump;
+});
+
+/* ------------------------------------------------------------------ *
+ * The wake inbox — issue #541, section A.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A REAL WAKE, THROUGH THE REAL PATH: a session the Agent subscribed to finishes
+ * a turn, the store fans the subscription out, and the daemon's sink is what
+ * catches the one subscriber that is not a session. Nothing here reaches into
+ * the runtime — the point is that the wiring between the three holds.
+ */
+async function workerCompletes(daemon: EngineDaemon, runId = "run_worker"): Promise<string> {
+  const store = daemon.store;
+  if (store.listProjects().length === 0) store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
+  const sessionId = `session_${runId}`;
+  store.createSession({ id: sessionId, projectId: "project_one" });
+  store.subscribe(AGENT_SELF_ID, { targetSessionId: sessionId, events: ["turn_completed"] });
+  store.submitTurn(sessionId, { runId, input: "work" });
+  const token = store.claimTurn(sessionId, `worker_${runId}`)!.claim!.token;
+  store.markRunning(sessionId, runId, token);
+  store.completeTurn(sessionId, runId, token, { text: "done" });
+  return sessionId;
+}
+
+test("a subscribed session finishing writes an inbox row and starts no Agent turn", async () => {
+  const { daemon, client } = await engine();
+  await client.setAgent({ enabled: true });
+  const sessionId = await workerCompletes(daemon);
+
+  const state = (await client.agent()).agent;
+  // NOT A TURN. This is the whole of #541 A at the seam a client can see.
+  expect(state.running).toBe(false);
+  expect(state.queued).toBe(0);
+  expect(state.inboxUnread).toBe(1);
+  expect((await client.agentThread()).rows).toHaveLength(0);
+
+  const inbox = await client.agentInbox();
+  expect(inbox.rows).toHaveLength(1);
+  expect(inbox.rows[0]).toMatchObject({ sessionId, runId: "run_worker", kind: "turn_completed", read: false });
+  expect(inbox.rows[0]!.summary).toContain("[wake: completed]");
+  expect(inbox.unread).toBe(1);
+  expect(inbox.more).toBe(false);
+});
+
+test("the inbox pages by cursor, filters to unread, and clamps its limit", async () => {
+  const { daemon, client } = await engine();
+  await client.setAgent({ enabled: true });
+  await workerCompletes(daemon, "run_one");
+  await workerCompletes(daemon, "run_two");
+  await workerCompletes(daemon, "run_three");
+
+  const first = await client.agentInbox({ limit: 2 });
+  expect(first.rows.map((row) => row.runId)).toEqual(["run_one", "run_two"]);
+  expect(first.more).toBe(true);
+  const second = await client.agentInbox({ after: first.cursor, limit: 2 });
+  expect(second.rows.map((row) => row.runId)).toEqual(["run_three"]);
+  expect(second.more).toBe(false);
+
+  // A LIMIT PAST THE CEILING IS CLAMPED, not refused: the store's own bound is
+  // the one that pages, and a second set here would be a second thing to keep
+  // in step with it.
+  expect((await client.agentInbox({ limit: 5_000 })).rows).toHaveLength(3);
+
+  await client.markAgentInboxRead([first.rows[0]!.id]);
+  expect((await client.agentInbox({ unreadOnly: true })).rows.map((row) => row.runId)).toEqual(["run_two", "run_three"]);
+  expect((await client.agentInbox()).unread).toBe(2);
+});
+
+test("marking read moves a row once, and a bad body is refused rather than ignored", async () => {
+  const { daemon, client } = await engine();
+  await client.setAgent({ enabled: true });
+  await workerCompletes(daemon);
+  const id = (await client.agentInbox()).rows[0]!.id;
+
+  expect(await client.markAgentInboxRead([id])).toEqual({ read: 1, unread: 0 });
+  expect(await client.markAgentInboxRead([id])).toEqual({ read: 0, unread: 0 });
+  expect((await client.agent()).agent.inboxUnread).toBe(0);
+
+  const bad = await fetch(`http://${daemon.discovery.host}:${daemon.discovery.port}/v2/agent/inbox/read`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${daemon.discovery.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ ids: "everything" }),
+  });
+  expect(bad.status).toBe(400);
+});
+
+test("an inbox row is pushed on the stream, so a client can badge it without polling", async () => {
+  const { daemon, client } = await engine();
+  await client.setAgent({ enabled: true });
+
+  const stream = client.agentStream(0);
+  const controller = new AbortController();
+  const response = await fetch(stream.url, { headers: stream.headers, signal: controller.signal });
+
+  const inboxFrames: Array<{ type: string; row: { kind: string; sessionId: string } }> = [];
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        for (;;) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary === -1) break;
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!frame.startsWith("data:")) continue;
+          const event = JSON.parse(frame.slice(5).trim()) as { type: string; row: { kind: string; sessionId: string } };
+          if (event.type === "inbox") inboxFrames.push(event);
+        }
+      }
+    } catch {
+      // The abort below is how this ends.
+    }
+  })();
+
+  const sessionId = await workerCompletes(daemon);
+  await until(async () => inboxFrames.length >= 1, "the inbox frame");
+  expect(inboxFrames[0]!.row).toMatchObject({ kind: "turn_completed", sessionId });
+
+  controller.abort();
+  await pump;
+});
+
+test("the digest opens the next turn a person begins, and clears the inbox", async () => {
+  const { daemon, client } = await engine([{ text: "I read the digest." }]);
+  await client.setAgent({ enabled: true });
+  await workerCompletes(daemon);
+  expect((await client.agent()).agent.inboxUnread).toBe(1);
+
+  await client.sendAgentTurn("what happened?");
+  await until(async () => (await client.agentThread()).rows.some((row) => row.kind === "turn_done"), "the turn");
+
+  // THE TRANSCRIPT KEEPS THE PERSON'S WORDS ALONE. The digest is engine prose
+  // and rides the system message; a row carrying it would put the engine's
+  // summary in the person's bubble, which is the mistake #550 fixed.
+  const user = (await client.agentThread()).rows.find((row) => row.kind === "user_message")!;
+  expect(user.detail.text).toBe("what happened?");
+  expect((await client.agent()).agent.inboxUnread).toBe(0);
+  expect((await client.agentInbox()).rows[0]!.read).toBe(true);
 });

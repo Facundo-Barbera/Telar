@@ -121,11 +121,29 @@ const STATUS_TONE = {
   idle: "text-sidebar-foreground/45",
 } as const;
 
+/**
+ * THE BADGE'S NUMBER, CLAMPED TO A LABEL — issue #541, section A.
+ *
+ * A wake no longer starts an Agent turn, so the rail is the only place a person
+ * learns that four workers finished overnight without opening the screen. `0`
+ * and `undefined` are both NOTHING TO SHOW, and they are different facts: zero
+ * is an engine saying the inbox is empty, absent is a Mac too old to have one.
+ * Neither draws a badge, so the distinction costs the row nothing.
+ *
+ * `99+` BECAUSE THE ROW HAS A FIXED WIDTH and the difference between 143 and 208
+ * waiting updates is not one anybody acts on differently.
+ */
+export function agentBadgeLabel(unread: number | undefined): string | undefined {
+  if (!unread || unread <= 0) return undefined;
+  return unread > 99 ? "99+" : String(unread);
+}
+
 export function AgentEntry({
   hostId,
   active,
   onNavigate,
   status,
+  unread,
 }: {
   /** The Mac this row is about — the one the address bar names. `undefined`
    *  and `LOCAL_HOST_ID` both mean this cockpit's own engine. */
@@ -138,8 +156,12 @@ export function AgentEntry({
    * caller with the state already in hand passes it straight through.
    */
   status?: ReturnType<typeof agentStatus>;
+  /** How many wakes are waiting, off the same state the status line comes from.
+   *  Injected for the same reason. */
+  unread?: number;
 }) {
   const line = status ?? agentStatus(undefined);
+  const badge = agentBadgeLabel(unread);
   return (
     <div className={`group/agent relative flex items-center rounded-md ${active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"}`}>
       <Link
@@ -154,7 +176,23 @@ export function AgentEntry({
       >
         <SparklesIcon aria-hidden className="size-4 shrink-0 text-sidebar-foreground/50" />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="min-w-0 truncate text-sm text-sidebar-foreground">{AGENT_LABEL}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 flex-1 truncate text-sm text-sidebar-foreground">{AGENT_LABEL}</span>
+            {/* WHAT CAME IN WHILE THE SCREEN WAS SHUT (#541 A). A wake no longer
+                starts a turn, so without this the rail has no way to say that
+                anything arrived at all. It is a COUNT and never a tone: whether
+                any of it is waiting on a person is the status line's job, one
+                line down, and two things competing to signal urgency on one row
+                is how neither gets read. */}
+            {badge && (
+              <span
+                aria-label={`${badge} unread`}
+                className="shrink-0 rounded-full bg-sidebar-foreground/15 px-1.5 py-px text-2xs tabular-nums text-sidebar-foreground/80"
+              >
+                {badge}
+              </span>
+            )}
+          </span>
           <span className={`inline-flex min-w-0 items-center gap-1 text-2xs ${STATUS_TONE[line.tone]}`}>
             {/* THE RAIL'S OWN GRAMMAR, not a second one: a spinner means still
                 going, a still dot means parked and waiting for a person. The
@@ -184,5 +222,16 @@ export function AgentEntry({
  */
 export function AgentEntryLive({ hostId, active, onNavigate }: { hostId?: string; active: boolean; onNavigate: () => void }) {
   const state = useAgentStatus(hostId ?? LOCAL_HOST_ID);
-  return <AgentEntry {...(hostId ? { hostId } : {})} active={active} onNavigate={onNavigate} status={agentStatus(state)} />;
+  return (
+    <AgentEntry
+      {...(hostId ? { hostId } : {})}
+      active={active}
+      onNavigate={onNavigate}
+      status={agentStatus(state)}
+      // THE BADGE RIDES THE POLL THAT WAS ALREADY HAPPENING. `inboxUnread` is on
+      // the same `/v2/agent` answer as the status line, so the count costs this
+      // row no second request — see `AgentState.inboxUnread`.
+      {...(state?.inboxUnread === undefined ? {} : { unread: state.inboxUnread })}
+    />
+  );
 }

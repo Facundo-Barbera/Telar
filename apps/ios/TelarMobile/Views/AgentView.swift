@@ -48,6 +48,13 @@ struct AgentView: View {
     /// families, context limits and the endpoint each id answers on, plus the
     /// service's own words when a half of it could not be read (#551).
     @State private var catalogue = AgentModelList(models: [], message: nil)
+    /// THE WAKE INBOX (#541 A) — unread rows only, ranked, and the true count
+    /// behind them. Read on the same poll as the state, because a wake landing
+    /// is not something anyone is watching for by the second and a third cadence
+    /// on this screen would be a third thing to reason about.
+    @State private var inboxRows: [AgentInboxRow] = []
+    @State private var inboxUnread = 0
+    @State private var inboxOpen = false
     /**
      STICK TO THE BOTTOM, THE WAY `SessionView` DOES (#539).
 
@@ -112,6 +119,12 @@ struct AgentView: View {
                     contextLine(meter, line)
                 }
                 transcript
+                // WHAT CAME IN WHILE NOBODY WAS TALKING TO IT (#541 A). A wake
+                // no longer starts an Agent turn, so nothing in the transcript
+                // above says four workers finished overnight — the Mac tells the
+                // model at the top of its next turn, and this tells the person
+                // before they type. Drawn only when something is unread.
+                inbox
                 composer
             }
         }
@@ -224,6 +237,95 @@ struct AgentView: View {
         }
     }
 
+    // ── THE WAKE INBOX ───────────────────────────────────────────────────────
+
+    /**
+     THE STRIP ABOVE THE COMPOSER — issue #541, section A.
+
+     COLLAPSED BY DEFAULT, AND ABSENT WHEN EMPTY. Absent is the ordinary case: a
+     phone watching a Mac with no fan-out running has nothing here and should
+     show nothing, not an empty box. When there IS something, the header alone
+     answers "how many, and is any of it waiting on me"; the rows are one tap
+     away, because the thing directly above the composer must not push the
+     conversation off a phone screen.
+
+     THE WORDS ARE THE MAC'S DIGEST VOCABULARY (`AgentInboxRow.verb`), because
+     this is the person's view of the rows the model was shown and two spellings
+     of one happening is the bug `describeWake` exists to prevent.
+     */
+    @ViewBuilder private var inbox: some View {
+        if !inboxRows.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { inboxOpen.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bell").font(.system(Theme.caption))
+                            Text("Inbox").font(Theme.meta.weight(.medium))
+                            Text(inboxSummary).font(Theme.meta)
+                            Image(systemName: inboxOpen ? "chevron.down" : "chevron.right").font(.system(Theme.caption))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(inboxRows.contains(where: \.needsYou) ? Theme.statusAmber : Theme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    // CLEARING IS A DECISION, NOT TIDYING: the unread rows are
+                    // the ones the Agent will open its next turn with, so
+                    // dismissing them means "I have read this, do not tell it".
+                    Button("Mark all read") {
+                        Task { await markRead(inboxRows.map(\.id)) }
+                    }
+                    .font(Theme.monoSmall)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textMuted)
+                }
+                if inboxOpen {
+                    ForEach(inboxRows) { row in
+                        HStack(spacing: 6) {
+                            Text(row.verb)
+                                .font(Theme.meta)
+                                .foregroundStyle(row.needsYou ? Theme.statusAmber : Theme.textMuted)
+                            Text("session …\(String(row.sessionId.suffix(6)))").font(Theme.monoSmall).foregroundStyle(Theme.textMuted)
+                            Text(row.line).font(Theme.meta).foregroundStyle(Theme.textMuted).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Button {
+                                Task { await markRead([row.id]) }
+                            } label: {
+                                Image(systemName: "checkmark").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Mark read: \(row.verb)")
+                        }
+                    }
+                    // THE NUMBER BEHIND A CAPPED LIST. The strip holds a
+                    // screenful; past that the honest answer is the count and
+                    // who can find the rest.
+                    if inboxUnread > inboxRows.count {
+                        Text("and \(inboxUnread - inboxRows.count) more — ask the Agent, it can find them with sessions_find.")
+                            .font(Theme.monoSmall)
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Agent inbox")
+        }
+    }
+
+    /// What the collapsed header says. A count, plus the one thing a person may
+    /// have to move on.
+    private var inboxSummary: String {
+        let waiting = inboxRows.filter { $0.kind == .requestOpened }.count
+        let count = max(inboxUnread, inboxRows.count)
+        let what = "\(count) \(count == 1 ? "update" : "updates")"
+        return waiting > 0 ? "\(what) · \(waiting) waiting on you" : what
+    }
+
     private func notice(_ text: String) -> some View {
         Text(text)
             .font(.footnote)
@@ -284,6 +386,7 @@ struct AgentView: View {
         await refreshState()
         await loadModels()
         await page()
+        await readInbox()
         loading = false
         // AFTER THE FIRST PAGE, AND ON EVERY RE-OPEN. This is the case the old
         // `onChange(of: rows.count)` anchor could not reach: the first page
@@ -295,10 +398,31 @@ struct AgentView: View {
             if Task.isCancelled { return }
             await refreshState()
             await page()
+            await readInbox()
             // NEW ROWS FOLLOW THE TAIL; a reader who scrolled up keeps their
             // place, because `rowsChanged` only pins when the count moved.
             scroll.rowsChanged(to: rows.count)
         }
+    }
+
+    /// THE UNREAD WAKES, RANKED. Fails soft like every other read here: a Mac
+    /// too old to serve the route, or one that did not answer, leaves whatever
+    /// is on screen and the strip simply does not appear.
+    private func readInbox() async {
+        guard let page = try? await api.agentInbox(after: 0, unreadOnly: true) else { return }
+        inboxRows = rankAgentInbox(page.rows)
+        inboxUnread = page.unread
+    }
+
+    /// Optimistic, for the strip's reason: a dismissal that waited a round trip
+    /// would feel broken over a slow link. A failed write is put right by the
+    /// next poll rather than left looking dismissed for ever.
+    private func markRead(_ ids: [Int]) async {
+        let gone = Set(ids)
+        inboxRows.removeAll { gone.contains($0.id) }
+        inboxUnread = max(0, inboxUnread - ids.count)
+        try? await api.markAgentInboxRead(ids)
+        await readInbox()
     }
 
     /// THE MODEL PILL'S LIST — `GET /v2/agent/models`, once per screen.
@@ -359,6 +483,10 @@ struct AgentView: View {
             let accepted = try await api.sendAgentTurn(text)
             if let agent = accepted.agent { state = agent }
             await page()
+            // THE TURN JUST OPENED WITH THE DIGEST, so those rows are read now.
+            // Waiting for the next poll would leave the strip claiming updates
+            // the Agent has already been handed.
+            await readInbox()
             scroll.rowsChanged(to: rows.count)
         } catch {
             failure = "That Mac refused the message."

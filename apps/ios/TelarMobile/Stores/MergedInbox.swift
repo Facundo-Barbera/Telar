@@ -63,7 +63,7 @@ func agentRows(_ parts: [(hostId: HostID, enabled: Bool, state: AgentState?)], f
     parts.compactMap { part in
         guard filter == nil || part.hostId == filter else { return nil }
         guard part.enabled else { return nil }
-        return HostedAgent(hostId: part.hostId, status: agentStatus(part.state))
+        return HostedAgent(hostId: part.hostId, status: agentStatus(part.state), unread: part.state?.inboxUnread ?? 0)
     }
 }
 
@@ -73,7 +73,20 @@ func agentRows(_ parts: [(hostId: HostID, enabled: Bool, state: AgentState?)], f
 struct HostedAgent: Identifiable, Equatable {
     let hostId: HostID
     var status: AgentStatus = AgentStatus(label: "…", tone: .idle)
+    /// HOW MANY WAKES ARE WAITING (#541 A) — the badge's number. A wake no
+    /// longer starts an Agent turn, so without this the sidebar has no way to
+    /// say that anything arrived while the screen was shut. `0` for a Mac whose
+    /// engine is too old to report one, which draws nothing either way.
+    var unread: Int = 0
     var id: HostID { hostId }
+
+    /// THE BADGE, CLAMPED TO A LABEL, or `nil` when there is nothing to show.
+    /// `99+` because the row has a fixed width and the difference between 143
+    /// and 208 waiting updates is not one anybody acts on differently.
+    var badge: String? {
+        guard unread > 0 else { return nil }
+        return unread > 99 ? "99+" : String(unread)
+    }
 }
 
 /// WHAT THE SIDEBAR'S AGENT ROW SAYS UNDERNEATH ITS NAME (#539).

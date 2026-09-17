@@ -98,6 +98,7 @@ import { readAgentModels } from "./models";
 import { DICTATION_OFF, DictationError } from "./dictation/token";
 import { dictationProvider } from "./dictation/provider";
 import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
+import { INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX } from "./agent/inbox";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
 import type { GhRunner } from "./github";
@@ -1277,14 +1278,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
   });
   /**
-   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES A TURN.
+   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES AN INBOX
+   * ROW — and no turn at all (#541 A).
    *
    * The store fans subscriptions out and finds one subscriber that is not a
    * session; this is where that one goes. Registered here rather than inside
    * the runtime because the direction matters: the runtime knows about the
    * store, and the store must not know about a graph.
+   *
+   * IT HANDS OVER THE NOTIFICATION WHOLE, the one `notification.ts` minted for
+   * every subscriber to this transition (#550), so the Agent's row and a
+   * session's notification item say the same sentence about the same fact.
    */
-  store.setAgentWakeSink((wake) => agentRuntime.wake({ notice: wake.input, wakeReason: wake.wakeReason as unknown as Record<string, unknown> }));
+  store.setAgentWakeSink((wake) => {
+    agentRuntime.wake({ notification: wake.notification });
+  });
   /**
    * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
    *
@@ -1649,6 +1657,46 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
           limit: positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit"),
         }));
+        return;
+      }
+      /**
+       * ══ THE WAKE INBOX — issue #541, section A ══
+       *
+       * WHAT REPLACED THE WAKE TURN. A completion on a subscribed session writes
+       * a row here and starts nothing; the next turn a person begins opens with
+       * a digest of what is unread. These two routes are what a client needs to
+       * draw the same thing the model was shown, and to clear it.
+       *
+       * BOUNDED LIKE EVERY OTHER READ IN THIS ENGINE (#515): `after` is an
+       * exclusive cursor, `limit` is clamped by the store, and `more` says
+       * whether the page stopped early. `unread=1` is the section above the
+       * composer; without it the route pages the whole inbox, which is what a
+       * "show everything" disclosure would ask for.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/agent/inbox") {
+        const unreadOnly = url.searchParams.get("unread");
+        writeJson(response, 200, agentRuntime.inbox({
+          after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
+          limit: positiveParam(url.searchParams.get("limit"), INBOX_PAGE_DEFAULT, INBOX_PAGE_MAX, "limit"),
+          ...(unreadOnly === "1" || unreadOnly === "true" ? { unreadOnly: true } : {}),
+        }));
+        return;
+      }
+      /**
+       * MARK ROWS READ, BY ID.
+       *
+       * BY ID AND NEVER "EVERYTHING", for `resolveAgentRequest`'s reason: a
+       * client holding a stale list must not be able to clear rows that landed
+       * after it last looked. `read` is how many actually MOVED, so a second
+       * press of the same button answers `0` rather than claiming a write that
+       * did nothing.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/agent/inbox/read") {
+        const input = await body(request);
+        const ids = Array.isArray(input.ids) ? input.ids.filter((id: unknown): id is number => typeof id === "number") : undefined;
+        if (!ids) throw new HttpError(400, "invalid_request", "ids must be a list of row ids");
+        if (ids.length > INBOX_PAGE_MAX) throw new HttpError(400, "invalid_request", `mark at most ${INBOX_PAGE_MAX} rows read at a time`);
+        writeJson(response, 200, agentRuntime.markInboxRead(ids));
         return;
       }
       if (request.method === "POST" && url.pathname.startsWith("/v2/agent/requests/")) {
