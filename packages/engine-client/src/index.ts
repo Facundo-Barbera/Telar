@@ -28,6 +28,7 @@ import {
   type GitignoreResult,
   type ComputerUseBackend,
   type ComputerUseStatus,
+  type AgentMessageIntent,
   type AgentOrientation,
   type InboxPolicy,
   type RememberedLogin,
@@ -373,6 +374,21 @@ export type AgentState = {
   /** The context meter, from the last turn that ENDED. Absent until one has;
    *  unchanged while the next runs, so it never blanks mid-thought. */
   lastUsage?: AgentLastUsage;
+  /**
+   * HOW MANY WAKES ARE WAITING — issue #541, section A.
+   *
+   * A completion or a parked request on a session the Agent subscribed to used
+   * to START A TURN. It now writes an INBOX ROW and starts nothing, and the next
+   * turn a person begins opens with a digest of what is unread.
+   *
+   * THE COUNT RIDES THIS ANSWER rather than a route of its own because the rail
+   * already polls `/v2/agent` every few seconds for the status line, and a badge
+   * is one integer. The rows themselves are `agentInbox()`.
+   *
+   * OPTIONAL ON THE WIRE: a Mac running an engine from before #541 sends none,
+   * and a client must read that as "no badge" rather than as zero waiting.
+   */
+  inboxUnread?: number;
 };
 
 export type AgentAnswer = {
@@ -479,16 +495,64 @@ export type AgentThreadAnswer = {
 };
 
 /**
+ * ONE ROW OF THE AGENT'S WAKE INBOX — issue #541, section A.
+ *
+ * A subscribed session finishing, failing, being stopped, or parking a request
+ * lands here instead of starting an Agent turn. The next turn a PERSON begins
+ * opens with a digest of what is unread, ranked: waiting on you, failed,
+ * completed, everything else counted.
+ *
+ * `summary` IS THE NOTIFICATION'S OWN LINE (#550) — the same first line a
+ * session's notification item shows — so the two surfaces cannot describe one
+ * completion in two different sentences.
+ */
+export type AgentInboxRow = {
+  /** Monotonic. The cursor a reader pages by, and the id `markAgentInboxRead`
+   *  takes. Its own id space: NOT a transcript row id. */
+  id: number;
+  at: number;
+  /** The session this is about. */
+  sessionId: string;
+  /** Its turn — the one that ended, or the one a request belongs to. */
+  runId: string;
+  /** The four wake transitions, plus `peer_message` for a message addressed to
+   *  the Agent. Nothing can address it yet (see `apps/engine/src/agent/identity.ts`);
+   *  the kind is in the vocabulary so the row that lands the day something can
+   *  needs no migration. */
+  kind: "turn_completed" | "turn_failed" | "turn_stopped" | "request_opened" | "peer_message";
+  /** For a peer message: what the sender said it was. */
+  intent?: AgentMessageIntent;
+  summary: string;
+  read: boolean;
+};
+
+export type AgentInboxAnswer = {
+  rows: AgentInboxRow[];
+  /** The id to pass as the next `after`. Unmoved when the page was empty. */
+  cursor: number;
+  more: boolean;
+  /** How many are unread IN TOTAL, not on this page — so a section showing five
+   *  rows can still badge the true number behind them. */
+  unread: number;
+};
+
+/**
  * ONE FRAME OF `GET /v2/agent/stream`.
  *
  * A ROW IS DURABLE AND PAGEABLE; A DELTA IS NEITHER. Tokens are pushed live and
  * stored nowhere — the `assistant_message` row that follows carries the whole
  * text, so a client joining mid-sentence sees the finished message a moment
  * later rather than half of one for ever.
+ *
+ * AN `inbox` FRAME IS A NUDGE. It is pushed the moment a wake lands so a cockpit
+ * can badge it without waiting for a poll, and it is NOT replayed by `after` —
+ * that cursor is the transcript's. A client that reconnects reads
+ * `agentInbox()`, which is the authoritative list.
  */
 export type AgentStreamEvent =
   | { type: "row"; row: AgentRow }
-  | { type: "delta"; runId: string; itemId: string; text: string };
+  | { type: "delta"; runId: string; itemId: string; text: string }
+  | { type: "inbox"; row: AgentInboxRow };
 
 export type SessionBootstrap = SessionSnapshot & {
   /**

@@ -1744,14 +1744,21 @@ function isDeltaOnlyBatch(observations: unknown[]): boolean {
 }
 
 /**
- * ONE WAKE, ON ITS WAY TO THE BUILT-IN AGENT (#531).
+ * ONE WAKE, ON ITS WAY TO THE BUILT-IN AGENT (#531, reshaped by #541 A).
  *
- * The same two things a session's wake carries — the NOTICE the model is handed
- * as its input, and the `WakeReason` that says which run on which session
- * caused it — with no turn around them, because the Agent's runtime is what
- * decides when to run one. See `setAgentWakeSink`.
+ * THE NOTIFICATION IS THE WHOLE OF IT NOW. It used to be the notice text plus a
+ * `WakeReason`, because the runtime turned both into a TURN — the text was the
+ * model's input and the reason was the row's provenance. Nothing on the far side
+ * starts a turn any more: the wake becomes one INBOX ROW (`agent/inbox.ts`) that
+ * the next human-started turn opens with. `NotificationDetail` already carries
+ * every field that row needs, minted once in `notification.ts` (#550), so
+ * handing over the notification rather than its two halves is what keeps the
+ * Agent's row and a session's notification item the same fact.
+ *
+ * STILL NO TURN AROUND IT: the Agent's runtime decides what a wake costs, which
+ * is now an INSERT rather than a conversation. See `setAgentWakeSink`.
  */
-export type AgentWake = { input: string; wakeReason: WakeReason };
+export type AgentWake = { notification: NotificationDetail };
 
 export class EngineStore {
   private executionStore?: ExecutionStore;
@@ -10086,18 +10093,46 @@ export class EngineStore {
       if (index >= 0) all.splice(index, 1);
       changed = true;
     };
+    /**
+     * ONE NOTIFICATION FOR EVERY SUBSCRIBER — minted here rather than per hit.
+     *
+     * Nothing in it is about WHO is being woken: it names the session that acted,
+     * its run, and the sentence the engine wrote about the transition. Two
+     * subscribers to one completion were being told the same fact in two objects
+     * built from the same inputs, which is the drift `notification.ts` exists to
+     * prevent, one level up. It is read and never written (`holdNotification`
+     * stores it, `mergeNotifications` builds new ones), so sharing it is safe.
+     *
+     * AND IT IS WHAT THE AGENT'S BRANCH HANDS OVER TOO (#541 A), so an inbox row
+     * and a session's notification item cannot describe the same completion
+     * differently.
+     *
+     * THE WAKE TEXT IS ITS BODY, NOT A TURN'S INPUT (#550). Same sentence, same
+     * author — what changed is where it sits. On `input` it was engine prose in
+     * the slot a person's words occupy, and every reader downstream had to be
+     * told in prose not to believe it. Here it is labelled as what it is, and
+     * `input` says only that a notification arrived. See `notificationLabel`.
+     */
+    const notification = wakeNotification({
+      wakeKind: kind,
+      targetSessionId,
+      runId: turn.runId,
+      ...(context.request ? { requestId: context.request.id } : {}),
+      body: wakeMessage(kind, target, turn, context),
+    });
     for (const subscription of hits) {
       const subscriberId = subscription.subscriberSessionId;
       if (subscriberId === targetSessionId) continue;
       /**
-       * THE AGENT'S WAKE DOES NOT GO THROUGH `submitTurn` (#531).
+       * THE AGENT'S WAKE STARTS NOTHING (#531, changed by #541 A).
        *
        * Everything below is a turn on a SESSION — a queue, a backlog cap, a
-       * coalesce against what is already queued there. The Agent has no queue
-       * in this store; its turns live on a LangGraph thread and are ordered by
-       * its own runtime. So the notice is handed over and the runtime decides
-       * what to do with it, and the one-shot is spent here on the same rule as
-       * every other subscription.
+       * mailbox, a coalesce against what is already queued there. The Agent has
+       * none of that machinery in this store, and as of #541 it wants none: a
+       * wake becomes an INBOX ROW on its thread and the next turn a PERSON
+       * begins opens with a digest of what is unread. So the notification is
+       * handed over and the runtime writes a row; the one-shot is still spent
+       * here, on the same rule as every other subscription.
        *
        * THE SINK IS OPTIONAL AND A MISS IS SILENT. An engine whose Agent is
        * switched off has no sink registered, and a wake for a subscription it
@@ -10106,15 +10141,7 @@ export class EngineStore {
        */
       if (isAgentSelf(subscriberId)) {
         try {
-          this.agentWakeSink?.({
-            input: wakeMessage(kind, target, turn, context),
-            wakeReason: {
-              kind,
-              sessionId: targetSessionId,
-              runId: turn.runId,
-              ...(context.request ? { requestId: context.request.id } : {}),
-            },
-          });
+          this.agentWakeSink?.({ notification });
         } catch {
           // The Agent's own runtime refusing a wake must not fail the turn
           // whose ending caused it — `fireSubscriptions`' contract, applied to
@@ -10153,22 +10180,6 @@ export class EngineStore {
         runId: turn.runId,
         ...(context.request ? { requestId: context.request.id } : {}),
       };
-      /**
-       * THE WAKE TEXT BECOMES THE NOTIFICATION'S BODY, not the turn's input.
-       *
-       * Same sentence, same author — what changed is where it sits. On `input`
-       * it was engine prose in the slot a person's words occupy, and every
-       * reader downstream had to be told in prose not to believe it. On the
-       * notification it is labelled as what it is, and `input` says only that a
-       * notification arrived. See `notificationLabel`.
-       */
-      const notification = wakeNotification({
-        wakeKind: kind,
-        targetSessionId,
-        runId: turn.runId,
-        ...(context.request ? { requestId: context.request.id } : {}),
-        body: wakeMessage(kind, target, turn, context),
-      });
       /**
        * SETTLED ONLY, BY DEFAULT — #550 clause 3.
        *

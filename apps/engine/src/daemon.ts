@@ -1277,14 +1277,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     orientation: () => (store.getAgentOrientation().preamble ? TELAR_ORIENTATION : undefined),
   });
   /**
-   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES A TURN.
+   * A COMPLETION OR A PARKED REQUEST ON A SUBSCRIBED SESSION BECOMES AN INBOX
+   * ROW — and no turn at all (#541 A).
    *
    * The store fans subscriptions out and finds one subscriber that is not a
    * session; this is where that one goes. Registered here rather than inside
    * the runtime because the direction matters: the runtime knows about the
    * store, and the store must not know about a graph.
+   *
+   * IT HANDS OVER THE NOTIFICATION WHOLE, the one `notification.ts` minted for
+   * every subscriber to this transition (#550), so the Agent's row and a
+   * session's notification item say the same sentence about the same fact.
    */
-  store.setAgentWakeSink((wake) => agentRuntime.wake({ notice: wake.input, wakeReason: wake.wakeReason as unknown as Record<string, unknown> }));
+  store.setAgentWakeSink((wake) => {
+    agentRuntime.wake({ notification: wake.notification });
+  });
   /**
    * AN APPROVAL THIS MACHINE PARKED BEFORE IT LAST STOPPED, FOUND AGAIN.
    *

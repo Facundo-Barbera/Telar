@@ -60,20 +60,28 @@
  * human message while a turn runs is QUEUED rather than steered: LangGraph's
  * unit of execution is a graph invocation on a thread, and injecting into one
  * mid-flight would mean writing to `messages` from outside the graph, behind
- * the checkpointer's back. Wakes queue on the same line, so a person's message
- * and a session's completion cannot interleave into one prompt.
+ * the checkpointer's back.
+ *
+ * ── AND A WAKE IS NOT A TURN AT ALL ANY MORE (#541 A) ───────────────────────
+ * A wake used to queue on that same line, on the reading that a person's
+ * message and a session's completion must not interleave into one prompt. True,
+ * and beside the point: a completion is not something to say to the Agent, it is
+ * something to TELL THE PERSON, next time they speak. So `wake` writes a row in
+ * `./inbox.ts` and starts nothing. Four workers finishing overnight cost four
+ * INSERTs, where they used to cost four conversations.
  */
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interrupt } from "@langchain/langgraph";
 import crypto from "node:crypto";
-import type { AgentSettings } from "@telar/engine-client";
+import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { toolInputSchema } from "../mcp-socket";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
+import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
 import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
@@ -182,13 +190,26 @@ export type AgentStateAnswer = {
    *  has, and unchanged while the next runs, because a meter that emptied
    *  itself the moment you spoke would answer a question nobody asked. */
   lastUsage?: AgentLastUsage;
+  /** How many wakes are waiting in the inbox (#541 A) — the badge's number, on
+   *  the state the rail already polls. `0` on a machine with no thread. */
+  inboxUnread: number;
 };
 
-/** What a watcher is pushed. A row is durable and pageable; a delta is neither,
- *  and is folded into the assistant row when the message completes. */
+/**
+ * What a watcher is pushed. A row is durable and pageable; a delta is neither,
+ * and is folded into the assistant row when the message completes.
+ *
+ * AN `inbox` FRAME IS A NUDGE, NOT A FEED (#541 A). It is pushed when a wake
+ * lands so a cockpit can badge the entry without waiting for its next poll, and
+ * it is deliberately NOT replayed by the stream's `after` — that cursor is the
+ * TRANSCRIPT's, and an inbox row has its own id space. A client that reconnects
+ * reads `GET /v2/agent/inbox`, which is the authoritative list; this frame only
+ * saves it the wait.
+ */
 export type AgentStreamEvent =
   | { type: "row"; row: AgentRow }
-  | { type: "delta"; runId: string; itemId: string; text: string };
+  | { type: "delta"; runId: string; itemId: string; text: string }
+  | { type: "inbox"; row: AgentInboxRow };
 
 export type AgentRuntimeOptions = {
   engineRoot: string;
@@ -231,6 +252,9 @@ export class AgentRuntime {
   private readonly now: () => number;
   private opened?: OpenedCheckpointer;
   private log?: AgentThreadLog;
+  /** The wake inbox, on the same handle as the transcript — see `open`. Named
+   *  `inboxTable` because `inbox()` is the read method beside it. */
+  private inboxTable?: AgentInbox;
   private queue: QueuedTurn[] = [];
   private live?: { turn: QueuedTurn; controller: AbortController };
   private pending?: AgentPendingRequest;
@@ -266,13 +290,17 @@ export class AgentRuntime {
    * first turn, the first thread read or the first stream opens it; a machine
    * that never switches the Agent on never has one.
    */
-  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog } {
-    if (!this.opened || !this.log) {
+  private open(): { opened: OpenedCheckpointer; log: AgentThreadLog; inbox: AgentInbox } {
+    if (!this.opened || !this.log || !this.inboxTable) {
       const opened = openAgentCheckpointer(this.paths.threads);
       this.opened = opened;
       this.log = new AgentThreadLog(opened.db);
+      // THE SAME HANDLE, a third table on it. Two connections to one WAL
+      // database would be two things to close before a reset could move it —
+      // see `thread-log.ts`.
+      this.inboxTable = new AgentInbox(opened.db);
     }
-    return { opened: this.opened, log: this.log };
+    return { opened: this.opened, log: this.log, inbox: this.inboxTable };
   }
 
   /**
@@ -387,6 +415,7 @@ export class AgentRuntime {
     this.opened?.close();
     this.opened = undefined;
     this.log = undefined;
+    this.inboxTable = undefined;
   }
 
   /**
@@ -440,8 +469,24 @@ export class AgentRuntime {
 
   state(): AgentStateAnswer {
     const settings = readAgentSettings(this.paths);
+    /**
+     * THE BADGE'S NUMBER RIDES THE STATE THE RAIL ALREADY POLLS (#541 A).
+     *
+     * `/v2/agent` is asked every three seconds by the sidebar entry's own hook,
+     * for the status line; a second route for one integer would be a second
+     * request on the same cadence answering a question this one is already
+     * making a round trip for. It is a COUNT and not the rows: the section above
+     * the composer pages those when it is opened.
+     *
+     * ZERO WHEN THERE IS NO THREAD, which is the guard that keeps a machine
+     * whose Agent has never been switched on from growing a database because
+     * something read its state — the same condition `thread()` and `cursor()`
+     * check before they open anything.
+     */
+    const unread = settings.threadId ? this.inbox({ limit: 1 }).unread : 0;
     return {
       enabled: settings.enabled,
+      inboxUnread: unread,
       ...(settings.threadId ? { threadId: settings.threadId } : {}),
       ...(settings.model ? { model: settings.model } : {}),
       ...(settings.effort ? { effort: settings.effort } : {}),
@@ -540,24 +585,61 @@ export class AgentRuntime {
   }
 
   /**
-   * A SESSION'S COMPLETION OR PARKED REQUEST, AS A TURN.
+   * A SESSION'S COMPLETION OR PARKED REQUEST, AS AN INBOX ROW — AND NO TURN
+   * (#541 A).
    *
-   * The notice is the input, exactly as it is for a session: what a wake hands
-   * a model is the engine's own sentence about what happened, not the peer's
-   * text — which the Agent can read with `sessions_read` if it wants it.
-   * Marked `origin: "wake"` so the transcript can draw it as something that
-   * arrived rather than something the person said.
+   * THIS IS THE CHANGE THE ISSUE IS ABOUT. A wake used to `submit` a turn whose
+   * input was the engine's notice: a model call, a lap of the graph, a
+   * transcript row, tokens — to announce a fact nobody had asked about. Four
+   * workers under one Agent meant four such turns at 3am, each re-reading the
+   * whole conversation to say "that one finished too". The Agent does not ACT on
+   * a completion; it tells the person about it the next time they speak. So the
+   * happening becomes one row in `./inbox.ts`, for the next turn to open with.
    *
-   * SILENT WHEN THE AGENT IS OFF. A subscription outliving the switch is a real
-   * state — the store keeps subscription rows — and a wake it produces has
-   * nowhere to go. Throwing would fail the turn whose ending caused it.
+   * THE ROW IS PUSHED to whoever is watching the stream, so a cockpit can badge
+   * it without waiting for its next poll.
+   *
+   * SILENT WHEN THE AGENT IS OFF, and for the same reason it always was: a
+   * subscription outliving the switch is a real state — the store keeps
+   * subscription rows — and a wake it produces has nowhere to go. Throwing would
+   * fail the turn whose ending caused it.
    */
-  wake(input: { notice: string; wakeReason?: Record<string, unknown> }): void {
+  wake(input: { notification: NotificationDetail }): AgentInboxRow | undefined {
     try {
-      this.submit({ text: input.notice, origin: "wake", ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}) });
+      const threadId = readAgentSettings(this.paths).threadId;
+      if (!threadId) return undefined;
+      const fields = inboxRowFromNotification(input.notification);
+      if (!fields) return undefined;
+      const row = this.open().inbox.append({ threadId, at: this.now(), ...fields });
+      this.push({ type: "inbox", row });
+      return row;
     } catch {
       // Switched off, or reset out from under the subscription.
+      return undefined;
     }
+  }
+
+  /* -------------------------------------------------------------- *
+   * The inbox.
+   * -------------------------------------------------------------- */
+
+  /** A page of the inbox, newest-ward from a cursor. `unreadOnly` is what the
+   *  section above the composer asks for. */
+  inbox(options: { after?: number; limit?: number; unreadOnly?: boolean } = {}): { rows: AgentInboxRow[]; cursor: number; more: boolean; unread: number } {
+    const threadId = readAgentSettings(this.paths).threadId;
+    if (!threadId) return { rows: [], cursor: 0, more: false, unread: 0 };
+    const { inbox } = this.open();
+    return { ...inbox.page(threadId, options), unread: inbox.unreadCount(threadId) };
+  }
+
+  /** Mark rows read by id, and answer how many actually moved. A client that
+   *  sends an id twice, or one already read, is told `0` rather than being
+   *  congratulated on a write that did nothing. */
+  markInboxRead(ids: readonly number[]): { read: number; unread: number } {
+    const threadId = readAgentSettings(this.paths).threadId;
+    if (!threadId) return { read: 0, unread: 0 };
+    const { inbox } = this.open();
+    return { read: inbox.markRead(threadId, ids), unread: inbox.unreadCount(threadId) };
   }
 
   /**
