@@ -83,6 +83,7 @@ import { agentToolSpecs, type AgentFleetCapability, type AgentMemoryCapability }
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
 import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
+import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
@@ -1017,7 +1018,10 @@ export class AgentRuntime {
         const [chunk] = part as [unknown, unknown];
         const message = chunk as { content?: unknown; id?: string; getType?: () => string };
         if (message?.getType?.() !== "ai") continue;
-        const text = typeof message.content === "string" ? message.content : "";
+        // BOTH SHAPES, because a streamed chunk carries whatever its route's
+        // client builds — a bare string on chat/completions, a text block on
+        // the other two. See `assistantText`.
+        const text = assistantText(message.content);
         if (text) this.push({ type: "delta", runId: turn.runId, itemId: message.id ?? turn.runId, text });
       }
       signal.throwIfAborted();
@@ -1297,7 +1301,7 @@ export class AgentRuntime {
        * the final assistant row is the same words in the conversation. Two
        * readers, two shapes, one of them keyed by run.
        */
-      const said = typeof answer.content === "string" ? answer.content : "";
+      const said = assistantText(answer.content);
       if (said.trim()) this.row("assistant_message", context.runId, { text: said, itemId: answer.id ?? context.runId });
       return { messages: [answer] };
     };
@@ -1490,7 +1494,7 @@ function lastAssistantText(messages: readonly BaseMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.getType() !== "ai") continue;
-    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    const content = assistantText(message.content);
     if (content.trim()) return content;
   }
   return "";
