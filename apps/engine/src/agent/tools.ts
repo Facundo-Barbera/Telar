@@ -50,6 +50,8 @@ import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools"
 import { err, failure, json, type ToolFactory } from "../tool-kit";
 import { SECTION_CHARS, STANDING_SECTION_KEYS, type StandingSection } from "./memory";
 import type { AgentRecallHit } from "./thread-log";
+import { head } from "../turn-summary";
+import type { GitHubIssueDetail, GitHubIssueRead, GitHubPullDetail, GitHubPullRead } from "@telar/engine-client";
 
 export { AGENT_SELF_ID } from "./identity";
 
@@ -265,6 +267,180 @@ export function agentMemoryTools(tool: ToolFactory, capability: AgentMemoryCapab
 }
 
 /* ------------------------------------------------------------------ *
+ * The one fact that is not a session — #541's owner decision 4.
+ * ------------------------------------------------------------------ */
+
+/**
+ * ONE ISSUE OR ONE PULL REQUEST, READ THROUGH `gh`.
+ *
+ * WHY THE AGENT HAS THIS AND NOTHING ELSE OUTSIDE TELAR. Every other fact a
+ * coordinator needs is a session's, and the sessions wall answers it. GitHub is
+ * the exception the owner named: "is #541 still open", "did the checks pass on
+ * that PR" and "what did the last comment say" come up constantly, the answer
+ * lives nowhere in this engine, and the alternative is the Agent assigning a
+ * session a turn to go and look.
+ *
+ * READ-ONLY, AND STRUCTURALLY SO. There is no merge here, no comment, no close
+ * — the capability has two methods and both are reads, so "the Agent merged my
+ * PR" is not a thing that can happen through a prompt. Merging stays where
+ * `projectPullMerge` put it: behind a person pressing a button that names the
+ * head commit they reviewed.
+ */
+export type AgentGitHubCapability = {
+  issue(projectId: string, number: number): Promise<GitHubIssueRead>;
+  pull(projectId: string, number: number): Promise<GitHubPullRead>;
+  /** Registered projects, so a number with no project named can resolve when
+   *  there is only one it could mean. */
+  projects(): Promise<Array<{ id: string; name: string }>>;
+};
+
+/** How much of the last comment rides along — `ANSWER_HEAD_CHARS`'s own number,
+ *  for its own reason: enough to know what was said, not enough to be a thread. */
+const COMMENT_HEAD_CHARS = 300;
+
+/** How many failing checks are named before the answer starts counting. A
+ *  person asks "what is red", and the first few are the answer. */
+const FAILING_CHECKS = 5;
+
+const GITHUB_STATUS =
+  "One GitHub issue or pull request by number: state, title, and for a PR its checks, mergeable state and review " +
+  "decision, plus the head of the last comment. Read-only — nothing here comments, closes or merges.";
+
+export function agentGitHubTools(tool: ToolFactory, capability: AgentGitHubCapability): unknown[] {
+  return [
+    tool(
+      "github_status",
+      GITHUB_STATUS,
+      {
+        number: z.number().int().min(1).describe("The issue or pull request number."),
+        kind: z.enum(["issue", "pull"]).optional().describe("Omit to try the pull request first and fall back to the issue."),
+        projectId: z.string().min(1).optional().describe("Whose repository. Omit only when this engine has one project."),
+      },
+      async (args) => {
+        const number = typeof args.number === "number" ? args.number : 0;
+        let projectId: string;
+        try {
+          projectId = await resolveGitHubProject(capability, args.projectId);
+        } catch (error) {
+          return err(failure(error));
+        }
+        const kind = args.kind === "issue" || args.kind === "pull" ? args.kind : undefined;
+        try {
+          if (kind !== "issue") {
+            const asPull = await capability.pull(projectId, number);
+            if ("pull" in asPull) return json(pullStatus(asPull.pull));
+            // NOT FOUND AS A PULL REQUEST IS NOT AN ERROR WHEN NO KIND WAS
+            // NAMED: GitHub numbers issues and pull requests from one sequence,
+            // so the same number is one or the other and asking is how you find
+            // out. Any OTHER failure — not signed in, not a repository — is
+            // about the machine and is reported rather than retried as an issue.
+            if (kind === "pull" || asPull.unavailable !== "not_found") return err(unavailableSentence(asPull, number, "pull request"));
+          }
+          const asIssue = await capability.issue(projectId, number);
+          if ("issue" in asIssue) return json(issueStatus(asIssue.issue));
+          return err(unavailableSentence(asIssue, number, "issue"));
+        } catch (error) {
+          return err(`Could not read #${number}: ${failure(error)}`);
+        }
+      },
+    ),
+  ];
+}
+
+/** The project a number means: the one it named, else the only one there is.
+ *  The refusal names the alternatives rather than saying "ambiguous". */
+async function resolveGitHubProject(capability: AgentGitHubCapability, named: unknown): Promise<string> {
+  if (typeof named === "string" && named.trim()) return named.trim();
+  const projects = await capability.projects();
+  if (projects.length === 1) return projects[0]!.id;
+  if (projects.length === 0) throw new Error("This engine has no projects, so there is no repository to ask GitHub about.");
+  throw new Error(
+    `Name the project whose repository this number is in — there are ${projects.length}: ${projects.map((project) => `${project.name} (${project.id})`).join(", ")}.`,
+  );
+}
+
+/** `gh`'s four reasons, as sentences a model can act on rather than a code. */
+function unavailableSentence(failed: { unavailable: string; message?: string }, number: number, what: string): string {
+  const because =
+    failed.unavailable === "not_found"
+      ? `there is no ${what} #${number} in that repository`
+      : failed.unavailable === "not_installed"
+        ? "the gh CLI is not installed on this machine"
+        : failed.unavailable === "not_authenticated"
+          ? "nobody is signed in to gh on this machine"
+          : failed.unavailable === "not_a_repository"
+            ? "that project is not a GitHub repository"
+            : failed.message || "gh could not answer";
+  return `Could not read #${number}: ${because}.`;
+}
+
+/** The last thing anybody said, clamped. Minimised comments are skipped — a
+ *  comment GitHub hid is not the state of the conversation. */
+function lastComment(comments: ReadonlyArray<{ author?: string; body: string; createdAt: number; minimized: boolean }>, older: number) {
+  const visible = comments.filter((comment) => !comment.minimized);
+  const last = visible.at(-1);
+  if (!last) return {};
+  return {
+    lastComment: { ...(last.author ? { by: last.author } : {}), at: last.createdAt, head: head(last.body, COMMENT_HEAD_CHARS) },
+    comments: visible.length + older,
+  };
+}
+
+function issueStatus(issue: GitHubIssueDetail) {
+  return {
+    kind: "issue" as const,
+    number: issue.number,
+    title: issue.title,
+    state: issue.state,
+    ...(issue.stateReason ? { stateReason: issue.stateReason } : {}),
+    ...(issue.author ? { author: issue.author } : {}),
+    // LABELS BY NAME. The stored row carries a colour beside each, which is a
+    // thing a panel draws and a model has no use for.
+    ...(issue.labels.length > 0 ? { labels: issue.labels.map((label) => label.name) } : {}),
+    ...(issue.assignees.length > 0 ? { assignees: issue.assignees } : {}),
+    url: issue.url,
+    updatedAt: issue.updatedAt,
+    ...lastComment(issue.comments, issue.olderComments),
+  };
+}
+
+function pullStatus(pull: GitHubPullDetail) {
+  const failing = pull.checks.filter((check) => check.conclusion && !["SUCCESS", "NEUTRAL", "SKIPPED"].includes(check.conclusion));
+  const running = pull.checks.filter((check) => check.status !== "COMPLETED");
+  return {
+    kind: "pull" as const,
+    number: pull.number,
+    title: pull.title,
+    state: pull.state,
+    ...(pull.isDraft ? { draft: true } : {}),
+    ...(pull.author ? { author: pull.author } : {}),
+    ...(pull.headRefName ? { head: pull.headRefName } : {}),
+    ...(pull.baseRefName ? { base: pull.baseRefName } : {}),
+    // GITHUB'S OWN WORDS, UNMAPPED — `GitHubPullDetail` argues it, and the two
+    // fields are different questions: do the trees combine, and will GitHub let
+    // you. UNKNOWN means ask again, not no.
+    mergeable: pull.mergeable,
+    mergeState: pull.mergeStateStatus,
+    ...(pull.reviewDecision ? { review: pull.reviewDecision } : {}),
+    checks:
+      pull.checks.length === 0
+        ? "none ran"
+        : {
+            total: pull.checks.length,
+            ...(running.length > 0 ? { running: running.length } : {}),
+            ...(failing.length > 0
+              ? { failing: failing.slice(0, FAILING_CHECKS).map((check) => check.name), ...(failing.length > FAILING_CHECKS ? { moreFailing: failing.length - FAILING_CHECKS } : {}) }
+              : {}),
+            ...(failing.length === 0 && running.length === 0 ? { green: true } : {}),
+          },
+    changed: { files: pull.changedFiles, additions: pull.additions, deletions: pull.deletions },
+    url: pull.url,
+    updatedAt: pull.updatedAt,
+    ...lastComment(pull.comments, pull.olderComments),
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * The wall.
  * ------------------------------------------------------------------ */
 
@@ -275,11 +451,13 @@ export type AgentWalls = {
   /** The Agent's own standing state and history search. Absent in a test that
    *  is only asking what the two shared walls hold. */
   memory?: AgentMemoryCapability;
+  /** The one read that is not about a Telar session — #541's owner decision 4. */
+  github?: AgentGitHubCapability;
 };
 
 /**
  * The Agent's whole tool list: 13 sessions tools, 3 query tools, 5 notes tools,
- * and the two it has about itself.
+ * one GitHub read, and the two it has about itself.
  *
  * SESSIONS FIRST, then the queries beside them, then the notebook — the order a
  * model is shown them in, and it is deliberate: the sessions wall is what the
@@ -292,6 +470,7 @@ export function collectAgentTools(walls: AgentWalls): SocketTool[] {
     ...collectTools(sessionsTools as never, walls.sessions as never),
     ...collectTools(agentQueryTools as never, walls.query as never),
     ...collectTools(notesTools as never, walls.notes as never),
+    ...(walls.github ? collectTools(agentGitHubTools as never, walls.github as never) : []),
     ...(walls.memory ? collectTools(agentMemoryTools as never, walls.memory as never) : []),
   ];
 }

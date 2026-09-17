@@ -1264,6 +1264,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // standing document and the transcript's search index, and this closure
         // is not called until a turn runs. See `AgentRuntime.memory`.
         memory: agentRuntime.memory(),
+        /**
+         * THE ONE READ THAT LEAVES THIS MACHINE — #541's owner decision 4.
+         *
+         * BOTH VERBS ARE THE STORE'S OWN, which is what keeps this bounded: they
+         * are the same cached, timeout-guarded, injectable-`gh` reads the panel
+         * uses (`projectIssue`, `projectPull`), so an Agent asking about a pull
+         * request four times in a turn spends one round trip and the second is
+         * the same thirty-second cache the cockpit hits.
+         */
+        github: {
+          issue: (projectId, number) => store.projectIssue(projectId, number),
+          pull: (projectId, number) => store.projectPull(projectId, number),
+          projects: async () => store.listProjects().map((project) => ({ id: project.id, name: project.name })),
+        },
       }),
     model:
       options.agentModel ??

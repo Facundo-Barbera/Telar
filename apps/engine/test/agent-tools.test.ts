@@ -113,16 +113,29 @@ test("the Agent's wall is the two walls plus the three query reads, and nothing 
  * ------------------------------------------------------------------ */
 
 test("the bound tool array stays well under what it was, with every tool still on it", () => {
-  const tools = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
-  const specs = agentToolSpecs(tools);
-  expect(specs).toHaveLength(21);
+  const shared = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
+  expect(shared).toHaveLength(21);
   /**
-   * 18,744 characters when #563 measured it, 11,584 now. A CEILING rather than
-   * an equality: prose is allowed to move, and the thing that must not come
-   * back is the tax — this array is resent on every lap of every turn, so a
-   * sentence added here is a sentence paid for a hundred times a day.
+   * 18,744 characters when #563 measured it, 11,576 now for the same 21 tools
+   * and 13,519 for the 24 the Agent actually binds. A CEILING rather than an
+   * equality: prose is allowed to move, and the thing
+   * that must not come back is the tax — this array is resent on every lap of
+   * every turn, so a sentence added here is a sentence paid for a hundred times
+   * a day.
    */
-  expect(JSON.stringify(specs).length).toBeLessThan(12_000);
+  expect(JSON.stringify(agentToolSpecs(shared)).length).toBeLessThan(12_000);
+
+  // AND THE WHOLE LIST THE AGENT ACTUALLY BINDS, three tools larger — the same
+  // ceiling applies to it, because it is the one that is resent.
+  const whole = collectAgentTools({
+    sessions: noSessions(),
+    notes: noNotes(),
+    query: noQueries(),
+    github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
+    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+  });
+  expect(whole).toHaveLength(24);
+  expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(14_000);
 });
 
 test("the model's copy drops the validator's bookkeeping and keeps every choice", () => {
