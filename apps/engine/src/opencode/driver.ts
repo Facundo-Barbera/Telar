@@ -219,7 +219,18 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
       };
       try {
         input.signal.throwIfAborted();
-        const parts = [{ type: "text" as const, text: input.prompt }, ...(input.attachments ?? []).map((attachment) => ({
+        /**
+         * A NOTIFICATION IS A SYNTHETIC PART — issue #550.
+         *
+         * OpenCode has no developer or system role on `session.prompt`, but its
+         * `TextPartInput` carries `synthetic` — the SDK's own word for "this was
+         * generated, not typed" — and that is the distinction being made. It is
+         * the OpenCode equivalent of the Claude driver's provenance stamp: the
+         * flag is structural, so a peer's report cannot pass for the person's by
+         * arriving on the same channel, and the notice's own text is what says
+         * which peer and where to read them.
+         */
+        const parts = [{ type: "text" as const, text: input.prompt, ...(input.notification ? { synthetic: true } : {}) }, ...(input.attachments ?? []).map((attachment) => ({
           type: "file" as const, mime: attachment.mediaType, filename: attachment.name,
           url: `data:${attachment.mediaType};base64,${fs.readFileSync(attachment.path).toString("base64")}`,
         }))];

@@ -20,6 +20,7 @@ import type {
   ItemDetail,
   ItemSeed,
   McpServer,
+  NotificationDetail,
   TurnAttachment,
   RequestDecision,
   RequestDetail,
@@ -177,6 +178,55 @@ function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): st
   }
   blocks.push({ type: "text", text: `${prompt}\n\nAttached files:\n${notes.join("\n")}` });
   return blocks;
+}
+
+/**
+ * A NOTIFICATION, ON THE CLAUDE CHANNEL THAT IS NOT THE PERSON'S — issue #550.
+ *
+ * TWO MECHANISMS, BECAUSE NEITHER IS SUFFICIENT ALONE.
+ *
+ * `origin` is the SDK's own provenance channel (`SDKMessageOrigin`) and it is
+ * the structural half: `peer` is what a message from another session IS, and
+ * `task-notification` is what an engine announcement about a background
+ * happening IS. The CLI's `isHuman()` gate reads it, so a peer's report can no
+ * longer pass for a person's instruction by arriving on the same stream. It is
+ * ALSO the half that can fail silently — an older CLI drops an origin kind it
+ * does not know (measured: `docs/investigations/delivery-as-harness-input-2026-09-11.md`
+ * §1) — and a provenance channel that fails open is not one to stake the whole
+ * claim on.
+ *
+ * `<system-reminder>` is the content half and the one that cannot be dropped.
+ * The harness's own convention is that text inside it is SYSTEM-authored — not
+ * the user speaking — and it survives any CLI that forwards content at all.
+ * There is no user-role alternative: `SDKUserMessage.message` is a
+ * `MessageParam` whose role is fixed to `"user"`, so a literal system role is
+ * not expressible on this wire and claiming one would be the same lie in a
+ * different field.
+ *
+ * WHAT IS NOT DONE HERE: `isSynthetic`. It marks messages the CLI GENERATED for
+ * itself and setting it on input risks the CLI treating the message as its own
+ * echo. The two mechanisms above say what needs saying without guessing at a
+ * field's receiving-side behaviour.
+ */
+export function claudeNotificationOrigin(detail: NotificationDetail): { kind: string; [field: string]: unknown } {
+  if (detail.kind === "peer_message") {
+    // `from` IS THE ADDRESSABLE IDENTITY and `fromSession` the navigable one;
+    // both are the sending session where there is one. A send from the outward
+    // sessions socket has no session to name, and says so rather than inventing
+    // a plausible id.
+    const from = detail.sessionId ?? "sessions-socket";
+    return { kind: "peer", from, ...(detail.sessionId ? { fromSession: detail.sessionId } : {}) };
+  }
+  // A wake and a parked request are the ENGINE reporting a background
+  // happening, which is exactly what this kind means to the CLI — and it is the
+  // one that gets framed as a notification rather than as prompt authority.
+  return { kind: "task-notification" };
+}
+
+/** The notice as SYSTEM-authored content. See `claudeNotificationOrigin` for
+ *  why the tag rather than a role, and why both halves are sent. */
+export function claudeNotificationContent(body: string): string {
+  return `<system-reminder>\n${body}\n</system-reminder>`;
 }
 
 /** The field kill switch: `TELAR_CLAUDE_STREAMING_INPUT=0` restores the
@@ -1253,6 +1303,7 @@ export function createClaudeDriver(
     async run({
       prompt,
       promptFromHuman,
+      notification,
       sessionId,
       cwd: claimedCwd,
       signal,
@@ -2568,8 +2619,13 @@ export function createClaudeDriver(
            */
           prompt: streaming
             ? (feed.stream() as AsyncIterable<SdkUserMessage>)
-            : (attachments?.length ?? 0) > 0
-              ? singleUserMessage(claudeInitialContent(prompt, attachments ?? []))
+            : // THE KILL-SWITCH PATH KEEPS THE SYSTEM WRAPPER even though it
+              // cannot carry an origin: `sdk.query`'s non-streaming form takes
+              // a bare string with nowhere to stamp provenance, so the content
+              // half is the whole of what this path can say — and it is the
+              // half that does not silently drop.
+              (attachments?.length ?? 0) > 0 || notification
+              ? singleUserMessage(claudeInitialContent(notification ? claudeNotificationContent(prompt) : prompt, attachments ?? []))
               : prompt,
           options: {
             cwd,
@@ -2744,10 +2800,22 @@ export function createClaudeDriver(
         // kind the CLI keeps.
         runtime.feed.push({
           type: "user",
-          message: { role: "user", content: claudeInitialContent(prompt, attachments ?? []) },
+          message: {
+            role: "user",
+            // A NOTIFICATION IS NOT THE PROMPT, it is an announcement the turn
+            // is being opened ON — so it goes in system-authored and stamped
+            // with its real provenance, never as the person's words (#550).
+            content: notification
+              ? claudeInitialContent(claudeNotificationContent(prompt), attachments ?? [])
+              : claudeInitialContent(prompt, attachments ?? []),
+          },
           parent_tool_use_id: null,
           uuid: turnUuid,
-          ...(promptFromHuman ? { origin: { kind: "human" as const } } : {}),
+          ...(notification
+            ? { origin: claudeNotificationOrigin(notification) }
+            : promptFromHuman
+              ? { origin: { kind: "human" as const } }
+              : {}),
         });
       }
 
@@ -2845,11 +2913,26 @@ export function createClaudeDriver(
                * reading the interrupt has always taken.
                */
               const typedByAPerson = queued.some((message) => message.sender === undefined && message.wakeReason === undefined);
+              /**
+               * A BATCH OF NOTIFICATIONS AND NOTHING ELSE IS A NOTIFICATION
+               * (#550). Mixed with a person's words it is the person's — same
+               * reading `typedByAPerson` already takes, and for the same reason:
+               * someone typed, mid-turn, and that is what the turn should
+               * honour. A batch that is ONLY notifications has no such claim on
+               * the person's channel, so it goes system-authored and stamped
+               * with the provenance of the first one in it.
+               */
+              const notifications = queued.map((message) => message.notification).filter((detail) => detail !== undefined);
+              const allNotifications = !typedByAPerson && notifications.length === queued.length && notifications[0] !== undefined;
               runtime.feed.push({
                 type: "user",
-                message: { role: "user", content: claudeInitialContent(text, attachments) },
+                message: { role: "user", content: claudeInitialContent(allNotifications ? claudeNotificationContent(text) : text, attachments) },
                 parent_tool_use_id: null,
-                ...(typedByAPerson ? { origin: { kind: "human" as const } } : {}),
+                ...(allNotifications
+                  ? { origin: claudeNotificationOrigin(notifications[0]!) }
+                  : typedByAPerson
+                    ? { origin: { kind: "human" as const } }
+                    : {}),
               });
               /**
                * PUSHING IS NOT INTERRUPTING: the provider reads no further input

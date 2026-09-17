@@ -299,3 +299,37 @@ test("two questions answer positionally, one list each", async () => {
   expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["dev"], ["origin"]]);
   f.driver.dispose?.();
 });
+
+/**
+ * #550 — A NOTIFICATION REACHES OPENCODE AS A SYNTHETIC PART.
+ *
+ * OpenCode has no developer or system role on `session.prompt`, but its
+ * `TextPartInput` carries `synthetic` — the SDK's own word for "generated, not
+ * typed" — and that is exactly the distinction. It is the structural half the
+ * prose frames used to stand in for.
+ */
+const NOTIFICATION = {
+  kind: "peer_message" as const,
+  sessionId: "session_peer",
+  runId: "run_x",
+  intent: "report" as const,
+  summary: "[agent message · report] from session session_peer",
+  fetch: { sessionId: "session_one", runId: "run_one" },
+  body: "[agent message · report] from session session_peer (run run_x, 9 chars)",
+};
+
+test("a notification's part is marked synthetic; a person's is not", async () => {
+  const f = fixture();
+  await f.driver.run({ ...f.input, prompt: NOTIFICATION.body, notification: NOTIFICATION });
+  const parts = f.calls.find((c) => c.path.endsWith("/prompt_async"))?.body.parts as Array<Record<string, unknown>>;
+  expect(parts[0]).toEqual({ type: "text", text: NOTIFICATION.body, synthetic: true });
+  f.driver.dispose?.();
+
+  // ANTI-VACUITY. A person's words carry no flag at all — absent is not a role,
+  // and inventing one for the human would make the distinction meaningless.
+  const human = fixture();
+  await human.driver.run(human.input);
+  const typed = human.calls.find((c) => c.path.endsWith("/prompt_async"))?.body.parts as Array<Record<string, unknown>>;
+  expect(typed[0]).toEqual({ type: "text", text: "hello" });
+  human.driver.dispose?.();
+});
