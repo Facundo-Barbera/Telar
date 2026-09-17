@@ -21,6 +21,14 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Telar scans the pairing code shown in the cockpit's Remote access settings.</string>
+	<!-- Dictation (#544). Without this key iOS terminates the app the moment
+	     AVAudioEngine's input node is touched, so the mic button would crash
+	     rather than refuse. The wording names where the audio goes, because
+	     "your Mac" is what a reader would otherwise assume and it is not true:
+	     the Mac holds the key and mints a token, and the audio goes from this
+	     phone to the transcription service directly. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Telar sends what you say to the transcription service your Mac is set up with, so it can be typed into the message box.</string>
 	<!-- Dialing the Mac by its LAN address (the "Local network" pairing QR)
 	     is local networking to iOS; without this key the connection is
 	     silently refused — a fresh install fails with a bare transport error.

@@ -667,6 +667,9 @@ struct SessionView: View {
                 draft: $draft,
                 focus: $composerFocused,
                 host: SessionComposerHost(store: store),
+                // See `ComposerView.api` — the dictation token is the one call
+                // the box makes that is not about this conversation.
+                api: store.api,
                 controls: AnyView(SessionComposerControls(store: store)),
                 onSend: { pinToTail() }
             )
@@ -834,6 +837,15 @@ struct ComposerView: View {
     /// than a store, so the Agent screen gets THIS composer instead of a bare
     /// `TextField` with a send button.
     let host: any ComposerHost
+    /// HOW THE BOX ASKS FOR A DICTATION TOKEN (#544) — the one call it makes
+    /// that is not about this conversation, so it is handed in rather than
+    /// reached through `ComposerHost`.
+    ///
+    /// OPTIONAL, AND THE MIC IS ABSENT WITHOUT IT. Both screens pass one; the
+    /// default is for the layout tests, which build this box to measure it and
+    /// have no Mac to talk to. A button that appeared and then failed at the
+    /// first tap would be worse than none.
+    var api: (any EngineAPI)?
     /// THE PILLS, SUPPLIED BY THE SCREEN. A session's three read a provider
     /// catalogue and a runtime mode; the Agent's read `agent.json`. Neither is
     /// this box's business — it owns the row they sit in and nothing else.
@@ -851,6 +863,12 @@ struct ComposerView: View {
     /// What just happened to the box — a stash, or a file turned away.
     @State private var note: String?
     @State private var dropping = false
+    /// PUSH-TO-TALK (#544). Built on first appearance rather than in an
+    /// initialiser because it needs the host's client, and `@State` is
+    /// constructed before the view's properties are available to it. Owned by
+    /// the box: a dictation that outlived this view would have nowhere to put
+    /// its words, and the microphone would stay live under nothing.
+    @State private var dictation: Dictation?
     @Environment(\.colorScheme) private var scheme
 
     private var isRunning: Bool { host.isRunning }
@@ -871,12 +889,48 @@ struct ComposerView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
+            // WHAT THE MIC IS HEARING, AND IT IS NOT IN THE BOX (#544). The
+            // service revises its interim guesses and the draft is not rewritten
+            // behind the person's cursor, so unconfirmed words live here and
+            // only finalised phrases are merged. A refusal takes the same line:
+            // one place above the box for "what just happened to this message".
+            if let dictation, let line = dictationLine(dictation) {
+                Text(line.text)
+                    .font(.system(Theme.footnote))
+                    .italic(line.unsettled)
+                    .foregroundStyle(line.unsettled ? Theme.textMuted : Theme.statusRed)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
             surface
             if focused { toolbar }
             if !queued.isEmpty { queueLine }
         }
         .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        // ONE PER BOX, and only once: `??=` rather than an assignment, so a
+        // re-appearance (a tab switch, a push and a pop) does not replace a
+        // dictation that is still running with a fresh idle one and leave the
+        // microphone held by an object nothing can stop.
+        .onAppear {
+            guard dictation == nil, let api else { return }
+            let live = Dictation(api: api)
+            // THE BINDING, NOT `self.draft`. This closure outlives the render
+            // that made it, and a `String` copied out of that render would be
+            // whatever the box held when the mic was first mounted — every
+            // dictated phrase would then land on top of a stale draft.
+            let box = $draft
+            live.onCommit = { commit in
+                box.wrappedValue = DictationTranscript.merge(draft: box.wrappedValue, commit: commit)
+            }
+            dictation = live
+        }
+        // LEAVING THE SCREEN RELEASES THE MICROPHONE. Without this, walking
+        // back to the rail mid-dictation leaves a socket streaming the room
+        // with nothing on screen saying so.
+        .onDisappear { dictation?.stop() }
         .sheet(isPresented: $showingStash) {
             StashSheet { entry in restore(entry) }
         }
@@ -975,6 +1029,19 @@ struct ComposerView: View {
         }
     }
 
+    /// The one line the dictation gets above the box: a refusal if there is
+    /// one, otherwise the words still being heard. `unsettled` is what decides
+    /// between muted italics and the red of something that went wrong.
+    ///
+    /// AN ERROR OUTRANKS THE PREVIEW because a stopped dictation has no preview
+    /// left to show, and a reason nobody sees is a feature that silently does
+    /// nothing.
+    private func dictationLine(_ dictation: Dictation) -> (text: String, unsettled: Bool)? {
+        if let error = dictation.error { return (error, false) }
+        guard dictation.phase == .listening, !dictation.heard.isEmpty else { return nil }
+        return (dictation.heard, true)
+    }
+
     /// ONE PATH FOR BOTH. A paste and a drop deliver the same item providers,
     /// and both end at the upload the picker already uses. A refusal is said
     /// out loud above the composer — a file that simply never appears reads as
@@ -1053,6 +1120,25 @@ struct ComposerView: View {
                     // cluster is already "things that go into this message".
                     StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                                 onStash: stashDraft, onOpen: { showingStash = true })
+                    // THE MIC, in the same cluster and for the same reason:
+                    // everything here is a way of getting words into this
+                    // message. It is on BOTH screens because the Agent renders
+                    // this same composer (#539) — one button, not two that
+                    // agree.
+                    if let dictation {
+                        ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
+                            dictation.toggle()
+                        } label: {
+                            Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
+                                .font(.system(size: 16))
+                                // A TOGGLE'S FAILURE MODE IS A RECORDING
+                                // SOMEBODY FORGOT, so the state is loud: the
+                                // pill turns red and the glyph fills.
+                                .symbolEffect(.pulse, isActive: dictation.phase == .listening)
+                        }
+                        .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")
+                        .disabled(dictation.phase == .starting)
+                    }
                     if isRunning {
                         ToolbarPill(variant: .danger) {
                             stop()
