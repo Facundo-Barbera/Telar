@@ -79,7 +79,7 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { toolInputSchema } from "../mcp-socket";
+import { agentToolSpecs } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
 import { compactToolResults, minifyToolResult } from "./compact";
@@ -945,11 +945,11 @@ export class AgentRuntime {
      * id the idempotency key is derived from. Wrapping each wall tool in a
      * LangChain `tool()` would add a second zod bridge and put the framework
      * between us and the call id, for nothing.
+     *
+     * `agentToolSpecs` IS WHERE THE SHAPE IS NARROWED for this one binding —
+     * see it for why `$schema` goes and why only here (#563).
      */
-    const specs = context.tools.map((tool) => ({
-      type: "function" as const,
-      function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool.shape) },
-    }));
+    const specs = agentToolSpecs(context.tools);
     // THE DIGEST GOES LAST, under the briefing and the orientation: it is the
     // most recent thing in the prompt and the least permanent, and a reader
     // arriving at it has already been told what it is looking at.

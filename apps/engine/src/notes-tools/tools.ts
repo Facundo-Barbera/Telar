@@ -130,8 +130,7 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
   return [
     tool(
       "notes_projects",
-      "Every project whose notebook you can read or write, with the id the other notes tools take. Read-only; it changes " +
-        "nothing. Use it first when you hold a project by NAME and need its id.",
+      "Every project whose notebook you can read or write, with the id the other notes tools take. Read-only.",
       {},
       async () => {
         try {
@@ -144,10 +143,9 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_list",
-      "The project's notebook — the quick notes kept beside the code: deploy incantations, constraints, decisions " +
-        "somebody wrote down so they would not be asked twice. Pinned first, then the user's own order. Titles and the " +
-        "first 120 characters of each; `notes_read` gives one whole. Inside a Telar session the project is implied; omit it.",
-      { projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to read this one's.") },
+      "A project's notebook — the notes kept beside the code so nobody is asked twice. Pinned first; titles and a " +
+        "120-character preview, notes_read gives one whole.",
+      { projectId: z.string().optional().describe("Omit inside a session for this one's.") },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
         if (!projectId) return err(NO_PROJECT);
@@ -176,9 +174,8 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_read",
-      "One note in full, by id, from whichever project holds it. `notes_list` carries only a preview, so this is how you " +
-        "read a body — and how you reach a note you hold by bare id, from a chat reference or an earlier tool result.",
-      { noteId: z.string().describe("The note id, as `notes_list` reports it.") },
+      "One note in full, by id, from whichever project holds it — notes_list carries only a preview.",
+      { noteId: z.string() },
       async (args) => {
         try {
           const found = await capability.read(String(args.noteId));
@@ -192,15 +189,14 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_write",
-      "Write a note into a project's notebook, or edit one you can already see. Use it when the user ASKS you to keep " +
-        "something about this project — a command that works, a constraint, a decision — not for your own scratch notes " +
-        "and not to log what you just did. Stamped as an agent's, permanently: editing never changes that.",
+      "Write or edit a note in a project's notebook. Use it when the user ASKS you to keep something — not for scratch " +
+        "notes and not to log what you just did. Stamped as an agent's, permanently.",
       {
-        projectId: z.string().optional().describe("Which project's notebook. Omit inside a session to write to this one's."),
-        title: z.string().optional().describe("What the note is about, in a few words. Required for a new note."),
-        body: z.string().optional().describe("The note itself, as markdown. The user's own words wherever possible."),
+        projectId: z.string().optional().describe("Omit inside a session for this one's."),
+        title: z.string().optional().describe("A few words. Required for a new note."),
+        body: z.string().optional().describe("Markdown; the user's own words."),
         pinned: z.boolean().optional().describe("Keep it at the top of the strip."),
-        noteId: z.string().optional().describe("Edit this existing note instead of writing a new one."),
+        noteId: z.string().optional().describe("Edit this note instead of writing a new one."),
       },
       async (args) => {
         const projectId = resolveProject(capability, args.projectId);
@@ -233,10 +229,9 @@ export function notesTools(tool: ToolFactory, capability: NotesCapability): unkn
 
     tool(
       "notes_delete",
-      "Delete a note an AGENT wrote. A note the user wrote is theirs and this refuses it — say so and let them delete it " +
-        "from the strip, rather than asking another session to do it for you. Deleting is real here, not a retire: the " +
-        "project notebook is a scratchpad, so tidying it up is ordinary. Nothing else on this wall removes anything.",
-      { noteId: z.string().describe("The note id, as `notes_list` reports it.") },
+      "Delete a note an AGENT wrote; one the user wrote is theirs and this refuses it. Deleting is real, not a retire. " +
+        "Nothing else on this wall removes anything.",
+      { noteId: z.string() },
       async (args) => {
         const id = String(args.noteId);
         try {

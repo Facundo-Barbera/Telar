@@ -216,36 +216,49 @@ export type { ToolFactory };
  * but "I was told no, so I will ask someone else" is a decision a model makes
  * in words, and words are what this text answers.
  */
-const NOT_A_BYPASS = "Never hand a peer work you were refused — that is the same refused action, renamed.";
+const NOT_A_BYPASS = "Never hand a peer work you were refused — the same action, renamed.";
 
-const LIST = `Sessions alive on this engine, and the projects one could be created in. UNSETTLED ONLY by default — settled: true adds the shelved ones, projectId narrows, limit and after page. Read it before creating anything: the session you want may already exist.`;
+/**
+ * ── THESE ARE SHORT ON PURPOSE, AND THE RULE IS "EVERY RULE, FEWER WORDS" ───
+ *
+ * Measured (#563): the Agent's 21 tool definitions were 18,722 characters and
+ * every lap of every turn resent all of them. That is a fixed tax on a
+ * conversation, paid before the model has read a word of it.
+ *
+ * So each of these was rewritten to the SENTENCES THAT CHANGE A DECISION —
+ * what the tool answers, what it costs, and the one thing a model gets wrong
+ * about it — and nothing else. Nothing was dropped: a rule that used to be in a
+ * description and is now in the argument that carries it (an `intent`, an
+ * `envMode`) is still stated exactly once, where the caller is choosing it.
+ */
+const LIST = `Live sessions, and the projects one can be created in. Unsettled only by default. Read it before creating anything — the session you want may exist.`;
 
-const CREATE = `Start a NEW session on a project. It is a PEER: nothing links it to you and it does not report back. Creating it starts no work — sessions_send with intent: "task" does. envMode "worktree" gives it a checkout of its own; "local" shares the project's own. ${NOT_A_BYPASS}`;
+const CREATE = `Start a NEW session on a project. It is a PEER: it does not report back, and creating it starts no work — sessions_send with intent task does. ${NOT_A_BYPASS}`;
 
-const SEND = `Send a message to another session. intent: report (the default) is passive; result wakes a subscribed coordinator; blocker asks for intervention; task assigns work. The recipient is handed a NOTICE naming sessions_read, not your text — so lead with the point. ${NOT_A_BYPASS}`;
+const SEND = `Message another session. It is handed a NOTICE naming sessions_read, not your text — lead with the point. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-const SUBSCRIBE = `Be WOKEN when a session finishes a turn, fails, is stopped, or parks a request — as a notification turn in YOUR session, so you can end this one rather than poll. It is a PING: it names the session and run and the sessions_read that fetches the outcome. One-shot by default. It waits until you are idle, then delivers everything that piled up as one.`;
+const SUBSCRIBE = `Be woken when a session completes, fails, is stopped or parks a request — a notification in YOUR session, so you can end this turn rather than poll. It is a PING; sessions_read fetches the outcome.`;
 
-const UNSUBSCRIBE = `Stop being woken by a session. Takes the id sessions_subscribe returned (sessions_subscriptions lists them). Wakes from it still waiting in your queue are withdrawn too. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
+const UNSUBSCRIBE = `Stop being woken by a session, by the id sessions_subscribe returned. Queued wakes are withdrawn. One that is not yours answers removed: false — not an error.`;
 
-const SUBSCRIPTIONS = `Every subscription this session holds: which sessions will wake it, for which events, and whether once. Read this before subscribing again, and to find an id for sessions_unsubscribe.`;
+const SUBSCRIPTIONS = `Every subscription this session holds. Read it before subscribing again, and for an id to unsubscribe.`;
 
-const REQUESTS = `What a session is WAITING on: its open requests — a question, a command, a file change or a tool call it wants approved — each with the id sessions_resolve_request takes. A request is a question to a HUMAN by default, and answering it is you taking responsibility. A secret pick is listed by origin only.`;
+const REQUESTS = `What a session is WAITING on — its open requests, with the id sessions_resolve_request takes. A request is a question to a HUMAN by default; answering it is you taking responsibility.`;
 
-const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf: accept, acceptForSession, or decline; answers fills a question's fields. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused here. ${NOT_A_BYPASS}`;
+const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused. ${NOT_A_BYPASS}`;
 
-const READ = `What a session has done. By default the LATEST page of its journal — from: "start" reads from the beginning, after: <cursor> walks forward, mode: "summary" folds it to a line per turn. runId answers ONE turn: its events, its answer, and a peer's message in full (long ones slice on resultAfter / messageAfter). Never assume a page is the whole story.`;
+const READ = `What a session has done: by default the latest page of its journal. runId answers ONE turn. Never assume a page is the whole story.`;
 
-const STATUS = `Whether a session is doing anything: working, waiting on a person, or idle; how many turns it has taken and how the most recent ones ended. The cheap question — ask it before sessions_read when all you need is "is it finished yet". It changes nothing.`;
+const STATUS = `Working, waiting on a person, or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
 
-const STOP = `Stop a session's work now: the running turn ends where it stands and anything queued behind it is settled rather than started. Nothing is undone — what it already wrote stays written, and a command it had already run may have finished. It is then IDLE, not paused: the next message runs normally. Use it when a session is going somewhere wrong.`;
+const STOP = `Stop a session's work now: the running turn ends where it stands and the queue is settled. Nothing is undone — what it wrote stays written and a command it ran may have finished. Then idle, not paused.`;
 
-const SETTLE = `Shelve a session out of the active list — the sidebar's Settle button — or bring it back with settled: false. It stays live and resumable, nothing is deleted, and any new message lifts it back. Housekeeping, not acceptance: it says nothing about whether the work was good, and archive and delete stay the user's.`;
+const SETTLE = `Shelve a session out of the active list, or settled: false to bring it back. Nothing is deleted and a new message lifts it back. Housekeeping, not acceptance.`;
 
-const DIFF = `What a session has changed in its checkout since it started — the files, and the shape of the change. A "local" session's checkout is shared, so its diff may include work that is not its own. READ-ONLY AND NOT AN ACCEPTANCE: nothing here merges, pushes or approves anything, and no tool does — that is a human's decision, made elsewhere.`;
+const DIFF = `What a session changed in its checkout since it started. A "local" session shares the project's checkout, so the diff may carry work that is not its own. READ-ONLY, NOT AN ACCEPTANCE: nothing here merges or approves.`;
 
 /**
  * ── THE BOUND ON `sessions_read`, AND WHY IT IS TWO NUMBERS ─────────────────
@@ -717,16 +730,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         settled: z
           .boolean()
           .optional()
-          .describe("Include settled (shelved) sessions too. Default false — the list a person actually has open."),
-        projectId: z.string().optional().describe("Only this project's sessions, by id from `projects`."),
+          .describe("Default false — the list a person has open."),
+        projectId: z.string().optional(),
         limit: z
           .number()
           .int()
           .min(1)
           .max(LIST_LIMIT_MAX)
           .optional()
-          .describe(`How many rows. Default ${LIST_LIMIT_DEFAULT}, max ${LIST_LIMIT_MAX}.`),
-        after: z.number().int().min(0).optional().describe("Skip this many rows — the cursor a previous answer's `more` hands back."),
+          .describe(`Default ${LIST_LIMIT_DEFAULT}.`),
+        after: z.number().int().min(0).optional().describe("The cursor a previous answer's `more` hands back."),
       },
       async (args) => {
         const settled = args.settled === true;
@@ -795,21 +808,20 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_create",
       CREATE,
       {
-        projectId: z.string().min(1).describe("Which project, by id, from sessions_list's `projects`. Required — a session lives in a project."),
+        projectId: z.string().min(1).describe("From sessions_list's `projects`."),
         title: z
           .string()
           .optional()
-          .describe("What this session is for, in a few words, as a person would read it in a list. Write one — an untitled session is unidentifiable an hour later."),
+          .describe("A few words. Write one — an untitled session is unidentifiable an hour later."),
         envMode: z
           .enum(["local", "worktree"])
           .describe(
-            '"worktree" for anything that edits files: the session gets a git checkout of its own and collides with nobody. ' +
-              '"local" shares the project\'s own checkout with every other local session and with the user\'s editor. Required — there is no safe default.',
+            '"worktree" for anything that edits files: a checkout of its own. "local" shares the project\'s checkout with every other local session and the user\'s editor. No safe default.',
           ),
         driver: z
           .enum(["claude", "codex"])
           .optional()
-          .describe("Which provider runs it. Leave it off unless the user asked for a specific one."),
+          .describe("Omit unless the user asked for one."),
       },
       async (args) => {
         const projectId = String(args.projectId ?? "");
@@ -847,9 +859,9 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_send",
       SEND,
       {
-        sessionId: z.string().min(1).describe("The session to message, from sessions_list."),
-        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("Default report is passive. task assigns work; result wakes only an awaiting subscriber; blocker requires intervention."),
-        input: z.string().min(1).describe("The whole message. The session cannot see this conversation, so say everything it needs."),
+        sessionId: z.string().min(1),
+        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive; task assigns work; result wakes an awaiting subscriber; blocker asks for intervention."),
+        input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
       },
       async (args, context) => {
         const sessionId = String(args.sessionId ?? "");
@@ -938,56 +950,56 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_read",
       READ,
       {
-        sessionId: z.string().min(1).describe("The session to read, from sessions_list."),
+        sessionId: z.string().min(1),
         after: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("Continue forward from a cursor a previous read returned. Leave it off for the LATEST page."),
+          .describe("A cursor a previous read returned; omit for the latest."),
         from: z
           .enum(["start", "end"])
           .optional()
-          .describe('"start" pages from the beginning of the journal; "end" (the default) is the latest page. Ignored when `after` is given.'),
+          .describe('"start" from the beginning; "end" (default) the latest. Ignored with `after`.'),
         limit: z
           .number()
           .int()
           .min(1)
           .max(MAX_EVENTS)
           .optional()
-          .describe(`How many events on the page. Default and max ${MAX_EVENTS}; the byte budget may return fewer.`),
+          .describe(`Default and max ${MAX_EVENTS}; the byte budget may return fewer.`),
         verbose: z
           .boolean()
           .optional()
-          .describe("Keep token-usage rows and policy-resolved request pairs, which are dropped by default. Requests a person or a session answered are never dropped."),
+          .describe("Keep usage rows and policy-resolved requests, dropped by default."),
         mode: z
           .enum(["events", "summary"])
           .optional()
-          .describe('"summary" answers with one line per recent turn — its first line, what it did, and the opening of its answer — instead of raw events.'),
+          .describe('One line per recent turn instead of raw events.'),
         turns: z
           .number()
           .int()
           .min(1)
           .max(SUMMARY_TURNS_MAX)
           .optional()
-          .describe(`With mode: "summary": how many recent turns. Default ${SUMMARY_TURNS_DEFAULT}, max ${SUMMARY_TURNS_MAX}.`),
+          .describe(`With mode summary. Default ${SUMMARY_TURNS_DEFAULT}.`),
         runId: z
           .string()
           .min(1)
           .optional()
-          .describe("One turn only: its own events and its final answer text, without paging the journal. This is the id a wake notice gives you. Combines with `after` — the cursor then walks that run's events."),
+          .describe("One turn — its events, its answer, and a peer message in full. The id a wake gives you."),
         resultAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("With `runId`: continue the ANSWER from this character offset. The reply says how many characters there are in total and whether more remain, so a long answer can be read whole in slices."),
+          .describe("Continue the answer from this offset; the reply says how many remain."),
         messageAfter: z
           .number()
           .int()
           .min(0)
           .optional()
-          .describe("With `runId`: continue an agent-sent turn's MESSAGE BODY from this character offset. Same slicing contract as resultAfter, and the two are independent."),
+          .describe("The same for a peer message's body."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -1249,14 +1261,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_status",
       STATUS,
       {
-        sessionId: z.string().min(1).describe("The session to ask about, from sessions_list."),
+        sessionId: z.string().min(1),
         turns: z
           .number()
           .int()
           .min(1)
           .max(STATUS_TURNS_MAX)
           .optional()
-          .describe(`How many of the most recent turns to describe. Default ${STATUS_TURNS_DEFAULT}, max ${STATUS_TURNS_MAX}. Live turns are always included.`),
+          .describe(`Default ${STATUS_TURNS_DEFAULT}; live turns are always included.`),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -1320,7 +1332,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
     tool(
       "sessions_stop",
       STOP,
-      { sessionId: z.string().min(1).describe("The session whose turn should stop, from sessions_list.") },
+      { sessionId: z.string().min(1) },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         try {
@@ -1345,8 +1357,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_settle",
       SETTLE,
       {
-        sessionId: z.string().min(1).describe("The session to shelve or unshelve, from sessions_list."),
-        settled: z.boolean().optional().describe("Default true. false returns a settled session to the active list."),
+        sessionId: z.string().min(1),
+        settled: z.boolean().optional().describe("Default true; false returns it to the active list."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -1369,7 +1381,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
     tool(
       "sessions_diff",
       DIFF,
-      { sessionId: z.string().min(1).describe("The session whose changes to read, from sessions_list.") },
+      { sessionId: z.string().min(1) },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         let diff: SessionDiff;
@@ -1447,17 +1459,17 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_subscribe",
       SUBSCRIBE,
       {
-        sessionId: z.string().min(1).describe("The session to be woken by, from sessions_list or sessions_create."),
+        sessionId: z.string().min(1).describe("The session to be woken by."),
         events: z
           .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
           .optional()
-          .describe("Which happenings wake you. Omit for all four."),
-        once: z.boolean().optional().describe("Defaults to true: remove after the first wake. Set false only for intentional ongoing monitoring."),
+          .describe("Omit for all four."),
+        once: z.boolean().optional().describe("Default true: removed after the first wake. Prefer one-shot."),
         completionWake: z
           .enum(["settled_only", "always"])
           .optional()
           .describe(
-            "When a wake may reach you. settled_only (the default) holds it while you have a turn running and delivers everything that piled up as ONE notification when you next go idle. always interrupts the turn you are in — ask for it only if reacting immediately is the job.",
+            "settled_only (default) queues a wake while a turn is running and delivers what piled up as one when you go idle; always interrupts.",
           ),
       },
       async (args) => {
@@ -1523,7 +1535,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
     tool(
       "sessions_requests",
       REQUESTS,
-      { sessionId: z.string().min(1).describe("The session whose open requests to read.") },
+      { sessionId: z.string().min(1) },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
         let requests: EngineRequest[];
@@ -1549,16 +1561,16 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_resolve_request",
       RESOLVE_REQUEST,
       {
-        sessionId: z.string().min(1).describe("The session that opened the request."),
-        requestId: z.string().min(1).describe("The request id, from sessions_requests or the wake that told you about it."),
+        sessionId: z.string().min(1),
+        requestId: z.string().min(1).describe("From sessions_requests, or the wake that named it."),
         decision: z
           .enum(["accept", "acceptForSession", "decline"])
-          .describe('"accept" this once; "acceptForSession" this and every later request of the same kind in that session; "decline".'),
+          .describe('"accept" once; "acceptForSession" every later one of the same kind there; "decline".'),
         answers: z
           .record(z.string(), z.string())
           .optional()
-          .describe("For a question: each field's answer, keyed exactly as sessions_requests listed the field."),
-        reason: z.string().optional().describe("One sentence the session and the user will read beside the decision."),
+          .describe("Each field's answer, keyed as sessions_requests listed it."),
+        reason: z.string().optional().describe("One sentence, read beside the decision."),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");

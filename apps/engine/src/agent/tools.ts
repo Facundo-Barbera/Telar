@@ -44,7 +44,7 @@
  * tool is refused reports the refusal as a fault.
  */
 import { z } from "zod";
-import { collectTools, type SocketTool } from "../mcp-socket";
+import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
 import { notesTools, type NotesCapability } from "../notes-tools/tools";
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
 import { err, failure, json, type ToolFactory } from "../tool-kit";
@@ -93,21 +93,15 @@ const OUTLINE_PAGE_MAX = 100;
 const ANSWER_SLICE_DEFAULT = 8_000;
 const ANSWER_SLICE_MAX = 64_000;
 
-const FIND = [
-  "Which conversation was this — a lexical search across every session on this engine.",
-  "Ten hits by default, each with the line that matched, so a list can be chosen from without opening anything.",
-  "This is the cheap first step before sessions_read: find the session, then outline it, then read the one turn that matters.",
-].join(" ");
+const FIND =
+  "Which conversation was this — a lexical search over every session, each hit carrying the line that matched. " +
+  "The cheap first step before sessions_read.";
 
-const OUTLINE = [
-  "Scroll a conversation without reading it: one row per turn, newest first — what was asked, what it did, how it ended.",
-  "Twenty turns a page. `before` is a sequence from a previous page's `next`, so a session being appended to underneath you cannot shift the window.",
-].join(" ");
+const OUTLINE =
+  "Scroll a conversation without reading it: one row per turn, newest first — what was asked, what it did, how it ended.";
 
-const ANSWER = [
-  "What one turn concluded, and nothing else — the answer text alone, without its events.",
-  "Defaults to the latest turn that actually said something. Long answers slice on `from`; the reply says how many characters there are in total.",
-].join(" ");
+const ANSWER =
+  "What one turn concluded — the answer alone, without its events. Defaults to the latest turn that said something.";
 
 export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapability): unknown[] {
   return [
@@ -115,11 +109,11 @@ export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapabil
       "sessions_find",
       FIND,
       {
-        q: z.string().min(1).describe("The words to look for. Lexical, not semantic — the phrase you remember seeing."),
-        projectId: z.string().min(1).optional().describe("Only this project's sessions."),
-        settled: z.boolean().optional().describe("true for shelved sessions only, false for the open ones. Omit for both."),
-        since: z.number().int().min(0).optional().describe("Only sessions touched at or after this epoch-millisecond stamp."),
-        limit: z.number().int().min(1).max(FIND_LIMIT_MAX).optional().describe(`How many hits. Default ${FIND_LIMIT_DEFAULT}, max ${FIND_LIMIT_MAX}.`),
+        q: z.string().min(1).describe("Lexical, not semantic — the phrase you remember seeing."),
+        projectId: z.string().min(1).optional(),
+        settled: z.boolean().optional().describe("true for shelved only, false for open. Omit for both."),
+        since: z.number().int().min(0).optional().describe("Epoch milliseconds."),
+        limit: z.number().int().min(1).max(FIND_LIMIT_MAX).optional().describe(`Default ${FIND_LIMIT_DEFAULT}.`),
       },
       async (args) => {
         try {
@@ -146,9 +140,9 @@ export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapabil
       "sessions_outline",
       OUTLINE,
       {
-        sessionId: z.string().min(1).describe("The session to outline, from sessions_list or sessions_find."),
-        before: z.number().int().min(0).optional().describe("Page upwards from this sequence — the `next` a previous page returned."),
-        limit: z.number().int().min(1).max(OUTLINE_PAGE_MAX).optional().describe(`How many turns. Default ${OUTLINE_PAGE_DEFAULT}, max ${OUTLINE_PAGE_MAX}.`),
+        sessionId: z.string().min(1),
+        before: z.number().int().min(0).optional().describe("The `next` a previous page returned, so appends cannot shift the window."),
+        limit: z.number().int().min(1).max(OUTLINE_PAGE_MAX).optional().describe(`Default ${OUTLINE_PAGE_DEFAULT}.`),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -168,10 +162,10 @@ export function agentQueryTools(tool: ToolFactory, capability: AgentQueryCapabil
       "sessions_answer",
       ANSWER,
       {
-        sessionId: z.string().min(1).describe("The session whose answer to read."),
-        runId: z.string().min(1).optional().describe("One turn by its run id. Omit for the latest turn that left text — the usual case after a wake."),
-        from: z.number().int().min(0).optional().describe("Continue from this character offset. Default 0."),
-        limit: z.number().int().min(1).max(ANSWER_SLICE_MAX).optional().describe(`How many characters. Default ${ANSWER_SLICE_DEFAULT}, max ${ANSWER_SLICE_MAX}.`),
+        sessionId: z.string().min(1),
+        runId: z.string().min(1).optional().describe("Omit for the latest turn that left text — the usual case after a wake."),
+        from: z.number().int().min(0).optional().describe("Character offset; the reply says the total."),
+        limit: z.number().int().min(1).max(ANSWER_SLICE_MAX).optional().describe(`Default ${ANSWER_SLICE_DEFAULT}.`),
       },
       async (args) => {
         const sessionId = String(args.sessionId ?? "");
@@ -223,4 +217,47 @@ export function collectAgentTools(walls: AgentWalls): SocketTool[] {
     ...collectTools(agentQueryTools as never, walls.query as never),
     ...collectTools(notesTools as never, walls.notes as never),
   ];
+}
+
+/**
+ * ONE FUNCTION DEFINITION PER TOOL, AS THE MODEL IS BOUND TO THEM.
+ *
+ * ── WHAT IS DROPPED, AND WHY ONLY HERE (#563) ───────────────────────────────
+ * `z.toJSONSchema` writes for a VALIDATOR. Three of the things it writes mean
+ * nothing to a language model and are resent on every lap of every turn:
+ *
+ *   · `"$schema": "https://json-schema.org/draft/2020-12/schema"` — 56
+ *     characters naming a dialect version nobody here is checking, ×21 tools.
+ *   · `"maximum": 9007199254740991` — what `z.number().int()` emits, which is
+ *     "an integer" said in 26 characters.
+ *   · `"minLength": 1` and `"propertyNames"` — a required string is required
+ *     and a record's keys are strings.
+ *
+ * THE MCP SOCKET KEEPS ALL OF IT. `tools/list` answers programs that may well
+ * validate, `toolInputSchema` is what that route serves, and one lap of one
+ * Agent turn is not a reason to narrow a wire format other software reads. This
+ * is the Agent's own binding, so the narrowing lives in it.
+ *
+ * NOTHING THE MODEL CHOOSES FROM IS TOUCHED: names, types, enums, real bounds
+ * and `required` all go through exactly as they were.
+ */
+export function agentToolSpecs(tools: readonly SocketTool[]): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: { name: tool.name, description: tool.description, parameters: forModel(toolInputSchema(tool.shape)) as Record<string, unknown> },
+  }));
+}
+
+/** The validator's bookkeeping removed, everything a model reads kept. */
+function forModel(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(forModel);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === "$schema" || key === "minLength" || key === "propertyNames") continue;
+    // A safe-integer bound is zod saying "whole number", not a limit anybody set.
+    if ((key === "maximum" || key === "minimum") && typeof value === "number" && Math.abs(value) === Number.MAX_SAFE_INTEGER) continue;
+    out[key] = forModel(value);
+  }
+  return out;
 }

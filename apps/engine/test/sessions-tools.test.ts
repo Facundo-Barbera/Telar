@@ -33,6 +33,7 @@ import { EngineStore } from "../src/state";
 import { sessionsTools, pageEvents, type SessionsCapability } from "../src/sessions-tools/tools";
 import { TELAR_SKILL } from "../src/orientation";
 import { collectSessionsWallTools } from "../src/sessions-tools/socket";
+import { toolInputSchema } from "../src/mcp-socket";
 import { WARP_CHILD_DISALLOWED_TOOLS } from "../src/warp/spawn";
 
 /**
@@ -953,7 +954,12 @@ describe("sessions_read returns the message a notice stands in for", () => {
     // The description names the call and the arguments; the mechanics of the
     // notice moved to the telar skill with everything else that would not fit
     // in 350 characters (#515), and both halves are asserted.
-    expect(tools.get("sessions_read")!.description).toContain("a peer's message in full");
+    //
+    // THE PEER-MESSAGE HALF NOW RIDES ON `runId` RATHER THAN ON THE TOOL'S OWN
+    // PROSE (#563). The rule is unchanged and is still stated exactly once —
+    // where the caller is choosing the argument that fetches it — and the
+    // sentence it used to live in was one the Agent resent on every lap.
+    expect(JSON.stringify(toolInputSchema(tools.get("sessions_read")!.shape))).toContain("a peer message in full");
     expect(TELAR_SKILL).toContain("A wake or a peer's message is a PING");
     expect(TELAR_SKILL).toContain("sessions_read(sessionId, runId)");
     expect(tools.get("sessions_subscribe")!.description).toContain("It is a PING");

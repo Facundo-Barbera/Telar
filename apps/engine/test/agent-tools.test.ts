@@ -12,9 +12,9 @@
  *     replays at the store rather than queueing a second turn.
  */
 import { expect, test } from "bun:test";
-import { collectTools } from "../src/mcp-socket";
+import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
-import { agentQueryTools, collectAgentTools, type AgentQueryCapability } from "../src/agent/tools";
+import { agentQueryTools, agentToolSpecs, collectAgentTools, type AgentQueryCapability } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { approvalRequest, needsApproval } from "../src/agent/approval";
 import type { NotesCapability } from "../src/notes-tools/tools";
@@ -106,6 +106,52 @@ test("the Agent's wall is the two walls plus the three query reads, and nothing 
   for (const forbidden of ["bash", "shell", "read_file", "write_file", "browser_navigate", "display_open", "warp"]) {
     expect(names).not.toContain(forbidden);
   }
+});
+
+/* ------------------------------------------------------------------ *
+ * What the wall COSTS — #563 item 2.
+ * ------------------------------------------------------------------ */
+
+test("the bound tool array stays well under what it was, with every tool still on it", () => {
+  const tools = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
+  const specs = agentToolSpecs(tools);
+  expect(specs).toHaveLength(21);
+  /**
+   * 18,744 characters when #563 measured it, 11,584 now. A CEILING rather than
+   * an equality: prose is allowed to move, and the thing that must not come
+   * back is the tax — this array is resent on every lap of every turn, so a
+   * sentence added here is a sentence paid for a hundred times a day.
+   */
+  expect(JSON.stringify(specs).length).toBeLessThan(12_000);
+});
+
+test("the model's copy drops the validator's bookkeeping and keeps every choice", () => {
+  const tools = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() });
+  const bound = JSON.stringify(agentToolSpecs(tools));
+  expect(bound).not.toContain("$schema");
+  expect(bound).not.toContain("minLength");
+  expect(bound).not.toContain("9007199254740991");
+  // Names, enums, real bounds and `required` are what the model chooses from.
+  expect(bound).toContain('"enum":["task","report","result","blocker"]');
+  expect(bound).toContain('"required":["projectId","envMode"]');
+  expect(bound).toContain('"maximum":50');
+  // And the socket's own answer is untouched: other programs validate against it.
+  expect(JSON.stringify(toolInputSchema(tools.find((tool) => tool.name === "sessions_send")!.shape))).toContain("$schema");
+});
+
+test("no rule was traded for the bytes", () => {
+  const byName = new Map(collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() }).map((tool) => [tool.name, tool.description]));
+  // The sentence the wall cannot enforce, on all three tools that could be bent
+  // into it.
+  for (const name of ["sessions_create", "sessions_send", "sessions_resolve_request"]) {
+    expect(byName.get(name)).toContain("refused");
+  }
+  expect(byName.get("sessions_diff")).toContain("NOT AN ACCEPTANCE");
+  expect(byName.get("sessions_settle")).toContain("not acceptance");
+  expect(byName.get("sessions_requests")).toContain("taking responsibility");
+  expect(byName.get("sessions_stop")).toContain("Nothing is undone");
+  expect(byName.get("notes_delete")).toContain("the user wrote is theirs");
+  expect(byName.get("sessions_list")).toContain("before creating");
 });
 
 test("a `self` of agent is what lets the subscription tools work at all", async () => {
