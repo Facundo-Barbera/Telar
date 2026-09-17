@@ -94,7 +94,12 @@ struct AgentView: View {
                 ContentUnavailableView(
                     "The Agent is off",
                     systemImage: "sparkles",
-                    description: Text("Its switch, its model and its key are set in Telar’s Settings on that Mac.")
+                    // IT NAMES A SCREEN ON THIS PHONE NOW (#556). It used to send
+                    // the reader to find a desktop, which was the honest answer
+                    // while the phone had nowhere to set this; it has an Agent
+                    // screen of its own under the Mac, so the sentence points
+                    // there rather than off the device.
+                    description: Text("Its switch, key, model and defaults are in Settings ▸ that Mac ▸ Agent — here, or in Telar on the Mac itself.")
                 )
             } else {
                 // THE CONTEXT METER, AS ONE LINE UNDER THE HEADER (#539). The

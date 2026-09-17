@@ -101,6 +101,24 @@ struct HostSettingsView: View {
                         ) { pushConnect = true }
                         if settings.api(for: hostId) != nil {
                             CardDivider()
+                            /**
+                             THE AGENT'S OWN SCREEN (#556), beside Devices and
+                             for the same reason: both are panels on the MAC,
+                             reached with this phone's paired credential, rather
+                             than settings of this app. The Agent screen's off
+                             state used to send the reader to find a desktop;
+                             this is the door that makes that unnecessary.
+
+                             GATED ON A CREDENTIAL, like Devices: an unpaired
+                             Mac cannot be read or written, so the row would open
+                             onto a screen that could only report a refusal.
+                             */
+                            CardNavRow(
+                                icon: "sparkles",
+                                title: "Agent",
+                                subtitle: "Its switch, key, model and defaults"
+                            ) { pushAgent = true }
+                            CardDivider()
                             CardNavRow(
                                 icon: "iphone.radiowaves.left.and.right",
                                 title: "Devices",
@@ -132,6 +150,11 @@ struct HostSettingsView: View {
         .navigationDestination(isPresented: $pushConnect) {
             ConnectView(settings: settings, target: .existing(hostId))
         }
+        .navigationDestination(isPresented: $pushAgent) {
+            if let api = settings.api(for: hostId) {
+                AgentSettingsView(api: api)
+            }
+        }
         .navigationDestination(isPresented: $pushDevices) {
             if let api = settings.api(for: hostId) {
                 DevicesView(api: api)
@@ -153,5 +176,6 @@ struct HostSettingsView: View {
     }
 
     @State private var pushConnect = false
+    @State private var pushAgent = false
     @State private var pushDevices = false
 }
