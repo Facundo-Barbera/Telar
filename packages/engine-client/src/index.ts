@@ -2461,7 +2461,7 @@ export class EngineClient {
    */
   subscribe(
     sessionId: string,
-    input: { targetSessionId: string; events?: WakeKind[]; once?: boolean },
+    input: { targetSessionId: string; events?: WakeKind[]; once?: boolean; completionWake?: Subscription["completionWake"] },
   ): Promise<{ subscription: Subscription }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`, input);
   }

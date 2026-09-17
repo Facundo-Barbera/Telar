@@ -3085,7 +3085,11 @@ describe("subscriptions", () => {
      * attribution — decided only by whether a turn was in flight.
      */
     const { store } = pair();
-    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
+    // #550 MADE THE STEER THE OPT-IN. `settled_only` is the default now, so a
+    // wake landing on a busy subscriber is held rather than steered — the case
+    // below this one. `always` is what still reaches the worker mid-turn, and
+    // the identity invariant this test pins is unchanged on that path.
+    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"], completionWake: "always" });
     // session_one is BUSY when the wake arrives — the whole point.
     store.submitTurn("session_one", { runId: "run_busy", input: "thinking" });
     const busy = store.claimTurn("session_one", "worker_one")!;
@@ -3327,10 +3331,19 @@ describe("subscriptions", () => {
     expect(notice(after[0]!)).toContain('sessions_read(sessionId: "session_two", runId: "run_p")');
     expect(notice(after[0]!).length).toBeLessThan(600);
 
-    // A wake the worker already CLAIMED is not rewritten: a fresh one queues behind it.
-    store.claimTurn("session_one", "worker_one");
+    // A wake the worker already CLAIMED is not rewritten — and under
+    // `settled_only` (#550) a fresh one does not queue behind it either: the
+    // subscriber is BUSY, so it is held until that turn settles.
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", claimed.runId, claimed.claim!.token);
     runTurn(store, "session_two", "run_next");
-    expect(wakes(store, "session_one")).toHaveLength(2);
+    expect(wakes(store, "session_one")).toHaveLength(1);
+    expect(store.pendingNotifications("session_one").map((each) => each.runId)).toEqual(["run_next"]);
+    // And settling it delivers what was held, as its own turn.
+    store.completeTurn("session_one", claimed.runId, claimed.claim!.token, { text: "read it" });
+    const delivered = wakes(store, "session_one").find((turn) => turn.notification?.runId === "run_next");
+    expect(delivered).toBeDefined();
+    expect(store.pendingNotifications("session_one")).toHaveLength(0);
   });
 
   test("unsubscribe withdraws the wakes still waiting from that session, and leaves everything else", () => {

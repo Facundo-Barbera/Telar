@@ -737,7 +737,10 @@ test("a WAKE steered into a running turn reaches the driver's mailbox still stam
   };
   const { client, sessionId, worker } = await setup(driver);
   const child = await client.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
-  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"] });
+  // `always` — #550 made the mid-turn steer the opt-in, and this test is about
+  // the mid-turn path. The default (`settled_only`) holds the wake instead, and
+  // `state.test.ts` pins that half.
+  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"], completionWake: "always" });
 
   await client.submitTurn(sessionId, { runId: "run_host", input: "Long task" });
   await worker.tick();

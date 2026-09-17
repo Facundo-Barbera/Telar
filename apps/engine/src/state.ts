@@ -71,6 +71,7 @@ import {
   type PluginPatch,
   type LatexConfig,
   Session as SessionSchema,
+  NotificationDetail as NotificationDetailSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
   Turn as TurnSchema,
@@ -170,7 +171,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { commitSessionWork, gitOverview, gitOverviewAsync, projectRemoteAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore, removeTelarGitignore } from "./gitignore";
 import { cloneRepository, isCloneFailure } from "./clone";
-import { notificationLabel, peerNotification, wakeNotification } from "./notification";
+import { MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, notificationLabel, peerNotification, wakeNotification } from "./notification";
 import {
   DEFAULT_ISSUE_FILTER,
   DEFAULT_PULL_FILTER,
@@ -1522,6 +1523,18 @@ function itemsFile(paths: EngineStatePaths, sessionId: string): string {
 
 function requestsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "requests.json");
+}
+
+/**
+ * THE NOTIFICATION MAILBOX — what arrived while this session was working.
+ *
+ * PER SESSION, beside its queue, because that is whose context is being spent:
+ * a subscription is engine-wide (`subscriptions.json`) but a HELD notification
+ * belongs to the recipient, and a session that is archived or deleted should
+ * take its unread mail with it rather than leave it in a shared file.
+ */
+function notificationsFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "notifications.json");
 }
 
 function tasksFile(paths: EngineStatePaths, sessionId: string): string {
@@ -8541,6 +8554,15 @@ export class EngineStore {
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     // A coordinator waiting on this session hears the failure like any other.
     this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+    /**
+     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+     *
+     * The turn that just ended was the reason a wake was held; ending it is the
+     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+     * flush sees a settled queue, and it is a no-op when the box is empty or a
+     * follow-up turn is already live.
+     */
+    this.flushPendingNotifications(sessionId);
   }
 
   /**
@@ -9185,6 +9207,15 @@ export class EngineStore {
     );
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
+    /**
+     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+     *
+     * The turn that just ended was the reason a wake was held; ending it is the
+     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+     * flush sees a settled queue, and it is a no-op when the box is empty or a
+     * follow-up turn is already live.
+     */
+    this.flushPendingNotifications(sessionId);
     // AFTER THE WAKE, NOT BEFORE. A coordinator's turn completing is what makes
     // its wake "consumed", and this session may be that coordinator — see
     // `evaluateDelegationSettling`.
@@ -9308,6 +9339,15 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+    /**
+     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+     *
+     * The turn that just ended was the reason a wake was held; ending it is the
+     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+     * flush sees a settled queue, and it is a no-op when the box is empty or a
+     * follow-up turn is already live.
+     */
+    this.flushPendingNotifications(sessionId);
     // A FAILED TURN STILL ENDS ONE. It never makes this session settleable —
     // clause 1 refuses a failed assignment — but the session may be the
     // COORDINATOR whose delegate is now waiting on nothing.
@@ -9379,6 +9419,15 @@ export class EngineStore {
     );
     // One wake for the live turn, not one per cancelled backlog message.
     if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
+    /**
+     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+     *
+     * The turn that just ended was the reason a wake was held; ending it is the
+     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+     * flush sees a settled queue, and it is a no-op when the box is empty or a
+     * follow-up turn is already live.
+     */
+    this.flushPendingNotifications(sessionId);
     this.evaluateDelegationSettling(sessionId);
     return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
   }
@@ -9424,6 +9473,15 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
+    /**
+     * AND ANYTHING HELD FOR THIS SESSION IS NOW DELIVERABLE — #550.
+     *
+     * The turn that just ended was the reason a wake was held; ending it is the
+     * moment "not now" becomes "now". Placed AFTER `fireSubscriptions` so the
+     * flush sees a settled queue, and it is a no-op when the box is empty or a
+     * follow-up turn is already live.
+     */
+    this.flushPendingNotifications(sessionId);
     // A stopped assignment IS finished (clause 1 takes it), so a Stop is one of
     // the moments a delegate can become settleable.
     this.evaluateDelegationSettling(sessionId);
@@ -9796,7 +9854,10 @@ export class EngineStore {
    * THE PAIR — a retried tool call returns the one subscription, with the
    * events merged, rather than minting a second that would wake twice.
    */
-  subscribe(subscriberSessionId: string, input: { targetSessionId: string; events?: WakeKind[]; once?: boolean }): Subscription {
+  subscribe(
+    subscriberSessionId: string,
+    input: { targetSessionId: string; events?: WakeKind[]; once?: boolean; completionWake?: Subscription["completionWake"] },
+  ): Subscription {
     assertId(input.targetSessionId, "target session id");
     if (subscriberSessionId === input.targetSessionId) {
       throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
@@ -9825,6 +9886,9 @@ export class EngineStore {
         if (input.once) existing.once = true;
         else delete existing.once;
       }
+      // Re-subscribing MERGES, so naming a policy changes it and omitting one
+      // leaves whatever was chosen before — the same rule `events` follows.
+      if (input.completionWake !== undefined) existing.completionWake = input.completionWake;
       this.writeSubscriptions(all);
       return structuredClone(existing);
     }
@@ -9841,6 +9905,10 @@ export class EngineStore {
       targetSessionId: input.targetSessionId,
       events,
       ...(input.once ? { once: true } : {}),
+      // ABSENT MEANS `settled_only`. Stored only when explicitly asked for, so
+      // the default stays a reading of the contract rather than a value written
+      // into every subscription ever made.
+      ...(input.completionWake ? { completionWake: input.completionWake } : {}),
       createdAt: this.now(),
     };
     all.push(subscription);
@@ -10059,6 +10127,38 @@ export class EngineStore {
         ...(context.request ? { requestId: context.request.id } : {}),
         body: wakeMessage(kind, target, turn, context),
       });
+      /**
+       * SETTLED ONLY, BY DEFAULT — #550 clause 3.
+       *
+       * A wake arriving while the subscriber has a live turn used to be STEERED
+       * into it (`submitTurn` steers whatever it accepts when a turn is
+       * running), so a coordinator with four workers took four interruptions in
+       * the middle of its own reasoning. Held instead, they arrive together, as
+       * ONE notification, when it next comes up for air.
+       *
+       * `always` IS STILL THERE and still means what it did, for a subscriber
+       * whose whole job is to react. It has to be asked for, which is the
+       * change: the loud behaviour is no longer what you get by not choosing.
+       */
+      if ((subscription.completionWake ?? "settled_only") === "settled_only" && this.hasLiveTurn(subscriberId)) {
+        this.holdNotification(subscriberId, notification);
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
+        continue;
+      }
+      /**
+       * A COHORT ALREADY WAITING TAKES THIS ONE WITH IT.
+       *
+       * Otherwise a wake landing in the window between a session going idle and
+       * its held mail being delivered would queue a turn of its own and the
+       * cohort would arrive as two — which is the merge failing at exactly the
+       * moment it matters, since that window is when a busy session drains.
+       */
+      if (this.readPendingNotifications(subscriberId).length > 0) {
+        this.holdNotification(subscriberId, notification);
+        this.flushPendingNotifications(subscriberId);
+        if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
+        continue;
+      }
       try {
         /**
          * ONE QUEUED WAKE PER CHILD TURN. A child that parks an approval,
@@ -10073,12 +10173,13 @@ export class EngineStore {
          */
         const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, notification, wakeReason);
         if (!coalesced) {
+          const delivered: NotificationDetail = { ...notification, deliveries: 1 };
           this.submitTurn(subscriberId, {
             runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-            input: notificationLabel(notification),
+            input: notificationLabel(delivered),
             origin: "session",
             wakeReason,
-            notification,
+            notification: delivered,
           });
         }
         // ONLY AN ENDING SPENDS A ONE-SHOT — see `TERMINAL_WAKE_KINDS`. A
@@ -10247,7 +10348,23 @@ export class EngineStore {
       (turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId && turn.wakeReason.runId === wakeReason.runId,
     );
     if (!waiting) return false;
+    /**
+     * A REWRITE IS A DELIVERY TOO, AND THERE ARE TWO OF THEM — #550 clause 3.
+     *
+     * The waiting turn has already been put in front of nobody yet, but it HAS
+     * been announced, and every rewrite spends the recipient's attention again
+     * on an errand it has not got to. Past `MAX_DELIVERIES` the turn keeps
+     * whatever it last said and the newer fact goes to the mailbox, where it
+     * stays PENDING and `sessions_status` reports it. That is what stops a
+     * chatty child from re-announcing itself at a busy coordinator for ever.
+     */
+    const deliveries = (waiting.notification?.deliveries ?? 1) + 1;
+    if (deliveries > MAX_DELIVERIES) {
+      this.holdNotification(subscriberId, notification);
+      return true;
+    }
     const at = this.now();
+    notification = { ...notification, deliveries };
     waiting.input = notificationLabel(notification);
     waiting.notification = notification;
     waiting.wakeReason = wakeReason;
@@ -10262,6 +10379,122 @@ export class EngineStore {
     // with `replayed: true` is how a client learns the words changed.
     this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
     return true;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * THE NOTIFICATION MAILBOX — issue #550 clause 3.
+   *
+   * A wake used to be delivered the instant it was fired, whatever the
+   * recipient was doing: a coordinator with four workers took four mid-turn
+   * interruptions, each landing in a context already full of the work it
+   * interrupted. `Subscription.completionWake` defaults to `settled_only`
+   * because interrupting is the expensive choice and should be the asked-for
+   * one, and this is where "not now" is kept until "now".
+   * ---------------------------------------------------------------- */
+
+  /** What this session has not been told yet. Absent file means an empty box —
+   *  no migration, and a session that never held one costs nothing. */
+  private readPendingNotifications(sessionId: string): NotificationDetail[] {
+    const stored = this.readDocument(notificationsFile(this.paths, sessionId));
+    if (stored === undefined) return [];
+    const parsed = NotificationDetailSchema.array().safeParse((stored as { pending?: unknown }).pending);
+    // A torn or older mailbox is DROPPED rather than thrown on. Unread mail is
+    // worth less than the session it is attached to, and every fact in here is
+    // still one `sessions_read` away from its source.
+    return parsed.success ? parsed.data : [];
+  }
+
+  private writePendingNotifications(sessionId: string, pending: NotificationDetail[]): void {
+    this.writeDocument(notificationsFile(this.paths, sessionId), { version: STATE_VERSION, pending });
+  }
+
+  /** Is a turn of this session's actually in front of a provider right now? The
+   *  question `settled_only` turns on — and `queued` is deliberately NOT busy:
+   *  a queued wake is already waiting its turn, which is what holding is for. */
+  private hasLiveTurn(sessionId: string): boolean {
+    return this.scanQueue(sessionId).turns.some((turn) => turn.state === "claimed" || turn.state === "running" || turn.state === "steering");
+  }
+
+  /**
+   * HOLD ONE, MERGING IT ONTO WHAT IS ALREADY WAITING.
+   *
+   * THE NEWEST FACT ABOUT ONE RUN WINS, which is `coalesceQueuedWake`'s rule
+   * applied to the box rather than to the queue: a child that parks an approval,
+   * gets it, then finishes has produced three facts about one run and only the
+   * last is worth a recipient's attention. Different runs stay separate — a
+   * failure on one turn is not erased by another turn finishing.
+   *
+   * BOUNDED, because a fan-out is exactly the shape that fills this. Past the
+   * cap the OLDEST goes: a coordinator coming up for air after an hour wants
+   * what happened recently, and the rest is still readable at its source.
+   */
+  private holdNotification(sessionId: string, detail: NotificationDetail): void {
+    const pending = this.readPendingNotifications(sessionId);
+    const index = pending.findIndex(
+      (each) => each.kind === detail.kind && each.sessionId === detail.sessionId && each.runId === detail.runId,
+    );
+    if (index >= 0) pending[index] = detail;
+    else pending.push(detail);
+    this.writePendingNotifications(sessionId, pending.slice(-MAX_COHORT_ENTRIES));
+  }
+
+  /**
+   * DELIVER EVERYTHING HELD, AS ONE NOTIFICATION — the cohort merge.
+   *
+   * Called when a session settles, and when a wake arrives on one that is
+   * already idle. ONE turn and ONE item for the whole cohort: four wakes that
+   * arrived during a long turn are four lines in one notice, not four turns.
+   *
+   * SILENT WHEN THERE IS NOTHING TO SAY, and silent while the session is still
+   * working — a flush that raced a claim would put a turn behind the very turn
+   * it was waiting for, which is holding with extra steps.
+   */
+  private flushPendingNotifications(sessionId: string): void {
+    const pending = this.readPendingNotifications(sessionId);
+    if (pending.length === 0) return;
+    if (this.hasLiveTurn(sessionId)) return;
+    const merged = mergeNotifications(pending);
+    // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
+    // a duplicate — and after it, the facts live on the turn, which is durable.
+    this.writePendingNotifications(sessionId, []);
+    const delivered: NotificationDetail = { ...merged, deliveries: 1 };
+    try {
+      this.submitTurn(sessionId, {
+        runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+        input: notificationLabel(delivered),
+        origin: "session",
+        // The COHORT'S newest happening is what stamps the turn — the same one
+        // whose fields lead the merged detail. A turn needs exactly one wake
+        // reason and this is the honest choice of one.
+        wakeReason: {
+          kind: merged.wakeKind ?? "turn_completed",
+          sessionId: merged.sessionId ?? sessionId,
+          ...(merged.runId ? { runId: merged.runId } : {}),
+          ...(merged.requestId ? { requestId: merged.requestId } : {}),
+        },
+        notification: delivered,
+      });
+    } catch (error) {
+      // Same contract as `fireSubscriptions`: the recipient's own state is not
+      // worth breaking a delivery for, and the reason goes where a person looks.
+      if (error instanceof EngineStateError && error.code === "conflict") {
+        this.appendEvent(sessionId, { type: "runtime.warning", message: `held notifications could not be delivered: ${error.message}` });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * WHAT THIS SESSION HAS NOT BEEN TOLD — the "pollable" half of the cap.
+   *
+   * A notification the cap refused to queue a third time stays here, and this is
+   * how `sessions_status` reports it: the result is not lost, it is simply not
+   * being pushed at a session that has not read the last two.
+   */
+  pendingNotifications(sessionId: string): NotificationDetail[] {
+    this.requireSession(sessionId);
+    return structuredClone(this.readPendingNotifications(sessionId));
   }
 
   /** The other half of `writeNotificationItem`: the row a coalesce superseded. */

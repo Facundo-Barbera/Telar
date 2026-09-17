@@ -80,7 +80,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -156,7 +156,7 @@ export type SessionsCapability = {
    * lately" costs one page instead of walking 61,933 events to reach the end.
    */
   cursor?(sessionId: string): Promise<number>;
-  status(sessionId: string): Promise<{ session: Session; turns: Turn[] }>;
+  status(sessionId: string): Promise<{ session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] }>;
   /**
    * PAUSE, NOT A ONE-TURN STOP — `EngineStore.pauseSession`, stamped
    * `by: "session"`. A stop of one turn lets the worker take the next queued
@@ -185,7 +185,10 @@ export type SessionsCapability = {
    * subscribing nobody.
    */
   self?: { sessionId: string };
-  subscribe(subscriberSessionId: string, input: { targetSessionId: string; events?: WakeKind[]; once?: boolean }): Promise<Subscription>;
+  subscribe(
+    subscriberSessionId: string,
+    input: { targetSessionId: string; events?: WakeKind[]; once?: boolean; completionWake?: Subscription["completionWake"] },
+  ): Promise<Subscription>;
   unsubscribe(subscriptionId: string, subscriberSessionId: string): Promise<boolean>;
   subscriptions(subscriberSessionId: string): Promise<Subscription[]>;
   /** Every request a session has, open or resolved; the wall keeps the open ones. */
@@ -224,7 +227,7 @@ const SEND = `Send a message to another session. intent: report (the default) is
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-const SUBSCRIBE = `Be WOKEN when a session finishes a turn, fails, is stopped, or parks a request. The wake is a real turn in YOUR session, so you can end this one rather than poll. It is a PING, not a report: it names the session and run and the sessions_read call that fetches the outcome. One-shot by default; once: false monitors until you unsubscribe.`;
+const SUBSCRIBE = `Be WOKEN when a session finishes a turn, fails, is stopped, or parks a request — as a notification turn in YOUR session, so you can end this one rather than poll. It is a PING: it names the session and run and the sessions_read that fetches the outcome. One-shot by default. It waits until you are idle, then delivers everything that piled up as one.`;
 
 const UNSUBSCRIBE = `Stop being woken by a session. Takes the id sessions_subscribe returned (sessions_subscriptions lists them). Wakes from it still waiting in your queue are withdrawn too. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
 
@@ -1261,13 +1264,14 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
             ? Math.min(args.turns, STATUS_TURNS_MAX)
             : STATUS_TURNS_DEFAULT;
-        let answer: { session: Session; turns: Turn[] };
+        let answer: { session: Session; turns: Turn[]; pendingNotifications?: NotificationDetail[] };
         try {
           answer = await capability.status(sessionId);
         } catch (error) {
           return err(`Could not read the status of "${sessionId}": ${failure(error)}`);
         }
         const { session, turns } = answer;
+        const pending = answer.pendingNotifications ?? [];
         const live = turns.filter((turn) => LIVE_TURN_STATES.has(turn.state));
         /**
          * THE RECENT ONES, AND EVERY LIVE ONE WHEREVER IT SITS.
@@ -1293,12 +1297,23 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           turnCount: turns.length,
           turns: withLive.map(turnLine),
           ...(dropped > 0 ? { turnsNotShown: dropped } : {}),
+          /**
+           * WHAT THIS SESSION HAS NOT BEEN TOLD YET — #550 clause 3.
+           *
+           * A notification held while it worked, or one the two-delivery cap
+           * declined to announce a third time, is not lost: it waits here and
+           * this is the poll that finds it. That is what makes the cap safe —
+           * "we stopped pushing" only holds together if there is a pull.
+           */
+          ...(pending.length > 0 ? { pendingNotifications: pending.map((detail) => detail.summary) } : {}),
           note:
             session.activity === "blocked"
               ? "It is WAITING ON A PERSON — a request is open and only a human can answer it. Nothing you send will unblock it."
               : live.length > 0
-                ? "A turn is in flight. Read it with sessions_read, or stop it with sessions_stop."
-                : "Nothing is running.",
+                ? `A turn is in flight. Read it with sessions_read, or stop it with sessions_stop.${pending.length > 0 ? ` ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting for it to finish.` : ""}`
+                : pending.length > 0
+                  ? `Nothing is running, and ${pending.length} notification${pending.length === 1 ? "" : "s"} are waiting to be delivered.`
+                  : "Nothing is running.",
         });
       },
     ),
@@ -1438,6 +1453,12 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .optional()
           .describe("Which happenings wake you. Omit for all four."),
         once: z.boolean().optional().describe("Defaults to true: remove after the first wake. Set false only for intentional ongoing monitoring."),
+        completionWake: z
+          .enum(["settled_only", "always"])
+          .optional()
+          .describe(
+            "When a wake may reach you. settled_only (the default) holds it while you have a turn running and delivers everything that piled up as ONE notification when you next go idle. always interrupts the turn you are in — ask for it only if reacting immediately is the job.",
+          ),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
@@ -1448,10 +1469,15 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             targetSessionId,
             ...(events && events.length > 0 ? { events } : {}),
             once: args.once !== false,
+            ...(args.completionWake === "always" || args.completionWake === "settled_only" ? { completionWake: args.completionWake } : {}),
           });
           return json({
             ...subscription,
-            note: `You will be woken with a "[wake: …]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues. The notice is a ping — fetch an outcome with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
+            note: `You will be woken with a notification when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. ${
+              (subscription.completionWake ?? "settled_only") === "settled_only"
+                ? "It waits for you to finish the turn you are in, and anything else that arrives meanwhile comes with it as one notification."
+                : "It interrupts the turn you are in."
+            } End your turn whenever you like; nothing is lost. The notice is a ping — fetch an outcome with sessions_read(sessionId: "${targetSessionId}", runId) when you want it.`,
           });
         } catch (error) {
           return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);
