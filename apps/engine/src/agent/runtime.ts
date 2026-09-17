@@ -81,7 +81,7 @@ import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
 import { agentToolSpecs, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
-import { AGENT_BRIEFING } from "./briefing";
+import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
 import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
@@ -265,6 +265,9 @@ type QueuedTurn = {
   input: string;
   origin: AgentTurnOrigin;
   wakeReason?: Record<string, unknown>;
+  /** THIS TURN IS BEING SPOKEN, so its answer is written to be heard (#567).
+   *  Per turn, never stored — see `AGENT_BRIEF_ANSWER` for why. */
+  brief?: boolean;
   /**
    * THIS TURN CONTINUES ONE THE CHECKPOINT ALREADY HOLDS — see `restore`.
    *
@@ -667,7 +670,7 @@ export class AgentRuntime {
    * composer needs something to follow — the same contract `submitTurn` has for
    * a session.
    */
-  submit(input: { text: string; origin?: AgentTurnOrigin; wakeReason?: Record<string, unknown> }): { runId: string; queued: number } {
+  submit(input: { text: string; origin?: AgentTurnOrigin; wakeReason?: Record<string, unknown>; brief?: boolean }): { runId: string; queued: number } {
     const settings = readAgentSettings(this.paths);
     if (!settings.enabled || !settings.threadId) throw new Error("Telar's Agent is switched off.");
     const text = input.text.trim();
@@ -677,6 +680,7 @@ export class AgentRuntime {
       input: text,
       origin: input.origin ?? "human",
       ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}),
+      ...(input.brief ? { brief: true } : {}),
     };
     this.queue.push(turn);
     void this.pump();
@@ -851,7 +855,11 @@ export class AgentRuntime {
         origin: turn.origin,
         ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
       });
-      this.row("turn_started", turn.runId, { origin: turn.origin });
+      // `brief` IS ON THE ROW because it changes the answer the transcript
+      // holds: a two-sentence reply under a question that deserved a page is a
+      // thing a person will come back to and wonder about, and the row is where
+      // the reason lives. Absent rather than false on an ordinary turn.
+      this.row("turn_started", turn.runId, { origin: turn.origin, ...(turn.brief ? { brief: true } : {}) });
     }
 
     /**
@@ -892,6 +900,10 @@ export class AgentRuntime {
       }),
       runId: turn.runId,
       ...(settings.access ? { access: settings.access } : {}),
+      // THE ANSWER'S SHAPE, FOR THIS TURN ONLY (#567). It rides the graph
+      // because the graph owns the system block, and it is read off the queued
+      // turn rather than off the settings so the written UI is untouched.
+      ...(turn.brief ? { brief: true } : {}),
     });
     const config: RunnableConfig = {
       configurable: { thread_id: threadId },
@@ -1028,7 +1040,7 @@ export class AgentRuntime {
    * The graph.
    * -------------------------------------------------------------- */
 
-  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string }) {
+  private buildGraph(context: { tools: SocketTool[]; model: BaseChatModel | undefined; runId: string; access?: AgentSettings["access"]; digest?: string; brief?: boolean }) {
     const byName = new Map(context.tools.map((tool) => [tool.name, tool]));
     /**
      * BOUND AS FUNCTION DEFINITIONS, NOT AS LANGCHAIN TOOL OBJECTS.
@@ -1070,9 +1082,17 @@ export class AgentRuntime {
      * the NEXT turn's prompt. The alternative is a system block that changes
      * between laps of one turn, which is a cache miss on every lap and a model
      * watching its own instructions move mid-thought.
+     *
+     * AND `brief` GOES UNDER ALL OF IT (#567), because it is the least
+     * permanent thing here: not a setting, not a property of the conversation,
+     * but of the ONE request a voice client sent. See `AGENT_BRIEF_ANSWER`.
      */
     const standing = renderStanding(readStanding(this.paths));
-    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest].filter(Boolean).join("\n\n"));
+    const system = new SystemMessage(
+      [AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest, context.brief ? AGENT_BRIEF_ANSWER : undefined]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
     const budget = this.options.budgetChars;
 
     const callModel = async (state: AgentGraphStateType, config?: RunnableConfig): Promise<Partial<AgentGraphStateType>> => {

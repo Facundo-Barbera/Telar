@@ -43,3 +43,24 @@ export const AGENT_BRIEFING =
   "github_status reads one issue or pull request by number — state, checks, mergeable, last comment. It is all you see outside Telar, and it changes nothing there. " +
   "PRESERVE WORK AND RESPECT PERMISSIONS: never stop or settle a session to tidy the list, never answer another session's request on the person's behalf unless you actually know the answer, and never hand a peer an action refused here — the same action under another name. " +
   "You own no project and no session by default. When something needs the person's decision, ask them.";
+
+/**
+ * ONE SENTENCE, FOR A TURN THAT WILL BE HEARD RATHER THAN READ (#567).
+ *
+ * PER TURN, NOT A SETTING. `brief` is a property of the REQUEST — telar-vr sends
+ * it, the cockpit does not — and the same conversation is read on a screen
+ * between two spoken turns. A stored preference would make the written UI
+ * terse because somebody once used their voice.
+ *
+ * IT RIDES THE SYSTEM BLOCK, LAST, because that block is rebuilt per turn and
+ * never checkpointed: an instruction about how to answer THIS question must not
+ * still be in the prompt three turns later, and anything appended to the
+ * message list would be. Last for the order the rest of the block already has —
+ * most permanent first, and nothing here is less permanent than this.
+ *
+ * WHAT IT ASKS FOR IS A LENGTH AND A SHAPE, not a tone. A list read aloud is a
+ * paragraph with the punctuation removed, and a code block is unspeakable; the
+ * Agent's voice is its own.
+ */
+export const AGENT_BRIEF_ANSWER =
+  "THIS ANSWER WILL BE SPOKEN ALOUD: reply in two or three sentences of plain prose. No lists, no headings, no code, no markdown.";

@@ -1673,7 +1673,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         const text = stringValue(input.text, "text") ?? "";
         try {
-          writeJson(response, 201, { ...agentRuntime.submit({ text }), agent: agentRuntime.state() });
+          /**
+           * `brief` IS THE VOICE CLIENT'S FLAG (#567) — telar-vr sends it, the
+           * cockpit does not. It shortens THIS turn's answer and is stored
+           * nowhere, so the same conversation read on a screen a minute later
+           * is unchanged. Absent and false are the same thing here.
+           */
+          writeJson(response, 201, {
+            ...agentRuntime.submit({ text, ...(input.brief === true ? { brief: true } : {}) }),
+            agent: agentRuntime.state(),
+          });
         } catch (error) {
           // A switched-off Agent and an empty message are both the caller's
           // mistake, said in the sentence the runtime wrote for them.
