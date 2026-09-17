@@ -52,6 +52,7 @@ import { useState } from "react";
 import type { DictationProviderId } from "@telar/engine-client";
 import { KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
 import { useDictationSettings } from "@/lib/dictation/settings";
+import { DICTATION_AUTOMATIC } from "@/lib/dictation/automatic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -135,7 +136,7 @@ export function DictationSection() {
             label="Language"
             icon={LanguagesIcon}
             hint={
-              language === "multi"
+              language === DICTATION_AUTOMATIC
                 ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence — which is what a name dropped into another language actually is. Narrow it below only if you speak one language and want the accuracy of saying so."
                 : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
             }
