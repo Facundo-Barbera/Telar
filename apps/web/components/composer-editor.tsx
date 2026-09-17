@@ -236,12 +236,23 @@ function placeCaret(root: HTMLElement, offset: number): void {
 
 export type ComposerEditorHandle = {
   focus: () => void;
+  /** Is the caret in this box right now? */
+  focused: () => boolean;
   /** The caret's index in the draft, or the draft's length when unfocused. */
   caret: () => number;
   /** Swap a run of the draft — how a completion replaces its own trigger. */
   replaceRange: (start: number, end: number, text: string) => void;
-  /** Splice text in at the caret, spaced the way a person would type it. */
-  insertAtCaret: (text: string) => void;
+  /**
+   * Splice text in at the caret, spaced the way a person would type it, and
+   * return the draft that was committed.
+   *
+   * THE RETURN IS FOR A CALLER WHO CANNOT WAIT FOR THE RENDER. `onChange` is
+   * the parent's route to the new string and stays the route for anything on
+   * screen; the page API (`lib/page-api.ts`) answers an external client
+   * synchronously, and the React state it would have to read back has not
+   * arrived yet at the moment it must answer.
+   */
+  insertAtCaret: (text: string) => string;
 };
 
 export const ComposerEditor = forwardRef<
@@ -257,12 +268,21 @@ export const ComposerEditor = forwardRef<
     onSelectionChange?: () => void;
     /** Pasted files become attachments, exactly as they did in the textarea. */
     onPasteFiles?: (files: File[]) => void;
+    /** The caret entered this box. The composer registry's "most recently
+     *  focused" is this event and nothing else — see lib/composer-registry.ts. */
+    onFocus?: () => void;
     placeholder?: string;
     disabled?: boolean;
     id?: string;
+    /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Documented as
+     *  stable for external clients in `docs/page-api.md`, beside `data-slot`. */
+    "data-composer"?: "session" | "agent";
     className?: string;
   }
->(function ComposerEditor({ value, onChange, onKeyDown, onSelectionChange, onPasteFiles, placeholder, disabled, id, className }, ref) {
+>(function ComposerEditor(
+  { value, onChange, onKeyDown, onSelectionChange, onPasteFiles, onFocus, placeholder, disabled, id, "data-composer": dataComposer, className },
+  ref,
+) {
   const root = useRef<HTMLDivElement>(null);
   /** The text the DOM currently shows. The guard that stops our own echo from
    *  repainting the box mid-keystroke. */
@@ -316,6 +336,7 @@ export const ComposerEditor = forwardRef<
     ref,
     () => ({
       focus: () => root.current?.focus(),
+      focused: () => Boolean(root.current) && document.activeElement === root.current,
       caret: () => {
         const box = root.current;
         if (!box) return painted.current.length;
@@ -332,6 +353,7 @@ export const ComposerEditor = forwardRef<
         const at = range ? range.end : painted.current.length;
         const next = insertReference(painted.current, text, at);
         rewrite(next.draft, next.caret);
+        return next.draft;
       },
     }),
     [rewrite],
@@ -348,6 +370,7 @@ export const ComposerEditor = forwardRef<
         suppressContentEditableWarning
         spellCheck
         data-slot="composer-editor"
+        data-composer={dataComposer}
         // 76px and 15px/24 are the textarea's, kept: a composer is the largest
         // single target on the screen and the type has to hold its own against
         // the transcript it sits under.
@@ -375,6 +398,7 @@ export const ComposerEditor = forwardRef<
             if (box) commit(serialize(box));
           }
         }}
+        onFocus={() => onFocus?.()}
         onKeyUp={() => onSelectionChange?.()}
         onMouseUp={() => onSelectionChange?.()}
         onBlur={() => onSelectionChange?.()}

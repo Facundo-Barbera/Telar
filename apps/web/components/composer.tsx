@@ -21,7 +21,8 @@
  * see is indistinguishable from a keystroke that did nothing.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   CircleCheckIcon,
   CornerDownLeftIcon,
@@ -65,6 +66,7 @@ import {
   useComposerCommandChoices,
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
+import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
 import { ComposerMenu } from "./composer-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
@@ -402,6 +404,7 @@ function ComposerBanner({
 export function Composer({
   draft,
   ready,
+  kind = "session",
   attachments,
   onAttach,
   fresh = false,
@@ -439,6 +442,17 @@ export function Composer({
 }: {
   draft: string;
   ready: boolean;
+  /**
+   * WHICH OF THE TWO MESSAGE BOXES THIS IS (#548).
+   *
+   * The Agent screen renders this same component, and until now nothing on the
+   * page said which one you were looking at. It names the editable root — `id`
+   * and `data-composer` — and it is what the page API reports to an external
+   * client that has to choose before it speaks into one. Not derived from
+   * `session` or `controls`: a composer's identity should not be a side effect
+   * of which props a caller happened to pass.
+   */
+  kind?: ComposerKind;
   /** Files picked but not yet sent. Owned by the cockpit because sending them
    *  is: they are uploaded as part of the same submit that creates the session. */
   attachments: File[];
@@ -590,15 +604,115 @@ export function Composer({
   const setQd = (next: QuestionDraft) => question && setQState({ requestId: question.id, draft: next });
   const qActiveKey = qFields[qd.index]?.key;
 
-  const advanceOrSubmitQuestion = () => {
-    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return;
+  /** WHAT THE BOX ACTUALLY HOLDS — the question's custom answer while one is on
+   *  screen, the draft otherwise. One expression, because the editor's value,
+   *  the registry's reading of it and the page API's answer must be the same
+   *  string or an external client is told about a draft nobody can see. */
+  const boxText = questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft;
+
+  /** True when the form moved on — advanced to the next field, or answered. */
+  const advanceOrSubmitQuestion = (): boolean => {
+    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return false;
     if (!isLastQuestion(qFields, qd)) {
       setQd(advanceQuestion(qd));
-      return;
+      return true;
     }
     const answers = buildAnswers(qFields, qd);
-    if (answers) onAnswerQuestion(question.id, answers);
+    if (!answers) return false;
+    onAnswerQuestion(question.id, answers);
+    return true;
   };
+
+  /**
+   * THE ONE GATE EVERY SEND PASSES THROUGH (#548).
+   *
+   * Enter, ⌘↵, the send button and now `window.telar.submit()` all end here.
+   * The first three used to carry their own copy of `draft.trim() && ready &&
+   * !driveAway`, and a caller arriving from OUTSIDE the app is exactly how a
+   * fourth copy — the one that forgets `driveAway`, or forgets that a question
+   * changes what Enter means — comes to be written.
+   *
+   * IT ANSWERS IN SENTENCES because the external caller cannot see the screen:
+   * a `false` tells a dictation client nothing it can say out loud.
+   */
+  const advance = useRef(advanceOrSubmitQuestion);
+  useLayoutEffect(() => {
+    advance.current = advanceOrSubmitQuestion;
+  });
+
+  const trySubmit = useCallback((): ComposerSubmit => {
+    // A QUESTION ON SCREEN CHANGES WHAT SENDING MEANS: the box is that
+    // question's custom answer, so Enter advances or answers the form.
+    if (questionActive) {
+      return advance.current() ? { ok: true } : { ok: false, reason: "The open question has no answer to send yet." };
+    }
+    if (!ready) return { ok: false, reason: "This conversation is not ready yet." };
+    if (driveAway) return { ok: false, reason: "The project's files are not reachable right now." };
+    if (!draft.trim()) return { ok: false, reason: "There is nothing to send." };
+    onSubmit();
+    return { ok: true };
+  }, [questionActive, ready, driveAway, draft, onSubmit]);
+
+  /* ---------------------------------------------------------------- *
+   * THE PAGE API'S SIDE OF THE COMPOSER (#548) — see lib/page-api.ts.
+   * ---------------------------------------------------------------- */
+
+  /** The DOM id of the editable root. `turn-prompt` is the session composer's
+   *  and stays: it is in the app's own label, and external clients already
+   *  reach for it. */
+  const editorId = kind === "agent" ? "agent-prompt" : "turn-prompt";
+  /** Registered under React's own instance key rather than the DOM id, so a
+   *  second composer of the same kind is a duplicate-id bug and not also an
+   *  unregistration of the first. */
+  const token = useId();
+  /**
+   * WHAT THIS COMPOSER HOLDS RIGHT NOW, readable from a call that arrived from
+   * outside React. Same reason as `latest` below: the entry is registered once
+   * and would otherwise answer with the mount's props forever.
+   *
+   * A LAYOUT EFFECT, NOT A PASSIVE ONE, and the difference is load-bearing:
+   * `dictate(text, { submit: true })` inserts and sends in one breath, and the
+   * send has to see the draft the insert just committed. Layout effects run
+   * inside the commit `flushSync` forces below; a passive effect would leave
+   * this holding the previous draft for exactly the moment that matters.
+   */
+  const live = useRef({ text: boxText, ready, submit: trySubmit });
+  useLayoutEffect(() => {
+    live.current = { text: boxText, ready, submit: trySubmit };
+  });
+
+  useEffect(
+    () =>
+      registerComposer(token, {
+        id: editorId,
+        kind,
+        draft: () => live.current.text,
+        focused: () => editor.current?.focused() ?? false,
+        insert: (text) => {
+          // THE SAME REFUSAL THE SCREEN SHOWS: `disabled={!ready}` on the editor
+          // means a person cannot type here either.
+          if (!live.current.ready) return { ok: false, reason: "This conversation is not ready yet." };
+          const box = editor.current;
+          if (!box) return { ok: false, reason: "The message box is not on screen." };
+          /**
+           * FLUSHED, NOT SCHEDULED. A keystroke and the Enter that follows it
+           * are two events with a render in between; `dictate(…, { submit:
+           * true })` is one call, and the send reads the draft out of REACT
+           * state — the cockpit's `onSubmit` sends what its own `draft` holds.
+           * Without the synchronous commit, a dictated sentence would be
+           * submitted as whatever was in the box before it, which is the one
+           * outcome a dictation client cannot notice or explain.
+           */
+          let draft = "";
+          flushSync(() => {
+            draft = box.insertAtCaret(text);
+          });
+          return { ok: true, draft };
+        },
+        submit: () => live.current.submit(),
+      }),
+    [token, editorId, kind],
+  );
 
   useEffect(() => {
     if (!escArmed) return;
@@ -1065,13 +1179,13 @@ export function Composer({
       if (questionActive) {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          advanceOrSubmitQuestion();
+          trySubmit();
         }
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (draft.trim() && ready && !driveAway) onSubmit();
+        trySubmit();
         return;
       }
       if (event.key === "Escape" && busy) {
@@ -1088,22 +1202,19 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- advanceOrSubmitQuestion is rebuilt per render by design; questionActive covers its liveness
+    // No `ready`, `onSubmit` or the question draft here any more: every send
+    // this handler can reach goes through `trySubmit`, which carries them.
     [
       draft,
-      ready,
       busy,
       escArmed,
-      onDraftChange,
-      onSubmit,
+      trySubmit,
       onStop,
       menuOpen,
       completions,
       active,
       apply,
       questionActive,
-      qd,
-      question,
       attachments,
       stash,
       stashOpen,
@@ -1129,11 +1240,7 @@ export function Composer({
   useCommandHandlers({
     "focus-composer": () => editor.current?.focus(),
     send: () => {
-      if (questionActive) {
-        advanceOrSubmitQuestion();
-        return;
-      }
-      if (draft.trim() && ready && !driveAway) onSubmit();
+      trySubmit();
     },
     // No arming here, unlike Escape: ⌘. is not a key anybody presses by accident
     // mid-sentence, which is the whole reason Escape needs two presses.
@@ -1316,11 +1423,7 @@ export function Composer({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (questionActive) {
-            advanceOrSubmitQuestion();
-            return;
-          }
-          if (draft.trim() && ready && !driveAway) onSubmit();
+          trySubmit();
         }}
       >
         {/* A TRANSLUCENT, BLURRED SURFACE — not a flat panel. The transcript
@@ -1425,7 +1528,7 @@ export function Composer({
               </span>
             </div>
           )}
-          <label className="sr-only" htmlFor="turn-prompt">
+          <label className="sr-only" htmlFor={editorId}>
             Message
           </label>
           {/* IN QUESTION MODE THE EDITOR IS THE CUSTOM-ANSWER FIELD: its value
@@ -1459,8 +1562,9 @@ export function Composer({
           >
           <ComposerEditor
             ref={editor}
-            id="turn-prompt"
-            value={questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft}
+            id={editorId}
+            data-composer={kind}
+            value={boxText}
             placeholder={
               questionActive
                 ? "Type your own answer, or leave blank…"
@@ -1490,6 +1594,9 @@ export function Composer({
             onSelectionChange={() => !questionActive && retrigger(draft)}
             onKeyDown={onKeyDown}
             onPasteFiles={addFiles}
+            // THE CARET ARRIVING IS THE WHOLE OF "ACTIVE" — see
+            // lib/composer-registry.ts.
+            onFocus={() => markComposerActive(token)}
           />
           </div>
           {attachments.length > 0 && (
