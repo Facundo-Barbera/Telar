@@ -62,6 +62,19 @@ export const DICTATION_TTL_SECONDS = 300;
 /** What a client gets. `provider` is what tells it which socket to open. */
 export type DictationToken = {
   provider: DictationProviderId;
+  /**
+   * WHAT TO ASK THE SOCKET TO TRANSCRIBE, already in the provider's own wire
+   * spelling (#560).
+   *
+   * IT RIDES THE TOKEN RATHER THAN BEING FETCHED SEPARATELY, which is the whole
+   * reason this field is here: both clients already ask for a token on every
+   * press of the mic button and neither reads the settings route on that path.
+   * Carrying it here makes one round trip serve both questions; the alternative
+   * — the composer growing a second fetch, or the button waiting on a settings
+   * hook — is a request and a race for a value the first answer could just have
+   * contained.
+   */
+  language: string;
   /** The JWT. Short-lived, single-purpose, and the only credential that ever
    *  leaves this engine towards a browser or a phone. */
   token: string;
@@ -117,6 +130,11 @@ export async function grantDictationToken(input: {
   /** The long-lived key. Absent means unconfigured, which is a refusal rather
    *  than a call. */
   key: string | undefined;
+  /** Deepgram's own code, mapped from the setting by the provider before it
+   *  got here — see `deepgramLanguage`. Not validated again: this function
+   *  spends a key, and re-checking a value its only caller just mapped would be
+   *  a second list to keep in step. */
+  language: string;
   ttlSeconds?: number;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -160,7 +178,7 @@ export async function grantDictationToken(input: {
   // on when their own JWT dies; the TTL asked for is the fallback, and it can
   // only ever be the same or longer than what they actually granted.
   const lifetime = typeof body.expires_in === "number" && body.expires_in > 0 ? body.expires_in : ttlSeconds;
-  return { provider: "deepgram", token, expiresAt: now() + lifetime * 1000 };
+  return { provider: "deepgram", token, expiresAt: now() + lifetime * 1000, language: input.language };
 }
 
 /** Deepgram's own sentence when its error body carries one, and the status

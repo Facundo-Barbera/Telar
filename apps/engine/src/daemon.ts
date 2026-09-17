@@ -1774,6 +1774,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // read as clearing one, and a client that sent no provider must not
           // be read as switching dictation off.
           if ("provider" in input) store.setDictationProvider(input.provider);
+          if ("language" in input) store.setDictationLanguage(input.language);
           if ("apiKey" in input) store.setDictationKey(input.apiKey);
         }
         // `provider` IS A SETTING NOW, not a constant riding the answer. `off`
@@ -1782,6 +1783,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // than a feature switched off. `configured` is still the whole of what
         // may be said about the key, and it is answered even when the provider
         // is off so the pane can say a key is already there.
+        //
+        // `language` AND `languages` TRAVEL TOGETHER (#560): the code that is
+        // stored, and the vocabulary it is written in, so a picker can be drawn
+        // from one answer without a second route and without a client holding a
+        // copy of a vendor's language table.
         writeJson(response, 200, { dictation: store.dictationState() });
         return;
       }
@@ -1806,12 +1812,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (request.method === "POST" && url.pathname === "/v2/dictation/token") {
         try {
-          const chosen = dictationProvider(store.dictationState().provider);
+          const state = store.dictationState();
+          const chosen = dictationProvider(state.provider);
           if (!chosen.mintToken) throw new DictationError("off", DICTATION_OFF);
+          // THE LANGUAGE GOES DOWN WITH THE TOKEN (#560). Both clients ask for
+          // one on every press of the mic button and neither reads the settings
+          // route on that path, so putting it here is what makes a single round
+          // trip answer "with what credential" and "in which language" at once.
           writeJson(
             response,
             200,
-            await chosen.mintToken({ key: store.dictationKey(), ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}) }),
+            await chosen.mintToken({
+              key: store.dictationKey(),
+              language: state.language,
+              ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
+            }),
           );
         } catch (error) {
           if (error instanceof DictationError) {
