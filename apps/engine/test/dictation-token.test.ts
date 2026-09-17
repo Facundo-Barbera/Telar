@@ -12,7 +12,10 @@
  *     words survive to the client;
  *   - what goes on the wire is `Authorization: Token <key>` and `ttl_seconds`,
  *     which is what the docs say and not what anybody remembered;
- *   - the answer is vendor-neutral: `provider` rides it.
+ *   - the answer is vendor-neutral: `provider` rides it;
+ *   - and, since #560, WHICH LANGUAGE — `multi` by default, refused by name
+ *     when it is not one the provider declares, and carried on the token so a
+ *     press of the mic button costs one round trip rather than two.
  *
  * DEEPGRAM IS NEVER CALLED. `dictationFetch` is injected for `gh`'s reason: a
  * developer with a real key pasted into their own engine would otherwise have
@@ -74,7 +77,7 @@ test("out of the box dictation is OFF, which is a choice and not a missing key",
   const { client } = await engine();
   // `off` rather than "deepgram with no key": macOS dictation and Wispr Flow
   // already work on the composer, so Telar does not claim the job uninvited.
-  expect(await client.dictation()).toEqual({ dictation: { provider: "off", configured: false } });
+  expect(await client.dictation()).toMatchObject({ dictation: { provider: "off", configured: false } });
 });
 
 test("an off Mac refuses a token with a sentence, and spends nothing finding out", async () => {
@@ -93,7 +96,7 @@ test("an off Mac refuses a token with a sentence, and spends nothing finding out
 test("choosing a provider turns it on, and the key that was already there is still there", async () => {
   const { client } = await engine();
   await client.setDictation({ apiKey: "dg-secret-key" });
-  expect(await client.setDictation({ provider: "deepgram" })).toEqual({ dictation: { provider: "deepgram", configured: true } });
+  expect(await client.setDictation({ provider: "deepgram" })).toMatchObject({ dictation: { provider: "deepgram", configured: true } });
   expect((await client.dictationToken()).token).toBe("jwt-from-deepgram");
 });
 
@@ -102,7 +105,7 @@ test("switching back off keeps the key rather than throwing it away", async () =
   await switchedOn(client);
   // Turning dictation back on later has to be one click, not a trip to the
   // vendor's console.
-  expect(await client.setDictation({ provider: "off" })).toEqual({ dictation: { provider: "off", configured: true } });
+  expect(await client.setDictation({ provider: "off" })).toMatchObject({ dictation: { provider: "off", configured: true } });
 });
 
 test("a provider this engine has never heard of is refused, and changes nothing", async () => {
@@ -122,7 +125,7 @@ test("a patch that names no provider leaves the chosen one alone", async () => {
 test("a pasted key is reported as configured and NEVER echoed back", async () => {
   const { client } = await engine();
   const saved = await client.setDictation({ provider: "deepgram", apiKey: "dg-secret-key" });
-  expect(saved).toEqual({ dictation: { provider: "deepgram", configured: true } });
+  expect(saved).toMatchObject({ dictation: { provider: "deepgram", configured: true } });
   // The whole answer, serialised: the point is that the secret is in none of
   // it — not as a field, not redacted, not as a length.
   expect(JSON.stringify(await client.dictation())).not.toContain("dg-secret-key");
@@ -219,6 +222,7 @@ test("an answer with no token in it is a refusal rather than an empty credential
 test("a key echoed back in an error body is scrubbed before it becomes a sentence", async () => {
   const failure = await grantDictationToken({
     key: "dg-secret-key",
+    language: "multi",
     fetchImpl: async () => Response.json({ err_msg: "bad key: dg-secret-key" }, { status: 401 }),
   }).catch((error: unknown) => error);
   expect((failure as Error).message).not.toContain("dg-secret-key");
@@ -231,14 +235,15 @@ test("the TTL is clamped to what Deepgram documents, at both ends", async () => 
     asked.push((JSON.parse(String(init?.body)) as { ttl_seconds: number }).ttl_seconds);
     return Response.json({ access_token: "jwt" });
   };
-  await grantDictationToken({ key: "k", ttlSeconds: 0, fetchImpl: grant });
-  await grantDictationToken({ key: "k", ttlSeconds: 99_999, fetchImpl: grant });
+  await grantDictationToken({ key: "k", language: "multi", ttlSeconds: 0, fetchImpl: grant });
+  await grantDictationToken({ key: "k", language: "multi", ttlSeconds: 99_999, fetchImpl: grant });
   expect(asked).toEqual([1, DEEPGRAM_MAX_TTL_SECONDS]);
 });
 
 test("without an expires_in, the TTL asked for is what the expiry is derived from", async () => {
   const answer = await grantDictationToken({
     key: "k",
+    language: "multi",
     ttlSeconds: 60,
     now: () => 1_000_000,
     fetchImpl: async () => Response.json({ access_token: "jwt" }),
@@ -250,5 +255,107 @@ test("a blank or whitespace key reads as no key at all", async () => {
   const directory = root();
   writeDictationKey(directory, "   ");
   expect(readDictationKey(directory)).toBeUndefined();
-  await expect(grantDictationToken({ key: "   " })).rejects.toThrow("No Deepgram key is configured");
+  await expect(grantDictationToken({ key: "   ", language: "multi" })).rejects.toThrow("No Deepgram key is configured");
+});
+
+/* ------------------------------------------------------------------ *
+ * WHICH LANGUAGE — issue #560.
+ *
+ * The bug was that nobody sent one and Deepgram defaults to `en`, so
+ * every dictation came back as English-shaped words whatever was
+ * actually said. What must not drift:
+ *
+ *   - `multi` is the default, and it is code-switching rather than a
+ *     word for "send nothing";
+ *   - it round-trips through GET and PATCH like any other setting;
+ *   - an unknown code is REFUSED WITH A SENTENCE, because the
+ *     alternative is a failed handshake three panes away from the
+ *     picker that caused it;
+ *   - the token answer carries it, so one round trip serves a press of
+ *     the mic button;
+ *   - the names ride the answer so no client holds a copy of Deepgram's
+ *     language table.
+ * ------------------------------------------------------------------ */
+
+test("out of the box the language is `multi` — code-switching, not English", async () => {
+  const { client } = await engine();
+  // NOT `en`, which is what Deepgram falls back to when nobody says, and not
+  // the Mac's locale either: a person who speaks two languages in one sentence
+  // is the ordinary case this default is for.
+  expect((await client.dictation()).dictation.language).toBe("multi");
+});
+
+test("the language round-trips, and choosing one leaves the provider and the key alone", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  const saved = await client.setDictation({ language: "es-419" });
+  expect(saved.dictation.language).toBe("es-419");
+  // THE OTHER TWO FIELDS SURVIVE IT. Each row on the pane saves on its own, so
+  // a one-field write that rewrote the whole document would have the language
+  // picker switch dictation off.
+  expect(saved.dictation.provider).toBe("deepgram");
+  expect(saved.dictation.configured).toBe(true);
+  expect((await client.dictation()).dictation.language).toBe("es-419");
+});
+
+test("and switching provider afterwards leaves the language alone", async () => {
+  const { client } = await engine();
+  await client.setDictation({ language: "ja" });
+  await client.setDictation({ provider: "deepgram" });
+  expect((await client.dictation()).dictation.language).toBe("ja");
+});
+
+test("a language this engine cannot transcribe is refused with a sentence, and changes nothing", async () => {
+  const { client } = await engine();
+  await client.setDictation({ language: "fr" });
+  const failure = await client.setDictation({ language: "elvish" }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(EngineClientError);
+  expect((failure as EngineClientError).code).toBe("invalid_request");
+  // A SENTENCE, because the only thing a client can do with it is show it to a
+  // person — and it names what the refusal is about.
+  expect((failure as EngineClientError).message).toContain("transcribe");
+  expect((await client.dictation()).dictation.language).toBe("fr");
+});
+
+test("the names to pick between ride the same answer as the choice", async () => {
+  const { client } = await engine();
+  const { languages } = (await client.dictation()).dictation;
+  // AUTOMATIC IS FIRST, because a picker renders the order it is given rather
+  // than hoisting a code it would have to recognise by name.
+  expect(languages[0]).toEqual({ code: "multi", label: "Automatic (any supported language)" });
+  // Deepgram's own table, read off the docs — a few spot checks rather than
+  // seventy, since the list itself is the thing under test everywhere else.
+  expect(languages).toContainEqual({ code: "es", label: "Spanish" });
+  expect(languages).toContainEqual({ code: "pt-BR", label: "Portuguese (Brazil)" });
+  expect(languages.map((language) => language.code)).not.toContain("en-ZZ");
+  // Every code offered is one the engine will actually store.
+  for (const { code } of languages) expect((await client.setDictation({ language: code })).dictation.language).toBe(code);
+});
+
+test("the token answer carries the language, so one round trip serves the whole press", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  await client.setDictation({ language: "de" });
+  // The client opens the socket with this and never reads the settings route
+  // on that path — see `use-dictation.ts` and `Dictation.swift`.
+  expect((await client.dictationToken()).language).toBe("de");
+});
+
+test("a Mac nobody has narrowed mints tokens that say `multi`", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  expect((await client.dictationToken()).language).toBe("multi");
+});
+
+test("a settings file with a language this build cannot place still answers its provider", async () => {
+  const { daemon, client } = await engine();
+  await switchedOn(client);
+  // HAND-EDITED, OR WRITTEN BY A NEWER BUILD. One unreadable field is not a
+  // reason to forget the other — the provider survives and the language falls
+  // back to code-switching, which transcribes everything rather than nothing.
+  const file = path.join(daemon.store.paths.root, "dictation", "settings.json");
+  fs.writeFileSync(file, JSON.stringify({ provider: "deepgram", language: "klingon" }));
+  const state = (await client.dictation()).dictation;
+  expect(state.provider).toBe("deepgram");
+  expect(state.language).toBe("multi");
 });

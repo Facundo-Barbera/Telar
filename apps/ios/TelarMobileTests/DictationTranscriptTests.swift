@@ -203,9 +203,13 @@ import Testing
 
     // MARK: the socket's address
 
+    private func query(_ url: URL) -> (String) -> String? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        return { name in items.first { $0.name == name }?.value }
+    }
+
     @Test func theSocketDeclaresWhatTheseBuffersActuallyAre() {
-        let query = URLComponents(url: DeepgramListen.url(), resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let value = { (name: String) in query.first { $0.name == name }?.value }
+        let value = query(DeepgramListen.url(language: DictationLanguages.automatic))
         // Unlike the web's, this end sends raw PCM with no container header for
         // the service to read — so the format has to be declared, and it has to
         // match what `Dictation` converts to.
@@ -218,6 +222,55 @@ import Testing
         // this URL — and on the web it is refused outright, which is why that
         // end sends it as the `bearer` subprotocol.
         #expect(value("access_token") == nil)
-        #expect(DeepgramListen.url().scheme == "wss")
+        #expect(DeepgramListen.url(language: DictationLanguages.automatic).scheme == "wss")
+    }
+
+    // MARK: which language (#560)
+
+    /// THE BUG, AS A TEST. A socket opened with no `language` transcribes as
+    /// English whatever it hears, so the parameter has to be on the URL — and
+    /// it has to be the one that was passed, not a default this file invented.
+    @Test func theSocketAsksForTheLanguageItWasGiven() {
+        #expect(query(DeepgramListen.url(language: "es"))("language") == "es")
+        #expect(query(DeepgramListen.url(language: "pt-BR"))("language") == "pt-BR")
+    }
+
+    @Test func automaticIsMultiAndRidesTheSocketLikeAnyOtherCode() {
+        // `multi` is a value Nova-3 accepts on the wire rather than a local
+        // word for "send nothing" — sending nothing is the bug.
+        #expect(DictationLanguages.automatic == "multi")
+        #expect(query(DeepgramListen.url(language: DictationLanguages.automatic))("language") == "multi")
+    }
+
+    /// A MAC ON A BUILD FROM BEFORE #560 answers a token with no `language` in
+    /// it. That must decode, and it must come out as code-switching rather than
+    /// as English — which is the failure this whole change is about.
+    @Test func aTokenWithNoLanguageInItFallsBackToAutomatic() throws {
+        let older = Data(#"{"provider":"deepgram","token":"jwt","expiresAt":1000}"#.utf8)
+        let answer = try JSONDecoder().decode(DictationTokenAnswer.self, from: older)
+        #expect(answer.language == nil)
+        #expect(answer.listenLanguage == "multi")
+
+        let newer = Data(#"{"provider":"deepgram","token":"jwt","expiresAt":1000,"language":"fr"}"#.utf8)
+        #expect(try JSONDecoder().decode(DictationTokenAnswer.self, from: newer).listenLanguage == "fr")
+    }
+
+    /// The settings answer's two new fields, and the same tolerance: an older
+    /// Mac sends neither, and the screen reads that as Automatic with nothing
+    /// to pick from rather than failing to decode.
+    @Test func theSettingsAnswerCarriesTheLanguageAndTheNamesToPickItBy() throws {
+        let body = Data(
+            #"{"dictation":{"provider":"deepgram","configured":true,"language":"ja","languages":[{"code":"multi","label":"Automatic (any supported language)"},{"code":"ja","label":"Japanese"}]}}"#
+                .utf8
+        )
+        let answer = try JSONDecoder().decode(DictationAnswer.self, from: body)
+        #expect(answer.dictation.language == "ja")
+        #expect(answer.dictation.languages?.first?.code == "multi")
+        #expect(answer.dictation.languages?.last?.label == "Japanese")
+
+        let older = Data(#"{"dictation":{"provider":"deepgram","configured":true}}"#.utf8)
+        let before = try JSONDecoder().decode(DictationAnswer.self, from: older)
+        #expect(before.dictation.language == nil)
+        #expect(before.dictation.languages == nil)
     }
 }
