@@ -515,9 +515,17 @@ export type AgentRow = {
 
 export type AgentThreadAnswer = {
   rows: AgentRow[];
-  /** The id to pass as the next `after`. Unmoved when the page was empty. */
+  /** The id to pass as the next `after`. On a forward page, the last row read
+   *  — unmoved when the page was empty. On a backward window (`tail`/`before`,
+   *  #580) the THREAD'S TIP, because that is what a reader who just opened on
+   *  the last page has to poll forward from. */
   cursor: number;
+  /** More in the direction you are paging: newer rows for `after`, OLDER ones
+   *  for `tail`/`before`. */
   more: boolean;
+  /** Backward windows only: the lowest id returned, and so the next `before`.
+   *  Absent when the window was empty. */
+  oldest?: number;
   threadId?: string;
 };
 
@@ -1138,11 +1146,20 @@ export class EngineClient {
     return this.request("POST", `/v2/agent/turns/${encodeURIComponent(runId)}/cancel`);
   }
 
-  /** The transcript, forward from a cursor. Bounded by a count AND a byte
-   *  budget, whichever is reached first — `#515`'s rule. */
-  agentThread(options: { after?: number; limit?: number } = {}): Promise<AgentThreadAnswer> {
+  /**
+   * The transcript, from either end. Bounded by a count AND a byte budget,
+   * whichever is reached first — `#515`'s rule.
+   *
+   * `after` pages FORWARD from a cursor: what a poll and a stream reconnect
+   * ride. `tail: true` opens on the LAST page and `before` walks back from it
+   * (#580) — what a screen opening a long conversation reads instead of
+   * walking the whole of it. Passing neither still means "from the beginning".
+   */
+  agentThread(options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}): Promise<AgentThreadAnswer> {
     const query = new URLSearchParams();
     if (options.after !== undefined) query.set("after", String(options.after));
+    if (options.before !== undefined) query.set("before", String(options.before));
+    if (options.tail) query.set("tail", "1");
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.toString();
     return this.request("GET", `/v2/agent/thread${suffix ? `?${suffix}` : ""}`);

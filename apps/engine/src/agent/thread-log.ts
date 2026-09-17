@@ -283,6 +283,58 @@ export class AgentThreadLog {
     return { rows, cursor: rows.at(-1)?.id ?? after, more };
   }
 
+  /**
+   * A PAGE BACKWARD FROM THE END — what opening a long conversation actually
+   * wants (#580).
+   *
+   * `page` above answers "what is new", which is the right read for a poll and
+   * the wrong one for an open: `after` is exclusive and `0` is the beginning,
+   * so a phone opening a 584-row thread walked the whole of it, oldest first,
+   * before it could draw a single line. This reads the OTHER end.
+   *
+   * `before` IS EXCLUSIVE, and omitting it means the tail. The rows come back
+   * ASCENDING like every other read here, so a client PREPENDS a block rather
+   * than reversing one, and `oldest` is the next `before`.
+   *
+   * `more` KEEPS ITS WORD and changes its direction: on `page` it means newer
+   * rows are waiting, here it means older ones are. Both read as "there is
+   * more where you are going", which is the only thing a pager does with it.
+   *
+   * `cursor` IS THE THREAD'S TIP, NOT THIS WINDOW'S TOP. A client pages
+   * backward for history and polls forward from the tip; handing it the top of
+   * an old window would send the next poll into the middle of the
+   * conversation and replay everything after it.
+   */
+  window(threadId: string, options: { before?: number; limit: number }): { rows: AgentRow[]; cursor: number; oldest?: number; more: boolean } {
+    const wanted = Math.max(1, Math.min(options.limit, THREAD_PAGE_MAX));
+    // One over, to tell a full window from a full window with more behind it.
+    const read = (options.before === undefined
+      ? this.db
+          .prepare("SELECT id, thread_id, run_id, at, kind, detail FROM agent_rows WHERE thread_id = ? ORDER BY id DESC LIMIT ?")
+          .all(threadId, wanted + 1)
+      : this.db
+          .prepare("SELECT id, thread_id, run_id, at, kind, detail FROM agent_rows WHERE thread_id = ? AND id < ? ORDER BY id DESC LIMIT ?")
+          .all(threadId, options.before, wanted + 1)) as Array<{ id: number | bigint; thread_id: string; run_id: string; at: number; kind: string; detail: string }>;
+
+    // NEWEST FIRST WHILE SPENDING THE BUDGET, so a window that runs out of
+    // bytes drops the OLDEST rows in it — the ones the next `before` will ask
+    // for anyway — rather than the ones the reader is about to look at.
+    const rows: AgentRow[] = [];
+    let chars = 0;
+    let more = read.length > wanted;
+    for (const raw of read.slice(0, wanted)) {
+      const size = raw.detail.length;
+      if (rows.length > 0 && chars + size > THREAD_PAGE_CHARS) {
+        more = true;
+        break;
+      }
+      rows.push(decode(raw));
+      chars += size;
+    }
+    rows.reverse();
+    return { rows, cursor: this.cursor(threadId), ...(rows[0] ? { oldest: rows[0].id } : {}), more };
+  }
+
   /** The last row's id, so a client opening on the tail can subscribe from the
    *  end without paging a whole conversation to reach it. */
   cursor(threadId: string): number {
