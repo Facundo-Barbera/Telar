@@ -9,7 +9,7 @@
  * `deepseek-flash` under `glm-5.3-flash`, no names, no grouping, nothing to
  * type into. The complaint in #551 is the obvious consequence — "it's really
  * hard to find them" — plus a second one that looked like a missing model and
- * was not: every id IS there, and eighteen of them are on endpoints Telar's
+ * was not: every id IS there, and sixteen of them are on endpoints Telar's
  * Agent client cannot speak, so picking one bought a 400 halfway through a
  * turn. The engine now describes the list; this draws what it describes.
  *
@@ -145,7 +145,7 @@ export function groupAgentFamilies(models: readonly AgentModel[]): { family: str
 /**
  * ONE ROW: the name, what it can hold, and where it runs.
  *
- * AN UNSUPPORTED ROW IS SHOWN, NOT HIDDEN. Dropping the eighteen would answer
+ * AN UNSUPPORTED ROW IS SHOWN, NOT HIDDEN. Dropping the sixteen would answer
  * the owner's other suspicion — that Go is withholding models — with a picker
  * that actually does withhold them. Greyed and unpressable, with the reason on
  * hover, says the true thing: the model exists, Telar cannot reach it yet.
@@ -171,7 +171,7 @@ function AgentModelRow({ model, selected, readOnly, onSelect }: { model: AgentMo
         selected ? "bg-accent" : !disabled && "hover:bg-accent/60",
         disabled && "cursor-default",
         // The greying is the UNSUPPORTED signal, so a read-only picker (no
-        // write in hand) must not borrow it — that would read as eighteen
+        // write in hand) must not borrow it — that would read as sixteen
         // models becoming thirty-eight broken ones.
         !model.supported && "opacity-45",
       )}

@@ -53,7 +53,7 @@
  * THE PICKER IS THE COMPOSER PILL'S, NOT A SECOND ONE THAT MATCHES IT (#551).
  * It was a `Dropdown` of raw ids, which was honest while the endpoint answered
  * raw ids; the engine describes them now, and thirty-eight rows across thirteen
- * families — eighteen of which this client cannot actually run — is not a
+ * families — sixteen of which this client cannot actually run — is not a
  * `<select>`. `AgentModelList` is that list, mounted here and in the composer,
  * so the two cannot drift.
  *
@@ -175,7 +175,7 @@ export function AgentSection() {
             // that agrees with it — #551 asks for one picker in both places,
             // and "one" has to mean one component. A `Dropdown` could not carry
             // it: the list is thirty-eight rows across thirteen families, it
-            // needs a search field, and eighteen of its rows are unpickable.
+            // needs a search field, and sixteen of its rows are unpickable.
             <Popover open={picking} onOpenChange={setPicking}>
               <PopoverTrigger
                 render={
