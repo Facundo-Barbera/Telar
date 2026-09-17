@@ -44,10 +44,10 @@ struct AgentView: View {
     /// what puts the keyboard away, and it cannot reach a flag private to the
     /// composer.
     @State private var composerFocused = false
-    /// The model list behind the composer's first pill, and the service's own
-    /// words when it could not be fetched.
-    @State private var models: [ProviderModel] = []
-    @State private var modelsMessage: String?
+    /// The described catalogue behind the composer's first pill — names,
+    /// families, context limits and the endpoint each id answers on, plus the
+    /// service's own words when a half of it could not be read (#551).
+    @State private var catalogue = AgentModelList(models: [], message: nil)
     /**
      STICK TO THE BOTTOM, THE WAY `SessionView` DOES (#539).
 
@@ -258,8 +258,7 @@ struct AgentView: View {
             controls: AnyView(
                 AgentComposerControls(
                     state: state,
-                    models: models,
-                    modelsMessage: modelsMessage,
+                    catalogue: catalogue,
                     onPatch: { patch in await configure(patch) }
                 )
             ),
@@ -298,8 +297,7 @@ struct AgentView: View {
     /// the key is pasted at least as often as after.
     private func loadModels() async {
         guard let answer = try? await api.agentModels() else { return }
-        models = answer.models
-        modelsMessage = answer.message
+        catalogue = answer
     }
 
     /// THE THREE PILLS WRITE HERE — the same `PATCH /v2/agent` the Mac's own
