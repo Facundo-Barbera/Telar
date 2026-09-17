@@ -921,6 +921,24 @@ export class AgentRuntime {
 
       // PASS 2 — the effects, each recorded in the same state write as its
       // answer.
+      /**
+       * A TOOL RESULT CARRIES ITS CALL ID AND NOTHING ELSE (#549).
+       *
+       * `ToolMessage` also takes a `name`, and setting it cost a whole model:
+       * `@langchain/openai` serialises that field onto the wire message, and
+       * OpenCode Go proxies some of its models (`omen-alpha` among them) to an
+       * Anthropic-shaped upstream that rejects it outright — `400 …
+       * messages[7]: "name" is not supported by this endpoint`, mid-conversation,
+       * on the first turn that used a tool. The OpenAI-shaped routes accepted
+       * the same thread, so the failure looked like the model and was the shape.
+       *
+       * Nothing is lost by dropping it. `tool_call_id` is what every
+       * OpenAI-compatible route pairs a result to its call on, and it is what
+       * the ledger, the transcript row and `sessions_send`'s idempotence all key
+       * off here. The name was decoration on a field the protocol already has.
+       * `model.ts`'s wrapper strips it from the body as well, so a library
+       * version that starts inferring one cannot put it back.
+       */
       const messages: ToolMessage[] = [];
       const effects: Record<string, string> = {};
       for (const call of calls) {
@@ -929,19 +947,19 @@ export class AgentRuntime {
         const key = ledgerKey(call.name, args);
         const already = key ? state.effects[key] : undefined;
         if (already !== undefined) {
-          messages.push(new ToolMessage({ tool_call_id: id, name: call.name, content: `${already}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }));
+          messages.push(new ToolMessage({ tool_call_id: id, content: `${already}\n\n[this exact call was already made on this thread; the recorded answer is above and nothing was sent again]` }));
           continue;
         }
         if (needsApproval({ name: call.name, args }) && decisions.get(id) !== "accept") {
           this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: DECLINED_ANSWER, status: "declined" });
-          messages.push(new ToolMessage({ tool_call_id: id, name: call.name, content: DECLINED_ANSWER }));
+          messages.push(new ToolMessage({ tool_call_id: id, content: DECLINED_ANSWER }));
           continue;
         }
         const tool = byName.get(call.name);
         if (!tool) {
           const message = `There is no tool called ${call.name} in this conversation. Use one of the tools you were given.`;
           this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: message, status: "failed" });
-          messages.push(new ToolMessage({ tool_call_id: id, name: call.name, content: message }));
+          messages.push(new ToolMessage({ tool_call_id: id, content: message }));
           continue;
         }
         let text: string;
@@ -962,7 +980,7 @@ export class AgentRuntime {
         }
         if (key) effects[key] = text;
         this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: text, status: failed ? "failed" : "completed" });
-        messages.push(new ToolMessage({ tool_call_id: id, name: call.name, content: text }));
+        messages.push(new ToolMessage({ tool_call_id: id, content: text }));
       }
       config?.signal?.throwIfAborted();
       return { messages, effects };
