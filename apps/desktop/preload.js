@@ -168,6 +168,18 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // refuses anything that leaves that origin — see window-target.js.
     openWindow: (path) => ipcRenderer.invoke("telar:app:open-window", { path }),
   },
+  /**
+   * Settings → Remote access → Push notifications (#579). Writes the relay
+   * credential into the login Keychain, which the cockpit's server reads on
+   * every push and must never be able to write itself.
+   *
+   * Answers `{ ok: true }` or `{ ok: false, error }`. The error is a sentence
+   * about what to do and never quotes what was pasted; the value goes to
+   * `security` on stdin rather than into argv. See main.js and push-relay.js.
+   */
+  push: {
+    provisionRelay: (config) => ipcRenderer.invoke("telar:push:provision-relay", config),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     // ANSWERS WHAT IT DID WITH THE PRESS — `{ status: "restarting" }` for the

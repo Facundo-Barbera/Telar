@@ -27,6 +27,7 @@ const { keymapOverrides, menuCommands, mergeKeymap } = require("./command-keys")
 const { macWindowChrome } = require("./window-chrome");
 const { backdropWindowOptions, vibrancyMaterial, windowBackgroundColor } = require("./window-material");
 const { windowTargetUrl } = require("./window-target");
+const { provisionPushRelay } = require("./push-relay");
 const { watchVolumes } = require("./volume-watch");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
@@ -2618,6 +2619,21 @@ ipcMain.handle("telar:app:relaunch", () => {
   app.relaunch();
   app.quit();
 });
+
+/**
+ * PROVISIONING THIS MAC'S PUSH RELAY — issue #579.
+ *
+ * The cockpit's server READS this Keychain item on every push and must never be
+ * able to write one: it is the process that answers requests from every paired
+ * phone, and a route that can mint the credential every push rides on is a far
+ * larger thing to get right than one that can only spend it. So the write is
+ * here, in the process with no request surface at all.
+ *
+ * NOTHING ABOUT THE VALUE IS LOGGED OR RETURNED. The answer is `{ ok }` and, on
+ * a refusal, a sentence about what to do — see `push-relay.js`, which also
+ * explains why the secret goes on stdin rather than into argv.
+ */
+ipcMain.handle("telar:push:provision-relay", async (_event, config) => provisionPushRelay(config));
 
 /**
  * A SECOND WINDOW ON A PAGE OF THE APP — "Open in a new window", from the

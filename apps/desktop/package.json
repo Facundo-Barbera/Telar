@@ -70,6 +70,7 @@
       "login-offer.html",
       "login-grant-writer.js",
       "vault-metadata.js",
+      "push-relay.js",
       "workspace-openers.js",
       "preload.js",
       "server-preload.js",
