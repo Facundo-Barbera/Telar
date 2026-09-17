@@ -23,6 +23,11 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  * The answer carries `languages` beside it so a pane can draw a picker from one
  * document; the names are the engine's, for the same reason the provider list
  * is.
+ *
+ * `vocabulary` IS THE THIRD (#581) — the person's own terms, one per entry,
+ * merged by the engine with what this Mac is currently about and handed to the
+ * recogniser on the token. It is a plain list here and nothing vendor-shaped:
+ * `keyterm` is Deepgram's word and this route never says it.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,6 +56,12 @@ export async function PATCH(request: Request) {
       await (await engineClient()).setDictation({
         ...("provider" in body ? { provider: body.provider as DictationProviderId } : {}),
         ...("language" in body ? { language: String(body.language ?? "") } : {}),
+        // THE WHOLE LIST, EVERY TIME (#581), because the box that writes it is
+        // a list and not a row of fields — so an empty array is the explicit
+        // clear, the same shape the key field's empty string is. Not validated
+        // here for the same reason as the two above: the engine tidies it and
+        // owns what a term may be.
+        ...("vocabulary" in body ? { vocabulary: (Array.isArray(body.vocabulary) ? body.vocabulary : []).map(String) } : {}),
         ...("apiKey" in body ? { apiKey: String(body.apiKey ?? "") } : {}),
       }),
     );

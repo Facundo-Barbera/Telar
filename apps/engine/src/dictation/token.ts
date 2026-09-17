@@ -75,6 +75,20 @@ export type DictationToken = {
    * contained.
    */
   language: string;
+  /**
+   * WHAT TO PRIME THE RECOGNISER WITH, already expressed the provider's way
+   * (#581).
+   *
+   * IT RIDES THE TOKEN for `language`'s reason and one more: these names come
+   * out of the STORE — unsettled conversations, project names, branches — and a
+   * browser tab or a phone has none of it. A client that had to fetch the
+   * glossary itself would be a second round trip on every press of a button for
+   * a list only this engine can build. See `keyterms.ts`.
+   *
+   * ALWAYS AN ARRAY, EMPTY WHEN THERE IS NOTHING TO SAY, so no client writes an
+   * `if` around it — a URL builder maps over it either way.
+   */
+  keyterms: string[];
   /** The JWT. Short-lived, single-purpose, and the only credential that ever
    *  leaves this engine towards a browser or a phone. */
   token: string;
@@ -135,6 +149,10 @@ export async function grantDictationToken(input: {
    *  spends a key, and re-checking a value its only caller just mapped would be
    *  a second list to keep in step. */
   language: string;
+  /** Already in the provider's own shape — see `deepgramKeyterms`, which is the
+   *  only thing that builds this. Absent reads as none, which is what a Mac
+   *  with no projects and no conversations honestly has. */
+  keyterms?: string[];
   ttlSeconds?: number;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -178,7 +196,7 @@ export async function grantDictationToken(input: {
   // on when their own JWT dies; the TTL asked for is the fallback, and it can
   // only ever be the same or longer than what they actually granted.
   const lifetime = typeof body.expires_in === "number" && body.expires_in > 0 ? body.expires_in : ttlSeconds;
-  return { provider: "deepgram", token, expiresAt: now() + lifetime * 1000, language: input.language };
+  return { provider: "deepgram", token, expiresAt: now() + lifetime * 1000, language: input.language, keyterms: input.keyterms ?? [] };
 }
 
 /** Deepgram's own sentence when its error body carries one, and the status

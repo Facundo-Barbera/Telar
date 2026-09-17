@@ -1916,6 +1916,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // be read as switching dictation off.
           if ("provider" in input) store.setDictationProvider(input.provider);
           if ("language" in input) store.setDictationLanguage(input.language);
+          // AN EMPTY LIST IS A REAL VALUE HERE — it is what emptying the box
+          // means — so this is by presence like the rest and not by truthiness.
+          if ("vocabulary" in input) store.setDictationVocabulary(input.vocabulary);
           if ("apiKey" in input) store.setDictationKey(input.apiKey);
         }
         // `provider` IS A SETTING NOW, not a constant riding the answer. `off`
@@ -1960,12 +1963,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // one on every press of the mic button and neither reads the settings
           // route on that path, so putting it here is what makes a single round
           // trip answer "with what credential" and "in which language" at once.
+          //
+          // AND WITH IT, THE GLOSSARY (#581). The same argument one step
+          // further: the words worth priming a recogniser with are this Mac's
+          // unsettled conversations, its projects and the terms somebody typed
+          // into the box, and no browser tab or phone can see any of them. The
+          // route hands the provider the RAW NAMES — `keyterm` is Deepgram's
+          // word and is spoken in `provider.ts`, not here.
           writeJson(
             response,
             200,
             await chosen.mintToken({
               key: store.dictationKey(),
               language: state.language,
+              vocabulary: state.vocabulary,
+              context: store.dictationContext(),
               ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}),
             }),
           );

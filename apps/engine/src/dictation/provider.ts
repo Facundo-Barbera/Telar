@@ -40,9 +40,17 @@
  * wire, and the engine validates against what the declarations add up to. A
  * provider with a different set of names, or the same set spelled differently,
  * is a list and a mapping function rather than an edit to the settings route.
+ *
+ * ── AND WHAT TO PRIME IT WITH, WHICH IS THE SAME SHAPE AGAIN (#581) ─────────
+ * The setting stores a person's plain `vocabulary`; the engine reads the names
+ * this Mac is currently about off the store. Neither is a `keyterm` — that word
+ * is Deepgram's, and `mintToken` is where it is spoken. The alternative was a
+ * route that built a vendor's query parameters and a provider that passed them
+ * through, which is the seam pointing the wrong way.
  */
 
 import { DEEPGRAM_LANGUAGES, DICTATION_LANGUAGE_DEFAULT, deepgramLanguage } from "./deepgram-languages";
+import { deepgramKeyterms, type DictationContext } from "./keyterms";
 import { grantDictationToken, type DictationToken } from "./token";
 
 /** The value stored and served. `off` is a real member rather than an absent
@@ -80,7 +88,22 @@ export type DictationProvider = {
    * `stream` provider has no token to give, and a route that called this on one
    * would be asking the wrong question rather than getting a null answer.
    */
-  mintToken?: (input: { key: string | undefined; language: string; fetchImpl?: typeof fetch }) => Promise<DictationToken>;
+  mintToken?: (input: {
+    key: string | undefined;
+    language: string;
+    /**
+     * THE PERSON'S OWN TERMS AND WHAT THIS MAC IS ABOUT, RAW (#581).
+     *
+     * Two arguments rather than a built list, which is the seam: the engine
+     * knows what there IS — a stored glossary, the unsettled conversations, the
+     * projects — and the provider knows what to DO with it. Deepgram makes
+     * `keyterm` parameters out of them; a provider that primes with a prompt
+     * string, or with nothing, takes the same two and answers differently.
+     */
+    vocabulary: readonly string[];
+    context: DictationContext;
+    fetchImpl?: typeof fetch;
+  }) => Promise<DictationToken>;
   /** Whether this provider needs a key pasted on this Mac. `off` does not, and
    *  neither will an on-device model — the settings pane draws the key row off
    *  this rather than off the provider's name. */
@@ -100,8 +123,11 @@ const DEEPGRAM: DictationProvider = {
   // THE MAPPING HAPPENS AT MINT TIME, so what a client is handed is already a
   // wire value and not a setting it would have to interpret. Identity for
   // Deepgram — see `deepgramLanguage` for why that is the point rather than an
-  // omission.
-  mintToken: ({ language, ...rest }) => grantDictationToken({ ...rest, language: deepgramLanguage(language) }),
+  // omission. The glossary is the same move one step further out: the engine
+  // hands over names, and `deepgramKeyterms` is what makes them this vendor's
+  // parameter (#581).
+  mintToken: ({ language, vocabulary, context, ...rest }) =>
+    grantDictationToken({ ...rest, language: deepgramLanguage(language), keyterms: deepgramKeyterms({ vocabulary, context }) }),
 };
 
 /** Chosen but not transcribing. It has no `mintToken`, which is what makes the

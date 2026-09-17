@@ -42,12 +42,17 @@ export type DictationSettingsHandle = {
    *  no client carries a copy of a vendor's language table that goes stale the
    *  day the vendor adds one. */
   languages: DictationLanguage[];
+  /** The person's own terms for the recogniser (#581), one per entry. The mic
+   *  button does NOT read this either — the engine merges it with what this
+   *  Mac is about and puts the result on the token — so it is here for the box
+   *  that edits it. */
+  vocabulary: string[];
   /** True until the engine has answered once. The row keeps its controls
    *  disabled until then rather than offering one that might be wrong. */
   loading: boolean;
   /** Every field by presence. The key is WRITE-ONLY, and an empty string
    *  clears it, which is what Remove sends. */
-  save: (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) => Promise<void>;
+  save: (patch: { provider?: DictationProviderId; apiKey?: string; language?: string; vocabulary?: string[] }) => Promise<void>;
   /** The engine refused, or is not answering. Shown on the row rather than
    *  swallowed — the engine's answer is the state. */
   error?: string;
@@ -66,7 +71,7 @@ export type DictationSettingsHandle = {
  * engine, so before it has answered there are none to offer. The picker is
  * disabled while `loading` either way.
  */
-const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false, language: "multi", languages: [] };
+const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false, language: "multi", languages: [], vocabulary: [] };
 
 export function useDictationSettings(): DictationSettingsHandle {
   const [dictation, setDictation] = useState(NONE);
@@ -95,7 +100,7 @@ export function useDictationSettings(): DictationSettingsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) => {
+  const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string; language?: string; vocabulary?: string[] }) => {
     try {
       const result = await createEngineApi().setDictation(patch);
       setDictation(result.dictation);
