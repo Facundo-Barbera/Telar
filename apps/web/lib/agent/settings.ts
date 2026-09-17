@@ -43,6 +43,11 @@ export const DEFAULT_AGENT_MODEL = "kimi-k3";
  *  to say, which the pane must not read as "no key". */
 export type AgentCredential = NonNullable<AgentAnswer["credential"]>;
 
+/** Everything the Agent's own tab can write, in one shape — the engine's patch
+ *  minus the fields no client sends. Named so the pane and this hook cannot
+ *  drift into two lists of optional keys. */
+export type AgentSettingsPatch = { enabled?: boolean; model?: string; effort?: string; access?: string; reset?: boolean; apiKey?: string };
+
 export type AgentSettingsHandle = {
   agent: AgentState;
   credential?: AgentCredential;
@@ -51,8 +56,12 @@ export type AgentSettingsHandle = {
   loading: boolean;
   /** By presence, like the engine's own patch: naming a model must not also
    *  re-decide the switch, and a `reset` that rode along by default would
-   *  archive a conversation nobody asked to lose. */
-  save: (patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }) => Promise<void>;
+   *  archive a conversation nobody asked to lose.
+   *
+   *  `effort` and `access` ride the same route the composer's pills write
+   *  (#539), so the pane and the pill read one value — and `""` clears either,
+   *  which is how "Auto" is said on the wire. */
+  save: (patch: AgentSettingsPatch) => Promise<void>;
   /** The engine refused, or is not answering. Shown on the row rather than
    *  swallowed — the engine's answer is the state. */
   error?: string;
@@ -96,7 +105,7 @@ export function useAgentSettings(): AgentSettingsHandle {
     };
   }, []);
 
-  const save = useCallback(async (patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }) => {
+  const save = useCallback(async (patch: AgentSettingsPatch) => {
     try {
       const result = await createEngineApi().setAgent(patch);
       setAgent(result.agent);

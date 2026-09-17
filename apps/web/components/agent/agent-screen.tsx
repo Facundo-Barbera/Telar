@@ -48,9 +48,11 @@ import { AgentComposerControls, useAgentModels } from "./agent-composer-controls
 import { Button } from "@/components/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 
-/** Where the switch, the model and the key live. One spelling, so the empty
- *  state and the key banner cannot point at two different places. */
-export const AGENT_SETTINGS_HREF = "/settings";
+/** Where the switch, the credential, the model and the two defaults live. One
+ *  spelling, so the empty state and the key banner cannot point at two
+ *  different places — and it names the pane now that the Agent has one (#556),
+ *  rather than landing on General and leaving the reader to find the tab. */
+export const AGENT_SETTINGS_HREF = "/settings?section=agent";
 
 /**
  * WHAT THIS SCREEN IS, as a value rather than as a render tree.

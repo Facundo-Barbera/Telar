@@ -114,18 +114,30 @@ struct CardField: View {
     @Binding var text: String
     var mono = false
     var keyboard: UIKeyboardType = .default
+    /// A SECRET IS TYPED INTO THE SAME FIELD, DOTTED. An API key pasted on a
+    /// phone somebody is holding in a room is the case this exists for, and a
+    /// second near-identical field type beside this one would drift from it.
+    /// The field never DISPLAYS a stored secret either way — that is the
+    /// caller's contract, and every caller here shows a placeholder instead.
+    var secure = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
-            TextField(placeholder, text: $text)
-                .font(mono ? .system(size: 15, design: .monospaced) : .system(size: 16))
-                .foregroundStyle(Theme.text)
-                .keyboardType(keyboard)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+            Group {
+                if secure {
+                    SecureField(placeholder, text: $text)
+                } else {
+                    TextField(placeholder, text: $text)
+                }
+            }
+            .font(mono ? .system(size: 15, design: .monospaced) : .system(size: 16))
+            .foregroundStyle(Theme.text)
+            .keyboardType(keyboard)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

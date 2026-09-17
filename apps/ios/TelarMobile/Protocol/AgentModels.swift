@@ -448,14 +448,23 @@ struct AgentModelList: Decodable {
     }
 }
 
-/// `PATCH /api/agent` — the three composer pills' write (#539).
+/// `PATCH /api/agent` — the three composer pills' write (#539), and the whole
+/// of the Agent settings screen's (#556).
 ///
 /// BY PRESENCE, NEVER BY VALUE. A phone setting an effort must not also be
 /// re-deciding who answers approvals, so an absent field means "leave it alone"
 /// and `""` means "clear it" — the same contract the Mac's own route keeps.
 /// That is exactly what an optional encodes to with the default encoder, which
 /// is why there is nothing clever here.
+///
+/// AND IT IS WHY `reset` IS AN OPTIONAL BOOL RATHER THAN A `Bool = false`. The
+/// thing it archives is the conversation, so a field that rode along on every
+/// patch by default would be one refactor away from carrying `true` — the same
+/// reasoning the desktop's own patch states.
 struct AgentSettingsPatch: Encodable {
+    /// Whether this Mac has an Agent at all. Machine-scoped: every rail on
+    /// every device draws from it, which is why the phone may write it.
+    var enabled: Bool?
     var model: String?
     /// `"low" | "medium" | "high"`, or `""` to stop sending `reasoning_effort`
     /// at all — the provider's own default.
@@ -463,6 +472,14 @@ struct AgentSettingsPatch: Encodable {
     /// `"ask"` (the default) or `"auto"`. `auto` answers the approval gate by
     /// policy; it does NOT widen which calls are gated.
     var access: String?
+    /// Archive the thread and mint a new one. The only field that moves the
+    /// Mac's `generation`, and the only destructive one here.
+    var reset: Bool?
+    /// WRITE-ONLY, and it never comes back: the answer reports which RUNG
+    /// answered and nothing else. `""` is an explicit clear — the one place
+    /// this departs from "blank never clears", because the field is the only
+    /// writer of the secret and a Remove button has to mean it.
+    var apiKey: String?
 }
 
 /// `POST /api/agent/turns`.

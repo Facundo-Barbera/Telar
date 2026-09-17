@@ -516,10 +516,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  the one approval it may be parked on. The credential rides along —
      *  which RUNG answered, never the key. */
     agent: () => request<AgentAnswer>(fetcher, "GET", "/api/agent"),
-    /** Switch it on, pick its model, paste its key, or start again. `reset`
-     *  archives the conversation and mints a new thread; it is the only patch
-     *  that moves `generation`. */
-    setAgent: (patch: { enabled?: boolean; model?: string; reset?: boolean; apiKey?: string }) =>
+    /** Switch it on, pick its model, choose its effort and access, paste its
+     *  key, or start again. `reset` archives the conversation and mints a new
+     *  thread; it is the only patch that moves `generation`. `effort` and
+     *  `access` take `""` to clear — see `EngineClient.setAgent`. */
+    setAgent: (patch: { enabled?: boolean; model?: string; effort?: string; access?: string; reset?: boolean; apiKey?: string }) =>
       request<AgentAnswer>(fetcher, "PATCH", "/api/agent", patch),
     /** What OpenCode Go serves the Agent, DESCRIBED — names, families, context
      *  limits and the endpoint each id answers on (#551). FAILS SOFT in two

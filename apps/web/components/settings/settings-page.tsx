@@ -24,7 +24,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -147,6 +147,27 @@ const SECTIONS: SettingsSection[] = [
    * already draws for the browser — the same subject, so the same glyph.
    */
   { id: "integrations", label: "Browser", icon: GlobeIcon, group: "Cockpit" },
+  /**
+   * THE AGENT'S OWN TAB (#556), FIRST UNDER "RUNTIME" and no longer a group
+   * stacked in the middle of General.
+   *
+   * IT WAS ON GENERAL BECAUSE IT WAS NEW, not because it belonged there: one
+   * experimental group between Links and Dictation, below three rows about
+   * every session and above three about this install. It has six rows of its
+   * own now — a switch, a credential, a model, two defaults and a reset — which
+   * is a pane, and burying a pane's worth of setup inside the one General pane
+   * is how a feature becomes unfindable.
+   *
+   * UNDER "RUNTIME" because whether this Mac HAS an Agent is a fact about the
+   * machine that runs turns: every rail on every device draws from it, and the
+   * key it spends lives with that engine's state. Cockpit is decisions about
+   * this window; this is not one.
+   *
+   * THE GLYPH IS THE RAIL ENTRY'S — `SparklesIcon`, the same one
+   * components/session/agent-entry.tsx draws, so the nav item and the row it
+   * configures are recognisably one subject.
+   */
+  { id: "agent", label: "Agent", icon: SparklesIcon, group: "Runtime" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME", beside Providers and for the same reason: both are CLIs
@@ -169,7 +190,7 @@ const SECTIONS: SettingsSection[] = [
  * live in bookmarks; an alias costs one map entry and never strands a link on
  * the default pane.
  */
-const SECTION_ALIASES: Record<string, string> = {
+export const SECTION_ALIASES: Record<string, string> = {
   sessions: "general",
   inbox: "general",
   textgen: "general",
@@ -189,6 +210,18 @@ const SECTION_ALIASES: Record<string, string> = {
    * lands on the one row it could have meant.
    */
   settled: "general",
+  /**
+   * THE AGENT LEFT GENERAL FOR A TAB OF ITS OWN (#556), and `main` is the id
+   * that has to keep landing on it.
+   *
+   * "Main" is what this feature was called before #531 — the designated
+   * coordinator conversation — and the word is still in the registry's own
+   * keywords because people who used it keep typing it. General is untouched
+   * and every id that named General still answers General; what moved is the
+   * Agent's rows, so the alias points at where they went rather than at the
+   * pane they were cut from.
+   */
+  main: "agent",
 };
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -239,7 +272,10 @@ function AboutSection({
   );
 }
 
-const SECTION_IDS = SECTIONS.map((section) => section.id);
+/** Exported with `SECTION_ALIASES` above so a test can resolve a link the way
+ *  the page does — through the real table and the real hook — rather than by
+ *  matching a string in this file's source. */
+export const SECTION_IDS = SECTIONS.map((section) => section.id);
 
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
@@ -309,10 +345,6 @@ export function SettingsPage() {
           <WorkspaceSection />
           <LinksSection />
           <InboxSection />
-          {/* AFTER THE THREE THAT APPLY TO EVERY SESSION, because this one
-              applies to exactly one — and it is experimental, so it should not
-              be the first thing a reader meets on the pane they open most. */}
-          <AgentSection />
           {/* AFTER THE AGENT AND BEFORE TEXTGEN: like TextGen it is a service
               this Mac spends a key on, and unlike the Agent it applies to every
               message box rather than to one conversation. */}
@@ -323,6 +355,12 @@ export function SettingsPage() {
           <UpdatesSection />
         </>
       )}
+
+      {/* ONE GROUP, ALONE ON ITS PANE — deliberately, rather than padded out
+          with a neighbour. Nothing else in Settings is about the Agent, and a
+          tab that held the Agent plus something adjacent would be General
+          again, one size down. */}
+      {active === "agent" && <AgentSection />}
 
       {active === "projects" && <ProjectsPage />}
 

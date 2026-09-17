@@ -50,6 +50,7 @@ import {
   ExternalLinkIcon,
   FolderGitIcon,
   FolderKanbanIcon,
+  GaugeIcon,
   GitPullRequestIcon,
   GlobeIcon,
   ImageIcon,
@@ -65,6 +66,7 @@ import {
   PlugIcon,
   PlugZapIcon,
   ServerIcon,
+  ShieldCheckIcon,
   SlidersHorizontalIcon,
   SmartphoneIcon,
   SparklesIcon,
@@ -133,52 +135,13 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
         ],
       },
       /**
-       * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's is what took its
-       * place (#531) — written once the pane below it existed, because every
-       * row this index carries has to be copy a pane actually renders.
-       * `settings-registry.test.ts` is what holds that.
+       * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's took its place
+       * (#531) — and the Agent's has since moved off General entirely, to a tab
+       * of its own under Runtime (#556). See the `agent` page below; what is
+       * pinned by `settings-registry.test.ts` is that the rows are declared on
+       * the pane that actually renders them, which is the drift this move would
+       * otherwise have introduced silently.
        */
-      {
-        /**
-         * INDEXED THOUGH IT IS EXPERIMENTAL, for the same reason the Main group
-         * above: a feature nobody can find is one nobody can switch off either.
-         * The keywords are the ones somebody uses when they have SEEN the rail
-         * entry and want to know what it is — and "main" is among them, because
-         * this replaces what that word used to name and people will keep
-         * typing it.
-         */
-        title: "Agent",
-        rows: [
-          {
-            title: "Agent (experimental)",
-            hint: "One built-in conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
-            keywords: ["agent", "main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
-            icon: SparklesIcon,
-          },
-          {
-            title: "Model",
-            hint: "Which model OpenCode Go serves the Agent. Empty runs the default.",
-            keywords: ["agent", "model", "opencode", "go", "kimi"],
-            icon: SparklesIcon,
-          },
-          {
-            /** Indexed by the words somebody types when a turn has just failed
-             *  and the message said "key": the pane is where it is fixed. */
-            title: "OpenCode Go key",
-            hint: "The credential the Agent calls OpenCode Go with. Stored with this Mac's engine state.",
-            keywords: ["agent", "key", "api key", "opencode", "go", "credential", "token", "401"],
-            icon: KeyRoundIcon,
-          },
-          {
-            /** Indexed by "start over" and "clear", which is what somebody
-             *  looking for this calls it before they find the word Telar uses. */
-            title: "Reset conversation",
-            hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
-            keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
-            icon: RotateCcwIcon,
-          },
-        ],
-      },
       {
         /**
          * DICTATION (#544). The keywords are what somebody types when they have
@@ -583,6 +546,76 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Camera, microphone, notifications, location, clipboard and screen sharing, per site and per browser profile.",
             keywords: ["camera", "microphone", "mic", "webcam", "notifications", "location", "geolocation", "clipboard", "screen share", "screen sharing", "permission", "permissions", "allow", "block", "revoke", "site"],
             icon: CameraIcon,
+          },
+        ],
+      },
+    ],
+  },
+  /**
+   * THE AGENT, ON ITS OWN PANE (#556) — every row of it, in the order the pane
+   * renders them.
+   *
+   * INDEXED THOUGH IT IS EXPERIMENTAL, for the reason the Main group before it
+   * was: a feature nobody can find is one nobody can switch off either. The
+   * keywords are what somebody types having SEEN the rail entry and wanting to
+   * know what it is — "main" among them, because this replaces what that word
+   * used to name and people keep typing it.
+   *
+   * SIX ROWS ON ONE PANE IS WHY THE PANE EXISTS. They were four rows in a group
+   * stacked between Links and Dictation on General, and the two the composer's
+   * pills already wrote — effort and access — had no settings home at all.
+   */
+  {
+    id: "agent",
+    label: "Agent",
+    icon: SparklesIcon,
+    groups: [
+      {
+        title: "Agent",
+        rows: [
+          {
+            title: "Agent (experimental)",
+            hint: "One built-in conversation per Mac for coordinating Telar work — no project, no checkout, running Telar's own loop.",
+            keywords: ["agent", "main", "assistant", "coordinator", "orchestrator", "delegate", "experimental", "rail", "briefing"],
+            icon: SparklesIcon,
+          },
+          {
+            /** Indexed by the words somebody types when a turn has just failed
+             *  and the message said "key": the pane is where it is fixed. */
+            title: "OpenCode Go key",
+            hint: "The credential the Agent calls OpenCode Go with. Stored with this Mac's engine state.",
+            keywords: ["agent", "key", "api key", "opencode", "go", "credential", "token", "401"],
+            icon: KeyRoundIcon,
+          },
+          {
+            title: "Model",
+            hint: "Which model OpenCode Go serves the Agent. Empty runs the default.",
+            keywords: ["agent", "model", "opencode", "go", "kimi"],
+            icon: SparklesIcon,
+          },
+          {
+            /** Findable by the wire name too: somebody who has read an API doc
+             *  types `reasoning_effort`, not "how hard it thinks". */
+            title: "Reasoning effort",
+            hint: "How hard the Agent's model thinks on each turn. Auto does not send the parameter at all.",
+            keywords: ["agent", "reasoning", "effort", "reasoning_effort", "thinking", "low", "medium", "high", "auto"],
+            icon: GaugeIcon,
+          },
+          {
+            /** "Approve" and "ask me" are what somebody types when they are
+             *  tired of answering the gate — or want to start being asked. */
+            title: "Access",
+            hint: "Whether you answer the Agent's approval gate or policy does. Neither widens which calls are gated.",
+            keywords: ["agent", "access", "approval", "approve", "ask", "auto", "permission", "gate", "confirm"],
+            icon: ShieldCheckIcon,
+          },
+          {
+            /** Indexed by "start over" and "clear", which is what somebody
+             *  looking for this calls it before they find the word Telar uses. */
+            title: "Reset conversation",
+            hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
+            keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
+            icon: RotateCcwIcon,
           },
         ],
       },
