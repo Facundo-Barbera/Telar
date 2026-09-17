@@ -63,6 +63,18 @@ struct DictationAnswer: Decodable, Sendable {
         /// client are seventy names that go stale the day the provider adds
         /// one, and there would be a second copy on the desktop.
         var languages: [DictationLanguageOption]?
+        /// THE PERSON'S OWN WORDS FOR THE RECOGNISER (#581) — a plain list of
+        /// terms, kept on that Mac beside the language.
+        ///
+        /// NOT `keyterm`S, which is Deepgram's name for the wire parameter: the
+        /// Mac merges this with what it knows about itself and expresses the
+        /// result the provider's way, so the setting outlives the provider it
+        /// was typed under.
+        ///
+        /// OPTIONAL FOR `language`'S REASON — a Mac on a build from before this
+        /// existed answers without it, which is a screen with one fewer card
+        /// rather than a decode failure.
+        var vocabulary: [String]?
     }
     var dictation: State
 }

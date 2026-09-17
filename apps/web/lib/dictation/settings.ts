@@ -73,6 +73,18 @@ export type DictationSettingsHandle = {
  */
 const NONE: DictationAnswer["dictation"] = { provider: "off", configured: false, language: "multi", languages: [], vocabulary: [] };
 
+/**
+ * THE ENGINE'S ANSWER OVER THE DEFAULTS, never adopted verbatim.
+ *
+ * An answer is a document that grows a field at a time — `language` and
+ * `languages` in #560, `vocabulary` in #581 — and this pane is served by
+ * whichever engine is on the machine, which after an update is briefly the old
+ * one. A field the answer does not carry has to fall back to what it means when
+ * nobody has said, rather than arriving as `undefined` in a control that will
+ * call `.join` on it.
+ */
+const adopt = (answer: DictationAnswer): DictationAnswer["dictation"] => ({ ...NONE, ...answer.dictation });
+
 export function useDictationSettings(): DictationSettingsHandle {
   const [dictation, setDictation] = useState(NONE);
   const [loading, setLoading] = useState(true);
@@ -85,13 +97,13 @@ export function useDictationSettings(): DictationSettingsHandle {
     const task = window.setTimeout(() => {
       void api
         .dictation()
-        .then((answer) => setDictation(answer.dictation))
+        .then((answer) => setDictation(adopt(answer)))
         .catch(() => undefined)
         .finally(() => setLoading(false));
     }, 0);
     const onChanged = (event: Event) => {
       const next = (event as CustomEvent<DictationAnswer>).detail;
-      if (next) setDictation(next.dictation);
+      if (next) setDictation(adopt(next));
     };
     window.addEventListener(CHANGED, onChanged);
     return () => {
@@ -103,7 +115,7 @@ export function useDictationSettings(): DictationSettingsHandle {
   const save = useCallback(async (patch: { provider?: DictationProviderId; apiKey?: string; language?: string; vocabulary?: string[] }) => {
     try {
       const result = await createEngineApi().setDictation(patch);
-      setDictation(result.dictation);
+      setDictation(adopt(result));
       setError(undefined);
       // Announced from what the ENGINE returned, never from what was sent: a
       // listener told the request rather than the outcome would show a change

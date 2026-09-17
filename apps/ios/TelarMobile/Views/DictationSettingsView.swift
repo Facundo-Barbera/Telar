@@ -36,6 +36,15 @@ import SwiftUI
 /// app would be the list that is wrong the day the provider adds one, and there
 /// is already one on the desktop.
 ///
+/// ── AND THE WORDS THAT MAC COULD NOT HAVE GUESSED (#581) ────────────────────
+/// Nothing primed the recogniser with any vocabulary at all, so a product name
+/// or a colleague's surname came back as whatever it sounded closest to. The
+/// Mac already sends what it can work out for itself — the conversations that
+/// are unsettled, the projects, their branches — and the card here is for the
+/// half only the person knows. One term per line, saved with a button rather
+/// than on losing focus: a phone's keyboard goes away by ways that are not a
+/// blur, and a list saved on one of those writes a half-typed word.
+///
 /// ── SAVE PER INTERACTION, AND THE MAC'S ANSWER IS THE STATE ─────────────────
 /// The same two rules the desktop's panes follow. A refused write leaves the
 /// controls showing what is actually stored and says why underneath, rather
@@ -49,10 +58,18 @@ struct DictationSettingsView: View {
     /// What that Mac offers. EMPTY UNTIL IT HAS ANSWERED, and empty is what
     /// keeps the row from being a menu with nothing in it.
     @State private var languages: [DictationLanguageOption] = []
+    /// The person's own terms for the recogniser, as that Mac holds them
+    /// (#581). Empty for a Mac on a build from before the field existed, which
+    /// is a card showing nothing rather than a screen that fails to load.
+    @State private var vocabulary: [String] = []
     /// True until that Mac has answered once. The controls stay inert rather
     /// than offering a choice that might be wrong.
     @State private var loading = true
     @State private var keyDraft = ""
+    /// THE TERMS AS TEXT, one per line, seeded from `vocabulary` every time
+    /// that Mac answers. A draft rather than a binding straight onto the list
+    /// because a half-typed line is not a term — the split happens on save.
+    @State private var vocabularyDraft = ""
     @State private var saving = false
     /// Why the last write did not land, in that Mac's own words.
     @State private var refusal: String?
@@ -149,6 +166,41 @@ struct DictationSettingsView: View {
                         )
                     }
 
+                    // THE WORDS THAT MAC COULD NOT HAVE GUESSED (#581). It
+                    // already sends what it can work out on its own — the
+                    // unsettled conversations, the projects, their branches —
+                    // so this card is for the half only the person knows.
+                    //
+                    // A SAVE BUTTON RATHER THAN ON-BLUR, unlike the desktop's:
+                    // a phone's keyboard hides by ways that are not a blur, and
+                    // a list that saved on every one of them would write a
+                    // half-typed term. It is the same shape as the key card
+                    // above it, which is the one on this screen people have
+                    // already used.
+                    VStack(spacing: 0) {
+                        SettingsSectionLabel("Vocabulary")
+                        SettingsCard {
+                            CardField(
+                                label: "One term per line",
+                                placeholder: "Kubernetes\nZarigüeya",
+                                text: $vocabularyDraft,
+                                multiline: true
+                            )
+                            CardDivider()
+                            Button { save(vocabulary: vocabularyTerms) } label: {
+                                CardRow(icon: "checkmark", title: "Save the vocabulary") { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                            // AN EMPTY BOX IS SAVEABLE, because emptying it is
+                            // how somebody clears the list — unlike the key
+                            // field, where blank means "I did not retype it".
+                            .disabled(saving || vocabularyTerms == vocabulary)
+                        }
+                        SettingsFootnote(
+                            "Words the recogniser has no reason to expect — a product name, a colleague’s surname, a piece of jargon. Your conversations, your projects and their branches are already sent; this is for the rest."
+                        )
+                    }
+
                     VStack(spacing: 0) {
                         SettingsCard {
                             CardRow(icon: "mic", title: "How it works", subtitle: nil) { EmptyView() }
@@ -200,6 +252,17 @@ struct DictationSettingsView: View {
             : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
     }
 
+    /// WHAT THE BOX WOULD SAVE, tidied the way that Mac will tidy it anyway —
+    /// blanks dropped, whitespace collapsed. Computed here only so the Save
+    /// button can tell "nothing changed" from "there is something to send";
+    /// the engine is still the one that decides what a stored term is.
+    private var vocabularyTerms: [String] {
+        vocabularyDraft
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     private var providerFootnote: String {
         switch provider {
         case DictationProvider.deepgram:
@@ -224,12 +287,19 @@ struct DictationSettingsView: View {
     /// One write, one field. THE MAC'S ANSWER IS WHAT THE SCREEN THEN SHOWS —
     /// never the value that was sent, so a refused change leaves the controls
     /// on what is actually stored.
-    private func save(provider newProvider: String? = nil, apiKey: String? = nil, language newLanguage: String? = nil) {
+    private func save(
+        provider newProvider: String? = nil,
+        apiKey: String? = nil,
+        language newLanguage: String? = nil,
+        vocabulary newVocabulary: [String]? = nil
+    ) {
         saving = true
         refusal = nil
         Task {
             do {
-                let answer = try await api.setDictation(provider: newProvider, apiKey: apiKey, language: newLanguage)
+                let answer = try await api.setDictation(
+                    provider: newProvider, apiKey: apiKey, language: newLanguage, vocabulary: newVocabulary
+                )
                 adopt(answer)
                 if apiKey != nil { keyDraft = "" }
             } catch {
@@ -248,5 +318,10 @@ struct DictationSettingsView: View {
         configured = answer.dictation.configured
         language = answer.dictation.language ?? DictationLanguages.automatic
         languages = answer.dictation.languages ?? []
+        vocabulary = answer.dictation.vocabulary ?? []
+        // THE BOX IS RESEEDED FROM THE ANSWER, never from what was sent — so a
+        // refused save leaves the stored terms on screen rather than the ones
+        // that did not take, which is this screen's rule everywhere else.
+        vocabularyDraft = vocabulary.joined(separator: "\n")
     }
 }
