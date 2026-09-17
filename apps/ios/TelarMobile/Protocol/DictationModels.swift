@@ -20,8 +20,22 @@ struct DictationTokenAnswer: Decodable, Sendable {
     /// than a duration so the phone compares it against its own clock instead
     /// of timing a request it did not observe the start of.
     var expiresAt: Double
+    /// WHAT TO ASK THE SOCKET TO TRANSCRIBE (#560), already in the provider's
+    /// own spelling — the Mac maps the setting before it answers, so nothing
+    /// here holds a vendor's language table.
+    ///
+    /// IT RIDES THE TOKEN so one round trip serves the whole tap: this phone
+    /// asks for a credential on every press and does not read the settings
+    /// route on that path.
+    ///
+    /// OPTIONAL, AND ABSENT MEANS `multi`. A Mac on a build from before this
+    /// field existed answers without it, and the phone must not fail to decode
+    /// a token it could have spent — code-switching is also the better guess
+    /// than English for a Mac that never got to be asked.
+    var language: String?
 
     var expiry: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
+    var listenLanguage: String { language ?? DictationLanguages.automatic }
 }
 
 /// WHO TRANSCRIBES ON THAT MAC, AND WHETHER IT COULD.
@@ -39,8 +53,34 @@ struct DictationAnswer: Decodable, Sendable {
     struct State: Decodable, Sendable {
         var provider: String
         var configured: Bool
+        /// Which language that Mac transcribes, or `multi` for all of them at
+        /// once (#560). Optional for the same reason `provider` is a plain
+        /// string: a Mac on an older build answers without it, and that is a
+        /// screen with one fewer row rather than a decode failure.
+        var language: String?
+        /// What may be chosen, named by that Mac. The phone renders this list
+        /// and holds none of its own — seventy language names copied onto a
+        /// client are seventy names that go stale the day the provider adds
+        /// one, and there would be a second copy on the desktop.
+        var languages: [DictationLanguageOption]?
     }
     var dictation: State
+}
+
+/// One language the Mac offers, with the name to offer it under. NAMED BY THE
+/// ENGINE, not translated here — see `DictationAnswer.State.languages`.
+struct DictationLanguageOption: Decodable, Sendable, Identifiable, Hashable {
+    var code: String
+    var label: String
+
+    var id: String { code }
+}
+
+enum DictationLanguages {
+    /// Code-switching across everything the provider supports, which is the
+    /// default and the answer for a Mac that has not said. Not sending a
+    /// language at all is what made dictation English-only (#560).
+    static let automatic = "multi"
 }
 
 enum DictationProvider {

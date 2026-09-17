@@ -115,17 +115,18 @@ protocol EngineAPI: Sendable {
     /// DEFAULTED BELOW TO `off`, which is the honest answer for a double and
     /// for a Mac too old to serve the route: no button either way.
     func dictation() async throws -> DictationAnswer
-    /// Choose a provider on that Mac, or paste its key.
+    /// Choose a provider on that Mac, choose a language, or paste its key.
     ///
-    /// BOTH FIELDS BY PRESENCE: a patch naming no provider must not switch
-    /// dictation off, and one naming no key must not clear it. The key goes
-    /// DOWN only — nothing ever sends it back, so the phone's field shows
-    /// whether one is saved and never what it is.
+    /// EVERY FIELD BY PRESENCE: a patch naming no provider must not switch
+    /// dictation off, one naming no language must not reset it, and one naming
+    /// no key must not clear it. The key goes DOWN only — nothing ever sends it
+    /// back, so the phone's field shows whether one is saved and never what it
+    /// is.
     ///
     /// DEFAULTED BELOW TO A REFUSAL rather than a lie: a double that quietly
     /// accepted a write would have a settings screen report a change that
     /// never happened.
-    func setDictation(provider: String?, apiKey: String?) async throws -> DictationAnswer
+    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer
     /// The transcript forward from a cursor. Bounded by a count AND a byte
     /// budget, whichever is reached first — page until `more` is false.
     func agentThread(after: Int) async throws -> AgentThreadPage
@@ -283,10 +284,17 @@ extension EngineAPI {
     /// and so does a cockpit too old to serve the route. Either way there is no
     /// mic button, which is the right outcome in both cases.
     func dictation() async throws -> DictationAnswer {
-        DictationAnswer(dictation: DictationAnswer.State(provider: DictationProvider.off, configured: false))
+        // NO LANGUAGES RATHER THAN A GUESSED LIST: they are the Mac's to name,
+        // and a double that invented some would have a picker offering choices
+        // nothing could honour.
+        DictationAnswer(
+            dictation: DictationAnswer.State(
+                provider: DictationProvider.off, configured: false, language: DictationLanguages.automatic, languages: []
+            )
+        )
     }
 
-    func setDictation(provider: String?, apiKey: String?) async throws -> DictationAnswer {
+    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer {
         throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot change dictation settings.", status: 409)
     }
 
@@ -807,13 +815,14 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/dictation")
     }
 
-    /// BY PRESENCE, both fields — an absent one is "leave it alone", which is
-    /// what lets the provider picker and the key field be two separate saves on
-    /// one screen without either undoing the other.
-    func setDictation(provider: String?, apiKey: String?) async throws -> DictationAnswer {
+    /// BY PRESENCE, every field — an absent one is "leave it alone", which is
+    /// what lets the provider picker, the language picker and the key field be
+    /// three separate saves on one screen without any of them undoing another.
+    func setDictation(provider: String?, apiKey: String?, language: String?) async throws -> DictationAnswer {
         var patch: [String: AnyEncodable] = [:]
         if let provider { patch["provider"] = AnyEncodable(provider) }
         if let apiKey { patch["apiKey"] = AnyEncodable(apiKey) }
+        if let language { patch["language"] = AnyEncodable(language) }
         return try await send("PATCH", "api/dictation", body: patch)
     }
 
