@@ -746,33 +746,33 @@ struct AgentMessageRow: View {
 /// assistant's lane, shaped like the compaction row, and it never expands —
 /// the run it is about is the thing worth opening, and that is elsewhere.
 struct WakeRow: View {
+    /// WHAT HAPPENED, from the structured reason and nothing else (#572). The
+    /// engine's own notice used to BE this line — so a peer's result and the
+    /// completion behind it both read "Session finished a turn.", one sentence
+    /// printed twice for two different facts. The notice is the `head` now.
     let line: String
+    /// The head of the words themselves, under the verb. Absent when the wake
+    /// announced something in another session's run and there is none here.
+    var head: String?
 
-    init(line: String) { self.line = line }
+    init(line: String, head: String? = nil) {
+        self.line = line
+        self.head = head
+    }
 
     /// A wake that arrived as its OWN TURN, the recipient being idle.
     init(turn: JournalTurn) {
-        if let notice = turn.agentNotice, !notice.isEmpty {
-            line = notice
-        } else {
-            let first = turn.prompt.split(separator: "\n").first.map(String.init) ?? turn.prompt
-            // A provider-started turn has NO prompt at all — that is its whole
-            // shape — so the kind is the only thing there is to say.
-            line = first.isEmpty
-                ? (turn.isProviderStarted ? describeProviderWake(turn.providerReason) : describeWake(turn.wakeReason))
-                : first
-        }
+        // A provider-started turn has NO prompt at all — that is its whole
+        // shape — so its own kind is the only thing there is to say.
+        line = turn.isProviderStarted ? describeProviderWake(turn.providerReason) : describeWake(turn.wakeReason)
+        head = notificationHead(turn.agentNotice) ?? notificationHead(turn.prompt)
     }
 
     /// The MID-TURN twin: the engine steered the same wake into a running turn.
     /// Same line, so the reader sees one kind of thing however it landed.
     init(message: UserMessageDetail) {
-        if let notice = message.notice, !notice.isEmpty {
-            line = notice
-        } else {
-            let first = message.text.split(separator: "\n").first.map(String.init) ?? message.text
-            line = first.isEmpty ? describeWake(message.wakeReason) : first
-        }
+        line = describeWake(message.wakeReason)
+        head = notificationHead(message.notice) ?? notificationHead(message.text)
     }
 
     var body: some View {
@@ -781,6 +781,9 @@ struct WakeRow: View {
             Text(line)
                 .font(Theme.meta)
                 .lineLimit(2)
+            if let head, head != line {
+                Text(head).font(Theme.monoSmall).lineLimit(1)
+            }
             Spacer(minLength: 0)
         }
         .foregroundStyle(Theme.textMuted)
@@ -792,20 +795,21 @@ struct WakeRow: View {
 
 /// WHAT A NOTIFICATION IS CALLED, in one line — issue #550.
 ///
-/// Beside `describeWake` and for its reason: the same happening must not be
-/// given two names by the two places that draw it.
+/// The Mac's `notificationLabel`, 1:1, and like it the ONE place a happening
+/// becomes a word on this phone (#572). `describeWake` is an adapter onto it,
+/// so a wake reaching a row in the other shape cannot be named differently —
+/// and a peer's `result` can no longer be classified as the completion that
+/// follows it a few seconds later.
 func describeNotification(_ detail: NotificationDetail) -> String {
-    switch detail.kind {
-    case "peer_message":
-        switch detail.intent ?? "report" {
-        case "task": return "A session assigned work"
-        case "blocker": return "A session reported a blocker"
-        case "result": return "A session sent a result"
-        default: return "A session sent a message"
-        }
-    case "request": return "Session asked a question"
-    default: return detail.wakeKind.map { describeWake(WakeReason(kind: $0)) } ?? "Session activity"
-    }
+    notificationVerb(kind: detail.kind, intent: detail.intent, wakeKind: detail.wakeKind)
+}
+
+/// The head of what was actually sent, for a peer's row — the Mac's
+/// `notificationHead`, to the character. Enough to tell a result from the
+/// result before it; not the message, which is behind the disclosure.
+func describeNotificationHead(_ detail: NotificationDetail, message: String? = nil) -> String? {
+    guard detail.kind == "peer_message" else { return nil }
+    return notificationHead(message ?? detail.summary)
 }
 
 /// A NOTIFICATION — a peer's message, a wake, a parked request. #550.
@@ -836,6 +840,12 @@ struct NotificationRow: View {
                 HStack(spacing: 6) {
                     Image(systemName: "bell").font(.system(Theme.caption))
                     Text(describeNotification(detail)).font(Theme.meta)
+                    // WHICH RESULT, not just that one arrived — #572. Two
+                    // notices from one session on one screen have to be told
+                    // apart without expanding both.
+                    if let head = describeNotificationHead(detail, message: message) {
+                        Text(head).font(Theme.monoSmall).lineLimit(1)
+                    }
                     if let entries = detail.entries, entries.count > 1 {
                         Text("and \(entries.count - 1) more").font(Theme.monoSmall)
                     }

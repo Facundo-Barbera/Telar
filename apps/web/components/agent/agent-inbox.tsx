@@ -27,6 +27,7 @@ import { useState } from "react";
 import { BellIcon, CheckIcon, ChevronRightIcon } from "lucide-react";
 import type { AgentInboxRow } from "@telar/engine-client";
 import { agentInboxLabel } from "@/lib/agent/inbox";
+import { stripNotificationKind } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 
 /** The strip's own summary: what a collapsed header says. Lifted out so a test
@@ -120,7 +121,8 @@ function AgentInboxItem({ row, onDismiss }: { row: AgentInboxRow; onDismiss: (id
 }
 
 /** The engine's own bracketed kind, stripped — the digest does the same, and for
- *  the same reason: the verb is already on the row beside it. */
+ *  the same reason: the verb is already on the row beside it. The transcript's
+ *  notification row strips it with the same function (#572). */
 function summaryOf(summary: string): string {
-  return summary.replace(/^\[[^\]]*]\s*/, "").trim();
+  return stripNotificationKind(summary);
 }

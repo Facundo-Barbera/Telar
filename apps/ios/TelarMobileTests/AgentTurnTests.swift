@@ -81,12 +81,17 @@ import Testing
     }
 
     @Test func aWakeRowSaysWhatHappenedWhenThePromptIsEmpty() {
-        #expect(describeWake(WakeReason(kind: "turn_completed")) == "A turn finished in another session.")
-        #expect(describeWake(WakeReason(kind: "turn_failed")) == "A turn failed in another session.")
-        #expect(describeWake(WakeReason(kind: "turn_stopped")) == "A turn was stopped in another session.")
-        #expect(describeWake(WakeReason(kind: "request_opened")) == "Another session is waiting on an answer.")
-        #expect(describeWake(WakeReason(kind: "peer_settled")) == "Another session woke this one.")
-        #expect(describeWake(nil) == "Another session woke this one.")
+        // ONE VOCABULARY FOR ONE HAPPENING (#572): `describeWake` is an adapter
+        // onto `notificationVerb`, so a wake and the notification carrying the
+        // same transition are named identically wherever either is drawn.
+        #expect(describeWake(WakeReason(kind: "turn_completed")) == "Session finished a turn")
+        #expect(describeWake(WakeReason(kind: "turn_failed")) == "Session failed a turn")
+        #expect(describeWake(WakeReason(kind: "turn_stopped")) == "Session was stopped")
+        #expect(describeWake(WakeReason(kind: "request_opened")) == "Session asked a question")
+        #expect(describeWake(WakeReason(kind: "peer_settled")) == "Session activity")
+        #expect(describeWake(nil) == "Session activity")
+        #expect(describeWake(WakeReason(kind: "turn_completed"))
+                == describeNotification(NotificationDetail(kind: "wake", wakeKind: "turn_completed", summary: "s", body: "b")))
     }
 
     // MARK: the provider starting a turn by itself
