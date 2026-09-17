@@ -4,7 +4,14 @@ Cited by `apps/web/lib/page-api.ts`. Added in #548 for the Quest cockpit
 (telar-vr), which runs this web app in a WebView, captures the headset
 microphone on push-to-talk, transcribes it, and has to put the resulting text in
 the composer. That client can run JavaScript in the page and nothing else: no
-extension, no bridge, no second origin. Mac dictation (#544) is the next caller.
+extension, no bridge, no second origin.
+
+**The second caller is inside this app.** The composer's mic button (#544) opens
+its own socket to a transcription service and inserts through `dictate` rather
+than reaching into the editor, so there is one insertion path on this app and
+not two — and the rule below about interim text is its rule. `dictate` inserts
+and cannot retract, so a live transcription's unconfirmed guesses are shown
+beside the button and only finalised phrases are written into the box.
 
 Everything here is something the person at the keyboard could do with their
 hands. There is no engine access, no reading of other sessions, and no way to

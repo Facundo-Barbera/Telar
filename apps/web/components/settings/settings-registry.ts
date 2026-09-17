@@ -58,6 +58,7 @@ import {
   KeyRoundIcon,
   RotateCcwIcon,
   LayersIcon,
+  MicIcon,
   LockIcon,
   MonitorIcon,
   PaletteIcon,
@@ -175,6 +176,31 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Start the Agent again with an empty thread. The old conversation is archived, not deleted.",
             keywords: ["agent", "reset", "clear", "start over", "new conversation", "archive", "thread"],
             icon: RotateCcwIcon,
+          },
+        ],
+      },
+      {
+        /**
+         * DICTATION (#544). The keywords are what somebody types when they have
+         * SEEN the mic button and it did not work — "microphone", "mic",
+         * "voice" — and the vendor's name, which is what the error message
+         * beside the button actually says.
+         */
+        title: "Dictation",
+        rows: [
+          {
+            title: "Deepgram key",
+            hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
+            keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
+            icon: KeyRoundIcon,
+          },
+          {
+            /** Indexed because "why is nothing being typed" is the question
+             *  this row answers, and it has no other home. */
+            title: "How it works",
+            hint: "Press the mic on the composer to start and press again to stop. Words land in the box as they are confirmed; nothing sends on its own.",
+            keywords: ["dictation", "microphone", "mic", "push to talk", "toggle", "voice", "speech"],
+            icon: MicIcon,
           },
         ],
       },

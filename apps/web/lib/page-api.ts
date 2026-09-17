@@ -5,7 +5,12 @@
  * captures the headset microphone on push-to-talk, transcribes it, and needs
  * the final text to land in the composer as if it had been typed. It can run
  * JavaScript in the page and nothing else: no extension, no other origin, no
- * bridge. Dictation on the Mac (#544) will want the same three calls.
+ * bridge.
+ *
+ * AND THE SECOND CALLER IS IN THIS APP. The composer's own mic button (#544)
+ * goes through these calls rather than around them — it is in-process and could
+ * read the registry directly, but dictation arriving by two paths on one app is
+ * two behaviours to keep in step. `components/dictation-button.tsx`.
  *
  * WHY A PAGE API AND NOT `execCommand`. The composer is not a textarea.
  * `components/composer-editor.tsx` is an imperative `contentEditable` whose
