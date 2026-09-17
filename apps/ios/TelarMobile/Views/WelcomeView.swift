@@ -131,6 +131,11 @@ struct WelcomeView: View {
             )
             // ADDS a host (or refreshes a known one) — never evicts others.
             settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579) — see
+            // `promptAfterPairing`. This is the first pairing on a fresh
+            // install, which is the one that used to leave the app absent from
+            // iOS's Notifications list entirely.
+            await MobileNotifications.shared.promptAfterPairing()
             error = nil
         } catch let apiError as EngineAPIError {
             error = apiError.errorDescription ?? "Pairing failed."

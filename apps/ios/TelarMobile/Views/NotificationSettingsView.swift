@@ -31,6 +31,14 @@ struct NotificationSettingsView: View {
             }
             Section("Connection") {
                 Text(notifications.status).font(.subheadline)
+                // AND THE ONE THAT IS NOT ABOUT THIS PHONE (#579). A Mac with
+                // no push relay will send nothing however this screen is set,
+                // and the fix is on that machine — so it is said here in full,
+                // under the toggle it makes irrelevant, rather than folded into
+                // a status line somebody would read as a network hiccup.
+                if !notifications.readiness.missingRelay.isEmpty {
+                    PushRelayBanner()
+                }
                 Button("Check connection") { Task { await notifications.syncRegistrations() } }
                 Button("Open system Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }

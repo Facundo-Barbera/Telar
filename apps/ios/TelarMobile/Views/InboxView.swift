@@ -12,6 +12,8 @@ struct InboxView: View {
     @State private var inbox = MergedInbox()
     /// t3's pagination: 10 settled built initially, +25 per "Show more".
     @State private var settledLimit = 10
+    /// WHETHER ANY MAC CAN NOTIFY AT ALL (#579) — read, never written.
+    @State private var notifications = MobileNotifications.shared
     @Environment(\.scenePhase) private var scenePhase
 
     private var multiHost: Bool { settings.hosts.count > 1 }
@@ -24,6 +26,19 @@ struct InboxView: View {
 
     var body: some View {
         List {
+            // A MAC THAT CANNOT NOTIFY, SAID ON THE SCREEN SOMEBODY OPENS
+            // (#579). It answered `configured: false` — it has this phone's
+            // token and no relay to send with — and the only place that showed
+            // was a status line under a toggle in Settings ▸ Notifications.
+            // One row whatever the number of Macs: the sentence is the same and
+            // the fix is the same on each.
+            if !notifications.readiness.missingRelay.isEmpty {
+                PushRelayBanner()
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+            }
+
             // One quiet row per unreachable Mac; the healthy ones keep
             // rendering underneath. Unauthorized escalates to red and taps
             // through — a retry can't fix a credential.

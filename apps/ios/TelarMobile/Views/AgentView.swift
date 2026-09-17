@@ -77,6 +77,11 @@ struct AgentView: View {
      */
     @State private var scroll = AgentTranscriptScroll()
 
+    /// WHETHER THIS MAC CAN NOTIFY AT ALL (#579) — read, never written, so the
+    /// banner above the transcript says what the last registration was told
+    /// rather than asking again on a screen that is not about notifications.
+    @State private var notifications = MobileNotifications.shared
+
     /// HOW MANY PAGES A FORWARD CATCH-UP WILL WALK.
     ///
     /// This used to bound the OPEN, because the Mac paged forward only — `after`
@@ -190,6 +195,13 @@ struct AgentView: View {
                     }
                     if let failure {
                         notice(failure)
+                    }
+                    // THIS MAC CANNOT NOTIFY YOU (#579). It answered
+                    // `configured: false` on the last registration, which until
+                    // now was visible only under a toggle in Settings ▸
+                    // Notifications — a screen the owner had never opened.
+                    if notifications.readiness.missingRelay.contains(hostId) {
+                        PushRelayBanner()
                     }
                     if thread.rows.isEmpty {
                         Text("Nothing yet. Ask it what is happening across your sessions, or hand it something to delegate.")
