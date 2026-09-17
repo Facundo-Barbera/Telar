@@ -30,6 +30,18 @@ test("the briefing tells the Agent to batch independent reads", () => {
 });
 
 /**
+ * AND WHICH CALL A STATUS QUESTION IS. Ten of the sixteen calls were
+ * `sessions_answer`, one per session — the tool is correct and the scope was
+ * wrong, which is a choice only the paragraph can inform.
+ */
+test("the briefing names fleet_status as the answer to a status question", () => {
+  expect(AGENT_BRIEFING).toContain("fleet_status");
+  expect(AGENT_BRIEFING).toContain("how are things");
+  // The contrast is the point: the bug was reaching for the one-turn read.
+  expect(AGENT_BRIEFING).toContain("sessions_answer is one turn's words");
+});
+
+/**
  * THE CEILING IS LOAD-BEARING, not tidiness: this paragraph is resent on every
  * lap of every turn, so a sentence added here is paid for thousands of times.
  * Adding a rule means taking the words from somewhere.

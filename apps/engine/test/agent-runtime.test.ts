@@ -837,6 +837,35 @@ test("a turn that answers early reports its own laps and never meets the cap", a
 });
 
 /* ------------------------------------------------------------------ *
+ * The two halves of `fleet_status` the runtime owns (#570).
+ * ------------------------------------------------------------------ */
+
+test("the runtime's half of the fleet read is its own notes and its own unread news", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "noted" }], wall(landed));
+  // A thread has to exist before the inbox does — the runtime opens its
+  // database on the first turn.
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().runId === undefined, "the first turn");
+
+  // NOTHING WRITTEN YET reads as empty rather than as an error.
+  expect(agent.fleet().who()).toBeUndefined();
+  expect(agent.fleet().unread()).toEqual({});
+
+  agent.memory().remember("who", "session_peer is on the lap cap; session_other is idle.");
+  agent.wake({ notification: wakeOf("session_peer", "run_1", "turn_completed", "[wake: completed] one") });
+  agent.wake({ notification: wakeOf("session_peer", "run_2", "turn_failed", "[wake: failed] two") });
+  agent.wake({ notification: wakeOf("session_other", "run_3", "turn_completed", "[wake: completed] three") });
+
+  // The `who` section VERBATIM: the tool reads the ids out of it, because that
+  // is the shape the Agent writes it in.
+  expect(agent.fleet().who()).toContain("session_peer");
+  // COUNTED PER SESSION, which is the number a fleet row carries.
+  expect(agent.fleet().unread()).toEqual({ session_peer: 2, session_other: 1 });
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
  * One message's calls run together (#570).
  * ------------------------------------------------------------------ */
 

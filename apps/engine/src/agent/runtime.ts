@@ -79,7 +79,7 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { agentToolSpecs, type AgentMemoryCapability } from "./tools";
+import { agentToolSpecs, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
 import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
@@ -667,6 +667,32 @@ export class AgentRuntime {
         if (!threadId) return [];
         const terms = query.split(/\s+/).map((term) => term.trim()).filter(Boolean);
         return this.open().log.search(threadId, terms, limit);
+      },
+    };
+  }
+
+  /**
+   * THE TWO HALVES OF `fleet_status` THAT ARE THE AGENT'S OWN (#570).
+   *
+   * The other five members of `AgentFleetCapability` are the STORE's — the rail,
+   * a session, its last turn, its open requests — and the daemon wires those.
+   * These two are not: the `who` section is the standing document this object
+   * owns, and the inbox is this thread's own unread news. Handed over the same
+   * seam `memory()` uses, for its reason: a test drives the tool with functions
+   * and no daemon, and the daemon composes one capability out of two owners.
+   */
+  fleet(): Pick<AgentFleetCapability, "who" | "unread"> {
+    return {
+      who: () => readStanding(this.paths).sections.who,
+      unread: (): Record<string, number> => {
+        const threadId = readAgentSettings(this.paths).threadId;
+        if (!threadId) return {};
+        const counted: Record<string, number> = {};
+        // BOUNDED BY `AgentInbox.unread`'s own scan, which is the digest's: a
+        // machine left running over a holiday must not make a status question
+        // walk ten thousand rows.
+        for (const row of this.open().inbox.unread(threadId)) counted[row.sessionId] = (counted[row.sessionId] ?? 0) + 1;
+        return counted;
       },
     };
   }

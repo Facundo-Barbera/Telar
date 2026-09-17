@@ -1260,6 +1260,53 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           outline: async (sessionId, window) => store.turnOutline(sessionId, window),
           answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
         },
+        /**
+         * "HOW ARE THINGS", IN ONE CALL — #570.
+         *
+         * TWO OWNERS, ONE CAPABILITY. The five reads about SESSIONS are the
+         * store's own — the same `liveSessionRows`, `turnOutline` and `requests`
+         * the rail and the query tools already use, so a fleet row and the rail's
+         * row cannot disagree about a session — and the two about the AGENT come
+         * from the runtime, which owns the standing document and the inbox. See
+         * `AgentRuntime.fleet`.
+         *
+         * `turnOutline` AT LIMIT 1 IS THE LAST-TURN READ. It is the projection
+         * #516 built for exactly this — state, when it ended, and the answer's
+         * opening line — so nothing here re-folds a turn a second way.
+         */
+        fleet: {
+          ...agentRuntime.fleet(),
+          rail: async () => {
+            const live = store.liveSessionRows({ all: false });
+            return { sessions: live.sessions, projects: live.projects };
+          },
+          subscribed: async () => [...new Set(store.subscriptionsFor(AGENT_SELF_ID).map((subscription) => subscription.targetSessionId))],
+          // ABSENT RATHER THAN THROWN: the Agent's notes outlive the sessions
+          // they name, and a status answer must not fail because one line of its
+          // own bookkeeping is stale.
+          session: async (sessionId) => {
+            try {
+              return store.getSession(sessionId);
+            } catch {
+              return undefined;
+            }
+          },
+          lastTurn: async (sessionId) => {
+            try {
+              const [newest] = store.turnOutline(sessionId, { limit: 1 }).turns;
+              return newest ? { state: newest.state, ...(newest.endedAt === undefined ? {} : { endedAt: newest.endedAt }), answer: newest.answer } : undefined;
+            } catch {
+              return undefined;
+            }
+          },
+          openRequests: async (sessionId) => {
+            try {
+              return store.requests(sessionId).filter((request) => request.state === "open").length;
+            } catch {
+              return 0;
+            }
+          },
+        },
         // THE AGENT'S OWN, from the runtime being constructed here: it owns the
         // standing document and the transcript's search index, and this closure
         // is not called until a turn runs. See `AgentRuntime.memory`.
