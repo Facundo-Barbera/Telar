@@ -35,6 +35,7 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatResult } from "@langchain/core/outputs";
 import {
+  answerOrphanedCalls,
   compactToolResults,
   FOLD_ANSWER_CHARS,
   FOLD_BLOCK_CHARS,
@@ -44,6 +45,7 @@ import {
   foldedTurnLine,
   isFold,
   minifyToolResult,
+  ORPHANED_CALL_RESULT,
   toolResultStub,
 } from "../src/agent/compact";
 import { AGENT_BRIEFING } from "../src/agent/briefing";
@@ -586,4 +588,42 @@ test("through the runtime: the prompt folds, and every row is still in the threa
   expect(rows.filter((row) => row.kind === "user_message").map((row) => row.detail.text)).toEqual(["what is running", "and now", "anything else"]);
   expect(rows.find((row) => row.kind === "tool_call")!.detail.output).toBe(wordy);
   agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * A call nothing answered (owner, 2026-09-17).
+ * ------------------------------------------------------------------ */
+
+test("a tool call the turn died before answering is answered, so the next prompt is not a 400", () => {
+  const messages = [
+    human("como vamos?"),
+    asked("call_dead", "sessions_answer"),
+    // The turn ended here (recursion limit, crash, cancel). The next human
+    // message follows the unanswered call directly.
+    human("hola?"),
+  ];
+  const repaired = answerOrphanedCalls(messages);
+  expect(repaired).toHaveLength(4);
+  expect(repaired[2]!.getType()).toBe("tool");
+  expect((repaired[2] as ToolMessage).tool_call_id).toBe("call_dead");
+  expect(contentOf(repaired[2]!)).toBe(ORPHANED_CALL_RESULT);
+  expect(repaired[3]).toBe(messages[2]!);
+});
+
+test("a call that was answered is left exactly as it was, and a partial answer set is completed", () => {
+  const whole = [human("hi"), asked("call_1", "sessions_list"), answered("call_1", "rows")];
+  expect(answerOrphanedCalls(whole)).toEqual(whole);
+  const two = new AIMessage({
+    content: "",
+    tool_calls: [
+      { id: "call_a", name: "sessions_find", args: {}, type: "tool_call" },
+      { id: "call_b", name: "sessions_find", args: {}, type: "tool_call" },
+    ],
+  });
+  const partial = [human("hi"), two, answered("call_a", "ok"), human("next")];
+  const repaired = answerOrphanedCalls(partial);
+  expect(repaired.map((m) => m.getType())).toEqual(["human", "ai", "tool", "tool", "human"]);
+  // Both ids are answered before the next human message; which comes first
+  // is not a fact the API cares about.
+  expect(repaired.slice(2, 4).map((m) => (m as ToolMessage).tool_call_id).sort()).toEqual(["call_a", "call_b"]);
 });

@@ -153,6 +153,46 @@ function idOf(row: unknown): string | undefined {
  * result exists ("true", "Deleted \"x\".") and spending 30 characters of
  * scaffolding to save 4 is the opposite of the point.
  */
+/**
+ * A CALL THE MODEL MADE THAT NOTHING EVER ANSWERED, ANSWERED (owner, 2026-09-17).
+ *
+ * WHAT LEFT ONE BEHIND: a turn that ended between the model asking for a tool
+ * and the tools node writing its result — the recursion limit of the build
+ * before #570 threw exactly there, and a crash or a cancel can still. The
+ * checkpoint then holds an assistant message with `tool_calls` followed by a
+ * human message, and every route Go serves refuses that prompt with a 400
+ * ("an assistant message with 'tool_calls' must be followed by tool
+ * messages"). Since the checkpoint is the conversation, every LATER turn sent
+ * it again and failed the same way: three in a row on the owner's thread, the
+ * Agent mute until a reset.
+ *
+ * THE REPAIR IS A RESULT, NOT A DELETION. Dropping the assistant message
+ * would drop what it said beside the call; answering the call with one line
+ * that says it was never run keeps the history honest and the API satisfied.
+ * Applied to what is SENT, never written back to the checkpoint — the same
+ * rule as every other step in this file, and the reason a repaired thread
+ * still shows the gap in the transcript.
+ */
+export const ORPHANED_CALL_RESULT = "[this call was never run: the turn ended before it could be]";
+
+export function answerOrphanedCalls(messages: readonly BaseMessage[]): BaseMessage[] {
+  const out: BaseMessage[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    out.push(message);
+    const calls = message.getType() === "ai" ? ((message as AIMessage).tool_calls ?? []) : [];
+    if (calls.length === 0) continue;
+    const answered = new Set<string>();
+    for (let next = index + 1; next < messages.length && messages[next]!.getType() === "tool"; next += 1) {
+      answered.add((messages[next] as ToolMessage).tool_call_id);
+    }
+    for (const call of calls) {
+      if (call.id && !answered.has(call.id)) out.push(new ToolMessage({ tool_call_id: call.id, content: ORPHANED_CALL_RESULT }));
+    }
+  }
+  return out;
+}
+
 export function compactToolResults(messages: readonly BaseMessage[]): BaseMessage[] {
   const turnStart = lastIndexOfType(messages, "human") + 1;
   const newest = newestResultRun(messages);

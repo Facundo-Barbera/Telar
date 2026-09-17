@@ -82,7 +82,7 @@ import type { SocketTool } from "../mcp-socket";
 import { agentToolSpecs, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
-import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
+import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
@@ -1240,7 +1240,9 @@ export class AgentRuntime {
       // MEASURED ON THE BLOCK THIS LAP ACTUALLY SENDS, which on the last lap is
       // one sentence longer than the others — the meter is what was sent.
       const reservedChars = String(prompt.content).length;
-      const folded = foldOldTurns(compactToolResults(state.messages), { budgetChars, reservedChars });
+      // 0. ANSWER ANY CALL NOTHING EVER ANSWERED — see `answerOrphanedCalls`.
+      //    First, because every step after it groups results under their call.
+      const folded = foldOldTurns(compactToolResults(answerOrphanedCalls(state.messages)), { budgetChars, reservedChars });
       const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
        * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
