@@ -33,8 +33,8 @@
  *
  * RESULTS FROM EARLIER TURNS. The unit here is the LAP, inside one turn, and a
  * turn boundary is the last human message. Older TURNS are a different problem
- * with a different answer — one deterministic line per turn, which is #541 part
- * F's summary compaction rather than this one.
+ * with a different answer — `foldOldTurns` at the foot of this file, one
+ * deterministic line per turn, which is #541 part F's summary compaction.
  *
  * AND THE TRANSCRIPT, WHICH KEEPS EVERYTHING. `agent_rows` is written from the
  * tool's own answer before any of this runs, so the cockpit still shows the
@@ -42,7 +42,7 @@
  * holds what a person reads. That split is `trim.ts`'s rule and it is the same
  * rule.
  */
-import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { firstLine } from "../turn-summary";
 
 /** How much of a shapeless result a stub carries. Enough to recognise which
@@ -195,4 +195,180 @@ function lastIndexOfType(messages: readonly BaseMessage[], type: string): number
     if (messages[index]!.getType() === type) return index;
   }
   return -1;
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. Older turns, one deterministic line each — #541 part F.
+ * ------------------------------------------------------------------ */
+
+/**
+ * HOW MUCH OF ONE FOLDED TURN SURVIVES — the three fields `turn-summary.ts`
+ * already settled on, and the same numbers rather than a second opinion: the
+ * first line of what was asked, what it did, and the head of what it answered.
+ */
+export const FOLD_INPUT_CHARS = 120;
+export const FOLD_ANSWER_CHARS = 200;
+
+/**
+ * THE FOLDED BLOCK'S OWN CEILING.
+ *
+ * A line per turn is fixed-size by construction, but "fixed-size, forever" is
+ * still unbounded — a thread with nine hundred turns would carry nine hundred
+ * lines. So the block keeps the NEWEST lines that fit and counts the rest in a
+ * sentence, which is the bound every page in this engine has. The lines it
+ * leaves out are not lost: `agent_rows` holds every turn whole and `recall`
+ * searches it.
+ */
+export const FOLD_BLOCK_CHARS = 12_000;
+
+/** The stamp that says a message is the engine's fold rather than something
+ *  anybody said. See `foldOldTurns` for what it is for. */
+export const FOLD_MARKER = "telar_turn_fold";
+
+const FOLD_ASK = "What happened earlier in this conversation?";
+const FOLD_LEAD =
+  "Earlier turns, one line each — a record, not a transcript. The thread holds them whole and `recall` searches them.";
+
+/**
+ * ONE TURN, AS THE LINE THAT REPLACES IT.
+ *
+ * DETERMINISTIC AND MODEL-FREE (#541, owner decision 1). The Agent never writes
+ * prose about its own history: a summary a model wrote is a summary that can be
+ * re-summarised, drift and cost a call. The projection that answers "what was
+ * that turn" for every OTHER conversation on this engine is `summariseTurn` —
+ * three fields and a fold — and this is the same three fields over LangGraph
+ * messages instead of over a journal.
+ */
+export function foldedTurnLine(turn: readonly BaseMessage[]): string {
+  const asked = turn.find((message) => message.getType() === "human");
+  const calls: string[] = [];
+  let answer = "";
+  for (const message of turn) {
+    if (message.getType() !== "ai") continue;
+    for (const call of (message as AIMessage).tool_calls ?? []) calls.push(call.name);
+    const said = typeof message.content === "string" ? message.content : "";
+    if (said.trim()) answer = said;
+  }
+  const did = calls.length > 0 ? ` · ${countCalls(calls)}` : "";
+  const said = answer.trim() ? ` · ${firstLine(answer, FOLD_ANSWER_CHARS)}` : "";
+  return `· ${firstLine(contentOf(asked), FOLD_INPUT_CHARS) || "(nothing said)"}${did}${said}`;
+}
+
+/** `sessions_find ×9, sessions_outline ×3` — what the turn DID, each tool named
+ *  once. Nine repetitions of a name and a reader counting to nine are the same
+ *  fact; only one of them is worth the characters. */
+function countCalls(calls: readonly string[]): string {
+  const counts = new Map<string, number>();
+  for (const name of calls) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name)).join(", ");
+}
+
+function contentOf(message: BaseMessage | undefined): string {
+  if (!message) return "";
+  return typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+}
+
+/** Is this one of the two messages a fold produces? */
+export function isFold(message: BaseMessage): boolean {
+  return message.additional_kwargs?.[FOLD_MARKER] === true;
+}
+
+/**
+ * THE OLDEST TURNS, REPLACED BY THEIR LINES — the summary compaction that takes
+ * the 120k trim's DROP (#541 part F).
+ *
+ * ── WHAT THIS REPLACES, AND WHY DROPPING WAS WRONG ──────────────────────────
+ * `trim.ts` kept the newest contiguous tail that fitted and let the rest fall
+ * off the top. That is safe and it is amnesia: the conversation in which the
+ * person explained what they wanted is exactly the part furthest from the end.
+ * A line per turn costs about 250 characters against the several thousand a
+ * turn really weighs, so forty turns of context become ten thousand characters
+ * instead of a hundred thousand — and the trim stays behind it as a backstop
+ * that should now never fire.
+ *
+ * ── A PAIR OF MESSAGES, NOT A SYSTEM BLOCK ──────────────────────────────────
+ * The Agent's model is whatever OpenCode Go is pointed at, and Go proxies both
+ * an OpenAI-shaped route and an Anthropic-shaped one. A `system` message in the
+ * MIDDLE of a conversation is ordinary on the first and is not a thing the
+ * second has — its system prompt is a separate top-level field, which is
+ * exactly the shape difference that cost a model in #549. A HUMAN message
+ * followed by an AI one is the shape both routes take without a per-route
+ * branch, so the fold asks a question and answers it. Both halves carry
+ * `FOLD_MARKER`, so a reader can tell the engine's words from anybody's.
+ *
+ * ── A SUMMARY IS NEVER SUMMARISED, AND IT IS STRUCTURAL ─────────────────────
+ * This is a PROJECTION of the raw turns, recomputed from them on every lap and
+ * never persisted into the checkpoint — so a fold's output is never a fold's
+ * input, and "never re-summarise a summary" is a property of the shape rather
+ * than a check that could be forgotten. Any fold message found in the input is
+ * therefore stale and is dropped before the turns are read, which is what makes
+ * the function idempotent.
+ *
+ * ── AND THE NEWEST TURNS ARE VERBATIM ───────────────────────────────────────
+ * Folding stops as soon as what is left fits the budget, oldest first, and the
+ * turn being answered is never folded. A conversation inside its budget comes
+ * back untouched, which is every ordinary one.
+ */
+export function foldOldTurns(
+  messages: readonly BaseMessage[],
+  options: { budgetChars: number; reservedChars?: number },
+): { messages: BaseMessage[]; folded: number } {
+  const raw = messages.filter((message) => !isFold(message));
+  const turns = splitTurns(raw);
+  const lines: string[] = [];
+
+  let spent = (options.reservedChars ?? 0) + cost(raw);
+  let folded = 0;
+  while (spent > options.budgetChars && folded < turns.length - 1) {
+    const turn = turns[folded]!;
+    lines.push(foldedTurnLine(turn));
+    spent -= cost(turn);
+    folded += 1;
+  }
+  if (folded === 0) return { messages: [...raw], folded: 0 };
+  return { messages: [...foldBlock(lines), ...turns.slice(folded).flat()], folded };
+}
+
+/** The conversation as turns, each beginning at a human message. Anything
+ *  before the first human message — which should be nothing — is its own
+ *  leading group rather than being dropped. */
+function splitTurns(messages: readonly BaseMessage[]): BaseMessage[][] {
+  const turns: BaseMessage[][] = [];
+  for (const message of messages) {
+    if (message.getType() === "human" || turns.length === 0) turns.push([message]);
+    else turns.at(-1)!.push(message);
+  }
+  return turns;
+}
+
+/** The pair, carrying the newest lines that fit and a count of the rest. */
+function foldBlock(lines: readonly string[]): BaseMessage[] {
+  const kept: string[] = [];
+  let chars = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    if (kept.length > 0 && chars + line.length > FOLD_BLOCK_CHARS) break;
+    kept.unshift(line);
+    chars += line.length + 1;
+  }
+  const missing = lines.length - kept.length;
+  const body = [
+    FOLD_LEAD,
+    ...(missing > 0 ? [`(${missing} turn${missing === 1 ? "" : "s"} older than these are in the thread only — use recall.)`] : []),
+    ...kept,
+  ].join("\n");
+  const stamp = { additional_kwargs: { [FOLD_MARKER]: true } };
+  return [new HumanMessage({ content: FOLD_ASK, ...stamp }), new AIMessage({ content: body, ...stamp })];
+}
+
+/** What a run of messages costs, on `trim.ts`'s own arithmetic so the two
+ *  cannot disagree about whether a conversation fits. */
+function cost(messages: readonly BaseMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    const calls = (message as AIMessage).tool_calls;
+    total += content.length + (calls ? JSON.stringify(calls).length : 0) + 32;
+  }
+  return total;
 }

@@ -82,7 +82,7 @@ import type { SocketTool } from "../mcp-socket";
 import { agentToolSpecs, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
-import { compactToolResults, minifyToolResult } from "./compact";
+import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
@@ -1017,21 +1017,27 @@ export class AgentRuntime {
       if (context.digest) this.digestDelivered = true;
       const bound = context.model.bindTools?.(specs as never) ?? context.model;
       /**
-       * THE TRIM IS THE PRE-MODEL STEP — see `./trim.ts`. It shapes what the
-       * MODEL sees and never what the transcript holds.
+       * THE PRE-MODEL STEP, IN THREE, AND THE ORDER IS THE ARGUMENT.
        *
-       * COMPACTION RUNS FIRST, AND IT IS NOT THE TRIM (#563). The trim DROPS
-       * whole blocks once a conversation passes its ceiling and has never fired
-       * in practice; what actually costs the money is a turn's own laps, each
-       * one resending every result the turn has collected so far. So the
-       * earlier laps' results collapse to a line each BEFORE the budget is
-       * measured — which means the meter reports what was really sent rather
-       * than what would have been.
+       * 1. COMPACT THIS TURN'S LAPS (#563). Earlier laps' results collapse to a
+       *    line each. This is what makes a 16-lap turn cost what a 3-lap one
+       *    does, and it runs first because it is the cheapest and the most of
+       *    what a long turn weighs.
+       * 2. FOLD OLDER TURNS (#541 part F). What is still over budget after that
+       *    is a long CONVERSATION rather than a long turn, so the oldest turns
+       *    are replaced by one deterministic line each — the projection in
+       *    `./compact.ts`, never a model call, never a summary of a summary.
+       * 3. TRIM, AS A BACKSTOP — see `./trim.ts`. It DROPS, which is why it is
+       *    last and should now never fire: everything it would have thrown away
+       *    has already become a line the model can still read.
+       *
+       * THE METER MEASURES THE END OF THAT, so what a person is shown is what
+       * was really sent rather than what would have been.
        */
-      const history = trimAgentHistory(compactToolResults(state.messages), {
-        ...(budget === undefined ? {} : { budgetChars: budget }),
-        reservedChars: String(system.content).length,
-      });
+      const budgetChars = budget ?? DEFAULT_AGENT_BUDGET_CHARS;
+      const reservedChars = String(system.content).length;
+      const folded = foldOldTurns(compactToolResults(state.messages), { budgetChars, reservedChars });
+      const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
        * THE PROMPT'S SIZE, TAKEN WHERE IT IS DECIDED — the context meter's
        * denominator (#539). The LAST lap wins rather than the largest: a turn

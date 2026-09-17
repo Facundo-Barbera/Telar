@@ -12,6 +12,15 @@
  *   - a result that is not JSON survives exactly as it was written;
  *   - the quadratic cost of a long turn is actually gone — measured on the
  *     16-lap turn the issue reports.
+ *
+ * AND THE FOLD BELOW IT (#541 part F), which is the other axis — older TURNS
+ * rather than earlier laps:
+ *
+ *   - an over-budget conversation loses its oldest turns to one deterministic
+ *     line each, and the turn being answered is never one of them;
+ *   - the fold is a human/assistant pair, because a mid-conversation system
+ *     message is not a thing the Anthropic-shaped route has;
+ *   - a summary is never summarised — folding twice is folding once.
  */
 import { expect, test } from "bun:test";
 import fs from "node:fs";
@@ -21,7 +30,17 @@ import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langcha
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatResult } from "@langchain/core/outputs";
-import { compactToolResults, minifyToolResult, toolResultStub } from "../src/agent/compact";
+import {
+  compactToolResults,
+  FOLD_ANSWER_CHARS,
+  FOLD_BLOCK_CHARS,
+  FOLD_INPUT_CHARS,
+  foldOldTurns,
+  foldedTurnLine,
+  isFold,
+  minifyToolResult,
+  toolResultStub,
+} from "../src/agent/compact";
 import { AgentRuntime } from "../src/agent/runtime";
 import type { SocketTool } from "../src/mcp-socket";
 
@@ -296,4 +315,85 @@ test("the transcript keeps the whole answer; the prompt carries the compact one"
   expect(contentOf(results[0]!)).toContain("[earlier lap] sessions_find");
   expect(contentOf(results[1]!)).toBe(minifyToolResult(pretty));
   agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * Older turns, folded — #541 part F.
+ * ------------------------------------------------------------------ */
+
+const turn = (ask: string, tools: string[], answer: string): BaseMessage[] => [
+  human(ask),
+  ...tools.flatMap((name, index) => [asked(`${ask}_${index}`, name), answered(`${ask}_${index}`, "x".repeat(3_000))]),
+  new AIMessage(answer),
+];
+
+test("a conversation inside its budget is not folded at all", () => {
+  const messages = [...turn("first", ["sessions_list"], "two are running"), ...turn("second", [], "nothing else")];
+  const folded = foldOldTurns(messages, { budgetChars: 500_000 });
+  expect(folded.folded).toBe(0);
+  expect(folded.messages).toEqual(messages);
+});
+
+test("the oldest turns become one line each, and the newest stays verbatim", () => {
+  const messages = [
+    ...turn("what is running", ["sessions_list", "sessions_status"], "two are running"),
+    ...turn("find the dictation thread", ["sessions_find", "sessions_find", "sessions_find"], "it is session_a"),
+    ...turn("what did it conclude", ["sessions_answer"], "the language picker went in"),
+  ];
+  const folded = foldOldTurns(messages, { budgetChars: 12_000 });
+  expect(folded.folded).toBeGreaterThan(0);
+
+  const [ask, block, ...rest] = folded.messages;
+  expect(ask!.getType()).toBe("human");
+  expect(block!.getType()).toBe("ai");
+  expect(isFold(ask!)).toBe(true);
+  expect(isFold(block!)).toBe(true);
+  // The line is the projection's three fields: what was asked, what it did,
+  // what it answered.
+  expect(String(block!.content)).toContain("what is running");
+  expect(String(block!.content)).toContain("sessions_list");
+  expect(String(block!.content)).toContain("two are running");
+  // Repeats are counted rather than listed.
+  if (folded.folded > 1) expect(String(block!.content)).toContain("sessions_find ×3");
+  // The turn being answered is untouched.
+  expect(String(rest.at(-1)!.content)).toBe("the language picker went in");
+  expect(rest.at(0)!.getType()).toBe("human");
+});
+
+test("the pair is human-then-assistant, which is the shape both routes take", () => {
+  const messages = [...turn("a", ["sessions_list"], "x"), ...turn("b", ["sessions_list"], "y"), ...turn("c", [], "z")];
+  const folded = foldOldTurns(messages, { budgetChars: 4_000 });
+  const types = folded.messages.map((message) => message.getType());
+  expect(types[0]).toBe("human");
+  expect(types[1]).toBe("ai");
+  // No system message appears mid-conversation: the Anthropic-shaped route has
+  // nowhere to put one.
+  expect(types).not.toContain("system");
+});
+
+test("a summary is never summarised: folding twice is folding once", () => {
+  const messages = [...turn("a", ["sessions_list"], "x"), ...turn("b", ["sessions_list"], "y"), ...turn("c", [], "z")];
+  const once = foldOldTurns(messages, { budgetChars: 4_000 });
+  const twice = foldOldTurns(once.messages, { budgetChars: 4_000 });
+  // The second pass sees the fold's own messages, drops them as stale, and has
+  // only the verbatim tail left to read — so it folds nothing and the lines
+  // cannot become input to another line.
+  expect(twice.folded).toBe(0);
+  expect(twice.messages.some((message) => isFold(message))).toBe(false);
+  // And the pass that matters is deterministic.
+  expect(foldOldTurns(messages, { budgetChars: 4_000 }).messages.map(contentOf)).toEqual(once.messages.map(contentOf));
+});
+
+test("the folded block has its own ceiling, and says what it left out", () => {
+  const many = Array.from({ length: 400 }, (_, index) => turn(`question number ${index} ${"q".repeat(200)}`, ["sessions_list"], `answer ${index}`)).flat();
+  const folded = foldOldTurns(many, { budgetChars: 8_000 });
+  const block = folded.messages[1]!;
+  expect(String(block.content).length).toBeLessThan(FOLD_BLOCK_CHARS + 500);
+  expect(String(block.content)).toContain("in the thread only");
+});
+
+test("one line is a fixed size whatever the turn weighed", () => {
+  const line = foldedTurnLine(turn(`${"a".repeat(4_000)}`, ["sessions_find", "sessions_find"], "b".repeat(4_000)));
+  expect(line.length).toBeLessThan(FOLD_INPUT_CHARS + FOLD_ANSWER_CHARS + 120);
+  expect(line).toContain("sessions_find ×2");
 });
