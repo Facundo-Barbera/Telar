@@ -29,14 +29,15 @@
  * source is named by RUNG (`describeGoCredential`), which is the only thing
  * about a credential this codebase will say out loud.
  *
- * ── TWO CALLS, AND THAT IS THE BUDGET ───────────────────────────────────────
- * One `GET /models` with no credential (the docs publish it as open), and ONE
- * completion capped at a single token. No loop and no retry: a smoke test that
- * retried would be one that could bill somebody twice for a mistake.
+ * ── THREE CALLS, AND THAT IS THE BUDGET ─────────────────────────────────────
+ * One `GET /models` with no credential (the docs publish it as open), and TWO
+ * completions capped at a single token each — the plain one, and the tool round
+ * trip #549 added. No loop and no retry: a smoke test that retried would be one
+ * that could bill somebody twice for a mistake.
  */
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { describeGoCredential, redactKey, resolveGoCredential } from "../src/agent/credentials";
 import { DEFAULT_GO_MODEL, readOpenCodeGoModels } from "../src/agent/go";
 import { agentChatModel } from "../src/agent/model";
@@ -50,6 +51,18 @@ const SMOKE_THREAD = "thread_telar_live_smoke";
 /** Rung 1's directory when this machine has an engine root, so a key pasted
  *  into Telar is the one smoked. Absent falls through to rungs 2 and 3. */
 const agentDir = process.env.TELAR_HOME ? path.join(process.env.TELAR_HOME, "engine", "agent") : undefined;
+
+/**
+ * THE MODEL THAT SAID NO (#549) — deliberately NOT `DEFAULT_GO_MODEL`.
+ *
+ * `kimi-k3` is the default and is OpenAI-shaped, and it accepted the very
+ * conversation this smoke is about; the 400 came from `omen-alpha`, which
+ * OpenCode Go proxies to an Anthropic-shaped upstream. A smoke for that bug run
+ * against the default would pass on every build, including the broken one.
+ * `TELAR_LIVE_SMOKE_MODEL` points it at another route when Go's model list
+ * changes underneath.
+ */
+const TOOL_SMOKE_MODEL = process.env.TELAR_LIVE_SMOKE_MODEL?.trim() || "omen-alpha";
 
 describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () => {
   const credential = resolveGoCredential({ ...(agentDir ? { agentDir } : {}) });
@@ -90,5 +103,66 @@ describe.skipIf(!LIVE)("OpenCode Go, live, through the Agent's own factory", () 
     // test has no business putting them in a log. That it came back at all is
     // the whole assertion.
     expect(answer).toBeDefined();
+  });
+
+  /**
+   * THE ONE THAT WOULD HAVE CAUGHT #549 — a tool result on the wire.
+   *
+   * ── WHY THE EXCHANGE IS BUILT RATHER THAN PROVOKED ──────────────────────────
+   * The request that failed was the SECOND one of a lap: the one carrying a
+   * tool result back. Asking a model to please call a tool and then answering
+   * it costs two completions and still depends on the model choosing to — a
+   * smoke that sometimes sends the shape it is testing is not a smoke. So the
+   * prior lap is handed over as history, which puts exactly the message #549 is
+   * about in front of the model on one call, with the tool declared alongside
+   * it so the request is a tool-using request in both directions.
+   *
+   * ── AND THE STATUS IS READ FROM THE RESPONSE, NOT INFERRED ──────────────────
+   * `fetchImpl` is the injection point the factory already has for a test that
+   * wants to watch the socket. The number it records is what gets reported: a
+   * smoke whose report is "it did not throw" is one that cannot tell a 200 from
+   * a 200-shaped error page. On a failure the provider's own sentence is
+   * printed — redacted like every other line — because that sentence is how the
+   * owner found this bug in the first place.
+   */
+  test("a tool round trip is accepted by the model that rejected one", async () => {
+    if (!credential) return;
+    let status = 0;
+    const model = agentChatModel({
+      threadId: SMOKE_THREAD,
+      model: TOOL_SMOKE_MODEL,
+      ...(agentDir ? { agentDir } : {}),
+      streaming: false,
+      maxTokens: 1,
+      fetchImpl: async (url, init) => {
+        const response = await fetch(url, init);
+        status = response.status;
+        return response;
+      },
+    });
+    const withTool = model.bindTools!([
+      {
+        type: "function",
+        function: {
+          name: "telar_smoke_status",
+          description: "Report whether the machine is well. Used only by Telar's live smoke.",
+          parameters: { type: "object", properties: { probe: { type: "string" } }, required: ["probe"] },
+        },
+      },
+    ]);
+
+    try {
+      await withTool.invoke([
+        new HumanMessage("Is the machine well?"),
+        new AIMessage({ content: "", tool_calls: [{ id: "call_telar_smoke", name: "telar_smoke_status", args: { probe: "live" } }] }),
+        // THE MESSAGE THE FIX IS ABOUT: the call id and the answer, no `name`.
+        new ToolMessage({ tool_call_id: "call_telar_smoke", content: "the machine is well" }),
+      ]);
+    } catch (error) {
+      say(`[live] ${TOOL_SMOKE_MODEL} tool round trip → ${status || "no response"} ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+    say(`[live] ${TOOL_SMOKE_MODEL} tool round trip → ${status}`);
+    expect(status).toBe(200);
   });
 });
