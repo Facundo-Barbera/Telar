@@ -66,6 +66,20 @@ export type DictationState = {
   /** Whether this browser can dictate at all — no `MediaRecorder`, no
    *  `getUserMedia` (an insecure origin, or a locked-down embed), no button. */
   supported: boolean;
+  /**
+   * WHERE TO DRAW THE INDICATOR, AND WHAT TO PUT IN IT (#561).
+   *
+   * `undefined` whenever there is nothing to draw — not listening, or the caret
+   * is not in a box this dictation can see. The rect is in VIEWPORT
+   * coordinates, so the pill is positioned without knowing anything about the
+   * composer's own scroll or layout.
+   *
+   * RE-READ AFTER EVERY FRAME rather than watched: words landing is the only
+   * thing that moves the caret during a dictation, and that is a moment this
+   * hook is already in the middle of. A `ResizeObserver` or a rAF loop would be
+   * a subscription for an event we are the cause of.
+   */
+  caret?: { rect: DOMRect; language: string };
 };
 
 /** A frame Deepgram reads as "that is the end of the audio, flush what you
@@ -96,6 +110,9 @@ export function useDictation(input: {
 }): DictationState {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [error, setError] = useState<string>();
+  /** WHERE THE PILL GOES (#561), re-measured whenever words land. State rather
+   *  than a ref because it is drawn; `undefined` is "nothing to draw". */
+  const [caret, setCaret] = useState<{ rect: DOMRect; language: string }>();
   /**
    * WHETHER THIS BROWSER CAN RECORD AT ALL.
    *
@@ -152,8 +169,20 @@ export function useDictation(input: {
    * the browser's recording dot lit, and that is the kind of thing people
    * uninstall an app over.
    */
+  /** The box this dictation is writing into, held for the length of it so the
+   *  teardown can take its marks back off — the registry's "active composer"
+   *  may well be a different one by then. */
+  const marked = useRef<DictationBox>(null);
+
   const teardown = useCallback(() => {
     generation.current += 1;
+    // THE MARKS COME OFF FIRST, and they come off on EVERY path out — a failed
+    // start, a lost socket, an unmount. A box left with a tinted caret and a
+    // greyed-out run after the microphone has closed is the app lying about
+    // what it is doing.
+    marked.current?.dictating?.({ listening: false });
+    marked.current = null;
+    setCaret(undefined);
     try {
       if (recorder.current?.state === "recording") recorder.current.stop();
     } catch {
@@ -245,6 +274,14 @@ export function useDictation(input: {
       const live = new WebSocket(listenUrl(minted.language), listenProtocols(minted.token));
       socket.current = live;
 
+      /** The pill, and the dim, re-read from the one place that knows. Called
+       *  when the socket opens and after every frame that writes. */
+      const redraw = (): void => {
+        speaking.dictating?.({ listening: true, ...(writer.current?.span() ? { interim: writer.current.span() } : {}) });
+        const rect = speaking.caretRect?.();
+        setCaret(rect ? { rect, language: minted.language } : undefined);
+      };
+
       live.onopen = () => {
         // THE RECORDER STARTS ONLY ONCE THE SOCKET IS OPEN. Chunks produced
         // before it are chunks with nowhere to go, and the first of them
@@ -258,6 +295,12 @@ export function useDictation(input: {
         };
         tape.start(CHUNK_MS);
         setPhase("listening");
+        // THE PILL APPEARS WHEN THE MICROPHONE IS ACTUALLY OPEN, not at the
+        // press: `starting` can end in a refused permission prompt, and an
+        // indicator that said "listening" through that would be wrong for as
+        // long as somebody took to read the dialog.
+        marked.current = speaking;
+        redraw();
       };
 
       live.onmessage = (event: MessageEvent) => {
@@ -275,7 +318,13 @@ export function useDictation(input: {
         if (refusal && !refusal.ok) {
           setError(refusal.reason);
           teardown();
+          return;
         }
+        // AFTER THE WRITE, NOT BEFORE IT: the words that just landed are what
+        // moved the caret, and the span the writer now holds is the run they
+        // occupy. A frame that said nothing about the words returned above and
+        // never reaches here, so the pill does not twitch on a keep-alive.
+        redraw();
       };
 
       live.onerror = () => {
@@ -327,5 +376,6 @@ export function useDictation(input: {
     ...(error === undefined ? {} : { error }),
     toggle,
     supported,
+    ...(caret === undefined ? {} : { caret }),
   };
 }

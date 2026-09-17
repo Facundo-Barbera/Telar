@@ -82,6 +82,38 @@ function chipElement(reference: TelarReference): HTMLElement {
 }
 
 /**
+ * THE WORDS STILL BEING REVISED, DRAWN DIMMER (#561).
+ *
+ * A plain `<span>` with an attribute and no `data-chip-text`, which is what
+ * makes it free: `textOf` recurses into any element it does not recognise and
+ * returns its text, so the draft serializes identically whether this wrapper is
+ * there or not. The ONE RULE at the top of this file is not bent — this is a
+ * drawing of the same string.
+ *
+ * AND THE ATTRIBUTE IS WHAT PAINTS IT, not a class the dictation reaches in and
+ * toggles. The span is created and destroyed by `paint` like every other node
+ * here, so there is nothing left behind for `serialize` to trip over when a
+ * phrase settles.
+ */
+const INTERIM_ATTRIBUTE = "data-dictation-interim";
+const INTERIM_CLASS = "opacity-55";
+
+/** The part of `[from, to)` that falls inside a segment starting at `at`. */
+function overlap(at: number, length: number, run: { start: number; end: number }): { from: number; to: number } | undefined {
+  const from = Math.max(run.start - at, 0);
+  const to = Math.min(run.end - at, length);
+  return from < to ? { from, to } : undefined;
+}
+
+function dimmed(text: string): HTMLElement {
+  const span = document.createElement("span");
+  span.setAttribute(INTERIM_ATTRIBUTE, "");
+  span.className = INTERIM_CLASS;
+  span.textContent = text;
+  return span;
+}
+
+/**
  * Draw a whole draft.
  *
  * THE TRAILING EMPTY TEXT NODE IS LOAD-BEARING. A `contenteditable=false`
@@ -89,11 +121,29 @@ function chipElement(reference: TelarReference): HTMLElement {
  * browser refuses to put one there and typing at the end of the message goes
  * nowhere. An empty text node after it is a legal caret position that
  * serializes to nothing.
+ *
+ * `interim` IS A RUN OF DRAFT OFFSETS, or nothing. A text segment it crosses is
+ * cut into up to three nodes so the dimmed one covers exactly the run — a chip
+ * is never dimmed, because a chip is not a word anybody dictated.
  */
-function paint(root: HTMLElement, draft: string): void {
+function paint(root: HTMLElement, draft: string, interim?: { start: number; end: number }): void {
   const nodes: Node[] = [];
+  let at = 0;
   for (const segment of segmentDraft(draft)) {
-    nodes.push(segment.type === "text" ? document.createTextNode(segment.text) : chipElement(segment.reference));
+    if (segment.type !== "text") {
+      nodes.push(chipElement(segment.reference));
+      at += segment.reference.text.length;
+      continue;
+    }
+    const inside = interim ? overlap(at, segment.text.length, interim) : undefined;
+    if (!inside) {
+      nodes.push(document.createTextNode(segment.text));
+    } else {
+      if (inside.from > 0) nodes.push(document.createTextNode(segment.text.slice(0, inside.from)));
+      nodes.push(dimmed(segment.text.slice(inside.from, inside.to)));
+      if (inside.to < segment.text.length) nodes.push(document.createTextNode(segment.text.slice(inside.to)));
+    }
+    at += segment.text.length;
   }
   if (nodes.length === 0 || nodes[nodes.length - 1]?.nodeType !== Node.TEXT_NODE) nodes.push(document.createTextNode(""));
   root.replaceChildren(...nodes);
@@ -234,10 +284,71 @@ function placeCaret(root: HTMLElement, offset: number): void {
   selection?.addRange(range);
 }
 
+/**
+ * WHERE THE CARET IS ON THE SCREEN (#561), in viewport coordinates.
+ *
+ * `Range.getBoundingClientRect()` ON A COLLAPSED RANGE IS EMPTY IN SOME
+ * PLACES, and they are the ordinary ones: the caret sitting in the empty text
+ * node `paint` leaves at the end, or in a box nobody has typed in yet. A rect
+ * of zeros would put the pill in the corner of the window, so the fallbacks
+ * are tried in the order that keeps it nearest the truth:
+ *
+ *   1. the collapsed range itself, which is right whenever there is text;
+ *   2. the character BEFORE it, whose right edge is where the caret stands —
+ *      this is the empty-trailing-node case, and it is the common one;
+ *   3. the box's own first line, for a box with nothing in it at all.
+ *
+ * VIEWPORT COORDINATES, NOT THE BOX'S, because the pill is drawn in a portal on
+ * `body` — see `dictation-caret-pill.tsx`. Anchoring it inside the composer
+ * would put it under the composer's own `overflow-y-auto`, which is the one
+ * place a floating badge must not be clipped.
+ */
+function caretRectIn(root: HTMLElement): DOMRect | undefined {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return undefined;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer)) return undefined;
+
+  const own = range.getBoundingClientRect();
+  if (own.height > 0) return own;
+
+  if (range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0) {
+    const back = document.createRange();
+    back.setStart(range.startContainer, range.startOffset - 1);
+    back.setEnd(range.startContainer, range.startOffset);
+    const previous = back.getBoundingClientRect();
+    // Its RIGHT edge, collapsed: that is the side the caret is on.
+    if (previous.height > 0) return new DOMRect(previous.right, previous.top, 0, previous.height);
+  }
+
+  const box = root.getBoundingClientRect();
+  if (box.height <= 0) return undefined;
+  const line = Number.parseFloat(window.getComputedStyle(root).lineHeight);
+  return new DOMRect(box.left, box.top, 0, Number.isFinite(line) && line > 0 ? line : box.height);
+}
+
 export type ComposerEditorHandle = {
   focus: () => void;
   /** Is the caret in this box right now? */
   focused: () => boolean;
+  /** Where the caret is on the screen, for something drawn beside it — see
+   *  `caretRectIn`. `undefined` when the caret is not in this box. */
+  caretRect: () => DOMRect | undefined;
+  /**
+   * WHAT A RUNNING DICTATION LOOKS LIKE IN THIS BOX (#561).
+   *
+   * Two marks, set together because they change together: `listening` tints the
+   * caret while the microphone is open, and `interim` is the run of the draft
+   * still being revised, drawn dimmer so settled words are tellable from words
+   * that are still moving.
+   *
+   * REPAINTS ONLY WHEN THE RUN ACTUALLY MOVED. Interim frames arrive several
+   * times a second and most of them follow a `replaceRange` that has already
+   * painted; repainting again for an unchanged span would be a second
+   * `replaceChildren` and a second caret placement per frame, which is visible
+   * as a flicker on a slow machine.
+   */
+  dictating: (state: { listening: boolean; interim?: { start: number; end: number } }) => void;
   /** The caret's index in the draft, or the draft's length when unfocused. */
   caret: () => number;
   /**
@@ -297,6 +408,17 @@ export const ComposerEditor = forwardRef<
   const painted = useRef("");
   const mounted = useRef(false);
   const [empty, setEmpty] = useState(true);
+  /**
+   * THE RUN STILL BEING REVISED (#561). A ref rather than state for the reason
+   * everything else in this file is imperative: it is a property of the DRAWING,
+   * every paint already reads it, and a state update per interim frame would
+   * re-render the composer several times a second.
+   */
+  const interim = useRef<{ start: number; end: number }>(null);
+  /** Whether the microphone is open, which is what tints the caret. State, not
+   *  a ref: it changes twice per dictation and it is a class on the element
+   *  React does own. */
+  const [listening, setListening] = useState(false);
 
   const commit = useCallback(
     (text: string) => {
@@ -312,7 +434,7 @@ export const ComposerEditor = forwardRef<
     (text: string, caret: number) => {
       const box = root.current;
       if (!box) return;
-      paint(box, text);
+      paint(box, text, interim.current ?? undefined);
       commit(text);
       box.focus();
       placeCaret(box, caret);
@@ -325,7 +447,7 @@ export const ComposerEditor = forwardRef<
     if (!box) return;
     if (!mounted.current) {
       mounted.current = true;
-      paint(box, value);
+      paint(box, value, interim.current ?? undefined);
       painted.current = value;
       setEmpty(value.length === 0);
       return;
@@ -334,6 +456,12 @@ export const ComposerEditor = forwardRef<
     // The parent replaced the whole draft — cleared after a send, or recalled a
     // queued line. A replacement puts the caret at the end; an edit would have
     // come through `onInput` and never reached here.
+    //
+    // AND IT DROPS THE INTERIM RUN. Offsets into a draft that has been replaced
+    // wholesale describe nothing, and a dimmed span left over one would grey
+    // out whatever text now happens to sit at those numbers — the dictation
+    // writer drops its own span on the same evidence (see `interim.ts`).
+    interim.current = null;
     paint(box, value);
     painted.current = value;
     setEmpty(value.length === 0);
@@ -345,6 +473,26 @@ export const ComposerEditor = forwardRef<
     () => ({
       focus: () => root.current?.focus(),
       focused: () => Boolean(root.current) && document.activeElement === root.current,
+      caretRect: () => {
+        const box = root.current;
+        return box ? caretRectIn(box) : undefined;
+      },
+      dictating: ({ listening: on, interim: run }) => {
+        setListening(on);
+        const was = interim.current;
+        const same = was === null ? run === undefined : run !== undefined && was.start === run.start && was.end === run.end;
+        interim.current = run ?? null;
+        // SAME RUN, NOTHING TO REDRAW — see the handle's own note. The common
+        // frame is one where `replaceRange` has just painted this very span.
+        if (same) return;
+        const box = root.current;
+        if (!box) return;
+        // The caret stays where the dictation left it: at the end of the words
+        // just heard, which is where the next ones go.
+        const at = selectionRange(box)?.end ?? painted.current.length;
+        paint(box, painted.current, interim.current ?? undefined);
+        if (document.activeElement === box) placeCaret(box, at);
+      },
       caret: () => {
         const box = root.current;
         if (!box) return painted.current.length;
@@ -380,11 +528,17 @@ export const ComposerEditor = forwardRef<
         spellCheck
         data-slot="composer-editor"
         data-composer={dataComposer}
+        // WHILE THE MICROPHONE IS OPEN, SO A READER CAN SEE IT IS (#561). The
+        // pill at the caret is the loud signal; this is the quiet one, and it
+        // is the one that survives the pill being off-screen because the box
+        // has scrolled.
+        data-dictating={listening ? "" : undefined}
         // 76px and 15px/24 are the textarea's, kept: a composer is the largest
         // single target on the screen and the type has to hold its own against
         // the transcript it sits under.
         className={cn(
           "max-h-48 min-h-[76px] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 pt-3 pb-2 text-[0.9375rem] leading-6 outline-none",
+          "data-dictating:caret-primary",
           disabled && "opacity-60",
         )}
         onInput={() => {

@@ -40,13 +40,14 @@ import { activeComposer } from "@/lib/composer-registry";
 import { useDictation } from "@/lib/dictation/use-dictation";
 import { useDictationSettings } from "@/lib/dictation/settings";
 import type { DictationBox } from "@/lib/dictation/interim";
+import { DictationCaretPill } from "./dictation-caret-pill";
 import { cn } from "@/lib/utils";
 
 export function DictationButton({ className }: { className?: string }) {
   // RESOLVED AT THE PRESS, not at render: "the active composer" is a question
   // whose answer changes with focus, and the hook asks it once per dictation.
   const box = useCallback((): DictationBox | undefined => activeComposer(), []);
-  const { phase, error, toggle, supported } = useDictation({ box });
+  const { phase, error, toggle, supported, caret } = useDictation({ box });
   const { provider } = useDictationSettings();
 
   // NO BUTTON WHERE NOBODY ASKED FOR ONE — `off` is the default, and while the
@@ -86,6 +87,11 @@ export function DictationButton({ className }: { className?: string }) {
         <MicIcon className={cn("size-4", listening && "animate-pulse")} />
         {listening && <span className="text-xs">Listening</span>}
       </button>
+      {/* THE BADGE AT THE CARET (#561), drawn from here because this is where
+          the dictation's state lives — but portalled onto `body` and positioned
+          in viewport coordinates, so it owes nothing to where this button sits
+          in the toolbar. Absent whenever there is no caret to sit beside. */}
+      {listening && caret && <DictationCaretPill rect={caret.rect} language={caret.language} />}
       {/* NO CAPTION OF UNCONFIRMED WORDS ANY MORE — they are in the composer,
           rewritten in place as Deepgram revises them. A refusal still needs
           somewhere to be said, and this is it. */}

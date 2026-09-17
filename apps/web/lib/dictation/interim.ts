@@ -46,12 +46,29 @@ export type DictationBox = {
   draft: () => string;
   insert: (text: string) => ComposerWrite;
   replace: (start: number, end: number, text: string) => ComposerWrite;
+  /** How the box draws a running dictation (#561) — see `ComposerEntry`.
+   *  OPTIONAL, so the fake box a test drives this with stays three functions
+   *  and a string. */
+  dictating?: (state: { listening: boolean; interim?: { start: number; end: number } }) => void;
+  /** Where the caret is on the screen, for the pill drawn beside it (#561).
+   *  Optional for `dictating`'s reason. */
+  caretRect?: () => DOMRect | undefined;
 };
 
 export type DictationWriter = {
   /** Put this frame's words in the box. Answers the refusal when the composer
    *  turned the write away — the caller's only move is to show it. */
   write: (words: DictationWords) => ComposerWrite | undefined;
+  /**
+   * THE UNCONFIRMED RUN AS IT STANDS, for whoever draws it (#561).
+   *
+   * A reader rather than a second copy: the span is this closure's own and the
+   * rules that move it are all above, so an indicator that asked anywhere else
+   * would be a second answer to a question with one. `undefined` between
+   * utterances and after somebody else has typed — which is exactly when there
+   * is nothing to dim.
+   */
+  span: () => { start: number; end: number } | undefined;
   /** Forget the span without touching the draft. Called when a dictation ends:
    *  whatever is in the box is the person's now, and a span remembered across
    *  presses would have the next one rewrite the last one's words. */
@@ -105,6 +122,7 @@ export function createDictationWriter(box: DictationBox): DictationWriter {
 
   return {
     forget,
+    span: () => span,
     write(words) {
       // SOMEBODY ELSE WROTE, so the offsets mean nothing now. Dropping the span
       // is the whole recovery: the guess already in the box becomes ordinary
