@@ -20,7 +20,11 @@
  *     line each, and the turn being answered is never one of them;
  *   - the fold is a human/assistant pair, because a mid-conversation system
  *     message is not a thing the Anthropic-shaped route has;
- *   - a summary is never summarised — folding twice is folding once.
+ *   - a summary is never summarised — folding twice is folding once;
+ *   - and it goes to a LOW-water mark (#567): the ceiling triggers a fold, the
+ *     floor stops it, and a history between the two is left alone. Without the
+ *     gap the meter sat at 100% for ever, because the mark that stopped the
+ *     fold was the mark that started it.
  */
 import { expect, test } from "bun:test";
 import fs from "node:fs";
@@ -35,6 +39,7 @@ import {
   FOLD_ANSWER_CHARS,
   FOLD_BLOCK_CHARS,
   FOLD_INPUT_CHARS,
+  FOLD_TARGET_RATIO,
   foldOldTurns,
   foldedTurnLine,
   isFold,
@@ -42,6 +47,7 @@ import {
   toolResultStub,
 } from "../src/agent/compact";
 import { AgentRuntime } from "../src/agent/runtime";
+import { trimAgentHistory } from "../src/agent/trim";
 import type { SocketTool } from "../src/mcp-socket";
 
 const human = (text: string) => new HumanMessage(text);
@@ -390,6 +396,78 @@ test("the folded block has its own ceiling, and says what it left out", () => {
   const block = folded.messages[1]!;
   expect(String(block.content).length).toBeLessThan(FOLD_BLOCK_CHARS + 500);
   expect(String(block.content)).toContain("in the thread only");
+});
+
+/* ------------------------------------------------------------------ *
+ * The low-water mark — #567. The meter sat at 100% because the fold stopped at
+ * the same number that started it.
+ * ------------------------------------------------------------------ */
+
+/**
+ * WHAT THE NEXT PROMPT WOULD REALLY COST, measured the way the meter measures
+ * it — `trimAgentHistory`'s own arithmetic, against a ceiling high enough that
+ * it drops nothing. The point of #567 is a number a person reads off a gauge,
+ * so the assertions are about that number rather than about a turn count.
+ */
+const measure = (messages: readonly BaseMessage[], reservedChars = 0) =>
+  trimAgentHistory(messages, { budgetChars: Number.MAX_SAFE_INTEGER, reservedChars }).chars;
+
+test("a saturated history folds to under the low-water mark, so the meter actually drops", () => {
+  const budgetChars = 120_000;
+  const messages = Array.from({ length: 40 }, (_, index) =>
+    turn(`question number ${index}`, ["sessions_list", "sessions_find"], `answer number ${index}`),
+  ).flat();
+  // The conversation the issue is about: saturated, and over the ceiling.
+  expect(measure(messages)).toBeGreaterThan(budgetChars);
+
+  const folded = foldOldTurns(messages, { budgetChars });
+  expect(folded.folded).toBeGreaterThan(0);
+  // UNDER 60%, not "just under 100%". The old fold stopped at `budgetChars` and
+  // left the next turn to start the whole thing again a few hundred characters
+  // later; this one buys about 48k of room at the default budget.
+  expect(measure(folded.messages)).toBeLessThanOrEqual(budgetChars * FOLD_TARGET_RATIO);
+  // The newest turn is still there, whole — the fold bought room from the top.
+  expect(contentOf(folded.messages.at(-1)!)).toBe("answer number 39");
+});
+
+test("a history between the two marks is left alone: the ceiling triggers a fold, the floor does not", () => {
+  const messages = [
+    ...turn("what is running", ["sessions_list"], "two are running"),
+    ...turn("find the dictation thread", ["sessions_find"], "it is session_a"),
+    ...turn("what did it conclude", ["sessions_answer"], "the language picker went in"),
+  ];
+  // A ceiling this history sits at 70% of: comfortably over the low-water mark
+  // and comfortably under the one that starts a fold.
+  const budgetChars = Math.ceil(measure(messages) / 0.7);
+  expect(measure(messages)).toBeGreaterThan(budgetChars * FOLD_TARGET_RATIO);
+  expect(measure(messages)).toBeLessThan(budgetChars);
+
+  const folded = foldOldTurns(messages, { budgetChars });
+  // NOT FOLDED DOWN TO THE FLOOR. The floor is where a fold STOPS; a
+  // conversation that never crossed the ceiling is one an earlier fold already
+  // made room in, and folding it again would spend its history for nothing.
+  expect(folded.folded).toBe(0);
+  expect(folded.messages).toEqual(messages);
+});
+
+test("the turn being answered survives even when the floor is out of reach", () => {
+  const messages = [
+    ...turn("first", ["sessions_list"], "two are running"),
+    ...turn("second", ["sessions_find"], "it is session_a"),
+    ...turn("last question", ["sessions_answer"], "the last answer"),
+  ];
+  // A budget no single turn fits in: the fold can never reach the floor, so the
+  // rule that stops it has to be the other one.
+  const folded = foldOldTurns(messages, { budgetChars: 1_000 });
+  expect(folded.folded).toBe(2);
+
+  const [, , ...tail] = folded.messages;
+  expect(tail[0]!.getType()).toBe("human");
+  expect(contentOf(tail[0]!)).toBe("last question");
+  expect(contentOf(tail.at(-1)!)).toBe("the last answer");
+  // VERBATIM, results and all — the turn being answered is never abridged, and
+  // what is still over budget after this is `trimAgentHistory`'s problem.
+  expect(tail.some((message) => message.getType() === "tool")).toBe(true);
 });
 
 test("one line is a fixed size whatever the turn weighed", () => {

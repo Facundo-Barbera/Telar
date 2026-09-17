@@ -215,6 +215,9 @@ import Testing
 ///   - the percentage is of the Mac's TRIM budget, the ceiling that will
 ///     actually drop the oldest exchange;
 ///   - a prompt over budget reads full rather than overflowing;
+///   - a fold says how many turns it cost (#567), and only when it cost some —
+///     the Mac now folds to a LOW-water mark, so the reading really does fall
+///     from full to two thirds between two turns;
 ///   - a Mac too old to send any of it costs the line, never the screen.
 @Suite struct AgentContextMeterTests {
     @Test func bothNumbersRideTheState() throws {
@@ -248,6 +251,36 @@ import Testing
         let over = AgentLastUsage(runId: "run_c", contextChars: 400_000, budgetChars: 120_000)
         #expect(over.percent == 100)
         #expect(over.meterLine == "100% context")
+    }
+
+    @Test func aFoldThatHappenedIsNamedOnTheLine() throws {
+        let json = #"""
+        {"agent":{"enabled":true,"running":false,"queued":0,
+         "lastUsage":{"runId":"run_e","usage":{"input":60000,"output":400,"total":60400},
+                      "contextChars":68000,"budgetChars":120000,"folded":9}}}
+        """#
+        let meter = try #require(try JSONDecoder().decode(AgentAnswer.self, from: Data(json.utf8)).agent.lastUsage)
+        #expect(meter.folded == 9)
+        #expect(meter.meterLine == "60,400 tokens · 57% context · folded 9 turns")
+        // One turn is one turn.
+        let one = AgentLastUsage(runId: "run_f", contextChars: 68_000, budgetChars: 120_000, folded: 1)
+        #expect(one.meterLine == "57% context · folded 1 turn")
+    }
+
+    @Test func aTurnThatFoldedNothingSaysNothingAndNeitherDoesAnOlderMac() throws {
+        // "folded 0 turns" on every ordinary turn would be noise in the one
+        // place on this screen that has to stay quiet.
+        let none = AgentLastUsage(runId: "run_g", contextChars: 12_000, budgetChars: 120_000, folded: 0)
+        #expect(none.meterLine == "10% context")
+        // A Mac from before #567 sends no `folded`, which reads as nothing to
+        // say rather than as a decoding failure that costs the whole meter.
+        let old = #"""
+        {"agent":{"enabled":true,"running":false,"queued":0,
+         "lastUsage":{"runId":"run_h","contextChars":12000,"budgetChars":120000}}}
+        """#
+        let meter = try #require(try JSONDecoder().decode(AgentAnswer.self, from: Data(old.utf8)).agent.lastUsage)
+        #expect(meter.folded == 0)
+        #expect(meter.meterLine == "10% context")
     }
 
     @Test func noCeilingMeansNoLineRatherThanADivisionByNothing() {

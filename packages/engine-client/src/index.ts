@@ -350,6 +350,18 @@ export type AgentLastUsage = {
   contextChars: number;
   /** The trim ceiling `contextChars` is a proportion of. */
   budgetChars: number;
+  /**
+   * HOW MANY OLDER TURNS THIS TURN FOLDED to one line each (#567).
+   *
+   * THE SENTENCE THAT EXPLAINS A FALLING METER. The engine folds to a LOW-water
+   * mark — about 60% of the budget — so the reading really does drop from full
+   * to two thirds between two turns, and a gauge that does that with nothing
+   * said beside it reads as broken rather than as working.
+   *
+   * OPTIONAL ON THE WIRE: a Mac running an engine from before #567 sends none,
+   * which a client reads as "nothing to say" rather than as zero turns folded.
+   */
+  folded?: number;
 };
 
 export type AgentState = {
@@ -467,15 +479,17 @@ export type DictationTokenAnswer = { provider: DictationProviderId; token: strin
  *   tool_call         `{ name, toolCallId, input, output, status }`
  *   request_opened    the whole `AgentRequest`
  *   request_resolved  `{ requestId, decision, tool }`
- *   turn_started      `{ origin }`
+ *   turn_started      `{ origin, brief? }` — `brief` only on a turn a voice
+ *                     client asked to have answered aloud (#567).
  *   turn_done         `{ status, text?, message?, usage?, contextChars,
- *                     budgetChars }` — `text` is the turn's ANSWER, the same
- *                     words as its last assistant row. Two readers, two shapes:
- *                     a list view renders this without replaying the thread.
- *                     The meter fields are `AgentLastUsage`'s, written on EVERY
- *                     ending (completed, stopped, failed) because a turn that
- *                     spent its tokens and then failed still spent them. A row
- *                     written before the meter existed carries neither.
+ *                     budgetChars, folded }` — `text` is the turn's ANSWER, the
+ *                     same words as its last assistant row. Two readers, two
+ *                     shapes: a list view renders this without replaying the
+ *                     thread. The meter fields are `AgentLastUsage`'s, written
+ *                     on EVERY ending (completed, stopped, failed) because a
+ *                     turn that spent its tokens and then failed still spent
+ *                     them. A row written before the meter existed carries none
+ *                     of them, and one from before #567 carries no `folded`.
  */
 export type AgentRow = {
   id: number;
@@ -1090,11 +1104,19 @@ export class EngineClient {
     return this.request("GET", "/v2/agent/models");
   }
 
-  /** Say something to the Agent. Answers the run id before the turn runs, so a
-   *  composer has something to follow; a turn already running queues this one
-   *  behind it rather than interleaving. */
-  sendAgentTurn(text: string): Promise<{ runId: string; queued: number; agent: AgentState }> {
-    return this.request("POST", "/v2/agent/turns", { text });
+  /**
+   * Say something to the Agent. Answers the run id before the turn runs, so a
+   * composer has something to follow; a turn already running queues this one
+   * behind it rather than interleaving.
+   *
+   * `brief` IS FOR A TURN THAT WILL BE HEARD RATHER THAN READ (#567): the
+   * answer comes back as two or three spoken sentences, with no lists and no
+   * code. It applies to THIS turn only and is stored nowhere — the same
+   * conversation opened in the cockpit a minute later is unchanged — so a voice
+   * client sends it on every turn and a written one never does.
+   */
+  sendAgentTurn(text: string, options: { brief?: boolean } = {}): Promise<{ runId: string; queued: number; agent: AgentState }> {
+    return this.request("POST", "/v2/agent/turns", { text, ...(options.brief ? { brief: true } : {}) });
   }
 
   /** Stop the Agent's live turn, or drop a queued one. `stopped: false` means

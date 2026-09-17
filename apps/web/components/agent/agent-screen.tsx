@@ -173,6 +173,7 @@ export function AgentScreen() {
             {...(lastUsage.usage ? { usage: lastUsage.usage } : {})}
             contextChars={lastUsage.contextChars}
             budgetChars={lastUsage.budgetChars}
+            {...(lastUsage.folded !== undefined ? { folded: lastUsage.folded } : {})}
           />
         </div>
       )}
