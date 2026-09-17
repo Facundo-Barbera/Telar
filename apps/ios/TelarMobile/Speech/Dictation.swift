@@ -173,8 +173,12 @@ import Foundation
         // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
         // second call to the settings route: this tap already costs one round
         // trip, and the Mac knows both answers at the moment it mints.
+        // AND SO DOES THE GLOSSARY (#581): the words worth priming the
+        // recogniser with are that Mac's unsettled conversations, its projects
+        // and the terms somebody typed into its settings, none of which this
+        // phone can see.
         language = minted.listenLanguage
-        var request = URLRequest(url: DeepgramListen.url(language: minted.listenLanguage))
+        var request = URLRequest(url: DeepgramListen.url(language: minted.listenLanguage, keyterms: minted.listenKeyterms))
         // THE HEADER, WHICH THE BROWSER CANNOT SEND. `Bearer` is the JWT's own
         // scheme; `Token` is for a long-lived API key and is refused for a
         // grant token.
@@ -326,7 +330,24 @@ enum DeepgramListen {
     /// English, so the next caller of this cannot open a socket without having
     /// decided. The value is the Mac's — mapped from the setting there and
     /// carried down on the token answer.
-    static func url(language: String) -> URL {
+    ///
+    /// AND SO IS `keyterms` (#581), for the same reason and a fresher one: the
+    /// headset has always primed the recogniser with up to forty of these and
+    /// this phone primed it with none, which is the whole of why the VR client
+    /// understood the app's own glossary and this app did not. One REPEATED
+    /// parameter per term — Deepgram reads `keyterm` as multi-valued, and a
+    /// comma-joined string would be one long term nobody says. It works under
+    /// `language=multi`, which is confirmed on the headset and is what every
+    /// Telar client actually opens.
+    ///
+    /// The list arrives bounded and ordered from the Mac; nothing here decides
+    /// what is in it.
+    ///
+    /// `endpointing` STAYS AT 300 rather than dropping to 100 for this end's
+    /// raw PCM: the headset saw monosyllables doubled at the lower value, and
+    /// "yes yes" in the box is a worse bug than a final landing a fifth of a
+    /// second late.
+    static func url(language: String, keyterms: [String]) -> URL {
         var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
         components.queryItems = [
             URLQueryItem(name: "model", value: "nova-3"),
@@ -337,7 +358,7 @@ enum DeepgramListen {
             URLQueryItem(name: "encoding", value: "linear16"),
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "channels", value: "1"),
-        ]
+        ] + keyterms.map { URLQueryItem(name: "keyterm", value: $0) }
         return components.url!
     }
 }

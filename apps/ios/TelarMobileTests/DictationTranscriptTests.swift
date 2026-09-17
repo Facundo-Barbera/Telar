@@ -209,7 +209,7 @@ import Testing
     }
 
     @Test func theSocketDeclaresWhatTheseBuffersActuallyAre() {
-        let value = query(DeepgramListen.url(language: DictationLanguages.automatic))
+        let value = query(DeepgramListen.url(language: DictationLanguages.automatic, keyterms: []))
         // Unlike the web's, this end sends raw PCM with no container header for
         // the service to read — so the format has to be declared, and it has to
         // match what `Dictation` converts to.
@@ -222,7 +222,7 @@ import Testing
         // this URL — and on the web it is refused outright, which is why that
         // end sends it as the `bearer` subprotocol.
         #expect(value("access_token") == nil)
-        #expect(DeepgramListen.url(language: DictationLanguages.automatic).scheme == "wss")
+        #expect(DeepgramListen.url(language: DictationLanguages.automatic, keyterms: []).scheme == "wss")
     }
 
     // MARK: which language (#560)
@@ -231,15 +231,15 @@ import Testing
     /// English whatever it hears, so the parameter has to be on the URL — and
     /// it has to be the one that was passed, not a default this file invented.
     @Test func theSocketAsksForTheLanguageItWasGiven() {
-        #expect(query(DeepgramListen.url(language: "es"))("language") == "es")
-        #expect(query(DeepgramListen.url(language: "pt-BR"))("language") == "pt-BR")
+        #expect(query(DeepgramListen.url(language: "es", keyterms: []))("language") == "es")
+        #expect(query(DeepgramListen.url(language: "pt-BR", keyterms: []))("language") == "pt-BR")
     }
 
     @Test func automaticIsMultiAndRidesTheSocketLikeAnyOtherCode() {
         // `multi` is a value Nova-3 accepts on the wire rather than a local
         // word for "send nothing" — sending nothing is the bug.
         #expect(DictationLanguages.automatic == "multi")
-        #expect(query(DeepgramListen.url(language: DictationLanguages.automatic))("language") == "multi")
+        #expect(query(DeepgramListen.url(language: DictationLanguages.automatic, keyterms: []))("language") == "multi")
     }
 
     /// A MAC ON A BUILD FROM BEFORE #560 answers a token with no `language` in

@@ -505,10 +505,16 @@ export type DictationTokenAnswer = {
    * that. Bounded and ordered there; a client appends it and does not think
    * about it.
    *
-   * EMPTY RATHER THAN ABSENT when there is nothing to say, so a URL builder
-   * maps over it without an `if`.
+   * THIS ENGINE ALWAYS SENDS IT, empty when there is nothing to say — but it
+   * is OPTIONAL on the type, because an engine that predates the field is a
+   * real thing a client can be pointed at: a cockpit updates on its own
+   * schedule and the phone reaches a paired Mac through the host proxy.
+   * ABSENT HAS TO READ AS "NO GLOSSARY", which is what every dictation had
+   * until now; arriving as `undefined` in a builder that iterates it would
+   * break the mic button outright over a feature that is an improvement to
+   * begin with.
    */
-  keyterms: string[];
+  keyterms?: string[];
 };
 
 /**

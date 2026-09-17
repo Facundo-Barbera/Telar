@@ -48,6 +48,24 @@
  * argument here rather than one with a default, so the next caller cannot open
  * a socket without deciding: the value comes from the setting, and the token
  * answer is what carries it.
+ *
+ * ── AND `keyterm`, WHICH NOT SENDING WAS THE NEXT BUG (#581) ────────────────
+ * The headset has always put up to forty of these on its socket, built from
+ * session titles and project names. This builder sent none, which is the whole
+ * of why the VR client "understands the glossary much better" — there is no
+ * glossary matching anywhere in Telar, and "the glossary" is this parameter.
+ *
+ * REPEATED, ONE PER TERM. Deepgram reads `keyterm` as a multi-value parameter,
+ * which is why this is `append` rather than `set` — a comma-joined string would
+ * be one long term nobody says.
+ *
+ * IT WORKS UNDER `language=multi`, confirmed on the headset, which is the one
+ * thing worth writing down: keyterm prompting is documented per-model and the
+ * combination is the one every Telar client actually opens.
+ *
+ * REQUIRED, LIKE `language`, and for exactly the reason this issue exists: the
+ * parameter went missing on every surface at once because nothing made a caller
+ * decide. An empty array is a real answer and says so.
  */
 
 export const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
@@ -59,8 +77,13 @@ export const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
  * before it reached this browser. Nothing here validates it: this file writes a
  * query, and a second copy of the vendor's language table on the client is
  * exactly what putting the list on the engine's answer avoids.
+ *
+ * `keyterms` IS ALREADY BOUNDED AND ORDERED when it gets here — forty terms,
+ * under Deepgram's token budget, deduplicated, the person's own first. That is
+ * all the engine's work (`dictation/keyterms.ts`); this appends them and does
+ * not think about it, for `language`'s reason.
  */
-export function listenUrl(language: string, base: string = DEEPGRAM_LISTEN_URL): string {
+export function listenUrl(language: string, keyterms: readonly string[], base: string = DEEPGRAM_LISTEN_URL): string {
   const url = new URL(base);
   url.searchParams.set("model", "nova-3");
   url.searchParams.set("interim_results", "true");
@@ -68,7 +91,15 @@ export function listenUrl(language: string, base: string = DEEPGRAM_LISTEN_URL):
   url.searchParams.set("language", language);
   // The one that ends an utterance on a pause rather than on the socket
   // closing, so a final lands while the person is still talking.
+  //
+  // 300 AND NOT LOWER, on both this surface and the phone. It was worth
+  // checking while the query was being changed anyway: the headset saw
+  // monosyllables doubled at 100, and a pause budget that splits "yes" into
+  // "yes yes" is a worse bug than a final landing a fifth of a second late.
   url.searchParams.set("endpointing", "300");
+  // APPENDED, NOT SET: `keyterm` is a repeated parameter, and one per term is
+  // what Deepgram reads — see the header.
+  for (const term of keyterms) url.searchParams.append("keyterm", term);
   return url.toString();
 }
 

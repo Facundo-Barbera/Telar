@@ -271,7 +271,16 @@ export function useDictation(input: {
       // one round trip, and the engine knows both answers at the moment it
       // mints. A settings hook here would also be a race — the button would
       // open a socket with whatever the hook had loaded by then.
-      const live = new WebSocket(listenUrl(minted.language), listenProtocols(minted.token));
+      //
+      // AND SO DOES THE GLOSSARY (#581). The keyterms are built from this Mac's
+      // unsettled conversations, its projects and the terms somebody typed into
+      // Settings — none of which this tab can see — so they arrive with the
+      // credential rather than being worked out here.
+      // `?? []` BECAUSE THE ENGINE ON THIS MAC MAY PREDATE THE FIELD: it
+      // updates on its own schedule, and a mic button that stopped working
+      // rather than dictating without a glossary would be a worse outcome than
+      // the bug this closes.
+      const live = new WebSocket(listenUrl(minted.language, minted.keyterms ?? []), listenProtocols(minted.token));
       socket.current = live;
 
       /** The pill, and the dim, re-read from the one place that knows. Called
