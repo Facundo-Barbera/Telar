@@ -1113,6 +1113,31 @@ export class EngineClient {
     return this.request("GET", `/v2/agent/thread${suffix ? `?${suffix}` : ""}`);
   }
 
+  /**
+   * THE WAKE INBOX, forward from a cursor — issue #541, section A.
+   *
+   * `unreadOnly` IS THE SECTION ABOVE THE COMPOSER; without it this pages the
+   * whole inbox, which is what a "show everything" disclosure would ask for.
+   * Bounded by a count the engine clamps, with `more` when the page stopped
+   * early — the same contract `agentThread` has.
+   */
+  agentInbox(options: { after?: number; limit?: number; unreadOnly?: boolean } = {}): Promise<AgentInboxAnswer> {
+    const query = new URLSearchParams();
+    if (options.after !== undefined) query.set("after", String(options.after));
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    if (options.unreadOnly) query.set("unread", "1");
+    const suffix = query.toString();
+    return this.request("GET", `/v2/agent/inbox${suffix ? `?${suffix}` : ""}`);
+  }
+
+  /** Mark inbox rows read, by id. `read` is how many actually MOVED, so a second
+   *  press of the same button answers `0` rather than claiming a write that did
+   *  nothing. BY ID and never "everything", so a client holding a stale list
+   *  cannot clear rows that landed after it last looked. */
+  markAgentInboxRead(ids: readonly number[]): Promise<{ read: number; unread: number }> {
+    return this.request("POST", "/v2/agent/inbox/read", { ids: [...ids] });
+  }
+
   /** Answer the parked approval. BY ID, so a client holding a stale question
    *  cannot approve the one that replaced it; `resolved: false` means it had
    *  already been answered. */
