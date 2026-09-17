@@ -103,6 +103,18 @@ describe("the route table", () => {
     expect(goRouteOf("muse-spark-1.3-contributor")).toBe("responses");
   });
 
+  /**
+   * THE ONE ROW WHOSE ROUTE WAS ASKED RATHER THAN READ OR GUESSED.
+   *
+   * `omen-alpha` sat in `INFERRED_ROUTES` as `messages` and answers on
+   * chat/completions — see the note there. Pinned by id because the inference
+   * rule that produced the wrong answer is still in use for its neighbours, and
+   * a counter-example is worth more here than in a comment alone.
+   */
+  test("omen-alpha is chat, measured against the service", () => {
+    expect(goRouteOf("omen-alpha")).toBe("chat");
+  });
+
   test("an id nobody transcribed is `unknown`, not a guess at a shape", () => {
     expect(goRouteOf("some-model-go-added-this-morning")).toBe("unknown");
     expect(goRouteGaps(["kimi-k3", "some-model-go-added-this-morning"])).toEqual(["some-model-go-added-this-morning"]);

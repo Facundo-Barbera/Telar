@@ -165,15 +165,35 @@ const DOCUMENTED_ROUTES: Record<string, GoRoute> = {
  *
  *   kimi-k2.5, glm-5, deepseek-flash, mimo-v2-pro, mimo-v2-omni, hy3-preview
  *       → chat. Every documented GLM, Kimi, DeepSeek, MiMo and Hy is chat.
- *   qwen3.5-plus, omen-alpha
- *       → messages. Every documented Qwen is Anthropic-shaped, and #551 names
- *         omen-alpha with the `/messages` set.
+ *   qwen3.5-plus
+ *       → messages. Every documented Qwen is Anthropic-shaped.
  *   grok-4.5
  *       → responses. Grok 4.6 is, and they are one model a version apart.
+ *   omen-alpha
+ *       → chat, ASKED RATHER THAN INFERRED — see below.
  *
  * KEPT SEPARATE FROM THE TRANSCRIPTION ABOVE so a reader can tell what was read
  * off a published table from what was inferred from its neighbours. When the
  * docs grow a row for one of these, it moves up rather than being edited here.
+ *
+ * ── `omen-alpha` WAS INFERRED WRONG, AND #571's SMOKE CAUGHT IT ──────────────
+ * It sat here as `messages` on two arguments, and both were bad. #551 read it
+ * as belonging with the `/messages` set; #549 had found it rejecting a `name`
+ * field with an Anthropic-shaped error, which looked like confirmation. Asked
+ * directly on 2026-09-17, one request per endpoint:
+ *
+ *   POST /chat/completions  →  200, a completion
+ *   POST /messages          →  500 Internal server error
+ *
+ * So Go serves it on chat/completions and PROXIES it to an Anthropic-shaped
+ * upstream — which is exactly what #549's note in `model.ts` says, and is the
+ * whole reason the `name` strip lives in a fetch wrapper. An Anthropic-shaped
+ * upstream is not an Anthropic-shaped ENDPOINT, and the two were conflated.
+ *
+ * It is the one id in this table whose route is measured rather than read or
+ * guessed, which is why it is called out rather than quietly moved: the
+ * inference rule that produced the wrong answer is still in use for the two
+ * above it, and this is the counter-example a reader should have.
  */
 const INFERRED_ROUTES: Record<string, GoRoute> = {
   "kimi-k2.5": "chat",
@@ -183,7 +203,7 @@ const INFERRED_ROUTES: Record<string, GoRoute> = {
   "mimo-v2-omni": "chat",
   "hy3-preview": "chat",
   "qwen3.5-plus": "messages",
-  "omen-alpha": "messages",
+  "omen-alpha": "chat",
   "grok-4.5": "responses",
 };
 
