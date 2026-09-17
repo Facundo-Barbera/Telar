@@ -71,6 +71,10 @@ export type KeybindingRow = {
   group: CommandGroup;
   /** `Namespace: Command`, the reference's own row title. */
   title: string;
+  /** What the row needs SAYING rather than showing. Almost every binding is its
+   *  own explanation; the folded jump range is the one that is not, because what
+   *  "the Nth row" counts is a rule and not a label. */
+  hint?: string;
   chord: string;
   caps: string[];
   /** The far end of a FOLDED RANGE. `⌘1–⌘9` is one row rather than nine, so the
@@ -88,6 +92,18 @@ export type KeybindingRow = {
 function rowTitle(command: Command): string {
   return command.label.replace(/…$/, "");
 }
+
+/**
+ * WHAT THE FOLDED RANGE COUNTS — issue #569.
+ *
+ * The row draws `⌘1–⌘9` and a title, and neither can say the thing a reader
+ * actually has to know: the numbers follow the rail's own order, and the Agent's
+ * entry is part of that order when the Mac in front of you has one. Somebody
+ * whose ⌘1 stopped opening their first conversation has to be able to find out
+ * why on the page where the binding lives.
+ */
+const JUMP_HINT =
+  "The Nth entry in the rail, top to bottom as drawn — shelved rows and folded groups skipped. When the Agent is switched on it takes ⌘1 and conversations start at ⌘2.";
 
 /**
  * The registry, as rows.
@@ -131,6 +147,7 @@ export function keybindingRows(platform: KeyCapPlatform, keymap: Keymap, command
         commandIds: folded.map((jump) => jump.id),
         group: command.group,
         title: `Jump to conversation ${first.jump}–${last!.jump}`,
+        hint: JUMP_HINT,
         chord,
         caps: keyCaps(chord, platform),
         ...(lastChord ? { through: keyCaps(lastChord, platform) } : {}),
@@ -351,6 +368,7 @@ export function KeybindingsPage() {
                 id={`keybindings-${row.id}`}
                 label={row.title}
                 icon={KeyboardIcon}
+                {...(row.hint ? { hint: row.hint } : {})}
                 {...(row.changed ? { onRevert: () => revert(row) } : {})}
                 {...(rejected === row.id
                   ? { error: "The nine jumps share one set of modifiers — press a chord ending in a digit." }
