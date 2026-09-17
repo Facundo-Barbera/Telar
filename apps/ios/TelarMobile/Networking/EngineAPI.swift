@@ -98,6 +98,14 @@ protocol EngineAPI: Sendable {
     /// models the transcript should not have to implement four routes it will
     /// never be asked for.
     func agent() async throws -> AgentAnswer
+    /// A SHORT-LIVED TRANSCRIPTION TOKEN (#544). The phone holds no Deepgram
+    /// key; it asks the Mac for one dictation's worth of credential and opens
+    /// its own socket with it — the audio never passes through the cockpit.
+    ///
+    /// DECLARED HERE AND DEFAULTED BELOW, like `sidebarLayout`: a double that
+    /// models the transcript has no business minting credentials, and should
+    /// not have to implement one to compile.
+    func dictationToken() async throws -> DictationTokenAnswer
     /// The transcript forward from a cursor. Bounded by a count AND a byte
     /// budget, whichever is reached first — page until `more` is false.
     func agentThread(after: Int) async throws -> AgentThreadPage
@@ -240,6 +248,16 @@ extension EngineAPI {
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
     func agentModels() async throws -> AgentModelList { AgentModelList(models: [], message: nil) }
     func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
+
+    /// A DOUBLE CANNOT MINT A CREDENTIAL, and must not pretend to: every other
+    /// default here answers with a real, empty state, but there is no empty
+    /// token — one would be handed to a websocket and fail at the handshake
+    /// with nothing explaining why. So this refuses in the sentence a Mac with
+    /// no key would use, which is also what the button already knows how to
+    /// show.
+    func dictationToken() async throws -> DictationTokenAnswer {
+        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+    }
 
     /// A double that models no registry has nothing to remove, and says so by
     /// returning rather than throwing: a test standing in for one endpoint
@@ -738,6 +756,17 @@ struct HTTPEngineAPI: EngineAPI {
 
     func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer {
         try await send("PATCH", "api/agent", body: patch)
+    }
+
+    // ── DICTATION (#544) ─────────────────────────────────────────────────────
+
+    /// POST because it MINTS: every call spends a round trip against the
+    /// transcription service and produces a new credential, and a GET that did
+    /// that would be cached by something eventually. The refusals arrive as
+    /// themselves — 409 is "no key on that Mac", 502 is the service refusing —
+    /// so the button has a sentence rather than a status.
+    func dictationToken() async throws -> DictationTokenAnswer {
+        try await post("api/dictation/token", body: [:])
     }
 
     func deleteSession(_ id: EngineID) async throws {

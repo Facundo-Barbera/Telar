@@ -46,6 +46,8 @@ import type {
   AgentModelCatalogue,
   AgentState,
   AgentThreadAnswer,
+  DictationAnswer,
+  DictationTokenAnswer,
   SessionDefaults,
   SidebarLayout,
   TextGenPolicy,
@@ -546,6 +548,25 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  one that replaced it. `resolved: false` means it was already answered. */
     resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
       request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
+    /* -------------------------------------------------------------- *
+     * DICTATION — issue #544, first step.
+     *
+     * NO AUDIO GOES THROUGH THE ENGINE. The microphone is in this browser,
+     * so the engine holds the key and hands out a token that dies in
+     * minutes; the page opens its own socket to the provider with it. Both
+     * answers carry `provider` so a second vendor can follow without every
+     * surface being rebuilt to guess.
+     * -------------------------------------------------------------- */
+    /** Which provider transcribes, and whether this Mac has its key. NEVER the
+     *  key — `configured` is the whole of what may be said about it. */
+    dictation: () => request<DictationAnswer>(fetcher, "GET", "/api/dictation"),
+    /** Paste the key, or clear it with an empty string. WRITE-ONLY: it goes
+     *  down and never comes back. Absent leaves the stored one alone. */
+    setDictation: (patch: { apiKey?: string }) => request<DictationAnswer>(fetcher, "PATCH", "/api/dictation", patch),
+    /** Mint a token for one dictation. Fetch one per press of the button
+     *  rather than holding one: it expires in minutes, and `expiresAt` is an
+     *  instant so a caller compares it against its own clock. */
+    dictationToken: () => request<DictationTokenAnswer>(fetcher, "POST", "/api/dictation/token"),
     /** Where each project group sits in the rail — see `SidebarLayout`. One
      *  arrangement for every client of this engine. */
     sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),

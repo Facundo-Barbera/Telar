@@ -28,7 +28,11 @@ import Observation
     /// Loaded lazily when the Model pill first opens.
     private(set) var catalogue: ModelCatalogue?
 
-    private let api: any EngineAPI
+    /// READ BY `SessionComposerHost` (#544), which forwards it so the composer
+    /// can ask for a dictation token — the one call the box makes that is not
+    /// about this conversation. Everything else here still goes through a verb
+    /// on this store.
+    let api: any EngineAPI
     private let sessionId: EngineID
     private let hostId: HostID?
     /// HOST-SCOPED: two Macs can mint the same session id, and a pending

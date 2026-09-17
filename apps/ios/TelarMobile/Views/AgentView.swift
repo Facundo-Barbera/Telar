@@ -252,6 +252,12 @@ struct AgentView: View {
                 onSend: { text in await send(text) },
                 onStop: { await cancel() }
             ),
+            // THE ONE CALL THE BOX MAKES THAT IS NOT ABOUT A CONVERSATION
+            // (#544): a dictation token is machine-scoped, so the client is
+            // handed in rather than reached through `ComposerHost` — that
+            // protocol names what the box reads about THIS conversation, and a
+            // token is not one of those.
+            api: api,
             // THE THREE CONTROLS, BOUND TO `/v2/agent` — item 1's row of menus
             // above the composer, which on this phone is the composer's own
             // toolbar rather than a second row above it.

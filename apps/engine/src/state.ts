@@ -158,6 +158,7 @@ import {
 } from "./turn-summary";
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
+import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
 import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -2939,6 +2940,48 @@ export class EngineStore {
   carryOverAgentKey(): boolean {
     const legacy = this.readProviderSecrets()[secretKey("telar", "OPENCODE_API_KEY")];
     return carryOverLegacyKey(this.agentDir, legacy);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * THE DICTATION KEY — issue #544.
+   *
+   * Beside the Agent's rather than on it: same 0600 pattern, same
+   * write-only rule, different vendor and its own directory. See
+   * `dictation/credentials.ts` for why sharing one file would be wrong.
+   * ---------------------------------------------------------------- */
+
+  /** `<engineRoot>/dictation` — the key lives in it, and nothing else does
+   *  yet. */
+  private get dictationDir(): string {
+    return path.join(this.paths.root, "dictation");
+  }
+
+  /** WHETHER THERE IS A KEY, which is the whole of what a client may know. No
+   *  source ladder here: there is exactly one rung, so "configured" says it
+   *  all. */
+  dictationCredential(): { configured: boolean } {
+    return dictationCredential(this.dictationDir);
+  }
+
+  /** Store the pasted key, or clear it with an empty string. The one write, so
+   *  the 0600 file has exactly one author. */
+  setDictationKey(key: unknown): { configured: boolean } {
+    if (typeof key !== "string") throw new EngineStateError("invalid_request", "the dictation key must be text");
+    if (key.length > 4096) throw new EngineStateError("invalid_request", "that key is too long");
+    writeDictationKey(this.dictationDir, key);
+    return this.dictationCredential();
+  }
+
+  /**
+   * THE KEY ITSELF, FOR THE ONE CALLER THAT SPENDS IT.
+   *
+   * Read at call time and handed straight to `grantDictationToken`, which puts
+   * it in an `Authorization` header and nowhere else. It is never returned to a
+   * client, never logged and never cached — the route that calls this answers
+   * with the short-lived token Deepgram mints, not with this.
+   */
+  dictationKey(): string | undefined {
+    return readDictationKey(this.dictationDir);
   }
 
   /**

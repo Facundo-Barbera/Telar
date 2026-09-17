@@ -95,6 +95,7 @@ import { isAgentSelf } from "./agent/identity";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
 import { readAgentModels } from "./models";
+import { DictationError, grantDictationToken } from "./dictation/token";
 import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
@@ -141,6 +142,14 @@ export type EngineDaemonOptions = {
    * A test passes a scripted model; nothing in production passes anything.
    */
   agentModel?: AgentRuntimeOptions["model"];
+  /**
+   * HOW THE ENGINE REACHES DEEPGRAM'S GRANT ENDPOINT — injected for `gh`'s
+   * reason and `agentModel`'s (#544). A route test that mints a dictation token
+   * must never spend a real Deepgram account, and a developer with a key
+   * pasted into their own engine would otherwise have this suite doing exactly
+   * that. Nothing in production passes anything; the default is `fetch`.
+   */
+  dictationFetch?: typeof fetch;
   /** Worker liveness is deliberately short; a lost running turn is stopped
    *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
@@ -1728,6 +1737,65 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             /* already gone */
           }
         };
+        return;
+      }
+      /**
+       * ══ DICTATION — issue #544, first step ══
+       *
+       * TWO ROUTES, AND NEITHER OF THEM CARRIES AUDIO. The microphone is in the
+       * client on every surface Telar has, so the engine does the one thing only
+       * it can: it holds the long-lived Deepgram key, and mints a token that
+       * expires in minutes for a client to open its own socket with. Relaying
+       * frames through a Mac that has no reason to see them is the second step's
+       * problem, and may never be one — see `dictation/token.ts`.
+       *
+       * MACHINE-SCOPED, like the session defaults and the Agent beside it: the
+       * desktop shell, a browser tab and a paired phone read one engine, and a
+       * per-client key would be a key pasted once per device.
+       */
+      if (url.pathname === "/v2/dictation" && (request.method === "GET" || request.method === "PATCH")) {
+        /**
+         * THE KEY IS WRITE-ONLY AND THERE IS NO SETTINGS DOCUMENT FOR IT TO
+         * RIDE ON. Stored 0600 under `dictation/`, for `agentKeyFile`'s reason:
+         * anything handed to every client that opens the pane is one redaction
+         * away from being echoed back to a browser. There is no redacted round
+         * trip to preserve either — the only field is one a person retypes, and
+         * an empty string clears it.
+         */
+        if (request.method === "PATCH") {
+          const input = await body(request);
+          if ("apiKey" in input) store.setDictationKey(input.apiKey);
+        }
+        // `provider` RIDES THE ANSWER so a client knows which socket the token
+        // route's answer will be for without a second read, and so a later
+        // provider can arrive without a new route. `configured` is the whole of
+        // what may be said about the key.
+        writeJson(response, 200, { dictation: { provider: "deepgram", ...store.dictationCredential() } });
+        return;
+      }
+      /**
+       * A TOKEN, SPENT ONCE, WORTH LITTLE IF CAUGHT.
+       *
+       * POST rather than GET because it MINTS something: it is a call to
+       * Deepgram that costs a round trip and produces a new credential every
+       * time, and a GET that did that would be cached by something eventually.
+       *
+       * THE REFUSALS ARE TWO DIFFERENT FACTS. No key here is `conflict` and the
+       * message names the pane to fix it on; Deepgram refusing is
+       * `provider_unavailable` and the message carries Deepgram's own words,
+       * because "401" alone cannot tell a person whether the key is wrong or
+       * the account is out of credit. Both are sentences — a client's only move
+       * is to show one to a person.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/dictation/token") {
+        try {
+          writeJson(response, 200, await grantDictationToken({ key: store.dictationKey(), ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}) }));
+        } catch (error) {
+          if (error instanceof DictationError) {
+            throw new HttpError(error.kind === "unconfigured" ? 409 : 502, error.kind === "unconfigured" ? "conflict" : "provider_unavailable", error.message);
+          }
+          throw error;
+        }
         return;
       }
       /**

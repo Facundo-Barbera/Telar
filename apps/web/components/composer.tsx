@@ -68,6 +68,7 @@ import {
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { markComposerActive, registerComposer, type ComposerKind, type ComposerSubmit } from "@/lib/composer-registry";
 import { ComposerMenu } from "./composer-menu";
+import { DictationButton } from "./dictation-button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import {
@@ -1625,6 +1626,20 @@ export function Composer({
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
+              {/**
+               * THE MIC (#544), and mounting it HERE is what puts it on both
+               * composers at once: the Agent screen renders this same
+               * component with `kind="agent"`, so one button cannot drift into
+               * two. It inserts through `window.telar.dictate`, which is the
+               * same door the headset already speaks through (#548) — the
+               * registry is what decides which box that is, not this row.
+               *
+               * IN THE LEFT CLUSTER because that cluster is already "things
+               * that go into this message". The right one is send and turn
+               * status, where a recording indicator would compete with the
+               * send affordance at exactly the moment both matter.
+               */}
+              <DictationButton />
               {/**
                * THE STASH COUNT, and it is not rendered at all while the stash
                * is empty. A "0" is chrome advertising a feature you have not

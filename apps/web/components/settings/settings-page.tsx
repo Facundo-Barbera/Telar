@@ -60,6 +60,7 @@ const AppearanceSection = dynamic(() => import("./appearance-section").then((mod
 const InboxSection = dynamic(() => import("./inbox-section").then((mod) => mod.InboxSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
 const AgentSection = dynamic(() => import("./agent-section").then((mod) => mod.AgentSection));
+const DictationSection = dynamic(() => import("./dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("./mcp-section").then((mod) => mod.McpSection));
 const OrientationSection = dynamic(() => import("./orientation-section").then((mod) => mod.OrientationSection));
 const IntegrationsPage = dynamic(() => import("./integrations-page").then((mod) => mod.IntegrationsPage));
@@ -312,6 +313,10 @@ export function SettingsPage() {
               applies to exactly one — and it is experimental, so it should not
               be the first thing a reader meets on the pane they open most. */}
           <AgentSection />
+          {/* AFTER THE AGENT AND BEFORE TEXTGEN: like TextGen it is a service
+              this Mac spends a key on, and unlike the Agent it applies to every
+              message box rather than to one conversation. */}
+          <DictationSection />
           <TextGenSection />
           {/* Merged in from the retired Application pane. */}
           <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
