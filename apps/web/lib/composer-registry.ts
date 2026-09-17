@@ -1,0 +1,88 @@
+/**
+ * WHICH BOX IS BEING TYPED INTO, ANSWERED FOR SOMEBODY OUTSIDE THE PAGE (#548).
+ *
+ * The page API (`lib/page-api.ts`) is handed a string by a client that is not
+ * part of this app — the Quest cockpit, running the real web app in a WebView
+ * and holding a transcription — and has to put it where a person would have
+ * typed it. `document.activeElement` is not an answer: it is whatever the last
+ * click left focused, which on this screen is as likely to be a menu as the
+ * composer, and a dictation that lands in a dropdown is a dictation lost.
+ *
+ * So each `Composer` says it is here, and says when the caret entered it. THE
+ * ACTIVE ONE IS THE MOST RECENTLY FOCUSED, falling back to the only one mounted
+ * — which is the usual case, because a session screen and the Agent screen are
+ * different routes and only one of them is ever on screen.
+ *
+ * ══ WHY THIS IS NOT IN composer.tsx ══
+ * The registry has to be readable from `lib/page-api.ts`, which the app shell
+ * installs on EVERY route — settings, `/pair`, the not-found page. Importing it
+ * from `composer.tsx` would drag the composer, its completion engine and its
+ * menus into the one bundle every one of those routes loads, which is precisely
+ * the weight #492 took back out of the root layout. A registry with no React in
+ * it costs those routes a Map.
+ *
+ * NOTHING HERE READS THE DOM. Each entry is a set of closures the composer that
+ * owns them wrote, so the guards below are that composer's own — there is no
+ * second opinion here about whether a draft may be sent.
+ */
+
+export type ComposerKind = "session" | "agent";
+
+/** Why a composer would not do what it was asked. A sentence, because an
+ *  external client's only move is to show it to a person. */
+export type ComposerRefusal = { ok: false; reason: string };
+
+export type ComposerInsert = { ok: true; draft: string } | ComposerRefusal;
+export type ComposerSubmit = { ok: true } | ComposerRefusal;
+
+export type ComposerEntry = {
+  /** The editable root's DOM id — `turn-prompt` on a session, `agent-prompt` on
+   *  the Agent screen. Stable for external clients; see docs/page-api.md. */
+  id: string;
+  kind: ComposerKind;
+  /** What the box holds right now, exactly as it would be sent. */
+  draft: () => string;
+  /** Is the caret in it, as opposed to merely being the last box that had it? */
+  focused: () => boolean;
+  /** Splice text in at the caret and report the committed draft. */
+  insert: (text: string) => ComposerInsert;
+  /** Send, behind the same guard the Enter key passes. */
+  submit: () => ComposerSubmit;
+};
+
+/** Keyed by a token the component owns (React's `useId`), never by the DOM id:
+ *  two composers of the same kind mounted at once is a bug about ids, and it
+ *  must not also be one composer silently unregistering the other. */
+const mounted = new Map<string, ComposerEntry>();
+let active: string | undefined;
+
+/** Register on mount; the returned function is the unmount. */
+export function registerComposer(token: string, entry: ComposerEntry): () => void {
+  mounted.set(token, entry);
+  return () => {
+    mounted.delete(token);
+    if (active === token) active = undefined;
+  };
+}
+
+/** The caret entered this composer. Ignored for a composer that is not mounted,
+ *  so a stale token can never make the registry point at nothing. */
+export function markComposerActive(token: string): void {
+  if (mounted.has(token)) active = token;
+}
+
+/**
+ * The composer an outside caller means.
+ *
+ * MOST RECENTLY FOCUSED WINS, and it keeps winning after a blur: clicking a
+ * toolbar button does not hand the dictation to some other box. With nothing
+ * ever focused, the only mounted composer is the answer; with several and no
+ * focus, there is no answer — guessing between two message boxes is the one
+ * mistake this registry exists to avoid.
+ */
+export function activeComposer(): ComposerEntry | undefined {
+  const focused = active === undefined ? undefined : mounted.get(active);
+  if (focused) return focused;
+  if (mounted.size !== 1) return undefined;
+  return mounted.values().next().value;
+}

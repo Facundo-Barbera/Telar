@@ -198,6 +198,10 @@ export function AgentScreen() {
       <Composer
         draft={draft}
         ready
+        /* THE OTHER MESSAGE BOX, NAMED (#548). It puts `data-composer="agent"`
+           and `id="agent-prompt"` on the editable root, and it is what the page
+           API reports to an external client deciding where to speak. */
+        kind="agent"
         attachments={[]}
         onAttach={() => {}}
         /* THE AGENT'S OWN THREE PILLS (#539) — same look as the session
