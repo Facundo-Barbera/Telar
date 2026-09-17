@@ -1,5 +1,6 @@
 import { forgetRelayConfig, relayConfig } from "@/lib/mobile/relay";
 import { pushConfigured, readPushRecords } from "@/lib/mobile/push";
+import { pushPausedUntil } from "@/lib/mobile/worker";
 import { readRemote } from "@/lib/remote/store";
 
 /**
@@ -32,7 +33,14 @@ export function GET(request: Request) {
     if (new URL(request.url).searchParams.get("fresh") === "1") forgetRelayConfig();
     const paired = new Map(readRemote().devices.map((device) => [device.id, device]));
     const records = readPushRecords();
+    const ownHostId = relayConfig()?.id;
+    const pausedUntil = pushPausedUntil();
     return Response.json({
+      // WHEN THIS MAC MAY SEND AGAIN (#584). The relay answers 429 with a
+      // `Retry-After` once a host is past its daily budget, and the worker
+      // honours it; without this the pane would show a row of phones that are
+      // registered, reachable and simply not being sent to.
+      ...(pausedUntil === undefined ? {} : { pausedUntil }),
       // The worker's own gate. A Mac that answers `false` here sends nothing,
       // whatever else is true.
       configured: pushConfigured(),
@@ -57,7 +65,16 @@ export function GET(request: Request) {
         liveActivities: record.liveActivities === true,
         updatedAt: record.updatedAt,
         lastDeliveryAt: record.lastDeliveryAt,
-        failures: record.failures ?? 0,
+        // WHAT HAPPENED LAST, AND HOW BADLY IT IS GOING (#584). A status and
+        // Apple's own word for it — never a token, never a payload. A phone
+        // that is being rejected looked identical to a quiet one before this.
+        lastStatus: record.lastStatus,
+        lastReason: record.lastReason,
+        consecutiveFailures: record.failures ?? 0,
+        parked: record.parked === true,
+        // A record another Mac owns is shown as that, not as a broken one: it
+        // is being served, just not from here (#584).
+        mine: record.relayHostId === ownHostId,
       })),
     });
   } catch {

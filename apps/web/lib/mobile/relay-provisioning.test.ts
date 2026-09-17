@@ -186,6 +186,46 @@ describe("telling a registered phone from a reached one", () => {
   });
 });
 
+/**
+ * WHY A PHONE IS NOT RINGING — issue #584.
+ *
+ * Two of the owner's three records were dead, one with 627 consecutive
+ * failures, and the pane showed a count of "recent failures" and nothing about
+ * WHY. A status and Apple's own word for it is the difference between "this
+ * phone's token is gone" and "the relay had a bad minute" — and it is still
+ * only a status: no token, no payload, no provider body.
+ */
+describe("the status route says why a phone is not being reached", () => {
+  test("the last status, Apple's reason, the failure run and whether it is parked", async () => {
+    setup();
+    const device = addDevice("Facundo's iPhone", mintDeviceToken());
+    saveRegistration(device.id, registration);
+    writePushRecords([{ ...readPushRecords()[0]!, lastStatus: 400, lastReason: "BadDeviceToken", failures: 20, parked: true }]);
+
+    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as {
+      devices: Array<{ lastStatus?: number; lastReason?: string; consecutiveFailures: number; parked: boolean; mine: boolean }>;
+    };
+    expect(body.devices[0]).toMatchObject({ lastStatus: 400, lastReason: "BadDeviceToken", consecutiveFailures: 20, parked: true });
+    // No relay is readable in a test, so this Mac has no host id — and the
+    // record carries none either, which is the single-Mac install.
+    expect(body.devices[0]!.mine).toBe(true);
+  });
+
+  test("a record another Mac registered is reported as not this one's to send", async () => {
+    setup();
+    const device = addDevice("Phone", mintDeviceToken());
+    saveRegistration(device.id, registration, undefined, "mac-two");
+    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as { devices: Array<{ mine: boolean }> };
+    expect(body.devices[0]!.mine).toBe(false);
+  });
+
+  test("a quiet Mac reports no pause, and the pause is never a guess", async () => {
+    setup();
+    const body = (await (await relayGET(new Request("http://localhost/api/mobile/relay"))).json()) as { pausedUntil?: number };
+    expect(body.pausedUntil).toBeUndefined();
+  });
+});
+
 describe("what counts as a relay config", () => {
   const token = "a".repeat(64);
   test("an https origin with no path, and a 64-hex token", () => {
