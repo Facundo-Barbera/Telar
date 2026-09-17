@@ -21,7 +21,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { AgentState, ProviderModel } from "@telar/engine-client";
+import type { AgentModel, AgentModelCatalogue, AgentState } from "@telar/engine-client";
 import {
   AGENT_ACCESS_HELP,
   AGENT_ACCESS_LABEL,
@@ -32,24 +32,34 @@ import {
   AgentModelControl,
 } from "./agent-composer-controls";
 
-const model = (id: string): ProviderModel => ({ id, label: id, efforts: [] }) as unknown as ProviderModel;
-const models = [model("kimi-k3"), model("gpt-5.5")];
+/** A described row, shaped like the engine's — see `agent-model-picker.test.tsx`
+ *  for the list's own cases; these are about the PILL. */
+const model = (id: string, name: string): AgentModel =>
+  ({ id, name, label: name, family: "Kimi", route: "chat", supported: true, described: true, efforts: [], isDefault: false }) as unknown as AgentModel;
+const catalogue: AgentModelCatalogue = {
+  models: [model("kimi-k3", "Kimi K3"), model("gpt-5.5", "GPT-5.5")],
+  source: { go: 1, modelsDev: 1 },
+};
+const empty: AgentModelCatalogue = { models: [], source: { go: null, modelsDev: null } };
 const on: AgentState = { enabled: true, running: false, queued: 0 };
 
 describe("the model pill", () => {
   test("names the model, and the service's default when nobody picked one", () => {
-    expect(renderToStaticMarkup(<AgentModelControl model="kimi-k3" models={models} />)).toContain("kimi-k3");
+    // THE NAME, NOT THE ID (#551): "Kimi K3" is what the row said when it was
+    // picked; `kimi-k3` is still what goes on the wire.
+    expect(renderToStaticMarkup(<AgentModelControl model="kimi-k3" catalogue={catalogue} />)).toContain("Kimi K3");
     // Not blank, and not a guessed id: the pill names the QUESTION until the
     // question is answered.
-    const unset = renderToStaticMarkup(<AgentModelControl models={models} />);
+    const unset = renderToStaticMarkup(<AgentModelControl catalogue={catalogue} />);
     expect(unset).toContain("Model");
     expect(unset).toContain("the service default");
   });
 
-  test("a model the list does not carry is still what the pill says", () => {
-    // Set in Settings, or added upstream since. The pill must never read as
-    // running something it is not.
-    expect(renderToStaticMarkup(<AgentModelControl model="some-newer-model" models={models} />)).toContain("some-newer-model");
+  test("a model the catalogue does not carry is still what the pill says", () => {
+    // Set in Settings, or withdrawn upstream since. The pill must never read as
+    // running something it is not, and it has no name to fall back on — so the
+    // raw id is what it shows.
+    expect(renderToStaticMarkup(<AgentModelControl model="some-newer-model" catalogue={catalogue} />)).toContain("some-newer-model");
   });
 });
 
@@ -89,8 +99,8 @@ describe("the access pill", () => {
 
 describe("the row", () => {
   test("all three, with the composer's hairlines between them", () => {
-    const markup = renderToStaticMarkup(<AgentComposerControls state={{ ...on, model: "kimi-k3", effort: "medium", access: "auto" }} models={models} />);
-    expect(markup).toContain("kimi-k3");
+    const markup = renderToStaticMarkup(<AgentComposerControls state={{ ...on, model: "kimi-k3", effort: "medium", access: "auto" }} catalogue={catalogue} />);
+    expect(markup).toContain("Kimi K3");
     expect(markup).toContain("Medium");
     expect(markup).toContain("Auto");
     // Two dividers between three pills — the same borderless grammar the
@@ -99,7 +109,7 @@ describe("the row", () => {
   });
 
   test("an Agent nobody has configured still draws three pills", () => {
-    const markup = renderToStaticMarkup(<AgentComposerControls state={on} models={[]} />);
+    const markup = renderToStaticMarkup(<AgentComposerControls state={on} catalogue={empty} />);
     expect(markup).toContain("Model");
     expect(markup).toContain("Reasoning");
     expect(markup).toContain(AGENT_ACCESS_LABEL.ask);

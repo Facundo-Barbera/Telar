@@ -208,7 +208,7 @@ export function AgentScreen() {
            composer's, different sources, because the Agent has no provider
            catalogue, no per-model effort list and no session runtime mode. See
            `agent-composer-controls.tsx`. */
-        controls={<AgentComposerControls state={handle.state} models={catalogue.models} {...(catalogue.message ? { message: catalogue.message } : {})} onChange={configure} />}
+        controls={<AgentComposerControls state={handle.state} catalogue={catalogue} onChange={configure} />}
         busy={running}
         sending={handle.sending}
         backgroundTasks={0}
