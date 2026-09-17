@@ -243,6 +243,8 @@ test("a decline reaches the model as a sentence, and nothing lands", async () =>
   const lastPrompt = model.seen.at(-1)!;
   const toolMessage = lastPrompt.find((message) => message.getType() === "tool")!;
   expect(String(toolMessage.content)).toContain("declined");
+  // AND IT IS IDENTIFIED BY THE CALL ID ALONE (#549) — see the test below.
+  expect(toolMessage.name).toBeUndefined();
   // The turn ENDED, rather than failing.
   expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.status).toBe("completed");
   agent.close();
@@ -704,6 +706,51 @@ test("ask is the default, so an Agent nobody configured still parks", async () =
   expect(landed).toHaveLength(0);
   agent.cancel();
   await until(() => agent.state().runId === undefined, "the turn");
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * 10 — the shape of a tool result (#549).
+ * ------------------------------------------------------------------ */
+
+/**
+ * EVERY TOOL RESULT, ON EVERY PATH, IS THE CALL ID AND THE ANSWER.
+ *
+ * `ToolMessage` also takes a `name`, this runtime used to set it on all four of
+ * its paths, and `@langchain/openai` serialises it onto the wire — where the
+ * Anthropic-shaped models OpenCode Go proxies reject it outright (`400 …
+ * messages[7]: "name" is not supported by this endpoint`). `model.ts`'s wrapper
+ * strips the field as a backstop, which means the SOCKET can no longer tell
+ * whether this file stopped setting it; that is what this test is for, and why
+ * it reads the messages handed to the model rather than a request body.
+ *
+ * Three of the four paths are here in one turn — an effect that ran, a tool
+ * that does not exist, and a call the ledger already answered. The fourth, a
+ * decline, is asserted where declines are tested above.
+ */
+test("every tool result the runtime builds is identified by its call id and carries no name", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      { toolCalls: [{ id: "call_1", name: "sessions_send", args: { sessionId: "session_peer", intent: "task", input: "do the thing" }, type: "tool_call" }, { id: "call_2", name: "no_such_tool", args: {}, type: "tool_call" }] },
+      // The same send again: answered off the ledger rather than at the wall.
+      sendTask("call_3"),
+      { text: "done" },
+    ],
+    wall(landed),
+  );
+  agent.patch({ access: "auto" });
+  agent.submit({ text: "delegate it" });
+  await until(() => agent.state().runId === undefined, "the turn");
+
+  const results = model.seen.flat().filter((message) => message.getType() === "tool");
+  const ids = results.map((message) => (message as { tool_call_id?: string }).tool_call_id);
+  // Each lap re-sends the history, so the three results appear more than once;
+  // what matters is that the set is the three calls and that none of them
+  // carries a name.
+  expect(new Set(ids)).toEqual(new Set(["call_1", "call_2", "call_3"]));
+  expect(results.every((message) => message.name === undefined)).toBe(true);
+  expect(landed.filter((call) => call.name === "sessions_send")).toHaveLength(1);
   agent.close();
 });
 
