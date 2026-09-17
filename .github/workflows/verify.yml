@@ -19,6 +19,15 @@ on:
 permissions:
   contents: read
 
+# THE REPO IS PUBLIC AND THE RUNNER IS THE OWNER'S MAC (2026-09-17). A
+# `pull_request` from a fork checks out and executes the fork's code on that
+# Mac. GitHub's approval gate is set to every external contributor, but this
+# job also refuses at the job level: only pull requests from branches IN this
+# repository run. A fork PR gets no check rather than a run, and the owner
+# reviews and re-pushes to a `telar/*` branch if it is wanted.
+# `github.event.pull_request.head.repo.full_name` is the fork's name on a fork
+# PR and this repo's on a branch PR; a push to main has no pull_request at all.
+
 concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
@@ -27,6 +36,7 @@ jobs:
   verify:
     name: Typecheck, lint, and test everything that does not need a Mac
     runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Without this a hang would hold the one runner for GitHub's 6-hour
     # default, and every release behind it.
     timeout-minutes: 15
