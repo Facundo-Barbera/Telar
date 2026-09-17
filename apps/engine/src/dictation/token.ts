@@ -89,7 +89,7 @@ export class DictationError extends Error {
 }
 
 export const NO_KEY_CONFIGURED =
-  "No Deepgram key is configured on this Mac, so dictation cannot start. Paste one in Settings → General → Dictation.";
+  "No Deepgram key is configured on this Mac, so dictation cannot start. Paste one in Settings → Dictation.";
 
 /** WHAT A MAC WITH NO PROVIDER CHOSEN SAYS, and it is not an error report: off
  *  is the default and the ordinary state, so the sentence names the decision

@@ -124,6 +124,17 @@ struct HostSettingsView: View {
                                 title: "Devices",
                                 subtitle: "Who may reach this Mac"
                             ) { pushDevices = true }
+                            CardDivider()
+                            // UNDER THIS MAC, not under the phone's own
+                            // settings (#544): the key is spent there and the
+                            // provider is that machine's decision. The mic
+                            // button on the composer only exists because this
+                            // row says it may.
+                            CardNavRow(
+                                icon: "waveform",
+                                title: "Dictation",
+                                subtitle: "Speak into the message box"
+                            ) { pushDictation = true }
                         }
                     }
                 }
@@ -160,6 +171,11 @@ struct HostSettingsView: View {
                 DevicesView(api: api)
             }
         }
+        .navigationDestination(isPresented: $pushDictation) {
+            if let api = settings.api(for: hostId) {
+                DictationSettingsView(api: api)
+            }
+        }
         .onAppear { nameDraft = host?.name ?? "" }
         .onChange(of: nameDraft) {
             guard host != nil else { return }
@@ -178,4 +194,5 @@ struct HostSettingsView: View {
     @State private var pushConnect = false
     @State private var pushAgent = false
     @State private var pushDevices = false
+    @State private var pushDictation = false
 }

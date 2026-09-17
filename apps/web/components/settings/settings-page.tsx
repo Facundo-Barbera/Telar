@@ -24,7 +24,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { BlocksIcon, FolderKanbanIcon, GitPullRequestIcon, GlobeIcon, KeyboardIcon, MicIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { markNavigation } from "@/lib/perf-marks";
@@ -176,6 +176,20 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "source-control", label: "Source control", icon: GitPullRequestIcon, group: "Runtime" },
   { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME" (#544): dictation is a service the machine that runs turns
+   * spends a key on, like Providers and TextGen — not a decision about this
+   * window. A paired phone dictating through this Mac reads this pane's
+   * setting, which is exactly what makes it the machine's and not the
+   * cockpit's.
+   *
+   * ITS OWN PANE RATHER THAN A GROUP INSIDE GENERAL, which is where it landed
+   * first. It ships OFF, so the thing a reader is most often looking for is the
+   * switch that turns it on — and a switch stacked seventh inside the pane
+   * everybody opens for something else is a switch nobody finds. A name in the
+   * nav is the cheapest possible answer to "can Telar do dictation".
+   */
+  { id: "dictation", label: "Dictation", icon: MicIcon, group: "Runtime" },
   /**
    * ONE DESTINATION FOR EVERY PLUGIN, rather than a top-level item each. Two
    * shipped today and the list grows; a nav that grew with it would crowd out
@@ -345,10 +359,6 @@ export function SettingsPage() {
           <WorkspaceSection />
           <LinksSection />
           <InboxSection />
-          {/* AFTER THE AGENT AND BEFORE TEXTGEN: like TextGen it is a service
-              this Mac spends a key on, and unlike the Agent it applies to every
-              message box rather than to one conversation. */}
-          <DictationSection />
           <TextGenSection />
           {/* Merged in from the retired Application pane. */}
           <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
@@ -361,6 +371,11 @@ export function SettingsPage() {
           tab that held the Agent plus something adjacent would be General
           again, one size down. */}
       {active === "agent" && <AgentSection />}
+
+      {/* AND THE SAME FOR DICTATION (#544), which left General by the same
+          door and for a sharper reason: it ships OFF, so the row a reader
+          wants is the switch that turns it on. */}
+      {active === "dictation" && <DictationSection />}
 
       {active === "projects" && <ProjectsPage />}
 

@@ -137,36 +137,16 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
       /**
        * THE MAIN ASSISTANT'S GROUP STOOD HERE, and the Agent's took its place
        * (#531) — and the Agent's has since moved off General entirely, to a tab
-       * of its own under Runtime (#556). See the `agent` page below; what is
-       * pinned by `settings-registry.test.ts` is that the rows are declared on
-       * the pane that actually renders them, which is the drift this move would
+       * of its own under Runtime (#556). Dictation's group left by the same
+       * door and for a sharper reason (#544): it ships OFF, so the row a reader
+       * wants is the switch that turns it on, and a switch buried inside the
+       * pane everybody opens for something else is one nobody finds.
+       *
+       * Both are declared on the `agent` and `dictation` pages below. What
+       * `settings-registry.test.ts` pins is that a row is declared on the pane
+       * that actually renders it — which is the drift either move would
        * otherwise have introduced silently.
        */
-      {
-        /**
-         * DICTATION (#544). The keywords are what somebody types when they have
-         * SEEN the mic button and it did not work — "microphone", "mic",
-         * "voice" — and the vendor's name, which is what the error message
-         * beside the button actually says.
-         */
-        title: "Dictation",
-        rows: [
-          {
-            title: "Deepgram key",
-            hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
-            keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
-            icon: KeyRoundIcon,
-          },
-          {
-            /** Indexed because "why is nothing being typed" is the question
-             *  this row answers, and it has no other home. */
-            title: "How it works",
-            hint: "Press the mic on the composer to start and press again to stop. Words land in the box as they are confirmed; nothing sends on its own.",
-            keywords: ["dictation", "microphone", "mic", "push to talk", "toggle", "voice", "speech"],
-            icon: MicIcon,
-          },
-        ],
-      },
       {
         title: "Generated text",
         rows: [
@@ -656,6 +636,67 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
             keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
             icon: ServerIcon,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    /**
+     * DICTATION (#544) — its own pane now, not a group inside General.
+     *
+     * The keywords are what somebody types when they have SEEN the mic button
+     * and it did not work — "microphone", "mic", "voice" — and, since it ships
+     * off, what somebody types looking for a button that is not there. The
+     * vendor's name is in there because it is what the error beside the button
+     * actually says.
+     */
+    id: "dictation",
+    label: "Dictation",
+    icon: MicIcon,
+    groups: [
+      {
+        title: "Dictation",
+        rows: [
+          {
+            /** THE ROW THAT TURNS IT ON, and the only one that exists while it
+             *  is off — so it is the one somebody searching for a missing mic
+             *  button has to land on. */
+            title: "Provider",
+            hint: "Who transcribes, or nobody. Off by default: no mic button anywhere, and this Mac's own dictation keeps working in the message box.",
+            keywords: [
+              "dictation",
+              "dictate",
+              "microphone",
+              "mic",
+              "voice",
+              "speech",
+              "transcribe",
+              "transcription",
+              "provider",
+              "off",
+              "disable",
+              "turn off",
+              "turn on",
+              "enable",
+              "deepgram",
+              "wispr",
+            ],
+            icon: MicIcon,
+          },
+          {
+            title: "Deepgram key",
+            hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
+            keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
+            icon: KeyRoundIcon,
+          },
+          {
+            /** Indexed because "why is nothing being typed" is the question
+             *  this row answers, and it has no other home. */
+            title: "How it works",
+            hint: "Press the mic on the composer to start and press again to stop. Words appear in the box as they are heard and are rewritten until they settle; nothing sends on its own.",
+            keywords: ["dictation", "microphone", "mic", "push to talk", "toggle", "voice", "speech"],
+            icon: MicIcon,
           },
         ],
       },
