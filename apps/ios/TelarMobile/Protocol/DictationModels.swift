@@ -81,6 +81,26 @@ enum DictationLanguages {
     /// default and the answer for a Mac that has not said. Not sending a
     /// language at all is what made dictation English-only (#560).
     static let automatic = "multi"
+
+    /// What `multi` is called where there are four characters to say it in.
+    static let automaticBadge = "AUTO"
+
+    /// THE LANGUAGE, IN THE TWO OR THREE CHARACTERS A BADGE HAS ROOM FOR (#561).
+    ///
+    /// The indicator at the caret is the size of the caret, and the person
+    /// reading it is the person who chose the setting — what they want at a
+    /// glance is which of the two they are dictating under, not the full name
+    /// of a language they are in the middle of speaking. So it is the code,
+    /// upper-cased, which is what iOS puts in its own dictation badge.
+    ///
+    /// AND `multi` READS AS "AUTO": the code is the vendor's word and AUTO is
+    /// the setting's own ("Automatic" in the picker). "MULTI" would be a third
+    /// name for one thing, and the one a reader has never seen on a screen.
+    static func badge(_ code: String?) -> String {
+        let trimmed = (code ?? "").trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return automaticBadge }
+        return trimmed == automatic ? automaticBadge : trimmed.uppercased()
+    }
 }
 
 enum DictationProvider {

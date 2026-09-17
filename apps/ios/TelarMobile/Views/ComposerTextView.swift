@@ -30,6 +30,22 @@ struct ComposerTextView: UIViewRepresentable {
     /// How far the box grows before it starts scrolling. `nil` takes whatever
     /// height the layout proposes — the new-session sheet's whole page.
     var maxLines: Int?
+    /// WHILE THE MICROPHONE IS OPEN (#561), which tints the caret. The field's
+    /// `tintColor` is the caret, so this is one property rather than a drawing.
+    var listening = false
+    /// THE WORDS STILL BEING REVISED, as character offsets into `text` (#561).
+    /// Drawn dimmer so settled words are tellable from words still moving.
+    /// `nil` between utterances and whenever nobody is dictating.
+    var interim: Range<Int>?
+    /// WHERE THE CARET IS, IN THIS FIELD'S OWN COORDINATES (#561), reported up
+    /// so the composer can float a badge beside it.
+    ///
+    /// A BINDING RATHER THAN A RETURN, because the question is asked by a view
+    /// that cannot reach a `UITextView`: SwiftUI owns the overlay and UIKit
+    /// owns the geometry, and this is the seam. Written only when it MOVES —
+    /// an unchanged write here would re-render the composer on every layout
+    /// pass of a box that is laid out on every keystroke.
+    var caretRect: Binding<CGRect?>?
     let onPaste: ([NSItemProvider]) -> Void
 
     func makeUIView(context: Context) -> ComposerUITextView {
@@ -54,6 +70,7 @@ struct ComposerTextView: UIViewRepresentable {
     func updateUIView(_ view: ComposerUITextView, context: Context) {
         context.coordinator.text = $text
         context.coordinator.focused = $focused
+        context.coordinator.caretRect = caretRect
         view.onPaste = onPaste
         if view.text != text { view.text = text }
 
@@ -62,6 +79,14 @@ struct ComposerTextView: UIViewRepresentable {
             view.font = font
             view.placeholderLabel.font = font
         }
+
+        // THE DIM GOES ON AFTER THE TEXT, and only when there is a run to dim
+        // (#561). A field whose `attributedText` is rewritten on every keystroke
+        // loses the selection and the undo stack, so the plain `view.text` path
+        // above stays the one every ordinary edit takes — this touches the field
+        // only while a dictation is actually revising something.
+        view.tintColor = listening ? UIColor(Theme.accent) : nil
+        view.applyInterim(interim, font: font, color: UIColor(Theme.text))
         if view.placeholderLabel.text != placeholder {
             view.placeholderLabel.text = placeholder
             view.accessibilityLabel = placeholder
@@ -113,6 +138,8 @@ struct ComposerTextView: UIViewRepresentable {
         var text: Binding<String>
         var focused: Binding<Bool>
         var wantsFocus = false
+        /// Where to report the caret, when anybody is drawing beside it (#561).
+        var caretRect: Binding<CGRect?>?
 
         init(text: Binding<String>, focused: Binding<Bool>) {
             self.text = text
@@ -122,16 +149,40 @@ struct ComposerTextView: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !textView.text.isEmpty
+            report(textView)
         }
 
         // Only when it actually moved: an unchanged write still re-renders the
         // composer, and the composer's morph is animated on this very flag.
         func textViewDidBeginEditing(_ textView: UITextView) {
             if !focused.wrappedValue { focused.wrappedValue = true }
+            report(textView)
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
             if focused.wrappedValue { focused.wrappedValue = false }
+            // NO CARET, SO NOTHING TO DRAW BESIDE. The badge goes away with the
+            // keyboard rather than hanging over a field nobody is in.
+            if caretRect?.wrappedValue != nil { caretRect?.wrappedValue = nil }
+        }
+
+        /// The caret moved without the text changing — an arrow key on a
+        /// hardware keyboard, a tap, a selection drag.
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            report(textView)
+        }
+
+        /// WRITTEN ONLY WHEN IT MOVED — see `caretRect`. `caretRect(for:)` is
+        /// the field's own answer and already accounts for the text container's
+        /// insets and the scroll offset, so what comes out is where the caret is
+        /// drawn inside this view right now.
+        private func report(_ textView: UITextView) {
+            guard let caretRect else { return }
+            let next = textView.selectedTextRange.map { textView.caretRect(for: $0.end) }
+            // A caret rect can come back infinite while the field is between
+            // layouts; an overlay placed on one would fly off the screen.
+            let usable = next.flatMap { $0.isInfinite || $0.isNull ? nil : $0 }
+            if caretRect.wrappedValue != usable { caretRect.wrappedValue = usable }
         }
     }
 }
@@ -164,6 +215,53 @@ final class ComposerUITextView: UITextView {
             width: max(bounds.width - textContainerInset.left - textContainerInset.right, 0),
             height: font.lineHeight
         )
+    }
+
+    /// WHICH RUN IS CURRENTLY DRAWN DIM, so an unchanged frame does no work.
+    private var dimmed: Range<Int>?
+
+    /**
+     THE WORDS STILL BEING REVISED, DRAWN DIMMER (#561).
+
+     REWRITING `attributedText` MOVES THE SELECTION, so it is put back by hand
+     around the write. That is the whole reason this is guarded on `dimmed`
+     rather than applied every pass: interim frames arrive several times a
+     second, and a field that re-attributed itself on each one would fight the
+     caret the person is typing at.
+
+     `typingAttributes` IS RESET AFTERWARDS. Without it the dim is sticky — the
+     next character somebody types inherits the attributes at the insertion
+     point, and a person who starts typing at the end of a guess would find
+     their own words coming out grey.
+     */
+    func applyInterim(_ run: Range<Int>?, font: UIFont, color: UIColor) {
+        let clamped = run.flatMap { span -> Range<Int>? in
+            let count = (text as NSString).length
+            let lower = min(max(0, span.lowerBound), count)
+            let upper = min(max(lower, span.upperBound), count)
+            return lower < upper ? lower ..< upper : nil
+        }
+        guard clamped != dimmed else { return }
+        dimmed = clamped
+
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let selection = selectedRange
+        if let clamped {
+            let drawn = NSMutableAttributedString(string: text, attributes: base)
+            drawn.addAttribute(
+                .foregroundColor,
+                value: color.withAlphaComponent(0.45),
+                range: NSRange(location: clamped.lowerBound, length: clamped.count)
+            )
+            attributedText = drawn
+        } else {
+            // BACK TO PLAIN, rather than to an attributed string that happens to
+            // look plain: everything downstream of here reads `text`, and one
+            // representation is one fewer thing to be subtly wrong.
+            attributedText = NSAttributedString(string: text, attributes: base)
+        }
+        selectedRange = selection
+        typingAttributes = base
     }
 
     /// Whether the clipboard is carrying something for the strip, WITHOUT

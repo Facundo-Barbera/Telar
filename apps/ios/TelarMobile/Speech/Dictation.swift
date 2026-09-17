@@ -54,6 +54,11 @@ import Foundation
     /// Why it stopped, or would not start. A sentence: the only move a button
     /// has is to show it to a person.
     private(set) var error: String?
+    /// WHAT THIS DICTATION IS TRANSCRIBING (#560), for the badge at the caret
+    /// to say (#561). Set when the socket is opened rather than at the tap: it
+    /// is the Mac's answer on the token, and until that has arrived there is no
+    /// honest value for it. `nil` while nothing is listening.
+    private(set) var language: String?
 
     /// WHAT THE SERVICE JUST SAID, handed to whoever owns the draft. Settled or
     /// not — the composer's `DictationDraftWriter` is what knows the difference
@@ -168,6 +173,7 @@ import Foundation
         // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
         // second call to the settings route: this tap already costs one round
         // trip, and the Mac knows both answers at the moment it mints.
+        language = minted.listenLanguage
         var request = URLRequest(url: DeepgramListen.url(language: minted.listenLanguage))
         // THE HEADER, WHICH THE BROWSER CANNOT SEND. `Bearer` is the JWT's own
         // scheme; `Token` is for a long-lived API key and is refused for a
@@ -272,6 +278,7 @@ import Foundation
             task.cancel(with: .goingAway, reason: nil)
         }
         socket = nil
+        language = nil
         teardownAudio()
         // THE WORDS STAY IN THE BOX, the span does not — including a guess the
         // service never got to settle. They said it; they can edit it.

@@ -726,6 +726,14 @@ export function Composer({
           });
           return { ok: true, draft };
         },
+        /**
+         * PURELY A DRAWING (#561), which is why it has no readiness guard and
+         * no refusal to return: it changes how the draft LOOKS and never what
+         * it says. A box that is not ready cannot be written into, so a
+         * dictation never gets far enough to mark one.
+         */
+        dictating: (state) => editor.current?.dictating(state),
+        caretRect: () => editor.current?.caretRect(),
         submit: () => live.current.submit(),
       }),
     [token, editorId, kind],

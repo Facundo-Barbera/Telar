@@ -869,6 +869,14 @@ struct ComposerView: View {
     /// the box: a dictation that outlived this view would have nowhere to put
     /// its words, and the microphone would stay live under nothing.
     @State private var dictation: Dictation?
+    /// THE RUN STILL BEING REVISED (#561). This was deliberately NOT `@State`
+    /// while nothing drew it — a mutation per interim frame to no visible
+    /// effect. It is drawn now, so it has to be: the field dims exactly this
+    /// range, and a frame that moved it is a frame that must redraw.
+    @State private var interim: Range<Int>?
+    /// Where the caret is inside the field, for the badge to float beside
+    /// (#561). Written by the field only when it actually moves.
+    @State private var caretRect: CGRect?
     /// WHETHER THAT MAC DICTATES AT ALL (#544). Read once from
     /// `GET /api/dictation`; `off` is the default and there is no mic button
     /// until somebody chooses a provider over there. FALSE UNTIL THE MAC
@@ -878,6 +886,10 @@ struct ComposerView: View {
 
     private var isRunning: Bool { host.isRunning }
     private var queued: [JournalTurn] { host.queuedTurns }
+    /// THE MICROPHONE IS ACTUALLY OPEN — not merely starting (#561). A badge
+    /// that said "listening" through a permission prompt would be wrong for as
+    /// long as somebody took to read the dialog.
+    private var isListening: Bool { dictation?.phase == .listening }
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -935,8 +947,17 @@ struct ComposerView: View {
             let words = DictationDraftBox()
             live.onWords = { heard in
                 box.wrappedValue = words.write(heard, into: box.wrappedValue)
+                // AFTER THE WRITE, from the writer that just moved it — the one
+                // place that knows where the unconfirmed run now sits (#561).
+                interim = words.unconfirmed
             }
-            live.onEnd = { words.forget() }
+            live.onEnd = {
+                words.forget()
+                // THE DIM COMES OFF ON EVERY PATH OUT, which is what `onEnd`
+                // already is: a field left greying a run after the microphone
+                // has closed is the app lying about what it is doing.
+                interim = nil
+            }
             dictation = live
         }
         // ASKED ONCE PER MOUNT, not polled: a provider is a decision somebody
@@ -994,10 +1015,28 @@ struct ComposerView: View {
                     placeholder: host.placeholder,
                     focused: focus,
                     maxLines: focused ? 7 : 1,
+                    listening: isListening,
+                    interim: interim,
+                    caretRect: $caretRect,
                     onPaste: { intake($0) }
                 )
                 .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
                 .padding(.vertical, focused ? 8 : 0)
+                // THE BADGE FLOATS OVER THE FIELD, anchored top-leading and
+                // offset to the caret — see `DictationCaretPill`. On the
+                // OVERLAY rather than in the text: nothing about it is part of
+                // the draft that gets sent.
+                .overlay(alignment: .topLeading) {
+                    if isListening, let caretRect {
+                        DictationCaretPill(language: dictation?.language)
+                            .offset(
+                                x: DictationCaretPill.origin(for: caretRect).x,
+                                y: DictationCaretPill.origin(for: caretRect).y
+                            )
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.linear(duration: 0.12), value: isListening)
                 if !focused {
                     if !host.pendingAttachments.isEmpty {
                         Text("+\(host.pendingAttachments.count)")

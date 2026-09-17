@@ -255,6 +255,80 @@ import Testing
         #expect(try JSONDecoder().decode(DictationTokenAnswer.self, from: newer).listenLanguage == "fr")
     }
 
+    // MARK: the badge at the caret (#561)
+
+    /// THE BADGE IS THE SIZE OF THE CARET, so it says the code and not the
+    /// name — which is what iOS's own dictation badge does.
+    @Test func theBadgeSaysTheLanguageCodeUpperCased() {
+        #expect(DictationLanguages.badge("es") == "ES")
+        // A regional variant keeps its region: PT and PT-BR are different rows
+        // in the picker, and a badge that flattened them would say the wrong
+        // one.
+        #expect(DictationLanguages.badge("pt-BR") == "PT-BR")
+        #expect(DictationLanguages.badge("es-419") == "ES-419")
+    }
+
+    /// `multi` READS AS AUTO — the picker calls it "Automatic", and "MULTI"
+    /// would be a third name for one setting and the one a reader has never
+    /// seen on a screen.
+    @Test func automaticReadsAsAutoRatherThanAsTheVendorsWord() {
+        #expect(DictationLanguages.badge(DictationLanguages.automatic) == "AUTO")
+        #expect(DictationLanguages.badge(DictationLanguages.automatic) != "MULTI")
+        // A Mac on a build from before #560 sends no language at all. The badge
+        // says what will actually be transcribed rather than going blank.
+        #expect(DictationLanguages.badge(nil) == "AUTO")
+        #expect(DictationLanguages.badge("  ") == "AUTO")
+    }
+
+    /// ABOVE THE CARET AND A HAIR TO ITS LEFT — beside it is where the next
+    /// word is about to be written, so a badge there covers the thing it is
+    /// reporting on.
+    @Test func theBadgeSitsAboveTheCaretAndIsClampedIntoTheField() {
+        let caret = CGRect(x: 120, y: 90, width: 2, height: 20)
+        let origin = DictationCaretPill.origin(for: caret)
+        #expect(origin.y < caret.minY)
+        #expect(origin.x < caret.minX)
+
+        // A caret on the FIRST line has no room above it, and a badge placed at
+        // a negative offset would be drawn outside the field entirely.
+        let top = DictationCaretPill.origin(for: CGRect(x: 0, y: 0, width: 2, height: 20))
+        #expect(top.x >= 0)
+        #expect(top.y >= 0)
+    }
+
+    /// The writer's own span, which is what the field draws dimmer. Read from
+    /// the writer rather than tracked beside it: two answers to one question is
+    /// how a dim ends up over the wrong words.
+    @Test func theUnconfirmedRunIsWhatTheWriterSaysItIs() {
+        var writer = DictationDraftWriter()
+        #expect(writer.unconfirmed == nil)
+
+        let draft = writer.write(guess("fix the"), into: "")
+        #expect(draft == "fix the")
+        #expect(writer.unconfirmed == 0 ..< 7)
+
+        let revised = writer.write(guess("fix the failing"), into: draft)
+        #expect(writer.unconfirmed == 0 ..< 15)
+
+        // A FINAL LEAVES NOTHING TO DIM: the words are the person's now.
+        _ = writer.write(settled("fix the failing test"), into: revised)
+        #expect(writer.unconfirmed == nil)
+    }
+
+    /// Somebody typing mid-guess drops the span, and the dim has to go with it
+    /// — a greyed-out run over text the writer no longer owns would be marking
+    /// the person's own words as unconfirmed.
+    @Test func somebodyElseTypingClearsTheRunThatWouldBeDimmed() {
+        var writer = DictationDraftWriter()
+        let draft = writer.write(guess("recording"), into: "")
+        #expect(writer.unconfirmed != nil)
+
+        _ = writer.write(guess("recorded"), into: draft + " typed over it")
+        // The span reopened at the end of what the person left, and it covers
+        // the new guess only.
+        #expect(writer.unconfirmed != 0 ..< 9)
+    }
+
     /// The settings answer's two new fields, and the same tolerance: an older
     /// Mac sends neither, and the screen reads that as Automatic with nothing
     /// to pick from rather than failing to decode.

@@ -67,6 +67,28 @@ export type ComposerEntry = {
    * it. `lib/dictation/interim.ts` is how that is tracked.
    */
   replace: (start: number, end: number, text: string) => ComposerWrite;
+  /**
+   * WHAT A RUNNING DICTATION LOOKS LIKE IN THIS BOX (#561).
+   *
+   * `listening` tints the caret for as long as the microphone is open;
+   * `interim` is the run of the draft still being revised, drawn dimmer so a
+   * reader can tell settled words from words that are still moving.
+   *
+   * ON THE REGISTRY FOR `replace`'s REASON, and it is the same reason: this is
+   * a mark on the drawing of somebody's draft, and the only callers that may
+   * make one are this app's own. `window.telar.dictate` does not grow it —
+   * an external client that could grey out a run of the draft could grey out
+   * what the PERSON typed, and then leave it that way.
+   *
+   * IT DRAWS, IT DOES NOT WRITE. Nothing here changes the string `draft()`
+   * answers, which is what keeps the composer's one rule true: the chips and
+   * the dimming are a drawing of the draft, and `serialize` returns the same
+   * text with them or without them.
+   */
+  dictating: (state: { listening: boolean; interim?: { start: number; end: number } }) => void;
+  /** Where the caret is on the screen, for something drawn beside it — the mic
+   *  pill at the caret. `undefined` when the caret is not in this box. */
+  caretRect: () => DOMRect | undefined;
   /** Send, behind the same guard the Enter key passes. */
   submit: () => ComposerSubmit;
 };
