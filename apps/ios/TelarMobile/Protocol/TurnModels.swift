@@ -173,17 +173,69 @@ func describeProviderWake(_ reason: ProviderReason?) -> String {
     }
 }
 
-/// What a wake row says when the prompt itself has nothing to show. The
-/// engine's own `agentNotice` and the prompt's first line both come first;
-/// this is the floor, and it names the KIND rather than repeating the id.
-func describeWake(_ reason: WakeReason?) -> String {
-    switch reason?.kind {
-    case "turn_completed": "A turn finished in another session."
-    case "turn_failed": "A turn failed in another session."
-    case "turn_stopped": "A turn was stopped in another session."
-    case "request_opened": "Another session is waiting on an answer."
-    default: "Another session woke this one."
+/**
+ * WHAT HAPPENED, DECIDED ONCE — issue #572. The Mac's `notificationVerbs`, 1:1.
+ *
+ * A worker sent its coordinator a `result` and its turn ended a few seconds
+ * later. Those are two facts and #240 keeps them two on purpose — but both rows
+ * read "Session finished a turn", because the surface drawing the peer's message
+ * classified it as a wake. The classification is one function now; `WakeRow`,
+ * `NotificationRow` and `describeWake` all come here, so there is no second
+ * switch for a new intent to be forgotten in.
+ */
+func notificationVerb(kind: String, intent: String? = nil, wakeKind: String? = nil) -> String {
+    if kind == "peer_message" {
+        switch intent ?? "report" {
+        case "task": return "A session assigned work"
+        case "blocker": return "A session reported a blocker"
+        case "result": return "A session sent a result"
+        default: return "A session sent a message"
+        }
     }
+    // A PARKED REQUEST IS ITS OWN KIND, and the one a reader can act on. Keyed
+    // on either field, because a `request` notification and a `request_opened`
+    // wake are the same happening reaching two callers.
+    if kind == "request" || wakeKind == "request_opened" { return "Session asked a question" }
+    switch wakeKind {
+    case "turn_completed": return "Session finished a turn"
+    case "turn_failed": return "Session failed a turn"
+    case "turn_stopped": return "Session was stopped"
+    // A NEWER ENGINE'S VOCABULARY IS STILL A NOTIFICATION. Naming it vaguely is
+    // honest; drawing nothing would lose the fact entirely.
+    default: return "Session activity"
+    }
+}
+
+/// How much of a peer's message a row shows after the verb — the Mac's
+/// `NOTIFICATION_HEAD_CHARS`. Enough to tell two notices from one session apart
+/// at a glance, and not enough to be the message.
+let notificationHeadChars = 80
+
+/// The engine's own bracketed kind, stripped — the verb beside it already says
+/// which happening this is.
+func stripNotificationKind(_ line: String) -> String {
+    guard line.hasPrefix("["), let close = line.firstIndex(of: "]") else { return line }
+    return String(line[line.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+}
+
+/// The head of what was actually sent — first line, clamped, and MARKED where it
+/// was cut so a reader never has to guess whether the line finished.
+func notificationHead(_ text: String?, limit: Int = notificationHeadChars) -> String? {
+    let line = (text ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .first { !$0.isEmpty }
+    guard let line else { return nil }
+    let stripped = stripNotificationKind(line)
+    if stripped.isEmpty { return nil }
+    if stripped.count <= limit { return stripped }
+    return String(stripped.prefix(limit - 1)) + "…"
+}
+
+/// What a wake row says. AN ADAPTER, NOT A VOCABULARY (#572): a wake reaches a
+/// row as a `WakeReason` and a notification reaches it as a `NotificationDetail`,
+/// and they are the same happening in two shapes.
+func describeWake(_ reason: WakeReason?) -> String {
+    notificationVerb(kind: reason?.kind == "request_opened" ? "request" : "wake", wakeKind: reason?.kind)
 }
 
 /// THE DESKTOP'S `agentSenderLabel`, 1:1. A session id is long and meaningless
