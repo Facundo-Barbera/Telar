@@ -30,9 +30,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { GaugeIcon, ShieldCheckIcon, SparklesIcon } from "lucide-react";
+import { GaugeIcon, ShieldCheckIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import type { AgentModelCatalogue, AgentState } from "@telar/engine-client";
-import { AgentModelList } from "@/components/agent/agent-model-picker";
+import { AgentModelList, agentModelTrouble } from "@/components/agent/agent-model-picker";
 import { ChoiceRow, CompactRow, ControlDivider, ControlTrigger, MenuHeading } from "@/components/composer-controls";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createEngineApi } from "@/lib/engine/client";
@@ -90,6 +90,16 @@ export function AgentModelControl({
   const readOnly = !onChange;
   const row = catalogue.models.find((entry) => entry.id === model);
   const label = row?.name ?? model ?? "Model";
+  /**
+   * THE MODEL ABOUT TO RUN IS ONE THIS CLIENT CANNOT SPEAK TO (#551).
+   *
+   * Reachable without going through this picker at all: typed into Settings
+   * before the picker existed, set from the phone, or moved to another endpoint
+   * by Go since. The pill is the last thing a person looks at before pressing
+   * send, so it is where the warning belongs — the fix is one row away in the
+   * menu this pill opens, and the settings pane offers it as a single press.
+   */
+  const trouble = agentModelTrouble(catalogue, model);
   const pick = (next: string) => {
     onChange?.({ model: next });
     setOpen(false);
@@ -100,9 +110,13 @@ export function AgentModelControl({
         render={
           <ControlTrigger
             open={open}
-            icon={<SparklesIcon className="size-3.5" />}
+            // THE GLYPH CARRIES IT, not the colour alone: this pill sits in a
+            // row of three, and a person who cannot tell `--warning` from
+            // `--muted-foreground` would otherwise have no signal at all.
+            icon={trouble ? <TriangleAlertIcon className="size-3.5 text-warning" /> : <SparklesIcon className="size-3.5" />}
             label={label}
-            ariaLabel={`Model: ${label === "Model" ? "the service default" : label}`}
+            {...(trouble ? { title: trouble.obstacle } : {})}
+            ariaLabel={trouble ? `Model: ${label} — ${trouble.obstacle}` : `Model: ${label === "Model" ? "the service default" : label}`}
             className="min-w-0 max-w-56 justify-start"
           />
         }

@@ -63,10 +63,10 @@
  */
 
 import { useEffect, useState } from "react";
-import { ChevronDownIcon, KeyRoundIcon, RotateCcwIcon, SparklesIcon } from "lucide-react";
+import { ChevronDownIcon, KeyRoundIcon, RotateCcwIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import type { AgentModelCatalogue } from "@telar/engine-client";
 import { NO_AGENT_MODELS } from "@/components/agent/agent-composer-controls";
-import { AgentModelList } from "@/components/agent/agent-model-picker";
+import { AgentModelList, agentModelTrouble } from "@/components/agent/agent-model-picker";
 import { createEngineApi } from "@/lib/engine/client";
 import { DEFAULT_AGENT_MODEL, useAgentSettings } from "@/lib/agent/settings";
 import { Button } from "@/components/ui/button";
@@ -123,6 +123,9 @@ export function AgentSection() {
    *  marks the row; `DEFAULT_AGENT_MODEL` is the id it falls back to before the
    *  list has arrived. */
   const fallbackName = catalogue.models.find((row) => row.isDefault)?.name ?? DEFAULT_AGENT_MODEL;
+  /** Whether what will run is something Telar's Agent can actually speak to,
+   *  and what to offer instead. See `agentModelTrouble`. */
+  const trouble = agentModelTrouble(catalogue, model || undefined);
   const hasKey = credential?.set === true;
 
   async function saveKey(value: string): Promise<void> {
@@ -219,7 +222,31 @@ export function AgentSection() {
             />
           )
         }
-      />
+      >
+        {/**
+         * THE MODEL ABOUT TO RUN IS ONE THIS CLIENT CANNOT SPEAK TO (#551).
+         *
+         * The picker cannot have caused it — it greys those rows — so this is
+         * an id that arrived another way: typed into the field above before the
+         * picker existed, set from the phone, or moved to another endpoint by
+         * Go since. The composer pill warns too, but only this pane can offer
+         * the fix as ONE PRESS, which is the whole point: a person reading a
+         * warning they cannot act on will learn to scroll past it.
+         */}
+        {trouble && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-2">
+            <TriangleAlertIcon className="size-3.5 shrink-0 text-warning" />
+            <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+              <span className="text-foreground">{trouble.running.name}</span> {trouble.obstacle}
+            </p>
+            {trouble.switchTo && (
+              <Button size="sm" disabled={loading} onClick={() => void save({ model: trouble.switchTo!.id })}>
+                Switch to {trouble.switchTo.name}
+              </Button>
+            )}
+          </div>
+        )}
+      </Row>
       <Row
         label="OpenCode Go key"
         icon={KeyRoundIcon}

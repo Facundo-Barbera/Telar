@@ -77,6 +77,40 @@ export function agentRouteObstacle(route: GoRoute): string | undefined {
 }
 
 /**
+ * THE MODEL THAT WILL ACTUALLY RUN, and whether Telar can run it (#551).
+ *
+ * ── WHY THE SURFACES NEED THIS AND NOT JUST THE LIST ────────────────────────
+ * A stored model can be one this client cannot speak to, and the picker being
+ * careful is not enough to prevent it: the id may have been typed into Settings
+ * before the picker existed, or set from the phone, or Go may have moved it to
+ * `/messages` since. The picker greys what it LISTS; this answers the question
+ * the pill and the settings row have to ask about the model already chosen.
+ *
+ * AN ABSENT MODEL IS NOT AN ABSENT ANSWER. Storing nothing means the engine's
+ * own default runs, so the default is what gets checked — and if THAT ever
+ * became unsupported, the warning is exactly as urgent.
+ *
+ * A MODEL THE CATALOGUE DOES NOT CARRY IS NOT A PROBLEM, because nothing here
+ * knows its route. It might be brand new. Warning about it would be this
+ * cockpit asserting something it cannot know, which is how a picker teaches
+ * people to ignore its warnings.
+ */
+export function agentModelTrouble(
+  catalogue: AgentModelCatalogue,
+  model?: string,
+): { running: AgentModel; obstacle: string; switchTo?: AgentModel } | undefined {
+  const running = model ? catalogue.models.find((row) => row.id === model) : catalogue.models.find((row) => row.isDefault);
+  if (!running || running.supported) return undefined;
+  const obstacle = agentRouteObstacle(running.route);
+  if (!obstacle) return undefined;
+  /** The nearest thing that WOULD run: the marked default when it is usable,
+   *  otherwise the newest supported row — the catalogue already arrives in that
+   *  order, so `find` is the answer rather than a second sort. */
+  const switchTo = catalogue.models.find((row) => row.isDefault && row.supported) ?? catalogue.models.find((row) => row.supported);
+  return { running, obstacle, ...(switchTo ? { switchTo } : {}) };
+}
+
+/**
  * WHAT A SEARCH MATCHES: the display name, the raw wire id, and the family.
  *
  * ALL THREE, because the three are what a person might know. Somebody who read

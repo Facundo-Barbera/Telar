@@ -41,6 +41,14 @@ const catalogue: AgentModelCatalogue = {
   source: { go: 1, modelsDev: 1 },
 };
 const empty: AgentModelCatalogue = { models: [], source: { go: null, modelsDev: null } };
+/** One row on an endpoint the Agent's chat/completions client cannot use. */
+const unreachable: AgentModelCatalogue = {
+  models: [
+    { ...model("kimi-k3", "Kimi K3"), isDefault: true },
+    { ...model("qwen3.8-max", "Qwen3.8 Max"), family: "Qwen", route: "messages", supported: false },
+  ],
+  source: { go: 1, modelsDev: 1 },
+};
 const on: AgentState = { enabled: true, running: false, queued: 0 };
 
 describe("the model pill", () => {
@@ -60,6 +68,20 @@ describe("the model pill", () => {
     // running something it is not, and it has no name to fall back on — so the
     // raw id is what it shows.
     expect(renderToStaticMarkup(<AgentModelControl model="some-newer-model" catalogue={catalogue} />)).toContain("some-newer-model");
+  });
+
+  /**
+   * THE LAST THING A PERSON LOOKS AT BEFORE PRESSING SEND (#551). A stored
+   * model on an endpoint this client cannot speak to did not come through the
+   * picker — it greys those — so the pill is where it gets caught.
+   */
+  test("warns when the model about to run is one Telar cannot speak to", () => {
+    const warned = renderToStaticMarkup(<AgentModelControl model="qwen3.8-max" catalogue={unreachable} />);
+    expect(warned).toContain("Qwen3.8 Max");
+    expect(warned).toContain("Not supported by Telar");
+    // The name is still what it says — the warning is beside the model, never
+    // instead of it, or the pill stops answering "what am I on right now".
+    expect(renderToStaticMarkup(<AgentModelControl model="kimi-k3" catalogue={unreachable} />)).not.toContain("Not supported by Telar");
   });
 });
 

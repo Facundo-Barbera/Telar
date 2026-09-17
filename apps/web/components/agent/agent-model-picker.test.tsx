@@ -26,7 +26,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentModel, AgentModelCatalogue } from "@telar/engine-client";
-import { AgentModelList, AgentModelRows, agentRouteObstacle, groupAgentFamilies, matchesAgentQuery, ROUTE_LABEL } from "./agent-model-picker";
+import {
+  AgentModelList,
+  AgentModelRows,
+  agentModelTrouble,
+  agentRouteObstacle,
+  groupAgentFamilies,
+  matchesAgentQuery,
+  ROUTE_LABEL,
+} from "./agent-model-picker";
 
 /**
  * REGISTERED HERE AND RELEASED IN `afterAll` — the pairing every DOM test in
@@ -256,6 +264,51 @@ describe("the Default row", () => {
     act(() => button.click());
     // `""` is what the engine's patch reads as "clear the setting".
     expect(picked).toEqual([""]);
+  });
+});
+
+/**
+ * THE MODEL ALREADY CHOSEN, which the picker cannot have caused: an id typed
+ * into Settings before this picker existed, set from the phone, or moved to
+ * another endpoint by Go since.
+ */
+describe("a stored model this client cannot speak to", () => {
+  test("is flagged, with the reason and something to switch to", () => {
+    const trouble = agentModelTrouble(catalogue, "qwen3.8-max")!;
+    expect(trouble.running.id).toBe("qwen3.8-max");
+    expect(trouble.obstacle).toContain("Not supported by Telar's Agent yet");
+    // The marked default when it is usable — the nearest thing that WOULD run.
+    expect(trouble.switchTo?.id).toBe("kimi-k3");
+  });
+
+  test("a supported one is not flagged, and neither is one nobody described", () => {
+    expect(agentModelTrouble(catalogue, "kimi-k3")).toBeUndefined();
+    expect(agentModelTrouble(catalogue, "deepseek-flash")).toBeUndefined();
+    // A MODEL THE CATALOGUE DOES NOT CARRY IS NOT A PROBLEM: nothing here knows
+    // its route, and a cockpit warning about what it cannot know is a cockpit
+    // whose warnings get ignored.
+    expect(agentModelTrouble(catalogue, "some-model-added-this-morning")).toBeUndefined();
+    // Nor is an empty catalogue, which is a Go that did not answer.
+    expect(agentModelTrouble({ models: [], source: { go: null, modelsDev: null } }, "qwen3.8-max")).toBeUndefined();
+  });
+
+  /** Storing nothing means the ENGINE'S default runs, so that is what gets
+   *  checked — and if it ever became unreachable the warning is as urgent. */
+  test("an unset model checks the default rather than staying quiet", () => {
+    expect(agentModelTrouble(catalogue)).toBeUndefined();
+    const moved = MODELS.map((row) => (row.id === "kimi-k3" ? { ...row, route: "messages" as const, supported: false } : row));
+    const trouble = agentModelTrouble({ models: moved, source: { go: 1, modelsDev: 1 } })!;
+    expect(trouble.running.id).toBe("kimi-k3");
+    // The marked default is the broken one, so the offer is the newest row that
+    // does work — the catalogue already arrives newest-first.
+    expect(trouble.switchTo?.id).toBe("kimi-k2.7-code");
+  });
+
+  test("nothing supported at all offers no switch rather than a wrong one", () => {
+    const allBroken = MODELS.map((row) => ({ ...row, route: "responses" as const, supported: false }));
+    const trouble = agentModelTrouble({ models: allBroken, source: { go: 1, modelsDev: 1 } }, "kimi-k3")!;
+    expect(trouble.obstacle).toBeTruthy();
+    expect(trouble.switchTo).toBeUndefined();
   });
 });
 

@@ -242,6 +242,34 @@ describe("the model row", () => {
     expect(container.textContent).not.toContain("did not answer its model list");
   });
 
+  /**
+   * THE ONE-PRESS FIX (#551). The picker greys unsupported rows, so a stored
+   * one arrived another way — typed into this field before the picker existed,
+   * or set from the phone. The composer pill warns; only this pane can offer
+   * the remedy, and a warning nobody can act on is a warning people scroll
+   * past.
+   */
+  test("a stored model Telar cannot speak to is flagged, with a switch that writes the fix", async () => {
+    answer = { agent: state({ enabled: true, model: "qwen3.8-max" }), credential: { source: "setting", set: true } };
+    models = {
+      models: [model("kimi-k3", "Kimi K3", { isDefault: true }), model("qwen3.8-max", "Qwen3.8 Max", { family: "Qwen", route: "messages", supported: false })],
+      source: { go: 1_000, modelsDev: 1_000 },
+    };
+    await mount();
+    expect(container.textContent).toContain("Not supported by Telar");
+    await click(button("Switch to Kimi K3"));
+    // The id, not the name — the name is what a person reads and the id is what
+    // the engine stores.
+    expect(sent).toEqual([{ model: "kimi-k3" }]);
+  });
+
+  test("a supported model is flagged as nothing at all", async () => {
+    answer = { agent: state({ enabled: true, model: "kimi-k3" }), credential: { source: "setting", set: true } };
+    models = { models: [model("kimi-k3", "Kimi K3", { isDefault: true })], source: { go: 1_000, modelsDev: 1_000 } };
+    await mount();
+    expect(container.textContent).not.toContain("Not supported by Telar");
+  });
+
   test("a stored model is named by the catalogue, not by its wire id", async () => {
     // #551: `kimi-k3` is what goes on the wire; "Kimi K3" is what the row said
     // when it was picked, and the trigger has to agree with the row.
