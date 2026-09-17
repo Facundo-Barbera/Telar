@@ -60,12 +60,34 @@
  * SAVE-PER-INTERACTION, AND THE ENGINE'S ANSWER IS THE STATE — the two rules
  * every settings pane here follows. A refused write leaves the controls showing
  * what is stored and says why underneath.
+ *
+ * ── IT IS A PANE OF ITS OWN NOW, AND THE ORDER IS THE SETUP ORDER (#556) ────
+ * This was one group stacked between Links and Dictation on General, which is
+ * where a feature goes while nobody is sure it will stay. It has a tab under
+ * Runtime instead, and the rows are in the order somebody actually switches the
+ * Agent on in: the SWITCH, then the CREDENTIAL — because a model picker with no
+ * key behind it lists nothing, so asking for the key first is what makes the
+ * next row work — then the model, then the two defaults every turn runs with,
+ * then the one destructive control.
+ *
+ * THE EFFORT AND ACCESS ROWS ARE THE COMPOSER'S PILLS, AS SETTINGS. They write
+ * the same two fields on `agent.json` through the same route (#539); the pill
+ * is what you reach for mid-conversation and this is where the standing answer
+ * is set. Dropdowns rather than pills because this is a settings row, and an
+ * enumeration in a settings row is a dropdown.
  */
 
 import { useEffect, useState } from "react";
-import { ChevronDownIcon, KeyRoundIcon, RotateCcwIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronDownIcon, GaugeIcon, KeyRoundIcon, RotateCcwIcon, ShieldCheckIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import type { AgentModelCatalogue } from "@telar/engine-client";
-import { NO_AGENT_MODELS } from "@/components/agent/agent-composer-controls";
+import {
+  AGENT_ACCESS_HELP,
+  AGENT_ACCESS_LABEL,
+  AGENT_EFFORT_LABEL,
+  NO_AGENT_MODELS,
+  type AgentAccess,
+  type AgentEffort,
+} from "@/components/agent/agent-composer-controls";
 import { AgentModelList, agentModelTrouble } from "@/components/agent/agent-model-picker";
 import { createEngineApi } from "@/lib/engine/client";
 import { DEFAULT_AGENT_MODEL, useAgentSettings } from "@/lib/agent/settings";
@@ -73,9 +95,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 
 const KEY_VAR = "OPENCODE_API_KEY";
+
+/**
+ * THE EFFORT ROW'S ANSWERS. `""` IS A REAL OPTION AND IS THE FIRST ONE: an
+ * unset effort means `reasoning_effort` is not sent at all, which is the
+ * provider's own behaviour rather than a level — so it is named "Auto" here for
+ * the same reason the composer's menu names it that.
+ */
+const EFFORT_OPTIONS: { value: AgentEffort | ""; label: string }[] = [
+  { value: "", label: "Auto" },
+  ...(["low", "medium", "high"] as AgentEffort[]).map((level) => ({ value: level, label: AGENT_EFFORT_LABEL[level] })),
+];
+
+const ACCESS_OPTIONS: { value: AgentAccess; label: string }[] = (["ask", "auto"] as AgentAccess[]).map((option) => ({
+  value: option,
+  label: AGENT_ACCESS_LABEL[option],
+}));
 
 const SOURCE_LABEL: Record<"setting" | "environment" | "cli", string> = {
   setting: "Using the key saved here.",
@@ -162,6 +200,58 @@ export function AgentSection() {
           />
         }
       />
+      {/* THE CREDENTIAL BEFORE THE MODEL (#556). The picker below is built from
+          `GET /api/agent/models`, which answers an EMPTY list on a Mac with no
+          key — so a pane that asked for the model first offered a text field and
+          a sentence about why it could not do better. Key first, and the row
+          under it is a real picker by the time it is read. */}
+      <Row
+        label="OpenCode Go key"
+        icon={KeyRoundIcon}
+        // THE ROW'S OWN STATE, beside the label rather than in the field: the
+        // field shows whether a key is there by its placeholder, and this is
+        // the word a reader scanning the pane sees without reading the hint.
+        {...(hasKey ? { status: "set" } : {})}
+        hint={
+          credential === undefined
+            ? "This engine does not report where its key comes from."
+            : credential.source
+              ? SOURCE_LABEL[credential.source]
+              : `No key anywhere. Paste one here, or set ${KEY_VAR} in the engine's environment, or sign in with the OpenCode CLI.`
+        }
+        control={
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              className="h-8 w-56 font-mono text-xs"
+              aria-label="OpenCode Go key"
+              // NEVER THE STORED KEY — the engine hands back which rung
+              // answered and nothing else, by design.
+              placeholder={hasKey ? "A key is saved" : "sk-…"}
+              value={key}
+              disabled={loading}
+              onChange={(event) => {
+                setKeySaved(false);
+                setKey(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && key.trim()) void saveKey(key);
+              }}
+            />
+            {hasKey && !key.trim() ? (
+              <Button variant="ghost" size="sm" disabled={loading} onClick={() => void saveKey("")}>
+                Remove
+              </Button>
+            ) : (
+              <Button size="sm" disabled={loading || !key.trim()} onClick={() => void saveKey(key)}>
+                Save
+              </Button>
+            )}
+          </div>
+        }
+      >
+        {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. It is stored with this Mac’s engine state and never shown again.</p>}
+      </Row>
       <Row
         label="Model"
         hint={
@@ -247,53 +337,49 @@ export function AgentSection() {
           </div>
         )}
       </Row>
+      {/* THE TWO DEFAULTS EVERY TURN RUNS WITH (#556) — the composer's second
+          and third pills, as standing settings. The pill is the mid-conversation
+          override; this is the answer a fresh turn starts from, and both write
+          the same two fields through the same route. */}
       <Row
-        label="OpenCode Go key"
-        icon={KeyRoundIcon}
-        // THE ROW'S OWN STATE, beside the label rather than in the field: the
-        // field shows whether a key is there by its placeholder, and this is
-        // the word a reader scanning the pane sees without reading the hint.
-        {...(hasKey ? { status: "set" } : {})}
+        label="Reasoning effort"
+        icon={GaugeIcon}
         hint={
-          credential === undefined
-            ? "This engine does not report where its key comes from."
-            : credential.source
-              ? SOURCE_LABEL[credential.source]
-              : `No key anywhere. Paste one here, or set ${KEY_VAR} in the engine's environment, or sign in with the OpenCode CLI.`
+          agent.effort
+            ? "Sent as reasoning_effort on every turn. A model with no reasoning mode ignores it."
+            : "Auto — reasoning_effort is not sent at all, which is the model's own behaviour and what every turn did before this setting existed."
         }
         control={
-          <div className="flex items-center gap-2">
-            <Input
-              type="password"
-              className="h-8 w-56 font-mono text-xs"
-              aria-label="OpenCode Go key"
-              // NEVER THE STORED KEY — the engine hands back which rung
-              // answered and nothing else, by design.
-              placeholder={hasKey ? "A key is saved" : "sk-…"}
-              value={key}
-              disabled={loading}
-              onChange={(event) => {
-                setKeySaved(false);
-                setKey(event.target.value);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && key.trim()) void saveKey(key);
-              }}
-            />
-            {hasKey && !key.trim() ? (
-              <Button variant="ghost" size="sm" disabled={loading} onClick={() => void saveKey("")}>
-                Remove
-              </Button>
-            ) : (
-              <Button size="sm" disabled={loading || !key.trim()} onClick={() => void saveKey(key)}>
-                Save
-              </Button>
-            )}
-          </div>
+          <Dropdown
+            value={agent.effort ?? ""}
+            options={EFFORT_OPTIONS}
+            className="w-56"
+            label="Reasoning effort"
+            disabled={loading}
+            // `""` IS THE CLEAR, not a missing field: the engine reads an empty
+            // string as "stop sending the parameter", which is what Auto means.
+            onChange={(next) => void save({ effort: next })}
+          />
         }
-      >
-        {keySaved && <p className="mt-2 text-xs text-muted-foreground">Saved. It is stored with this Mac’s engine state and never shown again.</p>}
-      </Row>
+      />
+      <Row
+        label="Access"
+        icon={ShieldCheckIcon}
+        // THE SENTENCE IS THE CHOSEN MODE'S OWN, shared with the composer's menu
+        // so the two cannot explain one decision differently. The `auto` half is
+        // the one that matters: it does not widen what the Agent may do.
+        hint={AGENT_ACCESS_HELP[agent.access ?? "ask"]}
+        control={
+          <Dropdown
+            value={agent.access ?? "ask"}
+            options={ACCESS_OPTIONS}
+            className="w-56"
+            label="Access"
+            disabled={loading}
+            onChange={(next) => void save({ access: next })}
+          />
+        }
+      />
       <Row
         label="Reset conversation"
         icon={RotateCcwIcon}

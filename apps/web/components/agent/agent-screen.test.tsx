@@ -51,8 +51,9 @@ describe("which screen the Agent draws", () => {
 
 describe("whose settings to send somebody to", () => {
   test("this Mac's, and nowhere at all for another's", () => {
-    expect(agentSettingsHref()).toBe("/settings");
-    expect(agentSettingsHref(LOCAL_HOST_ID)).toBe("/settings");
+    // The Agent's own pane, not the General it used to be stacked on (#556).
+    expect(agentSettingsHref()).toBe("/settings?section=agent");
+    expect(agentSettingsHref(LOCAL_HOST_ID)).toBe("/settings?section=agent");
     // There is no `/hosts/<id>/settings` route. Composing one would be a 404
     // dressed as a fix — a remote Agent gets a sentence instead of a button.
     expect(agentSettingsHref("host_other")).toBeUndefined();
