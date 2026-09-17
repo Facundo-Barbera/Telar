@@ -267,3 +267,83 @@ test("recall searches the tool answers too, which is where the facts are", async
   expect(hits.some((hit) => hit.kind === "tool_call")).toBe(true);
   agent.close();
 });
+
+/* ------------------------------------------------------------------ *
+ * Reset keeps the preferences; disable keeps everything.
+ * ------------------------------------------------------------------ */
+
+test("reset writes the preferences out BEFORE it clears anything, and clears the rest", async () => {
+  const engineRoot = root();
+  const order: string[] = [];
+  const kept: string[] = [];
+  const model = new ScriptedChatModel([{ text: "noted." }]);
+  const agent = new AgentRuntime({
+    engineRoot,
+    tools: () => [],
+    model: () => model,
+    keepPreferences: (preferences) => {
+      // The document is still on disk at this moment — that is the ordering the
+      // reset depends on.
+      order.push(readStanding(agentPaths(engineRoot)).sections.doing ? "document still here" : "document gone");
+      kept.push(preferences);
+    },
+  });
+  agent.patch({ enabled: true });
+  const paths = agentPaths(engineRoot);
+  rememberSection(paths, "doing", "coordinating #541");
+  rememberSection(paths, "who", "session_a is on part F");
+  rememberSection(paths, "preferences", "Small PRs. Ask before opening one.");
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().running === false, "the turn");
+
+  agent.patch({ reset: true });
+  expect(kept).toEqual(["Small PRs. Ask before opening one."]);
+  expect(order).toEqual(["document still here"]);
+  // Everything else is gone: the standing state, and the conversation with it.
+  expect(readStanding(paths)).toEqual({ sections: {} });
+  expect(agent.thread().rows).toEqual([]);
+  agent.close();
+});
+
+test("reset with nothing remembered writes no note at all", () => {
+  const engineRoot = root();
+  const kept: string[] = [];
+  const agent = new AgentRuntime({ engineRoot, tools: () => [], model: () => new ScriptedChatModel([]), keepPreferences: (text) => kept.push(text) });
+  agent.patch({ enabled: true });
+  rememberSection(agentPaths(engineRoot), "doing", "coordinating #541");
+  agent.patch({ reset: true });
+  expect(kept).toEqual([]);
+  agent.close();
+});
+
+test("a notebook that refuses the note does not stop the reset", () => {
+  const engineRoot = root();
+  const agent = new AgentRuntime({
+    engineRoot,
+    tools: () => [],
+    model: () => new ScriptedChatModel([]),
+    keepPreferences: () => {
+      throw new Error("the notebook is unwritable");
+    },
+  });
+  agent.patch({ enabled: true });
+  rememberSection(agentPaths(engineRoot), "preferences", "Small PRs.");
+  expect(() => agent.patch({ reset: true })).not.toThrow();
+  expect(readStanding(agentPaths(engineRoot))).toEqual({ sections: {} });
+  agent.close();
+});
+
+test("disable keeps everything — the standing state included", async () => {
+  const engineRoot = root();
+  const { agent } = agentOver(engineRoot, [{ text: "noted." }]);
+  const paths = agentPaths(engineRoot);
+  rememberSection(paths, "doing", "coordinating #541");
+  agent.submit({ text: "hello" });
+  await until(() => agent.state().running === false, "the turn");
+
+  agent.patch({ enabled: false });
+  expect(readStanding(paths).sections.doing).toBe("coordinating #541");
+  agent.patch({ enabled: true });
+  expect(readStanding(paths).sections.doing).toBe("coordinating #541");
+  agent.close();
+});

@@ -86,7 +86,7 @@ import { compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
-import { readStanding, rememberSection, renderStanding } from "./memory";
+import { clearStanding, preferencesOf, readStanding, rememberSection, renderStanding } from "./memory";
 import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
 import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
@@ -230,6 +230,20 @@ export type AgentRuntimeOptions = {
   orientation?: () => string | undefined;
   maxLaps?: number;
   budgetChars?: number;
+  /**
+   * WHERE THE PREFERENCES GO WHEN A RESET TAKES EVERYTHING ELSE — #541's owner
+   * decision 3.
+   *
+   * INJECTED, because a notebook is the ENGINE's and this object owns only the
+   * Agent's own directory. The daemon wires it to the Agent's own notebook file
+   * (`notes/agent.json`, under the reserved id the sessions wall already knows);
+   * a test wires it to a function and asserts the order.
+   *
+   * ABSENT IS LEGITIMATE. A runtime built without one resets exactly as it did
+   * before — the preferences go with everything else — rather than refusing to
+   * reset because nothing was listening.
+   */
+  keepPreferences?: (preferences: string) => void;
 };
 
 type QueuedTurn = {
@@ -465,6 +479,36 @@ export class AgentRuntime {
    * is what that hook is for.
    */
   patch(patch: { enabled?: unknown; model?: unknown; effort?: unknown; access?: unknown; reset?: unknown }): AgentStateAnswer {
+    /**
+     * THE PREFERENCES ARE KEPT BEFORE ANYTHING IS DESTROYED — #541's owner
+     * decision 3, and the ORDER is the decision.
+     *
+     * Three of the four standing sections describe work in flight and are
+     * exactly what a person resetting has asked to be rid of. The fourth is not
+     * about the work at all: it is what they taught the Agent about themselves,
+     * over many conversations, and making them teach it again is the reset
+     * costing them something they did not ask to lose.
+     *
+     * So it is written out FIRST, into the Agent's own notebook, and only then
+     * is the document deleted and the thread archived. A reset that failed
+     * halfway would leave the note written and the conversation intact, which is
+     * the harmless half of the two.
+     *
+     * DISABLE KEEPS EVERYTHING and takes none of this path: switching the Agent
+     * off is a switch on an entry in the rail, which is `store.ts`'s rule for
+     * the thread and is the same rule for what the thread learned.
+     */
+    if (patch.reset === true) {
+      const preferences = preferencesOf(readStanding(this.paths));
+      if (preferences) {
+        try {
+          this.options.keepPreferences?.(preferences);
+        } catch {
+          // A notebook that will not take the note must not block the reset the
+          // person asked for. They said start again; this is the courtesy.
+        }
+      }
+    }
     const result = patchAgentSettings(this.paths, patch, { now: this.now, beforeArchive: () => this.close() });
     if (patch.reset === true) {
       // The conversation is gone; anything waiting to be said to it is too —
@@ -474,6 +518,10 @@ export class AgentRuntime {
       this.pending = undefined;
       this.answer = undefined;
       this.lastUsage = undefined;
+      // AND WHAT IT WAS HOLDING. The standing state describes the conversation
+      // that has just been retired; carrying it into the new one would be the
+      // Agent starting again with somebody else's notes.
+      clearStanding(this.paths);
     }
     if (result.settings.enabled === false) this.queue = [];
     return this.state();

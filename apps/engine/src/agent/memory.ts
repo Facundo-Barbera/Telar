@@ -171,3 +171,14 @@ export function renderStanding(state: StandingState): string | undefined {
 export function preferencesOf(state: StandingState): string | undefined {
   return state.sections.preferences;
 }
+
+/**
+ * THE ONE NOTE A RESET LEAVES BEHIND — #541's owner decision 3.
+ *
+ * A TITLE RATHER THAN AN ID, because the note is rewritten on every reset
+ * rather than accumulated: a person who has started over four times wants the
+ * preferences they taught the Agent, not four copies of them with dates. The
+ * title is what the rewrite finds it by, so it is named here and used in one
+ * other place.
+ */
+export const PREFERENCES_NOTE_TITLE = "What the Agent knows about how you work";
