@@ -14,12 +14,18 @@ import SwiftUI
 /// picker in this platform's own furniture — `List` with `Section`s and
 /// `.searchable`, rather than a popover with a text field.
 ///
-/// ── UNSUPPORTED ROWS ARE SHOWN AND UNPICKABLE ───────────────────────────────
-/// Telar's Agent speaks `chat/completions` and only that; Go also serves an
-/// Anthropic-shaped `/messages` and OpenAI's `/responses`. Hiding those rows
-/// would answer the "Go is withholding models" suspicion by actually
-/// withholding them. Disabled, dimmed, with the reason beneath, says the true
-/// thing: the model exists, Telar cannot reach it yet.
+/// ── A ROW THE ENGINE WILL NOT RUN IS SHOWN AND UNPICKABLE ───────────────────
+/// Hiding such a row would answer the "Go is withholding models" suspicion by
+/// actually withholding them. Disabled, dimmed, with the reason beneath, says
+/// the true thing: the model exists, Telar cannot reach it.
+///
+/// SINCE #571 THERE ARE NONE. The Agent builds a client per endpoint —
+/// Anthropic-shaped `/messages` and OpenAI's `/responses` alongside
+/// `chat/completions` — and a live smoke over every id Go serves proved each
+/// before the engine marked them runnable. The dimming stays because
+/// `model.supported` is the ENGINE'S answer travelling on the wire, not a fact
+/// this app decides: the day it says no again, this screen greys the row
+/// without shipping a new build.
 struct AgentModelPickerSheet: View {
     let catalogue: AgentModelList
     /// The stored id, or nil for "whatever the engine defaults to".
@@ -161,8 +167,13 @@ struct AgentModelPickerSheet: View {
                         Image(systemName: "checkmark").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.accent)
                     }
                 }
-                if let obstacle = agentRouteObstacle(model.route) {
-                    Text(obstacle).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                // THE ENGINE'S ANSWER FIRST, then words for it — the desktop's
+                // ordering, so a runnable row can never carry an explanation
+                // baked into this binary.
+                if !model.supported {
+                    Text(agentRouteObstacle(model.route) ?? agentRouteUnsupported)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textMuted)
                 }
             }
             .contentShape(Rectangle())
@@ -191,19 +202,27 @@ struct AgentModelPickerSheet: View {
     }
 }
 
-/// WHY A ROUTE CANNOT BE RUN, in the words the person reads — the desktop's
+/// WHAT TO SAY ABOUT A ROW THE ENGINE WILL NOT RUN — the desktop's
 /// `agentRouteObstacle`, kept word for word so the two screens do not explain
-/// the same refusal differently. `nil` for the two that can run.
+/// the same refusal differently.
+///
+/// `nil` MEANS "no route-specific wording", NOT "the row is fine". The engine's
+/// `supported` is the authority and every caller checks it first; this only
+/// finds words, and callers fall back to `agentRouteUnsupported` rather than to
+/// silence. Getting that backwards is how a greyed row with no explanation
+/// reaches somebody.
+///
+/// There is no route-specific wording today: #571 gave the Agent a client per
+/// endpoint, so no route is left to apologise for. The seam stays for a fourth.
 func agentRouteObstacle(_ route: String) -> String? {
-    switch route {
-    case "messages":
-        return "Not supported by Telar's Agent yet — Go serves this one in Anthropic's shape, which the Agent's chat/completions request cannot use."
-    case "responses":
-        return "Not supported by Telar's Agent yet — Go serves this one on the Responses API, which the Agent cannot send."
-    default:
-        return nil
-    }
+    _ = route
+    return nil
 }
+
+/// What a row the engine refuses says when its route has no wording of its own.
+/// About TELAR rather than about the model — "we cannot" is the true half, and
+/// "it is broken" would be a claim about somebody else's service.
+let agentRouteUnsupported = "Not supported by Telar's Agent in this build."
 
 /// THE MODEL THAT WILL ACTUALLY RUN, and whether Telar can run it.
 ///
@@ -217,5 +236,8 @@ func agentRouteObstacle(_ route: String) -> String? {
 func agentModelObstacle(_ catalogue: AgentModelList, _ model: String?) -> String? {
     let running = model.map { id in catalogue.models.first { $0.id == id } } ?? catalogue.models.first(where: \.isDefault)
     guard let running, !running.supported else { return nil }
-    return agentRouteObstacle(running.route)
+    // THE ENGINE ALREADY SAID NO. A route with no wording of its own must not
+    // turn that into silence — the pill would then show nothing at all about a
+    // model that is about to fail the next turn.
+    return agentRouteObstacle(running.route) ?? agentRouteUnsupported
 }
