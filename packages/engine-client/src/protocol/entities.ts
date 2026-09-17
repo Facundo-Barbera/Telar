@@ -1644,12 +1644,116 @@ export const Subscription = z.object({
   events: z.array(WakeKind).min(1),
   /** Removed after it fires once. */
   once: z.boolean().optional(),
+  /**
+   * WHETHER A WAKE MAY INTERRUPT A SUBSCRIBER THAT IS WORKING.
+   *
+   * `settled_only` — the DEFAULT, and the default because interrupting is the
+   * expensive choice. A wake arriving while the subscriber has a live turn is
+   * HELD in that session's notification mailbox and delivered when it next
+   * settles, merged with everything else that arrived meanwhile. A coordinator
+   * with four workers used to take four mid-turn interruptions in the middle of
+   * its own reasoning; it now takes one notification when it comes up for air.
+   *
+   * `always` — steer it in the moment it lands, which is what every wake did
+   * before this existed. For a subscriber whose whole job is to react.
+   *
+   * ABSENT MEANS `settled_only`, so every subscription written before this
+   * field gets the quieter behaviour. The loud one has to be asked for.
+   */
+  completionWake: z.enum(["settled_only", "always"]).optional(),
   createdAt: Timestamp,
 });
 export type Subscription = z.infer<typeof Subscription>;
 
 export const AgentMessageIntent = z.enum(["task", "report", "result", "blocker"]);
 export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
+
+/**
+ * WHAT A NOTIFICATION IS ABOUT — issue #550.
+ *
+ * Three happenings reach a session without anybody typing at it: a peer sent
+ * it a message, a session it subscribed to did something, or one of them parked
+ * a request. All three used to arrive as a TURN whose `input` was engine-authored
+ * prose on the channel that is otherwise the person's — so the transcript drew
+ * the engine's words in the user's bubble and the model read an announcement as
+ * an instruction. `attribution.ts`'s "carries no human authorization" paragraph
+ * exists to counteract exactly that, in prose, every time.
+ *
+ * The fix is structural rather than textual: the happening becomes an ITEM with
+ * an honest role, the drivers deliver it on a channel that is not the user's,
+ * and the clients draw it as a notification row.
+ */
+export const NotificationKind = z.enum(["wake", "peer_message", "request"]);
+export type NotificationKind = z.infer<typeof NotificationKind>;
+
+/**
+ * ONE HAPPENING INSIDE A NOTIFICATION — the unit the cohort merge folds.
+ *
+ * A notification is usually one of these. It is more than one when several
+ * wakes were held for a session that was busy: they arrive as ONE item listing
+ * them rather than as four interruptions, which is the whole point of holding
+ * them. See `NotificationDetail.entries`.
+ */
+export const NotificationEntry = z.object({
+  kind: NotificationKind,
+  /** The session this is ABOUT — the peer that sent, or the session that acted.
+   *  Absent when the sender is an agent outside any session. */
+  sessionId: Id.optional(),
+  /** That session's run: the one holding a peer's body, or the one that ended. */
+  runId: Id.optional(),
+  requestId: Id.optional(),
+  /** For a wake: which of the four transitions. */
+  wakeKind: WakeKind.optional(),
+  /** For a peer message: what the sender said it was. */
+  intent: AgentMessageIntent.optional(),
+  /** One line. What a collapsed row and an outline page show. */
+  summary: z.string().max(1_000),
+});
+export type NotificationEntry = z.infer<typeof NotificationEntry>;
+
+export const NotificationDetail = z.object({
+  kind: NotificationKind,
+  sessionId: Id.optional(),
+  runId: Id.optional(),
+  requestId: Id.optional(),
+  wakeKind: WakeKind.optional(),
+  intent: AgentMessageIntent.optional(),
+  /** One line, the row's label and the outline's `input`. */
+  summary: z.string().max(1_000),
+  /**
+   * THE CALL THAT FETCHES WHAT THIS ANNOUNCES — named rather than implied,
+   * because a recipient told only that "more exists" tends to act on the teaser.
+   * For a peer message it is the RECIPIENT's own session and the receiving run,
+   * which is where the body is stored; for a wake or a request it is the target
+   * session and the turn in question.
+   */
+  fetch: z.object({ sessionId: Id, runId: Id }),
+  /**
+   * THE WHOLE TEXT THE MODEL WAS HANDED. The summary is the line a row shows;
+   * this is the notice itself — who, which run, how big, the fetch call.
+   *
+   * CARRIED ON THE ITEM so that `Turn.agentNotice` can be DERIVED from it rather
+   * than minted a second time: one string, one author, and no way for the row,
+   * the prompt and a later `sessions_read` to disagree about what the turn was
+   * told. See `agent-notice.ts`.
+   */
+  body: z.string().max(8_000),
+  /** Present only when more than one happening was folded in. The first is also
+   *  reflected in the fields above, so a client that ignores this still shows
+   *  something true. */
+  entries: z.array(NotificationEntry).max(50).optional(),
+  /**
+   * HOW MANY TIMES THIS HAS BEEN HANDED TO A MODEL — the cap in #550 clause 3.
+   *
+   * A notification is delivered at most TWICE: once when it lands, and once more
+   * if a newer fact about the same run supersedes it. Past that it is not queued
+   * again — it updates in place and stays PENDING in the session's mailbox,
+   * where `sessions_status` reports it. That is what stops a chatty child from
+   * spending a busy coordinator's context on the same errand indefinitely.
+   */
+  deliveries: z.number().int().positive().optional(),
+});
+export type NotificationDetail = z.infer<typeof NotificationDetail>;
 
 export const Turn = z.object({
   /**
@@ -1726,6 +1830,24 @@ export const Turn = z.object({
    * finds it missing falls back to `input` — see `framedTurnInput`.
    */
   agentNotice: z.string().max(4_000).optional(),
+  /**
+   * THIS TURN IS A NOTIFICATION — issue #550.
+   *
+   * The same object the turn's FIRST ITEM carries, minted once in
+   * `notification.ts` and stored in both places. On the item because that is
+   * what the drivers deliver and the clients render; on the TURN because
+   * `turn_summary` and `sessions_outline` have to show a turn's summary line
+   * without reading its items, and because `claimTurn` hands a worker the turn
+   * alone.
+   *
+   * WHEN IT IS PRESENT, `input` IS NOT THE PERSON'S WORDS and nothing should
+   * draw it as one. For a wake or a request `input` is a short machine label and
+   * the notice is `notification.body`. For a peer's message `input` is still the
+   * message EXACTLY AS SENT — that is the durable record `sessions_read` hands
+   * back, and moving it would abridge the one copy there is — but the model is
+   * handed `notification.body` instead, on a channel that is not the user's.
+   */
+  notification: NotificationDetail.optional(),
   /**
    * WHAT THE SENDER SAID THIS TASK COVERS, on the task turn itself.
    *
