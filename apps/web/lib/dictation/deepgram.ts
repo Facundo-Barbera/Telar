@@ -1,33 +1,33 @@
 /**
- * THE LIVE SOCKET'S ADDRESS, AND WHY THE TOKEN RIDES IN THE QUERY (#544).
+ * THE LIVE SOCKET'S ADDRESS, AND WHY THE TOKEN RIDES IN THE SUBPROTOCOL (#544).
  *
- * ── WHAT THE DOCS AND THE FIELD ACTUALLY SAY, READ ON 2026-09-16 ────────────
- * Deepgram publishes two ways to authenticate a websocket from a browser, and
- * only one of them works with a token from `/v1/auth/grant`:
+ * ── WHAT WAS PROBED AGAINST THE REAL ENDPOINT ON 2026-09-16 ─────────────────
+ * The first cut of this file put the grant JWT in `?access_token=` and reasoned
+ * its way there from a Deepgram discussion thread. It does not work. Three ways
+ * of authenticating `wss://api.deepgram.com/v1/listen` were tried with a token
+ * this engine had just minted, and only one of them opened:
  *
- *   `Sec-WebSocket-Protocol: token, <API_KEY>` is the DOCUMENTED browser path
- *   ("Using the Sec-WebSocket-Protocol"), and it is documented for an API KEY.
- *   Passing a grant JWT as `['token', jwt]` fails — a JWT's scheme is `Bearer`,
- *   not `Token`, and a JWT is long enough to run into subprotocol-header length
- *   limits besides (deepgram/discussions#1470).
+ *   `?access_token=<jwt>`                  refused — close 1002, "Expected 101
+ *                                          status code"
+ *   `new WebSocket(url, ["bearer", jwt])`  OPENS
+ *   `new WebSocket(url, ["token", jwt])`   refused
  *
- *   `?access_token=<JWT>` is what works for a grant token from a browser, and
- *   it is what that discussion lands on.
+ * So the browser authenticates through `Sec-WebSocket-Protocol`, and the scheme
+ * word is `bearer` — the JWT's own scheme. `token` is for a long-lived API key
+ * and is refused for a grant token, which is the one part of the old comment
+ * that was right.
  *
- * A BROWSER CANNOT SEND A HEADER ON A WEBSOCKET AT ALL — `new WebSocket()` has
- * no header argument, which is the whole reason Deepgram has a subprotocol path
- * in the first place. So the query parameter is not a shortcut here; it is the
- * only door open to this client. The phone is not in the same position: iOS
- * opens the same socket with `Authorization: Bearer <jwt>`, which is the
- * scheme the guide documents for the JWT.
+ * A BROWSER STILL CANNOT SEND A HEADER ON A WEBSOCKET — `new WebSocket()` has
+ * no header argument, which is why Deepgram has a subprotocol path at all. The
+ * second argument is that path: the browser sends the two values as the
+ * requested subprotocols and Deepgram reads the credential out of them. The
+ * phone is not in the same position and does not need this: iOS opens the same
+ * socket with `Authorization: Bearer <jwt>` on a `URLRequest`.
  *
- * ── WHAT PUTTING A CREDENTIAL IN A URL COSTS, AND WHY IT IS ACCEPTABLE HERE ──
- * A query parameter is the worst place for a secret: it lands in proxy logs, in
- * `Referer` headers, in browser history. This one is a token that dies in five
- * minutes, carries `usage::write` for the voice APIs only, and cannot reach the
- * Manage APIs — which is exactly the property the grant endpoint exists to give
- * it, and exactly why the long-lived key stays on the Mac. The URL is built
- * here, used once, and never stored or logged.
+ * NOTHING SECRET IS IN THE URL ANY MORE, which is the incidental win. A query
+ * parameter lands in proxy logs, `Referer` headers and browser history; a
+ * subprotocol is a request header on one handshake and is never written down by
+ * anything on the path.
  *
  * ── THE QUERY IS NOVA-3 AND INTERIM RESULTS ─────────────────────────────────
  * `nova-3` is what telar-vr already dictates with on the headset, so the same
@@ -44,8 +44,8 @@
 
 export const DEEPGRAM_LISTEN_URL = "wss://api.deepgram.com/v1/listen";
 
-/** Built per dictation, from a token that was minted for this one. */
-export function listenUrl(token: string, base: string = DEEPGRAM_LISTEN_URL): string {
+/** The address, which carries no credential — see the header. */
+export function listenUrl(base: string = DEEPGRAM_LISTEN_URL): string {
   const url = new URL(base);
   url.searchParams.set("model", "nova-3");
   url.searchParams.set("interim_results", "true");
@@ -53,8 +53,18 @@ export function listenUrl(token: string, base: string = DEEPGRAM_LISTEN_URL): st
   // The one that ends an utterance on a pause rather than on the socket
   // closing, so a final lands while the person is still talking.
   url.searchParams.set("endpointing", "300");
-  url.searchParams.set("access_token", token);
   return url.toString();
+}
+
+/**
+ * The `Sec-WebSocket-Protocol` values, which are where the credential goes.
+ *
+ * `bearer` IS THE SCHEME WORD AND IT IS NOT NEGOTIABLE: `token` is refused for
+ * a grant JWT and the query parameter is refused outright. Probed, not
+ * remembered — see the header.
+ */
+export function listenProtocols(token: string): [string, string] {
+  return ["bearer", token];
 }
 
 /**

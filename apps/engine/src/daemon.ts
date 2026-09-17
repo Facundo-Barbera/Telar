@@ -95,7 +95,8 @@ import { isAgentSelf } from "./agent/identity";
 import { AgentRuntime, type AgentRuntimeOptions } from "./agent/runtime";
 import { agentChatModel } from "./agent/model";
 import { readAgentModels } from "./models";
-import { DictationError, grantDictationToken } from "./dictation/token";
+import { DICTATION_OFF, DictationError } from "./dictation/token";
+import { dictationProvider } from "./dictation/provider";
 import { THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX } from "./agent/thread-log";
 import * as notebook from "./notes";
 import { ProjectNotesError } from "./notes";
@@ -1769,13 +1770,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
          */
         if (request.method === "PATCH") {
           const input = await body(request);
+          // BY PRESENCE, both of them. A client that sent no key must not be
+          // read as clearing one, and a client that sent no provider must not
+          // be read as switching dictation off.
+          if ("provider" in input) store.setDictationProvider(input.provider);
           if ("apiKey" in input) store.setDictationKey(input.apiKey);
         }
-        // `provider` RIDES THE ANSWER so a client knows which socket the token
-        // route's answer will be for without a second read, and so a later
-        // provider can arrive without a new route. `configured` is the whole of
-        // what may be said about the key.
-        writeJson(response, 200, { dictation: { provider: "deepgram", ...store.dictationCredential() } });
+        // `provider` IS A SETTING NOW, not a constant riding the answer. `off`
+        // is the default and means there is no mic button anywhere — see
+        // `dictation/provider.ts` for why that is the honest default rather
+        // than a feature switched off. `configured` is still the whole of what
+        // may be said about the key, and it is answered even when the provider
+        // is off so the pane can say a key is already there.
+        writeJson(response, 200, { dictation: store.dictationState() });
         return;
       }
       /**
@@ -1785,19 +1792,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * Deepgram that costs a round trip and produces a new credential every
        * time, and a GET that did that would be cached by something eventually.
        *
-       * THE REFUSALS ARE TWO DIFFERENT FACTS. No key here is `conflict` and the
-       * message names the pane to fix it on; Deepgram refusing is
-       * `provider_unavailable` and the message carries Deepgram's own words,
-       * because "401" alone cannot tell a person whether the key is wrong or
-       * the account is out of credit. Both are sentences — a client's only move
-       * is to show one to a person.
+       * THE REFUSALS ARE THREE DIFFERENT FACTS. Dictation being off is a
+       * `conflict` naming the pane that turns it on — and it is the ordinary
+       * default rather than a misconfiguration; no key is a `conflict` naming
+       * the pane to paste one on; Deepgram refusing is `provider_unavailable`
+       * carrying Deepgram's own words, because "401" alone cannot tell a person
+       * whether the key is wrong or the account is out of credit. All three are
+       * sentences — a client's only move is to show one to a person.
+       *
+       * THE PROVIDER DECIDES, AND IT DECIDES BY NOT HAVING A `mintToken`. That
+       * is what keeps "off spends nothing" true for the next provider too,
+       * rather than being an `if` somebody has to remember to write again.
        */
       if (request.method === "POST" && url.pathname === "/v2/dictation/token") {
         try {
-          writeJson(response, 200, await grantDictationToken({ key: store.dictationKey(), ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}) }));
+          const chosen = dictationProvider(store.dictationState().provider);
+          if (!chosen.mintToken) throw new DictationError("off", DICTATION_OFF);
+          writeJson(
+            response,
+            200,
+            await chosen.mintToken({ key: store.dictationKey(), ...(options.dictationFetch ? { fetchImpl: options.dictationFetch } : {}) }),
+          );
         } catch (error) {
           if (error instanceof DictationError) {
-            throw new HttpError(error.kind === "unconfigured" ? 409 : 502, error.kind === "unconfigured" ? "conflict" : "provider_unavailable", error.message);
+            const conflict = error.kind === "off" || error.kind === "unconfigured";
+            throw new HttpError(conflict ? 409 : 502, conflict ? "conflict" : "provider_unavailable", error.message);
           }
           throw error;
         }

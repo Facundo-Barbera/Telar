@@ -1,20 +1,31 @@
 /**
- * THE SOCKET'S ADDRESS (#544).
+ * THE SOCKET'S ADDRESS AND ITS CREDENTIAL (#544).
  *
- * Two facts worth holding: the token goes in the QUERY (a browser cannot send a
- * header on a websocket, and a grant JWT is refused as a `token` subprotocol —
- * see the header of `deepgram.ts`), and no `encoding` is declared beside
- * container audio, which is how a stream transcribes as silence.
+ * Two facts worth holding: the token rides the SUBPROTOCOL as `["bearer", jwt]`
+ * and never the query (probed live — the query is refused with close 1002; see
+ * the header of `deepgram.ts`), and no `encoding` is declared beside container
+ * audio, which is how a stream transcribes as silence.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { listenUrl, recordingType } from "./deepgram";
+import { listenProtocols, listenUrl, recordingType } from "./deepgram";
+
+describe("listenProtocols", () => {
+  test("the scheme word is `bearer` and the JWT follows it", () => {
+    // `token` is for a long-lived API key and is REFUSED for a grant JWT; this
+    // pair is the only one of the three probed that opened the socket.
+    expect(listenProtocols("jwt-abc")).toEqual(["bearer", "jwt-abc"]);
+  });
+});
 
 describe("listenUrl", () => {
-  const parsed = () => new URL(listenUrl("jwt-abc"));
+  const parsed = () => new URL(listenUrl());
 
-  test("the token rides the query, because the browser has nowhere else to put it", () => {
-    expect(parsed().searchParams.get("access_token")).toBe("jwt-abc");
+  test("no credential is in the URL at all", () => {
+    // The query parameter is refused by Deepgram, and a secret in a URL lands
+    // in proxy logs and browser history besides.
+    expect(parsed().searchParams.get("access_token")).toBeNull();
+    expect(listenUrl()).not.toContain("jwt");
   });
 
   test("nova-3, interim results, smart formatting — the headset's own settings", () => {

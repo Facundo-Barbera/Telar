@@ -1,15 +1,16 @@
 /**
- * WHAT GOES IN THE BOX AND WHAT ONLY GETS SHOWN (#544).
+ * WHAT ONE FRAME SAYS ABOUT THE WORDS (#544).
  *
- * The whole reason this reducer exists is that `window.telar.dictate` INSERTS
- * and cannot retract, while a live transcription revises itself. Every claim
- * here is that one rule: interim words are reported for the caption and never
- * committed, a final is committed exactly once, and nothing malformed off the
- * socket can end a dictation somebody is in the middle of.
+ * Every claim here is about the three cases the writer has to tell apart: a new
+ * guess, a settled phrase, and a frame that says nothing about the words at all
+ * — and the fourth that is easy to miss, a finalised SILENCE, which is the
+ * signal to take an unconfirmed guess back out of the box rather than leave it
+ * there forever. Nothing malformed off the socket may end a dictation somebody
+ * is in the middle of.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { EMPTY_TRANSCRIPT, parseFrame, readFrame } from "./transcript";
+import { parseFrame, readFrame } from "./transcript";
 
 const results = (transcript: string, isFinal: boolean) => ({
   type: "Results",
@@ -18,44 +19,44 @@ const results = (transcript: string, isFinal: boolean) => ({
 });
 
 describe("readFrame", () => {
-  test("an interim guess is shown and never committed", () => {
-    expect(readFrame(results("recur", false))).toEqual({ commit: "", interim: "recur" });
+  test("an interim guess is words that are not settled yet", () => {
+    expect(readFrame(results("recur", false))).toEqual({ text: "recur", final: false });
   });
 
-  test("a revised guess replaces the one before it, because neither was inserted", () => {
-    // The three guesses Deepgram actually walks through on the word
-    // "recording". Inserting each would put all three in somebody's message.
+  test("each guess is the whole utterance so far, which is what makes it a replacement", () => {
+    // The three Deepgram actually walks through on the word "recording". The
+    // writer puts each one over the last; appending them would put all three
+    // in somebody's message.
     const said = ["recur", "record", "recording"].map((guess) => readFrame(results(guess, false)));
-    expect(said.map((step) => step.commit)).toEqual(["", "", ""]);
-    expect(said.at(-1)!.interim).toBe("recording");
+    expect(said.map((step) => step!.final)).toEqual([false, false, false]);
+    expect(said.at(-1)!.text).toBe("recording");
   });
 
-  test("a final commits once and clears the caption", () => {
-    expect(readFrame(results("fix the failing test", true))).toEqual({ commit: "fix the failing test", interim: "" });
+  test("a final is the same words, settled", () => {
+    expect(readFrame(results("fix the failing test", true))).toEqual({ text: "fix the failing test", final: true });
   });
 
-  test("a final commits only what THIS frame finalised", () => {
-    // The second utterance carries its own words, not the first's again — an
-    // accumulating reducer is how a dictation says everything twice.
-    expect(readFrame(results("fix the failing test", true)).commit).toBe("fix the failing test");
-    expect(readFrame(results("and push it", true)).commit).toBe("and push it");
+  test("a finalised silence is still a final, and empty", () => {
+    // NOT `undefined`: the writer has an unconfirmed guess in the box and this
+    // is the frame that tells it to take the guess back out. Reported as
+    // "nothing happened" it would sit there until the person deleted it.
+    expect(readFrame(results("   ", true))).toEqual({ text: "", final: true });
+    expect(readFrame(results("", true))).toEqual({ text: "", final: true });
   });
 
-  test("a finalised silence commits nothing rather than a space", () => {
-    expect(readFrame(results("   ", true))).toEqual(EMPTY_TRANSCRIPT);
-    expect(readFrame(results("", true))).toEqual(EMPTY_TRANSCRIPT);
+  test("the frames that are not results say nothing about the words", () => {
+    // Deepgram sends all three on an ordinary dictation. `undefined` is the
+    // answer that leaves the draft alone.
+    expect(readFrame({ type: "Metadata" })).toBeUndefined();
+    expect(readFrame({ type: "SpeechStarted" })).toBeUndefined();
+    expect(readFrame({ type: "UtteranceEnd" })).toBeUndefined();
   });
 
-  test("the frames that are not results are nothing to this", () => {
-    // Deepgram sends all three on an ordinary dictation.
-    expect(readFrame({ type: "Metadata" })).toEqual(EMPTY_TRANSCRIPT);
-    expect(readFrame({ type: "SpeechStarted" })).toEqual(EMPTY_TRANSCRIPT);
-    expect(readFrame({ type: "UtteranceEnd" })).toEqual(EMPTY_TRANSCRIPT);
-  });
-
-  test("a results frame with no alternatives is empty, not a crash", () => {
-    expect(readFrame({ type: "Results", is_final: true, channel: {} })).toEqual(EMPTY_TRANSCRIPT);
-    expect(readFrame({ type: "Results", is_final: true })).toEqual(EMPTY_TRANSCRIPT);
+  test("a results frame with no alternatives says nothing either", () => {
+    expect(readFrame({ type: "Results", is_final: true })).toBeUndefined();
+    // An alternatives array that is present but empty IS an answer — the
+    // channel spoke and had no words in it.
+    expect(readFrame({ type: "Results", is_final: true, channel: { alternatives: [] } })).toEqual({ text: "", final: true });
   });
 });
 
@@ -71,6 +72,6 @@ describe("parseFrame", () => {
     expect(parseFrame("{not json")).toBeUndefined();
     expect(parseFrame("null")).toBeUndefined();
     expect(parseFrame("[1,2]")).toBeDefined(); // an array is an object; readFrame finds nothing in it
-    expect(readFrame(parseFrame("[1,2]")!)).toEqual(EMPTY_TRANSCRIPT);
+    expect(readFrame(parseFrame("[1,2]")!)).toBeUndefined();
   });
 });

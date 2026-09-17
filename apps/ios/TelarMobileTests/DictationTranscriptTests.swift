@@ -2,18 +2,19 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// WHAT GOES IN THE COMPOSER AND WHAT ONLY GETS SHOWN (#544).
+/// WHAT ONE FRAME SAYS, AND WHERE THE WORDS LAND (#544).
 ///
 /// A live transcription REVISES itself: the service streams interim guesses —
-/// "recur", "record", "recording" — and marks only some of them final. Writing
-/// every guess into the box puts all three in somebody's message.
+/// "recur", "record", "recording" — and marks only some of them final. Those
+/// guesses go INTO the composer and are rewritten in place until the service
+/// settles them, which is the desktop's behaviour
+/// (`apps/web/lib/dictation/interim.ts`) held here deliberately: a person
+/// dictating the same sentence into the phone and into the Mac must not watch
+/// their words behave differently.
 ///
-/// The rule is the web's, deliberately (`apps/web/lib/dictation/transcript.ts`):
-/// interim text is shown, only a final is merged. There it is forced by
-/// `window.telar.dictate`, which inserts and cannot retract; here the draft is a
-/// `String` this app owns and could be rewritten freely, so it is a CHOICE — and
-/// these are what hold it, because a person dictating the same sentence into the
-/// phone and into the desktop must not watch their words behave differently.
+/// The half that is worth testing is the SPAN — the run of the draft the
+/// unconfirmed words occupy — because the person is typing into the same box
+/// and an offset range does not survive that.
 @Suite struct DictationTranscriptTests {
     private func results(_ transcript: String, final: Bool) -> DictationFrame {
         let json = """
@@ -26,40 +27,38 @@ import Testing
         return frame
     }
 
-    // MARK: which words are committed
+    private func guess(_ text: String) -> DictationWords { DictationWords(text: text, final: false) }
+    private func settled(_ text: String) -> DictationWords { DictationWords(text: text, final: true) }
 
-    @Test func anInterimGuessIsShownAndNeverCommitted() {
-        #expect(DictationTranscript.step(results("recur", final: false)) == DictationStep(commit: "", interim: "recur"))
+    // MARK: what one frame says
+
+    @Test func anInterimGuessIsWordsThatAreNotSettledYet() {
+        #expect(DictationTranscript.read(results("recur", final: false)) == guess("recur"))
     }
 
-    @Test func revisedGuessesReplaceEachOtherBecauseNoneWasEverCommitted() {
-        let walk = ["recur", "record", "recording"].map { DictationTranscript.step(results($0, final: false)) }
-        #expect(walk.allSatisfy { $0.commit.isEmpty })
-        #expect(walk.last?.interim == "recording")
+    @Test func eachGuessIsTheWholeUtteranceSoFarWhichIsWhatMakesItAReplacement() {
+        let walk = ["recur", "record", "recording"].compactMap { DictationTranscript.read(results($0, final: false)) }
+        #expect(walk.allSatisfy { !$0.final })
+        #expect(walk.last?.text == "recording")
     }
 
-    @Test func aFinalCommitsAndClearsThePreview() {
-        #expect(DictationTranscript.step(results("fix the failing test", final: true))
-            == DictationStep(commit: "fix the failing test", interim: ""))
+    @Test func aFinalIsTheSameWordsSettled() {
+        #expect(DictationTranscript.read(results("fix the failing test", final: true)) == settled("fix the failing test"))
     }
 
-    @Test func aFinalCommitsOnlyWhatThatFrameFinalised() {
-        // Not everything said so far: an accumulating reducer is how a
-        // dictation ends up saying the whole utterance twice.
-        #expect(DictationTranscript.step(results("fix the failing test", final: true)).commit == "fix the failing test")
-        #expect(DictationTranscript.step(results("and push it", final: true)).commit == "and push it")
+    @Test func aFinalisedSilenceIsStillAFinalAndEmpty() {
+        // NOT `nil`: the writer has an unconfirmed guess in the box and this is
+        // the frame that tells it to take the guess back out. Reported as
+        // "nothing happened" it would sit there until the person deleted it.
+        #expect(DictationTranscript.read(results("   ", final: true)) == settled(""))
+        #expect(DictationTranscript.read(results("", final: true)) == settled(""))
     }
 
-    @Test func aFinalisedSilenceCommitsNothingRatherThanASpace() {
-        #expect(DictationTranscript.step(results("   ", final: true)) == .nothing)
-        #expect(DictationTranscript.step(results("", final: true)) == .nothing)
-    }
-
-    @Test func theFramesThatAreNotResultsAreNothingToThis() {
+    @Test func theFramesThatAreNotResultsSayNothingAboutTheWords() {
         // The service sends all three on an ordinary dictation.
         for type in ["Metadata", "SpeechStarted", "UtteranceEnd"] {
             guard let frame = DictationFrame.read(#"{"type":"\#(type)"}"#) else { continue }
-            #expect(DictationTranscript.step(frame) == .nothing)
+            #expect(DictationTranscript.read(frame) == nil)
         }
     }
 
@@ -68,15 +67,16 @@ import Testing
         // is worth ending a recording over.
         #expect(DictationFrame.read("{not json") == nil)
         #expect(DictationFrame.read("") == nil)
-        // A results frame with no alternatives is empty, not a crash.
+        // A results frame with no alternatives says nothing, rather than
+        // crashing or claiming the utterance went empty.
         guard let bare = DictationFrame.read(#"{"type":"Results","is_final":true,"channel":{}}"#) else {
             Issue.record("the fixture did not decode")
             return
         }
-        #expect(DictationTranscript.step(bare) == .nothing)
+        #expect(DictationTranscript.read(bare) == nil)
     }
 
-    // MARK: how they land in the draft
+    // MARK: how a phrase lands in a draft
 
     @Test func aPhraseLandsAloneInAnEmptyBox() {
         #expect(DictationTranscript.merge(draft: "", commit: "fix the failing test") == "fix the failing test")
@@ -99,21 +99,106 @@ import Testing
     }
 
     @Test func anEmptyPhraseChangesNothing() {
-        // What makes `merge` safe to call on every frame without the caller
-        // checking first.
         #expect(DictationTranscript.merge(draft: "fix", commit: "") == "fix")
         #expect(DictationTranscript.merge(draft: "fix", commit: "   ") == "fix")
         #expect(DictationTranscript.merge(draft: "", commit: "  ") == "")
     }
 
-    @Test func twoUtterancesReadAsOneSentence() {
-        // The whole loop, as a person experiences it: two finals, appended in
-        // order, spaced once.
+    // MARK: the span, and every way a person can invalidate it
+
+    @Test func eachGuessReplacesTheLastInTheBox() {
+        var writer = DictationDraftWriter()
         var draft = ""
-        for phrase in ["fix the failing test", "and push it"] {
-            draft = DictationTranscript.merge(draft: draft, commit: DictationTranscript.step(results(phrase, final: true)).commit)
+        for word in ["recur", "record", "recording"] {
+            draft = writer.write(guess(word), into: draft)
         }
+        // Three guesses, one word in the box — which is the whole feature.
+        #expect(draft == "recording")
+    }
+
+    @Test func aFinalSettlesTheWordsAndTheNextUtteranceStartsAfterThem() {
+        var writer = DictationDraftWriter()
+        var draft = ""
+        draft = writer.write(guess("fix the"), into: draft)
+        draft = writer.write(settled("fix the failing test"), into: draft)
+        #expect(draft == "fix the failing test")
+
+        // The span was forgotten at the final, so this opens a new one rather
+        // than replacing the sentence that is already there.
+        draft = writer.write(guess("and"), into: draft)
+        draft = writer.write(settled("and push it"), into: draft)
         #expect(draft == "fix the failing test and push it")
+    }
+
+    @Test func aFinalisedSilenceTakesTheUnconfirmedGuessBackOut() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("uh"), into: "")
+        #expect(draft == "uh")
+        draft = writer.write(settled(""), into: draft)
+        #expect(draft == "")
+    }
+
+    @Test func dictationStartsAtWhateverTheBoxAlreadyHolds() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("and"), into: "half typed")
+        draft = writer.write(settled("and spoken"), into: draft)
+        #expect(draft == "half typed and spoken")
+    }
+
+    @Test func somebodyTypingInsideTheSpanKeepsTheirKeystrokes() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("recording"), into: "")
+        #expect(draft == "recording")
+
+        // A keystroke in the middle of the unconfirmed word. The offsets now
+        // mean something else, and writing through them would eat what they
+        // typed.
+        draft = "recXXording"
+        draft = writer.write(guess("recording now"), into: draft)
+        #expect(draft.contains("recXX"))
+        #expect(draft.contains("recording now"))
+    }
+
+    @Test func somebodyTypingBeforeTheSpanDropsItRatherThanWritingAtAShiftedOffset() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("spoken"), into: "")
+        draft = "typed " + draft
+        draft = writer.write(settled("spoken words"), into: draft)
+        // Every character of "typed " survives. A span applied at its old
+        // offsets would have replaced "typed " itself.
+        #expect(draft.hasPrefix("typed "))
+        #expect(draft.contains("spoken words"))
+    }
+
+    @Test func theWordsKeepFlowingAfterAnInterruption() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("one"), into: "")
+        draft = "!" + draft
+        draft = writer.write(guess("two"), into: draft)
+        let afterTwo = draft
+        draft = writer.write(guess("three"), into: draft)
+        // The new span is live again from the next frame on, so a revision
+        // after the interruption still replaces in place rather than appending
+        // forever.
+        #expect(draft == afterTwo.replacingOccurrences(of: "two", with: "three"))
+    }
+
+    @Test func forgettingLeavesTheWordsAndOnlyDropsTheSpan() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess("said out loud"), into: "")
+        // The press ended mid-guess. What was heard is the person's draft now,
+        // and the next press appends rather than overwriting it.
+        writer.forget()
+        #expect(draft == "said out loud")
+        draft = writer.write(guess("more"), into: draft)
+        #expect(draft == "said out loud more")
+    }
+
+    @Test func anEmptyGuessWithNoSpanOpenWritesNothingAtAll() {
+        var writer = DictationDraftWriter()
+        var draft = writer.write(guess(""), into: "untouched")
+        draft = writer.write(settled(""), into: draft)
+        #expect(draft == "untouched")
     }
 
     // MARK: the socket's address
@@ -129,8 +214,9 @@ import Testing
         #expect(value("channels") == "1")
         #expect(value("model") == "nova-3")
         #expect(value("interim_results") == "true")
-        // The token goes in a header here — the browser is the one that cannot
-        // send one. Nothing credential-shaped belongs in this URL.
+        // The token goes in a header here. Nothing credential-shaped belongs in
+        // this URL — and on the web it is refused outright, which is why that
+        // end sends it as the `bearer` subprotocol.
         #expect(value("access_token") == nil)
         #expect(DeepgramListen.url().scheme == "wss")
     }

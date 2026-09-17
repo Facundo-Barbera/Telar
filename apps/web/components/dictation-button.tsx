@@ -3,45 +3,61 @@
 /**
  * THE MIC BUTTON — one component, both composers (#544).
  *
- * ── WHY IT INSERTS THROUGH `window.telar.dictate` ───────────────────────────
- * Not because the page API is convenient from in here — it is in-process, and
- * calling `activeComposer()` directly would work — but because it is the SAME
- * insertion the headset already uses (#548), and dictation arriving by two
- * different paths on one app is two behaviours to keep in step. `dictate` also
- * answers the question this button cannot: WHICH box is being typed into. The
- * session composer and the Agent's are different routes, so in practice one is
- * mounted; the registry is what makes "in practice" unnecessary.
+ * ── WHY IT WRITES THROUGH THE REGISTRY AND NOT THE PAGE API ─────────────────
+ * It used to go through `window.telar.dictate`, so that dictation arrived by
+ * one path whether it came from here or from the Quest cockpit (#548). That
+ * stopped being possible when the words moved INTO the box: rewriting a guess
+ * in place needs an insertion that can be taken back, and `dictate` must never
+ * grow one — an external client that could delete a run of the draft could
+ * delete what the PERSON typed.
+ *
+ * So the retraction lives on the composer registry, which the page API is built
+ * on top of and which only this app's own components can reach. The registry is
+ * still what answers the question this button cannot — WHICH box is being typed
+ * into — and `dictate` is unchanged for the clients that have it.
  *
  * ── THE STATE IS LOUD ON PURPOSE ────────────────────────────────────────────
  * This is a toggle, so the failure mode is a recording nobody remembered
- * starting. While it is listening the button is filled rather than tinted, it
- * pulses, and the words being heard are printed under the composer. A quiet
- * recording indicator is the one thing a microphone control must not be.
+ * starting. While it is listening the button is filled rather than tinted and
+ * it pulses. The words themselves are now the loudest signal there is: they
+ * appear in the composer as they are heard.
+ *
+ * ── AND IT IS NOT THERE UNLESS SOMEBODY ASKED FOR IT ────────────────────────
+ * `dictation.provider` defaults to `off` and there is no button until it is
+ * something else. macOS dictation and Wispr Flow work on this composer already
+ * — it is a plain editable — so a mic button that appeared uninvited would be
+ * Telar claiming a job the reader may have given to something else.
  *
  * ── WHAT IT DOES NOT DO ─────────────────────────────────────────────────────
- * It does not send. `dictate({ submit: true })` exists and this does not pass
- * it: a spoken message that goes out before the person has read it back is a
- * message they cannot take back, and the Enter key is right there. "Send it"
- * as a spoken command is a later issue on `window.telar.submit`.
+ * It does not send. A spoken message that goes out before the person has read
+ * it back is a message they cannot take back, and the Enter key is right there.
+ * "Send it" as a spoken command is a later issue on `window.telar.submit`.
  */
 
+import { useCallback } from "react";
 import { MicIcon } from "lucide-react";
-import { dictate } from "@/lib/page-api";
+import { activeComposer } from "@/lib/composer-registry";
 import { useDictation } from "@/lib/dictation/use-dictation";
+import { useDictationSettings } from "@/lib/dictation/settings";
+import type { DictationBox } from "@/lib/dictation/interim";
 import { cn } from "@/lib/utils";
 
 export function DictationButton({ className }: { className?: string }) {
-  const { phase, heard, error, toggle, supported } = useDictation({
-    // THE PAGE API, not the composer's own insert: one path, see the header.
-    // Its refusal is a sentence, and the only one this button could not have
-    // predicted — a composer that unmounted mid-dictation.
-    insert: (text) => void dictate(text),
-  });
+  // RESOLVED AT THE PRESS, not at render: "the active composer" is a question
+  // whose answer changes with focus, and the hook asks it once per dictation.
+  const box = useCallback((): DictationBox | undefined => activeComposer(), []);
+  const { phase, error, toggle, supported } = useDictation({ box });
+  const { provider } = useDictationSettings();
 
-  // NO BUTTON AT ALL where the browser cannot record: an insecure origin, an
-  // embed with no microphone permission, a browser without `MediaRecorder`. A
-  // control that is always disabled is an advertisement for something the
-  // reader cannot have.
+  // NO BUTTON WHERE NOBODY ASKED FOR ONE — `off` is the default, and while the
+  // engine's answer is still in flight the hook reports `off` too, so this
+  // never flashes a control that is about to vanish.
+  if (provider === "off") return null;
+
+  // NO BUTTON AT ALL where the browser cannot record either: an insecure
+  // origin, an embed with no microphone permission, a browser without
+  // `MediaRecorder`. A control that is always disabled is an advertisement for
+  // something the reader cannot have.
   if (!supported) return null;
 
   const listening = phase === "listening";
@@ -55,7 +71,7 @@ export function DictationButton({ className }: { className?: string }) {
         aria-pressed={listening}
         title={listening ? "Stop dictating" : "Dictate (speak into the message box)"}
         // THE BOX KEEPS THE CARET. Without this the press blurs the composer,
-        // and `dictate` inserts at a caret that is no longer anywhere — the
+        // and the first words land at a caret that is no longer anywhere — the
         // same reason every other control in this row does it.
         onMouseDown={(event) => event.preventDefault()}
         onClick={toggle}
@@ -70,11 +86,9 @@ export function DictationButton({ className }: { className?: string }) {
         <MicIcon className={cn("size-4", listening && "animate-pulse")} />
         {listening && <span className="text-xs">Listening</span>}
       </button>
-      {/* WHAT IT IS HEARING, AND IT IS NOT IN THE BOX. Deepgram revises its
-          interim guesses — "recur", "record", "recording" — and `dictate`
-          cannot retract, so only finalised phrases are inserted. This is where
-          the unfinished ones live; see lib/dictation/transcript.ts. */}
-      {listening && heard && <span className="min-w-0 truncate text-xs text-muted-foreground italic">{heard}</span>}
+      {/* NO CAPTION OF UNCONFIRMED WORDS ANY MORE — they are in the composer,
+          rewritten in place as Deepgram revises them. A refusal still needs
+          somewhere to be said, and this is it. */}
       {error && (
         <span role="status" className="min-w-0 truncate text-xs text-destructive">
           {error}

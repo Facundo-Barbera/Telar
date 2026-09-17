@@ -3,6 +3,8 @@
  *
  * What must not drift:
  *
+ *   - OFF IS THE DEFAULT and an off Mac spends nothing — no key is read, no
+ *     call is made, and the refusal is a sentence naming the pane;
  *   - the key never comes back out of any route, only `configured`;
  *   - the file it goes into is 0600 and is not the Agent's;
  *   - an unconfigured Mac is refused with a SENTENCE rather than a 500;
@@ -62,14 +64,64 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-test("out of the box there is no key, and the answer says which provider it would be for", async () => {
+/** A Mac somebody has actually switched dictation on for. Two fields because
+ *  they are two decisions: choosing a provider and paying for it. */
+async function switchedOn(client: EngineClient, key = "dg-secret-key"): Promise<void> {
+  await client.setDictation({ provider: "deepgram", apiKey: key });
+}
+
+test("out of the box dictation is OFF, which is a choice and not a missing key", async () => {
   const { client } = await engine();
-  expect(await client.dictation()).toEqual({ dictation: { provider: "deepgram", configured: false } });
+  // `off` rather than "deepgram with no key": macOS dictation and Wispr Flow
+  // already work on the composer, so Telar does not claim the job uninvited.
+  expect(await client.dictation()).toEqual({ dictation: { provider: "off", configured: false } });
+});
+
+test("an off Mac refuses a token with a sentence, and spends nothing finding out", async () => {
+  const { client, calls } = await engine();
+  await client.setDictation({ apiKey: "dg-secret-key" });
+  const failure = await client.dictationToken().catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(EngineClientError);
+  expect((failure as EngineClientError).code).toBe("conflict");
+  expect((failure as EngineClientError).message).toContain("switched off");
+  expect((failure as EngineClientError).message).toContain("Settings");
+  // A KEY IS PRESENT AND IS NOT SPENT. Off means off, not "off unless somebody
+  // pasted something once".
+  expect(calls).toHaveLength(0);
+});
+
+test("choosing a provider turns it on, and the key that was already there is still there", async () => {
+  const { client } = await engine();
+  await client.setDictation({ apiKey: "dg-secret-key" });
+  expect(await client.setDictation({ provider: "deepgram" })).toEqual({ dictation: { provider: "deepgram", configured: true } });
+  expect((await client.dictationToken()).token).toBe("jwt-from-deepgram");
+});
+
+test("switching back off keeps the key rather than throwing it away", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  // Turning dictation back on later has to be one click, not a trip to the
+  // vendor's console.
+  expect(await client.setDictation({ provider: "off" })).toEqual({ dictation: { provider: "off", configured: true } });
+});
+
+test("a provider this engine has never heard of is refused, and changes nothing", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  const failure = await client.setDictation({ provider: "wispr" as "deepgram" }).catch((error: unknown) => error);
+  expect((failure as EngineClientError).code).toBe("invalid_request");
+  expect((await client.dictation()).dictation.provider).toBe("deepgram");
+});
+
+test("a patch that names no provider leaves the chosen one alone", async () => {
+  const { client } = await engine();
+  await switchedOn(client);
+  expect((await client.setDictation({ apiKey: "another-key" })).dictation.provider).toBe("deepgram");
 });
 
 test("a pasted key is reported as configured and NEVER echoed back", async () => {
   const { client } = await engine();
-  const saved = await client.setDictation({ apiKey: "dg-secret-key" });
+  const saved = await client.setDictation({ provider: "deepgram", apiKey: "dg-secret-key" });
   expect(saved).toEqual({ dictation: { provider: "deepgram", configured: true } });
   // The whole answer, serialised: the point is that the secret is in none of
   // it — not as a field, not redacted, not as a length.
@@ -100,9 +152,9 @@ test("a patch that names no key leaves the stored one alone", async () => {
   expect((await client.setDictation({})).dictation.configured).toBe(true);
 });
 
-test("with a key configured, the token route answers a token and the instant it dies", async () => {
+test("with a provider and a key, the token route answers a token and the instant it dies", async () => {
   const { client, calls } = await engine();
-  await client.setDictation({ apiKey: "dg-secret-key" });
+  await switchedOn(client);
   const before = Date.now();
   const answer = await client.dictationToken();
 
@@ -121,8 +173,9 @@ test("with a key configured, the token route answers a token and the instant it 
   expect(calls[0]!.body).toEqual({ ttl_seconds: DICTATION_TTL_SECONDS });
 });
 
-test("with no key, the refusal is a conflict and a sentence naming where to fix it", async () => {
+test("switched on with no key, the refusal is a conflict and a sentence naming where to fix it", async () => {
   const { client, calls } = await engine();
+  await client.setDictation({ provider: "deepgram" });
   const failure = await client.dictationToken().catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(EngineClientError);
   expect((failure as EngineClientError).code).toBe("conflict");
@@ -136,7 +189,7 @@ test("Deepgram refusing is a different fact, and its own words reach the client"
   const { client } = await engine(() =>
     Response.json({ err_code: "INVALID_AUTH", err_msg: "Project does not have access to this feature" }, { status: 403 }),
   );
-  await client.setDictation({ apiKey: "dg-secret-key" });
+  await switchedOn(client);
   const failure = await client.dictationToken().catch((error: unknown) => error);
   expect((failure as EngineClientError).code).toBe("provider_unavailable");
   expect((failure as EngineClientError).message).toContain("403");
@@ -147,7 +200,7 @@ test("an unreachable Deepgram is reported as unreachable, not as a missing key",
   const { client } = await engine(() => {
     throw new Error("getaddrinfo ENOTFOUND api.deepgram.com");
   });
-  await client.setDictation({ apiKey: "dg-secret-key" });
+  await switchedOn(client);
   const failure = await client.dictationToken().catch((error: unknown) => error);
   expect((failure as EngineClientError).code).toBe("provider_unavailable");
   expect((failure as EngineClientError).message).toContain("could not be reached");
@@ -155,7 +208,7 @@ test("an unreachable Deepgram is reported as unreachable, not as a missing key",
 
 test("an answer with no token in it is a refusal rather than an empty credential", async () => {
   const { client } = await engine(() => Response.json({ expires_in: 300 }));
-  await client.setDictation({ apiKey: "dg-secret-key" });
+  await switchedOn(client);
   await expect(client.dictationToken()).rejects.toThrow("without a token in it");
 });
 

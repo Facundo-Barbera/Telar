@@ -6,10 +6,18 @@
  * ── THE WHOLE SHAPE IN ONE PARAGRAPH ────────────────────────────────────────
  * Press the button: ask this Mac's engine for a token that dies in five
  * minutes, ask the browser for the microphone, open a socket straight to
- * Deepgram with that token, and push 250 ms chunks of audio up it. Final
- * phrases come back and go into the composer through `window.telar.dictate` —
- * the same door the Quest cockpit uses (#548), so there is one insertion path
- * on this app and not two. Press it again and everything unwinds.
+ * Deepgram with that token, and push 250 ms chunks of audio up it. Words come
+ * back and go INTO the composer as they are heard, rewritten in place until
+ * Deepgram settles them. Press it again and everything unwinds.
+ *
+ * ── THE WORDS GO IN THE BOX, NOT IN A CAPTION ───────────────────────────────
+ * The first cut parked unconfirmed guesses beside the button and only inserted
+ * a phrase once it was final, because `window.telar.dictate` inserts and cannot
+ * retract. That reads as lag. The retraction now lives on the composer registry
+ * as `replace`, where the only callers are this app's own components, and the
+ * page API keeps its three calls exactly as external clients have them — see
+ * `lib/composer-registry.ts` and `lib/dictation/interim.ts`, which owns every
+ * rule about the span and about somebody typing into the middle of it.
  *
  * ── TOGGLE, NOT HOLD ────────────────────────────────────────────────────────
  * The owner asked for toggle. It is also the only one that works on all three
@@ -28,14 +36,15 @@
  * after the button says idle is a page nobody trusts twice.
  *
  * ── REFS, NOT STATE, FOR THE MACHINERY ──────────────────────────────────────
- * The socket, the recorder and the tracks are not rendered and must not
- * re-render anything when they change; what state carries is the three things
- * the button DRAWS — the phase, the words being heard, and the last refusal.
+ * The socket, the recorder, the tracks and the interim writer are not rendered
+ * and must not re-render anything when they change; what state carries is the
+ * two things the button DRAWS — the phase and the last refusal.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/lib/engine/client";
-import { CHUNK_MS, listenUrl, recordingType } from "./deepgram";
+import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "./deepgram";
+import { createDictationWriter, type DictationBox } from "./interim";
 import { parseFrame, readFrame } from "./transcript";
 
 export type DictationPhase =
@@ -48,9 +57,6 @@ export type DictationPhase =
 
 export type DictationState = {
   phase: DictationPhase;
-  /** Deepgram's current guess at the words still being spoken. SHOWN, never
-   *  inserted — see `transcript.ts` for why. */
-  heard: string;
   /** Why it stopped, or would not start. A sentence: the button's only move is
    *  to show it to a person. */
   error?: string;
@@ -78,13 +84,17 @@ const neverChanges = () => () => {};
 const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
 
 export function useDictation(input: {
-  /** Where a finalised phrase goes. The composer's own insertion in practice —
-   *  injected so a test can watch what would have been typed without mounting
-   *  one. */
-  insert?: (text: string) => void;
+  /** THE BOX BEING SPOKEN INTO, resolved per dictation rather than held: the
+   *  composer a person is looking at is whichever one is mounted and most
+   *  recently focused, and that is a question with a different answer at the
+   *  moment of the press than at the moment the hook was created.
+   *
+   *  `undefined` means there is none on screen, which is a refusal rather than
+   *  a silent no-op. Injected so a test can drive the whole loop against a box
+   *  that is a string. */
+  box?: () => DictationBox | undefined;
 }): DictationState {
   const [phase, setPhase] = useState<DictationPhase>("idle");
-  const [heard, setHeard] = useState("");
   const [error, setError] = useState<string>();
   /**
    * WHETHER THIS BROWSER CAN RECORD AT ALL.
@@ -108,17 +118,22 @@ export function useDictation(input: {
   const socket = useRef<WebSocket>(null);
   const recorder = useRef<MediaRecorder>(null);
   const stream = useRef<MediaStream>(null);
-  /** The insertion, held in a ref so `toggle` is stable across renders — the
-   *  composer passes a fresh closure every time it re-renders, and a `toggle`
+  /** How to find the box, held in a ref so `toggle` is stable across renders —
+   *  the button passes a fresh closure every time it re-renders, and a `toggle`
    *  that changed identity with it would re-arm every effect that holds one. */
-  const insert = useRef(input.insert);
+  const box = useRef(input.box);
   // IN AN EFFECT, NOT IN THE BODY. Writing a ref during render is what this
   // app's lint forbids, and the rule is right here: the composer re-renders on
   // every keystroke, so this runs constantly, and the value is only ever read
   // from a socket callback — which is after the commit either way.
   useEffect(() => {
-    insert.current = input.insert;
-  }, [input.insert]);
+    box.current = input.box;
+  }, [input.box]);
+  /** THE SPAN, FOR ONE DICTATION. Built at the press and dropped at the
+   *  teardown: a writer kept between presses would hold offsets into a draft
+   *  the person has since rewritten, and the next utterance would replace their
+   *  words with its own. See `interim.ts`. */
+  const writer = useRef<ReturnType<typeof createDictationWriter>>(null);
   /**
    * WHICH DICTATION THIS IS. Starting is asynchronous — a token round trip, a
    * permission prompt — and stopping is not, so a second press lands in the
@@ -160,7 +175,11 @@ export function useDictation(input: {
     }
     for (const track of stream.current?.getTracks() ?? []) track.stop();
     stream.current = null;
-    setHeard("");
+    // THE WORDS STAY IN THE BOX, the span does not. Whatever was written is the
+    // person's draft now — including a guess Deepgram never got to settle,
+    // which is the right call: they said it, and they can edit it.
+    writer.current?.forget();
+    writer.current = null;
     setPhase("idle");
   }, []);
 
@@ -174,6 +193,19 @@ export function useDictation(input: {
     const abandoned = (): boolean => generation.current !== mine;
     setError(undefined);
     setPhase("starting");
+    // THE BOX FIRST, AND BEFORE THE TOKEN. Resolved once and held for this
+    // whole dictation: the words have to keep going to the composer that was
+    // on screen at the press, not to whichever one is focused eight frames
+    // later. No box is a refusal rather than a silent no-op, and finding that
+    // out costs nothing — a token spent and a microphone prompt raised for a
+    // screen with no message box on it would both be for nothing.
+    const speaking = box.current?.();
+    if (!speaking) {
+      setError("No message box is on screen to dictate into.");
+      setPhase("idle");
+      return;
+    }
+    writer.current = createDictationWriter(speaking);
     try {
       // THE TOKEN FIRST, because it is the step that can fail for a reason the
       // person can fix — no key pasted, Deepgram refusing. Asking for the
@@ -181,6 +213,14 @@ export function useDictation(input: {
       // dictate at all, which is a prompt with nothing behind it.
       const minted = await createEngineApi().dictationToken();
       if (abandoned()) return;
+      // WHICH SOCKET TO OPEN IS THE ANSWER'S TO SAY, not this file's to assume.
+      // Everything below — the URL, the subprotocol, the container audio — is
+      // Deepgram's shape; an OpenAI or on-device provider arrives with a
+      // different one. Refusing by name is what keeps a future Mac from being
+      // driven by an older browser tab that would send it the wrong bytes.
+      if (minted.provider !== "deepgram") {
+        throw new Error(`This browser does not know how to dictate with ${minted.provider}. Update Telar, or choose another provider in Settings → Dictation.`);
+      }
       const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
       // A PERMISSION PROMPT CAN OUTLAST THE PRESS. Granted after a stop, the
       // track is live and owned by nobody — so it is stopped here rather than
@@ -191,7 +231,12 @@ export function useDictation(input: {
       }
       stream.current = microphone;
 
-      const live = new WebSocket(listenUrl(minted.token));
+      // THE TOKEN IS THE SECOND ARGUMENT, NOT A QUERY PARAMETER. Deepgram
+      // refuses `?access_token=` on this endpoint (close 1002, "Expected 101
+      // status code") and reads the credential out of the requested
+      // subprotocols instead — see `listenProtocols` and the header of
+      // `deepgram.ts`, where the three ways that were probed are written down.
+      const live = new WebSocket(listenUrl(), listenProtocols(minted.token));
       socket.current = live;
 
       live.onopen = () => {
@@ -212,12 +257,19 @@ export function useDictation(input: {
       live.onmessage = (event: MessageEvent) => {
         const frame = parseFrame(event.data);
         if (!frame) return;
-        const { commit, interim } = readFrame(frame);
-        setHeard(interim);
-        // ONE INSERTION PER FINAL, and the reducer hands back only what THIS
-        // frame finalised — inserting everything said so far each time is how
-        // a dictation says everything twice.
-        if (commit) insert.current?.(commit);
+        const words = readFrame(frame);
+        // A FRAME THAT SAYS NOTHING ABOUT THE WORDS — metadata, an utterance
+        // end, a keep-alive — must not touch the draft at all, which is why
+        // the reducer answers `undefined` rather than a pair of empty strings.
+        if (!words) return;
+        const refusal = writer.current?.write(words);
+        // A COMPOSER THAT TURNED THE WRITE AWAY ends the dictation rather than
+        // dropping words silently: it has unmounted, or the conversation is not
+        // ready, and every following frame would meet the same wall.
+        if (refusal && !refusal.ok) {
+          setError(refusal.reason);
+          teardown();
+        }
       };
 
       live.onerror = () => {
@@ -266,7 +318,6 @@ export function useDictation(input: {
 
   return {
     phase,
-    heard,
     ...(error === undefined ? {} : { error }),
     toggle,
     supported,
