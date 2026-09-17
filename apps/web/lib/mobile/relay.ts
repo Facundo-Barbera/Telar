@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
 import type { Delivery, PushRecord } from "./push";
+import { parseRelayConfig, type RelayConfig } from "./relay-config";
 
-/** Runtime identity belongs to this Mac, never to a release artifact. */
-export interface RelayConfig { url: string; token: string }
+/** The shape lives in `relay-config.ts` so a browser can validate a pasted one
+ *  without importing this module's Keychain read (#579). Re-exported here so
+ *  every existing caller keeps its import. */
+export { parseRelayConfig, type RelayConfig };
 const relayGlobal = globalThis as typeof globalThis & { telarPushRelayInitialized?: boolean };
 /** Called only by the cockpit startup hook, never by route imports or tests. */
 export function initializePushRelay(): void { relayGlobal.telarPushRelayInitialized = true; }
@@ -20,16 +23,10 @@ export function relayConfig(): RelayConfig | undefined {
   } catch { /* Unprovisioned hosts simply report push unavailable. */ }
   cached = { at: Date.now(), value }; return value;
 }
-export function parseRelayConfig(input: unknown): RelayConfig | undefined {
-  if (!input || typeof input !== "object") return;
-  const x = input as Record<string, unknown>;
-  if (typeof x.url !== "string" || typeof x.token !== "string" || !/^[a-f0-9]{64}$/i.test(x.token)) return;
-  try {
-    const url = new URL(x.url);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") return;
-    return { url: url.origin, token: x.token };
-  } catch { return; }
-}
+/** Drop the 30s cache, so a read taken straight after the Keychain item was
+ *  written sees it (#579). Without this, Settings would tell somebody who has
+ *  just provisioned the relay that this Mac has none, for half a minute. */
+export function forgetRelayConfig(): void { cached = undefined; }
 export async function relayRequest(config: RelayConfig, path: string, method: string, body?: unknown): Promise<Response> {
   return fetch(`${config.url}${path}`, { method, headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: AbortSignal.timeout(15000) });
 }
