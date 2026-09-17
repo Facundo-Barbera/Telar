@@ -9,7 +9,9 @@
  *     arithmetic rather than by a check somebody could forget;
  *   - the standing state is in the SYSTEM PROMPT and never in the transcript;
  *   - `recall` finds a row the prompt no longer carries, and finds it whether
- *     this sqlite has fts5 or not.
+ *     this sqlite has fts5 or not;
+ *   - the standing state sits between the briefing and #541 A's digest, most
+ *     permanent first, and neither is in the transcript.
  */
 import { expect, test } from "bun:test";
 import fs from "node:fs";
@@ -427,4 +429,40 @@ test("recall is scoped to one thread — an archived conversation answers nothin
   rows(log, "thread_a");
   expect(log.search("thread_b", ["dictation"], 5)).toEqual([]);
   opened.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * Standing state beside the digest — #541 parts A and F in one prompt.
+ * ------------------------------------------------------------------ */
+
+test("the system block carries the briefing, then the standing state, then the digest", async () => {
+  const engineRoot = root();
+  const { agent, model } = agentOver(engineRoot, [{ text: "read them both." }]);
+  rememberSection(agentPaths(engineRoot), "doing", "coordinating #541 across three sessions");
+
+  // A worker finishing writes an inbox row and starts nothing (#541 A).
+  agent.wake({
+    notification: {
+      kind: "wake",
+      wakeKind: "turn_completed",
+      sessionId: "session_aaaaaaaa",
+      runId: "run_9",
+      summary: "Session session_a finished a turn",
+    } as never,
+  });
+
+  agent.submit({ text: "what happened?" });
+  await until(() => agent.state().running === false, "the turn");
+
+  const system = String((model.seen.at(-1)![0] as SystemMessage).content);
+  const standingAt = system.indexOf("coordinating #541 across three sessions");
+  const digestAt = system.indexOf("Session session_a finished a turn");
+  expect(standingAt).toBeGreaterThan(-1);
+  expect(digestAt).toBeGreaterThan(-1);
+  // MOST PERMANENT FIRST: the briefing, then what is true now, then the news.
+  expect(system.indexOf("You are Telar's Agent")).toBeLessThan(standingAt);
+  expect(standingAt).toBeLessThan(digestAt);
+  // AND NEITHER IS IN THE TRANSCRIPT — the person's words are their own.
+  expect(agent.thread({ limit: 50 }).rows.find((row) => row.kind === "user_message")!.detail.text).toBe("what happened?");
+  agent.close();
 });
