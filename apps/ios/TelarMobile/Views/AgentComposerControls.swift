@@ -27,9 +27,10 @@ struct AgentComposerControls: View {
 
     @State private var picking = false
 
-    private static let efforts: [(String, String)] = [("low", "Low"), ("medium", "Medium"), ("high", "High")]
-    private static let accesses: [(String, String)] = [("ask", "Ask"), ("auto", "Auto")]
-
+    // THE LEVELS AND THE WORDS ARE `AgentSettings`' (#556), not two private
+    // tables in here. The pill is the mid-conversation override and the settings
+    // row is the standing answer — a level one of them offered and the other did
+    // not would be a setting you could not turn back off from where you set it.
     var body: some View {
         // THE MODEL — a searchable sheet rather than a menu (#551).
         //
@@ -61,9 +62,9 @@ struct AgentComposerControls: View {
             Button { patch(AgentSettingsPatch(effort: "")) } label: {
                 composerMenuRow("Auto", selected: state?.effort == nil)
             }
-            ForEach(Self.efforts, id: \.0) { value, label in
-                Button { patch(AgentSettingsPatch(effort: value)) } label: {
-                    composerMenuRow(label, selected: state?.effort == value)
+            ForEach(AgentSettings.efforts) { level in
+                Button { patch(AgentSettingsPatch(effort: level.value)) } label: {
+                    composerMenuRow(level.label, selected: state?.effort == level.value)
                 }
             }
         }
@@ -71,9 +72,9 @@ struct AgentComposerControls: View {
         // THE ACCESS — which is active is on the PILL, not only inside the menu.
         // It is the setting a person most wants to confirm before pressing send.
         ComposerLabeledPill(icon: "shield.lefthalf.filled", label: accessLabel) {
-            ForEach(Self.accesses, id: \.0) { value, label in
-                Button { patch(AgentSettingsPatch(access: value)) } label: {
-                    composerMenuRow(label, selected: (state?.access ?? "ask") == value)
+            ForEach(AgentSettings.accesses) { option in
+                Button { patch(AgentSettingsPatch(access: option.value)) } label: {
+                    composerMenuRow(option.label, selected: (state?.access ?? "ask") == option.value)
                 }
             }
         }
@@ -94,16 +95,10 @@ struct AgentComposerControls: View {
 
     /// An unchosen level names the QUESTION rather than repeating "Auto" beside
     /// the access pill, which would be one word twice with nothing to say which
-    /// was which.
-    private var effortLabel: String {
-        guard let effort = state?.effort else { return "Reasoning" }
-        return Self.efforts.first { $0.0 == effort }?.1 ?? effort
-    }
+    /// was which. See `AgentSettings.effortPillLabel`.
+    private var effortLabel: String { AgentSettings.effortPillLabel(state?.effort) }
 
-    private var accessLabel: String {
-        let active = state?.access ?? "ask"
-        return Self.accesses.first { $0.0 == active }?.1 ?? active
-    }
+    private var accessLabel: String { AgentSettings.accessLabel(state?.access) }
 
     private func patch(_ next: AgentSettingsPatch) {
         Task { await onPatch(next) }
