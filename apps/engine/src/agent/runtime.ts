@@ -79,14 +79,15 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { agentToolSpecs } from "./tools";
+import { agentToolSpecs, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
 import { AGENT_BRIEFING } from "./briefing";
 import { compactToolResults, minifyToolResult } from "./compact";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
 import { renderDigest } from "./digest";
 import { AgentInbox, inboxRowFromNotification, type AgentInboxRow } from "./inbox";
-import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRow } from "./thread-log";
+import { readStanding, rememberSection, renderStanding } from "./memory";
+import { AgentThreadLog, THREAD_PAGE_DEFAULT, type AgentRecallHit, type AgentRow } from "./thread-log";
 import { agentPaths, patchAgentSettings, readAgentSettings, type AgentPaths } from "./store";
 import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
 
@@ -530,6 +531,30 @@ export class AgentRuntime {
     return this.open().log.cursor(threadId);
   }
 
+  /**
+   * THE AGENT'S OWN MEMORY, AS A CAPABILITY THE WALL CAN BE BUILT OVER (#541 F).
+   *
+   * HANDED OUT RATHER THAN HELD, because the daemon assembles the tool list and
+   * this object owns the two things these verbs touch: the standing document
+   * beside `agent.json`, and the transcript's own search index. A wall built
+   * over this reaches neither directly.
+   *
+   * `recall` IS SCOPED TO THE LIVE THREAD, and answers nothing when the Agent is
+   * off or has been reset — an archived conversation is a different file, and
+   * searching it would answer a question about a thread the person retired.
+   */
+  memory(): AgentMemoryCapability {
+    return {
+      remember: (section, text) => ({ sections: rememberSection(this.paths, section, text, this.now).sections }),
+      recall: (query, limit): AgentRecallHit[] => {
+        const threadId = readAgentSettings(this.paths).threadId;
+        if (!threadId) return [];
+        const terms = query.split(/\s+/).map((term) => term.trim()).filter(Boolean);
+        return this.open().log.search(threadId, terms, limit);
+      },
+    };
+  }
+
   /** Push events to a watcher until it unsubscribes. The caller is responsible
    *  for the rows BEFORE its cursor — it pages those, then watches. */
   watch(listener: (event: AgentStreamEvent) => void): () => void {
@@ -950,10 +975,35 @@ export class AgentRuntime {
      * see it for why `$schema` goes and why only here (#563).
      */
     const specs = agentToolSpecs(context.tools);
-    // THE DIGEST GOES LAST, under the briefing and the orientation: it is the
-    // most recent thing in the prompt and the least permanent, and a reader
-    // arriving at it has already been told what it is looking at.
-    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), context.digest].filter(Boolean).join("\n\n"));
+    /**
+     * THE SYSTEM BLOCK, IN FOUR, FROM MOST PERMANENT TO LEAST: the briefing, the
+     * orientation, WHAT THE AGENT REMEMBERS, and then the news.
+     *
+     * STANDING STATE IS NOT IN THE TRANSCRIPT (#541 part F). It is what is TRUE
+     * NOW rather than something that was said, so it is rewritten in place by
+     * `remember` and read here once per turn; putting it in the message list
+     * would make every edit an append and leave three contradicting copies in
+     * the history.
+     *
+     * THE DIGEST STAYS LAST, under it (#541 A). Both are engine prose in the one
+     * slot that is rebuilt per turn and never checkpointed, and the order is the
+     * argument each made for itself: the standing state is a settled account of
+     * the work and the digest is what happened since the person last spoke, so a
+     * reader arriving at the news has already been told what it is looking at.
+     *
+     * AND THE ORDER IS WHAT A CACHE PREFIX CAN MATCH. The briefing and the
+     * orientation are the same characters on every turn of every conversation,
+     * the standing state changes between turns, and the digest changes every
+     * turn — which is the shape #563 item 3 will want when it marks a prefix
+     * cacheable, in its own PR.
+     *
+     * READ PER TURN, not per lap: a `remember` call inside this turn lands on
+     * the NEXT turn's prompt. The alternative is a system block that changes
+     * between laps of one turn, which is a cache miss on every lap and a model
+     * watching its own instructions move mid-thought.
+     */
+    const standing = renderStanding(readStanding(this.paths));
+    const system = new SystemMessage([AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest].filter(Boolean).join("\n\n"));
     const budget = this.options.budgetChars;
 
     const callModel = async (state: AgentGraphStateType, config?: RunnableConfig): Promise<Partial<AgentGraphStateType>> => {

@@ -1248,9 +1248,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * daemon's capability is the right one and why neither build carries the
    * request gate.
    */
-  const agentRuntime = new AgentRuntime({
+  const agentRuntime: AgentRuntime = new AgentRuntime({
     engineRoot: root,
-    tools: () =>
+    tools: (): SocketTool[] =>
       collectAgentTools({
         sessions: buildSessionsCapability({ sessionId: AGENT_SELF_ID }),
         notes: buildNotesCapability(),
@@ -1259,6 +1259,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           outline: async (sessionId, window) => store.turnOutline(sessionId, window),
           answer: async (sessionId, options) => store.turnAnswer(sessionId, options),
         },
+        // THE AGENT'S OWN, from the runtime being constructed here: it owns the
+        // standing document and the transcript's search index, and this closure
+        // is not called until a turn runs. See `AgentRuntime.memory`.
+        memory: agentRuntime.memory(),
       }),
     model:
       options.agentModel ??

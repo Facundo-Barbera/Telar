@@ -79,9 +79,114 @@ export const THREAD_PAGE_DEFAULT = 50;
 export const THREAD_PAGE_MAX = 200;
 const THREAD_PAGE_CHARS = 64_000;
 
+/**
+ * ── THE SAME SEARCH `/v2/sessions/find` HAS, OVER THE AGENT'S OWN ROWS ──────
+ *
+ * `recall` answers "what did we decide about the dictation work" from the
+ * Agent's own conversation, and it has to keep answering it after the summary
+ * compaction has folded that turn out of the prompt. The rows are still here —
+ * that is the whole point of the transcript being its own table — so the only
+ * thing missing was an index.
+ *
+ * FTS5 IS PROBED, NEVER ASSUMED. `execution-store.ts` states the reason and
+ * this is the same two sqlite builds: `bun:sqlite` has the module, `node:sqlite`
+ * under Electron-as-Node may not. A store that cannot have the virtual table
+ * says `like` and searches with a bounded scan of the same rows. No new
+ * dependency either way.
+ *
+ * WHAT IS INDEXED IS A PROJECTION, not the raw `detail` JSON. A row's detail
+ * carries ids, statuses and whole tool arguments; indexing them would match
+ * `run_1a2b` against a search for a word. `searchText` below decides what a row
+ * SAYS, per kind, and that is what goes in.
+ */
+const CREATE_SEARCH = `CREATE VIRTUAL TABLE IF NOT EXISTS agent_search USING fts5(
+    text, row_id UNINDEXED, thread_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`;
+
+/** How many rows one backfill pass indexes. A thread that predates the index is
+ *  caught up in one open; a pathological one is caught up over a few, and
+ *  searches the rest with the `LIKE` path meanwhile. */
+const BACKFILL_LIMIT = 20_000;
+
+/** How many matching rows a search looks at before it answers — `FIND_SCAN`'s
+ *  own argument, one conversation wide instead of one engine wide. */
+const RECALL_SCAN = 200;
+
+export type AgentRecallHit = { id: number; runId: string; at: number; kind: AgentRowKind; why: string };
+
+/**
+ * WHAT A ROW SAYS, as opposed to what it records.
+ *
+ * A tool call is indexed by its NAME AND ITS ANSWER, because "which session did
+ * I find" is a question about what came back. A request is indexed by the tool
+ * it was about. `turn_started` says nothing and is not indexed at all — an
+ * empty row in an index is a row every query has to skip.
+ */
+export function searchText(kind: AgentRowKind, detail: Record<string, unknown>): string {
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  if (kind === "user_message" || kind === "assistant_message") return text(detail.text);
+  if (kind === "turn_done") return text(detail.text);
+  if (kind === "tool_call") return [text(detail.name), text(detail.output)].filter(Boolean).join("\n");
+  if (kind === "request_opened" || kind === "request_resolved") return [text(detail.tool), text(detail.reason)].filter(Boolean).join(" ");
+  return "";
+}
+
 export class AgentThreadLog {
+  /** Which engine `recall` runs on — probed on open, exactly as the execution
+   *  store probes its own. */
+  readonly searchIndex: "fts5" | "like";
+
   constructor(private readonly db: NativeDatabase) {
     this.db.exec(CREATE);
+    this.searchIndex = this.openSearchIndex();
+    if (this.searchIndex === "fts5") this.backfill();
+  }
+
+  private openSearchIndex(): "fts5" | "like" {
+    try {
+      this.db.exec(CREATE_SEARCH);
+      return "fts5";
+    } catch {
+      return "like";
+    }
+  }
+
+  /**
+   * ROWS WRITTEN BEFORE THE INDEX EXISTED, indexed now.
+   *
+   * KEYED ON THE HIGHEST ROW ALREADY IN, so the steady state is one `MAX` and
+   * no work: `append` indexes as it writes, and a thread that has always had
+   * this table finds nothing to do. A thread that predates it is a one-off
+   * catch-up on the first open after upgrading.
+   */
+  private backfill(): void {
+    try {
+      const highest = this.db.prepare("SELECT MAX(row_id) AS id FROM agent_search").get() as { id: number | bigint | null } | undefined;
+      const after = highest?.id ? Number(highest.id) : 0;
+      const rows = this.db
+        .prepare("SELECT id, thread_id, kind, detail FROM agent_rows WHERE id > ? ORDER BY id LIMIT ?")
+        .all(after, BACKFILL_LIMIT) as Array<{ id: number | bigint; thread_id: string; kind: string; detail: string }>;
+      for (const raw of rows) {
+        let detail: Record<string, unknown> = {};
+        try {
+          const parsed: unknown = JSON.parse(raw.detail);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) detail = parsed as Record<string, unknown>;
+        } catch {
+          // A row whose payload will not parse is indexed as nothing rather
+          // than stopping the catch-up around it.
+        }
+        this.index(Number(raw.id), raw.thread_id, raw.kind as AgentRowKind, detail);
+      }
+    } catch {
+      // A catch-up that fails leaves `recall` finding fewer old rows, which is
+      // not a reason the Agent cannot open its transcript.
+    }
+  }
+
+  private index(id: number, threadId: string, kind: AgentRowKind, detail: Record<string, unknown>): void {
+    if (this.searchIndex !== "fts5") return;
+    const text = searchText(kind, detail);
+    if (!text.trim()) return;
+    this.db.prepare("INSERT INTO agent_search(text, row_id, thread_id) VALUES(?,?,?)").run(text, id, threadId);
   }
 
   /** Append one row and answer it, id and all — the caller pushes exactly what
@@ -91,7 +196,61 @@ export class AgentThreadLog {
       .prepare("INSERT INTO agent_rows (thread_id, run_id, at, kind, detail) VALUES (?, ?, ?, ?, ?)")
       .run(input.threadId, input.runId, input.at, input.kind, JSON.stringify(input.detail));
     const row = this.db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number | bigint };
-    return { id: Number(row.id), ...input };
+    const id = Number(row.id);
+    this.index(id, input.threadId, input.kind, input.detail);
+    return { id, ...input };
+  }
+
+  /**
+   * WHAT THIS CONVERSATION SAID ABOUT SOMETHING — `recall`'s one read.
+   *
+   * NEWEST FIRST, because a coordinator asking "what did we decide" means the
+   * last time it was decided. Bounded twice: the scan is capped, and the caller
+   * takes a page off the front of it.
+   *
+   * EVERY TERM IS QUOTED AS A PHRASE for `findSessions`'s own reason — fts5's
+   * query language has operators a person searching their own conversation
+   * never meant to type.
+   */
+  search(threadId: string, terms: readonly string[], limit: number): AgentRecallHit[] {
+    if (terms.length === 0) return [];
+    const wanted = Math.max(1, Math.min(limit, 50));
+    const rows =
+      this.searchIndex === "fts5"
+        ? (this.db
+            .prepare(
+              `SELECT r.id AS id, r.run_id AS run_id, r.at AS at, r.kind AS kind, s.text AS text
+                 FROM agent_search s JOIN agent_rows r ON r.id = s.row_id
+                 WHERE s.thread_id = ? AND agent_search MATCH ? ORDER BY r.id DESC LIMIT ?`,
+            )
+            .all(threadId, terms.map((term) => `"${term.replace(/"/g, '""')}"`).join(" AND "), RECALL_SCAN) as Array<{
+            id: number | bigint;
+            run_id: string;
+            at: number;
+            kind: string;
+            text: string;
+          }>)
+        : (this.db
+            .prepare(
+              `SELECT id, run_id, at, kind, detail AS text FROM agent_rows
+                 WHERE thread_id = ? AND detail LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?`,
+            )
+            .all(threadId, `%${terms[0]!.replace(/[\\%_]/g, (character) => `\\${character}`)}%`, RECALL_SCAN) as Array<{
+            id: number | bigint;
+            run_id: string;
+            at: number;
+            kind: string;
+            text: string;
+          }>);
+
+    const hits: AgentRecallHit[] = [];
+    for (const raw of rows) {
+      if (hits.length >= wanted) break;
+      const why = quote(String(raw.text), terms);
+      if (!why) continue;
+      hits.push({ id: Number(raw.id), runId: raw.run_id, at: Number(raw.at), kind: raw.kind as AgentRowKind, why });
+    }
+    return hits;
   }
 
   /**
@@ -130,6 +289,24 @@ export class AgentThreadLog {
     const row = this.db.prepare("SELECT MAX(id) AS id FROM agent_rows WHERE thread_id = ?").get(threadId) as { id: number | bigint | null } | undefined;
     return row?.id ? Number(row.id) : 0;
   }
+}
+
+/**
+ * THE LINE A HIT IS IN, so a caller is not taking the engine's word for the
+ * match — `findSessions`'s `why`, one conversation down.
+ *
+ * `WHY_CHARS` IS THE SAME NUMBER the session search uses, deliberately: a
+ * quotation long enough to be a sentence and short enough that a page of them
+ * is a page.
+ */
+const WHY_CHARS = 200;
+
+function quote(text: string, terms: readonly string[]): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const found = lines.find((line) => terms.some((term) => line.toLowerCase().includes(term.toLowerCase()))) ?? lines.find((line) => line.trim());
+  const line = (found ?? "").trim();
+  if (!line) return "";
+  return line.length <= WHY_CHARS ? line : `${line.slice(0, WHY_CHARS - 1)}…`;
 }
 
 function decode(raw: { id: number | bigint; thread_id: string; run_id: string; at: number; kind: string; detail: string }): AgentRow {

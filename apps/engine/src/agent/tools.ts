@@ -48,6 +48,8 @@ import { collectTools, toolInputSchema, type SocketTool } from "../mcp-socket";
 import { notesTools, type NotesCapability } from "../notes-tools/tools";
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
 import { err, failure, json, type ToolFactory } from "../tool-kit";
+import { SECTION_CHARS, STANDING_SECTION_KEYS, type StandingSection } from "./memory";
+import type { AgentRecallHit } from "./thread-log";
 
 export { AGENT_SELF_ID } from "./identity";
 
@@ -194,6 +196,75 @@ function clamp(raw: unknown, fallback: number, ceiling: number): number {
 }
 
 /* ------------------------------------------------------------------ *
+ * The Agent's own memory — #541 part F.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The two verbs the Agent has about ITSELF, as a capability for the same reason
+ * every other one here is: the runtime owns the document and the transcript,
+ * and a test drives these two with two functions and no graph.
+ */
+export type AgentMemoryCapability = {
+  /** Replace one section of the standing document. Empty text clears it. */
+  remember(section: StandingSection, text: string): { sections: Partial<Record<StandingSection, string>> };
+  /** Search this thread's own rows. */
+  recall(query: string, limit: number): AgentRecallHit[];
+};
+
+const RECALL_LIMIT_DEFAULT = 8;
+const RECALL_LIMIT_MAX = 25;
+
+const REMEMBER =
+  "Rewrite one section of what you hold across turns. It is always in your prompt and never in the conversation, so it " +
+  "survives older turns being folded away. One section at a time — the other three are untouched. Empty text clears a section.";
+
+const RECALL =
+  "Search THIS conversation's own history — what you and the person said, and what your tools answered — including turns " +
+  "already folded out of your prompt. Newest first, each hit quoting the line that matched.";
+
+export function agentMemoryTools(tool: ToolFactory, capability: AgentMemoryCapability): unknown[] {
+  return [
+    tool(
+      "remember",
+      REMEMBER,
+      {
+        section: z
+          .enum(STANDING_SECTION_KEYS as [StandingSection, ...StandingSection[]])
+          .describe("doing: what you are working on. who: which session is on what. questions: what you are waiting to hear. preferences: how this person wants to be worked with."),
+        text: z.string().describe(`The section's whole new text — it REPLACES what was there. Clipped at ${SECTION_CHARS} characters.`),
+      },
+      async (args) => {
+        try {
+          const state = capability.remember(args.section as StandingSection, typeof args.text === "string" ? args.text : "");
+          return json({ sections: state.sections, note: "Rewritten. It is in your prompt from the next lap onwards." });
+        } catch (error) {
+          return err(`Could not remember that: ${failure(error)}`);
+        }
+      },
+    ),
+    tool(
+      "recall",
+      RECALL,
+      {
+        q: z.string().min(1).describe("Lexical, not semantic — the phrase you remember seeing."),
+        limit: z.number().int().min(1).max(RECALL_LIMIT_MAX).optional().describe(`Default ${RECALL_LIMIT_DEFAULT}.`),
+      },
+      async (args) => {
+        try {
+          const hits = capability.recall(String(args.q ?? ""), clamp(args.limit, RECALL_LIMIT_DEFAULT, RECALL_LIMIT_MAX));
+          return json({
+            hits,
+            ...(hits.length === 0 ? { note: "Nothing in this conversation matched. It is lexical — try the words you actually used." } : {}),
+          });
+        } catch (error) {
+          return err(`Could not recall that: ${failure(error)}`);
+        }
+      },
+    ),
+  ];
+}
+
+/* ------------------------------------------------------------------ *
  * The wall.
  * ------------------------------------------------------------------ */
 
@@ -201,21 +272,27 @@ export type AgentWalls = {
   sessions: SessionsCapability;
   notes: NotesCapability;
   query: AgentQueryCapability;
+  /** The Agent's own standing state and history search. Absent in a test that
+   *  is only asking what the two shared walls hold. */
+  memory?: AgentMemoryCapability;
 };
 
 /**
- * The Agent's whole tool list: 13 sessions tools, 5 notes tools, 3 query tools.
+ * The Agent's whole tool list: 13 sessions tools, 3 query tools, 5 notes tools,
+ * and the two it has about itself.
  *
  * SESSIONS FIRST, then the queries beside them, then the notebook — the order a
  * model is shown them in, and it is deliberate: the sessions wall is what the
  * Agent is FOR, and a read that narrows the rail belongs next to the one that
- * lists it.
+ * lists it. Its own memory is last, because it is the only pair that is about
+ * the Agent rather than about Telar's work.
  */
 export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   return [
     ...collectTools(sessionsTools as never, walls.sessions as never),
     ...collectTools(agentQueryTools as never, walls.query as never),
     ...collectTools(notesTools as never, walls.notes as never),
+    ...(walls.memory ? collectTools(agentMemoryTools as never, walls.memory as never) : []),
   ];
 }
 
