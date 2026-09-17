@@ -249,6 +249,76 @@ test("the 16-lap turn stops being quadratic", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * The same sixteen calls, in laps — #570's measurement.
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE SAME FIXTURE, GROUPED THE WAY THE BRIEFING NOW ASKS FOR IT.
+ *
+ * ── WHY GROUPING BY KIND IS THE HONEST GROUPING, NOT A FLATTERING ONE ───────
+ * It is the fixture's real dependency structure. The nine searches do not need
+ * each other's answers, so they are one message; the three outlines need the
+ * searches' results, so they are the next; the four answer reads need the
+ * outlines'. Three batches is what this turn's data dependencies allow, and no
+ * regrouping could make it two.
+ *
+ * ── AND WHAT THIS DOES NOT CLAIM ────────────────────────────────────────────
+ * It is a measurement of the ENGINE's lap arithmetic for a given batching, not
+ * an observation of a model choosing to batch. Nothing in a unit test can hold
+ * a model to a briefing sentence; what the engine now guarantees is that a
+ * message's calls run TOGETHER when they arrive together, and that the turn
+ * lands with an answer whether they do or not.
+ */
+function batches(laps: Array<{ name: string; result: string }>): Array<Array<{ name: string; result: string }>> {
+  const kinds = ["sessions_find", "sessions_outline", "sessions_answer"];
+  return kinds.map((kind) => laps.filter((lap) => lap.name === kind)).filter((batch) => batch.length > 0);
+}
+
+/** What one turn sends the model when each batch is ONE message carrying all of
+ *  its calls — `turnCost`'s arithmetic, one message per batch instead of one per
+ *  call. */
+function batchedTurnCost(grouped: Array<Array<{ name: string; result: string }>>, options: { compact: boolean }): number {
+  let history: BaseMessage[] = [human("find the thread about the dictation feature")];
+  let total = 0;
+  grouped.forEach((batch, round) => {
+    total += cost(options.compact ? compactToolResults(history) : history);
+    const calls: ToolCall[] = batch.map((lap, index) => ({ id: `call_${round}_${index}`, name: lap.name, args: {}, type: "tool_call" }));
+    const results = batch.map(
+      (lap, index) => new ToolMessage({ tool_call_id: `call_${round}_${index}`, content: options.compact ? minifyToolResult(lap.result) : lap.result }),
+    );
+    history = [...history, new AIMessage({ content: "", tool_calls: calls }), ...results];
+  });
+  total += cost(options.compact ? compactToolResults(history) : history);
+  return total;
+}
+
+test("the 16-lap turn is four laps when its independent reads share a message", () => {
+  const laps = sixteenLaps();
+  const grouped = batches(laps);
+
+  // BEFORE: one call per message is one lap per call, plus the lap that answers.
+  const before = laps.length + 1;
+  // AFTER: one message per set of reads that do not need each other's answers.
+  const after = grouped.length + 1;
+  expect(before).toBe(17);
+  expect(after).toBe(4);
+
+  // Every call is still made — batching changes how many times the model is
+  // asked, never what the turn does.
+  expect(grouped.flat()).toHaveLength(laps.length);
+
+  // AND THE TURN NOW FITS UNDER THE CAP. Seventeen model calls is over MAX_LAPS,
+  // which is how this turn met LangGraph's ceiling and died with no answer;
+  // four is not close to it.
+  expect(before).toBeGreaterThan(12);
+  expect(after).toBeLessThan(12);
+
+  // The prompt cost falls with the lap count, because the count is what the
+  // per-lap prefix was being paid for.
+  expect(batchedTurnCost(grouped, { compact: true })).toBeLessThan(turnCost(laps, { compact: true }));
+});
+
+/* ------------------------------------------------------------------ *
  * Through the runtime: the row keeps what the model no longer sees.
  * ------------------------------------------------------------------ */
 

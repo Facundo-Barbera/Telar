@@ -3,8 +3,10 @@
  *
  * What must not drift:
  *
- *   - the wall is exactly 21 tools, and none of them is a shell, a file or a
- *     browser — absent, not disabled;
+ *   - the two shared walls plus the query reads are exactly 21 tools, and none
+ *     of them is a shell, a file or a browser — absent, not disabled;
+ *   - `fleet_status` is the union of the three lists the Agent has touched,
+ *     ranked with what is waiting on a person first, and bounded twice (#570);
  *   - the gate is argument-aware: a task is asked about, a report is not;
  *   - reads are never gated, because a gate on a read teaches people to click
  *     through gates;
@@ -14,7 +16,7 @@
 import { expect, test } from "bun:test";
 import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
-import { agentQueryTools, agentToolSpecs, collectAgentTools, type AgentQueryCapability } from "../src/agent/tools";
+import { agentFleetTools, agentQueryTools, agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability, type FleetSessionRow } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
 import { approvalRequest, needsApproval } from "../src/agent/approval";
 import type { NotesCapability } from "../src/notes-tools/tools";
@@ -43,7 +45,7 @@ test("every read on both walls is ungated", () => {
   const reads = [
     "sessions_list", "sessions_read", "sessions_status", "sessions_diff", "sessions_requests",
     "sessions_subscriptions", "sessions_subscribe", "sessions_unsubscribe", "sessions_settle",
-    "sessions_find", "sessions_outline", "sessions_answer",
+    "sessions_find", "sessions_outline", "sessions_answer", "fleet_status",
     "notes_projects", "notes_list", "notes_read", "notes_write",
   ];
   for (const name of reads) expect(needsApproval({ name, args: {} })).toBe(false);
@@ -93,6 +95,16 @@ const noQueries = (): AgentQueryCapability => ({
   answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
 });
 
+const emptyFleet = (): AgentFleetCapability => ({
+  rail: async () => ({ sessions: [], projects: [] }),
+  subscribed: async () => [],
+  who: () => undefined,
+  session: async () => undefined,
+  lastTurn: async () => undefined,
+  openRequests: async () => 0,
+  unread: () => ({}),
+});
+
 test("the Agent's wall is the two walls plus the three query reads, and nothing else", () => {
   const names = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() }).map((tool) => tool.name);
   expect(names).toEqual([
@@ -131,10 +143,11 @@ test("the bound tool array stays well under what it was, with every tool still o
     sessions: noSessions(),
     notes: noNotes(),
     query: noQueries(),
+    fleet: emptyFleet(),
     github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
     memory: { remember: () => ({ sections: {} }), recall: () => [] },
   });
-  expect(whole).toHaveLength(24);
+  expect(whole).toHaveLength(25);
   expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(14_000);
 });
 
@@ -274,4 +287,165 @@ test("no call id keeps the old behaviour — a fresh random id every time", asyn
   await send.run({ sessionId: "session_a", input: "hi" });
   await send.run({ sessionId: "session_a", input: "hi" });
   expect(seen[0]).not.toBe(seen[1]!);
+});
+
+/* ------------------------------------------------------------------ *
+ * `fleet_status` — one call where there were sixteen (#570).
+ * ------------------------------------------------------------------ */
+
+/** A fleet whose three sources can each be set independently, so a test can ask
+ *  what one of them contributes without the other two in the way. */
+function fleet(
+  parts: {
+    rail?: FleetSessionRow[];
+    projects?: Array<{ id: string; name: string }>;
+    subscribed?: string[];
+    who?: string;
+    elsewhere?: Record<string, FleetSessionRow>;
+    lastTurn?: Record<string, { state: string; endedAt?: number; answer: string }>;
+    openRequests?: Record<string, number>;
+    unread?: Record<string, number>;
+  } = {},
+): { tool: (name: string) => { run: (args: Record<string, unknown>) => Promise<{ content: Array<{ text?: string }> }> }; reads: string[] } {
+  const reads: string[] = [];
+  const capability: AgentFleetCapability = {
+    rail: async () => ({ sessions: parts.rail ?? [], projects: parts.projects ?? [] }),
+    subscribed: async () => parts.subscribed ?? [],
+    who: () => parts.who,
+    session: async (id) => {
+      reads.push(id);
+      return parts.elsewhere?.[id];
+    },
+    lastTurn: async (id) => parts.lastTurn?.[id],
+    openRequests: async (id) => parts.openRequests?.[id] ?? 0,
+    unread: () => parts.unread ?? {},
+  };
+  const tools = collectTools(agentFleetTools as never, capability as never);
+  return { tool: (name) => tools.find((one) => one.name === name)! as never, reads };
+}
+
+const answered = async (built: ReturnType<typeof fleet>, args: Record<string, unknown> = {}) =>
+  JSON.parse((await built.tool("fleet_status").run(args)).content[0]!.text!) as {
+    sessions: Array<{ id: string; title?: string; projectName?: string; activity: string; lastTurn?: { state: string; endedAt?: number }; lastAnswer?: string; openRequests: number; unreadInbox: number; sources: string[] }>;
+    total: number;
+    note?: string;
+  };
+
+test("fleet_status is the union of the rail, the subscriptions and the notes", async () => {
+  const built = fleet({
+    rail: [{ id: "session_rail", title: "on the rail", projectId: "p1", activity: "idle", updatedAt: 3 }],
+    projects: [{ id: "p1", name: "Telar" }],
+    subscribed: ["session_subbed"],
+    who: "session_noted is on the lap cap; I am waiting on it.",
+    elsewhere: {
+      session_subbed: { id: "session_subbed", title: "work I assigned", projectId: "p1", activity: "working" },
+      session_noted: { id: "session_noted", title: "named in my notes", activity: "idle" },
+    },
+  });
+  const answer = await answered(built);
+
+  // ALL THREE SOURCES, and each row says which list put it there.
+  expect(answer.sessions.map((row) => row.id).sort()).toEqual(["session_noted", "session_rail", "session_subbed"]);
+  expect(answer.sessions.find((row) => row.id === "session_rail")!.sources).toEqual(["rail"]);
+  expect(answer.sessions.find((row) => row.id === "session_subbed")!.sources).toEqual(["subscribed"]);
+  expect(answer.sessions.find((row) => row.id === "session_noted")!.sources).toEqual(["notes"]);
+  // The project is named, not just pointed at: a model should not need a second
+  // call to turn `p1` into "Telar".
+  expect(answer.sessions.find((row) => row.id === "session_rail")!.projectName).toBe("Telar");
+  // A session already on the rail is not fetched again.
+  expect(built.reads).not.toContain("session_rail");
+});
+
+test("a session in two sources is one row that names both", async () => {
+  const built = fleet({
+    rail: [{ id: "session_a", title: "both", activity: "idle" }],
+    subscribed: ["session_a"],
+    who: "session_a is the one I assigned.",
+  });
+  const answer = await answered(built);
+  expect(answer.sessions).toHaveLength(1);
+  expect(answer.sessions[0]!.sources).toEqual(["notes", "rail", "subscribed"]);
+});
+
+test("a note that outlives the session it names drops the row rather than failing", async () => {
+  const built = fleet({ who: "session_gone did the dictation work.", elsewhere: {} });
+  const answer = await answered(built);
+  // The Agent's notes outlive sessions; a status answer must not fail over one
+  // stale line of its own bookkeeping.
+  expect(answer.sessions).toEqual([]);
+  expect(answer.total).toBe(0);
+});
+
+test("waiting on a person comes first, then running, then most recently ended", async () => {
+  const built = fleet({
+    rail: [
+      { id: "session_old", title: "ended a while ago", activity: "idle" },
+      { id: "session_recent", title: "ended just now", activity: "idle" },
+      { id: "session_working", title: "running", activity: "working" },
+      { id: "session_blocked", title: "waiting on you", activity: "blocked" },
+      { id: "session_asked", title: "has an open request", activity: "idle" },
+    ],
+    openRequests: { session_asked: 2 },
+    lastTurn: {
+      session_old: { state: "completed", endedAt: 100, answer: "the old answer" },
+      session_recent: { state: "completed", endedAt: 900, answer: "the recent answer" },
+      session_blocked: { state: "running", answer: "" },
+    },
+  });
+  const answer = await answered(built);
+
+  // BLOCKED AND ASKED SHARE THE TOP BAND: an open request and `blocked` are the
+  // same fact from either end, and either alone would miss a case.
+  expect(answer.sessions.slice(0, 2).map((row) => row.id).sort()).toEqual(["session_asked", "session_blocked"]);
+  expect(answer.sessions[2]!.id).toBe("session_working");
+  // Then the two idle ones, most recently ended first.
+  expect(answer.sessions.slice(3).map((row) => row.id)).toEqual(["session_recent", "session_old"]);
+});
+
+test("a row carries the last turn and the head of its answer, not the whole thing", async () => {
+  const built = fleet({
+    rail: [{ id: "session_a", title: "a session", activity: "idle" }],
+    lastTurn: { session_a: { state: "completed", endedAt: 7, answer: "x".repeat(500) } },
+    unread: { session_a: 3 },
+    openRequests: { session_a: 1 },
+  });
+  const answer = await answered(built);
+  const row = answer.sessions[0]!;
+  expect(row.lastTurn).toEqual({ state: "completed", endedAt: 7 });
+  // Clamped at 200, with the ellipsis that says it was cut.
+  expect(row.lastAnswer!.length).toBe(200);
+  expect(row.lastAnswer!.endsWith("…")).toBe(true);
+  expect(row.unreadInbox).toBe(3);
+  expect(row.openRequests).toBe(1);
+});
+
+test("the answer is bounded by rows and by characters, and says what it left out", async () => {
+  const many = Array.from({ length: 40 }, (_, index) => ({ id: `session_${index}`, title: `session number ${index}`, activity: "idle" }));
+  const built = fleet({
+    rail: many,
+    lastTurn: Object.fromEntries(many.map((one, index) => [one.id, { state: "completed", endedAt: index, answer: "y".repeat(200) }])),
+  });
+
+  const capped = await answered(built);
+  // TWENTY IS THE CEILING, whatever was asked for, and the count is honest.
+  expect(capped.sessions.length).toBeLessThanOrEqual(20);
+  expect(capped.total).toBe(40);
+  expect(capped.note).toContain("not shown");
+
+  // AND THE CHARACTER BOUND BITES FIRST on rows this heavy — see FLEET_MAX_CHARS.
+  expect(JSON.stringify(capped).length).toBeLessThan(7_000);
+
+  // A caller asking for more than the ceiling is served the ceiling.
+  const asked = await answered(built, { limit: 500 });
+  expect(asked.sessions.length).toBeLessThanOrEqual(20);
+
+  // And a smaller limit is honoured.
+  const few = await answered(built, { limit: 3 });
+  expect(few.sessions).toHaveLength(3);
+  expect(few.note).toContain("37 more");
+});
+
+test("an empty fleet answers a list rather than an error", async () => {
+  const answer = await answered(fleet());
+  expect(answer).toEqual({ sessions: [], total: 0 });
 });

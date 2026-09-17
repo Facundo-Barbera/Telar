@@ -18,6 +18,54 @@ test("the briefing tells the Agent to answer in the person's language, in neutra
   expect(AGENT_BRIEFING).toContain("tú");
 });
 
+/**
+ * AND SO IS HOW IT SPENDS ITS LAPS (#570). One call per message is how "how are
+ * things" became sixteen sequential tool calls and no answer; the engine now
+ * runs a message's calls together, and this is the sentence that makes a model
+ * put them in one message in the first place.
+ */
+test("the briefing tells the Agent to batch independent reads", () => {
+  expect(AGENT_BRIEFING).toContain("INDEPENDENT READS GO IN ONE MESSAGE");
+  expect(AGENT_BRIEFING).toContain("not one per lap");
+});
+
+/**
+ * AND WHICH CALL A STATUS QUESTION IS. Ten of the sixteen calls were
+ * `sessions_answer`, one per session — the tool is correct and the scope was
+ * wrong, which is a choice only the paragraph can inform.
+ */
+test("the briefing names fleet_status as the answer to a status question", () => {
+  expect(AGENT_BRIEFING).toContain("fleet_status");
+  expect(AGENT_BRIEFING).toContain("how are things");
+  // The contrast is the point: the bug was reaching for the one-turn read.
+  expect(AGENT_BRIEFING).toContain("sessions_answer is one turn's words");
+});
+
+/**
+ * THE CEILING IS LOAD-BEARING, not tidiness: this paragraph is resent on every
+ * lap of every turn, so a sentence added here is paid for thousands of times.
+ * Adding a rule means taking the words from somewhere.
+ */
 test("the briefing stays under its stated ceiling", () => {
   expect(AGENT_BRIEFING.length).toBeLessThan(2_800);
+});
+
+/** Nothing was dropped to make room — every limit the paragraph held, it holds. */
+test("trimming for room kept every rule that was there", () => {
+  for (const rule of [
+    "YOU ARE NOT A SESSION",
+    "YOU HOLD THE SESSIONS WALL AND THE NOTES WALL",
+    "LOOK BEFORE YOU CREATE",
+    "DELEGATE ONLY WHAT WAS ASKED FOR",
+    "SUBSCRIBE ONLY TO WORK YOU ASSIGNED",
+    "REPORT WHAT CHANGED",
+    "SOME CALLS WAIT FOR THE PERSON",
+    "KEEP YOUR OWN NOTES WITH remember",
+    "recall searches",
+    "github_status reads",
+    "PRESERVE WORK AND RESPECT PERMISSIONS",
+    "ask them",
+  ]) {
+    expect(AGENT_BRIEFING).toContain(rule);
+  }
 });

@@ -198,6 +198,232 @@ function clamp(raw: unknown, fallback: number, ceiling: number): number {
 }
 
 /* ------------------------------------------------------------------ *
+ * `fleet_status` — the whole answer to "how are things" (#570).
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE READ THE AGENT DID NOT HAVE, and the absence cost sixteen laps.
+ *
+ * Asked "how are things", the Agent had no call that answers the question, so it
+ * assembled one: two `sessions_status`, two `sessions_outline`, one
+ * `sessions_requests` and TEN `sessions_answer` — one per session it remembered
+ * — and then hit the graph's ceiling with nothing to say. Every one of those
+ * reads is correctly scoped; none of them is "the fleet", and a model with no
+ * fleet read builds one a session at a time.
+ *
+ * ── WHY THE UNION OF THREE SOURCES ──────────────────────────────────────────
+ * "The sessions the Agent has touched" is not one list, and no single one of the
+ * three is it:
+ *
+ *   · SUBSCRIPTIONS are the work it ASSIGNED and asked to be woken by. The
+ *     highest-signal source, and the smallest — a one-shot subscription is
+ *     removed when it fires, so a session it delegated an hour ago is already
+ *     gone from here.
+ *   · THE STANDING STATE'S `who` SECTION is what it believes it is coordinating,
+ *     in its own words, and it SURVIVES the subscription: "session_x is on the
+ *     lap cap" stays true after the wake that removed the subscription. It is
+ *     also the only source that can name a session nobody else would list.
+ *   · THE UNSETTLED RAIL is what the PERSON has open, which is the half the
+ *     Agent's own bookkeeping cannot know: a session they started themselves,
+ *     this morning, is in no subscription and in no section the Agent wrote.
+ *
+ * A union, deduplicated by id. Each source alone answers a different question;
+ * "how are things" is all three.
+ *
+ * ── AND WHY IT IS BOUNDED TWICE ─────────────────────────────────────────────
+ * `limit` rows AND `FLEET_MAX_CHARS` of answer, whichever comes first — the
+ * two-number bound `boundedOutline` already argues for one level up. A count
+ * alone lets twenty rows of long titles through; a byte budget alone would
+ * happily return sixty tiny ones. What is left out is COUNTED and the count is
+ * in the answer, because a list that silently looked complete is how a model
+ * reports a third of the fleet as all of it.
+ */
+export type AgentFleetCapability = {
+  /** The unsettled rail — the list the PERSON has open — and the project names
+   *  its rows point at. Settled sessions are deliberately not in it: the shelf
+   *  is the person's own "I am done looking at this". */
+  rail(): Promise<{ sessions: FleetSessionRow[]; projects: Array<{ id: string; name: string }> }>;
+  /** The session ids this Agent asked to be woken by. */
+  subscribed(): Promise<string[]>;
+  /** The standing state's "who is on what" section, verbatim — the ids are read
+   *  out of its prose, because that is the shape the Agent writes it in. */
+  who(): string | undefined;
+  /** One session, for an id that came from a subscription or from `who` and was
+   *  not on the rail. `undefined` when it no longer exists, which is ordinary:
+   *  the Agent's own notes outlive the sessions they name. */
+  session(sessionId: string): Promise<FleetSessionRow | undefined>;
+  /** The newest turn, as the outline already folds one. */
+  lastTurn(sessionId: string): Promise<{ state: string; endedAt?: number; answer: string } | undefined>;
+  /** How many requests that session has OPEN — the number, not the requests. */
+  openRequests(sessionId: string): Promise<number>;
+  /** Unread inbox rows per session id. The Agent's OWN news — what it has not
+   *  been shown yet — rather than anything the store knows about. */
+  unread(): Record<string, number>;
+};
+
+export type FleetSessionRow = { id: string; title?: string; projectId?: string; activity: string; updatedAt?: number };
+
+/** Twenty sessions is the rail on a busy machine, and the ceiling the issue
+ *  names. A caller asking for more is served twenty and told so. */
+const FLEET_LIMIT_DEFAULT = 20;
+const FLEET_LIMIT_MAX = 20;
+
+/**
+ * THE ANSWER'S OWN CEILING — `OUTLINE_PAGE_BYTES`' number, for its reason. This
+ * lands in a model's context beside the rest of its work, and the whole point of
+ * the tool is that it costs ONE call rather than sixteen; a 20 KB answer would
+ * have moved the cost rather than removed it.
+ */
+const FLEET_MAX_CHARS = 6_000;
+
+/** What one row quotes of the last answer. The outline's own number: an
+ *  answer's opening is what identifies it. */
+const FLEET_ANSWER_CHARS = 200;
+
+/**
+ * A SESSION ID AS THE AGENT WRITES ONE INTO ITS NOTES.
+ *
+ * THE `session_` PREFIX IS THE WHOLE GUARD, and it is enough: a `who` section is
+ * prose, and prose does not contain that token unless it is naming a session. A
+ * minimum length was tried and removed — it silently dropped short ids, which
+ * made "the notes source works" depend on how long the id happened to be.
+ *
+ * NOTHING IS TRUSTED FROM IT. An id read out of the Agent's own prose is looked
+ * up like any other, and one that no longer resolves drops out of the answer.
+ */
+const SESSION_ID = /\bsession_[A-Za-z0-9_-]+\b/g;
+
+const FLEET_STATUS =
+  "How are things across every session you are on — subscriptions, the ones your notes name, and the person's open rail — one bounded row each. " +
+  "ONE call answers 'how is it going'; sessions_answer is for one turn's words.";
+
+type FleetRow = {
+  id: string;
+  title?: string;
+  projectName?: string;
+  activity: string;
+  lastTurn?: { state: string; endedAt?: number };
+  lastAnswer?: string;
+  openRequests: number;
+  unreadInbox: number;
+  /** Which of the three lists put this row here, so a reader can tell work it
+   *  assigned from work it merely has open. */
+  sources: string[];
+};
+
+/**
+ * WAITING ON A PERSON FIRST, THEN RUNNING, THEN MOST RECENTLY ENDED.
+ *
+ * THE RANKING IS THE ARGUMENT, and it is `renderDigest`'s: a parked request is
+ * the only band a person can act on, and a status answer that led with six idle
+ * sessions while one sat blocked would bury the single row that mattered. A
+ * session is "waiting" if it has an open request OR the engine calls it
+ * `blocked` — the two are the same fact seen from either end, and either alone
+ * would miss a case.
+ */
+function band(row: FleetRow): number {
+  if (row.openRequests > 0 || row.activity === "blocked") return 0;
+  if (row.activity === "working" || row.activity === "queued") return 1;
+  return 2;
+}
+
+export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapability): unknown[] {
+  return [
+    tool(
+      "fleet_status",
+      FLEET_STATUS,
+      {
+        limit: z.number().int().min(1).max(FLEET_LIMIT_MAX).optional().describe(`Default ${FLEET_LIMIT_DEFAULT}, which is also the most it will return.`),
+      },
+      async (args) => {
+        const limit = clamp(args.limit, FLEET_LIMIT_DEFAULT, FLEET_LIMIT_MAX);
+        try {
+          /**
+           * THE THREE SOURCES, READ TOGETHER. They do not depend on each other,
+           * and this tool exists to cost one round trip — running them in
+           * sequence here would be the very thing it was built to stop the model
+           * doing one level up.
+           */
+          const [rail, subscribed] = await Promise.all([capability.rail(), capability.subscribed()]);
+          const named = [...new Set((capability.who() ?? "").match(SESSION_ID) ?? [])];
+
+          const sources = new Map<string, Set<string>>();
+          const note = (id: string, source: string) => sources.set(id, (sources.get(id) ?? new Set()).add(source));
+          for (const session of rail.sessions) note(session.id, "rail");
+          for (const id of subscribed) note(id, "subscribed");
+          for (const id of named) note(id, "notes");
+
+          const known = new Map(rail.sessions.map((session) => [session.id, session]));
+          const projects = new Map(rail.projects.map((project) => [project.id, project.name]));
+          const unread = capability.unread();
+
+          /**
+           * ONE ROW EACH, ALL AT ONCE. A session named only in the notes costs
+           * one extra read; twenty of them in sequence would cost twenty round
+           * trips, which is the sixteen-lap turn again with the laps hidden
+           * inside one call.
+           */
+          const rows = (
+            await Promise.all(
+              [...sources.keys()].map(async (id): Promise<FleetRow | undefined> => {
+                const session = known.get(id) ?? (await capability.session(id));
+                // A NOTE OUTLIVES THE SESSION IT NAMES, and that is ordinary
+                // rather than an error: the row is dropped and the count says
+                // how many were.
+                if (!session) return undefined;
+                const [lastTurn, openRequests] = await Promise.all([capability.lastTurn(id), capability.openRequests(id)]);
+                return {
+                  id,
+                  ...(session.title ? { title: session.title } : {}),
+                  ...(session.projectId && projects.get(session.projectId) ? { projectName: projects.get(session.projectId)! } : {}),
+                  activity: session.activity,
+                  ...(lastTurn ? { lastTurn: { state: lastTurn.state, ...(lastTurn.endedAt === undefined ? {} : { endedAt: lastTurn.endedAt }) } } : {}),
+                  ...(lastTurn?.answer ? { lastAnswer: head(lastTurn.answer, FLEET_ANSWER_CHARS) } : {}),
+                  openRequests,
+                  unreadInbox: unread[id] ?? 0,
+                  sources: [...(sources.get(id) ?? [])].sort(),
+                };
+              }),
+            )
+          ).filter((row): row is FleetRow => row !== undefined);
+
+          rows.sort((left, right) => {
+            const bands = band(left) - band(right);
+            if (bands !== 0) return bands;
+            // Most recently ended first inside a band. A turn still running has
+            // no `endedAt`; it sorts to the top of its band, which is where a
+            // reader looking for "what is happening now" wants it.
+            return (right.lastTurn?.endedAt ?? Number.MAX_SAFE_INTEGER) - (left.lastTurn?.endedAt ?? Number.MAX_SAFE_INTEGER);
+          });
+
+          // BOUNDED TWICE, and the first row always fits — `boundedOutline`'s
+          // own rule, so one enormous title cannot return an empty list.
+          const shown: FleetRow[] = [];
+          let chars = 0;
+          for (const row of rows) {
+            if (shown.length >= limit) break;
+            chars += JSON.stringify(row).length + 1;
+            if (chars > FLEET_MAX_CHARS && shown.length > 0) break;
+            shown.push(row);
+          }
+
+          const left = rows.length - shown.length;
+          return json({
+            sessions: shown,
+            total: rows.length,
+            ...(left > 0
+              ? { note: `${left} more session${left === 1 ? "" : "s"} not shown. sessions_list for the rest, sessions_answer for one turn's words.` }
+              : {}),
+          });
+        } catch (error) {
+          return err(`Could not read the fleet: ${failure(error)}`);
+        }
+      },
+    ),
+  ];
+}
+
+/* ------------------------------------------------------------------ *
  * The Agent's own memory — #541 part F.
  * ------------------------------------------------------------------ */
 
@@ -448,6 +674,9 @@ export type AgentWalls = {
   sessions: SessionsCapability;
   notes: NotesCapability;
   query: AgentQueryCapability;
+  /** "How are things" in one call (#570). Absent in a test that is only asking
+   *  what the two shared walls hold. */
+  fleet?: AgentFleetCapability;
   /** The Agent's own standing state and history search. Absent in a test that
    *  is only asking what the two shared walls hold. */
   memory?: AgentMemoryCapability;
@@ -456,19 +685,26 @@ export type AgentWalls = {
 };
 
 /**
- * The Agent's whole tool list: 13 sessions tools, 3 query tools, 5 notes tools,
- * one GitHub read, and the two it has about itself.
+ * The Agent's whole tool list: 13 sessions tools, 3 query tools, the fleet read,
+ * 5 notes tools, one GitHub read, and the two it has about itself.
  *
  * SESSIONS FIRST, then the queries beside them, then the notebook — the order a
  * model is shown them in, and it is deliberate: the sessions wall is what the
  * Agent is FOR, and a read that narrows the rail belongs next to the one that
  * lists it. Its own memory is last, because it is the only pair that is about
  * the Agent rather than about Telar's work.
+ *
+ * `fleet_status` SITS WITH THE QUERIES, immediately after them, because it is
+ * the widest of the same family: `sessions_answer` is one turn, `sessions_outline`
+ * is one session, and this is all of them. A model choosing among four reads
+ * reads them in that order and picks the one whose scope matches its question,
+ * which is exactly the choice #570 is about.
  */
 export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   return [
     ...collectTools(sessionsTools as never, walls.sessions as never),
     ...collectTools(agentQueryTools as never, walls.query as never),
+    ...(walls.fleet ? collectTools(agentFleetTools as never, walls.fleet as never) : []),
     ...collectTools(notesTools as never, walls.notes as never),
     ...(walls.github ? collectTools(agentGitHubTools as never, walls.github as never) : []),
     ...(walls.memory ? collectTools(agentMemoryTools as never, walls.memory as never) : []),
