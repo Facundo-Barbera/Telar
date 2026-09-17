@@ -45,6 +45,7 @@ import type {
   AgentAnswer,
   AgentModelCatalogue,
   AgentState,
+  AgentInboxAnswer,
   AgentThreadAnswer,
   DictationAnswer,
   DictationProviderId,
@@ -550,6 +551,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  one that replaced it. `resolved: false` means it was already answered. */
     resolveAgentRequest: (requestId: string, decision: "accept" | "decline") =>
       request<{ resolved: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/requests/${encodeURIComponent(requestId)}`, { decision }),
+    /** THE WAKE INBOX (#541 A) — what a completion on a subscribed session writes
+     *  now that it no longer starts an Agent turn. `unreadOnly` is the strip
+     *  above the composer; without it this pages the whole inbox. */
+    agentInbox: (options: { after?: number; limit?: number; unreadOnly?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (options.after !== undefined) query.set("after", String(options.after));
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      if (options.unreadOnly) query.set("unread", "1");
+      const suffix = query.toString();
+      return request<AgentInboxAnswer>(fetcher, "GET", `/api/agent/inbox${suffix ? `?${suffix}` : ""}`);
+    },
+    /** Mark rows read BY ID, so a client holding a stale list cannot clear rows
+     *  that landed after it last looked. `read` is how many actually moved. */
+    markAgentInboxRead: (ids: readonly number[]) =>
+      request<{ read: number; unread: number }>(fetcher, "POST", "/api/agent/inbox/read", { ids: [...ids] }),
     /* -------------------------------------------------------------- *
      * DICTATION — issue #544, first step.
      *

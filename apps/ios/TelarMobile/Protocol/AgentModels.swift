@@ -148,8 +148,15 @@ struct AgentState: Decodable, Equatable {
     /// and unchanged while the next runs — a meter that emptied itself the
     /// moment you spoke would answer a question nobody asked.
     var lastUsage: AgentLastUsage?
+    /// HOW MANY WAKES ARE WAITING (#541 A). A completion on a session the Agent
+    /// subscribed to used to start a turn; it now writes an inbox row, and the
+    /// next turn a person begins opens with a digest of what is unread.
+    ///
+    /// `nil` IS A MAC TOO OLD TO HAVE ONE, and it is not zero: a badge drawn
+    /// from an absent field would be this phone inventing a number.
+    var inboxUnread: Int?
 
-    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, effort, access, running, runId, queued, request, lastUsage }
+    private enum CodingKeys: String, CodingKey { case enabled, threadId, model, effort, access, running, runId, queued, request, lastUsage, inboxUnread }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -166,9 +173,10 @@ struct AgentState: Decodable, Equatable {
         // AND A METER THIS BUILD CANNOT READ COSTS THE LINE. An older Mac sends
         // none at all, which is the same case.
         lastUsage = try? c.decodeIfPresent(AgentLastUsage.self, forKey: .lastUsage)
+        inboxUnread = (try? c.decodeIfPresent(Int.self, forKey: .inboxUnread)) ?? nil
     }
 
-    init(enabled: Bool, threadId: String? = nil, model: String? = nil, effort: String? = nil, access: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil, lastUsage: AgentLastUsage? = nil) {
+    init(enabled: Bool, threadId: String? = nil, model: String? = nil, effort: String? = nil, access: String? = nil, running: Bool = false, runId: String? = nil, queued: Int = 0, request: AgentRequest? = nil, lastUsage: AgentLastUsage? = nil, inboxUnread: Int? = nil) {
         self.enabled = enabled
         self.threadId = threadId
         self.model = model
@@ -179,6 +187,147 @@ struct AgentState: Decodable, Equatable {
         self.queued = queued
         self.request = request
         self.lastUsage = lastUsage
+        self.inboxUnread = inboxUnread
+    }
+}
+
+/// ONE ROW OF THE AGENT'S WAKE INBOX — issue #541, section A.
+///
+/// A subscribed session finishing, failing, being stopped or parking a request
+/// lands here instead of starting an Agent turn. The Mac renders the unread rows
+/// as a digest at the top of the next turn a person begins; this phone draws the
+/// same rows above the composer, in the same words.
+///
+/// `kind` IS A STRING BEHIND A SMALL ENUM, the tolerance `AgentRowKind` already
+/// has: a Mac on a newer engine may write a kind this build has never heard of,
+/// and the row must be skipped rather than take the page down with it.
+enum AgentInboxKind: String, Decodable {
+    case turnCompleted = "turn_completed"
+    case turnFailed = "turn_failed"
+    case turnStopped = "turn_stopped"
+    case requestOpened = "request_opened"
+    case peerMessage = "peer_message"
+}
+
+struct AgentInboxRow: Decodable, Equatable, Identifiable {
+    var id: Int
+    var at: Timestamp
+    /// The session this is about.
+    var sessionId: String
+    /// Its turn — the one that ended, or the one a request belongs to.
+    var runId: String
+    var kind: AgentInboxKind
+    /// For a peer message: what the sender said it was.
+    var intent: String?
+    var summary: String
+    var read: Bool
+
+    private enum CodingKeys: String, CodingKey { case id, at, sessionId, runId, kind, intent, summary, read }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        at = (try? c.decode(Timestamp.self, forKey: .at)) ?? 0
+        sessionId = (try? c.decode(String.self, forKey: .sessionId)) ?? ""
+        runId = (try? c.decode(String.self, forKey: .runId)) ?? ""
+        // AN UNKNOWN KIND THROWS, and `Skippable` in the page above turns that
+        // into "this row is not drawn" rather than "this page is lost".
+        kind = try c.decode(AgentInboxKind.self, forKey: .kind)
+        intent = (try? c.decodeIfPresent(String.self, forKey: .intent)) ?? nil
+        summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
+        read = (try? c.decode(Bool.self, forKey: .read)) ?? false
+    }
+
+    init(id: Int, at: Timestamp = 0, sessionId: String = "", runId: String = "", kind: AgentInboxKind, intent: String? = nil, summary: String = "", read: Bool = false) {
+        self.id = id
+        self.at = at
+        self.sessionId = sessionId
+        self.runId = runId
+        self.kind = kind
+        self.intent = intent
+        self.summary = summary
+        self.read = read
+    }
+
+    /// WHAT THIS ROW IS CALLED — the Mac's digest vocabulary, deliberately.
+    ///
+    /// The block the model was shown says "WAITING ON YOU", "FAILED",
+    /// "finished"; this is the person's view of the same rows, and two spellings
+    /// of one happening is the bug `describeWake` exists to prevent, one surface
+    /// over.
+    var verb: String {
+        switch kind {
+        case .requestOpened: return "Waiting on you"
+        case .turnFailed: return "Failed"
+        case .turnCompleted: return "Finished"
+        case .turnStopped: return "Stopped"
+        case .peerMessage:
+            switch intent ?? "report" {
+            case "task": return "Assigned work"
+            case "blocker": return "Reported a blocker"
+            case "result": return "Sent a result"
+            default: return "Sent a message"
+            }
+        }
+    }
+
+    /// Whether this is one a person has to move on — the rail's `warning` tone.
+    var needsYou: Bool {
+        kind == .requestOpened || kind == .turnFailed || (kind == .peerMessage && intent == "blocker")
+    }
+
+    /// The engine's own bracketed kind, stripped: the verb is already beside it.
+    var line: String {
+        guard let close = summary.firstIndex(of: "]"), summary.hasPrefix("[") else { return summary }
+        return summary[summary.index(after: close)...].trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// `GET /api/agent/inbox`. Bounded by a count the Mac clamps — page until `more`
+/// is false, or read the first screenful and trust `unread` for the rest.
+struct AgentInboxPage: Decodable {
+    var rows: [AgentInboxRow]
+    var cursor: Int
+    var more: Bool
+    /// How many are unread IN TOTAL, not on this page.
+    var unread: Int
+
+    private enum CodingKeys: String, CodingKey { case rows, cursor, more, unread }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rows = try c.decodeIfPresent([Skippable<AgentInboxRow>].self, forKey: .rows)?.compactMap(\.value) ?? []
+        cursor = (try? c.decode(Int.self, forKey: .cursor)) ?? 0
+        more = (try? c.decode(Bool.self, forKey: .more)) ?? false
+        unread = (try? c.decode(Int.self, forKey: .unread)) ?? rows.count
+    }
+
+    init(rows: [AgentInboxRow], cursor: Int = 0, more: Bool = false, unread: Int = 0) {
+        self.rows = rows
+        self.cursor = cursor
+        self.more = more
+        self.unread = unread
+    }
+}
+
+/// THE RANKING THE MAC'S DIGEST USES, applied to the strip.
+///
+/// Waiting on you, then failed, then everything else newest-first. A person
+/// glancing at this asks the same question the model was asked — "is anything
+/// waiting on me" — and a list in arrival order buries it under whatever
+/// finished last.
+func rankAgentInbox(_ rows: [AgentInboxRow]) -> [AgentInboxRow] {
+    func rank(_ kind: AgentInboxKind) -> Int {
+        switch kind {
+        case .requestOpened: return 0
+        case .turnFailed: return 1
+        case .peerMessage: return 2
+        case .turnCompleted: return 3
+        case .turnStopped: return 4
+        }
+    }
+    return rows.sorted { left, right in
+        rank(left.kind) == rank(right.kind) ? left.id > right.id : rank(left.kind) < rank(right.kind)
     }
 }
 

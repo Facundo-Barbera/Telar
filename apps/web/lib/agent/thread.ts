@@ -200,6 +200,16 @@ export type AgentThreadHandle = {
    *  through the same route Settings uses. `""` clears a field. */
   configure: (patch: { model?: string; effort?: string; access?: string }) => Promise<void>;
   sending: boolean;
+  /**
+   * BUMPED WHEN AN INBOX ROW LANDS ON THE STREAM (#541 A) — a counter, not the
+   * row.
+   *
+   * The stream's `inbox` frame is a NUDGE: it says something arrived, and the
+   * inbox route is the authoritative list (a reconnect replays transcript rows
+   * and not these). So this hook forwards the fact and `useAgentInbox` re-reads,
+   * rather than holding a second copy of a list it does not own.
+   */
+  inboxNudge: number;
 };
 
 /**
@@ -215,6 +225,9 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
+  /** See `AgentThreadHandle.inboxNudge` — a count of `inbox` frames seen, which
+   *  is all a reader of the inbox route needs from this connection. */
+  const [inboxNudge, setInboxNudge] = useState(0);
   const api = useMemo(() => createEngineApi(hostFetcher(hostId)), [hostId]);
   /** The highest row id this screen holds — where a reconnect resumes from.
    *  A ref rather than state because the stream effect must not re-run every
@@ -336,6 +349,11 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
                     }
                   }).catch(() => undefined);
                 }
+              } else if (event.type === "inbox") {
+                // A NUDGE, NOT A FEED. The row itself is read back from
+                // `/api/agent/inbox`, which is the list that survives a
+                // reconnect — see `AgentThreadHandle.inboxNudge`.
+                setInboxNudge((held) => held + 1);
               } else if (event.type === "delta") {
                 // ACCUMULATED PER MESSAGE. A delta for a NEW `itemId` starts a
                 // fresh buffer rather than appending to the last one — the
@@ -436,6 +454,7 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
     resolve,
     configure,
     sending,
+    inboxNudge,
     ...(error === undefined ? {} : { error }),
   };
 }

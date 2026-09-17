@@ -139,6 +139,17 @@ protocol EngineAPI: Sendable {
     /// replaced it. Two decisions and not three: the Agent's gate is decided
     /// per call, so there is nothing an "always" could attach to.
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws
+    /// THE WAKE INBOX (#541 A) — what a completion on a session the Agent
+    /// subscribed to writes now that it no longer starts a turn. `unreadOnly` is
+    /// the strip above the composer; without it this pages the whole inbox.
+    ///
+    /// DEFAULTED BELOW TO AN EMPTY PAGE, like the routes beside it: a double
+    /// that models the transcript should not have to implement one, and a Mac
+    /// too old to serve it answers the same thing — no strip.
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage
+    /// Mark rows read BY ID, so a phone holding a stale list cannot clear rows
+    /// that landed after it last looked.
+    func markAgentInboxRead(_ ids: [Int]) async throws
     /// WHAT THE AGENT MAY RUN — the composer's model pill (#539).
     ///
     /// FAILS SOFT rather than throwing: a Mac that could not reach OpenCode Go,
@@ -267,6 +278,8 @@ extension EngineAPI {
     func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
     func cancelAgentTurn(_ runId: String) async throws {}
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage { AgentInboxPage(rows: [], cursor: after) }
+    func markAgentInboxRead(_ ids: [Int]) async throws {}
     func agentModels() async throws -> AgentModelList { AgentModelList(models: [], message: nil) }
     func setAgent(_ patch: AgentSettingsPatch) async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
 
@@ -787,6 +800,16 @@ struct HTTPEngineAPI: EngineAPI {
         let _: IgnoredBody = try await post(
             "api/agent/requests/\(escape(requestId))", body: ["decision": AnyEncodable(accept ? "accept" : "decline")]
         )
+    }
+
+    func agentInbox(after: Int, unreadOnly: Bool) async throws -> AgentInboxPage {
+        var query = [URLQueryItem(name: "after", value: String(after))]
+        if unreadOnly { query.append(URLQueryItem(name: "unread", value: "1")) }
+        return try await get("api/agent/inbox", query: query)
+    }
+
+    func markAgentInboxRead(_ ids: [Int]) async throws {
+        let _: IgnoredBody = try await post("api/agent/inbox/read", body: ["ids": AnyEncodable(ids)])
     }
 
     func agentModels() async throws -> AgentModelList {
