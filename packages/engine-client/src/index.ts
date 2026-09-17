@@ -362,6 +362,18 @@ export type AgentLastUsage = {
    * which a client reads as "nothing to say" rather than as zero turns folded.
    */
   folded?: number;
+  /**
+   * HOW MANY TIMES THAT TURN WENT BACK TO THE MODEL (#570).
+   *
+   * MODEL CALLS, not tool calls: the last lap is the one that answers, so a turn
+   * that used no tool reports `1`. The engine caps this (see the engine's own
+   * `MAX_LAPS`) and lands the turn with an answer at the cap rather than letting
+   * the graph throw, which is why the number is worth showing — a turn that ended
+   * at the ceiling looks exactly like one that finished early unless it says so.
+   *
+   * OPTIONAL ON THE WIRE, like `folded`: an engine from before this sends none.
+   */
+  laps?: number;
 };
 
 export type AgentState = {
@@ -482,14 +494,15 @@ export type DictationTokenAnswer = { provider: DictationProviderId; token: strin
  *   turn_started      `{ origin, brief? }` — `brief` only on a turn a voice
  *                     client asked to have answered aloud (#567).
  *   turn_done         `{ status, text?, message?, usage?, contextChars,
- *                     budgetChars, folded }` — `text` is the turn's ANSWER, the
- *                     same words as its last assistant row. Two readers, two
+ *                     budgetChars, folded, laps }` — `text` is the turn's ANSWER,
+ *                     the same words as its last assistant row. Two readers, two
  *                     shapes: a list view renders this without replaying the
  *                     thread. The meter fields are `AgentLastUsage`'s, written
  *                     on EVERY ending (completed, stopped, failed) because a
  *                     turn that spent its tokens and then failed still spent
  *                     them. A row written before the meter existed carries none
- *                     of them, and one from before #567 carries no `folded`.
+ *                     of them, one from before #567 carries no `folded`, and one
+ *                     from before #570 no `laps`.
  */
 export type AgentRow = {
   id: number;

@@ -100,8 +100,44 @@ import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
  *
  * LangGraph counts SUPERSTEPS, and one lap is two of them (model, tools), so
  * the graph's ceiling is twice the laps plus one.
+ *
+ * ── IT IS A LANDING, NOT A WALL (#570) ──────────────────────────────────────
+ * This number used to be spent only as `recursionLimit`, and the way a turn met
+ * it was that LangGraph THREW: `Recursion limit of 25 reached without hitting a
+ * stop condition`, the turn `failed`, and the person who asked "how are things"
+ * got a library's sentence instead of an answer, after sixteen tool calls and
+ * 312k tokens. Measured on nightly 20260917.4, three of ten turns.
+ *
+ * So the cap is now spent HERE, one lap early: `callModel` sees that this call
+ * is the last one the turn may make, invokes the model with NO TOOLS BOUND and
+ * one sentence added to the system block, and whatever it says is the turn's
+ * answer. Unbinding is what makes that final call terminal — a model with no
+ * tools to call cannot ask for a seventeenth lap, so `shouldContinue` routes to
+ * END and nothing has to trust the model to stop when told.
+ *
+ * `recursionLimit` STAYS, above this, as the backstop it always should have
+ * been. Nothing routine reaches it any more: the final lap is superstep
+ * 2·MAX_LAPS−1, and the limit sits above that, so it can only fire if this cap
+ * is bypassed (a turn resumed into a fresh graph, see `spend.laps`) — which is
+ * exactly when a ceiling is still wanted.
  */
 const MAX_LAPS = 12;
+
+/**
+ * WHAT THE LAST LAP IS TOLD, and it is deliberately one sentence.
+ *
+ * It rides the SYSTEM block rather than the message list for `AGENT_BRIEF_ANSWER`'s
+ * reason: this is an instruction about how to answer THIS call, and anything
+ * appended to `messages` would be checkpointed and still be there three turns
+ * later. The system block is rebuilt per lap from `buildGraph`'s own pieces, so
+ * appending to it costs nothing and outlives nothing.
+ *
+ * IT ASKS FOR THE GAP AS WELL AS THE ANSWER. "Answer with what you have" alone
+ * produces a confident summary of a half-finished look; naming what was not
+ * reached is what lets the person decide whether to ask again.
+ */
+const OUT_OF_LAPS =
+  "You are out of tool calls for this turn. Answer with what you have and say what you did not get to.";
 
 /** The ledger's key for one effect. A hash rather than the arguments because a
  *  key is compared and never read, and a `sessions_send` argument is a whole
@@ -185,6 +221,19 @@ export type AgentLastUsage = {
    * that folded nothing.
    */
   folded: number;
+  /**
+   * HOW MANY TIMES THIS TURN WENT BACK TO THE MODEL (#570).
+   *
+   * THE NUMBER THE LAP CAP IS ABOUT, and the one nobody could see while the cap
+   * was a thrown exception: "sixteen calls" was read off a screenshot. It counts
+   * MODEL CALLS, which is one more than the tool rounds — the last lap is the
+   * one that answers — so a turn that called no tool at all reports `1`.
+   *
+   * ALWAYS WRITTEN, like the three numbers beside it. `0` is not a turn that
+   * ran: it is a row written before this field existed, or a turn stopped
+   * before it reached the model, and both are honestly "no laps to report".
+   */
+  laps: number;
 };
 
 export type AgentStateAnswer = {
@@ -306,7 +355,7 @@ export class AgentRuntime {
   /** What the live turn has spent so far: the model's own numbers summed over
    *  its laps, and the prompt size the most recent lap was trimmed to. Reset
    *  when a turn starts, folded into `turn_done` when one ends. */
-  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number; folded: number };
+  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number; folded: number; laps: number };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
   /** The inbox rows the live turn's digest accounts for, marked read when it
@@ -411,7 +460,7 @@ export class AgentRuntime {
     let found: AgentLastUsage | undefined;
     for (const row of page.rows) {
       if (row.kind !== "turn_done") continue;
-      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown; folded?: unknown };
+      const detail = row.detail as { usage?: Partial<AgentUsage>; contextChars?: unknown; budgetChars?: unknown; folded?: unknown; laps?: unknown };
       // A row written before the meter existed carries no numbers. It is still
       // the newest ended turn, so it CLEARS a stale meter rather than leaving
       // an older turn's figures on screen.
@@ -425,6 +474,7 @@ export class AgentRuntime {
         contextChars: typeof detail.contextChars === "number" ? detail.contextChars : 0,
         budgetChars: typeof detail.budgetChars === "number" ? detail.budgetChars : this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS,
         folded: typeof detail.folded === "number" ? detail.folded : 0,
+        laps: typeof detail.laps === "number" ? detail.laps : 0,
       };
     }
     return found;
@@ -819,7 +869,7 @@ export class AgentRuntime {
       this.live = { turn: next, controller };
       // The meter's accumulator, per turn. A stopped or failed turn reports
       // what it had spent before it ended — the tokens were bought either way.
-      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0, folded: 0 };
+      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0, folded: 0, laps: 0 };
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
@@ -907,7 +957,16 @@ export class AgentRuntime {
     });
     const config: RunnableConfig = {
       configurable: { thread_id: threadId },
-      // One lap is two supersteps, plus the final model call that answers.
+      /**
+       * THE BACKSTOP, ABOVE THE CAP THAT NOW FIRES FIRST (#570).
+       *
+       * One lap is two supersteps, plus the final model call that answers, so
+       * `callModel`'s own cap lands the turn at superstep 2·maxLaps−1 and this
+       * is never reached on the path the person sees. It is kept because it
+       * bounds the one case the cap does not: a graph rebuilt mid-turn starts
+       * its lap count again, and a ceiling that only existed while the counter
+       * was trustworthy would not be a ceiling.
+       */
       recursionLimit: (this.options.maxLaps ?? MAX_LAPS) * 2 + 1,
       signal,
     };
@@ -974,17 +1033,23 @@ export class AgentRuntime {
     // would leave a client unable to tell "folded nothing" from "an engine too
     // old to say".
     const folded = spend?.folded ?? 0;
+    // AND HOW MANY MODEL CALLS IT TOOK (#570) — on the same row and by the same
+    // rule. It is the reading the lap cap exists to bound, so a turn that ended
+    // at the cap and a turn that answered on its first call are told apart in
+    // the transcript rather than by counting tool rows.
+    const laps = spend?.laps ?? 0;
     const row = this.row("turn_done", runId, {
       ...detail,
       ...(usage ? { usage } : {}),
       contextChars,
       budgetChars,
       folded,
+      laps,
     });
     // Only when the row landed: a row suppressed because the thread was reset
     // mid-turn belongs to a conversation that no longer exists, and its meter
     // with it.
-    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars, folded };
+    if (row) this.lastUsage = { runId, at: row.at, ...(usage ? { usage } : {}), contextChars, budgetChars, folded, laps };
     /**
      * THE DIGEST'S ROWS ARE READ NOW — every ending, not only the happy one
      * (#541 A).
@@ -1104,7 +1169,25 @@ export class AgentRuntime {
       // `endedRow` marks its rows read only after this, so a turn stopped before
       // it ever reached the model leaves the news unread for the next one.
       if (context.digest) this.digestDelivered = true;
-      const bound = context.model.bindTools?.(specs as never) ?? context.model;
+      /**
+       * THE LAP CAP, SPENT AS A LANDING (#570) — see `MAX_LAPS`.
+       *
+       * COUNTED ON `spend`, which is the turn's own accumulator: it is created
+       * per turn in `drain` and is the same object `endedRow` reports from, so
+       * the number that bounds the loop and the number written to `turn_done`
+       * cannot disagree. A graph rebuilt mid-turn (a restart resuming a parked
+       * approval) gets a fresh one and a fresh budget — deliberate, and the
+       * reason `recursionLimit` is still set above this.
+       *
+       * `final` IS DECIDED BEFORE THE CALL, so this lap is the one that answers
+       * rather than the one that discovers it cannot continue. With no tools
+       * bound the model has nothing to call, `shouldContinue` sees no
+       * `tool_calls` and routes to END.
+       */
+      const laps = this.spend ? (this.spend.laps += 1) : 1;
+      const final = laps >= (this.options.maxLaps ?? MAX_LAPS);
+      const prompt = final ? new SystemMessage(`${String(system.content)}\n\n${OUT_OF_LAPS}`) : system;
+      const bound = final ? context.model : context.model.bindTools?.(specs as never) ?? context.model;
       /**
        * THE PRE-MODEL STEP, IN THREE, AND THE ORDER IS THE ARGUMENT.
        *
@@ -1124,7 +1207,9 @@ export class AgentRuntime {
        * was really sent rather than what would have been.
        */
       const budgetChars = budget ?? DEFAULT_AGENT_BUDGET_CHARS;
-      const reservedChars = String(system.content).length;
+      // MEASURED ON THE BLOCK THIS LAP ACTUALLY SENDS, which on the last lap is
+      // one sentence longer than the others — the meter is what was sent.
+      const reservedChars = String(prompt.content).length;
       const folded = foldOldTurns(compactToolResults(state.messages), { budgetChars, reservedChars });
       const history = trimAgentHistory(folded.messages, { budgetChars, reservedChars });
       /**
@@ -1145,7 +1230,7 @@ export class AgentRuntime {
       // CONFIG IS PASSED THROUGH so the turn's abort signal reaches the
       // provider call. A cancel that unwound the graph and left the request in
       // flight would not be a cancel.
-      const answer = (await bound.invoke([system, ...history.messages], config)) as AIMessage;
+      const answer = (await bound.invoke([prompt, ...history.messages], config)) as AIMessage;
       /**
        * THE MODEL'S OWN TOKEN COUNT, SUMMED OVER THE TURN'S LAPS. Nothing here
        * counts tokens — `usage_metadata` is what the provider reported, and a

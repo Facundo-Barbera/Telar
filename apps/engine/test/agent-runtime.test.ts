@@ -48,6 +48,16 @@ type Step = {
 class ScriptedChatModel extends BaseChatModel {
   index = 0;
   readonly seen: BaseMessage[][] = [];
+  /**
+   * WAS EACH LAP BOUND TO TOOLS — one entry per `_generate`, in order (#570).
+   *
+   * `bindTools` RETURNING `this` IS WHY THIS IS PER LAP rather than a flag: the
+   * runtime binds a fresh copy conceptually but gets the same object back, so
+   * "bound" has to mean "bound FOR THE LAP ABOUT TO RUN" or it would latch on
+   * after the first call and never answer the question the cap test asks.
+   */
+  readonly boundLaps: boolean[] = [];
+  private boundFor = -1;
   constructor(private readonly script: Step[]) {
     super({});
   }
@@ -55,15 +65,22 @@ class ScriptedChatModel extends BaseChatModel {
     return "scripted";
   }
   override bindTools(): this {
+    this.boundFor = this.index;
     return this;
   }
   async _generate(messages: BaseMessage[]): Promise<ChatResult> {
     this.seen.push(messages);
+    const bound = this.boundFor === this.index;
+    this.boundLaps.push(bound);
     const step = this.script[this.index] ?? { text: "nothing left to say" };
     this.index += 1;
     const message = new AIMessage({
       content: step.text ?? "",
-      tool_calls: step.toolCalls ?? [],
+      // A MODEL WITH NO TOOLS BOUND CANNOT CALL ONE. The scripted model honours
+      // that the way a real one does, so a step that asks for a tool on an
+      // unbound lap says its text instead of reaching for something it was not
+      // given — which is the whole mechanism the lap cap relies on.
+      tool_calls: bound ? step.toolCalls ?? [] : [],
       ...(step.usage
         ? { usage_metadata: { input_tokens: step.usage.input, output_tokens: step.usage.output, total_tokens: step.usage.input + step.usage.output } }
         : {}),
@@ -91,7 +108,7 @@ function wall(landed: Landed[], overrides: Record<string, (args: Record<string, 
   return ["sessions_list", "sessions_send", "sessions_create", "sessions_read"].map(make);
 }
 
-function runtime(script: Step[], tools: SocketTool[], options: { now?: () => number; budgetChars?: number } = {}) {
+function runtime(script: Step[], tools: SocketTool[], options: { now?: () => number; budgetChars?: number; maxLaps?: number } = {}) {
   const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-rt-"));
   const model = new ScriptedChatModel(script);
   const agent = new AgentRuntime({
@@ -102,6 +119,9 @@ function runtime(script: Step[], tools: SocketTool[], options: { now?: () => num
     // A ceiling a scenario can actually cross. The default is 120k, which no
     // scripted conversation is ever going to reach.
     ...(options.budgetChars !== undefined ? { budgetChars: options.budgetChars } : {}),
+    // Likewise for laps: the default is 12, and a test that had to script
+    // twelve tool calls to reach the cap would be testing its own fixture.
+    ...(options.maxLaps !== undefined ? { maxLaps: options.maxLaps } : {}),
   });
   agent.patch({ enabled: true });
   return { agent, model, engineRoot };
@@ -660,6 +680,8 @@ test("a turn's usage is the model's own numbers summed over its laps, on the row
     // A short conversation folds nothing, and says so rather than staying
     // silent — see `endedRow`.
     folded: 0,
+    // TWO MODEL CALLS, which is one tool round plus the lap that answered (#570).
+    laps: 2,
   });
   agent.close();
 });
@@ -738,6 +760,79 @@ test("the turns a fold cost ride the same reading the meter does", async () => {
   // pages and on the state it polls — one reading, two readers.
   expect(done.detail.folded).toBe(1);
   expect(agent.state().lastUsage).toMatchObject({ runId: done.runId, folded: 1 });
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * The lap cap — a turn out of laps still answers (#570).
+ * ------------------------------------------------------------------ */
+
+/** A model that never stops asking for tools, which is the shape of the turn
+ *  the issue reports: 16 calls and no answer. */
+const greedy = (laps: number): Step[] =>
+  Array.from({ length: laps }, (_, index) => ({
+    text: index === 0 ? "let me look." : "",
+    toolCalls: [{ id: `call_${index}`, name: "sessions_list", args: {}, type: "tool_call" as const }],
+  }));
+
+test("a turn that reaches the lap cap ends with an answer rather than a recursion error", async () => {
+  const landed: Landed[] = [];
+  // Three laps: two that may call tools, and a third the cap makes terminal.
+  const { agent, model } = runtime([...greedy(5)], wall(landed), { maxLaps: 3 });
+
+  const { runId } = agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the capped turn");
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.kind).toBe("turn_done");
+  // THE POINT OF THE WHOLE CHANGE: `completed`, not `failed`, and words rather
+  // than "Recursion limit of 25 reached without hitting a stop condition".
+  expect(done.detail.status).toBe("completed");
+  expect(done.detail.message).toBeUndefined();
+  expect(String(done.detail.text ?? "")).not.toContain("Recursion limit");
+  expect(String(done.detail.text ?? "").trim().length).toBeGreaterThan(0);
+
+  // It stopped where the cap is, and says so on the row and on the state.
+  expect(done.detail.laps).toBe(3);
+  expect(agent.state().lastUsage?.laps).toBe(3);
+  // Two tool rounds happened; the third lap was the one that answered.
+  expect(landed).toHaveLength(2);
+  expect(model.index).toBe(3);
+  agent.close();
+});
+
+test("the last lap is sent with no tools bound and one sentence saying why", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([...greedy(5)], wall(landed), { maxLaps: 3 });
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the capped turn");
+
+  // UNBINDING IS WHAT MAKES THE LAST CALL TERMINAL — a model with nothing to
+  // call cannot ask for a fourth lap, so nothing has to trust it to stop.
+  expect(model.boundLaps).toEqual([true, true, false]);
+
+  // And the note rides the SYSTEM block of that lap only, under everything else.
+  const systems = model.seen.map((messages) => String(messages[0]!.content));
+  expect(systems[0]).not.toContain("out of tool calls");
+  expect(systems[1]).not.toContain("out of tool calls");
+  expect(systems[2]).toContain("You are out of tool calls for this turn.");
+  expect(systems[2]).toContain("say what you did not get to");
+  agent.close();
+});
+
+test("a turn that answers early reports its own laps and never meets the cap", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime([{ text: "two sessions, both idle." }], wall(landed), { maxLaps: 3 });
+  agent.submit({ text: "how are things?" });
+  await until(() => agent.state().runId === undefined, "the short turn");
+
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.detail.status).toBe("completed");
+  expect(done.detail.text).toBe("two sessions, both idle.");
+  // ONE MODEL CALL IS ONE LAP. The count is of calls, not of tool rounds, so a
+  // turn that used no tool reports 1 rather than 0.
+  expect(done.detail.laps).toBe(1);
+  expect(landed).toHaveLength(0);
   agent.close();
 });
 
