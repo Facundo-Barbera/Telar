@@ -189,8 +189,24 @@ struct AgentView: View {
                             .foregroundStyle(Theme.textMuted)
                             .padding(.vertical, 8)
                     }
-                    ForEach(drawn) { row in
-                        AgentRowView(row: row)
+                    // THE WORK FOLDS INTO STEPS (#569). A turn with twelve tool
+                    // calls used to be twelve rows, which on a phone is the
+                    // whole screen; the session transcript's own fold applies
+                    // here unchanged — see `StepFoldView`.
+                    ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+                        switch segment {
+                        case .row(let row):
+                            AgentRowView(row: row)
+                        case .run(let run):
+                            StepFoldView(
+                                rows: run,
+                                live: state?.running == true && index == segments.indices.last,
+                                failed: { $0.status == "failed" },
+                                tally: { agentStepTally(run) }
+                            ) { row in
+                                AgentRowView(row: row)
+                            }
+                        }
                     }
                     // THE OPEN APPROVAL IS LIVE STATE, NOT HISTORY — one card at
                     // the bottom, off the Agent's own state. A card drawn from
@@ -236,6 +252,9 @@ struct AgentView: View {
             }
         }
     }
+
+    /// The drawn rows, cut at their seams — see `segmentAgentRows`.
+    private var segments: [AgentTranscriptSegment] { segmentAgentRows(drawn) }
 
     // ── THE WAKE INBOX ───────────────────────────────────────────────────────
 
@@ -508,6 +527,68 @@ struct AgentView: View {
         await refreshState()
         await page()
     }
+}
+
+/// THE AGENT'S CONVERSATION, CUT AT ITS SEAMS — issue #569.
+///
+/// Everything between two seams is a RUN of work, and a run is what folds. A
+/// `tool_call` is work; prose, the person's own message, a wake and a turn that
+/// ended without an answer are seams — each is a thing the reader is meant to
+/// see as it lands, and a fold that swallowed one would hide the sentence the
+/// work was an answer to. The session transcript's `segmentActivity`, over the
+/// Agent's own row kinds.
+enum AgentTranscriptSegment: Equatable, Identifiable {
+    case run([AgentRow])
+    case row(AgentRow)
+
+    /// A run is keyed by its FIRST row so the fold's open state survives rows
+    /// appending to it, and so a run that just settled keeps the same element
+    /// rather than remounting collapsed under the reader.
+    var id: Int {
+        switch self {
+        case .run(let rows): rows[0].id
+        case .row(let row): row.id
+        }
+    }
+}
+
+func segmentAgentRows(_ rows: [AgentRow]) -> [AgentTranscriptSegment] {
+    var segments: [AgentTranscriptSegment] = []
+    for row in rows {
+        guard row.kind == .toolCall else {
+            segments.append(.row(row))
+            continue
+        }
+        if case .run(var run)? = segments.last {
+            run.append(row)
+            segments[segments.count - 1] = .run(run)
+        } else {
+            segments.append(.run([row]))
+        }
+    }
+    return segments
+}
+
+/// "sessions_read ×12 · notes_list", in FIRST-APPEARANCE order — what the
+/// agent reached for first stays first, because the tally summarises a sequence
+/// and re-sorting it would describe a turn that never happened.
+///
+/// A STEP IS NAMED BY ITS TOOL. The session's verbs ("Ran command", "Read file")
+/// come off a typed `detail` the Agent's rows do not have, and `displayToolName`
+/// is already what the unfolded row says — so the fold and the rows behind it
+/// use one vocabulary.
+func agentStepTally(_ rows: [AgentRow]) -> String {
+    var order: [String] = []
+    var counts: [String: Int] = [:]
+    for row in rows {
+        let label = displayToolName(row.name ?? "tool")
+        if counts[label] == nil { order.append(label) }
+        counts[label, default: 0] += 1
+    }
+    return order.map { label in
+        let count = counts[label]!
+        return count > 1 ? "\(label) ×\(count)" : label
+    }.joined(separator: " · ")
 }
 
 /// ONE ROW OF THE AGENT'S CONVERSATION.

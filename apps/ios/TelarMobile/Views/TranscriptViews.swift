@@ -435,26 +435,50 @@ struct TaskChipRow: View {
     }
 }
 
-/// One run of activity rows: a rolling window while live, a tally once
-/// settled — the web's ActivityGroup. Both are the same sentence at two
+/// HOW A RUN OF WORK FOLDS, at both of its scales, over ANY row.
+///
+/// A rolling window while live — the newest step, with "+N earlier steps" above
+/// it — and one summary line once settled. Both are the same sentence at two
 /// scales, so the grammar is learned once. Its own fold state, so two runs in
 /// the same response open independently.
-struct ActivityRunView: View {
-    /// Already filtered by `renderable` — this view counts what it is given.
-    let rows: [JournalItem]
-    let tasks: [JournalTask]
-    let live: Bool
+///
+/// GENERIC OVER THE ROW, because the Agent's conversation folds by these same
+/// two rules over `AgentRow` and not `JournalItem` at all (#569). Its tool calls
+/// were drawn one flat line each — twelve calls, twelve lines — for exactly as
+/// long as this chrome could only be handed a session's items. What a row LOOKS
+/// like never reaches here: `content` draws it however that screen draws it, and
+/// the only two questions asked about a row are whether it failed and what the
+/// tally calls it.
+///
+/// THE FAILURE MARK IS A GLYPH, NOT A COUNT — the phone's own choice, and it
+/// reads every row rather than only the hidden ones: a run with a failure in it
+/// says so on the line that hides it, and a number on a phone-width row would
+/// cost the tally the space it needs.
+struct StepFoldView<Row: Identifiable, Content: View>: View {
+    private let rows: [Row]
+    private let live: Bool
+    private let failed: (Row) -> Bool
+    private let tally: () -> String
+    private let content: (Row) -> Content
     @State private var expanded = false
+
+    init(
+        rows: [Row],
+        live: Bool,
+        failed: @escaping (Row) -> Bool,
+        tally: @escaping () -> String,
+        @ViewBuilder content: @escaping (Row) -> Content
+    ) {
+        self.rows = rows
+        self.live = live
+        self.failed = failed
+        self.tally = tally
+        self.content = content
+    }
 
     /// A step that failed inside the fold must not be swallowed by the very
     /// mechanism that hid it.
-    private var anyFailed: Bool {
-        rows.contains { $0.status == .failed }
-            || rows.contains { item in
-                guard case .task(let taskId) = item.detail else { return false }
-                return tasks.first(where: { $0.id == taskId })?.task.state == .failed
-            }
-    }
+    private var anyFailed: Bool { rows.contains(where: failed) }
 
     var body: some View {
         if !rows.isEmpty {
@@ -488,17 +512,7 @@ struct ActivityRunView: View {
             .buttonStyle(.plain)
         }
         ForEach(expanded ? rows : Array(rows.suffix(1))) { item in
-            row(item)
-        }
-    }
-
-    /// A settled spawn folds into the tally like any other step, but when it
-    /// is shown it is the agent it started, not an empty placeholder.
-    @ViewBuilder private func row(_ item: JournalItem) -> some View {
-        if case .task = item.detail {
-            TaskChipRow(item: item, tasks: tasks)
-        } else {
-            ItemRowView(item: item)
+            content(item)
         }
     }
 
@@ -516,7 +530,7 @@ struct ActivityRunView: View {
                     .foregroundStyle(!expanded && anyFailed ? Theme.statusRed : Theme.textMuted)
                     .tabularNumbers()
                 Text("·").foregroundStyle(Theme.textMuted.opacity(0.5))
-                Text(tally)
+                Text(tally())
                     .font(Theme.meta)
                     .foregroundStyle(Theme.textMuted.opacity(0.8))
                     .lineLimit(1)
@@ -530,7 +544,7 @@ struct ActivityRunView: View {
             NestedDetail {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(rows) { item in
-                        row(item)
+                        content(item)
                     }
                 }
             }
@@ -548,6 +562,39 @@ struct ActivityRunView: View {
         Image(systemName: "exclamationmark.triangle")
             .font(.system(Theme.caption, weight: .medium))
             .foregroundStyle(Theme.statusRed)
+    }
+}
+
+/// One run of a SESSION's activity rows. All that is left here is what a
+/// session's items mean — which failed, what the tally calls each one, and which
+/// view draws one; the fold itself is `StepFoldView`, shared with the Agent's
+/// conversation.
+struct ActivityRunView: View {
+    /// Already filtered by `renderable` — this view counts what it is given.
+    let rows: [JournalItem]
+    let tasks: [JournalTask]
+    let live: Bool
+
+    var body: some View {
+        StepFoldView(rows: rows, live: live, failed: failed, tally: { tally }) { item in
+            row(item)
+        }
+    }
+
+    private func failed(_ item: JournalItem) -> Bool {
+        if item.status == .failed { return true }
+        guard case .task(let taskId) = item.detail else { return false }
+        return tasks.first(where: { $0.id == taskId })?.task.state == .failed
+    }
+
+    /// A settled spawn folds into the tally like any other step, but when it
+    /// is shown it is the agent it started, not an empty placeholder.
+    @ViewBuilder private func row(_ item: JournalItem) -> some View {
+        if case .task = item.detail {
+            TaskChipRow(item: item, tasks: tasks)
+        } else {
+            ItemRowView(item: item)
+        }
     }
 
     /// "Ran command ×12 · Read file ×4", in first-appearance order.

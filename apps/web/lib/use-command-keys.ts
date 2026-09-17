@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import { commandDestination, resolveWebCommandKeyAction } from "@/lib/command-keys";
+import { commandDestination, jumpDestinations, resolveWebCommandKeyAction } from "@/lib/command-keys";
 import {
   bindCommands,
   isCapturingChord,
@@ -149,14 +149,22 @@ export function useCommandKeys(
    * change in behaviour.
    */
   overrides?: CommandHandlers,
+  /**
+   * THE AGENT'S ADDRESS, when the rail is drawing its entry (#569).
+   *
+   * That row sits above every band, so it holds ⌘1 and `rows` take ⌘2..⌘9.
+   * Absent means the rail is drawing no Agent entry and the nine are the
+   * conversations, exactly as they were.
+   */
+  agentHref?: string,
 ): (id: CommandId) => void {
   const router = useRouter();
   const keymap = useKeymap();
-  const recentHrefs = useRef<string[]>([]);
+  const recentHrefs = useRef<(string | undefined)[]>([]);
   const latestOverrides = useRef(overrides);
   const latestKeymap = useRef(keymap);
   useEffect(() => {
-    recentHrefs.current = rows.map((session) => sessionHref(session));
+    recentHrefs.current = jumpDestinations(rows.map((session) => sessionHref(session)), agentHref);
     latestOverrides.current = overrides;
     latestKeymap.current = keymap;
   });

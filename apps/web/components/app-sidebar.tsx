@@ -100,7 +100,7 @@ import {
   useProjectFilter,
 } from "@/lib/project-filter";
 import { DraftRow } from "@/components/session/draft-row";
-import { AgentEntryLive, agentEntryActive, agentEntryShown } from "@/components/session/agent-entry";
+import { AgentEntryLive, agentEntryActive, agentEntryShown, agentHref } from "@/components/session/agent-entry";
 import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
@@ -150,6 +150,7 @@ import {
   SESSION_ROW_MIME,
   railJumpSlots,
   railRowsForCommandKeys,
+  railSessionSlots,
   useCollapsedGroups,
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
@@ -1224,16 +1225,29 @@ function SidebarBody() {
    */
   // THE GROUPS AS DRAWN, withheld rows and all: a number key that selected a row
   // its project group is no longer showing would count something invisible.
-  const jumpRows = grouped ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups) : list.sessions.slice(0, 9);
+  //
+  // AND THE AGENT'S ROW SPENDS THE FIRST NUMBER (#569). It is drawn above every
+  // band, so `showAgentEntry` leaves eight slots for conversations — read once,
+  // here, and handed to the rows, the badges and the dispatcher alike.
+  const jumpAgentEntry = { agentEntry: showAgentEntry };
+  /** ⌘1's destination when the rail draws the Agent — the VIEWED Mac's, the
+   *  same address the row itself links to. `undefined` when there is no row,
+   *  and then the nine are the conversations exactly as they were. */
+  const jumpAgentHref = showAgentEntry
+    ? agentHref(viewedHost === LOCAL_HOST_ID ? undefined : viewedHost)
+    : undefined;
+  const jumpRows = grouped
+    ? railRowsForCommandKeys({ ...grouped, groups: drawnGroups }, collapsedGroups, jumpAgentEntry)
+    : list.sessions.slice(0, railSessionSlots(showAgentEntry));
   /**
    * THE SAME ROWS, AS THE NUMBERS THEY WEAR while ⌘ is held — issue #401.
    *
    * Derived from `jumpRows` rather than alongside it, which is the only
    * arrangement in which the hint on a row and the key that fires it cannot
    * disagree: one array, read twice, so a folded group or a shelf is skipped by
-   * both or by neither.
+   * both or by neither — and the Agent's row shifts both or neither.
    */
-  const jumpSlots = railJumpSlots(jumpRows);
+  const jumpSlots = railJumpSlots(jumpRows, jumpAgentEntry);
   const jumpSlotFor = (key: string) => jumpSlots.get(key);
   /** Spread rather than passed, because most rows have no slot and the prop is
    *  optional — the same shape every other optional prop in this file takes. */
@@ -1268,7 +1282,7 @@ function SidebarBody() {
     // sidebar primitive, which is precisely why it appeared on no keybindings
     // pane and could not be changed. One registry, one dispatcher.
     "toggle-rail": () => toggleSidebar(),
-  });
+  }, jumpAgentHref);
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 

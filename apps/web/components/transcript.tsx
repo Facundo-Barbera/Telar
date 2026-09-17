@@ -59,6 +59,10 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
+// RULES 2 AND 3 LIVE NEXT DOOR, generic over the row, because the Agent's
+// conversation folds its work by the same two rules over rows that are not
+// `JournalItem` at all (#569). See `transcript-fold.tsx`.
+import { ROW, StepFold } from "@/components/transcript-fold";
 // The ONE definition of what a message looks like — shared with the cockpit so
 // a message sent mid-run and one sent idle cannot drift apart.
 import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
@@ -136,8 +140,6 @@ function preview(item: JournalItem): string {
 
 const failed = (item: JournalItem) => item.status === "failed";
 const running = (item: JournalItem) => item.status === "inProgress";
-
-const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
  * THE GESTURES A TRANSCRIPT ROW CAN OFFER THAT IT CANNOT PERFORM ITSELF.
@@ -1159,33 +1161,15 @@ export function ActivityGroup({
  * A FAILED SUB-AGENT COUNTS, because its row is the only trace of it here; the
  * work it failed at is inside the agent, not in this run.
  */
-export function failedCount(rows: readonly JournalItem[], tasks: readonly JournalTask[]): number {
-  return rows.filter(
-    (item) =>
-      failed(item) ||
-      (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed"),
-  ).length;
+export function itemFailed(item: JournalItem, tasks: readonly JournalTask[]): boolean {
+  return (
+    failed(item) ||
+    (item.detail.type === "task" && tasks.find((task) => task.id === (item.detail as { taskId: string }).taskId)?.state === "failed")
+  );
 }
 
-/**
- * The failed tally beside a neutral step count.
- *
- * SEPARATELY STYLED, AND ONLY THAT. The count of what went wrong is the
- * destructive part; the count of what happened is not. Hidden while the run is
- * open because every failed row is then on screen saying so itself — this is
- * the fold's summary of what it is covering up, not a second error report.
- */
-function FailedCount({ count, hidden }: { count: number; hidden: boolean }) {
-  if (hidden || count === 0) return null;
-  return (
-    <>
-      <span className="shrink-0 text-muted-foreground/50">·</span>
-      <span className="flex shrink-0 items-center gap-1 text-destructive">
-        <TriangleAlertIcon className="size-3 shrink-0" />
-        {count} failed
-      </span>
-    </>
-  );
+export function failedCount(rows: readonly JournalItem[], tasks: readonly JournalTask[]): number {
+  return rows.filter((item) => itemFailed(item, tasks)).length;
 }
 
 /**
@@ -1225,7 +1209,7 @@ function HarnessConsultRow({ label, items, tasks, ...gestures }: { label: string
  * cannot disagree about what a turn contained — a fold that applied only to
  * history would make a live turn look busier than the same turn a second later.
  */
-function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
+function TranscriptRows({ rows, tasks, ...gestures }: { rows: readonly JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
   const workspace = useContext(WorkspaceContext);
   const segments = useMemo(() => foldHarnessRows(rows, workspace), [rows, workspace]);
   return (
@@ -1241,69 +1225,42 @@ function TranscriptRows({ rows, tasks, ...gestures }: { rows: JournalItem[]; tas
   );
 }
 
+/**
+ * THE TWO RUNS ARE `StepFold`, and all that is left here is what a session's
+ * rows mean: which of them failed, and what the tally calls each one.
+ *
+ * The chrome — the window, the tally line, the failure count, the nesting — is
+ * generic and shared with the Agent's conversation, which folds the same two
+ * rules over rows that are not `JournalItem` (#569).
+ */
 function LiveRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
-  const [open, setOpen] = useState(false);
-  // Only the rows the fold is HIDING can carry a surprise; the one on screen
-  // reports itself. Same rule as the settled run, applied to its own window.
-  const failures = failedCount(rows.slice(0, -1), tasks);
-  const hidden = Math.max(0, rows.length - 1);
-  const shown = open ? rows : rows.slice(-1);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
-      {hidden > 0 && (
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((c) => !c)}
-          className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
-        >
-          <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-          <span className="shrink-0">
-            {open ? "Show fewer steps" : `+${hidden} earlier step${hidden === 1 ? "" : "s"}`}
-          </span>
-          <FailedCount count={failures} hidden={open} />
-        </button>
-      )}
-      <TranscriptRows rows={shown} tasks={tasks} {...pass} />
+      <StepFold
+        rows={rows}
+        live
+        failed={(item) => itemFailed(item, tasks)}
+        // A live window says how many steps are behind it and nothing about
+        // what they were, so this is never read.
+        tally={() => ""}
+        renderRows={(shown) => <TranscriptRows rows={shown} tasks={tasks} {...pass} />}
+      />
     </div>
   );
 }
 
 function SettledRun({ rows, tasks, onOpenAgent, onInsert, onOpenFile, onOpenFileInNewTab }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void } & RowGestures) {
-  const [open, setOpen] = useState(false);
   const workspace = useContext(WorkspaceContext);
-  const failures = failedCount(rows, tasks);
   const pass = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   return (
-    <>
-      {/* THE SUMMARY WRAPS RATHER THAN TRUNCATING (#354). At panel width a
-          busy turn ended "· Ran command ×4 · …" with the ellipsis eating the
-          part a reader actually scans for — what the agent DID — while the
-          generic head of the list survived. Two lines is the whole budget: a
-          fold that grows without limit stops being a fold. `items-start` keeps
-          the chevron and the step count on the first line rather than centring
-          them against a two-line block. */}
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((c) => !c)}
-        className={cn(ROW, "items-start text-muted-foreground hover:bg-muted/50")}
-      >
-        <ChevronRightIcon className={cn("mt-0.5 size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-        <span className="shrink-0">
-          {rows.length} step{rows.length === 1 ? "" : "s"}
-        </span>
-        <FailedCount count={failures} hidden={open} />
-        <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="line-clamp-2 min-w-0 text-muted-foreground/80">{tallyParts(rows, workspace).join(" · ")}</span>
-      </button>
-      {open && (
-        <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          <TranscriptRows rows={rows} tasks={tasks} {...pass} />
-        </div>
-      )}
-    </>
+    <StepFold
+      rows={rows}
+      live={false}
+      failed={(item) => itemFailed(item, tasks)}
+      tally={() => tallyParts(rows, workspace).join(" · ")}
+      renderRows={(shown) => <TranscriptRows rows={shown} tasks={tasks} {...pass} />}
+    />
   );
 }
 

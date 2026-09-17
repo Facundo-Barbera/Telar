@@ -59,6 +59,8 @@ import Link from "next/link";
 import { CircleDashedIcon, CircleDotIcon, SparklesIcon } from "lucide-react";
 import { hostPrefix, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { agentStatus, useAgentStatus } from "@/lib/agent/status";
+import { AGENT_JUMP_SLOT, type RailJumpSlot } from "@/lib/session-groups";
+import { KeyHintOverlay } from "@/components/ui/key-hint";
 
 /** What the row says, and the only name this screen has. Spelled once so the
  *  rail, the page and the settings group cannot drift into three words. */
@@ -144,6 +146,7 @@ export function AgentEntry({
   onNavigate,
   status,
   unread,
+  jumpSlot = AGENT_JUMP_SLOT,
 }: {
   /** The Mac this row is about — the one the address bar names. `undefined`
    *  and `LOCAL_HOST_ID` both mean this cockpit's own engine. */
@@ -159,6 +162,16 @@ export function AgentEntry({
   /** How many wakes are waiting, off the same state the status line comes from.
    *  Injected for the same reason. */
   unread?: number;
+  /**
+   * THE NUMBER THIS ROW WEARS while ⌘ is held — issue #569.
+   *
+   * It is `AGENT_JUMP_SLOT` and nothing else, because the row's position is not
+   * a variable: it is drawn above every band, so if it is drawn at all it is the
+   * first thing in the rail. The prop exists so a test can say ⌘1 rather than
+   * mounting the rail, and so an unbound jump draws nothing (`KeyHintOverlay`
+   * reads the live keymap).
+   */
+  jumpSlot?: RailJumpSlot;
 }) {
   const line = status ?? agentStatus(undefined);
   const badge = agentBadgeLabel(unread);
@@ -184,14 +197,22 @@ export function AgentEntry({
                 any of it is waiting on a person is the status line's job, one
                 line down, and two things competing to signal urgency on one row
                 is how neither gets read. */}
-            {badge && (
-              <span
-                aria-label={`${badge} unread`}
-                className="shrink-0 rounded-full bg-sidebar-foreground/15 px-1.5 py-px text-2xs tabular-nums text-sidebar-foreground/80"
-              >
-                {badge}
-              </span>
-            )}
+            {/* …AND ⌘1 SITS OVER THAT SAME SLOT while ⌘ is held (#569), the way
+                a conversation's number sits over its timestamp: the caps are
+                laid over the row's trailing end rather than inserted beside it,
+                so peeking at the numbers cannot reflow the rail under the eye
+                that is counting rows. `SessionRow` states the rule; this row
+                had no number at all until ⌘1 became its chord. */}
+            <KeyHintOverlay command={`jump-${jumpSlot}`}>
+              {badge && (
+                <span
+                  aria-label={`${badge} unread`}
+                  className="shrink-0 rounded-full bg-sidebar-foreground/15 px-1.5 py-px text-2xs tabular-nums text-sidebar-foreground/80"
+                >
+                  {badge}
+                </span>
+              )}
+            </KeyHintOverlay>
           </span>
           <span className={`inline-flex min-w-0 items-center gap-1 text-2xs ${STATUS_TONE[line.tone]}`}>
             {/* THE RAIL'S OWN GRAMMAR, not a second one: a spinner means still

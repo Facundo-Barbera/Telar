@@ -1197,7 +1197,10 @@ function buildApplicationMenu(keymap = readKeymap()) {
       submenu: [
         ...otherBindings.map(toMenuItem),
         { type: "separator" },
-        { label: "Jump to Conversation", submenu: jumpBindings.map(toMenuItem) },
+        // "Jump to" rather than "Jump to Conversation" (#569): the numbers
+        // count the rail's own entries, and the first of them is the Agent on
+        // a Mac that has one — see the jump block in command-keys.js.
+        { label: "Jump to", submenu: jumpBindings.map(toMenuItem) },
         // The Dev self-update entry (DEV-005) — only a --dev package carries
         // it. The shipping app keeps electron-updater; this is the local twin.
         ...(DEV_BUILD
