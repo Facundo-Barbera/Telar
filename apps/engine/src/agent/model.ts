@@ -32,6 +32,12 @@
  * `fetch` WRAPPER, which is the one layer below anything the client library can
  * override. `agent-model.test.ts` asserts what actually reached the socket
  * rather than what was configured.
+ *
+ * ── AND THE SAME WRAPPER TAKES ONE FIELD BACK OFF (#549) ────────────────────
+ * `withoutMessageNames` strips `name` from every outgoing message. The runtime
+ * is where that field stopped being set; this is the guard that keeps a library
+ * version from reintroducing it, for the same reason the headers are forced
+ * here — it is the last place the request is still ours. See the note on it.
  */
 import { ChatOpenAI } from "@langchain/openai";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -72,6 +78,45 @@ export type AgentModelInput = {
    *  rather than an answer. */
   maxTokens?: number;
 };
+
+/**
+ * NO MESSAGE LEAVES HERE WITH A `name` ON IT (#549).
+ *
+ * The runtime stopped putting one on its tool results, which is the actual fix;
+ * this is the belt to that pair of braces, in the one layer below anything the
+ * client library can decide. OpenCode Go proxies some of its models to an
+ * Anthropic-shaped upstream that rejects the field outright — `400 … messages[7]:
+ * "name" is not supported by this endpoint` — and the cost of learning that again
+ * is a person's conversation dying mid-turn on the first tool call. A future
+ * `@langchain/openai` that starts inferring a name from a tool call, or a second
+ * caller in this repo that sets one, is then a no-op rather than an outage.
+ *
+ * IT REWRITES NOTHING IT DOES NOT HAVE TO. A body that is not a JSON string, is
+ * not an object, has no `messages` array, or has no `name` anywhere in it comes
+ * back byte-identical — the request the library built is the request that goes,
+ * unless the one field is there. Nothing is logged: a request body is the
+ * conversation, and the wrapper's business is the envelope.
+ */
+function withoutMessageNames(body: BodyInit | null | undefined): BodyInit | null | undefined {
+  if (typeof body !== "string") return body;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (typeof parsed !== "object" || parsed === null) return body;
+  const messages = (parsed as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return body;
+  let found = false;
+  const stripped = messages.map((message) => {
+    if (typeof message !== "object" || message === null || !("name" in message)) return message;
+    found = true;
+    const { name: _name, ...rest } = message as Record<string, unknown>;
+    return rest;
+  });
+  return found ? JSON.stringify({ ...(parsed as Record<string, unknown>), messages: stripped }) : body;
+}
 
 /**
  * THE ERROR A MISSING KEY PRODUCES.
@@ -119,7 +164,7 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
   const withTelarHeaders: typeof fetch = (url, init) => {
     const headers = new Headers(init?.headers);
     for (const [name, value] of Object.entries(forced)) headers.set(name, value);
-    return transport(url, { ...init, headers });
+    return transport(url, { ...init, headers, body: withoutMessageNames(init?.body) });
   };
 
   return new ChatOpenAI({
