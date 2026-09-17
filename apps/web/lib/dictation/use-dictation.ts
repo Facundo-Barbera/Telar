@@ -33,7 +33,7 @@
  * the button DRAWS — the phase, the words being heard, and the last refusal.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/lib/engine/client";
 import { CHUNK_MS, listenUrl, recordingType } from "./deepgram";
 import { parseFrame, readFrame } from "./transcript";
@@ -67,6 +67,16 @@ export type DictationState = {
  *  socket. Documented as `{ "type": "CloseStream" }`. */
 const CLOSE_STREAM = JSON.stringify({ type: "CloseStream" });
 
+/** Module-level so the subscription identity is stable across renders — a fresh
+ *  closure here would make `useSyncExternalStore` resubscribe on every one. */
+const neverChanges = () => () => {};
+
+/** No `MediaRecorder` (an old browser), or no `getUserMedia` (an insecure
+ *  origin, or an embed with no microphone permission) — either way there is
+ *  nothing to offer, and a control that is permanently disabled is an
+ *  advertisement for something the reader cannot have. */
+const canRecord = (): boolean => typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined;
+
 export function useDictation(input: {
   /** Where a finalised phrase goes. The composer's own insertion in practice —
    *  injected so a test can watch what would have been typed without mounting
@@ -76,6 +86,24 @@ export function useDictation(input: {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [heard, setHeard] = useState("");
   const [error, setError] = useState<string>();
+  /**
+   * WHETHER THIS BROWSER CAN RECORD AT ALL.
+   *
+   * `useSyncExternalStore` RATHER THAN A READ DURING RENDER, and the third
+   * argument is the whole reason: this is a question about `window`, and the
+   * composer is server-rendered first. Reading it inline would answer `false`
+   * on the server and `true` in the browser — a hydration mismatch, with React
+   * finding a button in the client tree where the server sent none, on every
+   * screen that has a composer.
+   *
+   * AND RATHER THAN AN EFFECT THAT SETS STATE, which is the cascading render
+   * this app's lint forbids. `getServerSnapshot` is the hook's own answer to
+   * exactly this shape.
+   *
+   * IT NEVER CHANGES after the first client render, so `subscribe` is a no-op:
+   * a browser does not grow a `MediaRecorder` mid-session.
+   */
+  const supported = useSyncExternalStore(neverChanges, canRecord, () => false);
 
   const socket = useRef<WebSocket>(null);
   const recorder = useRef<MediaRecorder>(null);
@@ -241,6 +269,6 @@ export function useDictation(input: {
     heard,
     ...(error === undefined ? {} : { error }),
     toggle,
-    supported: typeof window !== "undefined" && typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia !== undefined,
+    supported,
   };
 }
