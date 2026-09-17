@@ -34,6 +34,7 @@ import {
   readModelsDev,
   routeObstacle,
   routeSupported,
+  type GoRoute,
   type ModelsDevEntry,
 } from "../src/agent/catalogue";
 import { DEFAULT_GO_MODEL } from "../src/agent/go";
@@ -103,40 +104,65 @@ describe("the route table", () => {
     expect(goRouteOf("muse-spark-1.3-contributor")).toBe("responses");
   });
 
-  /**
-   * THE ONE ROW WHOSE ROUTE WAS ASKED RATHER THAN READ OR GUESSED.
-   *
-   * `omen-alpha` sat in `INFERRED_ROUTES` as `messages` and answers on
-   * chat/completions — see the note there. Pinned by id because the inference
-   * rule that produced the wrong answer is still in use for its neighbours, and
-   * a counter-example is worth more here than in a comment alone.
-   */
-  test("omen-alpha is chat, measured against the service", () => {
-    expect(goRouteOf("omen-alpha")).toBe("chat");
-  });
-
   test("an id nobody transcribed is `unknown`, not a guess at a shape", () => {
     expect(goRouteOf("some-model-go-added-this-morning")).toBe("unknown");
     expect(goRouteGaps(["kimi-k3", "some-model-go-added-this-morning"])).toEqual(["some-model-go-added-this-morning"]);
   });
 
   /**
-   * WHAT THIS CLIENT SPEAKS. `unknown` is selectable on purpose — see
-   * `AgentModel.supported`: a model Go added yesterday that probably works
-   * beats a greyed row nobody can reach until a docs page is transcribed.
+   * WHAT THIS CLIENT SPEAKS — every route Go serves, since #571.
+   *
+   * `model.ts` builds `ChatAnthropic` for `/messages` and `ChatOpenAI` in its
+   * Responses mode for `/responses`, and `agent.live.test.ts` proved each with
+   * one tool lap per id against the real service before this moved. `unknown`
+   * was already selectable on purpose — see `AgentModel.supported`: a model Go
+   * added yesterday that probably works beats a greyed row nobody can reach
+   * until a docs page is transcribed.
    */
-  test("supported is chat and unknown; messages and responses are not", () => {
+  test("every route this build knows about is one it speaks", () => {
     expect(routeSupported("chat")).toBe(true);
     expect(routeSupported("unknown")).toBe(true);
-    expect(routeSupported("messages")).toBe(false);
-    expect(routeSupported("responses")).toBe(false);
+    expect(routeSupported("messages")).toBe(true);
+    expect(routeSupported("responses")).toBe(true);
   });
 
-  test("an unsupported route says why, and a supported one has nothing to say", () => {
-    expect(routeObstacle("messages")).toContain("chat/completions");
-    expect(routeObstacle("responses")).toContain("Responses");
-    expect(routeObstacle("chat")).toBeUndefined();
-    expect(routeObstacle("unknown")).toBeUndefined();
+  /**
+   * AND NOTHING HAS AN OBSTACLE TO REPORT, which is the same fact said once.
+   * `routeSupported` is DERIVED from this rather than kept beside it, so the
+   * two can no longer drift into a row that is greyed out with nothing to say,
+   * or explained and still pickable.
+   */
+  test("no route has anything to say against it, and supported is that fact inverted", () => {
+    for (const route of ["chat", "messages", "responses", "unknown"] as const) {
+      expect(routeObstacle(route)).toBeUndefined();
+      expect(routeSupported(route)).toBe(true);
+    }
+  });
+
+  /**
+   * ── HOW MANY OF EACH, COUNTED RATHER THAN CLAIMED ───────────────────────────
+   *
+   * #554 (`bf0a2a76`) landed because three comments said "eighteen unsupported"
+   * and the table said sixteen — a number written into prose is a claim like any
+   * other, and prose is the one place nothing checks it. It then went stale
+   * again the moment #571 measured `omen-alpha` onto chat/completions, which is
+   * the whole argument for counting here instead of anywhere else.
+   *
+   * THE SPLIT IS THE ASSERTION, not the total. `goRouteGaps` above already
+   * proves every id Go serves is placed; this proves WHERE they were placed, so
+   * a one-line edit that quietly moves a family between endpoints has to say so
+   * in a diff a reader can see.
+   */
+  test("the table places Go's 38 ids as 23 chat, 10 messages and 5 responses", () => {
+    const counts = new Map<GoRoute, number>();
+    for (const route of Object.values(GO_ROUTES)) counts.set(route, (counts.get(route) ?? 0) + 1);
+    expect(Object.fromEntries(counts)).toEqual({ chat: 23, messages: 10, responses: 5 });
+    // And the table covers the recorded list exactly — no id placed that Go
+    // does not serve, which a hand-maintained map drifts into.
+    expect(Object.keys(GO_ROUTES).sort()).toEqual([...GO_FIXTURE.ids].sort());
+    // EVERY ONE OF THEM IS RUNNABLE, which is what #571 bought. The fifteen on
+    // the two new routes are the ones that used to be greyed out.
+    expect(Object.values(GO_ROUTES).every((route) => routeSupported(route))).toBe(true);
   });
 
   /** Every transcribed row is one of the three the docs publish — a typo'd
@@ -203,19 +229,36 @@ describe("the merge", () => {
     expect(models.map((model) => model.id).sort()).toEqual(["grok-4.6", "kimi-k3"]);
     expect(models.every((model) => !model.described)).toBe(true);
     // The route table is CODE, so it survives models.dev being unreachable —
-    // which is the whole reason it is not fetched.
-    expect(models.find((model) => model.id === "grok-4.6")?.supported).toBe(false);
+    // which is the whole reason it is not fetched. The ROUTE is still placed
+    // even with no description at all; `supported` follows from it.
+    expect(models.find((model) => model.id === "grok-4.6")?.route).toBe("responses");
+    expect(models.find((model) => model.id === "grok-4.6")?.supported).toBe(true);
   });
 
   test("an id models.dev describes that Go does not serve is not invented", () => {
     expect(mergeCatalogue(["kimi-k3"], entries).map((model) => model.id)).toEqual(["kimi-k3"]);
   });
 
-  test("marks an Anthropic-shaped and a Responses model unsupported", () => {
+  /**
+   * THE ROW STILL CARRIES ITS ROUTE, WHICH IS THE FACT THAT OUTLIVED #571.
+   *
+   * This test used to assert that an Anthropic-shaped and a Responses model
+   * were UNSUPPORTED. They are not any more — `model.ts` speaks all three
+   * endpoints and a live smoke proved it — so what is worth pinning is the
+   * thing that did not change: the route is still placed per id, and the picker
+   * still gets a per-row badge that says which endpoint a model answers on. A
+   * catalogue that stopped carrying the route the day everything became
+   * pickable would have nothing to say when a fourth one arrives.
+   */
+  test("every row carries its own route, and all three are runnable", () => {
     const models = mergeCatalogue(["minimax-m3", "grok-4.6", "kimi-k3"], entries);
-    expect(models.find((model) => model.id === "minimax-m3")?.supported).toBe(false);
-    expect(models.find((model) => model.id === "grok-4.6")?.supported).toBe(false);
-    expect(models.find((model) => model.id === "kimi-k3")?.supported).toBe(true);
+    expect(models.map((model) => [model.id, model.route, model.supported])).toEqual(
+      expect.arrayContaining([
+        ["minimax-m3", "messages", true],
+        ["grok-4.6", "responses", true],
+        ["kimi-k3", "chat", true],
+      ]),
+    );
   });
 
   /** Newest first, within a family and between them — decided here so the
@@ -396,7 +439,8 @@ describe("the catalogue route's answer", () => {
     expect(catalogue.source).toEqual({ go: 5_000, modelsDev: null });
     expect(catalogue.models.map((model) => model.id).sort()).toEqual(["kimi-k3", "minimax-m3"]);
     expect(catalogue.models.every((model) => !model.described)).toBe(true);
-    expect(catalogue.models.find((model) => model.id === "minimax-m3")?.supported).toBe(false);
+    // The route survives the description failing, because it comes from code.
+    expect(catalogue.models.find((model) => model.id === "minimax-m3")?.route).toBe("messages");
     expect(catalogue.message).toContain("500");
   });
 

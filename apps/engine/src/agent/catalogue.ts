@@ -72,8 +72,10 @@ export type AgentModel = {
   family: string;
   route: GoRoute;
   /**
-   * Whether THIS CLIENT can actually run it — see the header. `chat` yes,
-   * `messages` and `responses` no.
+   * Whether THIS CLIENT can actually run it — `routeSupported`, which since
+   * #571 is every route: `model.ts` builds a client per endpoint and a live
+   * smoke proved each one. The field stays because the question is real and
+   * the answer is a build's, not a constant.
    *
    * `unknown` IS SUPPORTED, and that is the deliberate half of this field. A
    * model Go added yesterday would otherwise be greyed out until somebody
@@ -233,24 +235,53 @@ export function goRouteGaps(ids: readonly string[]): string[] {
  * Whether this build's Agent client can run a model on that route.
  *
  * ONE FUNCTION, because "what Telar speaks" is a single fact and three surfaces
- * ask it. When `go.ts` learns `/responses`, this is the line that changes.
+ * ask it — the engine's catalogue, the web picker and the phone's.
+ *
+ * ── ALL THREE, SINCE #571, AND EACH ONE WAS EARNED BY A SMOKE ───────────────
+ * `agent/model.ts` now builds `ChatAnthropic` for `/messages` and `ChatOpenAI`
+ * in its Responses mode for `/responses`, so the sentence this used to return
+ * — "Telar's Agent sends chat/completions, which this route rejects" — stopped
+ * being true. It was not flipped because the code looked right: #571's rule is
+ * that a route becomes supported when a live smoke says so, and
+ * `agent.live.test.ts` runs one tool lap per id against the real service. On
+ * 2026-09-17 every id Go actually served answered 200 on both new routes.
+ *
+ * WHICH LEAVES NOTHING UNSUPPORTED, and the machinery below stays anyway. It
+ * is one `if` and a sentence, it is what the picker reads, and the day Go adds
+ * a fourth endpoint — or a library version breaks one of these — the surfaces
+ * that have to say so are already wired to this function. Deleting it would
+ * mean rediscovering all three of them under time pressure.
  */
 export function routeSupported(route: GoRoute): boolean {
-  return route === "chat" || route === "unknown";
+  return routeObstacle(route) === undefined;
 }
 
 /**
- * WHY A ROUTE CANNOT BE RUN, in the words the picker shows. `undefined` for the
- * two that can.
+ * WHY A ROUTE CANNOT BE RUN, in the words the picker shows.
+ *
+ * `undefined` FOR EVERY ROUTE TODAY — see `routeSupported`. This is the single
+ * place the fact lives, and `routeSupported` is derived from it rather than
+ * the other way round, so a future route that cannot be spoken is one return
+ * statement away from being greyed out and explained on all three surfaces.
+ *
+ * `unknown` HAS NEVER HAD A SENTENCE and still does not: an id this build has
+ * not been told about is Telar's gap, not the model's, and warning about it
+ * would be this cockpit asserting something it cannot know.
  */
 export function routeObstacle(route: GoRoute): string | undefined {
-  if (route === "messages") {
-    return "Anthropic-shaped — Telar's Agent sends chat/completions, which this route rejects.";
+  /**
+   * EXHAUSTIVE ON PURPOSE, rather than a bare `return undefined`. Every arm is
+   * spelled so that the day `GoRoute` grows a fifth member this stops
+   * compiling — which is the one moment somebody must decide whether the new
+   * endpoint can be spoken, and the moment a default case would let pass.
+   */
+  switch (route) {
+    case "chat":
+    case "messages":
+    case "responses":
+    case "unknown":
+      return undefined;
   }
-  if (route === "responses") {
-    return "OpenAI Responses — Telar's Agent cannot form that request yet.";
-  }
-  return undefined;
 }
 
 /**
