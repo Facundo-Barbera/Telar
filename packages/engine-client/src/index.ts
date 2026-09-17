@@ -387,6 +387,25 @@ export type AgentAnswer = {
 };
 
 /**
+ * WHO TRANSCRIBES, AND WHETHER THIS MAC CAN — issue #544.
+ *
+ * `provider` IS ON THE ANSWER RATHER THAN ASSUMED, because it decides which
+ * socket a client opens and which audio format it encodes. Deepgram is the only
+ * value today; the field is what lets OpenAI or an on-device model follow
+ * without a new route and without every client being rebuilt to guess.
+ *
+ * `configured` IS THE WHOLE OF WHAT IS SAID ABOUT THE KEY. Not a prefix, not a
+ * length, not a redaction — all three are how a secret ends up in a log one
+ * pass later. See `apps/engine/src/dictation/credentials.ts`.
+ */
+export type DictationAnswer = { dictation: { provider: "deepgram"; configured: boolean } };
+
+/** A credential minted for one dictation, valid for minutes. `expiresAt` is
+ *  epoch milliseconds rather than a duration, so a client compares it against
+ *  its own clock instead of timing a request it did not observe the start of. */
+export type DictationTokenAnswer = { provider: "deepgram"; token: string; expiresAt: number };
+
+/**
  * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
  * vocabulary so a client that already draws a session recognises the shapes.
  *
@@ -1024,6 +1043,52 @@ export class EngineClient {
       url: `http://${this.discovery.host}:${this.discovery.port}/v2/agent/stream?after=${after}`,
       headers: { authorization: `Bearer ${this.discovery.token}` },
     };
+  }
+
+  /* ---------------------------------------------------------------- *
+   * DICTATION — issue #544, first step.
+   *
+   * NO AUDIO GOES THROUGH THE ENGINE. The microphone is in the client on
+   * every surface, so the engine holds the key and hands out a short-lived
+   * token for the client to open its own transcription socket with. The
+   * answers carry `provider` so a second vendor can follow without a second
+   * route.
+   * ---------------------------------------------------------------- */
+
+  /** Whether this Mac can dictate — which provider, and whether its key is
+   *  there. NEVER THE KEY, not even redacted: `configured` is the whole of
+   *  what may be said about it. */
+  dictation(): Promise<DictationAnswer> {
+    return this.request("GET", "/v2/dictation");
+  }
+
+  /**
+   * Paste the provider's key, or clear it.
+   *
+   * WRITE-ONLY, AND IT NEVER COMES BACK. An empty string clears — the same
+   * departure `setAgent` makes from the provider registry's "blank never
+   * clears", and for the same reason: this field is the only writer of the
+   * secret and a Remove button has to be able to mean it. Absent still means
+   * "leave it alone".
+   */
+  setDictation(patch: { apiKey?: string }): Promise<DictationAnswer> {
+    return this.request("PATCH", "/v2/dictation", patch);
+  }
+
+  /**
+   * Mint a token for one dictation.
+   *
+   * POST BECAUSE IT MINTS. Every call spends a round trip against the provider
+   * and produces a new credential; a GET that did that would be cached by
+   * something eventually.
+   *
+   * IT EXPIRES IN MINUTES, and `expiresAt` is an instant rather than a
+   * duration so a client can compare it against its own clock without having
+   * to have timed the request. Fetch one per press of the button rather than
+   * holding one.
+   */
+  dictationToken(): Promise<DictationTokenAnswer> {
+    return this.request("POST", "/v2/dictation/token");
   }
 
   /** Where each project group sits in the rail — see `SidebarLayout`.
