@@ -24,7 +24,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentRequest, AgentState } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { agentStatus } from "@/lib/agent/status";
-import { AgentEntry, agentEntryActive, agentEntryShown, agentHref } from "./agent-entry";
+import { AgentEntry, agentBadgeLabel, agentEntryActive, agentEntryShown, agentHref } from "./agent-entry";
 
 const enabled = (...hosts: string[]) => new Map(hosts.map((host) => [host, true]));
 
@@ -179,5 +179,45 @@ describe("the entry itself", () => {
   test("the open screen is marked as the current page", () => {
     expect(renderToStaticMarkup(<AgentEntry active onNavigate={() => {}} />)).toContain('aria-current="page"');
     expect(renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} />)).not.toContain("aria-current");
+  });
+});
+
+/**
+ * THE WAKE BADGE — issue #541, section A.
+ *
+ * A wake no longer starts an Agent turn, so this row is where a person learns
+ * anything arrived at all without opening the screen. The count comes off the
+ * SAME state the status line does, so it costs no second poll.
+ */
+describe("the unread badge", () => {
+  test("absent and zero both draw nothing, and they are different facts", () => {
+    // ABSENT is a Mac whose engine is older than the field; ZERO is one saying
+    // the inbox is empty. Neither draws a badge, so a cockpit pointed at an old
+    // Mac shows the row it always did.
+    expect(agentBadgeLabel(undefined)).toBeUndefined();
+    expect(agentBadgeLabel(0)).toBeUndefined();
+    expect(renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} />)).not.toContain("unread");
+  });
+
+  test("a count is drawn, and a large one is clamped to a label", () => {
+    expect(agentBadgeLabel(1)).toBe("1");
+    expect(agentBadgeLabel(99)).toBe("99");
+    // The row has a fixed width, and 143 versus 208 waiting updates is not a
+    // difference anybody acts on.
+    expect(agentBadgeLabel(100)).toBe("99+");
+    const markup = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} unread={4} />);
+    expect(markup).toContain('aria-label="4 unread"');
+    expect(markup).toContain(">4<");
+  });
+
+  test("the badge carries no urgency tone — that is the status line's job", () => {
+    // Two things competing to signal urgency on one row is how neither gets
+    // read: the count says something arrived, the line under it says whether
+    // somebody has to move.
+    const markup = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} unread={9} />);
+    expect(markup).not.toContain("text-warning");
+    const waiting = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus({ ...idle, request })} unread={9} />);
+    expect(waiting).toContain("text-warning");
+    expect(waiting).toContain('aria-label="9 unread"');
   });
 });
