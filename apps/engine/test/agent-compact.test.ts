@@ -46,6 +46,7 @@ import {
   minifyToolResult,
   toolResultStub,
 } from "../src/agent/compact";
+import { AGENT_BRIEFING } from "../src/agent/briefing";
 import { AgentRuntime } from "../src/agent/runtime";
 import { trimAgentHistory } from "../src/agent/trim";
 import type { SocketTool } from "../src/mcp-socket";
@@ -492,8 +493,10 @@ test("through the runtime: the prompt folds, and every row is still in the threa
     engineRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telar-agent-fold-")),
     tools: () => tools,
     model: () => model,
-    // Small enough that two ordinary turns cross it.
-    budgetChars: 3_000,
+    // Small enough that two ordinary turns cross it, but relative to the
+    // briefing: the system block is charged against the budget, and a fixed
+    // number here fails the day the briefing grows a sentence.
+    budgetChars: AGENT_BRIEFING.length + 600,
   });
   agent.patch({ enabled: true });
   for (const text of ["what is running", "and now", "anything else"]) {
