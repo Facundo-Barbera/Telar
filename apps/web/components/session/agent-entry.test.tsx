@@ -24,6 +24,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentRequest, AgentState } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@/lib/hosts/book";
 import { agentStatus } from "@/lib/agent/status";
+import { AGENT_JUMP_SLOT } from "@/lib/session-groups";
 import { AgentEntry, agentBadgeLabel, agentEntryActive, agentEntryShown, agentHref } from "./agent-entry";
 
 const enabled = (...hosts: string[]) => new Map(hosts.map((host) => [host, true]));
@@ -179,6 +180,24 @@ describe("the entry itself", () => {
   test("the open screen is marked as the current page", () => {
     expect(renderToStaticMarkup(<AgentEntry active onNavigate={() => {}} />)).toContain('aria-current="page"');
     expect(renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} />)).not.toContain("aria-current");
+  });
+
+  /**
+   * #569 — THE ROW HOLDS ⌘1, so it has to wear it.
+   *
+   * The row's slot is not a variable: it is drawn above every band, so if it is
+   * drawn at all it is the first entry in the rail. What is asserted here is
+   * that the number is that one and no other, and that putting the caps over the
+   * badge's slot did not cost the badge — the caps only appear while ⌘ is held,
+   * and the count has to be legible the rest of the time.
+   */
+  test("its number is the first, and the unread badge still draws under it", () => {
+    expect(AGENT_JUMP_SLOT).toBe(1);
+    const markup = renderToStaticMarkup(<AgentEntry active={false} onNavigate={() => {}} status={agentStatus(idle)} unread={3} />);
+    expect(markup).toContain('aria-label="3 unread"');
+    // Nothing is drawn for the chord itself until a modifier is held — see
+    // `KeyHintOverlay`, whose own behaviour is pinned in ui/key-hint.test.tsx.
+    expect(markup).not.toContain("kbd");
   });
 });
 

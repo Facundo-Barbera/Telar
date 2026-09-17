@@ -496,13 +496,23 @@ export function groupSessions(
  * this cannot drift from what is rendered: the same scope, the same page, the
  * same arranged groups, the same folds. (A search flattens the rail; the
  * caller hands over the flat result list instead.)
+ *
+ * THE AGENT'S ROW COUNTS TOO, WHEN THE RAIL DRAWS ONE (#569). It is the entry
+ * above every band, so it takes the first number and the conversations get one
+ * fewer — see `agentEntry`.
  */
-export function railRowsForCommandKeys(grouped: GroupedSessions, collapsed?: ReadonlySet<string>): SidebarSession[] {
+export function railRowsForCommandKeys(
+  grouped: GroupedSessions,
+  collapsed?: ReadonlySet<string>,
+  /** The rail is drawing the Agent's entry (`agentEntryShown`), so it has
+   *  already spent the first slot and only eight are left for conversations. */
+  options?: { agentEntry?: boolean },
+): SidebarSession[] {
   const rows = [...grouped.attention, ...grouped.pinned];
   for (const group of grouped.groups) {
     if (!collapsed?.has(group.key)) rows.push(...group.sessions);
   }
-  return rows.slice(0, 9);
+  return rows.slice(0, railSessionSlots(options?.agentEntry));
 }
 
 /** The nine numbers, as a type: a slot is 1-9 or there is no slot, and spelling
@@ -511,18 +521,38 @@ export const RAIL_JUMP_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 export type RailJumpSlot = (typeof RAIL_JUMP_SLOTS)[number];
 
 /**
+ * THE AGENT'S NUMBER — issue #569.
+ *
+ * ⌘1 used to land on the first CONVERSATION and the Agent's row, sitting at the
+ * very top of the rail, was skipped: the one entry always on screen was the one
+ * entry the number keys could not reach. It is the first row drawn, so it is the
+ * first number, and everything below it shifts down by one. When the rail draws
+ * no Agent entry nothing moves — a Mac with the Agent switched off has exactly
+ * the keys it always had.
+ */
+export const AGENT_JUMP_SLOT: RailJumpSlot = 1;
+
+/** How many of the nine are left for conversations. */
+export function railSessionSlots(agentEntry = false): number {
+  return RAIL_JUMP_SLOTS.length - (agentEntry ? 1 : 0);
+}
+
+/**
  * WHICH NUMBER EACH ROW WEARS while ⌘ is held — issue #401.
  *
  * Keyed by `sessionKey`, off the SAME array `useCommandKeys` is handed, so the
  * hint on a row and the key that fires cannot disagree: if one of them counts a
  * folded group or a shelf, both do. That is the whole reason this takes rows
  * rather than re-walking the groups — a second walk is a second chance to be
- * wrong about what is on screen.
+ * wrong about what is on screen. `agentEntry` is the same fact for the same
+ * reason: the badges have to shift with the keys or the row is lying about which
+ * chord opens it.
  */
-export function railJumpSlots(rows: readonly SidebarSession[]): Map<string, RailJumpSlot> {
+export function railJumpSlots(rows: readonly SidebarSession[], options?: { agentEntry?: boolean }): Map<string, RailJumpSlot> {
   const slots = new Map<string, RailJumpSlot>();
+  const offset = options?.agentEntry ? 1 : 0;
   rows.forEach((session, index) => {
-    const slot = RAIL_JUMP_SLOTS[index];
+    const slot = RAIL_JUMP_SLOTS[index + offset];
     if (slot !== undefined) slots.set(sessionKey(session), slot);
   });
   return slots;
