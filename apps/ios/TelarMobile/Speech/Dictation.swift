@@ -27,11 +27,11 @@ import Foundation
 /// and produce audio that transcribes as nothing.
 ///
 /// ── THE HEADER IS AVAILABLE HERE, SO IT IS USED ─────────────────────────────
-/// The browser cannot send a header on a websocket at all, which is why the web
-/// client puts the token in the query. `URLSessionWebSocketTask` takes a
-/// `URLRequest`, so the phone sends `Authorization: Bearer <jwt>` — the scheme
-/// the service's own guide documents for a grant JWT, and the one that keeps
-/// the credential out of a URL.
+/// The browser cannot send a header on a websocket at all, so the web client
+/// hands the credential over as the `bearer` subprotocol instead
+/// (`apps/web/lib/dictation/deepgram.ts`). `URLSessionWebSocketTask` takes a
+/// `URLRequest`, so the phone sends `Authorization: Bearer <jwt>` directly —
+/// the same scheme word, through the door this end actually has.
 ///
 /// ── TOGGLE, AND LOUD ABOUT IT ───────────────────────────────────────────────
 /// Hold-to-talk on a phone means holding a finger on the screen while the

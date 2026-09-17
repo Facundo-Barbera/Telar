@@ -63,7 +63,12 @@ class FakeSocket {
   onerror?: () => void;
   onclose?: () => void;
   readonly frames: unknown[] = [];
-  constructor(readonly url: string) {}
+  constructor(
+    readonly url: string,
+    /** The `Sec-WebSocket-Protocol` values — where the credential actually
+     *  goes, so this test can hold that claim. */
+    readonly protocols?: string | string[],
+  ) {}
   send(data: unknown) {
     this.frames.push(data);
     sent.push(data);
@@ -113,8 +118,8 @@ beforeEach(() => {
   // `new` ON A FUNCTION THAT RETURNS AN OBJECT YIELDS THAT OBJECT, which is how
   // the hook's own `new WebSocket(url)` hands the instance out here — the
   // constructor is left alone rather than assigning itself to a module global.
-  const open = function (url: string) {
-    live = new FakeSocket(url);
+  const open = function (url: string, protocols?: string | string[]) {
+    live = new FakeSocket(url, protocols);
     return live;
   };
   // The hook compares `readyState` against `WebSocket.OPEN` before every send,
@@ -248,11 +253,14 @@ describe("the mic button on a composer", () => {
     expect(draftOf(host)).toBe("summarise the rail ");
   });
 
-  test("it opens the socket with the token it was just minted, in the query", async () => {
+  test("it opens the socket with the token it was just minted, as the bearer subprotocol", async () => {
     const host = mount(<Box kind="session" />);
     await press(micIn(host));
     expect(tokenCalls).toBe(1);
-    expect(new URL(live!.url).searchParams.get("access_token")).toBe("jwt-abc");
+    // THE WHOLE OF THE BUG #555 SHIPPED: the query parameter is refused by
+    // Deepgram with close 1002, and `["bearer", jwt]` is what opens.
+    expect(live!.protocols).toEqual(["bearer", "jwt-abc"]);
+    expect(new URL(live!.url).searchParams.get("access_token")).toBeNull();
   });
 
   test("audio only goes up once the socket is open, so the container header is not lost", async () => {

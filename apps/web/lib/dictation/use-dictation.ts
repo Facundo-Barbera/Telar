@@ -35,7 +35,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/lib/engine/client";
-import { CHUNK_MS, listenUrl, recordingType } from "./deepgram";
+import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "./deepgram";
 import { parseFrame, readFrame } from "./transcript";
 
 export type DictationPhase =
@@ -191,7 +191,12 @@ export function useDictation(input: {
       }
       stream.current = microphone;
 
-      const live = new WebSocket(listenUrl(minted.token));
+      // THE TOKEN IS THE SECOND ARGUMENT, NOT A QUERY PARAMETER. Deepgram
+      // refuses `?access_token=` on this endpoint (close 1002, "Expected 101
+      // status code") and reads the credential out of the requested
+      // subprotocols instead — see `listenProtocols` and the header of
+      // `deepgram.ts`, where the three ways that were probed are written down.
+      const live = new WebSocket(listenUrl(), listenProtocols(minted.token));
       socket.current = live;
 
       live.onopen = () => {
