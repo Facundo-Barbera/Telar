@@ -1,5 +1,16 @@
 // Personal relay: unique revocable host credentials, production Telar destinations only.
-const reply = (status, body = {}) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
+const reply = (status, body = {}, headers = {}) => Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
+/** Apple names a rejection in its JSON body. ONLY that word travels back to the
+ *  host: no provider body, no credential, no device token, no payload. */
+async function appleReason(response) {
+  try {
+    const value = JSON.parse(await response.text())?.reason;
+    return typeof value === 'string' && /^[A-Za-z]{1,64}$/.test(value) ? value : undefined;
+  } catch { return undefined; }
+}
+/** The four Apple reasons that mean the token itself is gone, so this relay can
+ *  drop its own copy of the registration rather than hold it for a dead phone. */
+const DEAD_TOKEN = new Set(['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered', 'ExpiredToken']);
 const hex = /^[a-f0-9]{64,512}$/i;
 const id = /^[a-zA-Z0-9_-]{1,128}$/;
 const encode = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -102,13 +113,20 @@ export class RelayHost {
         body:JSON.stringify(body.payload),
       });
       // Do not return provider bodies, credentials, device tokens, or session content.
-      await response.body?.cancel();
-      if (response.status === 410) {
+      // APPLE'S OWN `reason` IS THE ONE EXCEPTION AND THE POINT OF #584: without
+      // it the host cannot tell a permanently dead device token from a bad hour,
+      // so it retried two rejected tokens 627 and 17 times over. A bare enum word.
+      let reason;
+      if (response.status === 200) await response.body?.cancel();
+      else reason = await appleReason(response);
+      // A token Apple has disowned is dropped HERE too, so this relay stops
+      // holding a registration for a phone that no longer exists.
+      if (response.status === 410 || DEAD_TOKEN.has(reason)) {
         if (isStart) { delete registration.pushToStartToken; await this.state.storage.put(deviceKey,registration); }
         else if (isAlert) await this.state.storage.delete(deviceKey);
         else { registration.activities = registration.activities.filter(t => t !== body.token); await this.state.storage.put(deviceKey,registration); }
       }
-      return reply(200, { status:response.status });
+      return reply(200, { status:response.status, ...(reason === undefined ? {} : { reason }) });
     } catch { return reply(503); }
   }
 }

@@ -53,6 +53,24 @@ test('APNs delivery uses fixed host; expired activity tokens do not revoke phone
   } finally {globalThis.fetch=original;}
 });
 
+test("Apple's rejection reason travels back, alone, and a disowned token drops the registration",async()=>{
+  const host=new RelayHost(store(),{SIGNER:{idFromName:n=>n,get:()=>({fetch:async()=>new Response('test-jwt')})}});
+  await host.fetch(request('/v1/devices/phone'));
+  const original=globalThis.fetch;
+  try {
+    // Apple answers a rejection with a JSON body. Only `reason` is forwarded:
+    // the host needs it to tell a dead token from a bad hour (#584), and
+    // nothing else Apple says is any of the host's business.
+    globalThis.fetch=async()=>new Response(JSON.stringify({reason:'BadDeviceToken',timestamp:1,'apns-id':'secret'}),{status:400});
+    assert.deepEqual(await (await host.fetch(request('/v1/devices/phone/push','POST',delivery))).json(),{status:400,reason:'BadDeviceToken'});
+    // The relay stops holding a registration for a phone Apple has disowned.
+    assert.equal((await host.fetch(request('/v1/devices/phone/push','POST',delivery))).status,409);
+    // A body that is not a reason is not quoted back in its place.
+    await host.fetch(request('/v1/devices/phone'));
+    globalThis.fetch=async()=>new Response('<html>gateway</html>',{status:503});
+    assert.deepEqual(await (await host.fetch(request('/v1/devices/phone/push','POST',delivery))).json(),{status:503});
+  } finally {globalThis.fetch=original;}
+});
 test('signing token survives signer eviction and rotates with credentials',async()=>{
   const key=()=>Buffer.from(generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({format:'pem',type:'pkcs8'})).toString('base64');
   const state={...store(),blockConcurrencyWhile:fn=>fn()};
