@@ -236,7 +236,13 @@ export function useDictation(input: {
       // status code") and reads the credential out of the requested
       // subprotocols instead — see `listenProtocols` and the header of
       // `deepgram.ts`, where the three ways that were probed are written down.
-      const live = new WebSocket(listenUrl(), listenProtocols(minted.token));
+      //
+      // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
+      // second fetch or from `useDictationSettings`: this press already costs
+      // one round trip, and the engine knows both answers at the moment it
+      // mints. A settings hook here would also be a race — the button would
+      // open a socket with whatever the hook had loaded by then.
+      const live = new WebSocket(listenUrl(minted.language), listenProtocols(minted.token));
       socket.current = live;
 
       live.onopen = () => {

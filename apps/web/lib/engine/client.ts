@@ -562,11 +562,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** Which provider transcribes, and whether this Mac has its key. NEVER the
      *  key — `configured` is the whole of what may be said about it. */
     dictation: () => request<DictationAnswer>(fetcher, "GET", "/api/dictation"),
-    /** Choose a provider, paste its key, or clear the key with an empty string.
-     *  The key is WRITE-ONLY: it goes down and never comes back. Either field
-     *  absent leaves the stored one alone — switching providers does not throw
-     *  a key away. */
-    setDictation: (patch: { provider?: DictationProviderId; apiKey?: string }) =>
+    /** Choose a provider, choose a language, paste its key, or clear the key
+     *  with an empty string. The key is WRITE-ONLY: it goes down and never
+     *  comes back. Any field absent leaves the stored one alone — switching
+     *  providers throws away neither a key nor a language. */
+    setDictation: (patch: { provider?: DictationProviderId; apiKey?: string; language?: string }) =>
       request<DictationAnswer>(fetcher, "PATCH", "/api/dictation", patch),
     /** Mint a token for one dictation. Fetch one per press of the button
      *  rather than holding one: it expires in minutes, and `expiresAt` is an

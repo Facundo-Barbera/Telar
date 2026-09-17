@@ -409,13 +409,32 @@ export type AgentAnswer = {
  */
 export type DictationProviderId = "off" | "deepgram";
 
-export type DictationAnswer = { dictation: { provider: DictationProviderId; configured: boolean } };
+/** One language the engine will transcribe, with the name to offer it under.
+ *  THE LABEL COMES FROM THE ENGINE so no client holds a copy of a vendor's
+ *  language table — see `apps/engine/src/dictation/deepgram-languages.ts`. */
+export type DictationLanguage = { code: string; label: string };
+
+/**
+ * `language` IS WHAT IS STORED and `languages` is the vocabulary it is written
+ * in (#560). Both ride one answer because a picker needs them at the same
+ * instant: fetched separately, a client could draw the list before the choice
+ * and show nothing selected.
+ *
+ * `multi` IS THE DEFAULT — Nova-3 code-switching between supported languages
+ * inside one utterance. Sending no language at all is what made dictation
+ * English-only, which is the bug this field closes.
+ */
+export type DictationAnswer = {
+  dictation: { provider: DictationProviderId; configured: boolean; language: string; languages: DictationLanguage[] };
+};
 
 /** A credential minted for one dictation, valid for minutes. `provider` is what
- *  tells the client which socket to open and what to encode. `expiresAt` is
- *  epoch milliseconds rather than a duration, so a client compares it against
- *  its own clock instead of timing a request it did not observe the start of. */
-export type DictationTokenAnswer = { provider: DictationProviderId; token: string; expiresAt: number };
+ *  tells the client which socket to open and what to encode, and `language` what
+ *  to ask it to transcribe — already in that provider's own spelling, so one
+ *  round trip serves the whole press of the button. `expiresAt` is epoch
+ *  milliseconds rather than a duration, so a client compares it against its own
+ *  clock instead of timing a request it did not observe the start of. */
+export type DictationTokenAnswer = { provider: DictationProviderId; token: string; expiresAt: number; language: string };
 
 /**
  * One row of the Agent's transcript. Deliberately close to `ItemDetail`'s
@@ -1087,8 +1106,13 @@ export class EngineClient {
    *
    * SWITCHING A PROVIDER OFF DOES NOT THROW ITS KEY AWAY, so turning dictation
    * back on is one click rather than a trip to the vendor's console.
+   *
+   * AN UNKNOWN `language` IS REFUSED WITH A SENTENCE rather than stored: a code
+   * the provider cannot transcribe would surface as a failed handshake on the
+   * next press of the mic button, which is a long way from the pane that caused
+   * it. `multi` is what an engine that has never been told answers.
    */
-  setDictation(patch: { provider?: DictationProviderId; apiKey?: string }): Promise<DictationAnswer> {
+  setDictation(patch: { provider?: DictationProviderId; apiKey?: string; language?: string }): Promise<DictationAnswer> {
     return this.request("PATCH", "/v2/dictation", patch);
   }
 

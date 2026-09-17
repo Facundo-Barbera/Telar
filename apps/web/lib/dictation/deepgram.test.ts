@@ -19,13 +19,13 @@ describe("listenProtocols", () => {
 });
 
 describe("listenUrl", () => {
-  const parsed = () => new URL(listenUrl());
+  const parsed = (language = "multi") => new URL(listenUrl(language));
 
   test("no credential is in the URL at all", () => {
     // The query parameter is refused by Deepgram, and a secret in a URL lands
     // in proxy logs and browser history besides.
     expect(parsed().searchParams.get("access_token")).toBeNull();
-    expect(listenUrl()).not.toContain("jwt");
+    expect(listenUrl("multi")).not.toContain("jwt");
   });
 
   test("nova-3, interim results, smart formatting — the headset's own settings", () => {
@@ -49,6 +49,34 @@ describe("listenUrl", () => {
     expect(url.protocol).toBe("wss:");
     expect(url.host).toBe("api.deepgram.com");
     expect(url.pathname).toBe("/v1/listen");
+  });
+
+  /* ---------------------------------------------------------------- *
+   * WHICH LANGUAGE — issue #560.
+   * ---------------------------------------------------------------- */
+
+  test("the language it was given is on the query", () => {
+    // THE BUG, AS A TEST. Without this parameter Deepgram falls back to `en`
+    // and transcribes Spanish as whatever English it sounded closest to —
+    // words in the box, confidently wrong.
+    expect(parsed("es").searchParams.get("language")).toBe("es");
+    expect(parsed("pt-BR").searchParams.get("language")).toBe("pt-BR");
+  });
+
+  test("`multi` goes on the wire like any other code — it is not a word for sending nothing", () => {
+    // Nova-3 takes `multi` as a model language and code-switches within an
+    // utterance. Sending no parameter at all is the thing that was broken.
+    expect(parsed("multi").searchParams.get("language")).toBe("multi");
+  });
+
+  test("every URL this builds has a language on it, whichever code is asked for", () => {
+    // The parameter went missing on every surface at once because it had no
+    // argument to go missing FROM. It is required now — a call with nothing in
+    // it does not typecheck, which is the guard `bun run typecheck` keeps — and
+    // this is the runtime half: nothing this function returns is languageless.
+    for (const code of ["multi", "en", "es-419", "zh-HK"]) {
+      expect(new URL(listenUrl(code)).searchParams.get("language")).toBe(code);
+    }
   });
 });
 

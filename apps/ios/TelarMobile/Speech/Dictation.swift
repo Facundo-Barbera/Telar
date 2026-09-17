@@ -165,7 +165,10 @@ import Foundation
         try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
         try session.setActive(true, options: [])
 
-        var request = URLRequest(url: DeepgramListen.url())
+        // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
+        // second call to the settings route: this tap already costs one round
+        // trip, and the Mac knows both answers at the moment it mints.
+        var request = URLRequest(url: DeepgramListen.url(language: minted.listenLanguage))
         // THE HEADER, WHICH THE BROWSER CANNOT SEND. `Bearer` is the JWT's own
         // scheme; `Token` is for a long-lived API key and is refused for a
         // grant token.
@@ -310,12 +313,19 @@ enum DeepgramListen {
     /// come out on every surface. `encoding` and `sample_rate` ARE declared
     /// here, unlike the web's, because this end sends raw PCM with no container
     /// header for the service to read.
-    static func url() -> URL {
+    ///
+    /// `language` IS AN ARGUMENT WITH NO DEFAULT (#560), which is the point:
+    /// leaving it off the query is what made every dictation come back as
+    /// English, so the next caller of this cannot open a socket without having
+    /// decided. The value is the Mac's — mapped from the setting there and
+    /// carried down on the token answer.
+    static func url(language: String) -> URL {
         var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
         components.queryItems = [
             URLQueryItem(name: "model", value: "nova-3"),
             URLQueryItem(name: "interim_results", value: "true"),
             URLQueryItem(name: "smart_format", value: "true"),
+            URLQueryItem(name: "language", value: language),
             URLQueryItem(name: "endpointing", value: "300"),
             URLQueryItem(name: "encoding", value: "linear16"),
             URLQueryItem(name: "sample_rate", value: "16000"),

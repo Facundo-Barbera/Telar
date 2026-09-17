@@ -16,6 +16,10 @@
  *     chosen.
  *   - THE KEY ROW IS NOT THERE WHILE IT IS OFF, because asking for a credential
  *     nothing will spend is asking "which key" before "whose".
+ *
+ * AND SINCE #560, THE LANGUAGE ROW — Automatic by default, under the provider
+ * and absent with it, drawn from the names the engine sends rather than from a
+ * table copied into this app.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -88,26 +92,89 @@ describe("what the pane shows before anybody has chosen", () => {
     await GlobalRegistrator.unregister();
   });
 
-  test("the provider row, and no key field under it", async () => {
-    // The engine has not answered, which is the same state as `off` — see
-    // `useDictationSettings`, where that is deliberate rather than incidental.
-    globalThis.fetch = (async () => Response.json({ dictation: { provider: "off", configured: false } })) as typeof fetch;
+  /** One render of the pane against a fixed engine answer. */
+  async function pane(dictation: Record<string, unknown>): Promise<{ host: HTMLElement; unmount: () => Promise<void> }> {
+    globalThis.fetch = (async () => Response.json({ dictation })) as typeof fetch;
     const { DictationSection } = await import("./dictation-section");
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
     await act(async () => {
       root.render(<DictationSection />);
-      await new Promise((settle) => setTimeout(settle, 0));
     });
+    // A SECOND `act`, NOT A LONGER FIRST ONE. The hook defers its load a tick
+    // (setting state from an effect body is the cascade this app's lint
+    // forbids) and then waits on a fetch, so the engine's answer arrives after
+    // the render's own act has closed — and the re-render it causes is only
+    // flushed by being inside one.
+    await act(async () => {
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((settle) => setTimeout(settle, 0));
+    });
+    return {
+      host,
+      unmount: async () => {
+        await act(() => root.unmount());
+        host.remove();
+      },
+    };
+  }
+
+  test("the provider row, and no key field under it", async () => {
+    // The engine has not answered, which is the same state as `off` — see
+    // `useDictationSettings`, where that is deliberate rather than incidental.
+    const { host, unmount } = await pane({ provider: "off", configured: false, language: "multi", languages: [] });
 
     expect(host.textContent).toContain("Provider");
     // No credential is asked for until somebody says whose it would be.
     expect(host.querySelector('input[aria-label="Deepgram key"]')).toBeNull();
     // And the pane says what off actually means, rather than only naming it.
     expect(host.textContent).toContain("No mic button anywhere");
+    // NOR A LANGUAGE, for the key row's reason: narrowing what nothing will
+    // transcribe is a setting with nowhere to land.
+    expect(host.textContent).not.toContain("Language");
 
-    await act(() => root.unmount());
-    host.remove();
+    await unmount();
+  });
+
+  /* ---------------------------------------------------------------- *
+   * WHICH LANGUAGE — issue #560.
+   * ---------------------------------------------------------------- */
+
+  test("with a provider chosen, the language row says Automatic and explains what that means", async () => {
+    const { host, unmount } = await pane({
+      provider: "deepgram",
+      configured: true,
+      language: "multi",
+      languages: [
+        { code: "multi", label: "Automatic (any supported language)" },
+        { code: "es", label: "Spanish" },
+      ],
+    });
+
+    expect(host.textContent).toContain("Language");
+    expect(host.textContent).toContain("Automatic (any supported language)");
+    // THE POINT OF `multi` IN WORDS, not just its name: switching languages
+    // inside one sentence is the thing picking `es` would break.
+    expect(host.textContent).toContain("inside one sentence");
+
+    await unmount();
+  });
+
+  test("a narrowed language shows its own name and says what narrowing costs", async () => {
+    const { host, unmount } = await pane({
+      provider: "deepgram",
+      configured: true,
+      language: "es",
+      languages: [
+        { code: "multi", label: "Automatic (any supported language)" },
+        { code: "es", label: "Spanish" },
+      ],
+    });
+
+    expect(host.textContent).toContain("Spanish");
+    // The honest half: more accurate inside that language, wrong outside it.
+    expect(host.textContent).toContain("sounded closest to");
+
+    await unmount();
   });
 });

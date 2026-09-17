@@ -58,7 +58,7 @@ describe.skipIf(!LIVE)("Deepgram's grant endpoint, live", () => {
     // THE SHORTEST TTL THE ENDPOINT TAKES. The token is discarded on the next
     // line; minting a five-minute one to throw away is a credential left alive
     // for no reason.
-    const answer = await grantDictationToken({ key, ttlSeconds: 1, url: DEEPGRAM_GRANT_URL });
+    const answer = await grantDictationToken({ key, language: "multi", ttlSeconds: 1, url: DEEPGRAM_GRANT_URL });
 
     expect(answer.provider).toBe("deepgram");
     expect(answer.token.length).toBeGreaterThan(0);

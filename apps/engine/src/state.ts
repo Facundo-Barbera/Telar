@@ -161,8 +161,8 @@ import {
 import { TELAR_ORIENTATION } from "./orientation";
 import { carryOverLegacyKey, readAgentKey, resolveGoCredential, writeAgentKey, type GoKeySource } from "./agent/credentials";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
-import { isDictationProviderId, type DictationProviderId } from "./dictation/provider";
-import { readDictationProvider, writeDictationProvider } from "./dictation/settings";
+import { dictationLanguages, isDictationLanguage, isDictationProviderId, type DictationLanguage, type DictationProviderId } from "./dictation/provider";
+import { readDictationSettings, writeDictationSettings } from "./dictation/settings";
 import { isAgentSelf, type AgentSenderProof } from "./agent/identity";
 import { agentPaths, readAgentSettings } from "./agent/store";
 import { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
@@ -2988,15 +2988,35 @@ export class EngineStore {
    * claimed otherwise would have somebody paste it a second time. Switching a
    * provider off does not throw a credential away.
    */
-  dictationState(): { provider: DictationProviderId; configured: boolean } {
-    return { provider: readDictationProvider(this.dictationDir), ...this.dictationCredential() };
+  dictationState(): { provider: DictationProviderId; configured: boolean; language: string; languages: readonly DictationLanguage[] } {
+    // `languages` RIDES THE SAME ANSWER rather than getting a route of its own
+    // (#560). It is the vocabulary the `language` beside it is written in, and
+    // a client that had to fetch the two separately could draw a picker with
+    // nothing in it, or with the stored code missing from the list. One
+    // document, one moment.
+    return { ...readDictationSettings(this.dictationDir), ...this.dictationCredential(), languages: dictationLanguages() };
   }
 
   /** Choose a provider, or switch dictation off. The only writer, so `off` is
    *  a value somebody chose rather than a state derived from an empty key. */
   setDictationProvider(provider: unknown): void {
     if (!isDictationProviderId(provider)) throw new EngineStateError("invalid_request", "that is not a dictation provider this engine knows");
-    writeDictationProvider(this.dictationDir, provider);
+    writeDictationSettings(this.dictationDir, { ...readDictationSettings(this.dictationDir), provider });
+  }
+
+  /**
+   * Which language to transcribe, or `multi` for all of them at once.
+   *
+   * REFUSED BY NAME rather than stored and discovered at the socket: an
+   * unsupported code would come back from the provider as a failed handshake
+   * with nothing on screen saying which setting caused it, and the person who
+   * typed it would be three panes away by then.
+   */
+  setDictationLanguage(language: unknown): void {
+    if (!isDictationLanguage(language)) {
+      throw new EngineStateError("invalid_request", "that is not a language this engine's transcription provider can transcribe");
+    }
+    writeDictationSettings(this.dictationDir, { ...readDictationSettings(this.dictationDir), language });
   }
 
   /** Store the pasted key, or clear it with an empty string. The one write, so

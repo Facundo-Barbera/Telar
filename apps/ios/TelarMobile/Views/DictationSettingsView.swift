@@ -24,6 +24,18 @@ import SwiftUI
 /// new one replaces it, and Remove clears it. `SecureField` keeps it off the
 /// screen on the way in.
 ///
+/// ── AND WHICH LANGUAGE, WHICH IS A ROW BECAUSE IT WAS A BUG (#560) ──────────
+/// Nothing sent a language on the socket and the service defaults to English,
+/// so dictating in Spanish on this phone produced English-shaped nonsense —
+/// which is worse than a refusal, because it looks like it worked. The row
+/// answers Automatic by default: code-switching between supported languages
+/// inside one sentence. Naming one is the NARROWING, offered for the accuracy
+/// it buys in a single tongue.
+///
+/// THE NAMES COME FROM THE MAC. Seventy of them, per provider — a copy in this
+/// app would be the list that is wrong the day the provider adds one, and there
+/// is already one on the desktop.
+///
 /// ── SAVE PER INTERACTION, AND THE MAC'S ANSWER IS THE STATE ─────────────────
 /// The same two rules the desktop's panes follow. A refused write leaves the
 /// controls showing what is actually stored and says why underneath, rather
@@ -33,6 +45,10 @@ struct DictationSettingsView: View {
 
     @State private var provider = DictationProvider.off
     @State private var configured = false
+    @State private var language = DictationLanguages.automatic
+    /// What that Mac offers. EMPTY UNTIL IT HAS ANSWERED, and empty is what
+    /// keeps the row from being a menu with nothing in it.
+    @State private var languages: [DictationLanguageOption] = []
     /// True until that Mac has answered once. The controls stay inert rather
     /// than offering a choice that might be wrong.
     @State private var loading = true
@@ -74,6 +90,35 @@ struct DictationSettingsView: View {
                 // spend. Switching off keeps the key — it is the row that goes
                 // away, not the secret.
                 if provider == DictationProvider.deepgram {
+                    VStack(spacing: 0) {
+                        SettingsSectionLabel("Language")
+                        SettingsCard {
+                            CardRow(icon: "globe", title: "Transcribe", subtitle: languageLabel) {
+                                // A MENU, like the provider row above it, and
+                                // for the same reason — but this one is long,
+                                // so it is the system's own scrolling menu
+                                // rather than seventy rows on this screen.
+                                // AUTOMATIC IS FIRST because the Mac puts it
+                                // first; nothing here hoists a code by name.
+                                Menu {
+                                    ForEach(languages) { option in
+                                        Button(option.label) { save(language: option.code) }
+                                    }
+                                } label: {
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Theme.chevron)
+                                }
+                                // NO OPTIONS MEANS THAT MAC HAS NOT ANSWERED,
+                                // or is on a build from before this field — an
+                                // empty menu would be a control that does
+                                // nothing when tapped.
+                                .disabled(loading || saving || languages.isEmpty)
+                            }
+                        }
+                        SettingsFootnote(languageFootnote)
+                    }
+
                     VStack(spacing: 0) {
                         SettingsSectionLabel("Deepgram")
                         SettingsCard {
@@ -141,6 +186,20 @@ struct DictationSettingsView: View {
         }
     }
 
+    /// The Mac's own name for what is stored. FALLING BACK TO THE CODE rather
+    /// than to "Automatic": a language this build's list does not contain is
+    /// still the one being transcribed, and showing the wrong name would be a
+    /// screen quietly disagreeing with the socket.
+    private var languageLabel: String {
+        languages.first { $0.code == language }?.label ?? language
+    }
+
+    private var languageFootnote: String {
+        language == DictationLanguages.automatic
+            ? "Words are transcribed in whichever supported language they are spoken in, including switching between two of them inside one sentence. Narrow it only if you speak one language and want the accuracy of saying so."
+            : "Only this language is transcribed. More accurate than Automatic within it, and wrong for anything else — a sentence in another language comes back as whatever this one sounded closest to."
+    }
+
     private var providerFootnote: String {
         switch provider {
         case DictationProvider.deepgram:
@@ -157,8 +216,7 @@ struct DictationSettingsView: View {
         // asleep has no dictation to offer either way, and a banner about a
         // setting nobody was editing would be noise.
         if let answer = try? await api.dictation() {
-            provider = answer.dictation.provider
-            configured = answer.dictation.configured
+            adopt(answer)
         }
         loading = false
     }
@@ -166,19 +224,29 @@ struct DictationSettingsView: View {
     /// One write, one field. THE MAC'S ANSWER IS WHAT THE SCREEN THEN SHOWS —
     /// never the value that was sent, so a refused change leaves the controls
     /// on what is actually stored.
-    private func save(provider newProvider: String? = nil, apiKey: String? = nil) {
+    private func save(provider newProvider: String? = nil, apiKey: String? = nil, language newLanguage: String? = nil) {
         saving = true
         refusal = nil
         Task {
             do {
-                let answer = try await api.setDictation(provider: newProvider, apiKey: apiKey)
-                provider = answer.dictation.provider
-                configured = answer.dictation.configured
+                let answer = try await api.setDictation(provider: newProvider, apiKey: apiKey, language: newLanguage)
+                adopt(answer)
                 if apiKey != nil { keyDraft = "" }
             } catch {
                 refusal = error.localizedDescription
             }
             saving = false
         }
+    }
+
+    /// The whole answer in one place, so a read and a write cannot drift into
+    /// adopting different subsets of it. A Mac on a build from before #560
+    /// sends neither language field; the defaults already here are the right
+    /// answer for it, so `??` keeps them rather than blanking the row.
+    private func adopt(_ answer: DictationAnswer) {
+        provider = answer.dictation.provider
+        configured = answer.dictation.configured
+        language = answer.dictation.language ?? DictationLanguages.automatic
+        languages = answer.dictation.languages ?? []
     }
 }
