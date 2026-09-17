@@ -1,7 +1,7 @@
-import { relayConfig, relayDelivery, revokeRelayDevice } from "./relay";
+import { relayConfig, relayDelivery, relayHostId, revokeRelayDevice } from "./relay";
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
-import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type PushRecord, type SessionSignal } from "./push";
+import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 /** A phone that actually ran the start reports the activity's token within seconds: iOS delivers it
  *  on `activityUpdates` and the app re-registers straight away. A receipt still standing alone after
@@ -13,28 +13,75 @@ const AUTOMATIC_START_STALE = 300;
  *  and when work goes idle, so recovering never needs a reinstall. */
 const AUTOMATIC_START_ATTEMPTS = 3;
 
+/**
+ * BACKOFF FOR A BAD HOUR, NOT FOR A DEAD PHONE — issue #584.
+ *
+ * The old ceiling was five minutes, which is 288 attempts a day per record and
+ * — with two relay calls per attempt and a rate limiter at 120/minute — exactly
+ * the shape of the 173k invocations that exhausted the Cloudflare account's
+ * daily quota. Thirty seconds to an hour is fast enough that a phone which was
+ * briefly unreachable still gets its alert, and slow enough that one which is
+ * permanently unreachable costs 24 calls a day rather than thousands.
+ */
+const RETRY_FLOOR = 30;
+const RETRY_CEILING = 3600;
+/**
+ * …AND AFTER TWENTY IN A ROW, STOP ASKING. One of the owner's three records had
+ * failed 627 times running. Nothing about the twentieth attempt is more likely
+ * to work than the six-hundredth; a parked record waits for the phone to PUT a
+ * fresh registration, which every app open does.
+ */
+export const PARK_AFTER_FAILURES = 20;
+
 /** Fold after successful delivery only. First sight baselines history, not a burst of old alerts. */
-export async function deliverRecord(record: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<number>, now = Date.now() / 1000): Promise<PushRecord | undefined> {
-  if ((record.retryAt ?? 0) > now) return record;
+export async function deliverRecord(
+  record: PushRecord,
+  sessions: SessionSignal[],
+  send: (delivery: Delivery) => Promise<DeliveryResult>,
+  now = Date.now() / 1000,
+  options: { changed?: ReadonlySet<string> } = {},
+): Promise<PushRecord | undefined> {
+  if (record.parked || (record.retryAt ?? 0) > now) return record;
   let failed = false;
   // WHEN APNS LAST TOOK SOMETHING, for the Settings pane that has to tell a
   // phone which is merely registered from one which is actually being reached
   // (#579). A 410 is the device saying it is gone; that is not a delivery.
   let delivered: number | undefined;
-  const safeSend = async (delivery: Delivery) => {
-    let status: number;
-    try { status = await send(delivery); } catch { status = 0; }
-    if (status !== 200 && status !== 410) failed = true;
-    if (status === 200) delivered = now;
-    return status;
+  let last: DeliveryResult | undefined;
+  /** Advances only when the relay accepts a registration, so the next push can
+   *  skip the PUT and be one call (#584). */
+  let relayRevision = record.relayRevision;
+  /** The relay's daily budget is spent. Spending further calls to be told so
+   *  again is the failure this guard exists to prevent, so the rest of this
+   *  record's sends are answered from here without touching the network. */
+  let budgetSpent: DeliveryResult | undefined;
+  const safeSend = async (delivery: Delivery): Promise<DeliveryResult> => {
+    if (budgetSpent) return budgetSpent;
+    let result: DeliveryResult;
+    try { result = await send(delivery); } catch { result = { status: 0 }; }
+    last = result;
+    if (result.retryAfter !== undefined) budgetSpent = result;
+    if (result.registered) relayRevision = record.revision;
+    if (result.status === 200) delivered = now;
+    // A DEAD TOKEN IS NOT A FAILURE TO RETRY, it is an answer: the caller drops
+    // what it names. Counting it would park a record that is already going away.
+    else if (!isDeadToken(result)) failed = true;
+    return result;
   };
   const next: PushRecord = { ...record, seen: { ...record.seen }, activitySent: { ...record.activitySent }, activities: [...record.activities] };
   for (const session of sessions) {
+    // ONLY WHAT MOVED (#584). A session whose signal has not changed since the
+    // last pass has nothing to say, and its checkpoint already equals its
+    // signal — so skipping it changes no state. One this record has never seen
+    // is the exception: it still has to be baselined.
+    if (options.changed && !options.changed.has(session.id) && session.id in record.seen) continue;
     const payload = notification(record, session, record.seen[session.id] ?? (record.baselined ? "new:0:0:false" : undefined));
     if (payload) {
-      const status = await safeSend(payload);
-      if (status === 410) return undefined;
-      if (status !== 200) continue;
+      const result = await safeSend(payload);
+      // Apple has rejected this phone's token for good. The record goes; the
+      // app re-registers on its next open and pairing is untouched.
+      if (isDeadToken(result)) return undefined;
+      if (result.status !== 200) continue;
     }
     next.seen[session.id] = signalKey(session);
   }
@@ -49,90 +96,244 @@ export async function deliverRecord(record: PushRecord, sessions: SessionSignal[
   if (!active.length) { next.automaticStartedAt = undefined; next.automaticStarts = undefined; }
   if (record.liveActivities && active.length && !automatic.length && (!record.automaticStartedAt || staleStart)
       && record.pushToStartToken && (record.automaticStarts ?? 0) < AUTOMATIC_START_ATTEMPTS) {
-    const status = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
-    if (status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
+    const result = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
+    if (result.status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
     // Expiration of a start token must never unregister ordinary phone notifications.
-    if (status === 410) next.pushToStartToken = undefined;
+    if (isDeadToken(result)) next.pushToStartToken = undefined;
   }
   for (const follow of automatic) {
     // The activity exists, so the start it came from worked: the attempt count has done its job.
     if (active.length && record.liveActivities) { next.automaticStartedAt = follow.startedAt; next.automaticStarts = undefined; }
     if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
-    const status = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
-    if (status === 410 || (status === 200 && (!active.length || !record.liveActivities))) {
+    const result = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
+    if (isDeadToken(result) || (result.status === 200 && (!active.length || !record.liveActivities))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
       delete next.activitySent[follow.token];
-    } else if (status === 200) { next.activitySent[follow.token] = now; next.automaticSignal = aggregateSignal; }
+    } else if (result.status === 200) { next.activitySent[follow.token] = now; next.automaticSignal = aggregateSignal; }
   }
   for (const follow of record.activities.filter(a => a.sessionId !== AUTOMATIC_ACTIVITY)) {
     const session = sessions.find(s => s.id === follow.sessionId);
     const changed = session && record.seen[session.id] !== signalKey(session);
     if (!changed && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
-    const status = await safeSend(activityDelivery(record, follow, session, now));
-    if (status === 410 || (status === 200 && (!session || session.activity === "idle"))) {
+    const result = await safeSend(activityDelivery(record, follow, session, now));
+    if (isDeadToken(result) || (result.status === 200 && (!session || session.activity === "idle"))) {
       next.activities = next.activities.filter(a => a.token !== follow.token);
       delete next.activitySent[follow.token];
-    } else if (status === 200) next.activitySent[follow.token] = now;
+    } else if (result.status === 200) next.activitySent[follow.token] = now;
   }
   next.failures = failed ? (record.failures ?? 0) + 1 : 0;
-  next.retryAt = failed ? now + Math.min(300, 5 * 2 ** Math.min(next.failures - 1, 6)) : undefined;
+  next.retryAt = failed ? now + Math.min(RETRY_CEILING, RETRY_FLOOR * 2 ** Math.min(next.failures - 1, 12)) : undefined;
+  if (failed && next.failures >= PARK_AFTER_FAILURES) next.parked = true; else delete next.parked;
   next.lastDeliveryAt = delivered ?? record.lastDeliveryAt;
+  if (last) {
+    next.lastStatus = last.status;
+    if (last.reason === undefined) delete next.lastReason; else next.lastReason = last.reason;
+  }
+  next.relayRevision = relayRevision;
   next.baselined = true;
   return next;
 }
 
-const workerGlobal = globalThis as typeof globalThis & { telarMobilePushTimer?: ReturnType<typeof setTimeout> };
+/**
+ * HOW OFTEN THIS MAC LOOKS, AND WHAT IT COSTS TO LOOK — issue #584.
+ *
+ * The old loop woke every 5 seconds and asked the engine to fold EVERY session
+ * (`liveSessions({all:true})`, 407 rows on the owner's store) to discover that
+ * nothing had happened. `liveSessionsMatching` is the same wide read with an
+ * ETag on it: a quiet tick is a 304 with no body and no fold, and the records
+ * are not touched at all — so a quiet hour now costs zero relay calls, which is
+ * the whole point.
+ *
+ * TEN SECONDS, NOT FIVE. An alert about a session that needs you can be ten
+ * seconds late; what it cannot be is a per-record relay call every five.
+ *
+ * NOT YET A SUBSCRIPTION. The issue asks for the engine's session events, and
+ * the engine has none to give — there is no global feed and the rail polls for
+ * exactly that reason (`engine-client`'s `liveSessionsSince`). The conditional
+ * read is the whole of the win available without a new engine route; the feed
+ * itself is filed separately.
+ */
+const POLL_INTERVAL = 10_000;
+/** The safety net, not the mechanism: an unconditional wide pass that re-reads
+ *  every record against every session, in case an ETag or a snapshot ever drifts
+ *  out of step with the truth. Ten minutes, not five seconds. */
+const RECONCILE_INTERVAL = 600_000;
+/** A Live Activity whose timestamp stops moving goes stale on the lock screen,
+ *  so one that is REGISTERED and has live work behind it is refreshed on this
+ *  cadence even when no signal changed. Nothing else wakes on it. */
+const HEARTBEAT_INTERVAL = 60_000;
+
+type WorkerState = {
+  telarMobilePushTimer?: ReturnType<typeof setTimeout>;
+  /** Milliseconds. The relay answered 429 with a `Retry-After`: this host's
+   *  daily budget is spent and nothing is sent until it resets (#584). */
+  telarMobilePushPausedUntil?: number;
+  /** The session list as of the last pass. The diff against it is what
+   *  "evaluate only the affected session" is made of — and on a 304 it is what
+   *  a Live Activity heartbeat refreshes from, so an unchanged tick never asks
+   *  the engine to fold the list a second time. */
+  telarMobilePushSnapshot?: SessionSignal[];
+  telarMobilePushETag?: string;
+  telarMobilePushReconciledAt?: number;
+  telarMobilePushBeatAt?: number;
+};
+const workerGlobal = globalThis as typeof globalThis & WorkerState;
+
+/** When this host may send again, or undefined when it is not paused. Read by
+ *  Settings so "push paused until…" is the relay's own answer, not a guess. */
+export function pushPausedUntil(now = Date.now()): number | undefined {
+  const until = workerGlobal.telarMobilePushPausedUntil;
+  if (until === undefined) return undefined;
+  if (until <= now) { delete workerGlobal.telarMobilePushPausedUntil; return undefined; }
+  return until;
+}
+
+/** The relay said how long to wait. Honour it for every record on this host. */
+export function pauseHost(seconds: number, now = Date.now()): void {
+  workerGlobal.telarMobilePushPausedUntil = now + seconds * 1000;
+}
+
+/**
+ * WHICH RECORDS ARE THIS MAC'S TO SEND — issue #584.
+ *
+ * Two Macs held the same three records and each served all of them, so every
+ * alert arrived twice and every dead token was retried twice. A record is
+ * stamped at registration with the relay host id of the Mac it registered
+ * against; a Mac serves only its own, and leaves every other record untouched
+ * rather than deleting it — the other Mac is still using it.
+ *
+ * A Mac with no relay id serves the records that carry none, which is the
+ * single-Mac install and the local-APNs-key one. A record stamped for another
+ * host on a Mac that has no id of its own is NOT served: it plainly belongs to
+ * somebody else.
+ */
+export function ownRecords(records: PushRecord[], ownHostId: string | undefined): PushRecord[] {
+  return records.filter(record => record.relayHostId === ownHostId);
+}
+
+/** The sessions whose signal moved since the last pass, plus every one this Mac
+ *  has not seen before. Everything else is, by definition, nothing to say. */
+export function changedSessions(sessions: SessionSignal[], previous: SessionSignal[] | undefined): Set<string> {
+  const before = new Map((previous ?? []).map(session => [session.id, signalKey(session)]));
+  const changed = new Set<string>();
+  for (const session of sessions) if (before.get(session.id) !== signalKey(session)) changed.add(session.id);
+  return changed;
+}
+
+/** Only the fields a notification is made of. Keeping the engine's whole row in
+ *  a module global would hold a copy of every session's state for ever. */
+function signals(sessions: readonly SessionSignal[]): SessionSignal[] {
+  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed }) => ({
+    id, title, activity,
+    ...(activityAt === undefined ? {} : { activityAt }),
+    ...(lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt }),
+    ...(lastTurnFailed === undefined ? {} : { lastTurnFailed }),
+  }));
+}
+
+/** Whether a stale Live Activity has to be refreshed on a tick where no session
+ *  signal moved: one registered, and work actually behind it. */
+export function heartbeatDue(records: PushRecord[], sessions: SessionSignal[], since: number | undefined, now: number): boolean {
+  if (!records.some(record => record.liveActivities && record.activities.length > 0)) return false;
+  if (!automaticSessions(sessions).length) return false;
+  return since === undefined || now - since >= HEARTBEAT_INTERVAL;
+}
+
 export function startMobilePushWorker(): void {
   if (workerGlobal.telarMobilePushTimer || !pushConfigured() || process.env.TELAR_COCKPIT !== "1") return;
   const tick = async () => {
     try {
-      const paired = new Set(readRemote().devices.filter(d => d.role === "full").map(d => d.id));
+      const nowMs = Date.now();
+      // PAUSED MEANS PAUSED. Not a cheaper tick, not the activities only: the
+      // relay has said this host is over its daily budget, and the one useful
+      // thing to do with that is stop until it says otherwise.
+      if (pushPausedUntil(nowMs) !== undefined) return;
       const relay = relayConfig();
-      const records = readPushRecords();
-      if (records.length) {
-        // ALL OF THEM (#457). The route's default is the unsettled rows, and a
-        // notification that is never sent is the worst failure this path has —
-        // so it reads the whole list rather than reasoning about which shelved
-        // session might still owe somebody a push.
-        const { sessions } = await (await engineClient()).liveSessions({ all: true });
-        for (const record of records) {
-          if (!paired.has(record.deviceId)) {
-            if (relay) await revokeRelayDevice(relay, record.deviceId);
-            writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
-            continue;
-          }
-          const result = await deliverRecord(record, sessions, async delivery => {
-            // Recheck at delivery time: revocation and preference changes can race a slow APNs connection.
-            if (!readRemote().devices.some(d => d.id === record.deviceId && d.role === "full")) return 410;
-            if (!readPushRecords().some(r => r.revision === record.revision)) return 409;
-            return relay ? relayDelivery(relay, record, delivery) : sendAPNs(delivery);
-          });
-          // A phone may change preferences while APNs is in flight. Never overwrite it.
-          const current = readPushRecords();
-          const index = current.findIndex(r => r.revision === record.revision);
-          if (index >= 0) {
-            if (result) current[index] = result; else current.splice(index, 1);
+      const ownHostId = relayHostId();
+      const stored = readPushRecords();
+      if (!stored.length) return;
+
+      // Sweep revoked devices first — it is the one thing that must happen
+      // whether or not a session moved, and it touches only this Mac's records.
+      const paired = new Set(readRemote().devices.filter(d => d.role === "full").map(d => d.id));
+      for (const record of ownRecords(stored, ownHostId)) {
+        if (paired.has(record.deviceId)) continue;
+        if (relay) await revokeRelayDevice(relay, record.deviceId);
+        writePushRecords(readPushRecords().filter(r => r.deviceId !== record.deviceId));
+      }
+      const records = ownRecords(readPushRecords(), ownHostId).filter(record => !record.parked);
+      if (!records.length) return;
+
+      const reconcile = nowMs - (workerGlobal.telarMobilePushReconciledAt ?? 0) >= RECONCILE_INTERVAL;
+      const api = await engineClient();
+      // THE WIDE LIST, CONDITIONALLY (#457 wanted all of it; #584 wants it to
+      // cost nothing when it has not moved). A reconcile hands back no ETag, so
+      // it is the same call made unconditionally — and it mints a fresh tag.
+      const etag = reconcile ? undefined : workerGlobal.telarMobilePushETag;
+      const answer = await api.liveSessionsMatching({ all: true, ...(etag === undefined ? {} : { etag }) });
+      if (reconcile) workerGlobal.telarMobilePushReconciledAt = nowMs;
+
+      let sessions: SessionSignal[];
+      let changed: ReadonlySet<string> | undefined;
+      if (answer.notModified) {
+        // Nothing moved, and the engine did not even fold the list to say so.
+        // The one reason left to do anything is a Live Activity that would
+        // otherwise go stale, refreshed from the list we already hold.
+        sessions = workerGlobal.telarMobilePushSnapshot ?? [];
+        if (!heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
+        // An empty change set: the activity refresh runs, no alert can fire.
+        changed = new Set<string>();
+      } else {
+        sessions = signals(answer.sessions);
+        if (answer.etag !== undefined) workerGlobal.telarMobilePushETag = answer.etag;
+        changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
+        workerGlobal.telarMobilePushSnapshot = sessions;
+        if (changed && changed.size === 0 && !heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs)) return;
+      }
+      workerGlobal.telarMobilePushBeatAt = nowMs;
+
+      for (const record of records) {
+        if (pushPausedUntil(Date.now()) !== undefined) break;
+        // A RECORD THAT WAS HELD BACK GETS THE WHOLE LIST. The change set is
+        // global and names what moved since the LAST PASS; a record in backoff
+        // sat out several of those, so narrowing it would hide every transition
+        // it missed until the next reconcile — including a session still
+        // waiting on the person. Narrowing only ever saved comparisons, never a
+        // relay call: an unchanged session produces no notification either way.
+        const narrow = record.failures ? undefined : changed;
+        const result = await deliverRecord(record, sessions, async delivery => {
+          // Recheck at delivery time: revocation and preference changes can race a slow APNs connection.
+          if (!readRemote().devices.some(d => d.id === record.deviceId && d.role === "full")) return { status: 410 };
+          if (!readPushRecords().some(r => r.revision === record.revision)) return { status: 409, relay: true };
+          const sent = relay ? await relayDelivery(relay, record, delivery) : await sendAPNs(delivery);
+          if (sent.retryAfter !== undefined) pauseHost(sent.retryAfter);
+          return sent;
+        }, Date.now() / 1000, narrow === undefined ? {} : { changed: narrow });
+        // A phone may change preferences while APNs is in flight. Never overwrite it.
+        const current = readPushRecords();
+        const index = current.findIndex(r => r.revision === record.revision);
+        if (index >= 0) {
+          if (result) current[index] = result; else current.splice(index, 1);
+          writePushRecords(current);
+        } else if (result?.automaticStartedAt) {
+          // A push-start wakes the app, whose registration may arrive before
+          // APNs returns. Retain only the start receipt across that refresh;
+          // never overwrite newer preferences, subscriptions or alert state.
+          const refreshed = current.find(r => r.deviceId === record.deviceId && r.topic === record.topic
+            && r.liveActivities && r.pushToStartToken === record.pushToStartToken);
+          if (refreshed && !refreshed.automaticStartedAt) {
+            refreshed.automaticStartedAt = result.automaticStartedAt;
+            // Carry the attempt count with the receipt, or a phone re-registering on every
+            // start push would reset the cap and be pushed forever.
+            refreshed.automaticStarts = result.automaticStarts;
             writePushRecords(current);
-          } else if (result?.automaticStartedAt) {
-            // A push-start wakes the app, whose registration may arrive before
-            // APNs returns. Retain only the start receipt across that refresh;
-            // never overwrite newer preferences, subscriptions or alert state.
-            const refreshed = current.find(r => r.deviceId === record.deviceId && r.topic === record.topic
-              && r.liveActivities && r.pushToStartToken === record.pushToStartToken);
-            if (refreshed && !refreshed.automaticStartedAt) {
-              refreshed.automaticStartedAt = result.automaticStartedAt;
-              // Carry the attempt count with the receipt, or a phone re-registering on every
-              // start push would reset the cap and be pushed forever.
-              refreshed.automaticStarts = result.automaticStarts;
-              writePushRecords(current);
-            }
           }
         }
       }
     } catch {
       // Keep checkpoints for retry, without logging credentials or session content.
       console.warn("[mobile-push] Delivery unavailable; retrying.");
-    } finally { workerGlobal.telarMobilePushTimer = setTimeout(tick, 5000); workerGlobal.telarMobilePushTimer.unref(); }
+    } finally { workerGlobal.telarMobilePushTimer = setTimeout(tick, POLL_INTERVAL); workerGlobal.telarMobilePushTimer.unref(); }
   };
   workerGlobal.telarMobilePushTimer = setTimeout(tick, 0);
   workerGlobal.telarMobilePushTimer.unref();

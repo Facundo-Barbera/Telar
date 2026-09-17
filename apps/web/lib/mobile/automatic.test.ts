@@ -8,7 +8,7 @@ import path from "node:path";
 const record = (): PushRecord => ({ hostId:"12345678-1234-1234-1234-123456789abc",hostName:"Studio Mac",token:"a".repeat(64),pushToStartToken:"b".repeat(64),topic:"com.telar.mobile",sandbox:false,enabled:false,completions:false,previews:false,liveActivities:true,mutedSessions:[],activities:[],deviceId:"phone",revision:"r1",updatedAt:0,seen:{},activitySent:{} });
 const work = {id:"one",title:"Private task",activity:"working",activityAt:1};
 test("automatic work starts once without a follow or notification opt-in; idle permits the next run",async()=>{
-  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   let r=(await deliverRecord(record(),[work],send,1000))!;
   expect(sent).toHaveLength(1);
   expect(sent[0]!.token).toBe(r.pushToStartToken);
@@ -20,7 +20,7 @@ test("automatic work starts once without a follow or notification opt-in; idle p
 });
 test("one host card aggregates work, gives attention precedence, and ends when idle or disabled",async()=>{
   const r=record();r.activities=[{sessionId:AUTOMATIC_ACTIVITY,token:"c".repeat(64),startedAt:1000}];
-  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   const busy=[work,{...work,id:"two",activity:"blocked"}];
   let next=(await deliverRecord(r,busy,send,1010))!;
   expect(sent).toHaveLength(1);
@@ -32,12 +32,13 @@ test("one host card aggregates work, gives attention precedence, and ends when i
   expect(sent[2]!.payload.aps.event).toBe("end");
 });
 test("start failures retry, expired start tokens preserve notifications, disabled and old clients never start",async()=>{
-  let r=(await deliverRecord(record(),[work],async()=>503,1000))!;
+  let r=(await deliverRecord(record(),[work],async()=>({status:503}),1000))!;
   expect(r.automaticStartedAt).toBeUndefined();expect(r.retryAt).toBeGreaterThan(1000);
-  r=(await deliverRecord(r,[work],async()=>410,1010))!;
+  // Past the 30s retry floor (#584), or the backoff would swallow this attempt.
+  r=(await deliverRecord(r,[work],async()=>({status:410}),1040))!;
   expect(r.token).toBe(record().token);expect(r.pushToStartToken).toBeUndefined();
   let sent=0;
-  for(const patch of [{liveActivities:false},{pushToStartToken:undefined},{liveActivities:undefined}]) await deliverRecord({...record(),...patch},[work],async()=>{sent++;return 200;},1000);
+  for(const patch of [{liveActivities:false},{pushToStartToken:undefined},{liveActivities:undefined}]) await deliverRecord({...record(),...patch},[work],async()=>{sent++;return {status:200};},1000);
   expect(sent).toBe(0);
 });
 test("a start receipt survives a refresh of the same start token, dies with a new one, and validates its fields",async()=>{
@@ -59,14 +60,14 @@ test("a start receipt survives a refresh of the same start token, dies with a ne
     expect(fresh.automaticStarts).toBeUndefined();
     expect(fresh.seen).toEqual(r.seen);
     const sent: Delivery[]=[];
-    await deliverRecord(fresh,[work],async d=>{sent.push(d);return 200;},2000);
+    await deliverRecord(fresh,[work],async d=>{sent.push(d);return {status:200};},2000);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.payload.aps.event).toBe("start");
     expect(sent[0]!.token).toBe("d".repeat(64));
   } finally {rmSync(dir,{recursive:true,force:true});}
 });
 test("a start the phone never ran is retried after five minutes, three times per token, then idle resets it",async()=>{
-  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   let r=(await deliverRecord(record(),[work],send,1000))!;
   expect(sent).toHaveLength(1);expect(r.automaticStarts).toBe(1);
   // Inside the window the phone may still report the activity's token.
@@ -81,7 +82,7 @@ test("a start the phone never ran is retried after five minutes, three times per
   await deliverRecord(r,[work],send,100020);expect(sent).toHaveLength(4);
 });
 test("a registered automatic activity is updated, never restarted",async()=>{
-  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return 200;};
+  const sent: Delivery[]=[];const send=async(d:Delivery)=>{sent.push(d);return {status:200};};
   const r={...record(),automaticStartedAt:1000,automaticStarts:1,activities:[{sessionId:AUTOMATIC_ACTIVITY,token:"c".repeat(64),startedAt:1000}]};
   const next=(await deliverRecord(r,[work],send,9000))!;
   expect(sent).toHaveLength(1);

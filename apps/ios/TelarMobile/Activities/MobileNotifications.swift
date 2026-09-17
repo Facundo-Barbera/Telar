@@ -92,7 +92,11 @@ struct PushStatus: Decodable { var configured: Bool }
     var enabled = UserDefaults.standard.bool(forKey: "telar.notifications.enabled") {
         didSet { defaults.set(enabled, forKey: "telar.notifications.enabled") }
     }
-    var completions = UserDefaults.standard.bool(forKey: "telar.notifications.completions") {
+    /// ON BY DEFAULT (owner's decision, #584). `bool(forKey:)` answers `false`
+    /// for a key nobody has written, so every phone that had never opened this
+    /// setting was silently opted OUT of the completion alert it was told it
+    /// would get. `object(forKey:)` distinguishes "off" from "never set".
+    var completions = UserDefaults.standard.object(forKey: "telar.notifications.completions") as? Bool ?? true {
         didSet { defaults.set(completions, forKey: "telar.notifications.completions") }
     }
     var previews = UserDefaults.standard.bool(forKey: "telar.notifications.previews") {

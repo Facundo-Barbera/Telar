@@ -17,11 +17,13 @@ test("relay registers the paired destination before sending and preserves provid
       calls.push(`${init?.method} ${input}`);
       return Response.json(init?.method === "POST" ? { status:410 } : {});
     }) as typeof fetch;
-    const record = {deviceId:"phone",token:"a".repeat(64),topic:"com.telar.mobile",sandbox:false,activities:[]} as unknown as PushRecord;
+    const record = {deviceId:"phone",revision:"r1",token:"a".repeat(64),topic:"com.telar.mobile",sandbox:false,activities:[]} as unknown as PushRecord;
     const delivery = {token:record.token,topic:record.topic,sandbox:false,kind:"alert" as const,collapseId:"a".repeat(64),payload:{aps:{alert:"Test"}}};
-    expect(await relayDelivery({url:"https://relay.example",token:"b".repeat(64)},record,delivery)).toBe(410);
+    // 410 is APPLE's, so no `relay` flag: this is the token being disowned, and
+    // `registered` says the PUT that preceded it was accepted (#584).
+    expect(await relayDelivery({url:"https://relay.example",token:"b".repeat(64)},record,delivery)).toEqual({status:410,registered:true});
     expect(calls).toEqual(["PUT https://relay.example/v1/devices/phone","POST https://relay.example/v1/devices/phone/push"]);
-    expect(await relayDelivery({url:"https://relay.example",token:"b".repeat(64)},{...record,sandbox:true},delivery)).toBe(400);
+    expect(await relayDelivery({url:"https://relay.example",token:"b".repeat(64)},{...record,sandbox:true},delivery)).toEqual({status:400,relay:true});
     expect(calls).toHaveLength(2);
   } finally {globalThis.fetch=original;}
 });

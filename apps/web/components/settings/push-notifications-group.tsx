@@ -42,6 +42,9 @@ export interface PushRelayStatus {
   /** Whether a DEBUG build's `sandbox: true` registration could ever be
    *  delivered to. The available Apple key is production-only. */
   sandbox: boolean;
+  /** Milliseconds. This Mac is past the relay's daily budget and sends nothing
+   *  until then — the relay's own `Retry-After`, honoured (#584). */
+  pausedUntil?: number;
   devices: Array<{
     deviceId: string;
     name?: string;
@@ -52,7 +55,15 @@ export interface PushRelayStatus {
     liveActivities: boolean;
     updatedAt: number;
     lastDeliveryAt?: number;
-    failures: number;
+    /** The last send's status and Apple's own word for it (#584). */
+    lastStatus?: number;
+    lastReason?: string;
+    consecutiveFailures: number;
+    /** Twenty consecutive failures: stopped until the phone registers again. */
+    parked: boolean;
+    /** Whether THIS Mac is the one that serves it. A record registered against
+     *  another Mac is left alone rather than sent twice (#584). */
+    mine: boolean;
   }>;
 }
 
@@ -72,15 +83,30 @@ export function relayHeadline(status: PushRelayStatus): { label: string; ok: boo
  */
 export function deviceLine(device: PushRelayStatus["devices"][number], now = Date.now()): string {
   const parts: string[] = [];
+  // ANOTHER MAC'S PHONE IS NOT THIS MAC'S PROBLEM, and saying so first stops the
+  // rest of the line being read as a fault here (#584).
+  if (!device.mine) parts.push("registered against another Mac — served from there");
   parts.push(device.enabled ? "Alerts on" : "Alerts off");
   if (device.liveActivities) parts.push("Live Activities");
   // A DEBUG BUILD REGISTERS SANDBOX and can never be delivered to through the
   // relay, which is worth saying beside a phone that shows up and never rings.
   if (device.sandbox) parts.push("sandbox build — the relay cannot reach it");
   parts.push(device.lastDeliveryAt ? `last delivery ${fmtAgo(device.lastDeliveryAt * 1000, now)}` : "never delivered to");
-  if (device.failures > 0) parts.push(`${device.failures} recent failure${device.failures === 1 ? "" : "s"}`);
+  // WHY IT IS FAILING, NOT JUST THAT IT IS. Apple's reason is the difference
+  // between "this phone's token is dead" and "the relay had a bad minute".
+  if (device.lastStatus !== undefined && device.lastStatus !== 200) {
+    parts.push(device.lastReason ? `last refused ${device.lastStatus} ${device.lastReason}` : `last refused ${device.lastStatus}`);
+  }
+  if (device.consecutiveFailures > 0) parts.push(`${device.consecutiveFailures} failure${device.consecutiveFailures === 1 ? "" : "s"} in a row`);
+  if (device.parked) parts.push("stopped until this phone registers again — open Telar on it");
   if (!device.paired) parts.push("no longer paired — will be dropped");
   return parts.join(" · ");
+}
+
+/** "Push paused until 14:32" — the relay's daily budget, in the words somebody
+ *  looking at a phone that is not ringing would use. */
+export function pausedLine(pausedUntil: number): string {
+  return `Push paused until ${new Date(pausedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 export function PushNotificationsGroup() {
@@ -169,6 +195,14 @@ export function PushNotificationsGroup() {
           label="This Mac has no push relay"
           icon={BellIcon}
           hint="Nothing is sent until one is provisioned — the worker that delivers notifications does not start, and every phone that registers is told push is unavailable. Paste the relay config below."
+          control={null}
+        />
+      )}
+      {status.pausedUntil !== undefined && (
+        <Row
+          label={pausedLine(status.pausedUntil)}
+          icon={BellIcon}
+          hint="This Mac has spent the relay's daily budget, so nothing is sent until it resets. Alerts resume on their own; no action is needed unless it happens every day, which would mean something is sending far more than it should."
           control={null}
         />
       )}
