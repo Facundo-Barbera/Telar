@@ -43,6 +43,7 @@
  */
 
 import {
+  BellIcon,
   BlocksIcon,
   BookMarkedIcon,
   CameraIcon,
@@ -464,6 +465,20 @@ export const SETTINGS_SEARCH_PAGES: readonly SettingsPageSpec[] = [
             hint: "Keeps this one. The lost-phone button.",
             keywords: ["sign out", "logout", "lost", "stolen"],
             icon: SmartphoneIcon,
+          },
+        ],
+      },
+      {
+        title: "Push notifications",
+        rows: [
+          {
+            title: "Provision relay",
+            // The words somebody types when notifications are not arriving —
+            // they search for the symptom, not for "relay", which is a term
+            // they have no reason to know.
+            hint: "Whether this Mac can send alerts to your phones, and the relay credential that lets it.",
+            keywords: ["notifications", "apns", "alerts", "push", "relay", "keychain", "phone", "not working"],
+            icon: BellIcon,
           },
         ],
       },

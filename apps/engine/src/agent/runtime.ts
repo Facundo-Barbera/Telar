@@ -640,6 +640,21 @@ export class AgentRuntime {
     return { ...log.page(threadId, Math.max(0, options.after ?? 0), options.limit ?? THREAD_PAGE_DEFAULT), threadId };
   }
 
+  /** THE LAST PAGE FIRST, then backwards — what a screen opening a long thread
+   *  reads instead of walking it (#580). See `AgentThreadLog.window`. */
+  threadWindow(options: { before?: number; limit?: number } = {}): { rows: AgentRow[]; cursor: number; oldest?: number; more: boolean; threadId?: string } {
+    const threadId = readAgentSettings(this.paths).threadId;
+    if (!threadId) return { rows: [], cursor: 0, more: false };
+    const { log } = this.open();
+    return {
+      ...log.window(threadId, {
+        ...(options.before === undefined ? {} : { before: options.before }),
+        limit: options.limit ?? THREAD_PAGE_DEFAULT,
+      }),
+      threadId,
+    };
+  }
+
   /** The end of the transcript, so a watcher can start from the tail without
    *  paging a whole conversation to reach it. */
   cursor(): number {

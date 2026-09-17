@@ -237,6 +237,13 @@ struct ConnectView: View {
             )
             // ADDS a host (or refreshes a known one) — never evicts others.
             settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            // AND ASKS FOR NOTIFICATION PERMISSION, ONCE (#579). Pairing is the
+            // moment this app first has something to notify anybody about, and
+            // it is the moment nothing used to happen: the only path to the
+            // system prompt was a toggle in Settings ▸ Notifications, so a
+            // phone that never visited that screen never appeared in iOS's own
+            // Notifications list at all.
+            await MobileNotifications.shared.promptAfterPairing()
             pairingLink = ""
             host = parsed.base.host() ?? host
             port = parsed.base.port.map(String.init) ?? (parsed.base.scheme == "https" ? "443" : port)

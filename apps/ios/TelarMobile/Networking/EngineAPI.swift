@@ -133,7 +133,19 @@ protocol EngineAPI: Sendable {
     func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer
     /// The transcript forward from a cursor. Bounded by a count AND a byte
     /// budget, whichever is reached first — page until `more` is false.
+    ///
+    /// THIS IS THE POLL, NOT THE OPEN (#580). A screen opening a conversation
+    /// asks for `agentThreadTail` and walks back with `agentThread(before:)`;
+    /// this is what keeps it up to date once it has.
     func agentThread(after: Int) async throws -> AgentThreadPage
+    /// THE LAST PAGE, which is the one somebody opening the Agent is looking at
+    /// (#580). `cursor` comes back as the thread's TIP, so the forward poll
+    /// starts from the end rather than from the top of this window.
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage
+    /// One page FURTHER BACK, exclusive of `before` — what pulling down at the
+    /// top of the transcript asks for. `oldest` is the next `before`, and
+    /// `more` says whether anything older is left.
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage
     func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted
     /// `stopped: false` means there was nothing left to stop, which is a fact
     /// rather than an error — a Stop pressed a beat late must not paint a
@@ -279,6 +291,8 @@ extension EngineAPI {
     /// state is what a caller gets rather than a failure.
     func agent() async throws -> AgentAnswer { AgentAnswer(agent: AgentState(enabled: false), credential: nil) }
     func agentThread(after: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: after, more: false) }
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage { AgentThreadPage(rows: [], cursor: 0, more: false) }
     func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted { AgentTurnAccepted(runId: "", queued: 0, agent: nil) }
     func cancelAgentTurn(_ runId: String) async throws {}
     func resolveAgentRequest(_ requestId: EngineID, accept: Bool) async throws {}
@@ -790,6 +804,20 @@ struct HTTPEngineAPI: EngineAPI {
 
     func agentThread(after: Int) async throws -> AgentThreadPage {
         try await get("api/agent/thread", query: [URLQueryItem(name: "after", value: String(after))])
+    }
+
+    func agentThreadTail(limit: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [
+            URLQueryItem(name: "tail", value: "1"),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ])
+    }
+
+    func agentThread(before: Int, limit: Int) async throws -> AgentThreadPage {
+        try await get("api/agent/thread", query: [
+            URLQueryItem(name: "before", value: String(before)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ])
     }
 
     func sendAgentTurn(_ text: String) async throws -> AgentTurnAccepted {

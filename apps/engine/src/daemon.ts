@@ -1745,10 +1745,33 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { stopped: agentRuntime.cancel(runId || undefined), agent: agentRuntime.state() });
         return;
       }
+      /**
+       * THE TRANSCRIPT, FROM EITHER END (#580).
+       *
+       * `after=` is unchanged and still means "what is new" — it is what every
+       * poll and every stream reconnect rides. `tail=1` opens on the END, and
+       * `before=<id>` walks back from there; both answer `oldest`, the next
+       * `before`, and read `more` as "older rows are waiting".
+       *
+       * BACKWARD IS ASKED FOR AND NEVER INFERRED. A bare read still means
+       * "from the beginning", so a client built against the old route gets
+       * exactly what it got before rather than silently landing at the end of
+       * a conversation it meant to read from the start.
+       */
       if (request.method === "GET" && url.pathname === "/v2/agent/thread") {
+        const limit = positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit");
+        const before = url.searchParams.get("before");
+        const tail = url.searchParams.get("tail");
+        if (before !== null || tail === "1" || tail === "true") {
+          writeJson(response, 200, agentRuntime.threadWindow({
+            ...(before === null ? {} : { before: positiveParam(before, 0, Number.MAX_SAFE_INTEGER, "before") }),
+            limit,
+          }));
+          return;
+        }
         writeJson(response, 200, agentRuntime.thread({
           after: positiveParam(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER, "after"),
-          limit: positiveParam(url.searchParams.get("limit"), THREAD_PAGE_DEFAULT, THREAD_PAGE_MAX, "limit"),
+          limit,
         }));
         return;
       }

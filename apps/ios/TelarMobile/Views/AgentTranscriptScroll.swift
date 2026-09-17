@@ -51,6 +51,17 @@ import SwiftUI
         pinToTail()
     }
 
+    /// ROWS LANDED ABOVE WHAT IS DRAWN — a backward page (#580).
+    ///
+    /// The count moved and the tail did not, so this records the new count and
+    /// pins NOTHING. Routing a prepend through `rowsChanged` would throw a
+    /// reader who pulled down to read history straight back to the bottom, on
+    /// the page they asked for.
+    func rowsPrepended(to count: Int) {
+        seenRows = count
+        loaded = true
+    }
+
     /// Straight to the tail, with no animation: this runs on every new row, and
     /// an animation per delta is what made the session's transcript visibly
     /// pump. Setting the position also clears `isPositionedByUser`, which is how

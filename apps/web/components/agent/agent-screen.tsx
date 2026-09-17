@@ -180,6 +180,20 @@ export function AgentScreen() {
 
       <ConversationViewport className="min-h-0 flex-1">
         <ConversationContent className="px-4">
+          {/* THE THREAD OPENS ON ITS LAST PAGE (#580), so the history above it
+              is fetched on a gesture rather than read through to get here. */}
+          {handle.hasOlder && (
+            <div className="mx-auto w-full max-w-[50rem] py-2 text-center">
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline-offset-4 hover:underline disabled:no-underline disabled:opacity-60"
+                disabled={handle.loadingOlder}
+                onClick={() => void handle.loadOlder()}
+              >
+                {handle.loadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            </div>
+          )}
           {handle.items.length === 0 ? (
             <p className="mx-auto max-w-[50rem] py-8 text-sm text-muted-foreground">
               Nothing yet. Ask it what is happening across your sessions, or hand it something to delegate.

@@ -447,12 +447,21 @@ struct AgentRow: Decodable, Equatable, Identifiable {
 /// reached first — page until `more` is false.
 struct AgentThreadPage: Decodable {
     var rows: [AgentRow]
-    /// The id to pass as the next `after`. Unmoved when the page was empty.
+    /// The id to pass as the next `after`. On a forward page it is the last row
+    /// read, unmoved when the page was empty; on a TAIL or `before` window
+    /// (#580) it is the thread's tip, because a screen that just opened on the
+    /// last page polls forward from the end and not from the top of its window.
     var cursor: Int
+    /// More in the direction being paged: newer rows for `after`, OLDER ones
+    /// for a tail or `before` window.
     var more: Bool
+    /// Backward windows only: the lowest id in this page, and so the next
+    /// `before`. Absent on a forward page, and on a window that came back empty
+    /// — which is how a puller learns it has reached the top.
+    var oldest: Int?
     var threadId: String?
 
-    private enum CodingKeys: String, CodingKey { case rows, cursor, more, threadId }
+    private enum CodingKeys: String, CodingKey { case rows, cursor, more, oldest, threadId }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -461,13 +470,18 @@ struct AgentThreadPage: Decodable {
         rows = try c.decodeIfPresent([Skippable<AgentRow>].self, forKey: .rows)?.compactMap(\.value) ?? []
         cursor = (try? c.decode(Int.self, forKey: .cursor)) ?? 0
         more = (try? c.decode(Bool.self, forKey: .more)) ?? false
+        // A MAC TOO OLD TO WINDOW SENDS NO `oldest`, and that reads as "there
+        // is nothing further back to ask for" — which is the honest answer from
+        // an engine that cannot serve the question.
+        oldest = try? c.decodeIfPresent(Int.self, forKey: .oldest)
         threadId = try? c.decodeIfPresent(String.self, forKey: .threadId)
     }
 
-    init(rows: [AgentRow], cursor: Int, more: Bool, threadId: String? = nil) {
+    init(rows: [AgentRow], cursor: Int, more: Bool, oldest: Int? = nil, threadId: String? = nil) {
         self.rows = rows
         self.cursor = cursor
         self.more = more
+        self.oldest = oldest
         self.threadId = threadId
     }
 }

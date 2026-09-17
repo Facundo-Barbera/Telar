@@ -32,6 +32,10 @@ export interface PushRecord extends MobileRegistration {
   automaticSignal?: string;
   failures?: number;
   retryAt?: number;
+  /** Seconds, when APNs last took something for this phone. Written only on a
+   *  200 (#579) — it is what Settings shows to tell a phone that is registered
+   *  from one that is actually being reached. Absent until the first one. */
+  lastDeliveryAt?: number;
   updatedAt: number;
   seen: Record<string, string>;
   activitySent: Record<string, number>;
@@ -84,7 +88,11 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   // and must not close the start gate; the attempt count travels with it for the same reason.
   const keepStart = registration.liveActivities === true && old?.liveActivities === true
     && registration.pushToStartToken !== undefined && registration.pushToStartToken === old.pushToStartToken;
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  // `lastDeliveryAt` TRAVELS ACROSS A RE-REGISTRATION. The phone re-registers on
+  // every preference change and every token refresh; forgetting when it was
+  // last reached would make Settings say "never" about a phone being pushed to
+  // all day.
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {

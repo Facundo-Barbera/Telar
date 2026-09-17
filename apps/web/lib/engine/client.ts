@@ -538,11 +538,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      *  was nothing left to stop, which is a fact rather than an error. */
     cancelAgentTurn: (runId: string) =>
       request<{ stopped: boolean; agent: AgentState }>(fetcher, "POST", `/api/agent/turns/${encodeURIComponent(runId)}/cancel`),
-    /** The transcript forward from a cursor, bounded by a count AND a byte
-     *  budget — #515's rule. Page until `more` is false. */
-    agentThread: (options: { after?: number; limit?: number } = {}) => {
+    /** The transcript, bounded by a count AND a byte budget — #515's rule.
+     *  `after` pages forward; `tail` opens on the LAST page and `before` walks
+     *  back from it (#580). Page until `more` is false. */
+    agentThread: (options: { after?: number; before?: number; tail?: boolean; limit?: number } = {}) => {
       const query = new URLSearchParams();
       if (options.after !== undefined) query.set("after", String(options.after));
+      if (options.before !== undefined) query.set("before", String(options.before));
+      if (options.tail) query.set("tail", "1");
       if (options.limit !== undefined) query.set("limit", String(options.limit));
       const suffix = query.toString();
       return request<AgentThreadAnswer>(fetcher, "GET", `/api/agent/thread${suffix ? `?${suffix}` : ""}`);

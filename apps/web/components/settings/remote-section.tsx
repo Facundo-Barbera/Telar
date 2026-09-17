@@ -28,6 +28,7 @@ import { desktopApp } from "@/lib/desktop-app";
 import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
+import { PushNotificationsGroup } from "./push-notifications-group";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "./settings-shell";
 
 interface RemoteDevice {
@@ -587,6 +588,12 @@ export function RemoteSection() {
           </div>
         )}
       </SettingsGroup>
+
+      {/* PUSH, UNDER THE DEVICES IT IS ABOUT (#579). It belongs here rather
+          than in Notifications because what it reports is a property of THIS
+          MAC's remote access — the relay credential and which paired phones it
+          can reach — not of what this browser chooses to be told. */}
+      <PushNotificationsGroup />
 
       {/* DANGER, AT THE FLOOR OF THE PANE. A plain label and no red panel — the
           separation is structural, so the one action that logs several devices

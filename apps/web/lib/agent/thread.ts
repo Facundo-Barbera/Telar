@@ -29,19 +29,18 @@ import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher, rewriteApiPath, LOCAL_HOST_ID } from "@/lib/hosts/client";
 
 /**
- * HOW MANY PAGES A FIRST READ WILL WALK.
+ * HOW MANY ROWS THE FIRST READ ASKS FOR — the LAST that many, not the first.
  *
- * THE ENGINE ONLY PAGES FORWARD. There is no "last N rows" read — `after` is
- * exclusive and `0` is the beginning — so opening a long conversation means
- * walking it. Each page is bounded by a count AND a byte budget (#515), and
- * this bounds the WALK: a thread that has run for a month stops at a screenful
- * of history rather than pulling the whole of it into a browser.
+ * THIS USED TO BE A PAGE COUNT (`MAX_THREAD_PAGES = 40`), because the engine
+ * only paged forward: `after` was exclusive and `0` was the beginning, so
+ * opening a conversation meant walking it from the first thing it ever said,
+ * and the ceiling existed only so that the walk could not hang the screen. The
+ * engine reads backward now (#580), so the walk is gone and the number that is
+ * left is the one that was always wanted: a screenful of the END.
  *
- * IT IS A CEILING, NOT A TARGET. Almost every thread finishes in one or two
- * pages and this never comes up; it exists so that the one that does not cannot
- * hang the screen.
+ * OLDER ROWS ARE A GESTURE, NOT A WALK — see `loadOlder`.
  */
-export const MAX_THREAD_PAGES = 40;
+export const THREAD_TAIL_ROWS = 50;
 
 /** What the screen draws, one entry per thing that happened. Derived from rows
  *  rather than stored, so a re-read cannot produce a different transcript. */
@@ -191,6 +190,15 @@ export type AgentThreadHandle = {
   /** True until the first read has answered. The screen shows nothing rather
    *  than an empty conversation it is about to contradict. */
   loading: boolean;
+  /** Older rows exist above what is drawn (#580). The transcript offers to
+   *  fetch them; it never fetches them on its own. */
+  hasOlder: boolean;
+  /** One page further back, prepended. Merged by id like everything else here,
+   *  so a row already held cannot arrive twice. */
+  loadOlder: () => Promise<void>;
+  /** A backward page is in flight — the button says so rather than looking
+   *  dead on a slow link. */
+  loadingOlder: boolean;
   /** The engine refused or is not answering. Shown rather than swallowed. */
   error?: string;
   send: (text: string) => Promise<void>;
@@ -228,6 +236,21 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
   /** See `AgentThreadHandle.inboxNudge` — a count of `inbox` frames seen, which
    *  is all a reader of the inbox route needs from this connection. */
   const [inboxNudge, setInboxNudge] = useState(0);
+  /** Older rows above what is drawn, and the id to ask for them with (#580).
+   *  `oldest` is a ref for `cursor`'s reason: `loadOlder` must not be rebuilt
+   *  on every row that lands. */
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const oldest = useRef<number | undefined>(undefined);
+  /**
+   * THE FIRST READ HAS LANDED, so the stream may open.
+   *
+   * IT IS A GATE, NOT A FLAG. The stream resumes from `cursor.current`, and
+   * both effects mount together — so without this the connection would open at
+   * `0` and the engine would replay the entire transcript down it, which is
+   * exactly the cost the tail read exists to avoid.
+   */
+  const [opened, setOpened] = useState(false);
   const api = useMemo(() => createEngineApi(hostFetcher(hostId)), [hostId]);
   /** The highest row id this screen holds — where a reconnect resumes from.
    *  A ref rather than state because the stream effect must not re-run every
@@ -240,8 +263,8 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
     setRows((held) => mergeAgentRows(held, incoming));
   }, []);
 
-  // THE FIRST READ: the Agent's own state, then the transcript, paged forward
-  // under a ceiling. Deferred a tick like every other loader here — setting
+  // THE FIRST READ: the Agent's own state, then the LAST page of the
+  // transcript (#580). Deferred a tick like every other loader here — setting
   // state from an effect BODY is the cascade this app's lint forbids.
   useEffect(() => {
     let cancelled = false;
@@ -252,18 +275,21 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
           if (cancelled) return;
           setState(answer.agent);
           setCredential(answer.credential);
-          let after = 0;
-          for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
-            const chunk = await api.agentThread({ after });
-            if (cancelled) return;
-            remember(chunk.rows);
-            after = chunk.cursor;
-            if (!chunk.more) break;
-          }
+          const chunk = await api.agentThread({ tail: true, limit: THREAD_TAIL_ROWS });
+          if (cancelled) return;
+          remember(chunk.rows);
+          // THE TIP, NOT THIS WINDOW'S TOP. An empty thread answers `0`, which
+          // is where a forward poll starts anyway.
+          cursor.current = Math.max(cursor.current, chunk.cursor);
+          oldest.current = chunk.oldest;
+          setHasOlder(chunk.more);
         } catch (cause) {
           if (!cancelled) setError(cause instanceof Error ? cause.message : "The engine is not answering.");
         } finally {
-          if (!cancelled) setLoading(false);
+          if (!cancelled) {
+            setLoading(false);
+            setOpened(true);
+          }
         }
       })();
     }, 0);
@@ -272,6 +298,32 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
       window.clearTimeout(task);
     };
   }, [api, hostId, remember]);
+
+  /**
+   * ONE PAGE FURTHER BACK, on a gesture.
+   *
+   * `oldest` IS THE CURSOR, not the count of what is held: a row that arrived
+   * on the stream while the reader was scrolled up is newer than everything
+   * here and must not move where the next backward page starts.
+   */
+  const loadOlder = useCallback(async () => {
+    const before = oldest.current;
+    if (before === undefined || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const chunk = await api.agentThread({ before, limit: THREAD_TAIL_ROWS });
+      remember(chunk.rows);
+      // A WINDOW THAT CAME BACK EMPTY IS THE TOP, whatever it says about
+      // `more` — leaving `oldest` where it was would let the same empty read
+      // be made for ever.
+      oldest.current = chunk.oldest ?? undefined;
+      setHasOlder(chunk.oldest !== undefined && chunk.more);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The engine is not answering.");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [api, loadingOlder, remember]);
 
   /**
    * THE LIVE FEED, and it is `fetch` rather than `EventSource`.
@@ -292,8 +344,13 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
    * THE BACKOFF IS THERE FOR THE ENGINE THAT IS DOWN. Without it a reconnect
    * loop against a refused port is a tight spin; with it a browser left open
    * overnight against a stopped engine costs one request every few seconds.
+   *
+   * IT WAITS FOR `opened`, and that is load-bearing rather than tidy: this
+   * resumes from `cursor.current`, so opening before the tail read has set it
+   * would replay the whole transcript down the connection (#580).
    */
   useEffect(() => {
+    if (!opened) return;
     const controller = new AbortController();
     let stopped = false;
     let delay = 1_000;
@@ -381,7 +438,7 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
       window.clearTimeout(task);
       controller.abort();
     };
-  }, [api, hostId, remember]);
+  }, [api, hostId, opened, remember]);
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -449,6 +506,9 @@ export function useAgentThread(hostId: string = LOCAL_HOST_ID): AgentThreadHandl
     state,
     credential,
     loading,
+    hasOlder,
+    loadOlder,
+    loadingOlder,
     send,
     cancel,
     resolve,
