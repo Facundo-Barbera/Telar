@@ -52,6 +52,25 @@ describe("what the meter reads", () => {
     expect(contextMeterReading({ contextChars: 68_000, budgetChars: 120_000, folded: 1 })!.label).toBe("57% context · folded 1 turn");
   });
 
+  test("a cache reading is a proportion of the INPUT, because the output could never have come from one", () => {
+    const reading = contextMeterReading({ usage: { input: 30_000, output: 400, total: 30_400, cacheRead: 21_000, cacheCreate: 0 }, contextChars: 68_000, budgetChars: 120_000 });
+    // 21,000 of 30,000 input — NOT of the 30,400 total, which would understate
+    // every hit by however much the model happened to say.
+    expect(reading).toMatchObject({ cached: "70% cached", label: "30,400 tokens · 70% cached · 57% context" });
+    expect(reading!.title).toContain("served from the provider's prompt cache");
+  });
+
+  test("a provider silent about caching draws no cache reading, and a cold cache draws zero", () => {
+    // SILENT. An OpenAI-compatible server need not forward cache statistics, and
+    // "0% cached" invented for that case is a measurement nobody took.
+    const silent = contextMeterReading({ usage: { input: 30_000, output: 400, total: 30_400 }, contextChars: 68_000, budgetChars: 120_000 });
+    expect(silent!.cached).toBeUndefined();
+    expect(silent!.label).not.toContain("cached");
+    // COLD is a real and different answer, and it is the one worth acting on.
+    const cold = contextMeterReading({ usage: { input: 30_000, output: 400, total: 30_400, cacheRead: 0 }, contextChars: 68_000, budgetChars: 120_000 });
+    expect(cold!.cached).toBe("0% cached");
+  });
+
   test("a turn that folded nothing says nothing — and neither does a Mac too old to say", () => {
     // "folded 0 turns" on every ordinary turn would be noise in the one place
     // on this screen that has to stay quiet.

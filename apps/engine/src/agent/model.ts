@@ -71,6 +71,16 @@
  * endpoint; the `name` strip is a no-op on the two routes that do not carry a
  * `messages` array of that shape, which is exactly what it was written to be —
  * see its note on leaving a body it has nothing to do with byte-identical.
+ *
+ * ── AND ONE FIELD GOES ON, ON THE ONE ROUTE THAT HAS IT (#563 item 3) ───────
+ * `withAnthropicCaching` puts `cache_control` breakpoints on an Anthropic-shaped
+ * body and leaves every other body byte-identical, by the same shape test and
+ * for the same reason. The two routes it skips are not missing a feature: their
+ * caching is the PROVIDER'S, automatic, and conditional on the prefix not moving
+ * between calls — so the most useful thing this file can do for them is change
+ * nothing, which is what it does. `agent-prefix.test.ts` measures that the
+ * prefix really does hold; `agent-model.test.ts` asserts what reaches the wire
+ * on each route here.
  */
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatAnthropic } from "@langchain/anthropic";
@@ -156,6 +166,106 @@ function withoutMessageNames(body: BodyInit | null | undefined): BodyInit | null
     return rest;
   });
   return found ? JSON.stringify({ ...(parsed as Record<string, unknown>), messages: stripped }) : body;
+}
+
+/**
+ * THE CACHE BREAKPOINTS THE ANTHROPIC SHAPE NEEDS, AND ONLY IT (#563 item 3).
+ *
+ * ── WHY THIS IS A BODY REWRITE AND NOT A RUNTIME SETTING ────────────────────
+ * The runtime does not know the route, and this file's header is the promise
+ * that it never has to. `cache_control` is a field of ONE of the three wire
+ * formats: the chat and `/responses` routes have no such parameter at all —
+ * there, caching is the provider's own, automatic, and it depends entirely on
+ * the prefix being byte-identical between calls (see `agent-prefix.test.ts`,
+ * which measures that it is). So a `SystemMessage` built with cache blocks in
+ * `runtime.ts` would be a request shape invented for one endpoint and sent to
+ * three, and the two that do not take it would have had their bytes changed for
+ * nothing — which is the one thing automatic caching cannot survive.
+ *
+ * SO IT IS APPLIED WHERE `withoutMessageNames` IS APPLIED, for the same stated
+ * reason: this wrapper is the last layer that is still ours, and it is the only
+ * one that sees the finished body. It is GATED ON SHAPE rather than on a route
+ * name, exactly as its sibling is — a body with a top-level `system` AND a
+ * `messages` array is the Anthropic shape and nothing else is. Chat/completions
+ * carries its system prompt as `messages[0]` and has no top-level `system`;
+ * `/responses` carries `input` rather than `messages`. A body that is not that
+ * shape comes back byte-identical.
+ *
+ * ── THREE BREAKPOINTS, AND THE FIRST IS THE ONE THAT PAYS ───────────────────
+ * Anthropic caches the prefix UP TO each breakpoint and allows four. The prompt
+ * order is tools → system → messages, so:
+ *
+ *   1. THE LAST TOOL. The bound tool array is 13,953 characters and is resent on
+ *      every lap of every turn — by far the largest fixed block. A breakpoint
+ *      here is what keeps it cached when the SYSTEM block changes, and the
+ *      system block changes on every turn: the standing state is rewritten by
+ *      `remember` and the digest is rebuilt per turn. With only a system
+ *      breakpoint, one `remember` call would cost the tools their cache too.
+ *   2. THE SYSTEM BLOCK, which adds the briefing, the orientation, the standing
+ *      state and the digest to the cached prefix for the laps within one turn.
+ *   3. THE LAST MESSAGE, which extends the prefix over the conversation so far.
+ *      It moves every lap, which is the point: the cache is prefix-based, so a
+ *      breakpoint that advances is one that keeps covering more.
+ *
+ * ── WHAT IT REFUSES TO MARK ─────────────────────────────────────────────────
+ * An empty text block (Anthropic rejects `cache_control` on one) and anything
+ * that is not a block it can safely carry the field on. A block that is already
+ * marked is left alone rather than marked twice.
+ */
+function withAnthropicCaching(body: BodyInit | null | undefined): BodyInit | null | undefined {
+  if (typeof body !== "string") return body;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (typeof parsed !== "object" || parsed === null) return body;
+  const request = parsed as Record<string, unknown>;
+  // THE SHAPE TEST, and it is the whole route branch. See the note above.
+  if (!("system" in request) || !Array.isArray(request.messages)) return body;
+
+  let marked = false;
+  const ephemeral = { type: "ephemeral" as const };
+  /** A text block carrying the breakpoint, or the block unchanged when it
+   *  cannot take one. Never marks twice and never marks an empty string. */
+  const mark = (block: unknown): unknown => {
+    if (typeof block === "string") {
+      if (!block.trim()) return block;
+      marked = true;
+      return { type: "text", text: block, cache_control: ephemeral };
+    }
+    if (!block || typeof block !== "object") return block;
+    const record = block as Record<string, unknown>;
+    if ("cache_control" in record) return block;
+    if (record.type === "text" && typeof record.text === "string" && !record.text.trim()) return block;
+    marked = true;
+    return { ...record, cache_control: ephemeral };
+  };
+  /** The LAST element marked, the rest untouched — a breakpoint is a position,
+   *  and marking every block would spend four of them on one field. */
+  const markLast = (value: unknown): unknown => {
+    if (typeof value === "string") return value.trim() ? [mark(value)] : value;
+    if (!Array.isArray(value) || value.length === 0) return value;
+    const out = [...value];
+    out[out.length - 1] = mark(out[out.length - 1]);
+    return out;
+  };
+
+  const system = markLast(request.system);
+  // 1 — the last tool, so the largest block survives a system block that moved.
+  const tools = Array.isArray(request.tools) && request.tools.length > 0 ? (markLast(request.tools) as unknown[]) : request.tools;
+  // 3 — the last message, on its last content block.
+  const messages = [...(request.messages as unknown[])];
+  const lastIndex = messages.length - 1;
+  const last = messages[lastIndex];
+  if (last && typeof last === "object") {
+    const record = last as Record<string, unknown>;
+    const content = markLast(record.content);
+    if (content !== record.content) messages[lastIndex] = { ...record, content };
+  }
+
+  return marked ? JSON.stringify({ ...request, system, ...(tools === undefined ? {} : { tools }), messages }) : body;
 }
 
 /**
@@ -284,7 +394,11 @@ export function agentChatModel(input: AgentModelInput): BaseChatModel {
   const withTelarHeaders: typeof fetch = (url, init) => {
     const headers = new Headers(init?.headers);
     for (const [name, value] of Object.entries(forced)) headers.set(name, value);
-    return transport(url, { ...init, headers, body: withoutMessageNames(init?.body) });
+    // ONE TAKES A FIELD OFF, THE OTHER PUTS ONE ON, and both are gated on the
+    // body's SHAPE rather than on a route — see each function's note. The strip
+    // runs first so the cache pass never marks a block on a message that was
+    // about to be rewritten anyway.
+    return transport(url, { ...init, headers, body: withAnthropicCaching(withoutMessageNames(init?.body)) });
   };
 
   /**

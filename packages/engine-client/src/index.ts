@@ -327,7 +327,28 @@ export type AgentRequest = {
  * turn's laps (#539). A turn that calls three tools goes back to the model four
  * times; the question a person asks is what the TURN cost.
  */
-export type AgentUsage = { input: number; output: number; total: number };
+export type AgentUsage = {
+  input: number;
+  output: number;
+  total: number;
+  /**
+   * HOW MUCH OF `input` THE PROVIDER SERVED OUT OF ITS PROMPT CACHE (#563).
+   *
+   * A FRACTION OF `input` RATHER THAN A NUMBER BESIDE IT, on every route the
+   * engine can run — so `cacheRead / input` is the proportion a client draws,
+   * and adding it to `input` would double-count.
+   *
+   * ABSENT IS "NOBODY SAID", NOT ZERO: an OpenAI-compatible server need not
+   * forward cache statistics at all, and a Mac running an engine from before
+   * #563 item 3 sends none. Zero is a real and different answer — the cache was
+   * cold — so a client must not coalesce the two.
+   */
+  cacheRead?: number;
+  /** What it cost to WRITE this turn's prefix into the cache. Only the
+   *  Anthropic-shaped route bills this, so it is absent on the others rather
+   *  than zero. */
+  cacheCreate?: number;
+};
 
 /**
  * THE CONTEXT METER — the last completed turn's cost, and how full the prompt

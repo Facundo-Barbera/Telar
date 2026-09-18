@@ -401,7 +401,47 @@ export type AgentPendingRequest = AgentApprovalRequest & { id: string; runId: st
  * numbers are the PROVIDER'S, reported on `usage_metadata`; nothing here counts
  * tokens itself.
  */
-export type AgentUsage = { input: number; output: number; total: number };
+export type AgentUsage = {
+  input: number;
+  output: number;
+  total: number;
+  /**
+   * HOW MUCH OF `input` THE PROVIDER SERVED FROM ITS CACHE (#563 item 3).
+   *
+   * A FRACTION OF `input`, NOT A NUMBER BESIDE IT, and that is true on all three
+   * of Go's routes rather than by a convention invented here: `@langchain/openai`
+   * reports `input_tokens` as the whole `prompt_tokens`, of which
+   * `prompt_tokens_details.cached_tokens` is a part, and `@langchain/anthropic`
+   * adds `cache_read_input_tokens` and `cache_creation_input_tokens` INTO
+   * `input_tokens` before handing it over. So `cacheRead / input` is a
+   * proportion on every route, and a reader never has to know which one ran.
+   *
+   * ── ABSENT IS NOT ZERO, WHICH IS WHY BOTH ARE OPTIONAL ──────────────────────
+   * `usage` itself is already absent when the provider reported no count at all,
+   * for the reason `AgentLastUsage.usage` gives. These two need the same
+   * distinction one level down: a provider can report tokens and say NOTHING
+   * about caching — no `input_token_details` on the message at all — and a `0`
+   * there would read as "the cache was cold" when the truth is "nobody said".
+   * The difference is the whole point of item 3: a cold cache is a thing to fix,
+   * and a silent provider is a thing to find out about.
+   *
+   * WRITTEN ONLY WHEN SOME LAP OF THE TURN CARRIED DETAILS. Summed over the
+   * turn's laps like the three numbers above it, and a lap that said nothing
+   * contributes nothing rather than suppressing the turn's total.
+   */
+  cacheRead?: number;
+  /**
+   * WHAT IT COST TO PUT THIS TURN'S PREFIX INTO THE CACHE — the miss half.
+   *
+   * ONLY `/messages` EVER REPORTS IT. The Anthropic shape bills cache writes as
+   * their own line (`cache_creation_input_tokens`) because they are charged at a
+   * premium; the chat and `/responses` routes have no equivalent field, and
+   * provider-side automatic caching there simply does not bill a write. So this
+   * is absent on the route the Agent runs today, and present on a Claude-model
+   * Agent — which is exactly the fact a reader needs in order to compare them.
+   */
+  cacheCreate?: number;
+};
 
 /**
  * THE CONTEXT METER'S WHOLE INPUT — the last turn's cost and the size of the
@@ -581,7 +621,21 @@ export class AgentRuntime {
   /** What the live turn has spent so far: the model's own numbers summed over
    *  its laps, and the prompt size the most recent lap was trimmed to. Reset
    *  when a turn starts, folded into `turn_done` when one ends. */
-  private spend?: { input: number; output: number; total: number; reported: boolean; contextChars: number; folded: number; laps: number };
+  private spend?: {
+    input: number;
+    output: number;
+    total: number;
+    reported: boolean;
+    /** Did ANY lap carry `input_token_details`? Separate from `reported` for the
+     *  reason `AgentUsage.cacheRead` gives: a provider that counts tokens and
+     *  says nothing about caching must not be written down as a cold cache. */
+    cacheReported: boolean;
+    cacheRead: number;
+    cacheCreate: number;
+    contextChars: number;
+    folded: number;
+    laps: number;
+  };
   /** Which conversation the live turn belongs to — see `row`. */
   private turnThreadId?: string;
   /** The inbox rows the live turn's digest accounts for, marked read when it
@@ -696,7 +750,19 @@ export class AgentRuntime {
         runId: row.runId,
         at: row.at,
         ...(typeof usage?.input === "number" && typeof usage.output === "number" && typeof usage.total === "number"
-          ? { usage: { input: usage.input, output: usage.output, total: usage.total } }
+          ? {
+              usage: {
+                input: usage.input,
+                output: usage.output,
+                total: usage.total,
+                // READ BACK ONLY WHEN THE ROW CARRIES THEM. A `turn_done` from
+                // before #563 item 3 has no cache numbers, and the meter must
+                // say nothing rather than draw a cold cache onto a turn that was
+                // never asked about one.
+                ...(typeof usage.cacheRead === "number" ? { cacheRead: usage.cacheRead } : {}),
+                ...(typeof usage.cacheCreate === "number" ? { cacheCreate: usage.cacheCreate } : {}),
+              },
+            }
           : {}),
         contextChars: typeof detail.contextChars === "number" ? detail.contextChars : 0,
         budgetChars: typeof detail.budgetChars === "number" ? detail.budgetChars : this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS,
@@ -1150,7 +1216,7 @@ export class AgentRuntime {
       this.live = { turn: next, controller };
       // The meter's accumulator, per turn. A stopped or failed turn reports
       // what it had spent before it ended — the tokens were bought either way.
-      this.spend = { input: 0, output: 0, total: 0, reported: false, contextChars: 0, folded: 0, laps: 0 };
+      this.spend = { input: 0, output: 0, total: 0, reported: false, cacheReported: false, cacheRead: 0, cacheCreate: 0, contextChars: 0, folded: 0, laps: 0 };
       try {
         await this.runTurn(next, controller.signal);
       } catch (error) {
@@ -1318,7 +1384,16 @@ export class AgentRuntime {
     const spend = this.spend;
     const budgetChars = this.options.budgetChars ?? DEFAULT_AGENT_BUDGET_CHARS;
     const usage: AgentUsage | undefined = spend?.reported
-      ? { input: spend.input, output: spend.output, total: spend.total }
+      ? {
+          input: spend.input,
+          output: spend.output,
+          total: spend.total,
+          // ONLY WHEN SOME LAP ACTUALLY CARRIED DETAILS — see `AgentUsage.cacheRead`.
+          // The two travel together: a route that reports one reports both, and
+          // writing `cacheRead` without `cacheCreate` would invite a reader to
+          // treat the missing one as zero on the route that has no such field.
+          ...(spend.cacheReported ? { cacheRead: spend.cacheRead, cacheCreate: spend.cacheCreate } : {}),
+        }
       : undefined;
     const contextChars = spend?.contextChars ?? 0;
     // WRITTEN EVEN WHEN IT IS ZERO, like the two numbers beside it: these three
@@ -1634,6 +1709,41 @@ export class AgentRuntime {
         this.spend.output += usage.output_tokens ?? 0;
         this.spend.total += usage.total_tokens ?? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
         this.spend.reported = true;
+        /**
+         * AND HOW MUCH OF THAT INPUT CAME OUT OF THE CACHE (#563 item 3).
+         *
+         * ── ONE FIELD, THREE ROUTES, AND LANGCHAIN ALREADY DID THE JOINING ────
+         * `input_token_details` is `@langchain/core`'s normalised shape and every
+         * client the Agent's factory can build fills it: `cached_tokens` from
+         * chat/completions' `prompt_tokens_details`, the same from `/responses`'
+         * `input_tokens_details`, and `cache_read_input_tokens` /
+         * `cache_creation_input_tokens` from the Anthropic shape. MEASURED
+         * against a local server on all three, streaming and not — see
+         * `agent-prefix.test.ts`. So there is no route branch here either, which
+         * is the rule `model.ts` keeps one layer down.
+         *
+         * THE SIGNAL IS A FIELD BEING PRESENT, NOT THE DETAILS OBJECT BEING
+         * THERE — and that distinction is MEASURED rather than fastidious.
+         * `@langchain/openai` 1.5.x attaches `input_token_details` to EVERY chat
+         * completion, empty, even when the server sent no `prompt_tokens_details`
+         * at all: its guard reads `promptTokensDetails?.audio_tokens !== null`,
+         * and an absent field is `undefined`, which is not `null`, so the branch
+         * always runs. A flag set on the object's existence would therefore have
+         * reported "cache cold, 0 tokens read" for every provider on earth that
+         * declines to forward cache statistics — which is the exact false
+         * measurement item 3 exists to avoid, and it would have looked like a
+         * finding rather than like a bug.
+         *
+         * SO THE TEST IS ON THE NUMBERS THEMSELVES. A provider that says
+         * `cache_read: 0` IS telling us the cache was cold, and that is a real
+         * and different sentence from saying nothing; both survive this read.
+         */
+        const details = usage.input_token_details;
+        if (details && (details.cache_read !== undefined || details.cache_creation !== undefined)) {
+          this.spend.cacheReported = true;
+          this.spend.cacheRead += details.cache_read ?? 0;
+          this.spend.cacheCreate += details.cache_creation ?? 0;
+        }
       }
       /**
        * ONE ROW PER THING THE ASSISTANT SAYS, AS IT SAYS IT.
