@@ -115,7 +115,7 @@ export function markComposerActive(token: string): void {
 }
 
 /**
- * The composer an outside caller means.
+ * WHICH COMPOSER IS THE ACTIVE ONE, as its key — asked once and answered once.
  *
  * MOST RECENTLY FOCUSED WINS, and it keeps winning after a blur: clicking a
  * toolbar button does not hand the dictation to some other box. With nothing
@@ -123,9 +123,28 @@ export function markComposerActive(token: string): void {
  * focus, there is no answer — guessing between two message boxes is the one
  * mistake this registry exists to avoid.
  */
-export function activeComposer(): ComposerEntry | undefined {
-  const focused = active === undefined ? undefined : mounted.get(active);
-  if (focused) return focused;
+function activeToken(): string | undefined {
+  if (active !== undefined && mounted.has(active)) return active;
   if (mounted.size !== 1) return undefined;
-  return mounted.values().next().value;
+  return mounted.keys().next().value;
+}
+
+/** The composer an outside caller means. */
+export function activeComposer(): ComposerEntry | undefined {
+  const token = activeToken();
+  return token === undefined ? undefined : mounted.get(token);
+}
+
+/**
+ * THE SAME ANSWER, AS A KEY — for a SIBLING REGISTRY keyed the way this one is.
+ *
+ * `lib/dictation/registry.ts` (#588) holds the running dictation of each
+ * composer, so a chord and the mic button can reach one toggle rather than two
+ * state machines. It has to resolve "which box" to the very composer this
+ * registry names, and the only way to guarantee that is to ask THIS function
+ * rather than to keep a second notion of active — which is exactly the third
+ * one the file header refuses.
+ */
+export function activeComposerToken(): string | undefined {
+  return activeToken();
 }

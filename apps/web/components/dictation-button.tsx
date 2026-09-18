@@ -28,38 +28,49 @@
  * — it is a plain editable — so a mic button that appeared uninvited would be
  * Telar claiming a job the reader may have given to something else.
  *
+ * ── IT NO LONGER OWNS THE DICTATION (#588) ──────────────────────────────────
+ * `useDictation` used to be called right here, which was correct while this was
+ * the only way to start one. ⌘D is a second caller, and a command handler with
+ * its own instance of the hook would be a second microphone over the same
+ * composer. The composer holds the one machine now (`useComposerDictation`) and
+ * hands it down; this is the control that draws it. Every refusal below is the
+ * same value the chord refuses on, because it is the same object.
+ *
  * ── WHAT IT DOES NOT DO ─────────────────────────────────────────────────────
  * It does not send. A spoken message that goes out before the person has read
  * it back is a message they cannot take back, and the Enter key is right there.
  * "Send it" as a spoken command is a later issue on `window.telar.submit`.
  */
 
-import { useCallback } from "react";
 import { MicIcon } from "lucide-react";
-import { activeComposer } from "@/lib/composer-registry";
-import { useDictation } from "@/lib/dictation/use-dictation";
-import { useDictationSettings } from "@/lib/dictation/settings";
-import type { DictationBox } from "@/lib/dictation/interim";
+import type { ComposerDictation } from "@/lib/dictation/use-composer-dictation";
+import { keyCapText, useKeyCapPlatform } from "@/lib/key-caps";
+import { useKeymap } from "@/lib/use-command-keys";
 import { DictationCaretPill } from "./dictation-caret-pill";
 import { cn } from "@/lib/utils";
 
-export function DictationButton({ className }: { className?: string }) {
-  // RESOLVED AT THE PRESS, not at render: "the active composer" is a question
-  // whose answer changes with focus, and the hook asks it once per dictation.
-  const box = useCallback((): DictationBox | undefined => activeComposer(), []);
-  const { phase, error, toggle, supported, caret } = useDictation({ box });
-  const { provider } = useDictationSettings();
+export function DictationButton({ dictation, className }: { dictation: ComposerDictation; className?: string }) {
+  const { phase, error, toggle, available, caret } = dictation;
+  /**
+   * THE CHORD THE TOOLTIP NAMES, READ FROM THE LIVE KEYMAP (#588) — never the
+   * literal "⌘D". A person who moved Dictate onto another key in Settings ›
+   * Keybindings must see the key they chose, and a person who UNBOUND it must
+   * see no chord at all rather than one that does nothing. Same store the
+   * dispatcher matches against, so the tooltip and the key cannot disagree.
+   *
+   * Above the early return, because it is a hook.
+   */
+  const keymap = useKeymap();
+  const platform = useKeyCapPlatform();
+  const chord = keyCapText(keymap["toggle-dictation"] ?? "", platform);
+  /** Empty for an unbound command — the tooltip is then the sentence it was
+   *  before this button had a chord at all, rather than an empty bracket. */
+  const chordSuffix = chord === "" ? "" : ` (${chord})`;
 
-  // NO BUTTON WHERE NOBODY ASKED FOR ONE — `off` is the default, and while the
-  // engine's answer is still in flight the hook reports `off` too, so this
-  // never flashes a control that is about to vanish.
-  if (provider === "off") return null;
-
-  // NO BUTTON AT ALL where the browser cannot record either: an insecure
-  // origin, an embed with no microphone permission, a browser without
-  // `MediaRecorder`. A control that is always disabled is an advertisement for
-  // something the reader cannot have.
-  if (!supported) return null;
+  // NO BUTTON WHERE NOBODY ASKED FOR ONE, and none where the browser cannot
+  // record. `available` is both facts, answered once for the button and the
+  // chord — see `useComposerDictation` for why each of them is a refusal.
+  if (!available) return null;
 
   const listening = phase === "listening";
   const busy = phase === "starting";
@@ -70,7 +81,12 @@ export function DictationButton({ className }: { className?: string }) {
         type="button"
         aria-label={listening ? "Stop dictating" : "Dictate"}
         aria-pressed={listening}
-        title={listening ? "Stop dictating" : "Dictate (speak into the message box)"}
+        // THE NAME STAYS THE NAME, the chord is an aside. `aria-label` is
+        // deliberately left alone: a screen reader gets the chord from the
+        // application's own keybindings, and a button whose NAME changed when
+        // somebody rebound a key would be a button nothing could be told to
+        // press by name.
+        title={listening ? `Stop dictating${chordSuffix}` : `Dictate${chordSuffix} — speak into the message box`}
         // THE BOX KEEPS THE CARET. Without this the press blurs the composer,
         // and the first words land at a caret that is no longer anywhere — the
         // same reason every other control in this row does it.

@@ -77,6 +77,23 @@ export function keyCaps(chord: string, platform: KeyCapPlatform): string[] {
     .map((part) => named[part.toLowerCase()] ?? KEY_GLYPHS[part] ?? (part.length === 1 ? part.toUpperCase() : part));
 }
 
+/**
+ * THE SAME CHORD AS ONE STRING, for somewhere a box per key cannot go — a
+ * `title` attribute, an accessible name (#588).
+ *
+ * THE JOIN IS THE PLATFORM'S, not a separator picked once. macOS writes its
+ * chords closed up (⇧⌘D) because the glyphs are already distinct; a keyboard
+ * with no glyphs needs the plus signs or "CtrlShiftD" is one word.
+ *
+ * "" FOR AN UNBOUND COMMAND, exactly as `keyCaps` answers an empty array — so
+ * the caller writes a tooltip with no chord in it rather than one promising a
+ * key that does nothing.
+ */
+export function keyCapText(chord: string, platform: KeyCapPlatform): string {
+  const caps = keyCaps(chord, platform);
+  return caps.join(platform === "mac" ? "" : "+");
+}
+
 /** Which keyboard this browser is on, read from the agent string. Pure enough to
  *  test: the string comes in, the answer goes out. */
 export function keyCapPlatformFor(agent: string): KeyCapPlatform {
