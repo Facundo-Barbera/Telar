@@ -56,6 +56,10 @@
  * that point is to retire a rule or to raise the number deliberately, and
  * quietly raising it to fit one more sentence is how a paragraph becomes a page.
  *
+ * AND THE NUMBER HAS NOT MOVED SINCE (#601). Two sentences were paid out of it
+ * rather than one, because #601's rule REPLACED a sentence in the same slot and
+ * still needed more room than that slot held. See the two sections below.
+ *
  * WHICH IS EXACTLY WHAT #592 COST, AND THE SENTENCE RETIRED WAS `github_status`'s.
  * Asked to wake a session and say where things stood, the Agent spent 22 calls
  * and 77,627 input tokens surveying thirteen sessions and took no action at all;
@@ -75,6 +79,66 @@
  * schema cannot carry. Retiring a duplicate costs nothing; retiring a limit
  * would have cost the limit.
  *
+ * ANSWERING IS NOW THE DEFAULT AND LOOKING IS THE EXCEPTION (#601). This is the
+ * one the owner feels: "No logro tener conversaciones normales con el agente."
+ * Every message opened with a pile of reads before any answer — measured over
+ * 119 turns, `fleet_status` as a per-turn ritual, `sessions_status` fanned out
+ * across five ids and `sessions_list` on top, fired identically for a real
+ * status question and for "¿Estás ahí?", at ~30,000 input tokens a lap.
+ *
+ * AND THE NEWS WAS ALREADY IN THE PROMPT WHEN IT WENT ASKING. `wake()` writes a
+ * row for every session that finished, failed, stopped or parked a request, with
+ * no model call and no tokens; `runTurn` renders those rows into the digest at
+ * the top of every human-started turn. The Agent had been told what happened
+ * before the person's message arrived, and then spent seven laps confirming it.
+ * The owner demonstrated the fix himself mid-log — "solo necesito que me
+ * contestes rápido" — and the next turn answered in one line with zero calls, at
+ * 24,218 input tokens against the previous turn's 77,627.
+ *
+ * SO THE RULE NAMES BOTH HALVES OF THE PROMPT, NOT JUST THE DIGEST, and that is
+ * a fact about the digest's shape rather than a flourish. `renderDigest` reports
+ * TRANSITIONS — finished, failed, stopped, waiting on you — so a session still
+ * WORKING right now has no row in it. What carries in-flight work is the
+ * standing state's "who is on what", which `remember` keeps and which sits
+ * directly above the digest in the same system block. A rule that said "answer
+ * from the digest" alone would be pointing at a block that genuinely cannot
+ * answer "what is running", and the Agent would go looking for the honest half
+ * of the reason. The digest and the notes together are what a check-in needs.
+ *
+ * AND `undefined` IS NEWS TOO. `renderDigest` returns nothing at all when
+ * nothing is unread — deliberately, so a quiet machine does not pay for the
+ * feature on every message — which means the ABSENCE of the block is the
+ * statement "nothing has happened since you last spoke". A model that read the
+ * absence as "I was told nothing" would look, which is the same bug arriving by
+ * the other door. So the sentence says it outright.
+ *
+ * NOT A CAP ON TOOL CALLS, deliberately. A ceiling produces confident answers
+ * built on nothing the day a question genuinely needs a read; what changed is
+ * which behaviour is the default, and the exception keeps its whole range.
+ *
+ * WHAT IT COST: TWO SENTENCES, AND NEITHER WAS A LIMIT.
+ *
+ *   1. `For 'how are things' call fleet_status ONCE; sessions_answer is one
+ *      turn's words.` was REPLACED IN PLACE rather than retired — same slot,
+ *      same subject, opposite instruction. It told the Agent to spend a call on
+ *      exactly the question #601 says costs none, so it could not survive the
+ *      rule that supersedes it. Its routing is not lost: `FLEET_STATUS`'s own
+ *      description, bound beside this paragraph on every lap, already said "ONE
+ *      call answers 'how is it going'; sessions_answer is for one turn's words"
+ *      in those words. It now also stops OPENING with the check-in's own phrase
+ *      and adds "NOT to confirm the digest" — the specific form of this rule, at
+ *      the moment of choosing that call. #570's finding is intact; its default
+ *      moved.
+ *   2. `recall searches this conversation's own history, folded turns included,
+ *      for the words rather than the gist.` was RETIRED, and it was the most
+ *      expendable thing left in the paragraph by exactly #592's test: it is the
+ *      only remaining sentence that DESCRIBES A TOOL instead of naming a limit.
+ *      Every clause of it is already in `RECALL` and in `recall`'s own `q`
+ *      parameter — "Search THIS conversation's own history", "including turns
+ *      already folded out of your prompt", "Lexical, not semantic" — bound on
+ *      every lap regardless. A duplicate costs nothing to retire; a limit would
+ *      have cost the limit. Every rule that was in this paragraph is still in it.
+ *
  * IT DOES NOT REPEAT THE `telar` SKILL, which already says what a session is,
  * that sessions are peers, that settling is shelving rather than acceptance,
  * and how assignment works. A second copy paid for on every turn would drift
@@ -87,13 +151,12 @@ export const AGENT_BRIEFING =
   "YOU HOLD THE SESSIONS WALL AND THE NOTES WALL and nothing else: no shell, no browser, no files, no runs. That is the shape of the role, not a restriction to work around: repository work belongs to the sessions you delegate to. " +
   "LOOK BEFORE YOU CREATE: sessions_find answers 'which conversation was this', sessions_outline scrolls one without reading it, sessions_answer gives what a turn concluded — those three before sessions_read. Read the rail before starting anything: the session usually already exists. " +
   "INDEPENDENT READS GO IN ONE MESSAGE, not one per lap — they run together, and your laps are few. " +
-  "For 'how are things' call fleet_status ONCE; sessions_answer is one turn's words. " +
+  "ANSWER BEFORE YOU LOOK: the digest and your notes are the news — no digest means nothing happened — so a greeting or 'how are things' costs NO call; read only for what they cannot carry. " +
   "DELEGATE ONLY WHAT WAS ASKED FOR, as a bounded task carrying everything the other session needs: it cannot see this conversation, and it is the one with the files. " +
   "SUBSCRIBE ONLY TO WORK YOU ASSIGNED, and prefer one-shot subscriptions; you are not a monitor and run no schedule. " +
   "REPORT WHAT CHANGED — a result, a blocker, a decision the person has to make — not that work is still in progress. " +
   "SOME CALLS WAIT FOR THE PERSON: assigning a task, raising a blocker, creating a session, stopping one, answering another session's request, deleting a note. That pause is the gate working, not a failure — never retry a declined call; say it was declined and ask what they want. " +
   "KEEP YOUR OWN NOTES WITH remember: four sections — what you are doing, who is on what, open questions, preferences — one at a time, always in this prompt, which is what you still have once older turns fold to one line each. " +
-  "recall searches this conversation's own history, folded turns included, for the words rather than the gist. " +
   "WHEN THEY ASKED FOR AN ACTION, reads are for finding the target — once it is found, act; if two candidates survive the first read, ask which rather than widening the search. " +
   "PRESERVE WORK AND RESPECT PERMISSIONS: never stop or settle a session to tidy the list, never answer another session's request unless you actually know the answer, and never hand a peer an action refused here — the same action renamed. " +
   "When something needs the person's decision, ask them.";
