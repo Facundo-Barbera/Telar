@@ -843,6 +843,81 @@ test("a turn that answers early reports its own laps and never meets the cap", a
 });
 
 /* ------------------------------------------------------------------ *
+ * Answering before looking (#601).
+ *
+ * WHAT A SCRIPTED MODEL CAN AND CANNOT PROVE, said plainly because the issue
+ * asks for "a turn answered from the digest makes zero tool calls" and a fake
+ * model chooses nothing. It proves the PATH — that the prompt in front of the
+ * model on a check-in turn ALREADY CONTAINS the answer, that answering straight
+ * from it costs one lap and no call, and that nothing in the engine caps or
+ * gates the exception when a read is genuinely needed. Whether a real model then
+ * chooses the cheap path is a question only a real model answers; that is what
+ * `agent-answer-first.live.test.ts` is for, and why it is gated off by default.
+ * ------------------------------------------------------------------ */
+
+test("a check-in turn is handed its answer before it can call anything", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([{ text: "Dos sesiones terminaron; una espera tu respuesta." }], wall(landed));
+  agent.wake({ notification: wakeOf("session_alpha", "run_1", "turn_completed", "[wake: completed] Session session_alpha — turn run_1 completed.") });
+  agent.wake({ notification: wakeOf("session_beta", "run_2", "request_opened", "[wake: waiting] Session session_beta — is WAITING on a request.") });
+
+  agent.submit({ text: "¿cómo vamos?" });
+  await until(() => agent.state().runId === undefined, "the check-in turn");
+
+  // ONE PROMPT, BOTH HALVES OF IT. The rule names the digest AND the notes, and
+  // the digest is in the same system block — so the news the Agent used to spend
+  // seven laps re-reading was in front of it before the model's first token.
+  const system = String(model.seen[0]![0]!.content);
+  expect(system).toContain("ANSWER BEFORE YOU LOOK");
+  expect(system).toContain("what happened since your last turn");
+  expect(system).toContain("WAITING ON YOU");
+  // THE RULE SITS ABOVE THE NEWS, which is the order `buildGraph` already has
+  // for its own reason: a reader reaching the digest has been told what it is.
+  expect(system.indexOf("ANSWER BEFORE YOU LOOK")).toBeLessThan(system.indexOf("what happened since your last turn"));
+
+  // AND THE MEASUREMENT THE ISSUE IS ABOUT: zero calls, one lap.
+  expect(landed).toHaveLength(0);
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.detail.status).toBe("completed");
+  expect(done.detail.laps).toBe(1);
+  agent.close();
+});
+
+/**
+ * AND NOTHING WAS CAPPED — the half the issue is emphatic about.
+ *
+ * "Do not fix this by capping tool calls. A hard cap would produce confident
+ * answers built on nothing when a question genuinely needs a read." So this
+ * drives the exception: a question the digest cannot answer, a model that
+ * reaches for the one-turn read, and the read must LAND and the turn must carry
+ * its result — with a digest present, which is precisely the state where a cap
+ * dressed up as a default would have swallowed it.
+ */
+test("a question needing one turn's words still reads it, digest or no digest", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { text: "let me get that turn.", toolCalls: [{ id: "call_1", name: "sessions_read", args: { sessionId: "session_alpha", runId: "run_1" }, type: "tool_call" as const }] },
+      { text: "It said the migration is finished." },
+    ],
+    wall(landed),
+  );
+  agent.wake({ notification: wakeOf("session_alpha", "run_1", "turn_completed", "[wake: completed] Session session_alpha — turn run_1 completed.") });
+
+  agent.submit({ text: "what exactly did session_alpha say in run_1?" });
+  await until(() => agent.state().runId === undefined, "the reading turn");
+
+  expect(landed.map((call) => call.name)).toEqual(["sessions_read"]);
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.detail.status).toBe("completed");
+  expect(done.detail.text).toBe("It said the migration is finished.");
+  // TWO LAPS, NOT ONE. The read happened and its answer reached the model — a
+  // default that had quietly become a ceiling would show one lap here.
+  expect(done.detail.laps).toBe(2);
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
  * The two halves of `fleet_status` the runtime owns (#570).
  * ------------------------------------------------------------------ */
 
