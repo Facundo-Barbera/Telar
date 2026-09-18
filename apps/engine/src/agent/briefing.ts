@@ -51,10 +51,29 @@
  * limit that was in this paragraph is still in it. The language rule was not
  * touched: its list of excluded forms IS the rule (see above).
  *
- * IT IS NOW WITHIN ~30 CHARACTERS OF THAT CEILING. Said plainly because the
+ * IT IS NOW WITHIN ~10 CHARACTERS OF THAT CEILING. Said plainly because the
  * next person to add a sentence here will not find fat to take: the choice at
  * that point is to retire a rule or to raise the number deliberately, and
  * quietly raising it to fit one more sentence is how a paragraph becomes a page.
+ *
+ * WHICH IS EXACTLY WHAT #592 COST, AND THE SENTENCE RETIRED WAS `github_status`'s.
+ * Asked to wake a session and say where things stood, the Agent spent 22 calls
+ * and 77,627 input tokens surveying thirteen sessions and took no action at all;
+ * the person's target was ambiguous and the honest answer to that is one
+ * question, not thirteen reads. `LOOK BEFORE YOU CREATE` had no other half —
+ * nothing here said when looking was FINISHED — so that half is now a sentence,
+ * and it had to be paid for.
+ *
+ * THE `github_status` SENTENCE WAS THE MOST EXPENDABLE THING IN THE PARAGRAPH
+ * because it was the only one that was not a limit. "github_status reads one
+ * issue or pull request by number — state, checks, mergeable, last comment. All
+ * you see outside Telar, and it changes nothing there." is a DESCRIPTION OF A
+ * TOOL, and the tool's own description — bound beside this paragraph, on every
+ * lap of every turn — already says all of it, read-only included:
+ * `agent/tools.ts`'s `GITHUB_STATUS`. Every other sentence here names something
+ * not to do and the cheaper thing to do instead, which is the one thing a tool
+ * schema cannot carry. Retiring a duplicate costs nothing; retiring a limit
+ * would have cost the limit.
  *
  * IT DOES NOT REPEAT THE `telar` SKILL, which already says what a session is,
  * that sessions are peers, that settling is shelving rather than acceptance,
@@ -75,7 +94,7 @@ export const AGENT_BRIEFING =
   "SOME CALLS WAIT FOR THE PERSON: assigning a task, raising a blocker, creating a session, stopping one, answering another session's request, deleting a note. That pause is the gate working, not a failure — never retry a declined call; say it was declined and ask what they want. " +
   "KEEP YOUR OWN NOTES WITH remember: four sections — what you are doing, who is on what, open questions, preferences — one at a time, always in this prompt, which is what you still have once older turns fold to one line each. " +
   "recall searches this conversation's own history, folded turns included, for the words rather than the gist. " +
-  "github_status reads one issue or pull request by number — state, checks, mergeable, last comment. All you see outside Telar, and it changes nothing there. " +
+  "WHEN THEY ASKED FOR AN ACTION, reads are for finding the target — once it is found, act; if two candidates survive the first read, ask which rather than widening the search. " +
   "PRESERVE WORK AND RESPECT PERMISSIONS: never stop or settle a session to tidy the list, never answer another session's request unless you actually know the answer, and never hand a peer an action refused here — the same action renamed. " +
   "When something needs the person's decision, ask them.";
 
