@@ -379,5 +379,17 @@ export const Item = z.object({
    *  parent timeline. */
   taskId: Id.optional(),
   providerRefs: ProviderRefs.optional(),
+  /**
+   * THIS ROW WAS READ OUT OF A PROVIDER'S TRANSCRIPT, not produced by a turn
+   * this engine ran — `/resume` adopting an existing Claude Code conversation
+   * (#616). The distinction has to be on the row itself: a session can hold
+   * imported history and live turns at once, so "is this session imported" is
+   * not a question with one answer, and a row that passes for a Telar turn it
+   * never was misleads every later reader, the Agent's digest included.
+   *
+   * `literal(true)`, not `boolean`, so absent and `false` are not two spellings
+   * of the same state. An imported row says so; every other row stays silent.
+   */
+  imported: z.literal(true).optional(),
 });
 export type Item = z.infer<typeof Item>;
