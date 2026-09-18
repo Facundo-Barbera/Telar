@@ -16,6 +16,13 @@ import Foundation
 /// never used. So the claim is tracked, and only a session actually taken is
 /// given back.
 ///
+/// IT ALSO ANSWERS "DID WE TOUCH THE AUDIO HARDWARE AT ALL". `Dictation`'s
+/// teardown reads `isHeld` to decide whether to instantiate `AVAudioEngine`'s
+/// input node, because doing so configures an input route and is a second way
+/// to disturb other audio. That works only because `take()` happens first in
+/// `open()` — the ordering is commented at both ends, and is the one thing to
+/// preserve if either moves.
+///
 /// ITS OWN TYPE SO THE RULE CAN BE PROVEN. Whether `setActive(false)` was
 /// called is not something `AVAudioSession` will answer afterwards, and the
 /// only other seam — driving `Dictation.stop()` from a test — starts an

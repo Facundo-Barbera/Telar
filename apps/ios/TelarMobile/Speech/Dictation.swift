@@ -177,6 +177,12 @@ import Foundation
         // something to give back. Every line below this one can throw, and the
         // `catch` in `start()` tears down on this same instance — which is what
         // returns the session on a start that got this far and no further.
+        //
+        // NOTHING THAT TOUCHES AUDIO HARDWARE MAY MOVE ABOVE THIS LINE, and
+        // `engine.inputNode` below is the one that matters: the teardown reads
+        // the claim to decide whether that node was ever instantiated, and an
+        // access ordered before the take would make it answer no while a route
+        // was already configured.
         try claim.take()
 
         // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
@@ -301,7 +307,21 @@ import Foundation
 
     private func teardownAudio() {
         if engine.isRunning { engine.stop() }
-        engine.inputNode.removeTap(onBus: 0)
+        // NOT INSTANTIATED JUST TO BE TORN DOWN (#623). Reading
+        // `engine.inputNode` is not a read: on iOS it CREATES the node and has
+        // the session configure an input route, which disturbs other audio
+        // without anything here having called `setActive(true)` at all. This
+        // function runs on every exit from a conversation, so on the
+        // no-dictation path it was doing precisely that — the same symptom as
+        // the deactivation below, by a second route. Removing a tap from a node
+        // nobody ever tapped is not worth paying that for.
+        //
+        // THE CLAIM IS THE RIGHT PREDICATE ONLY BECAUSE OF THE ORDER IN
+        // `open()`: the node is first touched well below `claim.take()`, so a
+        // tap can never exist without a claim, and skipping this can never
+        // strand one. Moving that access above the take would make this guard
+        // quietly wrong.
+        if claim.isHeld { engine.inputNode.removeTap(onBus: 0) }
         converter = nil
         // HANDED BACK, so whatever was ducked comes up again and the next app
         // to want the microphone is not fighting a session nobody is using —
