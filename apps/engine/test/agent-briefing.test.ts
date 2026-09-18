@@ -194,7 +194,7 @@ test("the recall sentence retired for #601 survives in recall's own schema", () 
     sessions: noSessions(),
     notes: noNotes(),
     query: noQueries(),
-    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+    memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   }).find((tool) => tool.name === "recall")!;
   expect(recall.description).toContain("THIS conversation's own history");
   expect(recall.description).toContain("already folded out of your prompt");
