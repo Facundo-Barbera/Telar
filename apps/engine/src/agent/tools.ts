@@ -607,12 +607,40 @@ export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapabil
           }
 
           const left = rows.length - shown.length;
+          /**
+           * WHICH QUESTION THIS HAS JUST ANSWERED, AND WHICH IT HAS NOT (#608).
+           *
+           * ── THE OVERLAP IS REAL AND THE PROSE IS THE HONEST FIX ─────────────
+           * Measured repeatedly: `sessions_status` called on a session
+           * `fleet_status` had just described, four times in one stretch of the
+           * log at ~4,200 characters. It is not a duplicate the memo can catch —
+           * two different tools, two different shapes — and it is not a bug in
+           * either. `activity` and `lastTurn.state` in a row ARE what
+           * `sessions_status` answers; nothing said so, so the model asked.
+           *
+           * THEY ARE NOT MERGED, AND THAT IS A DECISION RATHER THAN AN OMISSION.
+           * `sessions_status` is on the SHARED sessions wall — every session
+           * driver and every MCP client binds it, and none of them has a fleet,
+           * a subscription list or a `who` section for this tool's three sources
+           * to read. Folding one into the other would either drag the Agent's own
+           * bookkeeping onto a wall that cannot supply it, or lose the per-turn
+           * rows and pending notifications that the narrow read genuinely has and
+           * this one does not.
+           *
+           * SO THE SENTENCE SAYS BOTH HALVES, and it lands HERE rather than only
+           * in a description because this is the moment the choice is made: the
+           * model has just read a row and is deciding whether to confirm it. It
+           * is also the cheaper place — a tool description is resent on every lap
+           * of every turn, and this is paid once, on the call that made the
+           * question possible.
+           */
+          const overlap = shown.length > 0 ? "A row IS that session's status; sessions_status only adds its turn rows." : undefined;
+          const spare = left > 0 ? `${left} more session${left === 1 ? "" : "s"} not shown. sessions_list for the rest, sessions_answer for one turn's words.` : undefined;
+          const said = [spare, overlap].filter(Boolean).join(" ");
           return json({
             sessions: shown,
             total: rows.length,
-            ...(left > 0
-              ? { note: `${left} more session${left === 1 ? "" : "s"} not shown. sessions_list for the rest, sessions_answer for one turn's words.` }
-              : {}),
+            ...(said ? { note: said } : {}),
           });
         } catch (error) {
           return err(`Could not read the fleet: ${failure(error)}`);

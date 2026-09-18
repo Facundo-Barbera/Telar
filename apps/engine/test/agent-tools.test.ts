@@ -826,3 +826,49 @@ test("an empty fleet answers a list rather than an error", async () => {
   const answer = await answered(fleet());
   expect(answer).toEqual({ sessions: [], total: 0 });
 });
+
+/**
+ * WHY `sessions_status` IS NOT NEEDED FOR A SESSION THIS JUST LISTED (#608).
+ *
+ * Measured repeatedly — four occurrences in one stretch of the log at ~4,200
+ * characters — `sessions_status` called on a session `fleet_status` had just
+ * described. Not a duplicate any memo can catch: two tools, two shapes, both
+ * correct. What was missing is that nothing SAID the row already carried the
+ * answer, so this holds that the row does carry it and that the reply says so.
+ *
+ * AND THAT THEY ARE NOT MERGED, deliberately: `sessions_status` is on the shared
+ * sessions wall, bound by every session driver and MCP client, none of which has
+ * a fleet for this tool's three sources to read — and it genuinely holds one
+ * thing a row does not, which the sentence names rather than hides.
+ */
+test("a fleet row IS that session's status, and the answer says so where the choice is made", async () => {
+  const built = fleet({
+    rail: [
+      { id: "session_working", title: "mid-turn", activity: "working" },
+      { id: "session_blocked", title: "parked on a question", activity: "blocked" },
+    ],
+    lastTurn: { session_working: { state: "running", answer: "the last thing it said" }, session_blocked: { state: "completed", endedAt: 5, answer: "asked" } },
+    openRequests: { session_blocked: 1 },
+    since: 1,
+  });
+  const answer = await answered(built);
+
+  // EVERYTHING `sessions_status` ANSWERS IS ALREADY IN THE ROW: is it running,
+  // is it waiting on a person, and how the last turn ended.
+  const working = answer.sessions.find((row) => row.id === "session_working")!;
+  expect(working.activity).toBe("working");
+  expect(working.lastTurn!.state).toBe("running");
+  const blocked = answer.sessions.find((row) => row.id === "session_blocked")!;
+  expect(blocked.activity).toBe("blocked");
+  expect(blocked.openRequests).toBe(1);
+
+  // SAID IN WORDS, on the call that made the question possible — a description
+  // is resent on every lap, this is paid once.
+  expect(answer.note).toContain("A row IS that session's status");
+  // AND THE ONE THING IT DOES NOT CARRY IS NAMED, so the sentence is a routing
+  // rule rather than a claim the narrow read is redundant.
+  expect(answer.note).toContain("only adds its turn rows");
+
+  // An empty fleet says nothing: there is no row to mistake for a status.
+  expect((await answered(fleet())).note).toBeUndefined();
+});
