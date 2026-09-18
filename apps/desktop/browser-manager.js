@@ -1971,28 +1971,58 @@ class DesktopBrowserManager {
     this.emitState(scope);
   }
 
+  /** What a tab of this partition renders under. A POPUP never gets these —
+   *  Chromium fixes an opened window's preferences from its opener's and hands
+   *  the WebContents over already built (see `adoptPopupTab`) — so this is for
+   *  the two paths that do make their own: an ordinary tab, and the popup
+   *  fallback for an Electron that gave us no guest to adopt. */
+  tabWebPreferences(tab) {
+    return {
+      partition: tab.partition,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a login
+      // form inside an iframe reports its entry. Despite the name this
+      // enables no Node in any frame: sandbox stays on.
+      nodeIntegrationInSubFrames: true,
+      // The human-input reporter (see browser-tab-preload.js) — how a click
+      // in the page becomes a control-model takeover in the main process.
+      preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
+      // Chromium's built-in PDF viewer is a "plugin"; without this a PDF
+      // navigation downloads instead of rendering. Enables nothing else.
+      plugins: true,
+    };
+  }
+
   createViewForTab(tab) {
     // BEFORE THE VIEW, NOT AFTER: a page may ask for the camera on its first
     // frame, and a session with no handler denies without asking (#422).
     this.preparePartition(tab.partition);
-    const view = this.createView({
-      webPreferences: {
-        partition: tab.partition,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a login
-        // form inside an iframe reports its entry. Despite the name this
-        // enables no Node in any frame: sandbox stays on.
-        nodeIntegrationInSubFrames: true,
-        // The human-input reporter (see browser-tab-preload.js) — how a click
-        // in the page becomes a control-model takeover in the main process.
-        preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
-        // Chromium's built-in PDF viewer is a "plugin"; without this a PDF
-        // navigation downloads instead of rendering. Enables nothing else.
-        plugins: true,
-      },
-    });
+    return this.attachView(tab, this.createView({ webPreferences: this.tabWebPreferences(tab) }));
+  }
+
+  /**
+   * A POPUP'S VIEW: the WebContents already exists and is ADOPTED rather than
+   * replaced. `new WebContentsView({ webContents })` is the Electron API for
+   * exactly that, and it is what keeps `window.opener` alive — see
+   * `decidePopup` for why a second WebContents is not an option here.
+   *
+   * `guest` absent is the belt-and-braces path for an Electron that called
+   * `createWindow` without handing one over: a view of our own, on the
+   * OPENER'S partition, which loses the opener edge but never the identity.
+   */
+  adoptViewForTab(tab, guest) {
+    this.preparePartition(tab.partition);
+    const view = guest
+      ? this.createView({ webContents: guest })
+      : this.createView({ webPreferences: this.tabWebPreferences(tab) });
+    return this.attachView(tab, view);
+  }
+
+  /** Everything a fresh view needs once it exists, whoever made the
+   *  WebContents inside it. */
+  attachView(tab, view) {
     // Let the themed renderer host show through while a page is navigating.
     // An opaque white native underlay otherwise appears as a strip whenever
     // its bounds update a frame ahead of the surrounding right-panel layout.
@@ -2355,15 +2385,150 @@ class DesktopBrowserManager {
     return task;
   }
 
+  /**
+   * THE POPUP TABS EXIST — not that their pages have loaded. Since #615 the
+   * first navigation is CHROMIUM'S (it owns the guest and starts it the moment
+   * the handler answers), not a `loadTab` this manager awaits, so a caller that
+   * needs the popup's URL has to wait for the URL. Waiting here instead would
+   * hang on the blank popup an OAuth client opens before it has somewhere to
+   * send it — `window.open("")` then `popup.location = …` is the common shape.
+   */
   async settlePopupTabs() {
     await Promise.allSettled([...this.pendingPopupTabs]);
   }
 
-  async openPopupTab(opener, rawUrl) {
-    if (!this.tabs.includes(opener)) return null;
-    const url = normalizePopupUrl(rawUrl);
-    if (!url) return null;
-    return this.createTab(opener.scopeKey, url, this.popupOpener(opener));
+  /**
+   * CHROMIUM'S OWN POPUP, ADOPTED — the whole of #615.
+   *
+   * This used to answer `window.open` with `{ action: "deny" }` and then open
+   * the same URL again as an ordinary tab. The page loaded, so it looked
+   * right; but a tab Telar opened has no opener relationship with the page
+   * that asked for it, and every popup sign-in on the web hands its result
+   * back through exactly that relationship:
+   *
+   *   - `window.opener.postMessage(result, origin)` — `opener` was null, so
+   *     the call threw and the flow died in silence (signing into Cloudflare
+   *     with Google: the leftover tab just sat on the callback URL);
+   *   - `window.close()` — Chromium will not let script close a tab script did
+   *     not open, so the popup never went away;
+   *   - the opener polling `popup.closed` — `window.open()` had returned null.
+   *
+   * So the popup has to be CHROMIUM'S, not ours. `createWindow` is the seam
+   * (Electron 30+): Chromium has already built the guest WebContents — with
+   * the opener edge, the opener's session and the opener's webPreferences on
+   * it — and offers it instead of constructing a BrowserWindow. Adopting that
+   * into a `WebContentsView` lands it in the panel as an ordinary Telar tab
+   * with the relationship intact. Proven against real Electron in
+   * browser-popup.electron-test.js, which asserts the postMessage arrives and
+   * that `window.close()` closes the tab — not what this function returns.
+   *
+   * `disposition` IS DELIBERATELY NOT READ, having looked. Routing only
+   * `disposition: "new-window"` here and leaving `foreground-tab` on the old
+   * deny path is the obvious-looking split and it is the wrong one: the opener
+   * rules are Chromium's own, and a `target="_blank"` anchor and an explicit
+   * `noopener` both arrive here with the opener edge ALREADY severed upstream
+   * (measured: both report `foreground-tab`). Filtering on disposition could
+   * only re-break the flows this fixes. `features`, `referrer` and `postBody`
+   * are Chromium's to apply for the same reason — the guest already carries
+   * them, which is the point of not building a second WebContents.
+   */
+  decidePopup(opener, details) {
+    // THE SCHEME FENCE IS HERE, BEFORE THE ALLOW: adoption must not become a
+    // way around `normalizePopupUrl`. A refusal opens nothing and says
+    // nothing, exactly as it did.
+    if (!normalizePopupUrl(details?.url)) return { action: "deny" };
+    if (!this.tabs.includes(opener)) return { action: "deny" };
+    if (this.scopeTabs(opener.scopeKey).length >= MAX_TABS_PER_SCOPE) return { action: "deny" };
+    // WHOSE GESTURE THIS IS, decided NOW — at the `window.open` itself, which
+    // is the moment the question is about. `createWindow` runs later and the
+    // grace window in `popupOpener` would have moved by then.
+    const openedBy = this.popupOpener(opener);
+    return {
+      action: "allow",
+      /**
+       * A POPUP OUTLIVES ITS OPENER, the way it does in every browser — and
+       * here it must, for a reason of our own: `hibernateTab` closes an
+       * opener's WebContents when the live-view budget evicts it, and with
+       * Electron's default (`false`) that would take a half-finished sign-in
+       * down because some tab nobody was looking at got swapped out.
+       */
+      outlivesOpener: true,
+      createWindow: (options) => this.adoptPopupTab(opener, options, openedBy),
+    };
+  }
+
+  /**
+   * SYNCHRONOUS BY CONTRACT. Chromium is holding the guest open waiting for
+   * the WebContents this returns, so the tab record, the view and the adoption
+   * all happen here; the slow tail (the extension host, the view budget) goes
+   * to `finishPopupTab` and is tracked, which is what `settlePopupTabs` — and
+   * so every test that awaits a popup — is still waiting on.
+   */
+  adoptPopupTab(opener, options, openedBy) {
+    const guest = options?.webContents || null;
+    /**
+     * THE POPUP STAYS ON THE OPENER'S IDENTITY. Chromium gives a guest its
+     * opener's session, so this holds; it is checked rather than assumed
+     * because the failure it guards — an OAuth cookie written into a profile
+     * the person never signed in under — is a worse bug than the one being
+     * fixed here, and a silent one. A guest that is somehow elsewhere is
+     * refused: handed back so Electron's own bookkeeping completes, then
+     * closed, and no tab is ever filed for it.
+     */
+    const expected = this.sessionFor(opener.partition);
+    if (guest && expected && guest.session && guest.session !== expected) {
+      queueMicrotask(() => { try { guest.close(); } catch { /* already gone */ } });
+      return guest;
+    }
+    const scope = opener.scopeKey;
+    // THE OPENER'S PROFILE, NOT THE SCOPE'S CURRENT ONE. A tab's identity is
+    // fixed at creation (`createTab`), so a session that switched profiles
+    // since the opener was opened must not re-file its popup elsewhere.
+    const tab = this.newTabRecord(scope, { partition: opener.partition, id: opener.profileId }, openedBy);
+    const wasEmpty = this.scopeTabs(scope).length === 0;
+    this.tabs.push(tab);
+    // The same rule `createTab` applies: an agent's new tab does not take the
+    // screen, and the human's view follows only their own gesture.
+    if (openedBy === "human" || wasEmpty) this.activeTabIds.set(scope, tab.id);
+    if (openedBy === "agent") {
+      this.agentTabIds.set(scope, tab.id);
+      this.agentTabClosed.delete(scope);
+    }
+    const view = this.adoptViewForTab(tab, guest);
+    // Nobody has observed this page yet — the first mutation on it needs a
+    // look first, the same as any tab a person opened.
+    if (openedBy === "human") tab.lastHumanInputAt = this.now();
+    this.journalControl(tab, openedBy === "human" ? "human" : "agent");
+    this.applyVisibility();
+    this.emitState(scope);
+    this.trackPopupTab(this.finishPopupTab(tab, view));
+    return view.webContents;
+  }
+
+  /**
+   * A POPUP CANNOT WAIT FOR THE EXTENSION HOST the way `createTab` does:
+   * Chromium is already navigating it, and there is no before-the-first-
+   * navigation to wait in. Registering is all that is left — and in practice
+   * the host is warm, because the opener's own tab readied it.
+   */
+  async finishPopupTab(tab, view) {
+    const scope = tab.scopeKey;
+    const humanTabBefore = this.activeTabIds.get(scope);
+    await this.readyHostForTab(tab, view);
+    // AND THE EXTENSION HOST DOES NOT MOVE THE HUMAN'S VIEW EITHER — the
+    // second door `createTab` guards, on the same library call.
+    if (
+      tab.openedBy === "agent" &&
+      humanTabBefore !== undefined &&
+      this.activeTabIds.get(scope) !== humanTabBefore &&
+      this.tabs.some((candidate) => candidate.id === humanTabBefore)
+    ) {
+      this.activeTabIds.set(scope, humanTabBefore);
+    }
+    this.enforceLiveViewBudget(tab);
+    this.applyVisibility();
+    this.emitState(scope);
+    return tab;
   }
 
   /** A tab record with no WebContents — what createTab and the inventory
@@ -2449,10 +2614,7 @@ class DesktopBrowserManager {
       this.emitState(tab.scopeKey);
     };
     if (typeof wc.setWindowOpenHandler === "function") {
-      wc.setWindowOpenHandler(({ url }) => {
-        this.trackPopupTab(this.openPopupTab(tab, url)).catch(() => {});
-        return { action: "deny" };
-      });
+      wc.setWindowOpenHandler((details) => this.decidePopup(tab, details || {}));
     }
     /**
      * A hidden view is a background renderer and Chromium stops flushing its
@@ -2518,6 +2680,17 @@ class DesktopBrowserManager {
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+      /**
+       * THE DEAD VIEW GOES WITH THE TAB. This used to be a crash path only,
+       * where one orphaned child view in the window hardly mattered. Since
+       * #615 it is also the ROUTINE one — `window.close()` from an adopted
+       * popup destroys its WebContents, which is how an OAuth popup is
+       * supposed to end — so a view left parented to the window would now
+       * accumulate once per sign-in.
+       */
+      tab.view = null;
+      { const host = this.hostOfTab(tab); if (host) { try { host.removeTab(wc); } catch { /* host already gone */ } } }
+      try { this.window.contentView.removeChildView(view); } catch { /* never parented */ }
       this.noteAgentTabClosed(tab);
       const scoped = this.scopeTabs(tab.scopeKey);
       if (this.activeTabIds.get(tab.scopeKey) === tab.id) {
