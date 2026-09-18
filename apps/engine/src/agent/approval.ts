@@ -39,6 +39,80 @@
  *  framework. */
 export type GatedCall = { name: string; args: Record<string, unknown> };
 
+/**
+ * WHICH OF THE AGENT'S TOOLS ONLY LOOK — the table the within-turn memo asks
+ * (#592).
+ *
+ * ── WHY IT LIVES HERE AND NOT BESIDE THE MEMO ───────────────────────────────
+ * This file already owns the one sentence the classification is about: "anything
+ * that LANDS something on another session, or DESTROYS something". The gate
+ * below is a STRICT SUBSET of that — `sessions_settle`, `sessions_subscribe`,
+ * `sessions_unsubscribe`, `notes_write`, `remember` and a `report`-intent
+ * `sessions_send` all land something and are deliberately NOT gated, for the
+ * click-through reason the header argues. So the memo could not be derived from
+ * `needsApproval`: it would have read five landers and a send as reads. The
+ * table is the shared fact both now answer from, in the module that already
+ * held half of it.
+ *
+ * ── IT FAILS TOWARDS NOT MEMOISING ──────────────────────────────────────────
+ * A name this table has never heard of answers "lands". That direction is the
+ * whole safety of it: a new READ that nobody classified costs a duplicate page
+ * and is visible in the transcript, while a new WRITE that nobody classified
+ * would be silently swallowed the second time the model asked for it — which is
+ * exactly the correctness bug the memo must not be able to introduce.
+ * `agent-approval.test.ts` pins that every tool the Agent is actually given has
+ * an entry, so the safe direction is a backstop rather than the normal case.
+ */
+const TOOL_EFFECT: Readonly<Record<string, "reads" | "lands">> = {
+  // The sessions wall.
+  sessions_list: "reads",
+  sessions_read: "reads",
+  sessions_status: "reads",
+  sessions_diff: "reads",
+  sessions_requests: "reads",
+  sessions_subscriptions: "reads",
+  sessions_create: "lands",
+  sessions_send: "lands",
+  sessions_stop: "lands",
+  sessions_settle: "lands",
+  sessions_subscribe: "lands",
+  sessions_unsubscribe: "lands",
+  sessions_resolve_request: "lands",
+  // The three queries and the fleet read.
+  sessions_find: "reads",
+  sessions_outline: "reads",
+  sessions_answer: "reads",
+  fleet_status: "reads",
+  // The notebook.
+  notes_projects: "reads",
+  notes_list: "reads",
+  notes_read: "reads",
+  notes_write: "lands",
+  notes_delete: "lands",
+  // Outside Telar, and the Agent's own two.
+  github_status: "reads",
+  remember: "lands",
+  recall: "reads",
+};
+
+/**
+ * Does this call only LOOK at something?
+ *
+ * The one question the memo asks, and the only safe basis for it: a read
+ * repeated inside one turn cannot have changed in a way the Agent could act on,
+ * while a write repeated inside one turn is a second thing the person may well
+ * have asked for.
+ */
+export function readsOnly(name: string): boolean {
+  return TOOL_EFFECT[name] === "reads";
+}
+
+/** Every tool this table has been taught, so a test can hold it against the
+ *  list the Agent is actually given rather than against itself. */
+export function classifiedTools(): string[] {
+  return Object.keys(TOOL_EFFECT);
+}
+
 /** What an interrupt hands over — enough for a surface to render the ask
  *  without re-deriving which call it is about. */
 export type AgentApprovalRequest = {

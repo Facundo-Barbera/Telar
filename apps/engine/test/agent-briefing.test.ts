@@ -8,6 +8,44 @@
  */
 import { expect, test } from "bun:test";
 import { AGENT_BRIEFING } from "../src/agent/briefing";
+import { collectAgentTools } from "../src/agent/tools";
+import { AGENT_SELF_ID } from "../src/agent/identity";
+import type { SessionsCapability } from "../src/sessions-tools/tools";
+import type { NotesCapability } from "../src/notes-tools/tools";
+import type { AgentQueryCapability } from "../src/agent/tools";
+import type { Session, Turn } from "@telar/engine-client";
+
+const noSessions = (): SessionsCapability => ({
+  self: { sessionId: AGENT_SELF_ID },
+  list: async () => ({ sessions: [], projects: [] }),
+  create: async () => ({}) as Session,
+  send: async () => ({ turn: {} as Turn, replayed: false }),
+  read: async () => [],
+  status: async () => ({ session: {} as Session, turns: [] }),
+  stop: async () => ({ stopped: 0 }) as never,
+  settle: async () => ({}) as Session,
+  diff: async () => ({}) as never,
+  subscribe: async () => ({}) as never,
+  unsubscribe: async () => false,
+  subscriptions: async () => [],
+  requests: async () => [],
+  resolveRequest: async () => ({}) as never,
+});
+
+const noNotes = (): NotesCapability => ({
+  projects: async () => [],
+  list: async () => [],
+  read: async () => null,
+  create: async () => ({}) as never,
+  update: async () => null,
+  remove: async () => false,
+});
+
+const noQueries = (): AgentQueryCapability => ({
+  find: async () => ({ sessions: [], index: "like", more: false }),
+  outline: async () => ({ turns: [], total: 0, more: false }),
+  answer: async () => ({ runId: "run_1", sequence: 1, text: "", from: 0, totalChars: 0, more: false }),
+});
 
 test("the briefing tells the Agent to answer in the person's language, in neutral Spanish", () => {
   const rule = AGENT_BRIEFING.indexOf("ANSWER IN THE LANGUAGE THE PERSON USED");
@@ -50,7 +88,30 @@ test("the briefing stays under its stated ceiling", () => {
   expect(AGENT_BRIEFING.length).toBeLessThan(2_800);
 });
 
-/** Nothing was dropped to make room — every limit the paragraph held, it holds. */
+/**
+ * AND WHEN LOOKING IS FINISHED (#592). Asked to wake a session and say where
+ * things stood, the Agent spent 22 calls surveying thirteen sessions and took
+ * no action at all. `LOOK BEFORE YOU CREATE` had no other half: nothing said
+ * that the reads are there to FIND a target, or what to do when more than one
+ * survives.
+ */
+test("the briefing says when the looking is over and the acting starts", () => {
+  expect(AGENT_BRIEFING).toContain("WHEN THEY ASKED FOR AN ACTION");
+  expect(AGENT_BRIEFING).toContain("once it is found, act");
+  // ONE QUESTION, NOT A WIDER SEARCH — the half that keeps an ambiguous target
+  // from becoming thirteen reads.
+  expect(AGENT_BRIEFING).toContain("ask which rather than widening the search");
+});
+
+/**
+ * EVERY LIMIT THE PARAGRAPH HELD, IT HOLDS.
+ *
+ * `github_status reads` LEFT THIS LIST IN #592, and deliberately: it was the
+ * only entry that was not a limit but a DESCRIPTION OF A TOOL, and the tool's
+ * own description is bound beside this paragraph on every lap already. Room for
+ * the acting rule had to come from somewhere, and a duplicate is the only thing
+ * in here whose removal costs nothing. See `briefing.ts`'s header.
+ */
 test("trimming for room kept every rule that was there", () => {
   for (const rule of [
     "YOU ARE NOT A SESSION",
@@ -62,10 +123,25 @@ test("trimming for room kept every rule that was there", () => {
     "SOME CALLS WAIT FOR THE PERSON",
     "KEEP YOUR OWN NOTES WITH remember",
     "recall searches",
-    "github_status reads",
     "PRESERVE WORK AND RESPECT PERMISSIONS",
     "ask them",
   ]) {
     expect(AGENT_BRIEFING).toContain(rule);
   }
+});
+
+/** What was retired is still said where a model actually reads it. */
+test("the retired sentence's content survives in the tool's own description", () => {
+  expect(AGENT_BRIEFING).not.toContain("github_status");
+  const github = collectAgentTools({
+    sessions: noSessions(),
+    notes: noNotes(),
+    query: noQueries(),
+    github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
+  }).find((tool) => tool.name === "github_status")!;
+  expect(github.description).toContain("issue or pull request by number");
+  expect(github.description).toContain("checks");
+  expect(github.description).toContain("last comment");
+  // Including the half the briefing's sentence was really carrying.
+  expect(github.description).toContain("Read-only");
 });

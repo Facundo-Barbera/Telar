@@ -18,7 +18,8 @@ import { collectTools, toolInputSchema } from "../src/mcp-socket";
 import { sessionsTools, type SessionsCapability } from "../src/sessions-tools/tools";
 import { agentFleetTools, agentQueryTools, agentToolSpecs, collectAgentTools, type AgentFleetCapability, type AgentQueryCapability, type FleetSessionRow } from "../src/agent/tools";
 import { AGENT_SELF_ID } from "../src/agent/identity";
-import { approvalRequest, needsApproval } from "../src/agent/approval";
+import { approvalRequest, classifiedTools, needsApproval, readsOnly } from "../src/agent/approval";
+import { EngineStateError, TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../src/state";
 import type { NotesCapability } from "../src/notes-tools/tools";
 import type { Session, Turn } from "@telar/engine-client";
 
@@ -49,6 +50,53 @@ test("every read on both walls is ungated", () => {
     "notes_projects", "notes_list", "notes_read", "notes_write",
   ];
   for (const name of reads) expect(needsApproval({ name, args: {} })).toBe(false);
+});
+
+/**
+ * THE READS/LANDS SPLIT IS THE MEMO'S WHOLE SAFETY (#592).
+ *
+ * The within-turn memo answers a repeat with a pointer instead of the payload,
+ * and the one thing it must never do is answer a repeated WRITE that way — a
+ * person can legitimately ask for the same message twice, and a swallowed
+ * second `sessions_send` is work the Agent believes it did and nobody received.
+ *
+ * SO THE TABLE IS HELD AGAINST THE WALL ITSELF rather than against a copy of
+ * itself: a tool added to either wall and classified nowhere fails HERE, which
+ * is the only place the omission is visible before it is a silent bug.
+ */
+test("every tool the Agent is given is classified as a read or a lander", () => {
+  const whole = collectAgentTools({
+    sessions: noSessions(),
+    notes: noNotes(),
+    query: noQueries(),
+    fleet: emptyFleet(),
+    github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
+    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+  }).map((tool) => tool.name);
+  const classified = new Set(classifiedTools());
+  for (const name of whole) expect(classified.has(name)).toBe(true);
+  // And nothing classified has left the wall, so the table cannot rot quietly
+  // into a list of tools that no longer exist.
+  for (const name of classified) expect(whole).toContain(name);
+});
+
+test("the ten calls that land something are never memoisable", () => {
+  for (const name of [
+    "sessions_create", "sessions_send", "sessions_stop", "sessions_settle", "sessions_subscribe",
+    "sessions_unsubscribe", "sessions_resolve_request", "notes_write", "notes_delete", "remember",
+  ]) {
+    expect(readsOnly(name)).toBe(false);
+  }
+  // A GATE IS NOT THE TEST FOR THIS, and that is why the table exists: five of
+  // the ten above are deliberately ungated, so `needsApproval` would have read
+  // them as reads.
+  for (const name of ["sessions_settle", "sessions_subscribe", "sessions_unsubscribe", "notes_write", "remember"]) {
+    expect(needsApproval({ name, args: {} })).toBe(false);
+    expect(readsOnly(name)).toBe(false);
+  }
+  // A name nobody classified is a lander, because that is the direction whose
+  // failure is waste rather than lost work.
+  expect(readsOnly("some_tool_added_next_year")).toBe(false);
 });
 
 test("the ask names the call it is about, so a surface need not re-derive it", () => {
@@ -103,6 +151,7 @@ const emptyFleet = (): AgentFleetCapability => ({
   lastTurn: async () => undefined,
   openRequests: async () => 0,
   unread: () => ({}),
+  since: () => undefined,
 });
 
 test("the Agent's wall is the two walls plus the three query reads, and nothing else", () => {
@@ -238,6 +287,57 @@ test("a refusal from the store comes back as a sentence the model can read", asy
   expect(String((answer.content[0] as { text: string }).text)).toContain("session does not exist");
 });
 
+/**
+ * A REFUSAL THAT READS AS A HINT ABOUT ARGUMENTS COSTS TWO MORE CALLS (#592).
+ *
+ * The measured turn failed `sessions_answer` twice and retried with different
+ * arguments both times, because "turn does not exist" and "this session has no
+ * answered turn" describe the miss and neither closes the door. The second is
+ * the worse of the two: it reads as "pick a different turn" when it means
+ * "there is nothing here at all".
+ */
+test("both sessions_answer misses tell the model to stop rather than to retry", async () => {
+  const miss = async (message: string) => {
+    const tools = collectTools(agentQueryTools as never, {
+      ...noQueries(),
+      answer: async () => {
+        throw new EngineStateError("not_found", message);
+      },
+    } as never);
+    const answered = await tools.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_a" });
+    expect(answered.isError).toBe(true);
+    return String((answered.content[0] as { text: string }).text);
+  };
+
+  // NOTHING HERE AT ALL — and it must not read as an invitation to name a turn.
+  const none = await miss(TURN_ANSWER_NONE);
+  expect(none).toContain("There is nothing here to read");
+  expect(none).toContain("no runId will produce one");
+  expect(none).toContain("do not ask it again");
+  expect(none).not.toContain("has no answered turn");
+
+  // A runId THAT IS NOT THERE — the retry to shut down is the guess, so the one
+  // move that is not a guess is named.
+  const wrong = await miss(TURN_ANSWER_NO_SUCH_RUN);
+  expect(wrong).toContain("Do not guess another");
+  expect(wrong).toContain("omit runId");
+  expect(wrong).toContain("sessions_outline");
+
+  // Both still say WHICH session missed: a batch of reads needs pairing.
+  for (const sentence of [none, wrong]) expect(sentence).toContain("session_a");
+});
+
+test("a store failure that is not one of the two misses is passed through unchanged", async () => {
+  const tools = collectTools(agentQueryTools as never, {
+    ...noQueries(),
+    answer: async () => {
+      throw new Error("the database is locked");
+    },
+  } as never);
+  const answered = await tools.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_a" });
+  expect(String((answered.content[0] as { text: string }).text)).toContain("the database is locked");
+});
+
 /* ------------------------------------------------------------------ *
  * The send that cannot land twice.
  * ------------------------------------------------------------------ */
@@ -305,6 +405,11 @@ function fleet(
     lastTurn?: Record<string, { state: string; endedAt?: number; answer: string }>;
     openRequests?: Record<string, number>;
     unread?: Record<string, number>;
+    /** When the Agent's previous turn began (#592). Omitted means "no previous
+     *  turn", which is the first turn of a thread and makes everything news —
+     *  so the tests that predate the recency rule keep testing what they were
+     *  about. */
+    since?: number;
   } = {},
 ): { tool: (name: string) => { run: (args: Record<string, unknown>) => Promise<{ content: Array<{ text?: string }> }> }; reads: string[] } {
   const reads: string[] = [];
@@ -319,6 +424,7 @@ function fleet(
     lastTurn: async (id) => parts.lastTurn?.[id],
     openRequests: async (id) => parts.openRequests?.[id] ?? 0,
     unread: () => parts.unread ?? {},
+    since: () => parts.since,
   };
   const tools = collectTools(agentFleetTools as never, capability as never);
   return { tool: (name) => tools.find((one) => one.name === name)! as never, reads };
@@ -412,11 +518,93 @@ test("a row carries the last turn and the head of its answer, not the whole thin
   const answer = await answered(built);
   const row = answer.sessions[0]!;
   expect(row.lastTurn).toEqual({ state: "completed", endedAt: 7 });
-  // Clamped at 200, with the ellipsis that says it was cut.
-  expect(row.lastAnswer!.length).toBe(200);
+  // Clamped at the notebook's own preview length (#592), with the ellipsis that
+  // says it was cut. It was 200 and that was most of a 6,628-character answer.
+  expect(row.lastAnswer!.length).toBe(120);
   expect(row.lastAnswer!.endsWith("…")).toBe(true);
   expect(row.unreadInbox).toBe(3);
   expect(row.openRequests).toBe(1);
+});
+
+/**
+ * THE PROSE IS KEPT WHERE IT IS NEWS AND NOWHERE ELSE (#592).
+ *
+ * 6,628 characters for thirteen sessions, and the excerpt carried for every one
+ * of them — including long-idle sessions in other projects — was most of the
+ * bytes and nearly all of the staleness.
+ */
+test("a session that has not moved since the Agent's previous turn loses its prose", async () => {
+  const built = fleet({
+    rail: [
+      { id: "session_fresh", title: "just finished", activity: "idle" },
+      { id: "session_stale", title: "idle since yesterday", activity: "idle" },
+      { id: "session_busy", title: "still going", activity: "working" },
+    ],
+    lastTurn: {
+      session_fresh: { state: "completed", endedAt: 500, answer: "the PR is open and green" },
+      session_stale: { state: "completed", endedAt: 10, answer: "I finished the dictation work" },
+      // A turn still running has no `endedAt` at all.
+      session_busy: { state: "running", answer: "starting on the migration" },
+    },
+    since: 100,
+  });
+  const answer = await answered(built);
+  const row = (id: string) => answer.sessions.find((one) => one.id === id)!;
+
+  // NEWS: ended after the Agent last looked, or still working.
+  expect(row("session_fresh").lastAnswer).toBe("the PR is open and green");
+  expect(row("session_busy").lastAnswer).toBe("starting on the migration");
+  // NOT NEWS: the person has already been told, and an excerpt of it is bytes
+  // spent on staleness.
+  expect(row("session_stale").lastAnswer).toBeUndefined();
+  // WHAT THE ROW IS FOR SURVIVES EITHER WAY — the question is "what is running
+  // and what needs me", and none of that is prose.
+  expect(row("session_stale").activity).toBe("idle");
+  expect(row("session_stale").lastTurn).toEqual({ state: "completed", endedAt: 10 });
+  expect(row("session_stale").title).toBe("idle since yesterday");
+});
+
+test("the first turn of a conversation has reported nothing, so everything is news", async () => {
+  const built = fleet({
+    rail: [{ id: "session_a", title: "a session", activity: "idle" }],
+    lastTurn: { session_a: { state: "completed", endedAt: 1, answer: "what it concluded" } },
+    // No previous turn: this is the thread's first.
+  });
+  expect((await answered(built)).sessions[0]!.lastAnswer).toBe("what it concluded");
+});
+
+test("thirteen sessions cost materially less than the 6,628 characters that were measured", async () => {
+  // THE SHAPE OF THE MEASURED FLEET: thirteen sessions across three projects,
+  // two of them moving and the rest idle since before this conversation, each
+  // with a real answer behind it.
+  const sessions = Array.from({ length: 13 }, (_, index) => ({
+    id: `session_${index}${"0".repeat(24)}`,
+    title: `a reasonably descriptive session title ${index}`,
+    projectId: `p${index % 3}`,
+    activity: index < 2 ? "working" : "idle",
+  }));
+  const built = fleet({
+    rail: sessions,
+    projects: [{ id: "p0", name: "Telar" }, { id: "p1", name: "engine" }, { id: "p2", name: "telar-vr" }],
+    lastTurn: Object.fromEntries(
+      sessions.map((one, index) => [
+        one.id,
+        { state: index < 2 ? "running" : "completed", ...(index < 2 ? {} : { endedAt: 10 }), answer: "It concluded something at length, in the sort of paragraph a session writes when it has finished a piece of work and wants to hand it over. ".repeat(4) },
+      ]),
+    ),
+    openRequests: { [sessions[3]!.id]: 1 },
+    since: 100,
+  });
+
+  const answer = await answered(built);
+  expect(JSON.stringify(answer).length).toBeLessThan(3_500);
+  // AND IT STILL ANSWERS THE QUESTION. What is running, what needs me, and the
+  // two rows that moved keep the line that says what they said.
+  expect(answer.sessions).toHaveLength(13);
+  expect(answer.sessions.filter((row) => row.activity === "working")).toHaveLength(2);
+  expect(answer.sessions[0]!.openRequests).toBe(1);
+  expect(answer.sessions.filter((row) => row.lastAnswer !== undefined)).toHaveLength(2);
+  expect(answer.sessions.every((row) => (row.lastAnswer?.length ?? 0) <= 120)).toBe(true);
 });
 
 test("the answer is bounded by rows and by characters, and says what it left out", async () => {
