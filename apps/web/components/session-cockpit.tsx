@@ -279,6 +279,7 @@ function SessionMasthead({
   panel,
   onWatchRun,
   menu,
+  solo = false,
 }: {
   /** Absent for a conversation that belongs to no project (#526) — the
    *  breadcrumb then names Telar rather than linking into a project that is
@@ -317,6 +318,10 @@ function SessionMasthead({
    * menu, no chevron and no right-click.
    */
   menu?: Omit<SessionActionMenuState, "actions"> & { actions: Omit<SessionActionHandlers, "rename"> };
+  /** On the solo route there is no rail to restore, so the restore trigger is
+   *  not offered: a button that reopens a sidebar this route never renders is
+   *  the kind of control that looks broken rather than absent (#576). */
+  solo?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -331,7 +336,11 @@ function SessionMasthead({
    */
   const title = session?.title ?? "New conversation";
   // Whether this header is the window's left edge — see main-sidebar-trigger.
-  const mainIsLeftmost = useMainIsLeftmost();
+  // ON THE SOLO ROUTE IT ALWAYS IS. No rail is rendered there, whatever the
+  // shared provider still remembers about one being open — and asking the
+  // provider would leave the breadcrumb under the traffic lights.
+  const railHidden = useMainIsLeftmost();
+  const mainIsLeftmost = solo || railHidden;
 
   const commit = () => {
     setEditing(false);
@@ -409,8 +418,10 @@ function SessionMasthead({
         <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
           {/* Only mounts while the rail is hidden, leaving the workspace at true
               full width when it is not. The folder glyph stands in for it so the
-              breadcrumb does not shift sideways when the rail opens. */}
-          <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
+              breadcrumb does not shift sideways when the rail opens.
+              NEITHER ON THE SOLO ROUTE: there is no rail to restore, and the
+              glyph only exists to hold the place one would take. */}
+          {!solo && <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />}
           {/* The breadcrumb names the PROJECT, so pressing it lands in that
               project — on its canvas, which is what "this project, right now"
               looks like. It pointed at the retired `/projects` table, which named
@@ -1196,6 +1207,7 @@ export function SessionCockpit({
   projectId,
   sessionId: routeSessionId,
   projectName: serverProjectName,
+  solo = false,
 }: {
   /**
    * WHICH PROJECT THIS SCREEN IS ABOUT — and OPTIONAL since #526.
@@ -1211,6 +1223,28 @@ export function SessionCockpit({
   /** Resolved by the page, so the breadcrumb and the greeting never paint the
    *  raw id first and correct themselves a moment later. */
   projectName?: string;
+  /**
+   * ONE CONVERSATION AND NOTHING ELSE — the headset's route (#576).
+   *
+   * THE RIGHT PANEL IS NEVER MOUNTED HERE, not mounted at zero width and not
+   * hidden by a class: the whole point of the route is that a device with a
+   * WebView to spare does not pay for surfaces it cannot see. The rail is the
+   * shell's to skip (`isSoloRoute` in app-shell.tsx); the panel is this
+   * component's own, and this prop is the only thing that differs from the
+   * ordinary session page.
+   *
+   * SO EVERY GESTURE THAT WOULD OPEN THE PANEL IS WITHDRAWN RATHER THAN
+   * NEUTERED. A file chip, a diff, a sub-agent chip and the panel's own toggle
+   * are all threaded gestures (`RowGestures` in transcript.tsx), and absent
+   * already means "not offered" for every one of them — so on this route they
+   * are simply not handed down, and the chips render as the plain text they
+   * describe instead of as buttons that answer nothing.
+   *
+   * Everything the conversation itself does is untouched: live updates, turn
+   * submission, dictation through `window.telar`, and an inline request's
+   * accept/decline.
+   */
+  solo?: boolean;
 }) {
   /**
    * THE SESSION ID IS STATE, NOT JUST A PROP.
@@ -1435,7 +1469,13 @@ export function SessionCockpit({
   const [editors, setEditors] = useState<Record<string, EditorState>>(() => ({}));
   // Keep the panel MOUNTED through its close animation so the shell can animate
   // out (see RightPanel `open`). `shown` drives the width; `mounted` the DOM.
-  const panelPresence = usePanelPresence(panel.open);
+  //
+  // AND `mounted` IS WHERE THE SOLO ROUTE IS ENFORCED (#576). One gate, at the
+  // one thing that decides whether the panel is in the tree at all, rather than
+  // a check at each of the several places that can ask for it to open: the
+  // restore below can rehydrate `open: true` from an arrangement this session
+  // was left in on the ordinary route, and a chord could ask for it too.
+  const panelPresence = usePanelPresence(!solo && panel.open);
   /**
    * SEEDED FROM THE SERVER when the page could resolve it, which is every case
    * that matters — the canvas. The client read below stays for the session
@@ -2045,18 +2085,34 @@ export function SessionCockpit({
 
   useCommandHandlers(
     {
-      "toggle-panel": () => {
-        if (panelNow.current.open) {
-          updatePanel((current) => ({ ...current, open: false }));
-          return;
-        }
-        makeRoomForPanel();
-        updatePanel((current) => ({ ...current, open: true }));
-      },
-      "panel-next-tab": () => stepPanelTab(1),
-      "panel-previous-tab": () => stepPanelTab(-1),
-      "open-diff": () => showPanelTab("diff"),
-      "open-editor": () => showPanelTab("editor"),
+      /**
+       * NOT BOUND AT ALL ON THE SOLO ROUTE, which is what `deps` is for (see
+       * `useCommandHandlers`): there is no panel to open there, and a chord
+       * that claimed "open the Diff" and produced nothing would be the keyboard
+       * version of the dead button this route is careful not to draw.
+       */
+      ...(solo
+        ? {}
+        : {
+            "toggle-panel": () => {
+              if (panelNow.current.open) {
+                updatePanel((current) => ({ ...current, open: false }));
+                return;
+              }
+              makeRoomForPanel();
+              updatePanel((current) => ({ ...current, open: true }));
+            },
+            "panel-next-tab": () => stepPanelTab(1),
+            "panel-previous-tab": () => stepPanelTab(-1),
+            "open-diff": () => showPanelTab("diff"),
+            "open-editor": () => showPanelTab("editor"),
+            // The two surfaces a project opts into. Bound only while the plugin
+            // is on, so ⇧⌘B on a project with no notebooks does nothing rather
+            // than opening a tab whose surface is not there — hence the
+            // dependency array.
+            ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
+            ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
+          }),
       /**
        * PIN OR UNPIN THE CONVERSATION YOU ARE LOOKING AT (#408).
        *
@@ -2075,13 +2131,8 @@ export function SessionCockpit({
         if (!sessionId) return;
         void patchFromMenu({ settledOverride: pinToggleOverride(session?.settledOverride) }, "Could not change the session's pin.");
       },
-      // The two surfaces a project opts into. Bound only while the plugin is on,
-      // so ⇧⌘B on a project with no notebooks does nothing rather than opening a
-      // tab whose surface is not there — hence the dependency array.
-      ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
-      ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
     },
-    [dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
+    [solo, dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
 
   /**
@@ -2169,6 +2220,11 @@ export function SessionCockpit({
   const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
   const onConversationClick = useCallback(
     (event: React.MouseEvent) => {
+      // ON THE SOLO ROUTE A LINK IS JUST A LINK (#576). Both destinations this
+      // policy has — a forge tab and the session browser's tab — are surfaces
+      // of the right panel, which is not mounted here, so intercepting the
+      // click would swallow it. Left alone, the anchor does what an anchor does.
+      if (solo) return;
       if (!openLinksInSessionBrowser()) return;
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = (event.target as HTMLElement).closest?.("a[href]");
@@ -2202,7 +2258,7 @@ export function SessionCockpit({
         window.open(href, "_blank", "noopener,noreferrer");
       })();
     },
-    [hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
+    [solo, hostId, projectId, sessionId, showPanelTab, showSessionBrowser, updatePanel],
   );
 
   /**
@@ -3399,6 +3455,27 @@ export function SessionCockpit({
    *  every task rather than over the active turn's. */
   const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
 
+  /**
+   * THE ROW GESTURES THAT END IN THE RIGHT PANEL, withheld on the solo route.
+   *
+   * `RowGestures` (transcript.tsx) already states the rule these follow: absent
+   * means the affordance is not rendered, and nothing falls back to a second
+   * route. So a file chip, a sub-agent chip and a tool row's "Open file in the
+   * Editor" are simply not offered here, rather than drawn and then answering
+   * nothing — which is the one thing a chromeless route must not ship.
+   *
+   * `onInsert` is deliberately NOT one of them: quoting a line into the
+   * composer is the conversation's own gesture and works here as anywhere.
+   */
+  const panelGestures = solo
+    ? {}
+    : {
+        onOpenAgent: showAgent,
+        onOpenTab: showPanelTab,
+        onOpenFile: (path: string) => showPanelTab(`file:${path}`),
+        onOpenFileInNewTab: openFileInNewPanelTab,
+      };
+
   return (
     /**
      * THE PANEL IS A COLUMN OF THE ROOM, NOT A SHEET OVER IT.
@@ -3444,23 +3521,29 @@ export function SessionCockpit({
           session={session}
           {...(headerMenu ? { menu: headerMenu } : {})}
           onRename={(next) => void rename(next)}
+          solo={solo}
           // The masthead's Run control hands monitoring back to the panel
-          // through the same opener every other surface uses.
-          onWatchRun={() => showPanelTab("run")}
+          // through the same opener every other surface uses — so on the solo
+          // route it offers no "Watch output", because there is nowhere to
+          // watch it. Starting and stopping the run are unaffected.
+          {...(solo ? {} : { onWatchRun: () => showPanelTab("run") })}
           panel={
             <>
               {/* THE CHECKOUT INSPECTOR NEEDS A CHECKOUT. Absent rather than
                   empty: a panel reporting "no changes" about a repository this
                   conversation does not have would be answering a question
-                  nobody asked. */}
+                  nobody asked. It stays on the solo route — it is a popover of
+                  its own, not a door into the right panel. */}
               {(session?.projectId ?? projectId) !== undefined && <WorkspaceInspector projectId={(session?.projectId ?? projectId)!} />}
-              <RailToggle
-                open={panel.open}
-                onToggle={() => {
-                  makeRoomForPanel();
-                  updatePanel((current) => ({ ...current, open: true }));
-                }}
-              />
+              {!solo && (
+                <RailToggle
+                  open={panel.open}
+                  onToggle={() => {
+                    makeRoomForPanel();
+                    updatePanel((current) => ({ ...current, open: true }));
+                  }}
+                />
+              )}
             </>
           }
         />
@@ -3531,11 +3614,8 @@ export function SessionCockpit({
                 live={turn.runId === active?.runId}
                 requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
-                onOpenAgent={showAgent}
-                onOpenTab={showPanelTab}
                 onInsert={insertIntoComposer}
-                onOpenFile={(path) => showPanelTab(`file:${path}`)}
-                onOpenFileInNewTab={openFileInNewPanelTab}
+                {...panelGestures}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 {...(turn.failureCode === "rate_limited" && turn.state === "failed"
@@ -3613,9 +3693,15 @@ export function SessionCockpit({
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           {...(fresh ? {} : { onResumeAfterRateLimit: (next: boolean) => void setResumeAfterRateLimit(next) })}
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
-          onOpenChanges={() => showPanelTab("diff")}
+          // The composer's foot links its change count to the Diff surface —
+          // a right-panel tab, so on the solo route the count stays a count
+          // rather than becoming a link to nowhere.
+          {...(solo ? {} : { onOpenChanges: () => showPanelTab("diff") })}
         />
       </div>
+      {/* NOT IN THE TREE AT ALL ON THE SOLO ROUTE — `panelPresence` is fed
+          `!solo && panel.open` above, so `mounted` never turns true there and
+          this subtree is never rendered, never measured and never animated. */}
       {panelPresence.mounted && (
         <RightPanel
           open={panelPresence.shown}
