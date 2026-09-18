@@ -45,6 +45,7 @@
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { firstLine } from "../turn-summary";
 import { assistantText } from "./content";
+import { ERA_TURNS, type EraStore, type FoldedTurn } from "./eras";
 
 /** How much of a shapeless result a stub carries. Enough to recognise which
  *  answer it was; nowhere near enough to work from, which is the point — the
@@ -366,32 +367,60 @@ export function isFold(message: BaseMessage): boolean {
  * `FOLD_MARKER`, so a reader can tell the engine's words from anybody's.
  *
  * ── A SUMMARY IS NEVER SUMMARISED, AND IT IS STRUCTURAL ─────────────────────
- * This is a PROJECTION of the raw turns, recomputed from them on every lap and
- * never persisted into the checkpoint — so a fold's output is never a fold's
- * input, and "never re-summarise a summary" is a property of the shape rather
- * than a check that could be forgotten. Any fold message found in the input is
- * therefore stale and is dropped before the turns are read, which is what makes
- * the function idempotent.
+ * This is a PROJECTION of the raw turns and is never persisted INTO THE
+ * CHECKPOINT — so a fold's output is never a fold's input, and "never
+ * re-summarise a summary" is a property of the shape rather than a check that
+ * could be forgotten. Any fold message found in the input is therefore stale and
+ * is dropped before the turns are read, which is what makes the function
+ * idempotent.
  *
  * ── AND THE NEWEST TURNS ARE VERBATIM ───────────────────────────────────────
  * Folding runs oldest first and stops at the LOW-WATER MARK — see
  * `FOLD_TARGET_RATIO` for why that is not the mark that triggered it — and the
  * turn being answered is never folded. A conversation inside its budget comes
  * back untouched, which is every ordinary one.
+ *
+ * ── THE FOLD IS DERIVED ONCE PER TURN, NOT ONCE PER LAP (#599) ──────────────
+ * `eras` is where the settled part of the fold is kept: a run of turns entirely
+ * behind the frontier, holding the line for each and what each weighed. Without
+ * it this function stringifies every message in the conversation to weigh it and
+ * rewrites every folded line, on every lap of every turn — the same old history
+ * folded 119 times on the owner's thread. With it, an era is derived ONCE and
+ * only the tail behind the window is computed fresh. See `./eras.ts`.
+ *
+ * WHAT IS STORED IS THE FOLD, NEVER THE TRANSCRIPT. The rows and the FTS index
+ * are untouched, and `recall` still finds a word that occurs only in a turn old
+ * enough to have been summarised — which is the case the owner named and
+ * `agent-eras.test.ts` proves.
+ *
+ * WITHOUT AN `eras` PORT THIS BEHAVES EXACTLY AS IT DID, and it must: the port
+ * is a cache of a deterministic projection, so the messages it returns and the
+ * turn it stops at cannot depend on whether one was passed. The suite asserts
+ * that equality rather than trusting it.
  */
 export function foldOldTurns(
   messages: readonly BaseMessage[],
-  options: { budgetChars: number; reservedChars?: number },
+  options: { budgetChars: number; reservedChars?: number; eras?: EraStore },
 ): { messages: BaseMessage[]; folded: number } {
   const raw = messages.filter((message) => !isFold(message));
   const reserved = options.reservedChars ?? 0;
+  const turns = splitTurns(raw);
+  /**
+   * WHAT EACH TURN WEIGHS, from the store where the store has it.
+   *
+   * This is the whole saving: a weight is `JSON.stringify` over every message
+   * of a turn, and the turns an era covers are closed forever. One pass, so a
+   * turn is never weighed twice — the loop below subtracts from this array
+   * rather than re-costing what it folds.
+   */
+  const settled = settledTurns(options.eras, turns.length);
+  const weights = turns.map((turn, index) => settled[index]?.chars ?? cost(turn));
   // THE CEILING IS THE TRIGGER AND NOTHING ELSE. A conversation between the two
   // marks is one a previous fold already made room in, and folding it again
   // would spend its history to buy room it has.
-  let verbatim = reserved + cost(raw);
+  let verbatim = reserved + weights.reduce((total, chars) => total + chars, 0);
   if (verbatim <= options.budgetChars) return { messages: [...raw], folded: 0 };
 
-  const turns = splitTurns(raw);
   const target = options.budgetChars * FOLD_TARGET_RATIO;
   const lines: string[] = [];
   let folded = 0;
@@ -401,14 +430,62 @@ export function foldOldTurns(
   // a block's worth above the floor it was aiming at.
   let block = 0;
   while (verbatim + block > target && folded < turns.length - 1) {
-    const turn = turns[folded]!;
-    lines.push(foldedTurnLine(turn));
-    verbatim -= cost(turn);
+    lines.push(settled[folded]?.line ?? foldedTurnLine(turns[folded]!));
+    verbatim -= weights[folded]!;
     block = cost(foldBlock(lines));
     folded += 1;
   }
   if (folded === 0) return { messages: [...raw], folded: 0 };
+  sealAgedEras(options.eras, settled.length, lines, weights, folded);
   return { messages: [...foldBlock(lines), ...turns.slice(folded).flat()], folded };
+}
+
+/**
+ * THE STORED FOLD, FLATTENED ONTO TURN INDICES — one entry per turn an era
+ * already covers, and nothing past it.
+ *
+ * IGNORED WHOLE IF IT REACHES PAST THE CONVERSATION. An era claiming more turns
+ * than the thread has is a store that does not describe this message list, and
+ * the safe reading of that is to derive everything from raw. It should be
+ * impossible — a reset mints a new thread id and archives the file — so this is
+ * the branch that keeps "impossible" from meaning "lines under the wrong
+ * numbers".
+ */
+function settledTurns(eras: EraStore | undefined, turns: number): FoldedTurn[] {
+  if (!eras) return [];
+  const sealed = eras.sealed();
+  const flat = sealed.flatMap((era) => era.turns);
+  return flat.length <= turns ? flat : [];
+}
+
+/**
+ * SEAL EVERY WHOLE ERA THE FOLD HAS NOW PASSED.
+ *
+ * The condition is that ALL of an era's turns were folded — `(ordinal + 1) ·
+ * ERA_TURNS <= folded` — which is what "aged out of the live window" means
+ * here. A partial era is not sealed: its turns are behind the frontier this
+ * lap and the numbers it would store are the same either way, but storing half
+ * an era would break the multiplication `settledTurns` reads it back with.
+ *
+ * Starts at the first unsealed ordinal, so the ones already on disk are never
+ * rewritten — and `seal` ignores a duplicate anyway, which is what makes an era
+ * summarised once rather than summarised once per reader.
+ */
+function sealAgedEras(
+  eras: EraStore | undefined,
+  covered: number,
+  lines: readonly string[],
+  weights: readonly number[],
+  folded: number,
+): void {
+  if (!eras) return;
+  for (let ordinal = Math.floor(covered / ERA_TURNS); (ordinal + 1) * ERA_TURNS <= folded; ordinal += 1) {
+    const from = ordinal * ERA_TURNS;
+    eras.seal({
+      ordinal,
+      turns: Array.from({ length: ERA_TURNS }, (_unused, index) => ({ line: lines[from + index]!, chars: weights[from + index]! })),
+    });
+  }
 }
 
 /** The conversation as turns, each beginning at a human message. Anything
