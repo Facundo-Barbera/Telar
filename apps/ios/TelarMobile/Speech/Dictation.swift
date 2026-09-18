@@ -73,6 +73,11 @@ import Foundation
 
     private let api: EngineAPI
     private let engine = AVAudioEngine()
+    /// WHETHER THE SHARED SESSION IS OURS TO HAND BACK (#623). Lives on the
+    /// object rather than inside a generation, deliberately: a start that
+    /// activated and was then abandoned mid-flight leaves its claim here, where
+    /// the next `stop()` — and `.onDisappear` guarantees one — still finds it.
+    private let claim = AudioSessionClaim()
     private var socket: URLSessionWebSocketTask?
     private var converter: AVAudioConverter?
     /// WHICH DICTATION THIS IS. Starting is asynchronous — a token round trip,
@@ -168,7 +173,11 @@ import Foundation
         // length of a sentence instead of stopping.
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
-        try session.setActive(true, options: [])
+        // TAKEN THROUGH THE CLAIM (#623), so the teardown knows there is
+        // something to give back. Every line below this one can throw, and the
+        // `catch` in `start()` tears down on this same instance — which is what
+        // returns the session on a start that got this far and no further.
+        try claim.take()
 
         // THE LANGUAGE COMES OFF THE TOKEN ANSWER (#560) rather than from a
         // second call to the settings route: this tap already costs one round
@@ -295,9 +304,13 @@ import Foundation
         engine.inputNode.removeTap(onBus: 0)
         converter = nil
         // HANDED BACK, so whatever was ducked comes up again and the next app
-        // to want the microphone is not fighting a session nobody is using.
-        // `.notifyOthersOnDeactivation` is what actually un-ducks them.
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        // to want the microphone is not fighting a session nobody is using —
+        // BUT ONLY ONE WE TOOK (#623). Everything above is unconditional and
+        // must stay so; this is not. `stop()` runs on every exit from a
+        // conversation, dictated in or not, and telling the whole phone to
+        // resume a session this app never activated is what was interrupting
+        // somebody's music.
+        claim.handBack()
     }
 
     /// The Mac's own words where there are some — "no key is configured" names
