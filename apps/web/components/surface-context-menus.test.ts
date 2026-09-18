@@ -364,7 +364,11 @@ describe("the transcript's message and tool rows", () => {
   });
 
   test("Open file in the Editor goes through the cockpit's ONE door, showPanelTab with a file-shaped id", () => {
-    expect(code("session-cockpit.tsx")).toContain("onOpenFile={(path) => showPanelTab(`file:${path}`)}");
+    // WRITTEN AS A FIELD RATHER THAN A JSX PROP SINCE #576: the openers that
+    // end in the right panel are gathered into `panelGestures` so the solo
+    // route can withhold the lot of them at once. The door is unchanged — one
+    // call, one file-shaped id — which is what this test is about.
+    expect(code("session-cockpit.tsx")).toContain("onOpenFile: (path: string) => showPanelTab(`file:${path}`)");
   });
 
   test("every row in a turn gets the SAME gestures, so a live turn and a settled one cannot disagree", () => {
