@@ -15,7 +15,10 @@
  *     a restart, and marking it read moves it exactly once;
  *   - everything the assistant SAYS reaches a row, including the sentence
  *     before a tool call — which `turn_done.detail.text` alone could never
- *     carry, because it holds the turn's last message.
+ *     carry, because it holds the turn's last message;
+ *   - a SPOKEN turn is cheap and not merely short (#603): a shorter wall, three
+ *     laps rather than twelve, a withheld tool that refuses in a sentence
+ *     instead of being silently absent, and a landing that still admits the gap.
  */
 import { expect, test } from "bun:test";
 import fs from "node:fs";
@@ -28,7 +31,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import type { NotificationDetail, WakeKind } from "@telar/engine-client";
 import type { SocketTool } from "../src/mcp-socket";
 import { wakeNotification } from "../src/notification";
-import { AGENT_BRIEF_ANSWER } from "../src/agent/briefing";
+import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "../src/agent/briefing";
 import { AgentRuntime, type AgentStreamEvent } from "../src/agent/runtime";
 import { patchAgentSettings } from "../src/agent/store";
 
@@ -61,6 +64,9 @@ class ScriptedChatModel extends BaseChatModel {
    * after the first call and never answer the question the cap test asks.
    */
   readonly boundLaps: boolean[] = [];
+  /** AND TO WHAT (#603). The spoken wall is a shorter LIST, so "was it bound"
+   *  cannot answer the question — the names are what changed. */
+  readonly boundNames: string[][] = [];
   private boundFor = -1;
   constructor(private readonly script: Step[]) {
     super({});
@@ -68,8 +74,9 @@ class ScriptedChatModel extends BaseChatModel {
   _llmType(): string {
     return "scripted";
   }
-  override bindTools(): this {
+  override bindTools(tools: Parameters<NonNullable<BaseChatModel["bindTools"]>>[0]): this {
     this.boundFor = this.index;
+    this.boundNames.push((tools as ReadonlyArray<{ function?: { name?: string } }>).map((spec) => spec.function?.name ?? ""));
     return this;
   }
   async _generate(messages: BaseMessage[]): Promise<ChatResult> {
@@ -102,7 +109,7 @@ class ScriptedChatModel extends BaseChatModel {
 
 type Landed = { name: string; args: Record<string, unknown>; toolCallId?: string };
 
-function wall(landed: Landed[], overrides: Record<string, (args: Record<string, unknown>) => string> = {}): SocketTool[] {
+function wall(landed: Landed[], overrides: Record<string, (args: Record<string, unknown>) => string> = {}, names?: readonly string[]): SocketTool[] {
   const make = (name: string): SocketTool => ({
     name,
     description: `the ${name} tool`,
@@ -112,7 +119,7 @@ function wall(landed: Landed[], overrides: Record<string, (args: Record<string, 
       return { content: [{ type: "text", text: overrides[name]?.(args) ?? `${name} ok` }] };
     },
   });
-  return ["sessions_list", "sessions_send", "sessions_create", "sessions_read"].map(make);
+  return (names ?? ["sessions_list", "sessions_send", "sessions_create", "sessions_read"]).map(make);
 }
 
 function runtime(script: Step[], tools: SocketTool[], options: { now?: () => number; budgetChars?: number; maxLaps?: number } = {}) {
@@ -1179,6 +1186,179 @@ test("brief asks for a spoken answer, on that turn and no other", async () => {
   expect(String(model.seen[1]![0]!.content)).not.toContain(AGENT_BRIEF_ANSWER);
   const rows = agent.thread({ limit: 200 }).rows.filter((row) => row.kind === "turn_started");
   expect(rows.at(-1)!.detail.brief).toBeUndefined();
+  agent.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * A SPOKEN TURN SHOULD COST LIKE ONE — #603.
+ *
+ * `brief` used to mean one thing: 154 characters asking for a short answer.
+ * The work underneath was identical — full wall, full lap budget — and the
+ * measured result was 221,633 input tokens for a 90-character reply. These
+ * four hold the three things that changed, and the one that must not:
+ *
+ *   - the WALL is shorter on a spoken turn, and the same tools on a typed one;
+ *   - a tool kept off it REFUSES IN A SENTENCE and does not run, which is the
+ *     failure that would be worse than the cost being fixed;
+ *   - a withheld call does not wake anybody for an approval it will refuse;
+ *   - the LAP CAP lands, and the landing still admits the gap — the cap is
+ *     only allowed to exist because the answer it produces is honest.
+ * ------------------------------------------------------------------ */
+
+/** A model that keeps calling a tool it IS allowed on a spoken turn, so the cap
+ *  is what stops it rather than a refusal. Different arguments each lap, for
+ *  `greedy`'s reason: an identical repeat would measure the memo. */
+const greedySpoken = (laps: number, last?: string): Step[] =>
+  Array.from({ length: laps }, (_, index) => ({
+    text: index === 0 ? "let me look." : (index === laps - 1 && last) || "",
+    ...(index === laps - 1 && last
+      ? {}
+      : { toolCalls: [{ id: `call_${index}`, name: "sessions_send", args: { sessionId: `session_${index}`, intent: "report", input: "ping" }, type: "tool_call" as const }] }),
+  }));
+
+test("a spoken turn is bound to the short wall, and the next typed one to all of it", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([{ text: "two are idle." }, { text: "two are idle." }], wall(landed));
+
+  agent.submit({ text: "how are things?", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+  // THE WALL IS THE LEVER: tool specs are the one part of the prompt resent
+  // WHOLE on every lap, so this is the saving that multiplies by lap count.
+  // `sessions_list` and `sessions_read` are off it — one is a second way to do
+  // what `fleet_status` does, the other pages a journal at somebody's ears.
+  expect(model.boundNames[0]).toEqual(["sessions_send", "sessions_create"]);
+
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined && model.seen.length === 2, "the typed turn");
+  // AND IT IS PER TURN, exactly as the sentence is: the written UI is untouched.
+  expect(model.boundNames[1]).toEqual(["sessions_list", "sessions_send", "sessions_create", "sessions_read"]);
+  agent.close();
+});
+
+test("a spoken turn is sent the spoken briefing, and the next typed one the whole paragraph", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([{ text: "two are idle." }, { text: "two are idle." }], wall(landed));
+
+  agent.submit({ text: "how are things?", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+  const spoken = String(model.seen[0]![0]!.content);
+  expect(spoken).toContain(AGENT_SPOKEN_BRIEFING);
+  expect(spoken).not.toContain(AGENT_BRIEFING);
+  // The subset's own clause is here; the four a nine-tool turn makes false are not.
+  expect(spoken).toContain("THIS TURN HOLDS FEWER TOOLS");
+  expect(spoken).not.toContain("YOU HOLD THE SESSIONS WALL AND THE NOTES WALL");
+
+  agent.submit({ text: "and now?" });
+  await until(() => agent.state().runId === undefined && model.seen.length === 2, "the typed turn");
+  // PER TURN, like everything else `brief` touches: the written UI is untouched.
+  expect(String(model.seen[1]![0]!.content)).toContain(AGENT_BRIEFING);
+  agent.close();
+});
+
+test("a tool withheld from a spoken turn refuses in a sentence, and nothing runs", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime(
+    [
+      { text: "", toolCalls: [{ id: "call_1", name: "sessions_read", args: { sessionId: "session_a" }, type: "tool_call" }] },
+      { text: "That one needs the cockpit on the Mac." },
+    ],
+    wall(landed),
+  );
+
+  agent.submit({ text: "read me that session", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+
+  // THE THING THAT WOULD BE WORSE THAN THE COST: a silent absence that lets the
+  // Agent believe and then SAY it did something. It did not run, and both the
+  // model and the transcript are told so in those words.
+  expect(landed).toHaveLength(0);
+  const row = agent.thread({ limit: 200 }).rows.find((one) => one.kind === "tool_call")!;
+  expect(row.detail.status).toBe("failed");
+  expect(String(row.detail.output)).toContain("NOTHING HAPPENED");
+  expect(String(row.detail.output)).toContain("sessions_read");
+  const answered = model.seen.at(-1)!.filter((message) => message.getType() === "tool");
+  expect(String(answered[0]!.content)).toContain("needs the cockpit on the Mac");
+  // AND THE TURN STILL ANSWERS. A refusal is a tool result, never a thrown turn.
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.status).toBe("completed");
+  agent.close();
+});
+
+test("a withheld call that would have been gated wakes nobody", async () => {
+  const landed: Landed[] = [];
+  const { agent } = runtime(
+    [
+      { text: "", toolCalls: [{ id: "call_1", name: "sessions_stop", args: { sessionId: "session_a" }, type: "tool_call" }] },
+      { text: "Stopping one needs the Mac." },
+    ],
+    wall(landed, {}, ["sessions_stop", "sessions_send"]),
+  );
+
+  agent.submit({ text: "stop that one", brief: true });
+  await until(() => agent.state().runId === undefined, "the spoken turn");
+
+  // THE WORST OUTCOME WOULD BE A HANG: a person waiting to HEAR an answer while
+  // the turn is parked on an approval for a call that was never going to run.
+  // So the withheld check sits above the gate, not below it.
+  expect(kinds(agent)).not.toContain("request_opened");
+  expect(agent.state().request).toBeUndefined();
+  expect(landed).toHaveLength(0);
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.status).toBe("completed");
+  agent.close();
+});
+
+test("a spoken turn lands at three laps where a typed one would keep going", async () => {
+  const landed: Landed[] = [];
+  const { agent, model } = runtime([...greedySpoken(6)], wall(landed));
+  agent.submit({ text: "how are things?", brief: true });
+  await until(() => agent.state().runId === undefined, "the capped spoken turn");
+  // Two laps that may look, and a third the cap makes terminal — against the
+  // eleven the owner measured on the headset.
+  expect(model.index).toBe(3);
+  expect(model.boundLaps).toEqual([true, true, false]);
+  expect(landed).toHaveLength(2);
+  expect(agent.thread({ limit: 200 }).rows.at(-1)!.detail.laps).toBe(3);
+  agent.close();
+
+  // THE SAME SCRIPT TYPED IS UNCAPPED at three: `lapCeiling` only lowers, and
+  // only for the turn that asked to be spoken.
+  const typedLanded: Landed[] = [];
+  const typed = runtime([...greedySpoken(6)], wall(typedLanded));
+  typed.agent.submit({ text: "how are things?" });
+  await until(() => typed.agent.state().runId === undefined, "the typed turn");
+  // Six tool laps and a seventh that answers because the SCRIPT ran out — the
+  // typed ceiling of twelve was never the thing that stopped it.
+  expect(typed.model.index).toBe(7);
+  expect(typedLanded).toHaveLength(6);
+  typed.agent.close();
+});
+
+test("the spoken landing asks for the gap INSIDE the one sentence it is allowed", async () => {
+  const landed: Landed[] = [];
+  const answer = "Two are idle and I did not get to the third.";
+  const { agent, model } = runtime([...greedySpoken(3, answer)], wall(landed));
+  agent.submit({ text: "how are things?", brief: true });
+  await until(() => agent.state().runId === undefined, "the capped spoken turn");
+
+  const systems = model.seen.map((messages) => String(messages[0]!.content));
+  expect(systems[0]).not.toContain("out of tool calls");
+  expect(systems[2]).toContain("You are out of tool calls for this turn.");
+  /**
+   * THE CAP IS ONLY ALLOWED TO EXIST BECAUSE OF THIS LINE. #601 refused a cap
+   * that "produces confident answers built on nothing"; what makes this one a
+   * different object is that the last lap asks for the gap. On a SPOKEN turn
+   * the two instructions are in tension — one sentence, and also an admission —
+   * and a model resolving that by dropping the admission is exactly the thing
+   * that was refused. So the spoken landing puts the gap INSIDE the sentence,
+   * and both instructions are in the block that lap sends.
+   */
+  expect(systems[2]).toContain("IN THAT SAME SENTENCE");
+  expect(systems[2]).toContain(AGENT_BRIEF_ANSWER);
+
+  // And the sentence reaches the answer whole — nothing folds, trims or
+  // rewrites the turn's last words on the way to the row a surface speaks.
+  const done = agent.thread({ limit: 200 }).rows.at(-1)!;
+  expect(done.detail.status).toBe("completed");
+  expect(done.detail.text).toBe(answer);
   agent.close();
 });
 

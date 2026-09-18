@@ -79,9 +79,9 @@ import { Annotation, Command, END, MessagesAnnotation, START, StateGraph, interr
 import crypto from "node:crypto";
 import type { AgentSettings, NotificationDetail } from "@telar/engine-client";
 import type { SocketTool } from "../mcp-socket";
-import { agentToolSpecs, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
+import { agentToolSpecs, onSpokenWall, withheldFromSpokenTurn, type AgentFleetCapability, type AgentMemoryCapability } from "./tools";
 import { approvalRequest, DECLINED_ANSWER, needsApproval, readsOnly, type AgentApprovalDecision, type AgentApprovalRequest } from "./approval";
-import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING } from "./briefing";
+import { AGENT_BRIEF_ANSWER, AGENT_BRIEFING, AGENT_SPOKEN_BRIEFING } from "./briefing";
 import { answerOrphanedCalls, compactToolResults, foldOldTurns, minifyToolResult } from "./compact";
 import { assistantText } from "./content";
 import { openAgentCheckpointer, type OpenedCheckpointer } from "./checkpointer";
@@ -126,6 +126,31 @@ import { DEFAULT_AGENT_BUDGET_CHARS, trimAgentHistory } from "./trim";
 const MAX_LAPS = 12;
 
 /**
+ * THE SAME CEILING, MUCH LOWER, FOR A TURN SOMEBODY IS LISTENING TO (#603).
+ *
+ * ── WHY A SPOKEN TURN GETS ITS OWN NUMBER ───────────────────────────────────
+ * Measured on the owner's own history: brief turns spent 2.55 laps each on
+ * average and up to eleven, to produce answers a couple of hundred characters
+ * long — one of them 221,633 input tokens for a 90-character reply. A lap is
+ * the whole prompt and the whole tool wall again, and on a spoken turn it is
+ * also a person standing there waiting with their ears. Three is two chances to
+ * look and one to answer.
+ *
+ * ── IT IS NOT THE CAP #601 REFUSED, AND THE DIFFERENCE IS THE LANDING ───────
+ * "Do not fix this by capping tool calls" was aimed at a cap that produces
+ * confident answers built on nothing. This one cannot: `MAX_LAPS`'s landing
+ * already binds no tools and adds `OUT_OF_LAPS`, which asks for the GAP as well
+ * as the answer — so a spoken turn that runs out says what it did not get to,
+ * out loud, and the person asks again in three seconds. An honest short answer
+ * is a different object from a confident wrong one.
+ *
+ * ── IT ONLY EVER LOWERS ─────────────────────────────────────────────────────
+ * Taken as a `Math.min` against whatever is configured, so a test that asks for
+ * two laps still gets two and this cannot quietly raise anybody's ceiling.
+ */
+const BRIEF_MAX_LAPS = 3;
+
+/**
  * WHAT THE LAST LAP IS TOLD, and it is deliberately one sentence.
  *
  * It rides the SYSTEM block rather than the message list for `AGENT_BRIEF_ANSWER`'s
@@ -137,9 +162,24 @@ const MAX_LAPS = 12;
  * IT ASKS FOR THE GAP AS WELL AS THE ANSWER. "Answer with what you have" alone
  * produces a confident summary of a half-finished look; naming what was not
  * reached is what lets the person decide whether to ask again.
+ *
+ * ── AND ON A SPOKEN TURN THE GAP HAS TO FIT IN THE SENTENCE (#603) ──────────
+ * `AGENT_BRIEF_ANSWER` asks for ONE sentence, and a model reading it beside
+ * "say what you did not get to" can honour both by dropping the second — which
+ * is exactly the confident-answer-built-on-nothing that `BRIEF_MAX_LAPS` is
+ * only allowed to exist because it avoids. So the spoken landing puts the
+ * admission INSIDE the sentence rather than beside it, and the two share their
+ * first clause rather than being two sentences that can drift apart.
  */
-const OUT_OF_LAPS =
-  "You are out of tool calls for this turn. Answer with what you have and say what you did not get to.";
+const OUT_OF_LAPS_OPENING = "You are out of tool calls for this turn. Answer with what you have";
+const OUT_OF_LAPS = `${OUT_OF_LAPS_OPENING} and say what you did not get to.`;
+const OUT_OF_LAPS_SPOKEN = `${OUT_OF_LAPS_OPENING}, and say what you did not get to IN THAT SAME SENTENCE — one sentence that admits the gap, never a confident one that hides it.`;
+
+/** The turn's lap ceiling: whatever is configured, lowered for a spoken turn.
+ *  `Math.min` rather than a choice, so this can only ever take laps away. */
+function lapCeiling(configured: number, brief: boolean | undefined): number {
+  return brief === true ? Math.min(configured, BRIEF_MAX_LAPS) : configured;
+}
 
 /**
  * WHAT A FAILED TURN SAYS WHEN THE ERROR SAID NOTHING (#602).
@@ -1153,8 +1193,12 @@ export class AgentRuntime {
        * bounds the one case the cap does not: a graph rebuilt mid-turn starts
        * its lap count again, and a ceiling that only existed while the counter
        * was trustworthy would not be a ceiling.
+       *
+       * IT FOLLOWS THE SPOKEN CAP DOWN (#603) through the same `lapCeiling` the
+       * node uses, so the backstop stays above the cap rather than seven laps
+       * above it.
        */
-      recursionLimit: (this.options.maxLaps ?? MAX_LAPS) * 2 + 1,
+      recursionLimit: lapCeiling(this.options.maxLaps ?? MAX_LAPS, turn.brief) * 2 + 1,
       signal,
     };
 
@@ -1365,8 +1409,16 @@ export class AgentRuntime {
      *
      * `agentToolSpecs` IS WHERE THE SHAPE IS NARROWED for this one binding —
      * see it for why `$schema` goes and why only here (#563).
+     *
+     * AND ON A SPOKEN TURN THE LIST IS NARROWED TOO (#603): 13,973 bytes of
+     * wall becomes 5,484, on every lap. `context.tools` is untouched — `byName`
+     * below still holds all 25, which is what lets a withheld call be REFUSED
+     * rather than merely missing. See `SPOKEN_WALL`.
      */
-    const specs = agentToolSpecs(context.tools);
+    const specs = agentToolSpecs(context.tools, { spoken: context.brief === true });
+    /** Was this name kept off THIS turn's binding? Asked twice below — once so
+     *  nobody is woken for a call that will be refused, once to refuse it. */
+    const withheld = (name: string): boolean => context.brief === true && byName.has(name) && !onSpokenWall(name);
     /**
      * THE SYSTEM BLOCK, IN FOUR, FROM MOST PERMANENT TO LEAST: the briefing, the
      * orientation, WHAT THE AGENT REMEMBERS, and then the news.
@@ -1400,7 +1452,16 @@ export class AgentRuntime {
      */
     const standing = renderStanding(readStanding(this.paths));
     const system = new SystemMessage(
-      [AGENT_BRIEFING, this.options.orientation?.(), standing, context.digest, context.brief ? AGENT_BRIEF_ANSWER : undefined]
+      [
+        // THE SPOKEN BRIEFING IS THE SAME CLAUSES, TAGGED (#603) — not a second
+        // text. What is dropped is what a spoken turn's nine-tool wall makes
+        // FALSE, plus one clause whose content its tool's own schema carries.
+        context.brief ? AGENT_SPOKEN_BRIEFING : AGENT_BRIEFING,
+        this.options.orientation?.(),
+        standing,
+        context.digest,
+        context.brief ? AGENT_BRIEF_ANSWER : undefined,
+      ]
         .filter(Boolean)
         .join("\n\n"),
     );
@@ -1431,8 +1492,11 @@ export class AgentRuntime {
        * `tool_calls` and routes to END.
        */
       const laps = this.spend ? (this.spend.laps += 1) : 1;
-      const final = laps >= (this.options.maxLaps ?? MAX_LAPS);
-      const prompt = final ? new SystemMessage(`${String(system.content)}\n\n${OUT_OF_LAPS}`) : system;
+      const final = laps >= lapCeiling(this.options.maxLaps ?? MAX_LAPS, context.brief);
+      // THE SPOKEN LANDING IS A DIFFERENT SENTENCE (#603), because the answer it
+      // lands in is one sentence long and the gap has to be inside it.
+      const landing = context.brief ? OUT_OF_LAPS_SPOKEN : OUT_OF_LAPS;
+      const prompt = final ? new SystemMessage(`${String(system.content)}\n\n${landing}`) : system;
       const bound = final ? context.model : context.model.bindTools?.(specs as never) ?? context.model;
       /**
        * THE PRE-MODEL STEP, IN THREE, AND THE ORDER IS THE ARGUMENT.
@@ -1539,6 +1603,11 @@ export class AgentRuntime {
       const decisions = new Map<string, AgentApprovalDecision>();
       for (const call of calls) {
         const args = (call.args ?? {}) as Record<string, unknown>;
+        // A CALL THIS TURN WILL REFUSE IS NOT WORTH WAKING ANYBODY FOR (#603).
+        // Above `needsApproval` because the alternative is the worst outcome in
+        // the issue: a spoken turn parked on an approval for a `sessions_stop`
+        // that was never going to run, with the person waiting to hear an answer.
+        if (withheld(call.name)) continue;
         if (!needsApproval({ name: call.name, args })) continue;
         // AN EFFECT ALREADY ON THE LEDGER IS NOT ASKED ABOUT AGAIN: the person
         // approved this exact call once, nothing new will happen, and waking
@@ -1653,6 +1722,29 @@ export class AgentRuntime {
         calls.map(async (call, index): Promise<{ message: ToolMessage; effect?: [string, string] }> => {
           const id = call.id ?? "";
           const args = (call.args ?? {}) as Record<string, unknown>;
+          /**
+           * A TOOL THIS TURN WAS NOT GIVEN REFUSES IN A SENTENCE (#603).
+           *
+           * FIRST, ABOVE THE LEDGER, AND THE ORDER IS A FORECLOSURE RATHER THAN
+           * A FIX. The ledger replays a committed effect for a byte-identical
+           * call and it OUTLIVES THE TURN THAT MADE IT, so a ledgered call that
+           * were ever withheld would be handed its old answer here and the
+           * Agent would say out loud that it had just done something it had
+           * done last week — the silent absence the issue forbids, arriving
+           * through the one door that is open when a tool is not bound. Today
+           * the two ledgered calls (`sessions_send`, `sessions_create`) are both
+           * ON the spoken wall, so nothing reaches that door; `SPOKEN_WALL` is a
+           * table somebody will edit, which is why this sits above it anyway.
+           *
+           * IT IS A TOOL RESULT AND A ROW, not a throw: the model has to be
+           * able to tell the person, and the transcript has to show that the
+           * model reached for something it did not have.
+           */
+          if (withheld(call.name)) {
+            const refusal = withheldFromSpokenTurn(call.name);
+            this.row("tool_call", context.runId, { name: call.name, toolCallId: id, input: args, output: refusal, status: "failed" });
+            return { message: new ToolMessage({ tool_call_id: id, content: refusal }) };
+          }
           const key = ledgerKey(call.name, args);
           const already = key ? state.effects[key] : undefined;
           if (already !== undefined) {

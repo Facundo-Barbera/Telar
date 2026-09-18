@@ -819,6 +819,116 @@ export function collectAgentTools(walls: AgentWalls): SocketTool[] {
   ];
 }
 
+/* ------------------------------------------------------------------ *
+ * The wall a SPOKEN turn is bound to — #603 lever 2.
+ * ------------------------------------------------------------------ */
+
+/**
+ * WHICH TOOLS A SPOKEN TURN IS GIVEN, AND WHY IT IS A SHORTER LIST.
+ *
+ * ── THE ARITHMETIC THAT MAKES THIS THE FIRST LEVER ──────────────────────────
+ * Tool definitions are the one part of the prompt that is resent WHOLE on every
+ * lap — the history compacts, the system block is one copy, and this array is
+ * not either of those. Measured on the 25 tools the Agent binds: 13,993 bytes,
+ * ×2.55 laps on the median brief turn, on every spoken turn of every day. The
+ * nine below are 5,514. Nothing else on a brief turn is worth 8,479 bytes a lap.
+ *
+ * ── THE RULE, AND IT IS ONE SENTENCE ────────────────────────────────────────
+ * A SPOKEN TURN ANSWERS. It does not page a document and it does not tidy the
+ * rail. So what survives is the reads whose answer can be SAID — a fleet line,
+ * a session's state, what one turn concluded, what is waiting on a person, an
+ * issue's state — plus the three things a spoken sentence can actually be: hand
+ * work to a session, start one, and keep something in mind.
+ *
+ * What that rule removes, and each one is removed for its own reason:
+ *
+ *   · `sessions_read`, `sessions_outline`, `sessions_diff`, the notebook's four
+ *     — THEY PAGE. A journal read aloud is not an answer, and the payload is
+ *     paid for again on every remaining lap of the turn. `sessions_answer` is
+ *     the same question at speakable size and it stays.
+ *   · `sessions_stop`, `sessions_settle`, `sessions_subscribe`,
+ *     `sessions_unsubscribe`, `sessions_resolve_request`, `notes_delete` — THEY
+ *     TIDY THE RAIL. Housekeeping is a thing a person does looking at the list,
+ *     and five of the six are irreversible enough that hearing about them
+ *     afterwards is the wrong order.
+ *   · `sessions_list` and `recall` — A SECOND WAY TO DO SOMETHING ALREADY HERE.
+ *     The briefing already says to call `fleet_status` once for "how are
+ *     things", and `recall` searches a history the prompt is already carrying.
+ *
+ * ── IT FAILS TOWARDS WITHHELD ───────────────────────────────────────────────
+ * A name this table has never heard of is NOT on the spoken wall, and that is
+ * the safe direction: a new tool nobody classified costs a spoken turn one
+ * honest refusal, where the other direction would silently put bytes back on
+ * every lap. `agent-tools.test.ts` pins that every tool the Agent is given has
+ * an entry, so the backstop is a backstop rather than the normal case.
+ *
+ * ── AND ABSENCE IS NEVER SILENT ─────────────────────────────────────────────
+ * A withheld tool is withheld from the BINDING only. It is still on the wall the
+ * runtime dispatches against, and `withheldFromSpokenTurn` is what a call to one
+ * answers with — see `runtime.ts`'s tools node, where that check sits ABOVE the
+ * effect ledger precisely so a `sessions_create` that landed on an earlier typed
+ * turn cannot be replayed into a spoken turn as something this turn did.
+ */
+const SPOKEN_WALL: Readonly<Record<string, "spoken" | "withheld">> = {
+  // The reads whose answer can be said out loud.
+  fleet_status: "spoken",
+  sessions_find: "spoken",
+  sessions_answer: "spoken",
+  sessions_status: "spoken",
+  sessions_requests: "spoken",
+  github_status: "spoken",
+  // The three things a spoken sentence can be.
+  sessions_send: "spoken",
+  sessions_create: "spoken",
+  remember: "spoken",
+  // They page.
+  sessions_read: "withheld",
+  sessions_outline: "withheld",
+  sessions_diff: "withheld",
+  notes_projects: "withheld",
+  notes_list: "withheld",
+  notes_read: "withheld",
+  notes_write: "withheld",
+  // They tidy the rail.
+  sessions_stop: "withheld",
+  sessions_settle: "withheld",
+  sessions_subscribe: "withheld",
+  sessions_unsubscribe: "withheld",
+  sessions_subscriptions: "withheld",
+  sessions_resolve_request: "withheld",
+  notes_delete: "withheld",
+  // A second way to do something already here.
+  sessions_list: "withheld",
+  recall: "withheld",
+};
+
+/** Is this tool bound on a turn that will be spoken aloud? Unknown names are
+ *  not — see `SPOKEN_WALL` for why that is the safe direction. */
+export function onSpokenWall(name: string): boolean {
+  return SPOKEN_WALL[name] === "spoken";
+}
+
+/** Every tool the table has been taught, so a test can hold it against the list
+ *  the Agent is actually given rather than against itself. */
+export function spokenWallTable(): Readonly<Record<string, "spoken" | "withheld">> {
+  return SPOKEN_WALL;
+}
+
+/**
+ * WHAT A WITHHELD TOOL ANSWERS WITH, IF THE MODEL REACHES FOR IT ANYWAY.
+ *
+ * THE FAILURE THIS EXISTS TO PREVENT is not the cost, it is the claim: a call
+ * that returned nothing, or a stale ledger entry, lets the Agent say "done" in
+ * the one sentence the person hears and then walk away. So the answer opens
+ * with what did NOT happen, and closes by telling the model to say so.
+ *
+ * IT NAMES THE MAC because "you cannot do that" with no second half is an answer
+ * a person cannot act on. The tool exists; it is this turn that cannot reach it.
+ */
+export function withheldFromSpokenTurn(name: string): string {
+  return `NOTHING HAPPENED: ${name} is not available on a spoken turn, and no part of it ran. Tell the person, in one sentence, that this one needs the cockpit on the Mac.`;
+}
+
 /**
  * ONE FUNCTION DEFINITION PER TOOL, AS THE MODEL IS BOUND TO THEM.
  *
@@ -840,9 +950,18 @@ export function collectAgentTools(walls: AgentWalls): SocketTool[] {
  *
  * NOTHING THE MODEL CHOOSES FROM IS TOUCHED: names, types, enums, real bounds
  * and `required` all go through exactly as they were.
+ *
+ * ── AND ON A SPOKEN TURN IT IS ALSO SHORTER (#603) ──────────────────────────
+ * `spoken` narrows the LIST rather than the shape — see `SPOKEN_WALL`. It is a
+ * property of the one request, so it is an argument here and not a field on the
+ * wall: the same `SocketTool[]` is bound wide on a typed turn and narrow on a
+ * spoken one, in the same process, seconds apart.
  */
-export function agentToolSpecs(tools: readonly SocketTool[]): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
-  return tools.map((tool) => ({
+export function agentToolSpecs(
+  tools: readonly SocketTool[],
+  options?: { spoken?: boolean },
+): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return (options?.spoken ? tools.filter((tool) => onSpokenWall(tool.name)) : tools).map((tool) => ({
     type: "function" as const,
     function: { name: tool.name, description: tool.description, parameters: forModel(toolInputSchema(tool.shape)) as Record<string, unknown> },
   }));
