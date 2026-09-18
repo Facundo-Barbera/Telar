@@ -476,9 +476,10 @@ describe("sessions_read is bounded", () => {
     const whole = store.readEvents(id, 0);
     expect(whole.length).toBeGreaterThan(50);
 
-    // `from: "start"` IS THE OLD DEFAULT, kept and named (#515). The bare call
-    // now reads the END of the journal — asserted below.
-    const first = await call(tools, "sessions_read", { sessionId: id, from: "start" });
+    // `from: "start"` IS THE OLD DEFAULT, kept and named (#515). `mode:
+    // "events"` is the raw journal, which is no longer the default shape (#608);
+    // within it, the bare call reads the END — asserted below.
+    const first = await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start" });
     const page = first.json!.events as Array<{ id: number }>;
     expect(first.json!.more).toBe(true);
     expect(page.length).toBeLessThanOrEqual(50);
@@ -492,12 +493,12 @@ describe("sessions_read is bounded", () => {
     // Only the rows a page is allowed to drop are missing — `verbose` keeps
     // them, so this walk asks for them and expects every id back.
     const seen: number[] = (
-      (await call(tools, "sessions_read", { sessionId: id, from: "start", verbose: true })).json!.events as Array<{ id: number }>
+      (await call(tools, "sessions_read", { sessionId: id, mode: "events", from: "start", verbose: true })).json!.events as Array<{ id: number }>
     ).map((event) => event.id);
     let cursor = seen.at(-1)!;
     let more = true;
     for (let guard = 0; more && guard < 20; guard++) {
-      const next = await call(tools, "sessions_read", { sessionId: id, after: cursor, verbose: true });
+      const next = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: cursor, verbose: true });
       for (const event of next.json!.events as Array<{ id: number }>) seen.push(event.id);
       cursor = next.json!.cursor as number;
       more = next.json!.more === true;
@@ -515,7 +516,7 @@ describe("sessions_read is bounded", () => {
    * caller ever walked them. The bare call is the one a model actually makes,
    * so the bare call is the one that has to answer the question it means.
    */
-  test("the bare call reads the LATEST page, and says what is behind it", async () => {
+  test("an events read with no cursor reads the LATEST page, and says what is behind it", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
@@ -524,7 +525,7 @@ describe("sessions_read is bounded", () => {
       store.stopTurn(id);
     }
     const whole = store.readEvents(id, 0);
-    const latest = await call(tools, "sessions_read", { sessionId: id });
+    const latest = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     const page = latest.json!.events as Array<{ id: number }>;
     expect(page.length).toBeGreaterThan(0);
     // The page ENDS at the journal's end — that is what "latest" means.
@@ -546,7 +547,7 @@ describe("sessions_read is bounded", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
-    const read = await call(tools, "sessions_read", { sessionId: id, verbose: true });
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
     expect(read.json!.earlier).toBe(false);
     expect((read.json!.events as Array<{ id: number }>).map((event) => event.id)).toEqual(store.readEvents(id, 0).map((event) => event.id));
   });
@@ -571,12 +572,12 @@ describe("sessions_read is bounded", () => {
       { kind: "usage", usage: { tokens: { input: 1, output: 1, cacheRead: 0, cacheCreate: 0 }, contextUsed: 2, contextMax: 10 } },
     ]);
 
-    const quiet = await call(tools, "sessions_read", { sessionId: id });
+    const quiet = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     const types = (quiet.json!.events as Array<{ type: string }>).map((event) => event.type);
     expect(types).not.toContain("usage.updated");
     expect(quiet.json!.quietEvents).toBeGreaterThan(0);
 
-    const loud = await call(tools, "sessions_read", { sessionId: id, verbose: true });
+    const loud = await call(tools, "sessions_read", { sessionId: id, mode: "events", verbose: true });
     expect((loud.json!.events as Array<{ type: string }>).map((event) => event.type)).toContain("usage.updated");
     expect(loud.json!.quietEvents).toBeUndefined();
   });
@@ -600,7 +601,51 @@ describe("sessions_read is bounded", () => {
     expect(turns.at(-1)!.asked).toBe("line 7");
     expect(summary.json!.events).toBeUndefined();
     // Smaller than the events it stands in for, which is the entire point.
-    expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id })).text.length);
+    expect(summary.text.length).toBeLessThan((await call(tools, "sessions_read", { sessionId: id, mode: "events" })).text.length);
+  });
+
+  /**
+   * ── AND THE FOLD IS WHAT A BARE CALL GETS (#608) ──────────────────────────
+   *
+   * Measured: 8,568 characters of raw events on one turn, 9,107 and 12,953 on
+   * two others — one of them reporting `quietEvents: 69`, sixty-nine rows the
+   * tool had already judged not worth showing, inside a payload charged in full.
+   * Every one of those questions was "what has this session been doing", which
+   * is the shape below and a fifth of the size.
+   */
+  test("the bare call is the summary, and the raw journal has to be asked for", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+    for (let lap = 0; lap < 8; lap++) {
+      await call(tools, "sessions_send", { intent: "task", sessionId: id, input: `line ${lap}` });
+      store.stopTurn(id);
+    }
+    const bare = await call(tools, "sessions_read", { sessionId: id });
+    expect(bare.json!.mode).toBe("summary");
+    expect(bare.json!.events).toBeUndefined();
+    // The description says so too — it is what a model reads while choosing.
+    expect(tools.get("sessions_read")!.description).toContain("by default a turn-by-turn summary");
+    expect(tools.get("sessions_read")!.description).toContain('mode: events');
+
+    // A CURSOR DOES NOT SILENTLY BUY THE EVENTS SHAPE BACK. The measured waste
+    // carried `after: 4100` on a turn that had made no read to get a cursor
+    // from, so "has an `after`" is not evidence that raw events were wanted.
+    // It still narrows WHICH events the summary's "did" lines are drawn from.
+    const withCursor = await call(tools, "sessions_read", { sessionId: id, after: 0 });
+    expect(withCursor.json!.mode).toBe("summary");
+
+    const raw = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
+    expect(raw.json!.mode).toBeUndefined();
+    expect((raw.json!.events as unknown[]).length).toBeGreaterThan(0);
+    expect(bare.text.length).toBeLessThan(raw.text.length);
+
+    // A RUN-SCOPED READ IS UNTOUCHED — a wake names a run, and that read was
+    // never the waste. It wins over the default outright.
+    const runId = store.turns(id).at(-1)!.runId;
+    const scoped = await call(tools, "sessions_read", { sessionId: id, runId });
+    expect(scoped.json!.mode).toBeUndefined();
+    expect(scoped.json!.runId).toBe(runId);
   });
 
   test("a run-scoped read answers with THAT turn's events and its final text, without paging", async () => {
@@ -813,12 +858,12 @@ describe("sessions_read is bounded", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one" });
-    const read = await call(tools, "sessions_read", { sessionId: id });
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     expect(read.json!.runId).toBeUndefined();
     expect(read.json!.result).toBeUndefined();
     expect((read.json!.events as unknown[]).length).toBeGreaterThan(0);
     // An explicit cursor is still a forward walk from exactly there.
-    const forward = await call(tools, "sessions_read", { sessionId: id, after: 0 });
+    const forward = await call(tools, "sessions_read", { sessionId: id, mode: "events", after: 0 });
     expect(forward.json!.from).toBe(0);
   });
 
@@ -828,7 +873,7 @@ describe("sessions_read is bounded", () => {
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "x".repeat(60_000) });
 
-    const read = await call(tools, "sessions_read", { sessionId: id });
+    const read = await call(tools, "sessions_read", { sessionId: id, mode: "events" });
     const text = read.text;
     // The clamp says where it happened rather than truncating silently.
     expect(text).toContain("more characters, not shown");

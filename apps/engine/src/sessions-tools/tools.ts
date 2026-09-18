@@ -250,7 +250,33 @@ const REQUESTS = `What a session is WAITING on — its open requests, with the i
 
 const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. Recorded as answered BY A SESSION. Only answer what you actually know; a secret pick is refused. ${NOT_A_BYPASS}`;
 
-const READ = `What a session has done: by default the latest page of its journal. runId answers ONE turn. Never assume a page is the whole story.`;
+/**
+ * IT DEFAULTED TO THE EXPENSIVE HALF OF ITS OWN JOB (#608).
+ *
+ * ── WHAT WAS MEASURED ───────────────────────────────────────────────────────
+ * 8,568 characters on one turn, 9,107 and 12,953 on two others — and one of
+ * those reported `quietEvents: 69`, sixty-nine rows the tool itself had judged
+ * not worth showing inside a payload charged at full price. The question behind
+ * every one of them was "what has this session been doing", and `mode:
+ * "summary"` answers exactly that in 2,000–4,000.
+ *
+ * ── SO THE FOLD IS THE DEFAULT AND THE JOURNAL IS THE ASK ───────────────────
+ * The bare call is the one a model makes when a peer has been working and it
+ * wants to know what came of it; raw events are for debugging a run's tool
+ * trace, which is a real need and now a named one. `runId` is untouched and
+ * still wins outright — a wake names a run, and that read was never the waste.
+ *
+ * ── IT IS A BREAK, AND DELIBERATELY NOT A NARROW ONE ────────────────────────
+ * This wall is bound by every session driver and every MCP client, not only by
+ * the Agent, so the default flips for all of them. Scoping the change to a bare
+ * call — leaving `after` on the events shape as a "continuation" — was tried on
+ * paper and rejected: the measured call WAS `{after: 4100, limit: 14}`, from a
+ * turn that had made no previous read to get a cursor from. A default that
+ * depends on which arguments happen to be present is also one no description can
+ * state in a sentence. `after` still narrows which events the summary's "did"
+ * lines are drawn from, so it is honoured rather than ignored.
+ */
+const READ = `What a session has done: by default a turn-by-turn summary. runId answers ONE turn; mode: events for the raw journal, which is long.`;
 
 const STATUS = `Working, waiting on a person, or idle, and how recent turns ended. The cheap "is it finished yet", before sessions_read. Changes nothing.`;
 
@@ -971,18 +997,18 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         verbose: z
           .boolean()
           .optional()
-          .describe("Keep usage rows and policy-resolved requests, dropped by default."),
+          .describe("Keep usage rows and policy-resolved requests."),
         mode: z
           .enum(["events", "summary"])
           .optional()
-          .describe('One line per recent turn instead of raw events.'),
+          .describe("Default summary; events is the raw journal."),
         turns: z
           .number()
           .int()
           .min(1)
           .max(SUMMARY_TURNS_MAX)
           .optional()
-          .describe(`With mode summary. Default ${SUMMARY_TURNS_DEFAULT}.`),
+          .describe(`Default ${SUMMARY_TURNS_DEFAULT}.`),
         runId: z
           .string()
           .min(1)
@@ -993,7 +1019,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .int()
           .min(0)
           .optional()
-          .describe("Continue the answer from this offset; the reply says how many remain."),
+          .describe("Continue the answer from this offset."),
         messageAfter: z
           .number()
           .int()
@@ -1006,6 +1032,10 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         const askedAfter = typeof args.after === "number" && Number.isSafeInteger(args.after) && args.after >= 0 ? args.after : undefined;
         const after = askedAfter ?? 0;
         const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : undefined;
+        /** THE FOLD UNLESS THE RAW JOURNAL WAS ASKED FOR — see `READ` (#608).
+         *  Named here rather than compared inline because three places below
+         *  branch on it, and "the default" is the thing that changed. */
+        const mode: "events" | "summary" = args.mode === "events" ? "events" : "summary";
         const verbose = args.verbose === true;
         const limit =
           typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit >= 1 ? Math.min(args.limit, MAX_EVENTS) : MAX_EVENTS;
@@ -1192,7 +1222,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
          * has no turns to summarise and says so rather than returning an empty
          * list a caller would read as "this session has done nothing".
          */
-        if (args.mode === "summary") {
+        if (mode === "summary") {
           const wanted =
             typeof args.turns === "number" && Number.isSafeInteger(args.turns) && args.turns >= 1
               ? Math.min(args.turns, SUMMARY_TURNS_MAX)

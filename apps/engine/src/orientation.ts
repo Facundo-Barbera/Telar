@@ -150,12 +150,13 @@ name the exact next call.
   of conversations is ordinary and almost all of them are shelved.
 - \`sessions_status\` is the cheap "is it finished yet": an activity, a turn
   count, and the last few turns. Ask it before you read anything.
-- \`sessions_read\` answers the LATEST page by default, which is what "what has
-  it been doing" means. \`mode: "summary"\` folds recent turns to a line each —
-  what it was asked, what it did, how it answered — and is usually the right
-  first read of a long session. \`from: "start"\` reads from the beginning;
-  \`after\` walks forward from a cursor; \`verbose: true\` restores the token
-  counts and auto-approved requests that are dropped by default.
+- \`sessions_read\` FOLDS by default: recent turns, a line each — what it was
+  asked, what it did, how it answered — which is what "what has it been doing"
+  means, and a fifth of the size of the journal it stands in for. \`mode:
+  "events"\` is the raw journal, for debugging a run's tool trace; within it,
+  \`from: "start"\` reads from the beginning, \`after\` walks forward from a
+  cursor, and \`verbose: true\` restores the token counts and auto-approved
+  requests that are dropped by default.
 - **A wake or a peer's message is a PING.** It names a session and a run and
   carries no body. \`sessions_read(sessionId, runId)\` fetches the whole thing —
   the answer, and a peer's message in full — and long ones come back in verbatim

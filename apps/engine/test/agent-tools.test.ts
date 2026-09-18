@@ -24,6 +24,7 @@ import {
   agentFleetTools,
   agentQueryTools,
   agentToolSpecs,
+  answerIdentity,
   collectAgentTools,
   onSpokenWall,
   spokenWallTable,
@@ -259,11 +260,14 @@ test("the spoken wall is the saving, and it is paid on every lap", () => {
    * for the reason the test above this one gives: prose may move, the tax may
    * not come back.
    *
-   * THE WIDE ONE HAS SEVEN CHARACTERS OF HEADROOM and that is not a typo. #601
-   * spent nearly all of it on `FLEET_STATUS`; the next sentence added to any
-   * tool description on this wall will fail this line, which is the ceiling
-   * doing its job. Retire something or argue the number up deliberately — do
-   * not nudge it to fit one more clause.
+   * THE WIDE ONE HAD SEVEN CHARACTERS OF HEADROOM and now has 47, which is not
+   * slack that was found — it was bought. #608 needed `sessions_read` to say
+   * that it folds by default and `sessions_answer` that its limit is a floor,
+   * and paid for both out of `sessions_read`'s own parameters: four
+   * descriptions whose second halves were already stated by the answers those
+   * calls return. The ceiling was NOT raised, and the rule it enforces is
+   * unchanged — retire something or argue the number up deliberately, never
+   * nudge it to fit one more clause.
    */
   expect(wide).toBeLessThan(14_000);
   expect(spoken).toBeLessThan(6_000);
@@ -420,6 +424,96 @@ test("both sessions_answer misses tell the model to stop rather than to retry", 
 
   // Both still say WHICH session missed: a batch of reads needs pairing.
   for (const sentence of [none, wrong]) expect(sentence).toContain("session_a");
+});
+
+/**
+ * THE FIRST CALL IS THE WHOLE ANSWER WHERE THE ANSWER FITS (#608).
+ *
+ * Measured: 20,273 characters fetched across eight overlapping windows for a
+ * 6,127-character answer; 15,384 over 7 calls for one of 3,556; and an
+ * 883-character answer read five times at limits 2500/4000/4000/3000/4000. Every
+ * one of those asked for LESS than the 8,000 default, so a bigger default would
+ * have changed none of them — the number had to stop being a way to ask for a
+ * smaller page.
+ */
+test("a limit under the default is served the default, so the first call is the whole answer", async () => {
+  const asked: Array<{ from: number; limit: number }> = [];
+  const whole = "x".repeat(6_127);
+  const tools = collectTools(agentQueryTools as never, {
+    ...noQueries(),
+    answer: async (_id: string, options: { from: number; limit: number }) => {
+      asked.push(options);
+      const text = whole.slice(options.from, options.from + options.limit);
+      const more = options.from + text.length < whole.length;
+      return { runId: "run_1", sequence: 1, text, from: options.from, totalChars: whole.length, more, ...(more ? { next: options.from + text.length } : {}) };
+    },
+  } as never);
+  const answer = (args: Record<string, unknown>) => tools.find((tool) => tool.name === "sessions_answer")!.run(args);
+
+  const first = await answer({ sessionId: "session_a", limit: 2_500 });
+  // THE STORE WAS ASKED FOR THE FLOOR, not for what the model guessed.
+  expect(asked[0]!.limit).toBe(8_000);
+  const body = JSON.parse(String((first.content[0] as { text: string }).text)) as { text: string; more: boolean; totalChars: number; note: string };
+  expect(body.text).toHaveLength(6_127);
+  expect(body.more).toBe(false);
+  // AND IT SAYS SO IN WORDS. `more` and `totalChars` have been in this reply
+  // since #516 and nothing read them.
+  expect(body.note).toContain("That is the whole answer (6127 characters)");
+  expect(body.note).toContain("do not read this run again");
+
+  // ABOVE THE FLOOR THE NUMBER IS THE CALLER'S AGAIN — a genuinely long answer
+  // is still paged, and the reply hands over the exact next call.
+  const long = "y".repeat(40_000);
+  const paged = collectTools(agentQueryTools as never, {
+    ...noQueries(),
+    answer: async (_id: string, options: { from: number; limit: number }) => {
+      const text = long.slice(options.from, options.from + options.limit);
+      const more = options.from + text.length < long.length;
+      return { runId: "run_2", sequence: 1, text, from: options.from, totalChars: long.length, more, ...(more ? { next: options.from + text.length } : {}) };
+    },
+  } as never);
+  const page = await paged.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_b", limit: 20_000 });
+  const first20k = JSON.parse(String((page.content[0] as { text: string }).text)) as { text: string; more: boolean; note: string };
+  expect(first20k.text).toHaveLength(20_000);
+  expect(first20k.more).toBe(true);
+  expect(first20k.note).toContain("Characters 0-20000 of 40000");
+  expect(first20k.note).toContain("from: 20000");
+
+  // AND IT PARSED AT ALL, which is the defect that read above found: `json()`
+  // clamps at 16,000 and this tool will hand over 64,000, so a caller taking the
+  // tool at its word used to get JSON cut off mid-string. The slices are
+  // verbatim by contract — see `ANSWER_MAX_CHARS`.
+  const whole64k = await paged.find((tool) => tool.name === "sessions_answer")!.run({ sessionId: "session_b", limit: 64_000 });
+  const everything = JSON.parse(String((whole64k.content[0] as { text: string }).text)) as { text: string; more: boolean };
+  expect(everything.text).toHaveLength(40_000);
+  expect(everything.more).toBe(false);
+});
+
+/**
+ * THE IDENTITY THE TURN'S MEMO KEYS ON — the RESOLVED pair, not the arguments.
+ * `runtime.ts` owns the memo; this owns what a reply looks like, and the pairing
+ * is what keeps a field rename from silently turning the dedup off.
+ */
+test("a sessions_answer reply names the run it resolved to, and whether it is finished", () => {
+  const reply = (fields: Record<string, unknown>) => JSON.stringify({ runId: "run_1", more: false, ...fields });
+
+  // AN OMITTED runId IS A RESOLUTION THE STORE MADE — worth remembering as "the
+  // latest". A named one says nothing about which turn is newest.
+  expect(answerIdentity("sessions_answer", { sessionId: "session_a" }, reply({}))).toEqual({ sessionId: "session_a", runId: "run_1", latest: true, whole: true });
+  expect(answerIdentity("sessions_answer", { sessionId: "session_a", runId: "run_1" }, reply({}))).toEqual({
+    sessionId: "session_a", runId: "run_1", latest: false, whole: true,
+  });
+
+  // A HALF-READ RUN IS NOT FINISHED, which is what keeps a caller paging a long
+  // answer from being handed a pointer in the middle of it.
+  expect(answerIdentity("sessions_answer", { sessionId: "session_a" }, reply({ more: true }))?.whole).toBe(false);
+
+  // ANYTHING IT CANNOT READ IS SIMPLY NOT MEMOISED: another tool, a missing
+  // session, an error answer that is not JSON, a reply with no runId.
+  expect(answerIdentity("fleet_status", { sessionId: "session_a" }, reply({}))).toBeUndefined();
+  expect(answerIdentity("sessions_answer", {}, reply({}))).toBeUndefined();
+  expect(answerIdentity("sessions_answer", { sessionId: "session_a" }, "Could not read the answer from \"session_a\": …")).toBeUndefined();
+  expect(answerIdentity("sessions_answer", { sessionId: "session_a" }, JSON.stringify({ more: false }))).toBeUndefined();
 });
 
 test("a store failure that is not one of the two misses is passed through unchanged", async () => {
@@ -731,4 +825,50 @@ test("the answer is bounded by rows and by characters, and says what it left out
 test("an empty fleet answers a list rather than an error", async () => {
   const answer = await answered(fleet());
   expect(answer).toEqual({ sessions: [], total: 0 });
+});
+
+/**
+ * WHY `sessions_status` IS NOT NEEDED FOR A SESSION THIS JUST LISTED (#608).
+ *
+ * Measured repeatedly — four occurrences in one stretch of the log at ~4,200
+ * characters — `sessions_status` called on a session `fleet_status` had just
+ * described. Not a duplicate any memo can catch: two tools, two shapes, both
+ * correct. What was missing is that nothing SAID the row already carried the
+ * answer, so this holds that the row does carry it and that the reply says so.
+ *
+ * AND THAT THEY ARE NOT MERGED, deliberately: `sessions_status` is on the shared
+ * sessions wall, bound by every session driver and MCP client, none of which has
+ * a fleet for this tool's three sources to read — and it genuinely holds one
+ * thing a row does not, which the sentence names rather than hides.
+ */
+test("a fleet row IS that session's status, and the answer says so where the choice is made", async () => {
+  const built = fleet({
+    rail: [
+      { id: "session_working", title: "mid-turn", activity: "working" },
+      { id: "session_blocked", title: "parked on a question", activity: "blocked" },
+    ],
+    lastTurn: { session_working: { state: "running", answer: "the last thing it said" }, session_blocked: { state: "completed", endedAt: 5, answer: "asked" } },
+    openRequests: { session_blocked: 1 },
+    since: 1,
+  });
+  const answer = await answered(built);
+
+  // EVERYTHING `sessions_status` ANSWERS IS ALREADY IN THE ROW: is it running,
+  // is it waiting on a person, and how the last turn ended.
+  const working = answer.sessions.find((row) => row.id === "session_working")!;
+  expect(working.activity).toBe("working");
+  expect(working.lastTurn!.state).toBe("running");
+  const blocked = answer.sessions.find((row) => row.id === "session_blocked")!;
+  expect(blocked.activity).toBe("blocked");
+  expect(blocked.openRequests).toBe(1);
+
+  // SAID IN WORDS, on the call that made the question possible — a description
+  // is resent on every lap, this is paid once.
+  expect(answer.note).toContain("A row IS that session's status");
+  // AND THE ONE THING IT DOES NOT CARRY IS NAMED, so the sentence is a routing
+  // rule rather than a claim the narrow read is redundant.
+  expect(answer.note).toContain("only adds its turn rows");
+
+  // An empty fleet says nothing: there is no row to mistake for a status.
+  expect((await answered(fleet())).note).toBeUndefined();
 });
