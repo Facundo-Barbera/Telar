@@ -49,7 +49,7 @@ import { notesTools, PREVIEW_CHARS, type NotesCapability } from "../notes-tools/
 import { sessionsTools, type SessionsCapability } from "../sessions-tools/tools";
 import { err, failure, json, type ToolFactory } from "../tool-kit";
 import { TURN_ANSWER_NONE, TURN_ANSWER_NO_SUCH_RUN } from "../state";
-import { SECTION_CHARS, STANDING_SECTION_KEYS, type StandingSection } from "./memory";
+import { CROWDED_CHARS, SECTION_CHARS, STANDING_CHARS, STANDING_SECTION_KEYS, type RememberResult, type StandingSection } from "./memory";
 import type { AgentRecallHit } from "./thread-log";
 import { head } from "../turn-summary";
 import type { GitHubIssueDetail, GitHubIssueRead, GitHubPullDetail, GitHubPullRead } from "@telar/engine-client";
@@ -541,8 +541,9 @@ export function agentFleetTools(tool: ToolFactory, capability: AgentFleetCapabil
  * and a test drives these two with two functions and no graph.
  */
 export type AgentMemoryCapability = {
-  /** Replace one section of the standing document. Empty text clears it. */
-  remember(section: StandingSection, text: string): { sections: Partial<Record<StandingSection, string>> };
+  /** Replace one section of the standing document. Empty text clears it, and a
+   *  text over `SECTION_CHARS` is refused rather than clipped. */
+  remember(section: StandingSection, text: string): RememberResult;
   /** Search this thread's own rows. */
   recall(query: string, limit: number): AgentRecallHit[];
 };
@@ -550,9 +551,57 @@ export type AgentMemoryCapability = {
 const RECALL_LIMIT_DEFAULT = 8;
 const RECALL_LIMIT_MAX = 25;
 
+/**
+ * THE SHEDDING RULE IS IN THE DESCRIPTION, AND IT WAS PAID FOR IN KIND (#607).
+ *
+ * This wall is resent WHOLE on every lap and `agent-tools.test.ts` holds it
+ * under 14,000 characters, with seven to spare. #607 must not spend those:
+ * raising a per-lap cost to fix a per-call one is the trade backwards.
+ *
+ * So the sentence that had to arrive — "settled things come OUT" — was paid for
+ * by tightening this description and the two argument descriptions below it,
+ * and the wall measures 13,993 / 5,514 after the change exactly as it did
+ * before. Nothing was nudged.
+ *
+ * It belongs here rather than only in the answer because it is a NORM, not
+ * news: the Agent needs it while composing the text, and an answer arrives
+ * after the text has been written.
+ */
 const REMEMBER =
-  "Rewrite one section of what you hold across turns. It is always in your prompt and never in the conversation, so it " +
-  "survives older turns being folded away. One section at a time — the other three are untouched. Empty text clears a section.";
+  "Rewrite one section of what you hold across turns — in your prompt, not the conversation, so it outlives folded turns. " +
+  "One at a time; the others are untouched, and empty text clears one. Settled things come OUT: delete the line, never mark " +
+  "it resolved.";
+
+/**
+ * WHAT A WRITE SAYS BACK, and it is deliberately not the note (#607).
+ *
+ * The Agent has what it just wrote — echoing it back is the caller paying twice
+ * for its own sentence. What it does NOT have is how big the note has become,
+ * so that is what it gets.
+ */
+const REMEMBERED = "Rewritten. It is in your prompt from the next lap onwards.";
+
+/** The same, once the note is big enough to be worth pruning — `CROWDED_CHARS`
+ *  argues the threshold. Names the fix, because "it is large" is not actionable
+ *  and "delete the settled lines" is. */
+const CROWDED = (standing: number) =>
+  `Rewritten. Your whole note is now ${standing} of ${STANDING_CHARS} characters and rides in your prompt on EVERY turn — ` +
+  `go through it and DELETE what is settled, rather than marking it resolved.`;
+
+/**
+ * THE REFUSAL, and it carries what the section holds.
+ *
+ * Long, and that is the point: an error the Agent cannot act on in one lap is
+ * an error it will hit again at ~30,000 input tokens a try. It names what is
+ * held now, what was sent, by how much it is over, and what to do — so the
+ * rewrite needs neither a read nor a guess.
+ */
+const tooLong = (result: Extract<RememberResult, { written: false }>) =>
+  `NOTHING WAS WRITTEN. "${result.section}" still holds exactly what it held. You sent ${result.sent} characters and a section ` +
+  `holds ${result.limit} — ${result.over} over.\n\n` +
+  `Do not shorten the new line: take SETTLED lines out. A line saying something is resolved, done, merged or already sent is a ` +
+  `line to delete, not to keep. Here is what the section holds right now, so send it back with those gone:\n\n` +
+  (result.holding || "(nothing — the section is empty, so the text you sent is simply too long on its own)");
 
 const RECALL =
   "Search THIS conversation's own history — what you and the person said, and what your tools answered — including turns " +
@@ -566,13 +615,20 @@ export function agentMemoryTools(tool: ToolFactory, capability: AgentMemoryCapab
       {
         section: z
           .enum(STANDING_SECTION_KEYS as [StandingSection, ...StandingSection[]])
-          .describe("doing: what you are working on. who: which session is on what. questions: what you are waiting to hear. preferences: how this person wants to be worked with."),
-        text: z.string().describe(`The section's whole new text — it REPLACES what was there. Clipped at ${SECTION_CHARS} characters.`),
+          .describe("doing: what you are working on. who: which session is on what. questions: what you await. preferences: how this person likes to work."),
+        text: z.string().describe(`The section's whole new text — it REPLACES what was there. Over ${SECTION_CHARS} is refused, nothing written.`),
       },
       async (args) => {
         try {
-          const state = capability.remember(args.section as StandingSection, typeof args.text === "string" ? args.text : "");
-          return json({ sections: state.sections, note: "Rewritten. It is in your prompt from the next lap onwards." });
+          const result = capability.remember(args.section as StandingSection, typeof args.text === "string" ? args.text : "");
+          if (!result.written) return err(tooLong(result));
+          return json({
+            section: result.section,
+            chars: result.chars,
+            others: result.others,
+            standing: result.standing,
+            note: result.standing > CROWDED_CHARS ? CROWDED(result.standing) : REMEMBERED,
+          });
         } catch (error) {
           return err(`Could not remember that: ${failure(error)}`);
         }

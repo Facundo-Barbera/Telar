@@ -5,8 +5,12 @@
  *
  *   - `remember` replaces ONE section and leaves the other three alone, which
  *     is the whole reason there are sections;
- *   - a section is clipped and MARKED, so the document has a ceiling by
- *     arithmetic rather than by a check somebody could forget;
+ *   - a write ANSWERS with that section alone and never the document (#607) —
+ *     the echo made `remember` the biggest consumer of the Agent's context;
+ *   - a write over the section's budget is REFUSED, atomically and out loud,
+ *     never clipped in silence, and one rewrite gets through;
+ *   - the read path still clips, because a file outlives its build — and it
+ *     COUNTS what it dropped, per `tool-kit.ts`'s rule;
  *   - the standing state is in the SYSTEM PROMPT and never in the transcript;
  *   - `recall` finds a row the prompt no longer carries, and finds it whether
  *     this sqlite has fts5 or not;
@@ -23,13 +27,16 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { ChatResult } from "@langchain/core/outputs";
 import {
   clipSection,
+  CROWDED_CHARS,
   preferencesOf,
   readStanding,
   rememberSection,
   renderStanding,
   SECTION_CHARS,
+  standingChars,
   STANDING_CHARS,
   STANDING_SECTION_KEYS,
+  type RememberResult,
 } from "../src/agent/memory";
 import { agentPaths } from "../src/agent/store";
 import { AgentRuntime } from "../src/agent/runtime";
@@ -65,19 +72,136 @@ test("empty text clears a section rather than storing an empty one", () => {
   expect(readStanding(paths).sections.questions).toBeUndefined();
 });
 
-test("a section too long is clipped and says so", () => {
+/* ------------------------------------------------------------------ *
+ * The budget: refused on the way in, clipped-and-counted on the way out.
+ * ------------------------------------------------------------------ */
+
+const written = (result: RememberResult) => {
+  if (!result.written) throw new Error(`expected a write, got a refusal of ${result.sent} characters`);
+  return result;
+};
+const refused = (result: RememberResult) => {
+  if (result.written) throw new Error("expected a refusal, got a write");
+  return result;
+};
+
+test("a write over the section budget is refused, and refused ATOMICALLY", () => {
+  const paths = agentPaths(root());
+  rememberSection(paths, "doing", "Coordinating #541.");
+
+  const result = refused(rememberSection(paths, "doing", "x".repeat(SECTION_CHARS + 1)));
+  expect(result.sent).toBe(SECTION_CHARS + 1);
+  expect(result.limit).toBe(SECTION_CHARS);
+  expect(result.over).toBe(1);
+  // What it holds rides back, so the rewrite does not cost a read as well.
+  expect(result.holding).toBe("Coordinating #541.");
+  // NOTHING WAS WRITTEN — not a clipped version, not an empty one.
+  expect(readStanding(paths).sections.doing).toBe("Coordinating #541.");
+});
+
+test("a refusal is followed by a rewrite that gets through — it cannot loop", () => {
+  const paths = agentPaths(root());
+  rememberSection(paths, "doing", ["#541 part F", "#576 RESOLVED", "#563 RESOLVED"].join("\n"));
+
+  const no = refused(rememberSection(paths, "doing", "z".repeat(SECTION_CHARS + 200)));
+  // The error is actionable on its own: it says what is held, so the second
+  // attempt is composed from `holding` with the settled lines struck out.
+  const shorter = no.holding.split("\n").filter((line) => !line.includes("RESOLVED")).join("\n");
+  const yes = written(rememberSection(paths, "doing", shorter));
+  expect(yes.chars).toBe("#541 part F".length);
+  expect(readStanding(paths).sections.doing).toBe("#541 part F");
+});
+
+test("exactly at the budget is a write; one character over is not", () => {
+  const paths = agentPaths(root());
+  expect(written(rememberSection(paths, "doing", "a".repeat(SECTION_CHARS))).chars).toBe(SECTION_CHARS);
+  expect(refused(rememberSection(paths, "who", "a".repeat(SECTION_CHARS + 1))).over).toBe(1);
+});
+
+test("the read path still clips — and COUNTS what it dropped, never silently", () => {
   const clipped = clipSection("x".repeat(SECTION_CHARS * 3));
-  expect(clipped.length).toBeLessThanOrEqual(SECTION_CHARS);
-  expect(clipped).toContain("clipped");
+  expect(clipped.text.length).toBeLessThanOrEqual(SECTION_CHARS);
+  expect(clipped.dropped).toBeGreaterThan(SECTION_CHARS);
+  // The count is in the mark, so a reader of the document knows how much went.
+  expect(clipped.text).toContain(`${clipped.dropped} characters dropped`);
+  // And text that fits is returned untouched, at no cost.
+  expect(clipSection("  short  ")).toEqual({ text: "short", dropped: 0 });
+});
+
+test("a memory.json holding an over-long section still renders inside the ceiling", () => {
+  const paths = agentPaths(root());
+  fs.mkdirSync(paths.dir, { recursive: true });
+  // What an older build — or a person with an editor — can leave behind.
+  fs.writeFileSync(
+    path.join(paths.dir, "memory.json"),
+    JSON.stringify({ version: 1, sections: Object.fromEntries(STANDING_SECTION_KEYS.map((key) => [key, "y".repeat(SECTION_CHARS * 4)])) }),
+  );
+  const rendered = renderStanding(readStanding(paths))!;
+  expect(rendered.length).toBeLessThanOrEqual(STANDING_CHARS);
+  expect(rendered).toContain("characters dropped");
 });
 
 test("four full sections still fit the document's stated ceiling", () => {
   const paths = agentPaths(root());
-  for (const key of STANDING_SECTION_KEYS) rememberSection(paths, key, "y".repeat(SECTION_CHARS * 2));
+  for (const key of STANDING_SECTION_KEYS) rememberSection(paths, key, "y".repeat(SECTION_CHARS));
   const rendered = renderStanding(readStanding(paths))!;
   expect(rendered.length).toBeLessThanOrEqual(STANDING_CHARS);
   // Every section is in it — the cap is per section, so none was dropped.
   for (const key of STANDING_SECTION_KEYS) expect(rendered).toContain("y".repeat(50));
+});
+
+test("the document's bound holds across many turns, on a fixture rather than by assertion", () => {
+  const paths = agentPaths(root());
+  let lines: string[] = [];
+  let refusals = 0;
+  // Two hundred turns of an Agent that only ever APPENDS — #607's actual
+  // failure, where every settled item became a "RESUELTO: #NNN" line.
+  for (let turn = 0; turn < 200; turn += 1) {
+    lines.push(`#${600 + turn} ${turn % 3 === 0 ? "RESUELTO" : "in flight"} — a line of roughly the length these really are`);
+    const result = rememberSection(paths, "doing", lines.join("\n"));
+    if (!result.written) {
+      refusals += 1;
+      // What the Agent is told to do, done: settled lines OUT.
+      lines = lines.filter((line) => !line.includes("RESUELTO"));
+      // And if that is still not enough, the oldest go until it fits.
+      while (!rememberSection(paths, "doing", lines.join("\n")).written) lines.shift();
+    }
+    expect(standingChars(readStanding(paths))).toBeLessThanOrEqual(STANDING_CHARS);
+    expect((readStanding(paths).sections.doing ?? "").length).toBeLessThanOrEqual(SECTION_CHARS);
+  }
+  // It really did hit the wall repeatedly — otherwise this proves nothing.
+  expect(refusals).toBeGreaterThan(1);
+  // And it came back DOWN, which is the half of #607 that was missing: the
+  // document was measured 448 → 3,698 and never once smaller.
+  expect((readStanding(paths).sections.doing ?? "").length).toBeLessThan(SECTION_CHARS);
+});
+
+test("writing the same section twice with identical text does not grow the document", () => {
+  const paths = agentPaths(root());
+  const text = "Coordinating #541, #563 and #607.";
+  const first = written(rememberSection(paths, "doing", text));
+  const second = written(rememberSection(paths, "doing", text));
+  expect(second.chars).toBe(first.chars);
+  expect(second.standing).toBe(first.standing);
+  expect(readStanding(paths).sections.doing).toBe(text);
+});
+
+test("a write answers with its own section's size and the others' sizes, never their text", () => {
+  const paths = agentPaths(root());
+  rememberSection(paths, "who", "session_a is on the dictation work.");
+  rememberSection(paths, "preferences", "Small PRs, conventional commits.");
+
+  const result = written(rememberSection(paths, "doing", "Coordinating #541."));
+  expect(result.section).toBe("doing");
+  expect(result.chars).toBe("Coordinating #541.".length);
+  expect(result.others).toEqual({
+    who: "session_a is on the dictation work.".length,
+    preferences: "Small PRs, conventional commits.".length,
+  });
+  // `doing` is not in `others` — it is the one that was written.
+  expect(Object.keys(result.others)).not.toContain("doing");
+  // The whole rendered document, which is what it costs on every turn.
+  expect(result.standing).toBe(standingChars(readStanding(paths)));
 });
 
 test("an empty document renders nothing at all", () => {
@@ -132,31 +256,103 @@ test("the two memory tools are on the wall, and only when the Agent brought them
     sessions: noSessions(),
     notes: noNotes(),
     query: noQueries(),
-    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+    memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   }).map((tool) => tool.name);
   expect(withMemory.slice(-2)).toEqual(["remember", "recall"]);
   const without = collectAgentTools({ sessions: noSessions(), notes: noNotes(), query: noQueries() }).map((tool) => tool.name);
   expect(without).not.toContain("remember");
 });
 
-test("remember refuses nothing and answers with what the document now holds", async () => {
-  const written: Array<[string, string]> = [];
+/** The wall over one real document, so a tool answer can be measured. */
+function memoryWall(paths: ReturnType<typeof agentPaths>) {
   const tools = collectAgentTools({
     sessions: noSessions(),
     notes: noNotes(),
     query: noQueries(),
-    memory: {
-      remember: (section, text) => {
-        written.push([section, text]);
-        return { sections: { [section]: text } };
-      },
-      recall: () => [],
-    },
+    memory: { remember: (section, text) => rememberSection(paths, section, text), recall: () => [] },
   });
-  const answer = await tools.find((tool) => tool.name === "remember")!.run({ section: "doing", text: "coordinating #541" });
-  expect(written).toEqual([["doing", "coordinating #541"]]);
-  expect(answer.isError).toBeUndefined();
-  expect(String((answer.content[0] as { text: string }).text)).toContain("coordinating #541");
+  const remember = tools.find((tool) => tool.name === "remember")!;
+  return async (section: string, text: string) => {
+    const answer = await remember.run({ section, text });
+    return { isError: answer.isError === true, text: String((answer.content[0] as { text: string }).text) };
+  };
+}
+
+/** A note of the shape #607 measured: the other three sections near enough
+ *  full, so the document is the ~3.7 KB the issue found in the log. */
+const FILLED = 880;
+const filled = (lead: string) => lead.padEnd(FILLED, ".").slice(0, FILLED);
+
+function fullNote(paths: ReturnType<typeof agentPaths>) {
+  rememberSection(paths, "who", filled("session_a is on #576. session_b is on #563. session_c idle."));
+  rememberSection(paths, "questions", filled("Waiting on the owner about part C of #541."));
+  rememberSection(paths, "preferences", filled("Small PRs. Conventional commits. Ask before pushing."));
+}
+
+test("a single-section write answers with that section alone — the whole note is not echoed", async () => {
+  const paths = agentPaths(root());
+  fullNote(paths);
+  const call = memoryWall(paths);
+
+  const answer = await call("doing", "Coordinating #541 and #607.");
+  expect(answer.isError).toBe(false);
+  const body = JSON.parse(answer.text) as { section: string; chars: number; others: Record<string, number>; standing: number; note: string };
+
+  expect(body.section).toBe("doing");
+  expect(body.chars).toBe("Coordinating #541 and #607.".length);
+  // LENGTHS, NOT TEXT. The three sections it did not touch are numbers.
+  expect(body.others).toEqual({ who: FILLED, questions: FILLED, preferences: FILLED });
+  for (const other of ["session_a is on #576", "Waiting on the owner", "Conventional commits"]) {
+    expect(answer.text).not.toContain(other);
+  }
+});
+
+test("the answer is a small fraction of the note it wrote into", async () => {
+  const paths = agentPaths(root());
+  fullNote(paths);
+  const answer = await memoryWall(paths)("doing", "Coordinating #541 and #607.");
+  const note = standingChars(readStanding(paths));
+
+  // #607 measured 3,686 characters returned to write one section. The whole
+  // note is still that big — the ANSWER is what shrank.
+  expect(note).toBeGreaterThan(2_000);
+  expect(answer.text.length).toBeLessThan(note / 5);
+  expect(answer.text.length).toBeLessThan(500);
+});
+
+test("a write over the budget is an ERROR the model can act on, not a silent clip", async () => {
+  const paths = agentPaths(root());
+  rememberSection(paths, "doing", "#541 part F\n#576 RESUELTO");
+  const call = memoryWall(paths);
+
+  const answer = await call("doing", "q".repeat(SECTION_CHARS + 50));
+  expect(answer.isError).toBe(true);
+  expect(answer.text).toContain("NOTHING WAS WRITTEN");
+  expect(answer.text).toContain(String(SECTION_CHARS + 50));
+  expect(answer.text).toContain("50 over");
+  // It carries what the section holds, which is what makes one rewrite enough.
+  expect(answer.text).toContain("#576 RESUELTO");
+  expect(readStanding(paths).sections.doing).toBe("#541 part F\n#576 RESUELTO");
+
+  // And the rewrite lands.
+  const second = await call("doing", "#541 part F");
+  expect(second.isError).toBe(false);
+  expect(readStanding(paths).sections.doing).toBe("#541 part F");
+});
+
+test("a crowded note is told it is crowded, and told what to do about it", async () => {
+  const paths = agentPaths(root());
+  const call = memoryWall(paths);
+
+  const roomy = JSON.parse((await call("doing", "Coordinating #541.")).text) as { standing: number; note: string };
+  expect(roomy.standing).toBeLessThan(CROWDED_CHARS);
+  expect(roomy.note).not.toContain("DELETE");
+
+  fullNote(paths);
+  const crowded = JSON.parse((await call("doing", "Coordinating #541 and #607.")).text) as { standing: number; note: string };
+  expect(crowded.standing).toBeGreaterThan(CROWDED_CHARS);
+  expect(crowded.note).toContain("DELETE what is settled");
+  expect(crowded.note).toContain(String(crowded.standing));
 });
 
 /* ------------------------------------------------------------------ *

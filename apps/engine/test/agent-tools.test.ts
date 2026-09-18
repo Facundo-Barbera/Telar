@@ -86,7 +86,7 @@ test("every tool the Agent is given is classified as a read or a lander", () => 
     query: noQueries(),
     fleet: emptyFleet(),
     github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
-    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+    memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   }).map((tool) => tool.name);
   const classified = new Set(classifiedTools());
   for (const name of whole) expect(classified.has(name)).toBe(true);
@@ -209,7 +209,7 @@ test("the bound tool array stays well under what it was, with every tool still o
     query: noQueries(),
     fleet: emptyFleet(),
     github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
-    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+    memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   });
   expect(whole).toHaveLength(25);
   expect(JSON.stringify(agentToolSpecs(whole)).length).toBeLessThan(14_000);
@@ -226,7 +226,7 @@ const wholeWall = () =>
     query: noQueries(),
     fleet: emptyFleet(),
     github: { issue: async () => ({ unavailable: "not_found" }), pull: async () => ({ unavailable: "not_found" }), projects: async () => [] },
-    memory: { remember: () => ({ sections: {} }), recall: () => [] },
+    memory: { remember: (section) => ({ written: true, section, chars: 0, others: {}, standing: 0 }), recall: () => [] },
   });
 
 test("a spoken turn is bound to nine tools, and the exclusions are the named ones", () => {

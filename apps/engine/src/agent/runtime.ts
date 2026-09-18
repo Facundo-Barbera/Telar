@@ -849,7 +849,11 @@ export class AgentRuntime {
    */
   memory(): AgentMemoryCapability {
     return {
-      remember: (section, text) => ({ sections: rememberSection(this.paths, section, text, this.now).sections }),
+      // HANDED STRAIGHT THROUGH (#607). This used to reshape the write into
+      // `{ sections }` — the whole document, echoed back to confirm one
+      // sentence the caller had just written. The result now says which section
+      // and how big, and the wall turns that into an answer.
+      remember: (section, text) => rememberSection(this.paths, section, text, this.now),
       recall: (query, limit): AgentRecallHit[] => {
         const threadId = readAgentSettings(this.paths).threadId;
         if (!threadId) return [];
