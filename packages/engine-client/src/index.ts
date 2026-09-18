@@ -538,7 +538,12 @@ export type DictationTokenAnswer = {
  *                     budgetChars, folded, laps }` — `text` is the turn's ANSWER,
  *                     the same words as its last assistant row. Two readers, two
  *                     shapes: a list view renders this without replaying the
- *                     thread. The meter fields are `AgentLastUsage`'s, written
+ *                     thread. ON A `failed` TURN both `message` and `text` carry
+ *                     the reason and neither is ever empty (#602): a failure that
+ *                     told the person nothing had them re-ask and pay twice, so
+ *                     the reader that folds the log draws `message` and the one
+ *                     that cannot — a voice client — still has an answer to give.
+ *                     The meter fields are `AgentLastUsage`'s, written
  *                     on EVERY ending (completed, stopped, failed) because a
  *                     turn that spent its tokens and then failed still spent
  *                     them. A row written before the meter existed carries none

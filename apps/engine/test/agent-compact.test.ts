@@ -627,3 +627,123 @@ test("a call that was answered is left exactly as it was, and a partial answer s
   // is not a fact the API cares about.
   expect(repaired.slice(2, 4).map((m) => (m as ToolMessage).tool_call_id).sort()).toEqual(["call_a", "call_b"]);
 });
+
+/* ------------------------------------------------------------------ *
+ * The whole pre-model step, at the size the cluster failed at — #602.
+ *
+ * ── WHAT THE ISSUE MEASURED, AND WHY A UNIT TEST WAS NOT ENOUGH ─────────────
+ * Three consecutive turns died on the same 400 — "an assistant message with
+ * 'tool_calls' must be followed by tool messages" — at contextChars 64,697 /
+ * 64,769 / 64,821, each having folded 38 turns, immediately after a turn that
+ * burned 306,913 input tokens and died on the recursion limit. That death is
+ * what leaves the dangling call in the checkpoint, and `answerOrphanedCalls`
+ * repairs it.
+ *
+ * But the repair is the FIRST of four steps, and the two after it rearrange the
+ * list: the fold replaces whole turns with a pair of messages, and the trim
+ * drops blocks off the top. Proving the repair alone says nothing about what is
+ * finally SENT. So this drives the real order — repair, compact, fold, trim —
+ * at the fold depth and prompt size the cluster reported, and asserts the one
+ * property the provider actually checks.
+ * ------------------------------------------------------------------ */
+
+/** The provider's rule, both directions: no call goes unanswered, and no result
+ *  answers a call that is not above it. Returns the first breach, so a failure
+ *  names what is wrong rather than just that something is. */
+function pairingFault(messages: readonly BaseMessage[]): string | undefined {
+  const asked_ = new Set<string>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.getType() === "ai") {
+      const answers = new Set<string>();
+      for (let next = index + 1; next < messages.length && messages[next]!.getType() === "tool"; next += 1) {
+        answers.add((messages[next] as ToolMessage).tool_call_id);
+      }
+      for (const call of (message as AIMessage).tool_calls ?? []) {
+        if (!call.id) continue;
+        if (!answers.has(call.id)) return `call ${call.id} at ${index} is followed by no result`;
+        asked_.add(call.id);
+      }
+      continue;
+    }
+    if (message.getType() !== "tool") continue;
+    const id = (message as ToolMessage).tool_call_id;
+    if (!asked_.has(id)) return `result at ${index} answers ${id}, which nothing above it asked for`;
+  }
+  return undefined;
+}
+
+/**
+ * THE CHECKPOINT THE CLUSTER INHERITED: a long conversation whose LAST turn
+ * ended between the model asking for a tool and the tools node answering, with
+ * the person's next question directly underneath.
+ *
+ * The old turns are small and the recent ones heavy, which is what a real
+ * conversation looks like once `compactToolResults` has been over the old laps —
+ * and it is what puts the fold depth and the prompt size in the band the issue
+ * measured.
+ */
+function threadWithADeadCall(): BaseMessage[] {
+  const messages: BaseMessage[] = [];
+  for (let turn = 0; turn < 40; turn += 1) {
+    messages.push(human(`older question ${turn}`));
+    messages.push(asked(`call_old_${turn}`, "sessions_find"));
+    messages.push(answered(`call_old_${turn}`, JSON.stringify({ sessions: [{ id: `session_${turn}` }], note: "x".repeat(1_400) })));
+    messages.push(new AIMessage(`answer ${turn}`));
+  }
+  for (let turn = 0; turn < 5; turn += 1) {
+    messages.push(human(`recent question ${turn}`));
+    messages.push(asked(`call_recent_${turn}`, "sessions_answer"));
+    messages.push(answered(`call_recent_${turn}`, JSON.stringify({ events: [{ id: turn }], body: "y".repeat(11_800) })));
+    messages.push(new AIMessage(`recent answer ${turn}`));
+  }
+  // THE DEATH. `sessions_answer` was asked for and never ran — the turn hit the
+  // recursion limit between the two supersteps — so the checkpoint ends with an
+  // assistant message carrying a call and no result under it.
+  messages.push(human("dame el resumen completo"));
+  messages.push(asked("call_dead", "sessions_answer"));
+  // And the person asks the next question into that.
+  messages.push(human("Hola, ¿cómo estás?"));
+  return messages;
+}
+
+/** `callModel`'s pre-model step, in its real order. Kept as one function so the
+ *  test cannot accidentally prove something about a different sequence than the
+ *  runtime runs. */
+function preModel(messages: readonly BaseMessage[], options: { repair: boolean; budgetChars: number; reservedChars: number }) {
+  const repaired = options.repair ? answerOrphanedCalls(messages) : [...messages];
+  const folded = foldOldTurns(compactToolResults(repaired), options);
+  const history = trimAgentHistory(folded.messages, options);
+  return { ...history, folded: folded.folded };
+}
+
+test("at the size the cluster failed at, everything the prompt sends is still a matched pair", () => {
+  const budgetChars = 120_000;
+  const reservedChars = AGENT_BRIEFING.length;
+  const messages = threadWithADeadCall();
+
+  // BEFORE THE FIX: the same fixture, the same three steps after it, and the
+  // breach the provider refused with a 400 is right there in what would be sent.
+  const broken = preModel(messages, { repair: false, budgetChars, reservedChars });
+  expect(pairingFault(broken.messages)).toContain("call_dead");
+
+  // AFTER: nothing to refuse, and the repair survives the fold and the trim.
+  const sent = preModel(messages, { repair: true, budgetChars, reservedChars });
+  expect(pairingFault(sent.messages)).toBeUndefined();
+  // The dead call is answered by the line that says so rather than quietly
+  // dropped — the model is told the look never happened.
+  const excuse = sent.messages.find((message) => message.getType() === "tool" && (message as ToolMessage).tool_call_id === "call_dead");
+  expect(contentOf(excuse!)).toBe(ORPHANED_CALL_RESULT);
+  // And the person's question is still the last thing in it.
+  expect(contentOf(sent.messages.at(-1)!)).toBe("Hola, ¿cómo estás?");
+
+  // AT THE MEASURED SIZE, which is what makes this the cluster's fixture rather
+  // than a small hand-made list: a deep fold, and a prompt in the 64k band the
+  // three failures reported against a 120k budget.
+  expect(sent.folded).toBeGreaterThan(25);
+  expect(sent.chars).toBeGreaterThan(50_000);
+  expect(sent.chars).toBeLessThan(80_000);
+  // The trim is a backstop and should not have fired at all — everything the
+  // fold left fits, so nothing fell off the top.
+  expect(sent.dropped).toBe(0);
+});
