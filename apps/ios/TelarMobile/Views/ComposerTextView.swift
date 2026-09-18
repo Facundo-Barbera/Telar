@@ -72,7 +72,7 @@ struct ComposerTextView: UIViewRepresentable {
         context.coordinator.focused = $focused
         context.coordinator.caretRect = caretRect
         view.onPaste = onPaste
-        if view.text != text { view.text = text }
+        context.coordinator.sync(view, to: text)
 
         let font = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: fontSize))
         if view.font != font {
@@ -81,10 +81,9 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         // THE DIM GOES ON AFTER THE TEXT, and only when there is a run to dim
-        // (#561). A field whose `attributedText` is rewritten on every keystroke
-        // loses the selection and the undo stack, so the plain `view.text` path
-        // above stays the one every ordinary edit takes — this touches the field
-        // only while a dictation is actually revising something.
+        // (#561). It is an ATTRIBUTE edit and nothing else — see
+        // `applyInterim` — so it runs after the sync above without undoing what
+        // that just told the keyboard.
         view.tintColor = listening ? UIColor(Theme.accent) : nil
         view.applyInterim(interim, font: font, color: UIColor(Theme.text))
         if view.placeholderLabel.text != placeholder {
@@ -140,15 +139,67 @@ struct ComposerTextView: UIViewRepresentable {
         var wantsFocus = false
         /// Where to report the caret, when anybody is drawing beside it (#561).
         var caretRect: Binding<CGRect?>?
+        /// THE DRAFT THIS FIELD ITSELF PUBLISHED, last time it did (#624). The
+        /// whole of the echo guard: see `sync`.
+        private var published: String?
+        /// AN EXTERNAL WRITE IS IN PROGRESS, so the delegate callbacks it
+        /// provokes are this class talking to itself. `replace(_:withText:)`
+        /// reports back the way a keystroke does — unlike the assignment it
+        /// replaces, which reported nothing — and those reports arrive inside
+        /// SwiftUI's own update pass, which is not a place to write state.
+        private var applying = false
 
         init(text: Binding<String>, focused: Binding<Bool>) {
             self.text = text
             self.focused = focused
         }
 
+        /// PUT THE BINDING'S DRAFT IN THE FIELD AS AN EDIT (#624), rather than
+        /// as a new buffer.
+        ///
+        /// Three things are declined rather than applied, and each is a bug
+        /// the old one-line assignment had:
+        ///
+        /// MID-COMPOSITION, NOTHING IS WRITTEN. A marked range is the keyboard
+        /// half-way through a word — a Pinyin syllable, a Japanese reading, a
+        /// dictation the system itself is revising — and text arriving under it
+        /// ends the composition somewhere the person did not choose. The write
+        /// is DROPPED, not deferred: the composition finishes, this field's own
+        /// `textViewDidChange` pushes what the person actually typed back into
+        /// the binding, and the next dictation frame sees a draft it did not
+        /// write and re-merges against it (`DictationDraftWriter`). Deferring
+        /// would mean replaying a value that was computed before the person
+        /// finished the word, on top of the word they finished.
+        ///
+        /// A LATE ECHO IS NOT AN EDIT. The field publishes each keystroke into
+        /// the binding and the binding comes back a render later; if the person
+        /// typed again in between, that stale value would arrive here as a
+        /// difference and undo the newer keystroke. A draft this field
+        /// published is one the field already has, or has since moved past.
+        ///
+        /// AN UNCHANGED DRAFT IS NOT WORTH A ROUND TRIP through the input
+        /// machinery, which is most update passes — SwiftUI calls
+        /// `updateUIView` for state that has nothing to do with the text.
+        func sync(_ view: ComposerUITextView, to next: String) {
+            guard view.text != next, next != published, view.markedTextRange == nil else { return }
+            applying = true
+            let moved = view.apply(next)
+            applying = false
+            guard moved else { return }
+            // THE CARET MOVED AND SOMETHING MAY BE DRAWN BESIDE IT (#561), but
+            // not from inside the update pass — the same reason the
+            // first-responder work below hops to the next turn of the loop.
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let view else { return }
+                report(view)
+            }
+        }
+
         func textViewDidChange(_ textView: UITextView) {
-            if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !textView.text.isEmpty
+            guard !applying else { return }
+            published = textView.text
+            if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             report(textView)
         }
 
@@ -169,6 +220,7 @@ struct ComposerTextView: UIViewRepresentable {
         /// The caret moved without the text changing — an arrow key on a
         /// hardware keyboard, a tap, a selection drag.
         func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !applying else { return }
             report(textView)
         }
 
@@ -217,17 +269,78 @@ final class ComposerUITextView: UITextView {
         )
     }
 
+    /**
+     SOMEBODY ELSE'S DRAFT, APPLIED AS AN EDIT (#624).
+
+     `text = string` hands UIKit a new buffer and tells the keyboard nothing:
+     the marked range, the inline prediction and the correction context all go,
+     and because the assignment does not travel through `UITextInputDelegate`
+     the keyboard never learns they went. It keeps correcting against the
+     sentence it last saw. That is the whole of this issue — worst under
+     dictation only because an interim transcript rewrites the draft several
+     times a second, so the keyboard's context was being thrown away between
+     one word and the next.
+
+     So: find the run that actually differs and replace THAT, bracketed by the
+     two calls that tell the keyboard to resync. `textWillChange` /
+     `textDidChange` are the notifications UIKit sends itself when it edits the
+     buffer, and an edit made from outside has to send them by hand or the
+     keyboard is left holding a stale typing context — the same bug in a
+     smaller range.
+
+     Answers whether anything changed, so the caller can skip the work that
+     only matters when it did.
+     */
+    @discardableResult func apply(_ next: String) -> Bool {
+        guard let edit = ComposerTextEdit.replacement(from: text, to: next) else { return false }
+        guard let start = position(from: beginningOfDocument, offset: edit.range.location),
+              let end = position(from: start, offset: edit.range.length),
+              let span = textRange(from: start, to: end)
+        else {
+            // A RANGE THE FIELD WILL NOT MAKE is not a reason to leave the draft
+            // and the box disagreeing. Falling back to the assignment costs the
+            // keyboard's context for one write, which is what every write used
+            // to cost.
+            text = next
+            dimmed = nil
+            return true
+        }
+        let selection = selectedRange
+        inputDelegate?.textWillChange(self)
+        replace(span, withText: edit.text)
+        inputDelegate?.textDidChange(self)
+        // THE CARET STAYS WHERE THE PERSON PUT IT unless the edit ran over it.
+        // `replace` leaves it after the inserted text, which is right for a
+        // dictation appending at the tail and wrong for one appending while
+        // somebody is fixing a typo three words back.
+        if let kept = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text) {
+            selectedRange = kept
+        }
+        // THE TEXT MOVED UNDER THE DIM, so what is drawn dim has to be worked
+        // out again — the cache below is about frames where nothing moved.
+        dimmed = nil
+        return true
+    }
+
     /// WHICH RUN IS CURRENTLY DRAWN DIM, so an unchanged frame does no work.
     private var dimmed: Range<Int>?
 
     /**
      THE WORDS STILL BEING REVISED, DRAWN DIMMER (#561).
 
-     REWRITING `attributedText` MOVES THE SELECTION, so it is put back by hand
-     around the write. That is the whole reason this is guarded on `dimmed`
-     rather than applied every pass: interim frames arrive several times a
-     second, and a field that re-attributed itself on each one would fight the
-     caret the person is typing at.
+     COLOUR ONLY, ON THE STORAGE THE FIELD ALREADY HAS (#624). This used to
+     build a whole `NSAttributedString` from `text` and assign `attributedText`,
+     which is the same wholesale replacement `apply` exists to avoid — it reset
+     the keyboard's correction context on every interim frame, which on the
+     dictation path is several times a second. An attribute edit changes no
+     characters, so the marked range, the inline prediction and the correction
+     context all survive it, and the selection does not need putting back by
+     hand because nothing moved it.
+
+     It stays guarded on `dimmed` all the same: interim frames are frequent and
+     re-attributing a paragraph that is already drawn right is work for nothing.
+     `apply` clears that cache when it moves the text, which is the one thing
+     that can make a still-correct-looking span wrong.
 
      `typingAttributes` IS RESET AFTERWARDS. Without it the dim is sticky — the
      next character somebody types inherits the attributes at the insertion
@@ -235,8 +348,8 @@ final class ComposerUITextView: UITextView {
      their own words coming out grey.
      */
     func applyInterim(_ run: Range<Int>?, font: UIFont, color: UIColor) {
+        let count = (text as NSString).length
         let clamped = run.flatMap { span -> Range<Int>? in
-            let count = (text as NSString).length
             let lower = min(max(0, span.lowerBound), count)
             let upper = min(max(lower, span.upperBound), count)
             return lower < upper ? lower ..< upper : nil
@@ -245,22 +358,18 @@ final class ComposerUITextView: UITextView {
         dimmed = clamped
 
         let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        let selection = selectedRange
+        textStorage.beginEditing()
+        // BACK TO PLAIN FIRST, so the run that stopped being unconfirmed a
+        // frame ago is repainted rather than left grey.
+        textStorage.setAttributes(base, range: NSRange(location: 0, length: count))
         if let clamped {
-            let drawn = NSMutableAttributedString(string: text, attributes: base)
-            drawn.addAttribute(
+            textStorage.addAttribute(
                 .foregroundColor,
                 value: color.withAlphaComponent(0.45),
                 range: NSRange(location: clamped.lowerBound, length: clamped.count)
             )
-            attributedText = drawn
-        } else {
-            // BACK TO PLAIN, rather than to an attributed string that happens to
-            // look plain: everything downstream of here reads `text`, and one
-            // representation is one fewer thing to be subtly wrong.
-            attributedText = NSAttributedString(string: text, attributes: base)
         }
-        selectedRange = selection
+        textStorage.endEditing()
         typingAttributes = base
     }
 
