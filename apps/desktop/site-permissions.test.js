@@ -371,6 +371,32 @@ describe("what the site is told", () => {
     expect(bundle.asked.asked).toEqual([]);
   });
 
+  /**
+   * #614 — every site's Copy button. The permission string is Chromium's own
+   * (`clipboard-sanitized-write`, measured on Electron 43 in
+   * clipboard-write.electron-test.js); it used to fall into the unknown bucket
+   * and be refused, so `writeText` rejected and most sites swallowed it.
+   */
+  test("a Copy button is granted without a prompt, and nothing is written down", async () => {
+    const bundle = handlers();
+    expect(await askSite(bundle.handlers, "clipboard-sanitized-write", { requestingUrl: `${SITE}/docs` })).toBe(true);
+    // The check handler is what navigator.permissions.query reports — "denied"
+    // there is what told a page not to bother offering the button at all.
+    expect(bundle.handlers.check(page(), "clipboard-sanitized-write", SITE, {})).toBe(true);
+    expect(bundle.asked.asked).toEqual([]);
+    expect(bundle.keeper.list(PARTITION)).toEqual([]);
+  });
+
+  test("writing is not reading: clipboard-read is still a question the person answers", async () => {
+    const bundle = handlers({ answers: [{ decision: "block" }] });
+    expect(await askSite(bundle.handlers, "clipboard-read", { requestingUrl: `${SITE}/docs` })).toBe(false);
+    expect(bundle.asked.asked[0]).toMatchObject({ origin: SITE, kinds: ["clipboard-read"] });
+    expect(bundle.keeper.get(PARTITION, SITE, "clipboard-read")).toBe("block");
+    // And a refused READ does not follow the write into the auto-granted set.
+    expect(bundle.handlers.check(page(), "clipboard-read", SITE, {})).toBe(false);
+    expect(bundle.handlers.check(page(), "clipboard-sanitized-write", SITE, {})).toBe(true);
+  });
+
   test("a prompt nobody answers ends as Block and the page is told so", async () => {
     const asked = prompts();
     const bundle = handlers({ prompts: asked });
